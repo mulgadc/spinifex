@@ -578,10 +578,10 @@ func buildPoolLookup(mgr *gpu.Manager) (byMdev, byPCI map[string]gpu.PoolEntry) 
 // resolveVMGPU maps a single GPUAttachment to a VMGPUInfo using the pool
 // lookup tables built by buildPoolLookup. Returns nil if the attachment cannot
 // be matched (e.g. daemon restart before pool is fully restored).
-func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) *types.VMGPUInfo {
+func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) *clusterv1.VMGPUInfo {
 	if att.MdevPath != "" {
 		if e, ok := byMdev[att.MdevPath]; ok && e.MIGInstance != nil {
-			return &types.VMGPUInfo{
+			return &clusterv1.VMGPUInfo{
 				Model:    e.Device.Model,
 				VRAMMiB:  e.MIGInstance.Profile.MemoryMiB,
 				Profile:  e.MIGInstance.Profile.Name,
@@ -592,7 +592,7 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 	}
 	if att.PCIAddress != "" {
 		if e, ok := byPCI[att.PCIAddress]; ok {
-			return &types.VMGPUInfo{
+			return &clusterv1.VMGPUInfo{
 				Model:      e.Device.Model,
 				VRAMMiB:    e.Device.MemoryMiB,
 				PCIAddress: att.PCIAddress,
@@ -605,8 +605,8 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 // resolveVMGPUs resolves every attachment it can, reporting a short list rather
 // than passing it off as complete. One unresolved attachment used to read as no
 // GPU at all; eight make a shortened list a plausible wrong answer.
-func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []types.VMGPUInfo {
-	gpus := make([]types.VMGPUInfo, 0, len(attachments))
+func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []clusterv1.VMGPUInfo {
+	gpus := make([]clusterv1.VMGPUInfo, 0, len(attachments))
 	for _, attachment := range attachments {
 		if info := resolveVMGPU(attachment, byMdev, byPCI); info != nil {
 			gpus = append(gpus, *info)
@@ -627,9 +627,9 @@ func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, b
 func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 	poolByMdev, poolByPCI := buildPoolLookup(d.gpuManager)
 
-	vms := make([]types.VMInfo, 0, d.vmMgr.Count())
+	vms := make([]clusterv1.VMInfo, 0, d.vmMgr.Count())
 	d.vmMgr.ForEach(func(v *vm.VM) {
-		info := types.VMInfo{
+		info := clusterv1.VMInfo{
 			InstanceID:   v.ID,
 			Status:       string(v.Status),
 			InstanceType: v.InstanceType,
@@ -648,7 +648,7 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 		vms = append(vms, info)
 	})
 
-	resp := types.NodeVMsResponse{
+	resp := clusterv1.NodeVMsResponse{
 		Node: d.node,
 		Host: d.daemonIP(),
 		VMs:  vms,

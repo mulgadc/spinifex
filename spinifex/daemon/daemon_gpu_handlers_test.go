@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ func gpuStatusRequest(t *testing.T, daemon *Daemon, subject string) types.NodeSt
 }
 
 // gpuVMsRequest subscribes and requests handleNodeVMs on a fresh subject.
-func gpuVMsRequest(t *testing.T, daemon *Daemon, subject string) types.NodeVMsResponse {
+func gpuVMsRequest(t *testing.T, daemon *Daemon, subject string) clusterv1.NodeVMsResponse {
 	t.Helper()
 	sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleNodeVMs))
 	require.NoError(t, err)
@@ -40,7 +41,7 @@ func gpuVMsRequest(t *testing.T, daemon *Daemon, subject string) types.NodeVMsRe
 	reply, err := daemon.natsConn.Request(subject, nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeVMsResponse
+	var resp clusterv1.NodeVMsResponse
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	return resp
 }

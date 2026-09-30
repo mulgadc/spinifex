@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -73,7 +74,7 @@ func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesO
 
 // VMInfoWithNode extends the daemon's VMInfo with node attribution.
 type VMInfoWithNode struct {
-	types.VMInfo
+	clusterv1.VMInfo
 
 	Node string `json:"node"`
 }
@@ -85,7 +86,7 @@ type GetVMsOutput struct {
 
 // GetVMs queries all daemon nodes via NATS fan-out and returns their VMs.
 func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
-	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.vms", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, nc, clusterv1.NodeVMsSubject, []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
@@ -93,7 +94,7 @@ func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutpu
 
 	allVMs := make([]VMInfoWithNode, 0)
 	for _, frame := range frames {
-		var nodeResp types.NodeVMsResponse
+		var nodeResp clusterv1.NodeVMsResponse
 		if json.Unmarshal(frame.Data, &nodeResp) != nil {
 			continue
 		}

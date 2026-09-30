@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -241,14 +242,14 @@ func runGetVMs(cmd *cobra.Command, args []string) {
 	defer nc.Close()
 
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	responses, err := collectResponses(nc, "spinifex.node.vms", timeout)
+	responses, err := collectResponses(nc, clusterv1.NodeVMsSubject, timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	type vmRow struct {
-		types.VMInfo
+		clusterv1.VMInfo
 
 		Node string
 		Host string
@@ -256,7 +257,7 @@ func runGetVMs(cmd *cobra.Command, args []string) {
 
 	var allVMs []vmRow
 	for _, data := range responses {
-		var resp types.NodeVMsResponse
+		var resp clusterv1.NodeVMsResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
 			continue
 		}

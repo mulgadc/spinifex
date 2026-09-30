@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -287,10 +287,10 @@ func TestWarnIfGuestsLeftRunningNamesRunningGuests(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	stubConnect(t, &config.ClusterConfig{Node: "node1"}, nc, nil)
 
-	sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-		resp := types.NodeVMsResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeVMsResponse{
 			Node: "node1",
-			VMs: []types.VMInfo{
+			VMs: []clusterv1.VMInfo{
 				{InstanceID: "i-running", Status: vmStatusRunning},
 				{InstanceID: "i-stopped", Status: "stopped"},
 			},
@@ -318,10 +318,10 @@ func TestWarnIfGuestsLeftRunningNoGuestsIsSilent(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	stubConnect(t, &config.ClusterConfig{Node: "node1"}, nc, nil)
 
-	sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-		resp := types.NodeVMsResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeVMsResponse{
 			Node: "node1",
-			VMs:  []types.VMInfo{{InstanceID: "i-stopped", Status: "stopped"}},
+			VMs:  []clusterv1.VMInfo{{InstanceID: "i-stopped", Status: "stopped"}},
 		}
 		body, _ := json.Marshal(resp)
 		_ = msg.Respond(body)
@@ -516,10 +516,10 @@ func TestReportGuestsLeftRunningSevereLogsErrorAndNamesGuests(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	stubConnect(t, &config.ClusterConfig{Node: "node1"}, nc, nil)
 
-	sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-		resp := types.NodeVMsResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeVMsResponse{
 			Node: "node1",
-			VMs: []types.VMInfo{
+			VMs: []clusterv1.VMInfo{
 				{InstanceID: "i-abandoned", Status: vmStatusRunning},
 				{InstanceID: "i-stopped", Status: "stopped"},
 			},

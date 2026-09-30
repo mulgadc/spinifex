@@ -2239,7 +2239,7 @@ func TestHandleNodeVMs(t *testing.T) {
 	reply, err := daemon.natsConn.Request("spinifex.node.vms.test", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeVMsResponse
+	var resp clusterv1.NodeVMsResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 
@@ -2248,7 +2248,7 @@ func TestHandleNodeVMs(t *testing.T) {
 	assert.Len(t, resp.VMs, 2)
 
 	// Build a lookup by instance ID
-	vmsByID := make(map[string]types.VMInfo)
+	vmsByID := make(map[string]clusterv1.VMInfo)
 	for _, v := range resp.VMs {
 		vmsByID[v.InstanceID] = v
 	}
@@ -2276,7 +2276,7 @@ func TestHandleNodeVMs_Empty(t *testing.T) {
 	reply, err := daemon.natsConn.Request("spinifex.node.vms.empty", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeVMsResponse
+	var resp clusterv1.NodeVMsResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 
@@ -2300,7 +2300,7 @@ func TestHandleNodeVMs_UnknownInstanceType(t *testing.T) {
 	reply, err := daemon.natsConn.Request("spinifex.node.vms.unknown", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeVMsResponse
+	var resp clusterv1.NodeVMsResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 

@@ -92,6 +92,7 @@ services:
       # rarely the node that served the request (fan-out, no queue group).
       - "ec2.eni.public-ip-changed"
       - "spinifex.node.status"
+      # contracts/cluster/v1 owns the VM inventory payload and subject.
       - "spinifex.node.vms"
       - "spinifex.nodes.discover"
       - "spinifex.cluster.shutdown.progress"

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 )
@@ -376,7 +376,7 @@ func reportGuestsLeftRunning(severe bool, msg string) {
 	defer nc.Close()
 	node := cfg.Node
 
-	responses, err := collectResponses(nc, "spinifex.node.vms", guestEnumerationTimeout)
+	responses, err := collectResponses(nc, clusterv1.NodeVMsSubject, guestEnumerationTimeout)
 	if err != nil {
 		slog.Warn("could not enumerate local guests", "node", node, "error", err)
 		return
@@ -384,7 +384,7 @@ func reportGuestsLeftRunning(severe bool, msg string) {
 
 	var running []string
 	for _, data := range responses {
-		var resp types.NodeVMsResponse
+		var resp clusterv1.NodeVMsResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
 			continue
 		}

@@ -1021,7 +1021,7 @@ func (d *Daemon) subscribeAll() error {
 		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{"spinifex.node.status", d.handleNodeStatus, ""},
-		{"spinifex.node.vms", d.handleNodeVMs, ""},
+		{clusterv1.NodeVMsSubject, d.handleNodeVMs, ""},
 		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account

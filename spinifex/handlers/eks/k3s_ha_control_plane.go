@@ -11,9 +11,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -576,8 +577,8 @@ func (h *natsHostScheduler) InstanceHosts(ctx context.Context, instanceIDs []str
 		want[id] = true
 	}
 	out := make(map[string]string)
-	h.fanout(ctx, "spinifex.node.vms", func(data []byte) {
-		var resp types.NodeVMsResponse
+	h.fanout(ctx, clusterv1.NodeVMsSubject, func(data []byte) {
+		var resp clusterv1.NodeVMsResponse
 		if json.Unmarshal(data, &resp) != nil || resp.Node == "" {
 			return
 		}

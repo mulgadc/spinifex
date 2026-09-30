@@ -13,3 +13,10 @@ when a wire change is required.
 `NodeHealthResponse` is also the daemon HTTPS `/health` representation. Do not
 change their subject or JSON shape incompatibly in this package; add a new
 version when a wire change is required.
+
+`NodeVMsSubject` retains the deployed `spinifex.node.vms` fan-out route.
+`NodeVMsResponse` is the VM inventory reply used by the SPX operator CLI and
+by EKS host lookup. It is distinct from node status and capacity reporting:
+do not add scheduling or physical-GPU inventory merely because those callers
+also inspect nodes. Do not change its subject or JSON shape incompatibly; add
+a new version when a wire change is required.

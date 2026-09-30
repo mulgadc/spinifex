@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats-server/v2/server"
@@ -119,11 +120,11 @@ func TestGetVMs_NoResponders(t *testing.T) {
 func TestGetVMs_WithVMs(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
-	sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-		resp := types.NodeVMsResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeVMsResponse{
 			Node: "node1",
 			Host: "10.0.0.1",
-			VMs: []types.VMInfo{
+			VMs: []clusterv1.VMInfo{
 				{InstanceID: "i-abc123", Status: "running", InstanceType: "t3.small"},
 				{InstanceID: "i-def456", Status: "running", InstanceType: "t3.medium"},
 			},
@@ -149,10 +150,10 @@ func TestGetVMs_MultiNode(t *testing.T) {
 
 	for _, name := range []string{"node1", "node2"} {
 		nodeName := name
-		sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-			resp := types.NodeVMsResponse{
+		sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeVMsResponse{
 				Node: nodeName,
-				VMs: []types.VMInfo{
+				VMs: []clusterv1.VMInfo{
 					{InstanceID: "i-" + nodeName, Status: "running"},
 				},
 			}

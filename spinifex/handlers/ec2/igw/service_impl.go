@@ -137,7 +137,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	slog.InfoContext(ctx, "CreateInternetGateway completed", "internetGatewayId", igwID, "accountID", accountID)
 
 	return &ec2.CreateInternetGatewayOutput{
-		InternetGateway: s.recordToEC2(&record),
+		InternetGateway: s.recordToEC2(&record, accountID),
 	}, nil
 }
 
@@ -257,7 +257,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 			continue
 		}
 
-		igws = append(igws, s.recordToEC2(&record))
+		igws = append(igws, s.recordToEC2(&record, accountID))
 		foundIDs[record.InternetGatewayId] = true
 	}
 
@@ -584,9 +584,10 @@ func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey, vpcID s
 	return nil
 }
 
-func (s *IGWServiceImpl) recordToEC2(record *IGWRecord) *ec2.InternetGateway {
+func (s *IGWServiceImpl) recordToEC2(record *IGWRecord, accountID string) *ec2.InternetGateway {
 	igw := &ec2.InternetGateway{
 		InternetGatewayId: aws.String(record.InternetGatewayId),
+		OwnerId:           aws.String(accountID),
 	}
 
 	// AWS returns no attachment at all unless one exists, so a requested but

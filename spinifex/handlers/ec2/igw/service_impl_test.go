@@ -85,6 +85,7 @@ func TestCreateInternetGateway(t *testing.T) {
 	assert.Equal(t, "igw-", (*out.InternetGateway.InternetGatewayId)[:4])
 	// Should not have attachments when created
 	assert.Empty(t, out.InternetGateway.Attachments)
+	assert.Equal(t, testAccountID, aws.StringValue(out.InternetGateway.OwnerId))
 }
 
 func TestCreateInternetGateway_WithTags(t *testing.T) {
@@ -196,6 +197,7 @@ func TestDescribeInternetGateways_ByID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.InternetGateways, 1)
 	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+	assert.Equal(t, testAccountID, aws.StringValue(desc.InternetGateways[0].OwnerId))
 }
 
 func TestDescribeInternetGateways_Empty(t *testing.T) {

@@ -74,7 +74,7 @@ func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider
 		cfg.AccessKey = fixture.AccessKey
 		cfg.SecretKey = fixture.SecretKey
 		cfg.PluginPath = pluginPath
-		cfg.NBDTransport = types.NBDTransportTCP
+		cfg.NBDTransport = NBDTransportTCP
 		cfg.NodeName = name
 		// The lease owner is derived from NodeName, and setupTestConfig built
 		// the store before this function could set it. Rebuild it, or both

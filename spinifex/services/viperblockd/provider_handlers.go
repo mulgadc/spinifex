@@ -1408,7 +1408,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 	mountSpan.SetAttributes(attribute.Int64("volume.size_bytes", safecast.Uint64ToInt64(vb.GetVolumeSize())))
 
-	useTCP := cfg.NBDTransport == types.NBDTransportTCP
+	useTCP := cfg.NBDTransport == NBDTransportTCP
 
 	var nbdURI string
 	var nbdSocket string

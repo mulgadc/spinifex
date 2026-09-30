@@ -149,7 +149,7 @@ type Config struct {
 
 	// NBDTransport controls the transport type: "socket" (default) or "tcp"
 	// Socket is faster for local connections, TCP required for remote/DPU scenarios
-	NBDTransport types.NBDTransport
+	NBDTransport NBDTransport
 
 	// ShardWAL enables sharded WAL for mounted volumes (default false)
 	ShardWAL bool

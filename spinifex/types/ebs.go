@@ -24,16 +24,6 @@ type EBSRequest struct {
 	HotplugPort int `json:"HotplugPort,omitempty"`
 }
 
-// NBDTransport defines the transport type for NBD connections.
-type NBDTransport string
-
-const (
-	// NBDTransportSocket uses Unix domain sockets (faster, local only).
-	NBDTransportSocket NBDTransport = "socket"
-	// NBDTransportTCP uses TCP connections (required for remote/DPU scenarios).
-	NBDTransportTCP NBDTransport = "tcp"
-)
-
 type EBSMountResponse struct {
 	URI     string `json:"URI"`
 	Mounted bool   `json:"Mounted"`

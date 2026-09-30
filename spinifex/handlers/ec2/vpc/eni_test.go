@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -688,20 +687,6 @@ func TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound(t *testing.T) {
 
 	_, err := svc.DetachAndDeleteENI(context.Background(), testAccountID, "eni-never-existed", false)
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
-}
-
-func TestGenerateENIMac(t *testing.T) {
-	t.Parallel()
-	mac := generateENIMac("eni-test123")
-	hw, err := net.ParseMAC(mac)
-	require.NoError(t, err)
-	assert.Equal(t, byte(0x02), hw[0]&0x03)
-
-	// Same input produces same MAC
-	assert.Equal(t, mac, generateENIMac("eni-test123"))
-
-	// Different input produces different MAC
-	assert.NotEqual(t, mac, generateENIMac("eni-test456"))
 }
 
 // --- Filter tests ---

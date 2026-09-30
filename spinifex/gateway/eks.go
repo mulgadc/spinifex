@@ -14,14 +14,8 @@ import (
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 )
 
-// GenerateEKSErrorResponse returns a JSON {"__type":"<code>Exception","message":"<msg>"} body
-// for use by writeClusterUnavailable, writeThrottleError, and ErrorHandler.
-func GenerateEKSErrorResponse(code, message, _ string) []byte {
-	return gateway_eks.GenerateEKSErrorResponse(code, message)
-}
-
 // jsonErrorType derives the X-Amzn-Errortype header value for code, mirroring
-// GenerateEKSErrorResponse's own "Exception" suffixing so the header and the
+// gateway_eks.GenerateEKSErrorResponse's own "Exception" suffixing so the header and the
 // body's __type always agree.
 func jsonErrorType(code string) string {
 	if strings.HasSuffix(code, "Exception") {

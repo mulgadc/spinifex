@@ -1443,7 +1443,7 @@ func policyToSDK(p *Policy, attachmentCount int64) *iam.Policy {
 // policyInScope applies ListPolicies' Scope: Local is customer-managed, AWS is
 // arn:aws:iam::aws:policy/..., and All (or unset) keeps both.
 func policyInScope(policyARN, scope string) bool {
-	awsManaged := isAWSManagedPolicyARN(policyARN)
+	awsManaged := iamarn.IsAWSManagedPolicyARN(policyARN)
 	switch scope {
 	case iam.PolicyScopeTypeLocal:
 		return !awsManaged
@@ -1575,7 +1575,7 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	// in Spinifex, so store them opaquely rather than failing NoSuchEntity — the
 	// grant document is modeled in builtinManagedPolicyDoc and resolved at
 	// evaluation time. Customer-managed ARNs must still exist.
-	if !isAWSManagedPolicyARN(policyARN) {
+	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
 		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
@@ -1641,7 +1641,7 @@ func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string,
 	for _, arn := range arns {
 		// AWS-managed ARNs have no KV entry; report them from the ARN itself so
 		// attach/list round-trips instead of silently dropping them.
-		if isAWSManagedPolicyARN(arn) {
+		if iamarn.IsAWSManagedPolicyARN(arn) {
 			if strings.HasPrefix(policyPathFromARN(arn), pathPrefix) {
 				attached = append(attached, &iam.AttachedPolicy{
 					PolicyArn:  aws.String(arn),

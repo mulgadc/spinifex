@@ -305,7 +305,7 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	// AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy, ...). Store them opaquely
 	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
 	// failing NoSuchEntity. Customer-managed ARNs must still exist.
-	if !isAWSManagedPolicyARN(policyARN) {
+	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
 		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
@@ -555,14 +555,6 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 	}
 
 	return docs, nil
-}
-
-// isAWSManagedPolicyARN reports whether arn is an AWS-managed policy ARN
-// (arn:aws:iam::aws:policy/...). These are not provisioned in Spinifex but are
-// stored and round-tripped opaquely so stock EKS tooling that attaches them
-// works without a backing policy document.
-func isAWSManagedPolicyARN(arn string) bool {
-	return iamarn.IsAWSManagedPolicyARN(arn)
 }
 
 // managedPolicyNameFromARN returns the final path segment of an AWS-managed

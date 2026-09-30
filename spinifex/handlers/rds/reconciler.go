@@ -154,7 +154,7 @@ func (r *Reconciler) watchBuckets(ctx context.Context) ([]*kvstore.Bucket, error
 
 // One pass, and when the loop should run again with nothing having changed.
 func (r *Reconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
-	if !r.isLeader() {
+	if !r.lease.Held() {
 		// Leadership changes without anything being written, so a follower has
 		// to keep asking. The pass itself is a lease check and nothing more.
 		return leaseRefresh, nil
@@ -172,11 +172,7 @@ func (r *Reconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
 // cluster-singular and held continuously rather than claimed per sweep, so
 // holding it is the whole answer and there is nothing for the caller to release.
 func (r *Reconciler) AcquireClusterLease() (func(), bool) {
-	return func() {}, r.isLeader()
-}
-
-func (r *Reconciler) isLeader() bool {
-	return r.lease.Held()
+	return func() {}, r.lease.Held()
 }
 
 func (r *Reconciler) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {

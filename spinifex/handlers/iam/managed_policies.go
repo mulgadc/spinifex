@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 )
 
 // awsManagedPolicyDocs maps well-known AWS-managed policy ARNs to the grant
@@ -311,7 +313,7 @@ func builtinManagedPolicyDoc(arn string) (PolicyDocument, bool) {
 // failing the whole request. Customer-managed ARNs are fetched from KV and
 // fail closed (error) when unresolvable.
 func (s *IAMServiceImpl) resolveAttachedPolicy(ctx context.Context, accountID, arn string) (doc PolicyDocument, include bool, err error) {
-	if isAWSManagedPolicyARN(arn) {
+	if iamarn.IsAWSManagedPolicyARN(arn) {
 		if d, ok := builtinManagedPolicyDoc(arn); ok {
 			return d, true, nil
 		}

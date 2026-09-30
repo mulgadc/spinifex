@@ -30,6 +30,7 @@ import (
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -396,7 +397,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if jsonErrorService(svc) {
-		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
+		body := gateway_eks.GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(awserrors.ErrorServiceUnavailable))
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -428,7 +429,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if jsonErrorService(svc) {
-		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
+		body := gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
@@ -855,7 +856,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
 	// query/XML services fall through.
 	if jsonErrorService(svc) {
-		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
+		body := gateway_eks.GenerateEKSErrorResponse(code, errorMsg.Message)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(code))

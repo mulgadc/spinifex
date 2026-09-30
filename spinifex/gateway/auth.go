@@ -14,6 +14,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/otelsetup"
@@ -521,7 +522,7 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
-		_, _ = w.Write(GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID))
+		_, _ = w.Write(gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message))
 		return
 	}
 

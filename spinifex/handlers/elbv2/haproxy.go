@@ -218,7 +218,7 @@ func buildHAProxyConfig(lb *LoadBalancerRecord, listeners []*ListenerRecord, tgB
 			if validHTTPStatusCode(fr.StatusCode) {
 				hf.StatusCode = fr.StatusCode
 			}
-			if validContentType(fr.ContentType) {
+			if contentTypeRegex.MatchString(fr.ContentType) {
 				hf.ContentType = fr.ContentType
 			}
 			if validFixedResponseBody(fr.MessageBody) {
@@ -527,11 +527,6 @@ func validHTTPStatusCode(s string) bool {
 		}
 	}
 	return true
-}
-
-// validContentType accepts a conservative type/subtype MIME string.
-func validContentType(s string) bool {
-	return contentTypeRegex.MatchString(s)
 }
 
 // validFixedResponseBody rejects bytes that would terminate or inject into the HAProxy directive.

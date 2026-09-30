@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
+	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
@@ -312,7 +313,7 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 	kvKey := accountID + "." + groupName
 
 	// AWS-managed ARNs are stored opaquely (like roles); customer-managed ARNs must exist.
-	if !isAWSManagedPolicyARN(policyARN) {
+	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
 		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}

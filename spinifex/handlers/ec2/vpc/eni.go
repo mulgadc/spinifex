@@ -167,7 +167,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	}
 
 	// Generate a deterministic MAC address
-	macAddr := generateENIMac(eniId)
+	macAddr := utils.HashMAC(eniId)
 
 	description := ""
 	if input.Description != nil {
@@ -1097,11 +1097,6 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 	eni.TagSet = utils.MapToEC2Tags(record.Tags)
 
 	return eni
-}
-
-// generateENIMac creates a locally-administered unicast MAC address from an ENI ID.
-func generateENIMac(eniId string) string {
-	return utils.HashMAC(eniId)
 }
 
 // portEventPayload is the wire shape for vpc.create-port / vpc.delete-port.

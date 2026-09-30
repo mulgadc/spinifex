@@ -9,7 +9,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// meterName is the instrumentation scope for every instancecache metric.
+// meterName deliberately preserves the pre-move instrumentation scope. It is
+// an observable telemetry identity, not a Go import path; changing it would
+// split existing time series at a structural-only move.
 const meterName = "github.com/mulgadc/spinifex/spinifex/instancecache"
 
 // cacheMetrics holds one Cache's instruments. Registered per instance, not as

@@ -101,6 +101,7 @@ services:
       - "spinifex.cluster.shutdown.storage"
       - "spinifex.cluster.shutdown.persist"
       - "spinifex.cluster.shutdown.infra"
+      # Operator-plane Predastore topology contract (contracts/operator/v1).
       - "spinifex.storage.config"
       # ELBv2 control plane (handlers/elbv2/service_nats.go topic map).
       - "elbv2.CreateLoadBalancer"

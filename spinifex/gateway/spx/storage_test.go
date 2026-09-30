@@ -7,7 +7,7 @@ import (
 	"time"
 
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,17 +17,17 @@ func TestGetStorageStatus_Success(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
 	// Mock daemon returning storage config
-	sub, err := nc.Subscribe("spinifex.storage.config", func(msg *nats.Msg) {
-		resp := types.StorageConfigResponse{
-			Encoding: types.StorageEncoding{DataShards: 2, ParityShards: 1},
-			MetaNodes: []types.StorageMetaNode{
+	sub, err := nc.Subscribe(operatorv1.StorageConfigSubject, func(msg *nats.Msg) {
+		resp := operatorv1.StorageConfigResponse{
+			Encoding: operatorv1.StorageEncoding{DataShards: 2, ParityShards: 1},
+			MetaNodes: []operatorv1.StorageMetaNode{
 				{ID: 1, Host: "127.0.0.1", Port: 1}, // nothing listens on port 1
 			},
-			BlobNodes: []types.StorageBlobNode{
+			BlobNodes: []operatorv1.StorageBlobNode{
 				{ID: 1, Host: "0.0.0.0", Port: 9991},
 				{ID: 2, Host: "0.0.0.0", Port: 9992},
 			},
-			Buckets: []types.StorageBucket{
+			Buckets: []operatorv1.StorageBucket{
 				{Name: "predastore", Region: "ap-southeast-2"},
 			},
 		}

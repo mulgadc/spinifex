@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/nats-io/nats.go"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/assert"
@@ -100,18 +100,18 @@ func storageConfigResponse(t *testing.T, cfg string, reply string) []byte {
 func TestHandleStorageConfig_SplitsNodesByRole(t *testing.T) {
 	payload := storageConfigResponse(t, clusterTOML, "test.storage.config.ok")
 
-	var resp types.StorageConfigResponse
+	var resp operatorv1.StorageConfigResponse
 	require.NoError(t, json.Unmarshal(payload, &resp))
 
 	assert.Equal(t, 2, resp.Encoding.DataShards)
 	assert.Equal(t, 1, resp.Encoding.ParityShards)
 
 	require.Len(t, resp.MetaNodes, 1)
-	assert.Equal(t, types.StorageMetaNode{ID: 3, Host: "10.0.0.1", Port: 7660}, resp.MetaNodes[0])
+	assert.Equal(t, operatorv1.StorageMetaNode{ID: 3, Host: "10.0.0.1", Port: 7660}, resp.MetaNodes[0])
 
 	require.Len(t, resp.BlobNodes, 2)
-	assert.Equal(t, types.StorageBlobNode{ID: 2, Host: "10.0.0.1", Port: 6660}, resp.BlobNodes[0])
-	assert.Equal(t, types.StorageBlobNode{ID: 4, Host: "10.0.0.2", Port: 6660}, resp.BlobNodes[1])
+	assert.Equal(t, operatorv1.StorageBlobNode{ID: 2, Host: "10.0.0.1", Port: 6660}, resp.BlobNodes[0])
+	assert.Equal(t, operatorv1.StorageBlobNode{ID: 4, Host: "10.0.0.2", Port: 6660}, resp.BlobNodes[1])
 
 	require.Len(t, resp.Buckets, 1)
 	assert.Equal(t, "predastore", resp.Buckets[0].Name)

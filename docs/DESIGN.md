@@ -268,7 +268,11 @@ Ports are unique within a host but repeat across the cluster, so a multi-node cl
 
 A single-node install is the same arrangement with one host: seven nodes — a gate, three blob and three meta — colocated in one process, needing seven distinct ports (8443, 6660–6662, 7660–7662) to stay unique within the host even though only the gate opens a listener. It has no code path of its own.
 
-The daemon reports the topology on `spinifex.storage.config` by parsing the config file. It does not connect to Predastore to do so, and no Predastore node exposes a status endpoint.
+The daemon reports the topology on `spinifex.storage.config` (the
+`contracts/operator/v1` Predastore-topology contract) by parsing the config
+file. It does not connect to Predastore to do so, and no Predastore node
+exposes a status endpoint. This is an operator status interface, not a generic
+storage-provider contract.
 
 ## Configuration
 

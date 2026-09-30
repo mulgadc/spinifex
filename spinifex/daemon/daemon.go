@@ -33,6 +33,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	"github.com/mulgadc/spinifex/spinifex/config"
@@ -1021,7 +1022,7 @@ func (d *Daemon) subscribeAll() error {
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{"spinifex.node.status", d.handleNodeStatus, ""},
 		{"spinifex.node.vms", d.handleNodeVMs, ""},
-		{"spinifex.storage.config", d.handleStorageConfig, ""},
+		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account
 		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},

@@ -92,7 +92,10 @@ func TestWaitForClusterReady_PredastoreBecomesReady(t *testing.T) {
 	require.NoError(t, err)
 
 	d := &Daemon{
-		config:   &config.Config{Predastore: config.PredastoreConfig{Host: closedPort(t)}},
+		config: &config.Config{
+			Predastore: config.PredastoreConfig{Host: closedPort(t)},
+			NATS:       config.NATSConfig{CACert: writeServerCA(t, srv)},
+		},
 		natsConn: nc,
 	}
 

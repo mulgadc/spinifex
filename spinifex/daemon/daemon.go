@@ -2574,15 +2574,6 @@ func (d *Daemon) checkViperblockReady() bool {
 	return err == nil
 }
 
-// predastoreReadinessClient is hoisted to package scope so the 2s readiness
-// poll loop doesn't build a fresh transport every call. Verification is off
-// because the probe authenticates nothing and reads no data.
-var predastoreReadinessClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // readiness probe only, no data exchanged
-	},
-}
-
 // checkPredastoreReady reports whether predastore is serving HTTPS, not just
 // listening. Any response counts as ready, including the 401/403 an S3
 // endpoint returns for this deliberately unsigned request.
@@ -2595,11 +2586,18 @@ func (d *Daemon) checkPredastoreReady() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	rootCAs, err := loadClusterTrustRoot(d)
+	if err != nil {
+		slog.Warn("predastore readiness probe: could not load cluster CA", "err", err)
+		return false
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: rootCAs}}}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+"/", nil)
 	if err != nil {
 		return false
 	}
-	resp, err := predastoreReadinessClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}

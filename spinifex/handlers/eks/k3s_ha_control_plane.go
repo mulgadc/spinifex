@@ -16,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -500,8 +499,8 @@ func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType s
 
 	var hosts []azHost
 	seen := make(map[string]bool)
-	h.fanout(ctx, "spinifex.node.status", func(data []byte) {
-		var st types.NodeStatusResponse
+	h.fanout(ctx, clusterv1.NodeStatusSubject, func(data []byte) {
+		var st clusterv1.NodeStatusResponse
 		if json.Unmarshal(data, &st) != nil || st.Node == "" || seen[st.Node] {
 			return
 		}
@@ -554,7 +553,7 @@ func spreadHostsByAZ(hosts []azHost) []string {
 
 // nodeFitsCustomerInstance reports whether a node advertises at least one free
 // slot for the given customer instance type in its node.status capacity.
-func nodeFitsCustomerInstance(st types.NodeStatusResponse, instanceType string) bool {
+func nodeFitsCustomerInstance(st clusterv1.NodeStatusResponse, instanceType string) bool {
 	for _, c := range st.InstanceTypes {
 		if c.Name == instanceType && c.Available >= 1 {
 			return true
@@ -565,7 +564,7 @@ func nodeFitsCustomerInstance(st types.NodeStatusResponse, instanceType string) 
 
 // nodeFitsSystemInstance reports whether a node's headroom (Total - Reserved - Alloc)
 // fits at least one VM of the given vCPU/memory footprint.
-func nodeFitsSystemInstance(st types.NodeStatusResponse, vcpu int, memGB float64) bool {
+func nodeFitsSystemInstance(st clusterv1.NodeStatusResponse, vcpu int, memGB float64) bool {
 	remainVCPU := st.TotalVCPU - st.ReservedVCPU - st.AllocVCPU
 	remainMem := st.TotalMemGB - st.ReservedMemGB - st.AllocMemGB
 	return remainVCPU >= vcpu && remainMem >= memGB

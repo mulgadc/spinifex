@@ -13,9 +13,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 
 	"github.com/nats-io/nats.go"
@@ -67,7 +67,7 @@ func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, nats
 // Early-exits once expectedNodes reply; on a degraded cluster it waits the full timeout
 // rather than placing on a partial view.
 func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType string, expectedNodes int, accountID string) ([]nodeAllocation, error) {
-	frames, _, err := utils.Gather(ctx, natsConn, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, natsConn, clusterv1.NodeStatusSubject, []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -75,7 +75,7 @@ func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType st
 
 	var nodes []nodeAllocation
 	for _, frame := range frames {
-		var status types.NodeStatusResponse
+		var status clusterv1.NodeStatusResponse
 		if err := json.Unmarshal(frame.Data, &status); err != nil {
 			slog.DebugContext(ctx, "queryNodeCapacity: failed to unmarshal response", "err", err)
 			continue

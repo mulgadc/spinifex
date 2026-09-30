@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
@@ -40,7 +41,6 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -202,7 +202,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		Config:    cfg,
 	}
 
-	nodeReply, err := json.Marshal(types.NodeDiscoverResponse{Node: "integration-test-node"})
+	nodeReply, err := json.Marshal(clusterv1.NodeDiscoverResponse{Node: "integration-test-node"})
 	require.NoError(t, err)
 	gw.StubSubject(t, nodeDiscoverSubject, nodeReply)
 

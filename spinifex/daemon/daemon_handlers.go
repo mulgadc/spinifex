@@ -22,7 +22,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -408,12 +407,12 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) string {
 		gpuModelNames = append(gpuModelNames, dev.Model)
 	}
 
-	var gpuInventory []types.GPUInfo
+	var gpuInventory []clusterv1.GPUInfo
 	if d.gpuManager != nil {
 		gpuInventory = buildGPUInventory(d.gpuManager.Snapshot())
 	}
 
-	resp := types.NodeStatusResponse{
+	resp := clusterv1.NodeStatusResponse{
 		Node:           d.node,
 		Status:         "Ready",
 		Host:           d.daemonIP(),
@@ -518,14 +517,14 @@ func fetchNATSRole(url string, client *http.Client) string {
 // buildGPUInventory converts a pool snapshot into per-physical-GPU GPUInfo
 // records suitable for the NodeStatusResponse. Entries are ordered by first
 // appearance of each PCI address in the snapshot.
-func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
-	byPCI := make(map[string]*types.GPUInfo, len(snapshot))
+func buildGPUInventory(snapshot []gpu.PoolEntry) []clusterv1.GPUInfo {
+	byPCI := make(map[string]*clusterv1.GPUInfo, len(snapshot))
 	var order []string
 
 	for _, e := range snapshot {
 		pci := e.Device.PCIAddress
 		if _, ok := byPCI[pci]; !ok {
-			byPCI[pci] = &types.GPUInfo{
+			byPCI[pci] = &clusterv1.GPUInfo{
 				PCIAddress: pci,
 				Model:      e.Device.Model,
 				VRAMMiB:    e.Device.MemoryMiB,
@@ -536,7 +535,7 @@ func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
 		if e.MIGInstance != nil {
 			g.MIGEnabled = true
 			g.MIGProfile = e.MIGInstance.Profile.Name
-			g.Slices = append(g.Slices, types.GPUSliceInfo{
+			g.Slices = append(g.Slices, clusterv1.GPUSliceInfo{
 				GIID:       e.MIGInstance.GIID,
 				Profile:    e.MIGInstance.Profile.Name,
 				VRAMMiB:    e.MIGInstance.Profile.MemoryMiB,
@@ -548,7 +547,7 @@ func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
 		}
 	}
 
-	gpus := make([]types.GPUInfo, 0, len(order))
+	gpus := make([]clusterv1.GPUInfo, 0, len(order))
 	for _, pci := range order {
 		gpus = append(gpus, *byPCI[pci])
 	}

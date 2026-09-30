@@ -20,3 +20,10 @@ by EKS host lookup. It is distinct from node status and capacity reporting:
 do not add scheduling or physical-GPU inventory merely because those callers
 also inspect nodes. Do not change its subject or JSON shape incompatibly; add
 a new version when a wire change is required.
+
+`NodeStatusSubject` retains the deployed `spinifex.node.status` fan-out route.
+`NodeStatusResponse` carries daemon-reported status, schedulable capacity and
+physical-GPU inventory for the SPX operator CLI and EC2/EKS placement callers.
+It is an observation contract, not the owner of capacity, scheduling or GPU
+allocation policy. Do not change its subject or JSON shape incompatibly; add
+a new version when a wire change is required.

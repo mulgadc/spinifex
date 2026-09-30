@@ -76,7 +76,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -666,7 +665,7 @@ func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeIn
 
 // GetResourceStats returns host resource figures, reservation, allocation, and
 // per-type capacity caps for the node status response.
-func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64, reservedVCPU int, reservedMemGB float64, allocVCPU int, allocMemGB float64, caps []types.InstanceTypeCap) {
+func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64, reservedVCPU int, reservedMemGB float64, allocVCPU int, allocMemGB float64, caps []clusterv1.InstanceTypeCap) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
@@ -1020,7 +1019,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
 		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
-		{"spinifex.node.status", d.handleNodeStatus, ""},
+		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
 		{clusterv1.NodeVMsSubject, d.handleNodeVMs, ""},
 		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},

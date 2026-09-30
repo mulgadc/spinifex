@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -203,7 +203,7 @@ func TestGetResourceStats_GPUTypesAreGatedOnGPUs(t *testing.T) {
 		reservations:  make(map[string]*capacityReservation),
 	}
 
-	capFor := func() types.InstanceTypeCap {
+	capFor := func() clusterv1.InstanceTypeCap {
 		t.Helper()
 		_, _, _, _, _, _, caps := rm.GetResourceStats()
 		for _, c := range caps {
@@ -212,7 +212,7 @@ func TestGetResourceStats_GPUTypesAreGatedOnGPUs(t *testing.T) {
 			}
 		}
 		t.Fatal("gpu.4x4c missing from the census")
-		return types.InstanceTypeCap{}
+		return clusterv1.InstanceTypeCap{}
 	}
 
 	assert.Equal(t, 1, capFor().Available, "four GPUs back one four-GPU instance")

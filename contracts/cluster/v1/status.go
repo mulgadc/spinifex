@@ -1,4 +1,10 @@
-package types
+package clusterv1
+
+const (
+	// NodeStatusSubject fans out a request for each responding daemon's status
+	// and schedulable-capacity snapshot. Its reply payload is NodeStatusResponse.
+	NodeStatusSubject = "spinifex.node.status"
+)
 
 // GPUSliceInfo describes a single MIG slice within a physical GPU.
 type GPUSliceInfo struct {
@@ -22,8 +28,9 @@ type GPUInfo struct {
 	Slices     []GPUSliceInfo `json:"slices,omitempty"`
 }
 
-// NodeStatusResponse is returned by the spinifex.node.status NATS topic (fan-out).
-// Schedulable capacity = TotalVCPU - ReservedVCPU - AllocVCPU (same for memory).
+// NodeStatusResponse is one daemon's reply on NodeStatusSubject. Schedulable
+// capacity = TotalVCPU - ReservedVCPU - AllocVCPU (and the same for memory).
+// The subject fans out, so callers collect one response per responding node.
 type NodeStatusResponse struct {
 	Node           string            `json:"node"`
 	Status         string            `json:"status"`

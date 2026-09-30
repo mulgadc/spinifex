@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -43,15 +43,15 @@ func runTopNodes(cmd *cobra.Command, args []string) {
 	defer nc.Close()
 
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	responses, err := collectResponses(nc, "spinifex.node.status", timeout)
+	responses, err := collectResponses(nc, clusterv1.NodeStatusSubject, timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	respondedNodes := make(map[string]types.NodeStatusResponse)
+	respondedNodes := make(map[string]clusterv1.NodeStatusResponse)
 	for _, data := range responses {
-		var resp types.NodeStatusResponse
+		var resp clusterv1.NodeStatusResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
 			continue
 		}

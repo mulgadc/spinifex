@@ -15,7 +15,6 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/pterm/pterm"
@@ -134,7 +133,7 @@ func formatUptime(seconds int64) string {
 	return fmt.Sprintf("%dm", mins)
 }
 
-func formatRoles(resp types.NodeStatusResponse) string {
+func formatRoles(resp clusterv1.NodeStatusResponse) string {
 	var roles []string
 	if resp.NATSRole != "" {
 		roles = append(roles, "nats:"+resp.NATSRole)
@@ -170,16 +169,16 @@ func runGetNodes(cmd *cobra.Command, args []string) {
 	defer nc.Close()
 
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	responses, err := collectResponses(nc, "spinifex.node.status", timeout)
+	responses, err := collectResponses(nc, clusterv1.NodeStatusSubject, timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Parse responses into a map by node name
-	respondedNodes := make(map[string]types.NodeStatusResponse)
+	respondedNodes := make(map[string]clusterv1.NodeStatusResponse)
 	for _, data := range responses {
-		var resp types.NodeStatusResponse
+		var resp clusterv1.NodeStatusResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
 			continue
 		}

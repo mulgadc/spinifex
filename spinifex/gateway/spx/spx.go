@@ -10,7 +10,6 @@ import (
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -41,21 +40,21 @@ func GetVersion(version, commit string) (*VersionOutput, error) {
 
 // GetNodesOutput is the response for GetNodes.
 type GetNodesOutput struct {
-	Nodes       []types.NodeStatusResponse `json:"nodes"`
-	ClusterMode string                     `json:"cluster_mode"`
+	Nodes       []clusterv1.NodeStatusResponse `json:"nodes"`
+	ClusterMode string                         `json:"cluster_mode"`
 }
 
 // GetNodes queries all daemon nodes via NATS fan-out and returns their status.
 func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
-	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, nc, clusterv1.NodeStatusSubject, []byte("{}"),
 		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}
 
-	nodes := make([]types.NodeStatusResponse, 0, len(frames))
+	nodes := make([]clusterv1.NodeStatusResponse, 0, len(frames))
 	for _, frame := range frames {
-		var node types.NodeStatusResponse
+		var node clusterv1.NodeStatusResponse
 		if json.Unmarshal(frame.Data, &node) == nil {
 			nodes = append(nodes, node)
 		}

@@ -6,7 +6,6 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -54,8 +53,8 @@ func TestGetNodes_NoResponders(t *testing.T) {
 func TestGetNodes_SingleNode(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
-	sub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
-		resp := types.NodeStatusResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeStatusSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeStatusResponse{
 			Node:       "node1",
 			Status:     "Ready",
 			Host:       "10.0.0.1",
@@ -65,7 +64,7 @@ func TestGetNodes_SingleNode(t *testing.T) {
 			TotalMemGB: 16.0,
 			AllocVCPU:  2,
 			AllocMemGB: 2.0,
-			InstanceTypes: []types.InstanceTypeCap{
+			InstanceTypes: []clusterv1.InstanceTypeCap{
 				{Name: "t3.small", VCPU: 2, MemoryGB: 2.0, Available: 3},
 			},
 		}
@@ -93,8 +92,8 @@ func TestGetNodes_MultiNode(t *testing.T) {
 
 	for _, name := range []string{"node1", "node2", "node3"} {
 		nodeName := name
-		sub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
-			resp := types.NodeStatusResponse{Node: nodeName, Status: "Ready"}
+		sub, err := nc.Subscribe(clusterv1.NodeStatusSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeStatusResponse{Node: nodeName, Status: "Ready"}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 		})

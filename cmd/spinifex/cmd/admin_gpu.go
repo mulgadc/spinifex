@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -111,7 +111,7 @@ func init() {
 }
 
 // gpuNodeStatus queries NATS and returns the NodeStatusResponse for the target node.
-func gpuNodeStatus(targetNode string) (*types.NodeStatusResponse, error) {
+func gpuNodeStatus(targetNode string) (*clusterv1.NodeStatusResponse, error) {
 	cfg, nc, err := loadConfigAndConnect()
 	if err != nil {
 		return nil, err
@@ -122,12 +122,12 @@ func gpuNodeStatus(targetNode string) (*types.NodeStatusResponse, error) {
 		targetNode = cfg.Node
 	}
 
-	responses, err := collectResponses(nc, "spinifex.node.status", 3*time.Second)
+	responses, err := collectResponses(nc, clusterv1.NodeStatusSubject, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("collect node status: %w", err)
 	}
 	for _, raw := range responses {
-		var resp types.NodeStatusResponse
+		var resp clusterv1.NodeStatusResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			continue
 		}

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -32,7 +32,7 @@ func collectCensus(ctx context.Context, natsConn *nats.Conn, expectedNodes int, 
 		expectedNodes = 1
 	}
 
-	frames, _, err := utils.Gather(ctx, natsConn, "spinifex.node.status", []byte("{}"),
+	frames, _, err := utils.Gather(ctx, natsConn, clusterv1.NodeStatusSubject, []byte("{}"),
 		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func collectCensus(ctx context.Context, natsConn *nats.Conn, expectedNodes int, 
 	seen := make(map[string]struct{})
 	var census []nodeCensus
 	for _, frame := range frames {
-		var status types.NodeStatusResponse
+		var status clusterv1.NodeStatusResponse
 		if err := json.Unmarshal(frame.Data, &status); err != nil {
 			slog.DebugContext(ctx, "collectCensus: failed to unmarshal response", "err", err)
 			continue

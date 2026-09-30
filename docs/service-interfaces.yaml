@@ -91,6 +91,7 @@ services:
       # An EIP association reaches whichever node holds the instance, which is
       # rarely the node that served the request (fan-out, no queue group).
       - "ec2.eni.public-ip-changed"
+      # contracts/cluster/v1 owns the node status/capacity payload and subject.
       - "spinifex.node.status"
       # contracts/cluster/v1 owns the VM inventory payload and subject.
       - "spinifex.node.vms"

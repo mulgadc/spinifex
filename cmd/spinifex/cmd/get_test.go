@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
+	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/stretchr/testify/assert"
 )
 

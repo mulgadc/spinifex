@@ -2169,7 +2169,7 @@ func TestHandleNodeStatus(t *testing.T) {
 	reply, err := daemon.natsConn.Request("spinifex.node.status.test", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeStatusResponse
+	var resp clusterv1.NodeStatusResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 
@@ -2199,7 +2199,7 @@ func TestHandleNodeStatus_NoVMs(t *testing.T) {
 	reply, err := daemon.natsConn.Request("spinifex.node.status.empty", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeStatusResponse
+	var resp clusterv1.NodeStatusResponse
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 

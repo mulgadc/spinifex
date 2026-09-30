@@ -10,14 +10,13 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // gpuStatusRequest subscribes and requests handleNodeStatus on a fresh subject
 // so each test gets an isolated round trip.
-func gpuStatusRequest(t *testing.T, daemon *Daemon, subject string) types.NodeStatusResponse {
+func gpuStatusRequest(t *testing.T, daemon *Daemon, subject string) clusterv1.NodeStatusResponse {
 	t.Helper()
 	sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleNodeStatus))
 	require.NoError(t, err)
@@ -26,7 +25,7 @@ func gpuStatusRequest(t *testing.T, daemon *Daemon, subject string) types.NodeSt
 	reply, err := daemon.natsConn.Request(subject, nil, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.NodeStatusResponse
+	var resp clusterv1.NodeStatusResponse
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	return resp
 }
@@ -69,7 +68,7 @@ func TestHandleNodeStatus_WholeGPU(t *testing.T) {
 	resp := gpuStatusRequest(t, daemon, "spinifex.node.status.wholegpu")
 
 	require.Len(t, resp.GPUs, 2)
-	byPCI := make(map[string]types.GPUInfo, 2)
+	byPCI := make(map[string]clusterv1.GPUInfo, 2)
 	for _, g := range resp.GPUs {
 		byPCI[g.PCIAddress] = g
 	}
@@ -123,7 +122,7 @@ func TestHandleNodeStatus_MIG(t *testing.T) {
 	assert.Empty(t, g.InstanceID, "whole-GPU InstanceID is unused in MIG mode")
 	require.Len(t, g.Slices, 2)
 
-	byGI := make(map[int]types.GPUSliceInfo, 2)
+	byGI := make(map[int]clusterv1.GPUSliceInfo, 2)
 	for _, s := range g.Slices {
 		byGI[s.GIID] = s
 	}

@@ -5,24 +5,25 @@
 // Two properties matter here. A type mismatch on an unrelated field cannot
 // poison the parse and silently widen the request to "*", because every field
 // is decoded on demand. And AWS JSON 1.1 spells fields lower-camel while the
-// SDK structs are upper-camel, so lookups are case-insensitive by design
-// rather than by relying on encoding/json's own fallback.
+// SDK structs are upper-camel, so lookups are case-insensitive by design. Names
+// are ASCII-only, where strings.ToLower folds exactly as encoding/json does.
 package bodyscope
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"log/slog"
 	"slices"
 	"strings"
+	"unicode"
 )
 
-// ErrAmbiguousBody reports a body carrying two spellings of one field that
-// differ only in case. encoding/json resolves those in document order when the
-// handler builds its typed input, while a case-folded map cannot resolve them
-// at all, so the gate and the handler would name different objects. The caller
-// must reject the request rather than resolve it or widen to "*".
-var ErrAmbiguousBody = errors.New("bodyscope: field spelled two ways in one body")
+// ErrAmbiguousBody reports a field the handler's decode could read differently:
+// a non-ASCII name, which encoding/json may fold onto an ASCII one, or a name
+// given twice, where it skips a repeated null and merges a repeated object.
+var ErrAmbiguousBody = errors.New("bodyscope: body names a field ambiguously")
 
 // Scope is a parsed request body. The zero value is usable and reports every
 // field as absent, which is what a body the gate cannot parse resolves to.
@@ -33,23 +34,32 @@ type Scope struct {
 // Parse reads body as a JSON object. A body that is empty or does not parse
 // yields an empty Scope and no error: it is the handler that rejects a
 // malformed request, so the caller sees a validation fault rather than a
-// denial. A body whose fields collide under the case fold yields
-// ErrAmbiguousBody. action names the caller for the log lines only.
+// denial. A field named ambiguously yields ErrAmbiguousBody. action names the
+// caller for the log lines only.
 func Parse(action string, body []byte) (Scope, error) {
 	if len(body) == 0 {
 		return Scope{}, nil
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
+	// v2 refuses a repeated name at any depth. Invalid UTF-8 stays accepted
+	// because the handler's v1 decode accepts it.
+	var raw map[string]jsontext.Value
+	err := jsonv2.Unmarshal(body, &raw, jsontext.AllowInvalidUTF8(true))
+	if errors.Is(err, jsontext.ErrDuplicateName) {
+		slog.Error("bodyscope: body names a field ambiguously, refusing to resolve a scope",
+			"action", action, "err", err)
+		return Scope{}, ErrAmbiguousBody
+	}
+	if err != nil {
 		slog.Debug("bodyscope: body does not parse, authorizing account-wide", "action", action, "err", err)
 		return Scope{}, nil
 	}
 	fields := make(map[string]json.RawMessage, len(raw))
 	for name, value := range raw {
 		lower := strings.ToLower(name)
-		if _, duplicate := fields[lower]; duplicate {
-			slog.Error("bodyscope: field spelled two ways in one body, refusing to resolve a scope",
-				"action", action, "field", lower)
+		nonASCII := strings.ContainsFunc(name, func(r rune) bool { return r > unicode.MaxASCII })
+		if _, duplicate := fields[lower]; duplicate || nonASCII {
+			slog.Error("bodyscope: body names a field ambiguously, refusing to resolve a scope",
+				"action", action, "field", name)
 			return Scope{}, ErrAmbiguousBody
 		}
 		fields[lower] = value

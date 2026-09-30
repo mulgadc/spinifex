@@ -65,11 +65,39 @@ func TestObject_FieldSpelledTwoWaysInANestedObjectIsRejected(t *testing.T) {
 	require.ErrorIs(t, err, bodyscope.ErrAmbiguousBody)
 }
 
-// A field repeated under one spelling is not ambiguous: encoding/json takes the
-// last occurrence and so does the map, so both sides agree.
-func TestParse_RepeatedIdenticalSpellingIsNotAmbiguous(t *testing.T) {
-	scope := mustParse(t, "DeleteCluster", `{"cluster":"dev","cluster":"prod"}`)
-	assert.Equal(t, "prod", scope.String("cluster"))
+// encoding/json skips a repeated null and merges a repeated object where a map
+// keeps only the last, so any repeat can leave the handler with another value.
+func TestParse_RepeatedFieldIsAmbiguous(t *testing.T) {
+	for _, body := range []string{
+		`{"cluster":"dev","cluster":"prod"}`,
+		`{"cluster":"dev","cluster":"dev"}`,
+		`{"repositoryName":"victim","repositoryName":null}`,
+		`{"config":{"id":"victim"},"config":{"type":"x"}}`,
+	} {
+		_, err := bodyscope.Parse("DeleteRepository", []byte(body))
+		require.ErrorIs(t, err, bodyscope.ErrAmbiguousBody, "body %q", body)
+	}
+
+	_, err := bodyscope.Parse("RetrieveAndGenerate", []byte(`{"config":{"id":"a","id":null}}`))
+	require.ErrorIs(t, err, bodyscope.ErrAmbiguousBody)
+}
+
+// encoding/json folds some non-ASCII runes onto ASCII letters (U+017F onto
+// "s", U+212A onto "k"), so a non-ASCII name can fill a field the gate never
+// looked up. No AWS member name is non-ASCII, so any such name is refused.
+func TestParse_NonASCIIFieldNameIsAmbiguous(t *testing.T) {
+	for _, body := range []string{
+		`{"cluſter":"victim"}`,
+		`{"tas\u212a":"victim"}`,
+		`{"cluster":"dev","naïve":1}`,
+	} {
+		_, err := bodyscope.Parse("DeleteCluster", []byte(body))
+		require.ErrorIs(t, err, bodyscope.ErrAmbiguousBody, "body %q", body)
+	}
+
+	scope := mustParse(t, "RetrieveAndGenerate", `{"config":{"knowledgeBaſeId":"victim"}}`)
+	_, err := scope.Object("config")
+	require.ErrorIs(t, err, bodyscope.ErrAmbiguousBody)
 }
 
 func TestStrings_DropsEmptyElements(t *testing.T) {

@@ -67,6 +67,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/network/external/exonet"
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -1459,6 +1460,12 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			OCIPublicIPPool:  p.OCIPublicIPPool,
 			OCIConfigFile:    p.OCIConfigFile,
 			OCIConfigProfile: p.OCIConfigProfile,
+
+			ExoscaleZone:       p.ExoscaleZone,
+			ExoscaleInstanceID: p.ExoscaleInstanceID,
+			ExoscaleConfigFile: p.ExoscaleConfigFile,
+			ExoscaleAccount:    p.ExoscaleAccount,
+			ExoscaleBinary:     p.ExoscaleBinary,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true
@@ -1506,6 +1513,31 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 	}
 	if len(d.ociAllocators) > 0 {
 		go d.runOCIAffinityLoop()
+	}
+	return nil
+}
+
+// installExoscaleAllocators builds one allocator per source="exoscale" pool
+// and reconciles it before it serves. As with OCI, Allocate creates the EIP
+// before recording it, and this pass is the only thing that finds one a crash
+// left behind — on a five-EIP quota, one leak is a fifth of the capacity.
+func (d *Daemon) installExoscaleAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceExoscale) {
+		alloc, err := exonet.FromPoolConfig(d.ctx, js, p)
+		if err != nil {
+			return fmt.Errorf("build Exoscale allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		res, err := alloc.Reconcile(d.ctx)
+		if err != nil {
+			slog.Error("Exoscale allocator reconcile failed; leaked elastic IPs may be billing",
+				"pool", p.Name, "err", err)
+			continue
+		}
+		slog.Info("Exoscale allocator ready", "pool", p.Name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
 	}
 	return nil
 }
@@ -1852,6 +1884,9 @@ func (d *Daemon) startCluster() error {
 			}
 			if ociErr := d.installOCIAllocators(ipam, js); ociErr != nil {
 				return nil, ociErr
+			}
+			if exoErr := d.installExoscaleAllocators(ipam, js); exoErr != nil {
+				return nil, exoErr
 			}
 			return ipam, nil
 		})

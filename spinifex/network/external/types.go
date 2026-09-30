@@ -37,6 +37,13 @@ type ExternalPoolConfig struct {
 	// principal: no dynamic group, no IAM policy, and no metadata read.
 	OCIConfigFile    string
 	OCIConfigProfile string
+	// Exoscale* configure a source="exoscale" pool: the zone the EIPs live in,
+	// the instance they attach to, and how the exo CLI is invoked.
+	ExoscaleZone       string
+	ExoscaleInstanceID string
+	ExoscaleConfigFile string
+	ExoscaleAccount    string
+	ExoscaleBinary     string
 }
 
 // IsDHCP reports whether the pool sources IPs from an upstream DHCP server.
@@ -49,6 +56,11 @@ func (p *ExternalPoolConfig) IsOCI() bool {
 	return p != nil && p.Source == SourceOCI
 }
 
+// IsExoscale reports whether the pool sources IPs from Exoscale Elastic IPs.
+func (p *ExternalPoolConfig) IsExoscale() bool {
+	return p != nil && p.Source == SourceExoscale
+}
+
 const (
 	// SourceStatic is the default pool source (inline range math, KV-backed).
 	SourceStatic = "static"
@@ -59,6 +71,10 @@ const (
 	// it, so the addresses have to be created through the provider rather than
 	// computed from a range.
 	SourceOCI = "oci"
+	// SourceExoscale delegates allocation to Exoscale Elastic IPs, created and
+	// attached through the exo CLI. A manual EIP arrives addressed to itself,
+	// so unlike OCI there is no private half to map.
+	SourceExoscale = "exoscale"
 
 	// DHCPMACDerived leases with deterministic per-client-id 02:xx MACs.
 	DHCPMACDerived = "derived"

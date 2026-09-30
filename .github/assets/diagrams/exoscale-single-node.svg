@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1020" height="836" viewBox="0 0 1020 836" role="img" aria-label="Spinifex on a single Exoscale instance: the instance sits on the zone&#x27;s public network with one interface, eth0, holding its own address and the default route. Manual Elastic IPs are delivered to eth0 and routed by the host into OVN through the spx-nat transit veth, and an Exoscale block storage volume backs /var/lib/spinifex.">
+<rect x="0" y="0" width="1020" height="836" rx="20" fill="#14181D" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="28" y="42" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#EE4B12" font-weight="600" text-anchor="start" letter-spacing="2.5">SPINIFEX ON EXOSCALE — SINGLE NODE</text>
+<text x="992" y="42" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#9AA1A8" font-weight="400" text-anchor="end">one instance · routed NAT · Elastic IPs</text>
+<text x="28" y="72" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="23" fill="#F5F3EE" font-weight="800" text-anchor="start">One Exoscale instance, single Spinifex node</text>
+<rect x="28" y="92" width="964" height="76" rx="13" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="48" y="122" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="700" text-anchor="start" letter-spacing="1.5">INTERNET</text>
+<text x="972" y="122" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">AWS SDKs, SSH and guest egress all arrive here</text>
+<rect x="46" y="126" width="260.0" height="22" rx="7" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="176.0" y="140.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#9AA1A8" font-weight="400" text-anchor="middle">aws-cli / Terraform / boto3 → :9999</text>
+<rect x="315.0" y="126" width="171.6" height="22" rx="7" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="400.8" y="140.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#9AA1A8" font-weight="400" text-anchor="middle">ssh → guest Elastic IP</text>
+<rect x="495.6" y="126" width="205.6" height="22" rx="7" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="598.4" y="140.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#9AA1A8" font-weight="400" text-anchor="middle">guest egress ← same address</text>
+<line x1="510" y1="170" x2="510" y2="186" stroke="#EE4B12" stroke-width="1.3" stroke-opacity="0.55" stroke-dasharray="2 4"/>
+<rect x="28" y="188" width="964" height="582" rx="16" fill="#EE4B12" fill-opacity="0.022" stroke="#EE4B12" stroke-width="1.4" stroke-opacity="0.45" stroke-dasharray="6 5"/>
+<text x="50" y="218" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#EE4B12" font-weight="600" text-anchor="start" letter-spacing="2">EXOSCALE ZONE DE-FRA-1  ·  PUBLIC NETWORK 91.92.116.0/23</text>
+<text x="970" y="218" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#9AA1A8" font-weight="400" text-anchor="end">gateway 91.92.116.1 · security group open to all</text>
+<rect x="48" y="232" width="924" height="520" rx="14" fill="#EE4B12" fill-opacity="0.05" stroke="#EE4B12" stroke-width="1.4" stroke-opacity="0.5"/>
+<text x="68" y="266" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="16" fill="#F5F3EE" font-weight="800" text-anchor="start">standard.huge</text>
+<text x="212" y="266" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="400" text-anchor="start">spinifex-node-01  ·  8 vCPU / 32 GiB  ·  Ubuntu 26.04</text>
+<text x="952" y="266" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">one host = one Spinifex region</text>
+<line x1="68" y1="282" x2="952" y2="282" stroke="#EE4B12" stroke-opacity="0.25" stroke-width="1"/>
+<rect x="68" y="298" width="434" height="108" rx="13" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="88" y="328" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="700" text-anchor="start" letter-spacing="1.5">eth0 — PUBLIC INTERFACE</text>
+<text x="482" y="328" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">the only NIC</text>
+<text x="88" y="356" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#F3F1EC" font-weight="400" text-anchor="start">91.92.116.250/23  ·  holds the default route</text>
+<text x="88" y="378" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#5B636C" font-weight="400" text-anchor="start">advertise IP · API :9999 · SSH · host masquerade</text>
+<rect x="518" y="298" width="434" height="108" rx="13" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="538" y="328" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="700" text-anchor="start" letter-spacing="1.5">ELASTIC IPs — MANUAL</text>
+<text x="932" y="328" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">attached to the instance</text>
+<text x="538" y="356" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#F3F1EC" font-weight="400" text-anchor="start">89.145.163.1/32  →  delivered to eth0</text>
+<text x="538" y="378" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#5B636C" font-weight="400" text-anchor="start">the host routes each /32 into OVN, never owns it</text>
+<line x1="735" y1="406" x2="735" y2="422" stroke="#EE4B12" stroke-width="1.3" stroke-opacity="0.55" stroke-dasharray="2 4"/>
+<rect x="68" y="424" width="884" height="40" rx="11" fill="#1E242B" fill-opacity="1.0" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.45"/>
+<text x="88" y="449" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#EE4B12" font-weight="600" text-anchor="start">spx-nat-host ⇄ spx-nat-ovs</text>
+<text x="296" y="449" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#9AA1A8" font-weight="400" text-anchor="start">transit 100.127.0.0/24  ·  EIP/32 routed in  ·  masquerade out eth0 for the rest</text>
+<line x1="510" y1="464" x2="510" y2="480" stroke="#EE4B12" stroke-width="1.3" stroke-opacity="0.55" stroke-dasharray="2 4"/>
+<rect x="68" y="482" width="884" height="100" rx="13" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="88" y="512" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="700" text-anchor="start" letter-spacing="1.5">SPINIFEX CONTROL PLANE</text>
+<text x="932" y="512" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">every service is one binary: spx service &lt;name&gt;</text>
+<rect x="86" y="530" width="93.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="132.5" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">awsgw :9999</text>
+<rect x="188.0" y="530" width="58.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="217.0" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">daemon</text>
+<rect x="255.0" y="530" width="44.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="277.0" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">vpcd</text>
+<rect x="308.0" y="530" width="44.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="330.0" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">NATS</text>
+<rect x="361.0" y="530" width="86.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="404.0" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">predastore</text>
+<rect x="456.0" y="530" width="86.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="499.0" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">viperblock</text>
+<rect x="551.0" y="530" width="79.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="590.5" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">northstar</text>
+<rect x="639.0" y="530" width="72.0" height="22" rx="7" fill="#EE4B12" fill-opacity="0.06" stroke="#EE4B12" stroke-width="1" stroke-opacity="0.5"/>
+<text x="675.0" y="544.8" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11" fill="#F3F1EC" font-weight="400" text-anchor="middle">ui :3000</text>
+<text x="86" y="568" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#5B636C" font-weight="400" text-anchor="start">SigV4 in, NATS in the middle, QEMU/KVM (nested) · OVN/OVS · Predastore · Viperblock underneath</text>
+<line x1="248" y1="582" x2="248" y2="598" stroke="#EE4B12" stroke-width="1.3" stroke-opacity="0.4" stroke-dasharray="2 4"/>
+<line x1="772" y1="582" x2="772" y2="598" stroke="#EE4B12" stroke-width="1.3" stroke-opacity="0.4" stroke-dasharray="2 4"/>
+<rect x="68" y="600" width="532" height="130" rx="13" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="88" y="630" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="700" text-anchor="start" letter-spacing="1.5">TENANT VPCs — OVN br-int</text>
+<text x="580" y="630" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">geneve-local</text>
+<rect x="86" y="644" width="496" height="34" rx="9" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="100" y="666" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#F3F1EC" font-weight="400" text-anchor="start">vpc-a  172.31.0.0/16</text>
+<text x="300" y="666" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#9AA1A8" font-weight="400" text-anchor="start">i-…  172.31.0.4  →  89.145.163.1</text>
+<rect x="86" y="686" width="496" height="34" rx="9" fill="none" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="100" y="708" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#F3F1EC" font-weight="400" text-anchor="start">vpc-b  10.0.0.0/16</text>
+<text x="300" y="708" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#9AA1A8" font-weight="400" text-anchor="start">i-…  10.0.1.9  ·  private, egress only</text>
+<rect x="616" y="600" width="336" height="130" rx="13" fill="#181D23" fill-opacity="1.0" stroke="#2A2F36" stroke-width="1" stroke-opacity="1.0"/>
+<text x="636" y="630" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="12" fill="#9AA1A8" font-weight="700" text-anchor="start" letter-spacing="1.5">BLOCK STORAGE VOLUME</text>
+<text x="932" y="630" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="10.5" fill="#5B636C" font-weight="400" text-anchor="end">256 GiB+</text>
+<text x="636" y="658" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#F3F1EC" font-weight="400" text-anchor="start">virtio-blk  →  /dev/vdb</text>
+<text x="636" y="680" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-size="11.5" fill="#F3F1EC" font-weight="400" text-anchor="start">/var/lib/spinifex</text>
+<text x="636" y="700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="11.5" fill="#5B636C" font-weight="400" text-anchor="start">found by-id, defaults,nofail</text>
+<text x="636" y="718" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="11.5" fill="#5B636C" font-weight="400" text-anchor="start">viperblock · predastore · JetStream</text>
+<text x="28" y="796" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#5B636C" font-weight="400" text-anchor="start">A guest&#x27;s public address is a manual Exoscale Elastic IP, delivered to eth0 addressed to itself — no private/public pair to translate.</text>
+<text x="28" y="814" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif" font-size="12" fill="#5B636C" font-weight="400" text-anchor="start">The host routes it into OVN, so inbound and outbound are the same address and the guest sees its private IP only.</text>
+</svg>

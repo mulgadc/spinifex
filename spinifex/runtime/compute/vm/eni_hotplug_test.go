@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // newHotPlugTestVM returns a VM in StateRunning with a non-nil QMPClient
@@ -39,7 +38,7 @@ func newHotPlugTestVMWithPlumber(t *testing.T, slots int) (*Manager, *VM, *StubD
 		ID:        "i-test",
 		Status:    StateRunning,
 		QMPClient: &qmp.QMPClient{},
-		ENIRequests: types.ENIRequests{
+		ENIRequests: ENIRequests{
 			AvailableSlots:  available,
 			AttachedByENIID: make(map[string]int),
 		},

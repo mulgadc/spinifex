@@ -15,7 +15,6 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -118,7 +117,7 @@ func newENIHotPlugFixture(t *testing.T) *eniHotPlugFixture {
 		ID:        "i-hp-test",
 		Status:    vm.StateRunning,
 		QMPClient: &qmp.QMPClient{},
-		ENIRequests: spxtypes.ENIRequests{
+		ENIRequests: vm.ENIRequests{
 			AvailableSlots:  []int{1, 2, 3, 4},
 			AttachedByENIID: map[string]int{},
 		},
@@ -352,7 +351,7 @@ func TestHandleDetachNetworkInterface_WrongOwner(t *testing.T) {
 	otherVM := &vm.VM{
 		ID:     "i-other",
 		Status: vm.StateRunning,
-		ENIRequests: spxtypes.ENIRequests{
+		ENIRequests: vm.ENIRequests{
 			AvailableSlots:  []int{1},
 			AttachedByENIID: map[string]int{},
 		},

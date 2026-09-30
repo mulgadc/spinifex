@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 func TestENISlotFromDeviceID(t *testing.T) {
@@ -67,7 +66,7 @@ func TestAdoptENISlot(t *testing.T) {
 }
 
 func TestAdoptENISlot_NilMap(t *testing.T) {
-	v := &VM{ENIRequests: types.ENIRequests{AvailableSlots: []int{1}}}
+	v := &VM{ENIRequests: ENIRequests{AvailableSlots: []int{1}}}
 	m := &Manager{}
 	m.AdoptENISlot(v, "eni-a", 1)
 	if got := v.ENIRequests.AttachedByENIID["eni-a"]; got != 1 {

@@ -88,7 +88,7 @@ type VM struct {
 	Config       Config        `json:"config"`
 
 	EBSRequests types.EBSRequests `json:"ebs_requests"`
-	ENIRequests types.ENIRequests `json:"eni_requests"`
+	ENIRequests ENIRequests       `json:"eni_requests"`
 
 	QMPClient *qmp.QMPClient `json:"-"`
 

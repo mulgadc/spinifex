@@ -102,6 +102,18 @@ func TestPrincipalPolicyActionsRoundTrip(t *testing.T) {
 		cmd.PrincipalPolicyActions(cmd.PrincipalPolicyDocument(grants)))
 }
 
+// A NotAction grant covers everything but its list, so rendering only Action
+// would show the principal as holding nothing.
+func TestPrincipalPolicyActionsRenderNotAction(t *testing.T) {
+	document := `{"Version":"2012-10-17","Statement":[
+		{"Effect":"Allow","NotAction":["spinifex:DeleteAccount","spinifex:CreateAccount"],"Resource":"*"},
+		{"Effect":"Allow","Action":"spinifex:ListAccounts","Resource":"*"},
+		{"Effect":"Deny","NotAction":"spinifex:ListAccounts","Resource":"*"}]}`
+
+	assert.Equal(t, []string{"ListAccounts", "NotAction(DeleteAccount, CreateAccount)"},
+		cmd.PrincipalPolicyActions(document))
+}
+
 // A document nobody can parse is reported as no grants rather than as a guess.
 func TestPrincipalPolicyActionsIgnoreAnUndecodableDocument(t *testing.T) {
 	assert.Empty(t, cmd.PrincipalPolicyActions("{not json"))

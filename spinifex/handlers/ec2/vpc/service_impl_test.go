@@ -511,9 +511,24 @@ func TestDescribeSubnets_NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{
-		SubnetIds: []*string{aws.String("subnet-nonexistent")},
+		SubnetIds: []*string{aws.String("subnet-missing1"), aws.String("subnet-missing2")},
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidSubnetID.NotFound")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidSubnetIDNotFound, code)
+	assert.Equal(t, "The subnet ID 'subnet-missing1' does not exist", msg)
+}
+
+func TestDeleteSubnet_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	_, err := svc.DeleteSubnet(context.Background(), &ec2.DeleteSubnetInput{
+		SubnetId: aws.String("subnet-missing1"),
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidSubnetIDNotFound, code)
+	assert.Equal(t, "The subnet ID 'subnet-missing1' does not exist", msg)
 }
 
 func TestCreateMultipleSubnetsInVpc(t *testing.T) {

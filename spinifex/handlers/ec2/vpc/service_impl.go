@@ -811,7 +811,7 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 		// destroy); destroy orchestration tolerates it too. A transient read
 		// error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetIDNotFound, "The subnet ID '%s' does not exist", subnetID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -1044,9 +1044,9 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 				found[*subnet.SubnetId] = true
 			}
 		}
-		for id := range subnetIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+		for _, id := range input.SubnetIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetIDNotFound, "The subnet ID '%s' does not exist", *id)
 			}
 		}
 	}

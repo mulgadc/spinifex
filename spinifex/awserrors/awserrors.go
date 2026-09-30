@@ -1069,7 +1069,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidSubnetConflict:                                 {HTTPCode: 409, Message: "The specified CIDR block conflicts with that of another subnet in your VPC."},
 	ErrorInvalidSubnetRange:                                    {HTTPCode: 400, Message: "The CIDR block you've specified for the subnet is not valid. The allowed block size is between a /28 netmask and /16 netmask."},
 	ErrorInvalidSubnetIDMalformed:                              {HTTPCode: 400, Message: "The specified subnet ID is malformed. Ensure that you specify the ID in the form subnet-xxxxxxxxxxxxxxxxx"},
-	ErrorInvalidSubnetIDNotFound:                               {HTTPCode: 404, Message: "or InvalidSubnetId.NotFound \tThe specified subnet does not exist."},
+	ErrorInvalidSubnetIDNotFound:                               {HTTPCode: 404, Message: "The specified subnet does not exist."},
 	ErrorInvalidTagKeyMalformed:                                {HTTPCode: 400, Message: "The specified tag key is not valid. Tag keys cannot be empty or null, and cannot start with aws:."},
 	ErrorInvalidTargetArnUnknown:                               {HTTPCode: 404, Message: "The specified ARN for the specified user or role is not valid or does not exist."},
 	ErrorInvalidTargetException:                                {HTTPCode: 404, Message: "The specified TargetId is not valid, does not exist, or is in another organization. You can only generate an account status report for declarative policies in your own organization. Ensure that you specify the TargetId in one of the following forms: r-xxxx, ou-xxxx-xxxxxxxx, or a 12-digit account ID in the form xxxxxxxxxxxx."},

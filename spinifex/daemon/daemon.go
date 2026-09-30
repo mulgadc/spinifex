@@ -2646,7 +2646,7 @@ func (d *Daemon) awaitShutdown() {
 
 // computeConfigHash computes a SHA256 hash of the shared cluster config.
 func (d *Daemon) computeConfigHash() (string, error) {
-	sharedData := types.SharedClusterData{
+	sharedData := sharedClusterData{
 		Epoch:   d.clusterConfig.Epoch,
 		Version: d.clusterConfig.Version,
 		Nodes:   d.clusterConfig.Nodes,

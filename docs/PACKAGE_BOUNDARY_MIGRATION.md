@@ -184,6 +184,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `b8b97279c`, `c0c64cd53` | `spinifex/instancecache` | `spinifex/runtime/compute/cache` | Cache policy is decoupled from callers before becoming node-local compute runtime. |
 | `aa0c36ff4` | `spinifex/types/ec2.go` | `contracts/ec2/v1` | The EC2 instance-command subject and JSON payload are an explicit versioned cross-process contract; `commands_test.go` is its compatibility evidence. |
 | `c239fd897` | `spinifex/types/eni.go` | `spinifex/runtime/compute/vm/eni_requests.go` | PCIe hot-plug slot allocation is mutex-bearing, per-VM runtime state rather than a shared type or wire contract; `record_test.go` preserves its restart semantics. |
+| `6d6275e78` | `spinifex/types/cluster.go` (`NodeHealthResponse`) | `contracts/cluster/v1/health.go` | Node health is a versioned cluster control-plane representation shared by the per-node NATS route and daemon HTTPS `/health`; `health_test.go` pins both wire forms. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
@@ -214,11 +215,11 @@ func tagARN(region, accountID, resourceARN string) string {
 // resource ARN (arn:aws:ecr:<region>:<account>:repository/<name>). tagARN and
 // the tag handlers share this one parser for that shape.
 func RepositoryNameFromResourceARN(resourceARN string) (string, error) {
-	parts := strings.SplitN(resourceARN, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecr" {
+	service, _, _, resource, ok := arn.Split(resourceARN)
+	if !ok || service != "ecr" {
 		return "", invalidResourceARNError()
 	}
-	kind, name, found := strings.Cut(parts[5], "/")
+	kind, name, found := strings.Cut(resource, "/")
 	if !found || kind != repositoryResourceType || name == "" {
 		return "", invalidResourceARNError()
 	}

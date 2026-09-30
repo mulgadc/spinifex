@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
@@ -438,7 +439,7 @@ func matchAWSPrincipalEntry(clause, callerARN string) bool {
 		return true
 	}
 	if utils.IsAccountID(clause) {
-		clause = fmt.Sprintf("arn:aws:iam::%s:root", clause)
+		clause = arn.FormatIAMRoot(clause)
 	}
 	if clause == callerARN {
 		return true
@@ -485,11 +486,11 @@ type principalARN struct {
 }
 
 func parsePrincipalARN(arnStr string) (principalARN, bool) {
-	parts := strings.SplitN(arnStr, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[3] != "" {
+	service, region, account, resource, ok := arn.Split(arnStr)
+	if !ok || region != "" {
 		return principalARN{}, false
 	}
-	return principalARN{service: parts[2], account: parts[4], resource: parts[5]}, true
+	return principalARN{service: service, account: account, resource: resource}, true
 }
 
 func lastPathSegment(s string) string {

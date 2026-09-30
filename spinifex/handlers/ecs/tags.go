@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -37,22 +38,22 @@ func ResourceARNSegment(resourceARN string) (string, error) {
 // (.../cluster/{name}, .../task-definition/{family}:{rev});
 // service/task/container-instance ARNs embed the owning cluster.
 func parseResourceARN(resourceARN string) (kind ecsResourceKind, cluster, id, segment string, err error) {
-	// SplitN(..., 6) keeps the resource segment intact even though a
-	// task-definition id ("family:1") itself contains a colon.
-	parts := strings.SplitN(resourceARN, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "ecs" {
+	// Split keeps the resource segment intact even though a task-definition
+	// id ("family:1") itself contains a colon.
+	service, _, _, segment, ok := arn.Split(resourceARN)
+	if !ok || service != "ecs" {
 		return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	rtype, rest, ok := strings.Cut(parts[5], "/")
+	rtype, rest, ok := strings.Cut(segment, "/")
 	if !ok || rtype == "" || rest == "" {
 		return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 
 	switch rtype {
 	case "cluster":
-		return ecsResourceCluster, rest, rest, parts[5], nil
+		return ecsResourceCluster, rest, rest, segment, nil
 	case "task-definition":
-		return ecsResourceTaskDefinition, "", rest, parts[5], nil
+		return ecsResourceTaskDefinition, "", rest, segment, nil
 	case "service", "task", "container-instance":
 		clusterName, name, ok := strings.Cut(rest, "/")
 		if !ok || clusterName == "" || name == "" {
@@ -60,11 +61,11 @@ func parseResourceARN(resourceARN string) (kind ecsResourceKind, cluster, id, se
 		}
 		switch rtype {
 		case "service":
-			return ecsResourceService, clusterName, name, parts[5], nil
+			return ecsResourceService, clusterName, name, segment, nil
 		case "task":
-			return ecsResourceTask, clusterName, name, parts[5], nil
+			return ecsResourceTask, clusterName, name, segment, nil
 		default:
-			return ecsResourceContainerInstance, clusterName, name, parts[5], nil
+			return ecsResourceContainerInstance, clusterName, name, segment, nil
 		}
 	default:
 		return 0, "", "", "", errors.New(awserrors.ErrorECSInvalidParameter)

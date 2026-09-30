@@ -2001,15 +2001,11 @@ func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (j
 // (arn:aws:eks:<region>:<acct>:cluster/<name>), reporting false for any other
 // ARN shape (e.g. nodegroup) the tag store does not back.
 func clusterNameFromARN(arn string) (string, bool) {
-	const prefix = "arn:aws:eks:"
-	if !strings.HasPrefix(arn, prefix) {
+	service, _, _, resource, ok := resourcearn.Split(arn)
+	if !ok || service != "eks" {
 		return "", false
 	}
-	parts := strings.SplitN(arn, ":", 6)
-	if len(parts) != 6 {
-		return "", false
-	}
-	resType, name, found := strings.Cut(parts[5], "/")
+	resType, name, found := strings.Cut(resource, "/")
 	if !found || resType != "cluster" || name == "" {
 		return "", false
 	}
@@ -2020,15 +2016,11 @@ func clusterNameFromARN(arn string) (string, bool) {
 // (arn:aws:eks:<region>:<acct>:nodegroup/<cluster>/<ng>/<uuid>), reporting false
 // for any other ARN shape.
 func nodegroupRefFromARN(arn string) (string, string, bool) {
-	const prefix = "arn:aws:eks:"
-	if !strings.HasPrefix(arn, prefix) {
+	service, _, _, resource, ok := resourcearn.Split(arn)
+	if !ok || service != "eks" {
 		return "", "", false
 	}
-	parts := strings.SplitN(arn, ":", 6)
-	if len(parts) != 6 {
-		return "", "", false
-	}
-	resType, rest, found := strings.Cut(parts[5], "/")
+	resType, rest, found := strings.Cut(resource, "/")
 	if !found || resType != "nodegroup" {
 		return "", "", false
 	}

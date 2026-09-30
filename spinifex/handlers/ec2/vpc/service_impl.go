@@ -1363,8 +1363,21 @@ func (s *VPCServiceImpl) ModifyVpcAttribute(ctx context.Context, input *ec2.Modi
 	if input.VpcId == nil || *input.VpcId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.EnableDnsHostnames == nil && input.EnableDnsSupport == nil && input.EnableNetworkAddressUsageMetrics == nil {
+	var set []string
+	if input.EnableDnsSupport != nil {
+		set = append(set, "enableDnsSupport")
+	}
+	if input.EnableDnsHostnames != nil {
+		set = append(set, "enableDnsHostnames")
+	}
+	if input.EnableNetworkAddressUsageMetrics != nil {
+		set = append(set, "enableNetworkAddressUsageMetrics")
+	}
+	if len(set) == 0 {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(set) > 1 {
+		return nil, multipleAttributesError(set)
 	}
 
 	vpcID := *input.VpcId

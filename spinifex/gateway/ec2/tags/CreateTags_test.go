@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateCreateTagsInput(t *testing.T) {
@@ -137,4 +138,22 @@ func TestValidateDeleteTagsInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateCreateTagsInput_RejectsReservedAWSPrefix(t *testing.T) {
+	for _, key := range []string{"aws:foo", "AWS:Foo"} {
+		err := ValidateCreateTagsInput(&ec2.CreateTagsInput{
+			Resources: []*string{aws.String("vpc-1234567890abcdef0")},
+			Tags:      []*ec2.Tag{{Key: aws.String(key), Value: aws.String("v")}},
+		})
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, "error %v carries no AWS code", err)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+		assert.Equal(t, "Value ( "+key+" ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use", msg)
+	}
+
+	assert.NoError(t, ValidateCreateTagsInput(&ec2.CreateTagsInput{
+		Resources: []*string{aws.String("vpc-1234567890abcdef0")},
+		Tags:      []*ec2.Tag{{Key: aws.String("team:aws:owner"), Value: aws.String("v")}},
+	}))
 }

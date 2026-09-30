@@ -3,6 +3,7 @@ package gateway_ec2_tags
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -27,6 +28,11 @@ func ValidateCreateTagsInput(input *ec2.CreateTagsInput) error {
 	for _, tag := range input.Tags {
 		if tag.Key == nil || *tag.Key == "" {
 			return errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		// AWS reserves the prefix in any case.
+		if strings.HasPrefix(strings.ToLower(*tag.Key), "aws:") {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"Value ( %s ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use", *tag.Key)
 		}
 	}
 

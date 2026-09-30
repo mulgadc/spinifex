@@ -608,7 +608,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	subnetID := *subnetOut.Subnet.SubnetId
 
 	sg1Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String("sg-prop-1"),
+		GroupName:   aws.String("grp-prop-1"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
@@ -616,7 +616,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	sg1 = *sg1Out.GroupId
 
 	sg2Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String("sg-prop-2"),
+		GroupName:   aws.String("grp-prop-2"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)

@@ -830,8 +830,8 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
-	sg1 := createTestSG(t, svc, vpcId, "sg-one")
-	sg2 := createTestSG(t, svc, vpcId, "sg-two")
+	sg1 := createTestSG(t, svc, vpcId, "grp-one")
+	sg2 := createTestSG(t, svc, vpcId, "grp-two")
 
 	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
@@ -855,8 +855,8 @@ func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
-	sg1 := createTestSG(t, svc, vpcId, "sg-mod-1")
-	sg2 := createTestSG(t, svc, vpcId, "sg-mod-2")
+	sg1 := createTestSG(t, svc, vpcId, "grp-mod-1")
+	sg2 := createTestSG(t, svc, vpcId, "grp-mod-2")
 
 	eventCh := make(chan *nats.Msg, 1)
 	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
@@ -913,7 +913,7 @@ func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	sgA := createTestSG(t, svc, vpcId, "sg-evt-A")
+	sgA := createTestSG(t, svc, vpcId, "grp-evt-A")
 
 	eventCh := make(chan *nats.Msg, 1)
 	sub, err := nc.Subscribe("vpc.create-port", func(msg *nats.Msg) {
@@ -1062,8 +1062,8 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
-	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
+	sgA := createTestSG(t, svc, vpcId, "grp-aaa")
+	sgB := createTestSG(t, svc, vpcId, "grp-bbb")
 
 	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
@@ -1222,8 +1222,8 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
-	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
+	sgA := createTestSG(t, svc, vpcId, "grp-aaa")
+	sgB := createTestSG(t, svc, vpcId, "grp-bbb")
 
 	// Create ENI with security groups
 	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
@@ -1465,7 +1465,7 @@ func TestValidateSGAttachment_TooMany(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgs := make([]string, 6)
 	for i := range sgs {
-		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("sg-%d", i))
+		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("grp-%d", i))
 	}
 
 	err := svc.validateSGAttachment(t.Context(), testAccountID, sgs, vpcID)
@@ -1508,7 +1508,7 @@ func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
-	sg1 := createTestSG(t, svc, vpcId, "sg-mod-fail-1")
+	sg1 := createTestSG(t, svc, vpcId, "grp-mod-fail-1")
 
 	// Swap the stub's vpc.update-port-sgs reply to an error in-place so
 	// there's exactly one responder (no race with a layered subscriber).
@@ -1551,4 +1551,23 @@ func TestUpdateENIPublicIP_NotFound(t *testing.T) {
 	err := svc.UpdateENIPublicIP(testAccountID, "eni-missing", "203.0.113.8", "amazon")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "eni-missing")
+}
+
+// AWS checks the attribute combination before it looks the interface up, and
+// its order of names is unstable, so only the names are asserted.
+func TestModifyNetworkInterfaceAttribute_MultipleAttributes(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String("eni-nonexistent"),
+		Groups:             []*string{aws.String("sg-111")},
+		Description:        &ec2.AttributeValue{Value: aws.String("desc")},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Contains(t, msg, "Fields for multiple attribute types specified: ")
+	assert.Contains(t, msg, "description")
+	assert.Contains(t, msg, "securityGroups")
 }

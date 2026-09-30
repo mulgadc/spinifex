@@ -405,18 +405,48 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 	return false, fmt.Errorf("DetachAndDeleteENI: exhausted %d CAS attempts for %s: %w", maxAttempts, eniID, lastErr)
 }
 
-// ModifyNetworkInterfaceAttribute modifies ENI attributes (security groups,
-// description). SourceDestCheck=true is accepted as a no-op.
+// ValidateModifyNetworkInterfaceAttributeAttributes checks the attribute fields
+// of a ModifyNetworkInterfaceAttribute request, which AWS does before it looks
+// the interface up. The gateway and the handler share it so their order agrees.
+func ValidateModifyNetworkInterfaceAttributeAttributes(input *ec2.ModifyNetworkInterfaceAttributeInput) error {
+	var set []string
+	if input.SourceDestCheck != nil {
+		set = append(set, "sourceDestCheck")
+	}
+	if input.Description != nil {
+		set = append(set, "description")
+	}
+	if len(input.Groups) > 0 {
+		set = append(set, "securityGroups")
+	}
+	if len(set) == 0 {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(set) > 1 {
+		return multipleAttributesError(set)
+	}
+	// Disabling source/dest check is unsupported: OVN port security enforces it.
+	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
+	return nil
+}
+
+// multipleAttributesError is AWS's answer to a Modify*Attribute request that
+// sets more than one attribute. AWS's name order is not stable; this one is.
+func multipleAttributesError(names []string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+		"Fields for multiple attribute types specified: %s", strings.Join(names, ", "))
+}
+
+// ModifyNetworkInterfaceAttribute modifies one ENI attribute (security groups
+// or description). SourceDestCheck=true is accepted as a no-op.
 func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if len(input.Groups) == 0 && input.Description == nil && input.SourceDestCheck == nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	// Disabling source/dest check is unsupported: OVN port security enforces it.
-	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
-		return nil, errors.New(awserrors.ErrorUnsupported)
+	if err := ValidateModifyNetworkInterfaceAttributeAttributes(input); err != nil {
+		return nil, err
 	}
 
 	eniId := *input.NetworkInterfaceId

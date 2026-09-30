@@ -161,7 +161,7 @@ func TestGetSecurityGroupsForVpc_PagesEveryGroupOnce(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 
 	expected := describedGroupIDsForVpc(t, svc, vpcID)
-	for _, name := range []string{"sg-a", "sg-b", "sg-c", "sg-d", "sg-e", "sg-f", "sg-g"} {
+	for _, name := range []string{"grp-a", "grp-b", "grp-c", "grp-d", "grp-e", "grp-f", "grp-g"} {
 		expected = append(expected, createTestSG(t, svc, vpcID, name))
 	}
 

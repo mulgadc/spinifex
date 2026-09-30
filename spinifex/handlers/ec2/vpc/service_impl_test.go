@@ -2485,3 +2485,22 @@ func findTag(tags []*ec2.Tag, key string) string {
 	}
 	return ""
 }
+
+// AWS checks the attribute combination before it looks the VPC up, and its
+// order of names is unstable, so only the names are asserted.
+func TestVpc_ModifyVpcAttribute_MultipleAttributes(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+
+	_, err := svc.ModifyVpcAttribute(context.Background(), &ec2.ModifyVpcAttributeInput{
+		VpcId:              aws.String("vpc-nonexistent"),
+		EnableDnsSupport:   &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+		EnableDnsHostnames: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Contains(t, msg, "Fields for multiple attribute types specified: ")
+	assert.Contains(t, msg, "enableDnsSupport")
+	assert.Contains(t, msg, "enableDnsHostnames")
+}

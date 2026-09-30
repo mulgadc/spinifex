@@ -193,6 +193,10 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	if err := s.requireVPCExists(ctx, accountID, vpcId); err != nil {
 		return nil, err
 	}
+	if strings.HasPrefix(groupName, "sg-") {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Value (%s) for parameter GroupName is invalid. Group names may not be in the format sg-*.", groupName)
+	}
 
 	// Check for duplicate group name in the same VPC and enforce the per-VPC
 	// SG quota in the same bucket walk.

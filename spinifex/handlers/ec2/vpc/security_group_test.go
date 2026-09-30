@@ -131,8 +131,8 @@ func TestDescribeSecurityGroups_All(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSG(t, svc, vpcID, "sg-a")
-	createTestSG(t, svc, vpcID, "sg-b")
+	createTestSG(t, svc, vpcID, "grp-a")
+	createTestSG(t, svc, vpcID, "grp-b")
 
 	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -1301,8 +1301,8 @@ func TestDescribeSecurityGroups_FilterByVpcId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpc1 := createTestVPC(t, svc, "10.0.0.0/16")
 	vpc2 := createTestVPC(t, svc, "172.16.0.0/16")
-	createTestSG(t, svc, vpc1, "sg-in-vpc1")
-	createTestSG(t, svc, vpc2, "sg-in-vpc2")
+	createTestSG(t, svc, vpc1, "grp-in-vpc1")
+	createTestSG(t, svc, vpc2, "grp-in-vpc2")
 
 	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
@@ -1354,13 +1354,13 @@ func TestDescribeSecurityGroups_FilterMultipleValues_OR(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSG(t, svc, vpcID, "sg-alpha")
-	createTestSG(t, svc, vpcID, "sg-beta")
-	createTestSG(t, svc, vpcID, "sg-gamma")
+	createTestSG(t, svc, vpcID, "grp-alpha")
+	createTestSG(t, svc, vpcID, "grp-beta")
+	createTestSG(t, svc, vpcID, "grp-gamma")
 
 	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
-			{Name: aws.String("group-name"), Values: []*string{aws.String("sg-alpha"), aws.String("sg-gamma")}},
+			{Name: aws.String("group-name"), Values: []*string{aws.String("grp-alpha"), aws.String("grp-gamma")}},
 		},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1552,6 +1552,30 @@ func TestCreateSecurityGroup_RejectsReservedDefaultName(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "InvalidGroup.Reserved")
+}
+
+func TestCreateSecurityGroup_RejectsSgPrefixedName(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("sg-foo"),
+		Description: aws.String("d"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value (sg-foo) for parameter GroupName is invalid. Group names may not be in the format sg-*.", msg)
+
+	// AWS reports a missing VPC ahead of the name.
+	_, err = svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("sg-foo"),
+		Description: aws.String("d"),
+		VpcId:       aws.String("vpc-nonexistent"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidVpcIDNotFound)
 }
 
 func TestDeleteSecurityGroup_RejectsDefault(t *testing.T) {

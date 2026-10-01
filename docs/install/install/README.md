@@ -75,6 +75,13 @@ curl -fsSL https://install.mulgadc.com | bash
 
 The installer downloads the Spinifex binary and bootstraps all dependencies (QEMU, OVN/OVS, AWS CLI).
 
+This installs the latest release. To try the newest development build instead, set the channel — it carries unreleased work and has not been through release testing, so use it to evaluate a fix or a new feature rather than for anything you depend on.
+
+```bash
+curl -fsSL https://install.mulgadc.com -o /tmp/spx-install.sh
+sudo INSTALL_SPINIFEX_CHANNEL=dev bash /tmp/spx-install.sh
+```
+
 ## Step 2. Setup OVN Networking
 
 If your WAN interface is already a bridge (e.g. `br-wan`), setup-ovn.sh auto-detects it:

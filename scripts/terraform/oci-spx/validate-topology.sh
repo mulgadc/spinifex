@@ -316,8 +316,9 @@ if [ -n "${DISTRO_NAME:-}" ]; then
     sudo env INSTALL_SPINIFEX_TARBALL="/tmp/$DISTRO_NAME" bash "/tmp/$SETUP_NAME"
 else
     # The real customer path, including the checksum step a local tarball skips.
-    # --channel dev installs the newest prerelease, which is what our contacts run.
-    curl -sfL https://install.mulgadc.com | sudo bash -s -- --channel "$CHANNEL"
+    # The environment variable rather than --channel: the installer served by
+    # install.mulgadc.com is the latest release's, so it predates the flag.
+    curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL="$CHANNEL" bash
 fi
 sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 REMOTE

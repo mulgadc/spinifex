@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

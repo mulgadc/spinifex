@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 )
 
 // repositoryNamePattern is the expression AWS names when it refuses a

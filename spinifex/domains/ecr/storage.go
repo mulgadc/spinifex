@@ -1,7 +1,9 @@
-// Package ecr holds the ECR registry handlers and the predastore storage
-// layout that backs them. v1 stores everything for one account in a single
-// per-account bucket; blobs are content-addressable and deduplicated per
-// account, while manifests and tags are indexed per repository.
+// Package ecr owns ECR repository and blob semantics, including the
+// S3-compatible storage layout that backs registry data. v1 stores everything
+// for one account in a single per-account bucket; blobs are content-addressable
+// and deduplicated per account, while manifests and tags are indexed per
+// repository. Generic gateway packages own HTTP and SigV4 mechanics and reach
+// this domain through its explicit service and metadata interfaces.
 package ecr
 
 import (

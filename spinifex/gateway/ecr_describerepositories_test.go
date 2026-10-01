@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"

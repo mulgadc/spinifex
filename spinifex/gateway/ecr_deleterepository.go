@@ -8,9 +8,9 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 )
 
 // deleteRepositoryRequest is the camelCase AWS JSON 1.1 input shape. force=true

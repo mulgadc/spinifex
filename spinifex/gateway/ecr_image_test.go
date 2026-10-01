@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

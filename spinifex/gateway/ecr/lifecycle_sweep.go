@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 

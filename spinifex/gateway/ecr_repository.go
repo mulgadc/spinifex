@@ -3,7 +3,7 @@ package gateway
 import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 )
 
 // buildRepository projects a RepoMeta record into the AWS *ecr.Repository

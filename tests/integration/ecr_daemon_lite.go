@@ -5,7 +5,7 @@ package integration
 import (
 	"testing"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/nats-io/nats.go"
 )
 

@@ -266,25 +266,28 @@ func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*I
 		return s.getInstanceProfile(ctx, accountID, nameOrARN)
 	}
 
-	profileAccountID, profileName, err := parseInstanceProfileARN(nameOrARN)
-	if err != nil {
+	var profile *InstanceProfile
+	_, _, err := auth.ResolveInstanceProfileARN(nameOrARN, func(profileAccountID, profileName string) (string, error) {
+		if profileAccountID != accountID {
+			return "", errors.New(awserrors.ErrorAccessDenied)
+		}
+		p, err := s.getInstanceProfile(ctx, accountID, profileName)
+		if err != nil {
+			return "", err
+		}
+		profile = p
+		return p.ARN, nil
+	})
+	switch {
+	case errors.Is(err, auth.ErrInvalidInstanceProfileARN):
+		return nil, errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
+	case errors.Is(err, auth.ErrInstanceProfileARNMismatch):
+		// A non-canonical spelling names no stored profile.
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	case err != nil:
 		return nil, err
 	}
-	if profileAccountID != accountID {
-		return nil, errors.New(awserrors.ErrorAccessDenied)
-	}
-	return s.getInstanceProfile(ctx, accountID, profileName)
-}
-
-// parseInstanceProfileARN extracts accountID and profile name from an IAM
-// instance-profile ARN, reporting every malformed shape as the one AWS error
-// code this API returns.
-func parseInstanceProfileARN(arnStr string) (accountID, name string, err error) {
-	accountID, name, err = auth.ParseInstanceProfileARN(arnStr)
-	if err != nil {
-		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
-	}
-	return accountID, name, nil
+	return profile, nil
 }
 
 // TagInstanceProfile upserts tags on an instance profile under CAS, like the

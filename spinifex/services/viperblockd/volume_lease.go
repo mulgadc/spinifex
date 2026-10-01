@@ -56,20 +56,30 @@ func leaseStoreUnavailable(err error) bool {
 // until the entry ages out.
 const volumeLeaseTTL = 45 * time.Second
 
-// volumeLeaseRenewInterval keeps a live holder's entry young. Well inside the
-// TTL so one missed renewal does not surrender the lease.
-const volumeLeaseRenewInterval = 15 * time.Second
+// volumeLeaseRenewInterval keeps a live holder's entry young. It also bounds
+// how stale a confirmation can be when an outage starts, which is subtracted
+// from validity to give the outage this lease survives.
+const volumeLeaseRenewInterval = 10 * time.Second
 
-// volumeLeaseRenewTimeout bounds one renewal attempt. Without it a JetStream
-// call that hangs holds the renewal goroutine past the point where the server
-// has already given the entry away, and the holder never notices.
-const volumeLeaseRenewTimeout = 5 * time.Second
+// volumeLeaseRenewTimeout bounds one renewal attempt, and is set above
+// deviceStallBound so a renewal that begins inside a stall can still be
+// answered once the stall clears instead of being certain to fail.
+const volumeLeaseRenewTimeout = 12 * time.Second
 
 // volumeLeaseValidity is how long a holder may keep writing after its last
-// *confirmed* renewal. Set below volumeLeaseTTL on purpose: a server-side TTL
-// is not a lease unless the holder stops before the server may re-grant, so the
-// difference is the margin covering scheduling delay and request latency.
-const volumeLeaseValidity = 30 * time.Second
+// *confirmed* renewal. Set volumeLeaseAcquireMargin below volumeLeaseTTL: a
+// server-side TTL is not a lease unless the holder stops before the re-grant.
+const volumeLeaseValidity = 40 * time.Second
+
+// volumeLeaseAcquireMargin is the gap left between validity and the server TTL.
+// It covers scheduling delay and request latency on this side, and the entry
+// still has to age out before a peer can claim it.
+const volumeLeaseAcquireMargin = 5 * time.Second
+
+// deviceStallBound is the longest single stall the storage under JetStream is
+// expected to produce, from nvme_core.io_timeout on the hosts we run. A
+// property of the host rather than a setting of ours, so it is only asserted.
+const deviceStallBound = 10 * time.Second
 
 // volumeLeaseCheckInterval is how often validity is tested. Shorter than the
 // renewal interval so a lapsed holder is fenced on its own schedule rather than
@@ -344,26 +354,45 @@ func (l *volumeLeases) release(ctx context.Context, lease *volumeLease) {
 // first indefinitely while the server hands the entry to somebody else, and
 // only the second stops it.
 func (lease *volumeLease) renewLoop(ctx context.Context) {
-	defer close(lease.done)
-
 	ticker := time.NewTicker(volumeLeaseCheckInterval)
 	defer ticker.Stop()
+
+	// The renewal runs on its own goroutine so a JetStream call that blocks for
+	// its whole timeout cannot delay the validity check. Waiting for it before
+	// closing done leaves release reading a settled revision.
+	var renewing sync.WaitGroup
+	defer func() {
+		renewing.Wait()
+		close(lease.done)
+	}()
+
+	// Buffered, so a renewal that finishes after the loop has gone still sends
+	// its answer and exits rather than leaking on an unread channel. One slot is
+	// enough because only one renewal is ever in flight.
+	outcome := make(chan bool, 1)
+	inFlight := false
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case stillOurs := <-outcome:
+			inFlight = false
+			if !stillOurs {
+				return
+			}
 		case <-ticker.C:
 			if lease.expiredLocally() {
 				lease.surrender(ctx)
 				return
 			}
-			if time.Since(lease.lastConfirmed()) < volumeLeaseRenewInterval {
+			if inFlight || time.Since(lease.lastConfirmed()) < volumeLeaseRenewInterval {
 				continue
 			}
-			if !lease.renew(ctx) {
-				return
-			}
+			inFlight = true
+			renewing.Go(func() {
+				outcome <- lease.renew(ctx)
+			})
 		}
 	}
 }

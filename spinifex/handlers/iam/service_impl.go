@@ -2411,17 +2411,19 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 	if len(values) == 0 {
 		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
 	}
+	// An IfExists form takes its base operator's values.
+	base, _ := iampolicy.BaseOperator(op)
 	for _, v := range values {
 		// Only the string and ARN operators expand variables; a reference in a
-		// Bool or IpAddress value is already rejected as unparseable below.
-		switch op {
-		case iampolicy.OpIPAddress, iampolicy.OpNotIPAddress, iampolicy.OpBool:
+		// Bool, Null or IpAddress value is already rejected as unparseable below.
+		switch base {
+		case iampolicy.OpIPAddress, iampolicy.OpNotIPAddress, iampolicy.OpBool, iampolicy.OpNull:
 		default:
 			if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
 				return err
 			}
 		}
-		switch op {
+		switch base {
 		case iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike:
 			if _, ok := iampolicy.SplitARN(v); !ok {
 				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not an ARN of six colon-separated components",
@@ -2434,7 +2436,7 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 						i, op, key, v)
 				}
 			}
-		case iampolicy.OpBool:
+		case iampolicy.OpBool, iampolicy.OpNull:
 			if !strings.EqualFold(v, "true") && !strings.EqualFold(v, "false") {
 				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not true or false", i, op, key, v)
 			}

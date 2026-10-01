@@ -2285,6 +2285,23 @@ func TestValidatePolicyDocument_SupportedCondition(t *testing.T) {
 		doc.Statement[0].Condition["IpAddress"]["aws:SourceIp"])
 }
 
+// Null takes a JSON boolean or its string form, and IfExists forms reach the
+// write path on the keys their base operator does.
+func TestValidatePolicyDocument_NullAndIfExists(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"Null":{"aws:username":true}}`,
+		`{"Null":{"s3:prefix":"false"}}`,
+		`{"StringEqualsIfExists":{"aws:username":"alice"}}`,
+		`{"NotIpAddressIfExists":{"aws:SourceIp":"10.0.0.0/8"}}`,
+		`{"BoolIfExists":{"aws:SecureTransport":"true"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
 func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
 	t.Parallel()
 	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
@@ -2395,6 +2412,12 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 		{"empty array", `{"IpAddress":{"aws:SourceIp":[]}}`, "has no value"},
 		{"NotIpAddress hostname", `{"NotIpAddress":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
 		{"NotIpAddress empty array", `{"NotIpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+		{"Null yes", `{"Null":{"aws:username":"yes"}}`, "not true or false"},
+		{"Null variable", `{"Null":{"aws:username":"${aws:username}"}}`, "not true or false"},
+		{"IpAddressIfExists hostname", `{"IpAddressIfExists":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"BoolIfExists yes", `{"BoolIfExists":{"aws:SecureTransport":"yes"}}`, "not true or false"},
+		{"StringEqualsIfExists unknown variable", `{"StringEqualsIfExists":{"aws:username":"${aws:bogus}"}}`, `references policy variable "aws:bogus"`},
+		{"NullIfExists", `{"NullIfExists":{"aws:username":"true"}}`, "is not supported in this release"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

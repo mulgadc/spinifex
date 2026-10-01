@@ -1459,6 +1459,7 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			OCIVNICIface:     p.OCIVNICIface,
 			OCISubnetID:      p.OCISubnetID,
 			OCIPublicIPPool:  p.OCIPublicIPPool,
+			OCIAuth:          p.OCIAuth,
 			OCIConfigFile:    p.OCIConfigFile,
 			OCIConfigProfile: p.OCIConfigProfile,
 

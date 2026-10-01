@@ -1,17 +1,34 @@
 variable "tenancy_ocid" { type = string }
 variable "user_ocid" { type = string }
 variable "fingerprint" { type = string }
-variable "private_key_path" { type = string }
+variable "private_key_path" {
+  type    = string
+  default = ""
+}
+
+# The PEM itself, for a CI runner that holds it as a secret in the environment.
+# Exactly one of this and private_key_path is set; the check lives here so a run
+# fails on the input rather than on an OCI 401 forty seconds later.
+variable "private_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+  validation {
+    condition     = (var.private_key == "") != (var.private_key_path == "")
+    error_message = "Set exactly one of private_key (the PEM, for CI) or private_key_path (a file, for a workstation)."
+  }
+}
 # OCI's own region name. Spinifex's region is a separate setting that follows AWS
 # naming, so ap-sydney-1 here beside ap-southeast-2 in spinifex.toml is correct.
 variable "region" {
   type    = string
   default = "ap-sydney-1"
 }
-# Unused. Kept declared because scripts/oci_env.py discovers and exports it, and
-# there are no identity resources left that need the home-region endpoint.
+# OCI serves IAM writes from the tenancy home region, which is not necessarily
+# where we build: the dynamic group and policy in instance-principal.tf go through
+# the oci.home provider. Unset means the two are the same region.
 variable "home_region" {
-  description = "Unused. The tenancy home region, exported by the Python environment tool."
+  description = "Tenancy home region, for IAM writes. Defaults to var.region; set OCI_HOME_REGION when they differ."
   type        = string
   default     = null
   nullable    = true
@@ -37,6 +54,14 @@ variable "deployment_name" {
     error_message = "deployment_name must be 1-15 lowercase alphanumeric characters starting with a letter, because it is used as the VCN dns_label."
   }
 }
+# Needs a tenancy-admin principal, which is why it is opt-in. See
+# instance-principal.tf for what the policy grants and why it is narrow.
+variable "enable_instance_principal" {
+  description = "Create the dynamic group and policy that let nodes authenticate as themselves, so no OCI API key is installed on any node."
+  type        = bool
+  default     = false
+}
+
 variable "vcn_cidr" {
   description = "VCN address space. A /22 leaves room for the per-node secondary private IPs Spinifex allocates for external addresses."
   type        = string

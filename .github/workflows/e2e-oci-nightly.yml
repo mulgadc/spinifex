@@ -1,0 +1,179 @@
+name: E2E OCI Nightly
+
+# Dispatched by the same Cloudflare Worker that drives e2e-nightly.yml, once per
+# ref, rather than by a `schedule:` here. GitHub registers a schedule only from
+# the default branch, so a cron in this file could never run `dev` and a feature
+# branch as separate nightlies, and it would always execute the default branch's
+# copy of this file -- leaving a fix to the workflow itself untestable until it
+# had already shipped. A dispatch takes both the file and the source from its ref.
+on:
+  workflow_dispatch:
+    inputs:
+      topologies:
+        description: "Space-separated topologies (blank = vm-single vm-multi bm)"
+        required: false
+      workbooks:
+        description: "Space-separated workbooks (blank = the driver's default list)"
+        required: false
+      source:
+        description: "tree (build this ref) or release (the published installer)"
+        required: false
+        default: tree
+      keep_on_fail:
+        description: "Leave a failed topology up to inspect. It keeps billing."
+        required: false
+        type: boolean
+        default: false
+      no_external_pool:
+        description: "Form without the OCI allocator. Skips every workbook needing a public address."
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: "Runner label (blank = the OCI_E2E_RUNNER variable, else ubuntu-26.04)"
+        required: false
+
+permissions:
+  contents: read
+
+# Every topology is built in one OCI compartment under one set of resource names,
+# so two runs at once would each see the other's instances and the sweep in
+# e2e-oci.sh could destroy a cluster the other run was still testing. Queue the
+# second rather than cancelling it: a dispatch is usually a verification run.
+concurrency:
+  group: e2e-oci
+  cancel-in-progress: false
+
+jobs:
+  oci:
+    # Hosted by default: this job only drives Terraform and SSH, and the work
+    # happens on OCI, so nothing here needs a hypervisor. Overridable because the
+    # argument for a per-provider self-hosted runner is control, not capacity --
+    # a dedicated label keeps a two-hour cloud wait off the hypervisor labels and
+    # lifts the six-hour cap a hosted job carries.
+    runs-on: ${{ inputs.runner || vars.OCI_E2E_RUNNER || 'ubuntu-26.04' }}
+    # Three topologies including a bare-metal build, each with its own install,
+    # formation and workbook pass. The sweep still runs if this fires.
+    timeout-minutes: 300
+    env:
+      # Outside github.workspace on purpose. actions/checkout runs git clean -ffdx,
+      # which on a persistent runner would delete the Terraform state of a killed
+      # run before the next sweep could read it, leaving instances nothing can find.
+      OCI_STATE_ROOT: ${{ runner.workspace }}/oci-state
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: spinifex
+
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # mulga alone. It is the only private repository of the six, and the
+          # five that build-install-artifacts.sh clones are public, so the builder
+          # needs no credential and this token is not widened to reach them.
+          repositories: mulga
+
+      # build-install-artifacts.sh lives in mulga. The workbooks and their driver
+      # are in spinifex, so only the one directory is needed here.
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          path: mulga
+          token: ${{ steps.app-token.outputs.token }}
+          sparse-checkout: scripts/tofu-cluster
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      # Written to the runner's own filesystem and nowhere else. The OCI API
+      # credential is not here at all: it reaches Terraform as OCI_PRIVATE_KEY in
+      # the environment, so no key file is ever created.
+      - name: Install the throwaway SSH key
+        env:
+          OCI_E2E_SSH_PRIVATE_KEY: ${{ secrets.OCI_E2E_SSH_PRIVATE_KEY }}
+          OCI_E2E_SSH_PUBLIC_KEY: ${{ secrets.OCI_E2E_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$OCI_E2E_SSH_PRIVATE_KEY" > ~/.ssh/oci-spx
+          printf '%s\n' "$OCI_E2E_SSH_PUBLIC_KEY" > ~/.ssh/oci-spx.pub
+          chmod 600 ~/.ssh/oci-spx
+          ssh-keygen -y -f ~/.ssh/oci-spx > /dev/null
+
+      - name: Run the OCI topologies
+        working-directory: spinifex/scripts/terraform/oci-spx
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          MULGA_ROOT: ${{ github.workspace }}/mulga
+          SPX_REF: ${{ github.ref_name }}
+          OCI_TOPOLOGIES: ${{ inputs.topologies }}
+          OCI_SOURCE: ${{ inputs.source }}
+          # 1 unless the dispatch asked to form without the allocator, which is the
+          # only way to run before the tenancy's dynamic group exists. The run then
+          # records the allocator and the workbooks as SKIPPED rather than passing
+          # them, so a green run with this set is not a claim about guest networking.
+          OCI_INSTANCE_PRINCIPAL: ${{ inputs.no_external_pool && '0' || '1' }}
+          OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
+          OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
+          OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
+          # Through the environment, never interpolated into the script below: a
+          # dispatch input is attacker-controlled text as far as the shell is
+          # concerned, and a quote in it would otherwise end the string.
+          WORKBOOKS_INPUT: ${{ inputs.workbooks }}
+        run: |
+          set -uo pipefail
+          # WORKBOOKS is exported only when the dispatch named some: the harness
+          # distinguishes unset (the driver's default list) from empty (run none).
+          if [ -n "$WORKBOOKS_INPUT" ]; then export WORKBOOKS="$WORKBOOKS_INPUT"; fi
+          ./e2e-oci.sh 2>&1 | tee "$RUNNER_TEMP/e2e-oci.log"
+          exit "${PIPESTATUS[0]}"
+
+      # always(), and before the artifact upload: an OCI bare-metal host left
+      # running by a cancelled or timed-out job is the most expensive way this
+      # workflow can fail. The sweep works from the Terraform state files, so it
+      # can only destroy what this run created.
+      - name: Sweep anything left behind
+        if: always() && !inputs.keep_on_fail
+        working-directory: spinifex/scripts/terraform/oci-spx
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci-sweep
+        run: ./e2e-oci.sh --sweep-only
+
+      # Explicit, not left to the runner's own cleanup: a hosted runner is
+      # discarded after the job, but a self-hosted one keeps $HOME, so the key
+      # would outlive the run that needed it and sit there between nightlies.
+      - name: Remove the throwaway SSH key
+        if: always()
+        run: rm -f ~/.ssh/oci-spx ~/.ssh/oci-spx.pub
+
+      # Named files rather than a directory glob, for two reasons. The artifact
+      # directory also holds the distro tarball and the test archive, which are
+      # hundreds of megabytes and reproducible from the ref; and the per-topology
+      # state directories hold terraform.tfstate, which is never an artifact.
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-oci-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/e2e-oci.log
+            ${{ runner.temp }}/e2e-oci/*.log
+            ${{ runner.temp }}/e2e-oci/verdict.txt
+            ${{ runner.temp }}/e2e-oci-sweep/*.log
+            ${{ runner.workspace }}/oci-state/.validate-*/*.log
+            ${{ runner.workspace }}/oci-state/.validate-*/*.txt
+          retention-days: 14

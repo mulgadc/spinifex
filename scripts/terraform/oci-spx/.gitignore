@@ -8,3 +8,5 @@ terraform.tfstate.*
 crash.log
 terraform.tfvars
 *.pem
+*.log
+.validate-*/

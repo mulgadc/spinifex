@@ -56,9 +56,8 @@ var _ Client = (*apiClient)(nil)
 
 // NewInstancePrincipalClient authenticates as the instance itself, using the
 // certificate the metadata service serves at /opc/v2/identity/cert.pem. No key
-// material on disk and nothing to rotate, which is why this is the only
-// constructor offered for the daemon path — a node that can reach its own
-// metadata service is already proving it is the instance it claims to be.
+// material on disk and nothing to rotate; the cost is a dynamic group and an IAM
+// policy, which only a tenancy admin can write. Selected by oci_auth.
 func NewInstancePrincipalClient() (Client, error) {
 	provider, err := auth.InstancePrincipalConfigurationProvider()
 	if err != nil {
@@ -83,11 +82,8 @@ const DefaultConfigProfile = "DEFAULT"
 // NewConfigFileClient authenticates from an API-key config file — the same
 // ~/.oci/config the oci CLI uses.
 //
-// This is the v1 path, deliberately in preference to instance principal. It
-// needs no dynamic group and no IAM policy written by a tenancy admin, and it
-// never reads the instance metadata service, which matters because Spinifex's
-// own per-instance IMDS endpoints claim 169.254.169.254 on the host and take
-// the cloud's own metadata service with it.
+// The default, because it needs nothing from a tenancy admin. It costs a private
+// key on every node, which NewInstancePrincipalClient avoids.
 func NewConfigFileClient(path, profile string) (Client, error) {
 	if path == "" {
 		path = DefaultConfigFile

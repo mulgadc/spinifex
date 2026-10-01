@@ -355,7 +355,11 @@ The variables worth knowing, all of which have defaults that build a working sin
 > **`node_client_cidr_allow_list` defaults to `0.0.0.0/0`.** Nodes sit in a public subnet with public addresses because they serve the UI, the S3 gate and the AWS gateway directly — there is no bastion. Restrict this before any real use.
 
 > [!NOTE]
-> **Bare metal changes nothing else in this document.** Set `compute_shape = "BM.Standard.E2.64"` and the same config builds it: the two flex sizing variables stop applying, the shape's own CPU and memory take over, and every other step — the volume, the second VNIC, `br-wan`, the install — is identical. Nested virtualisation stops being a question, because there is no nesting.
+> **Bare metal needs the Terraform to place the external VNIC, and that is now automatic.** Set `compute_shape = "BM.Standard.E2.64"` and the same config builds it: the two flex sizing variables stop applying and the shape's own CPU and memory take over. Nested virtualisation stops being a question, because there is no nesting.
+>
+> Two steps are *not* identical to a VM, and both are handled for you rather than being yours to work around. On bare metal the OS owns the physical ports, so the first VNIC on a port **is** the port and a second one sharing it is a tagged overlay with no Linux device at all — the external VNIC is therefore attached at `nic_index = 1`, making it the first VNIC on the second port and so untagged and present at boot, exactly as on a VM. And OCI makes a bare-metal volume attachment multipath, where the Oracle Cloud Agent will not log the session in unless multipathd is running but probes the unit name Debian retired; cloud-init installs the alias it looks for. The device then appears as `/dev/mapper/mpatha` rather than a plain disk.
+>
+> Proved on `BM.Standard.E2.64` on 2026-10-01: both VNICs untagged, `br-wan` built unattended with egress past the subnet, the volume mounted, and guests running. The external-address path on bare metal is **not** yet proved, because it needs the credentials in Step 5.
 
 ## Step 2. Build the infrastructure
 
@@ -681,7 +685,17 @@ instance: ocid1.instance.oc1.ap-sydney-1.anzxsljr6eq5...tkxdq
 
 **You only need the compartment OCID for the config below** — the VNIC is resolved at runtime. Match a VNIC by MAC against `ip -br link show br-wan` if you want to confirm which is which; Oracle's VNIC ordering is not a documented contract, so "the second one" is not a selector.
 
+### Choose how the node authenticates
+
+Two routes. **Instance principal is the better one**: each node authenticates with the certificate its own metadata service serves, so there is no key material on any node, nothing to rotate, and nothing to copy as you add nodes. It needs a dynamic group and an IAM policy, which only a tenancy admin can create — once, after which every node and every rebuild inherits them. The `oci-spx` Terraform creates both behind `enable_instance_principal = true`; its README has the command and what the policy grants.
+
+With that done, the whole of the next section is skipped and the pool below carries `oci_auth = "instance_principal"` instead of the two `oci_config_*` keys. Setting both is refused at config load, because the certificate is already the credential and a key file beside it would be the half silently ignored.
+
+**An API key is the fallback**, and the default, because it needs nothing from a tenancy admin. The cost is that the key goes on every node by hand, and a node you forget fails only when a guest asks for an address.
+
 ### Install the credentials on the node
+
+Skip this entirely under instance principal.
 
 **The daemon cannot read `~/.oci/`.** Its systemd unit sets `ProtectHome=yes`, so a config under any home directory is invisible to it however the permissions read. Credentials go under `/etc/spinifex/`, on every node:
 
@@ -729,11 +743,21 @@ oci_config_profile = "spinifex"
 dns_servers        = ["169.254.169.253"]
 ```
 
+Under instance principal the last three lines of that block become one:
+
+```toml
+oci_auth           = "instance_principal"
+dns_servers        = ["169.254.169.253"]
+```
+
+The Terraform stages whichever of the two is correct at `/etc/spinifex/oci/external-pool.toml` on each node, so this is an append rather than something to type.
+
 Notes on the keys:
 
 - **Exactly one of `oci_vnic_id` and `oci_vnic_iface`**, never both — the config is rejected if you set both or neither. Two that disagreed would send allocations to a VNIC the datapath is not on, and OCI would drop the traffic without a word.
 - **`oci_vnic_iface` is the right choice on a cluster**, because it resolves through instance metadata **by MAC** on the node it runs on. Naming either `br-wan` or the physical interface resolves to the same VNIC. Use `oci_vnic_id` only when you want to pin a specific VNIC on a single node.
-- `oci_compartment_id` is the only other required key. `oci_subnet_id` is optional and defaults to the VNIC's own subnet; set it only when you want private IPs from a different subnet. `oci_config_file` defaults to `~/.oci/config` and `oci_config_profile` to `DEFAULT` — **on a node both need setting**, because the daemon cannot read a home directory.
+- `oci_compartment_id` is the only other required key. `oci_subnet_id` is optional and defaults to the VNIC's own subnet; set it only when you want private IPs from a different subnet. `oci_config_file` defaults to `~/.oci/config` and `oci_config_profile` to `DEFAULT` — **on a node both need setting**, because the daemon cannot read a home directory. Neither is valid under `oci_auth = "instance_principal"`.
+- **`oci_auth` is `config_file` by default** and takes `instance_principal` for the keyless route. Name it explicitly rather than relying on a default you have forgotten: a typo is rejected at config load, which is better than a node quietly falling back to a key file nobody installed.
 - `oci_public_ip_pool` takes a BYOIP pool OCID. Accepted today so BYOIP is a config change later rather than a code change; see [Limits](#limits-in-this-version).
 - `range_start`, `range_end`, `gw_lrp_range_*`, `bind_bridge` and `dhcp_mac` are **rejected** on an OCI pool. OCI owns the addresses; a range you wrote would be fiction.
 - Leave the `nat-transit` pool alone. In routed mode the per-VPC gateway router addresses come from the RFC 6598 transit range, not from OCI — **only public addresses handed to guests consume an OCI address.** Fifty VPCs and three Elastic IPs cost three reserved public IPs, not fifty-three.

@@ -196,12 +196,31 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `61cf833aa` | `spinifex/cloud/exoscale` | `spinifex/providers/cloud/exoscale` | Exoscale CLI access is a replaceable external-cloud adapter. The source move rewrites its four Exonet callers and preserves its adapter tests and CLI boundary. |
 | `dbc62562c` | `spinifex/objectstore` | `spinifex/providers/objectstore` | The generic S3-compatible client is a replaceable object-storage adapter, not S3 resource authority. The mechanical move rewrites all direct callers; its focused suite and caller compilation passed. |
 | `f11922986` | `spinifex/config` | `spinifex/bootstrap/config` | Root configuration parsing belongs to bootstrap. Its package API is unchanged; package tests and regular, integration, E2E and benchmark caller compilation passed. |
+| `93084043a` | `spinifex/handlers/ecr` | `spinifex/domains/ecr` | ECR repository metadata, blob semantics and lifecycle rules are ECR domain ownership. The full domain suite, direct callers and tagged integration callers passed. |
+| `51b5c55b9` | `spinifex/gateway/ecrapi` | `spinifex/domains/ecr/awsapi` | AWS JSON 1.1 action inventory, validation, resource-scope derivation and NATS-backed action handlers are ECR action-adapter ownership. Focused, gateway and tagged integration validation passed. |
+| `5e7311eb2` | `spinifex/gateway/ecr` | `spinifex/domains/ecr/registry` | The OCI Distribution v2 protocol adapter is ECR data-plane ownership. Focused registry, gateway/AWS-gateway and tagged integration validation passed. |
+| `474c07316` | `spinifex/gateway/ecrauth` | `spinifex/domains/ecr/auth` | ECR token claims, issuer/verifier, encrypted signing-key persistence and rotation are ECR credential ownership. Focused, gateway/AWS-gateway and tagged integration validation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
 subscription and permission shape, while callers use
 `InstanceCommandSubject` rather than reconstructing the subject. The
 contract's README states the route, scope and change rule.
+
+### ECR composition boundary remaining
+
+The ECR AWS JSON dispatcher and `/v2/*` route assembly remain methods on the
+generic `GatewayConfig`. They establish the generic HTTP route, authenticated
+request context, bounded-body read and policy gate, then invoke the ECR domain
+packages above. They are not moved merely to remove the last ECR-named files
+from `gateway`: doing so first would make the ECR domain own generic gateway
+state and policy mechanics.
+
+A later ECR slice must instead define the consuming action capability and make
+the composition root supply it. Only then may the action wrappers leave
+`gateway` without either a forwarding package or an inverted dependency. This
+is a recorded sequencing boundary, not a declaration that the current wrapper
+is the permanent target.
 
 ## Recording rule
 

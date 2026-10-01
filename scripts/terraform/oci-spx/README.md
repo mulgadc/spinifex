@@ -239,6 +239,22 @@ sudo install -d -o root -g spinifex -m 0750 /etc/spinifex/oci
 sudo install -o root -g spinifex -m 0640 ~/.oci/oci_api_key.pem /etc/spinifex/oci/oci_api_key.pem
 ```
 
+**The key is half of it.** `oci_config_file` names an ordinary OCI SDK config, and nothing creates that file, so a node with only the PEM forms and then fails every allocation. The profile must be `spinifex`, to match `oci_config_profile`, and the four identifiers are the ones already in the tfvars:
+
+```bash
+sudo tee /etc/spinifex/oci/config >/dev/null <<'CONF'
+[spinifex]
+user=ocid1.user.oc1..<yours>
+fingerprint=<yours>
+tenancy=ocid1.tenancy.oc1..<yours>
+region=ap-sydney-1
+key_file=/etc/spinifex/oci/oci_api_key.pem
+CONF
+sudo chown root:spinifex /etc/spinifex/oci/config && sudo chmod 0640 /etc/spinifex/oci/config
+```
+
+For repeated runs, `validate-topology.sh --credential-hook` does both steps on every node. The hook is an operator-owned executable rather than anything in this repository, because a credential rendered into user-data or Terraform state is readable from instance metadata for the life of the instance, and these hosts run other people's guests. Instance principal needs no hook at all, which is the reason to prefer it wherever a dynamic group can be created.
+
 Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/external-pool.toml` on each node, with `oci_auth` set to match. Append it to `/etc/spinifex/spinifex.toml` after `spx admin init` and restart `spinifex.target`. Under instance principal that file holds no secret at all, which is the point of it.
 
 ## Validating a topology end to end

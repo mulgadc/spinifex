@@ -2,6 +2,7 @@ package handlers_iam
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -1655,4 +1656,49 @@ func TestRoleAndPolicy_DescriptionLength(t *testing.T) {
 		PolicyName: aws.String("p"), PolicyDocument: aws.String(validPolicyDocument()), Description: atMax,
 	})
 	require.NoError(t, err)
+}
+
+func TestDeleteRole_RevokesSessionsOnceRecordIsGone(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	role := createTestRole(t, svc, "retired")
+
+	_, err := svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.NoError(t, err)
+
+	require.Len(t, revoker.calls, 1)
+	assert.Equal(t, revocation{testAccountID, aws.StringValue(role.Arn), aws.StringValue(role.RoleId), true}, revoker.calls[0])
+}
+
+func TestDeleteRole_ConflictDoesNotRevoke(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	role := createTestRole(t, svc, "attached")
+	policy := createTestPolicy(t, svc, "RolePolicy")
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: role.RoleName, PolicyArn: policy.Arn})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+	assert.Empty(t, revoker.calls, "a role that survives the delete keeps its sessions")
+}
+
+func TestDeleteRole_RevocationFailureKeepsDelete(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc, err: errors.New("jetstream unavailable")}
+	svc.SetSessionRevoker(revoker)
+	role := createTestRole(t, svc, "retired")
+
+	_, err := svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.NoError(t, err)
+	require.Len(t, revoker.calls, 1)
+
+	_, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: role.RoleName})
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
 }

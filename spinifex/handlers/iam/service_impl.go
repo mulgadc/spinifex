@@ -110,9 +110,23 @@ type IAMServiceImpl struct {
 	instanceProfilesBucket jetstream.KeyValue
 	groupsBucket           jetstream.KeyValue
 	key                    *masterkey.Key
+	sessionRevoker         SessionRevoker
 }
 
 var _ IAMService = (*IAMServiceImpl)(nil)
+
+// SessionRevoker removes the STS session credentials bound to a deleted user or
+// role. STS implements it; IAM cannot import STS, so the gateway installs it.
+type SessionRevoker interface {
+	RevokeUserSessions(ctx context.Context, accountID, userName, userID string) (int, error)
+	RevokeRoleSessions(ctx context.Context, accountID, roleARN, roleID string) (int, error)
+}
+
+// SetSessionRevoker installs the revoker DeleteUser and DeleteRole call once the
+// principal record is gone. Must be called before the service handles requests.
+func (s *IAMServiceImpl) SetSessionRevoker(r SessionRevoker) {
+	s.sessionRevoker = r
+}
 
 // NewIAMServiceImpl creates a new IAM service backed by NATS JetStream KV.
 // The context bounds bucket creation and the schema migrations only.
@@ -586,6 +600,19 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 	}
 
 	slog.Info("IAM user deleted", "accountID", accountID, "userName", userName)
+
+	// Revoked after the delete so a racing mint either writes before the scan or
+	// fails to resolve the user. A failure keeps the delete; the janitor retries.
+	if s.sessionRevoker != nil {
+		revoked, err := s.sessionRevoker.RevokeUserSessions(ctx, accountID, userName, user.UserID)
+		if err != nil {
+			slog.Error("Revoking deleted user's sessions failed; janitor will reap them",
+				"accountID", accountID, "userName", userName, "revoked", revoked, "err", err)
+		} else if revoked > 0 {
+			slog.Info("Deleted user's sessions revoked",
+				"accountID", accountID, "userName", userName, "revoked", revoked)
+		}
+	}
 	return &iam.DeleteUserOutput{}, nil
 }
 

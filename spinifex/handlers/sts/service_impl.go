@@ -34,7 +34,10 @@ type STSServiceImpl struct {
 	masterKey []byte
 }
 
-var _ STSService = (*STSServiceImpl)(nil)
+var (
+	_ STSService                  = (*STSServiceImpl)(nil)
+	_ handlers_iam.SessionRevoker = (*STSServiceImpl)(nil)
+)
 
 // NewSTSServiceImpl constructs an STSServiceImpl. masterKey must be the 32-byte
 // key shared with IAMServiceImpl. The context bounds bucket creation and the

@@ -704,7 +704,8 @@ func TestResolveInstanceProfile_NonCanonicalARNRejected(t *testing.T) {
 	} {
 		_, err := svc.ResolveInstanceProfile(testAccountID, arn)
 		require.Error(t, err, arn)
-		assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity, arn)
+		// The EC2 gateway maps this to InvalidIamInstanceProfile.NotFound by exact match.
+		assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error(), arn)
 	}
 }
 

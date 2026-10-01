@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/paging"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

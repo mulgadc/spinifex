@@ -1,5 +1,6 @@
-// Package paging pages a listing with opaque resume tokens. Each API keeps its
-// own limits and error text; this package only owns the token and the slicing.
+// Package paging pages AWS listing results with opaque resume tokens. Each API
+// keeps its own limits and error text; this package only owns the token and
+// slicing mechanics.
 package paging
 
 import (

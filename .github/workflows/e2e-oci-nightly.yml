@@ -29,6 +29,9 @@ on:
         required: false
         type: boolean
         default: false
+      runner:
+        description: "Runner label (blank = the OCI_E2E_RUNNER variable, else ubuntu-26.04)"
+        required: false
 
 permissions:
   contents: read
@@ -43,9 +46,12 @@ concurrency:
 
 jobs:
   oci:
-    # Hosted, not self-hosted: this job only drives Terraform and SSH, and the
-    # work happens on OCI. Nothing here needs a hypervisor.
-    runs-on: ubuntu-26.04
+    # Hosted by default: this job only drives Terraform and SSH, and the work
+    # happens on OCI, so nothing here needs a hypervisor. Overridable because the
+    # argument for a per-provider self-hosted runner is control, not capacity --
+    # a dedicated label keeps a two-hour cloud wait off the hypervisor labels and
+    # lifts the six-hour cap a hosted job carries.
+    runs-on: ${{ inputs.runner || vars.OCI_E2E_RUNNER || 'ubuntu-26.04' }}
     # Three topologies including a bare-metal build, each with its own install,
     # formation and workbook pass. The sweep still runs if this fires.
     timeout-minutes: 300
@@ -59,16 +65,10 @@ jobs:
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          # Six repositories, not one. The checkout below needs mulga; the other
-          # five are what build-install-artifacts.sh clones, and every one of them
-          # is private, so an unauthenticated clone fails rather than degrading.
-          repositories: |
-            mulga
-            spinifex
-            predastore
-            viperblock
-            northstar
-            bluebottle
+          # mulga alone. It is the only private repository of the six, and the
+          # five that build-install-artifacts.sh clones are public, so the builder
+          # needs no credential and this token is not widened to reach them.
+          repositories: mulga
 
       # build-install-artifacts.sh lives in mulga. The workbooks and their driver
       # are in spinifex, so only the one directory is needed here.
@@ -78,18 +78,6 @@ jobs:
           path: mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
-
-      # The builder clones by https and takes no credential argument, so the token
-      # has to reach git itself. Scoped to our organisation, and the runner is
-      # ephemeral and single-tenant, so the config dies with the job.
-      - name: Authenticate git for the private sub-repos
-        env:
-          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          git config --global \
-            url."https://x-access-token:$GH_APP_TOKEN@github.com/mulgadc/".insteadOf \
-            "https://github.com/mulgadc/"
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -159,6 +147,13 @@ jobs:
           TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci-sweep
         run: ./e2e-oci.sh --sweep-only
+
+      # Explicit, not left to the runner's own cleanup: a hosted runner is
+      # discarded after the job, but a self-hosted one keeps $HOME, so the key
+      # would outlive the run that needed it and sit there between nightlies.
+      - name: Remove the throwaway SSH key
+        if: always()
+        run: rm -f ~/.ssh/oci-spx ~/.ssh/oci-spx.pub
 
       # Named files rather than a directory glob, for two reasons. The artifact
       # directory also holds the distro tarball and the test archive, which are

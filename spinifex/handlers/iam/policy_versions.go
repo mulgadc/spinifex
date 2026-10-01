@@ -125,6 +125,9 @@ func policyCASTarget(accountID, policyARN string) (string, kvutil.CASConfig, err
 
 func (s *IAMServiceImpl) CreatePolicyVersion(accountID string, input *iam.CreatePolicyVersionInput) (*iam.CreatePolicyVersionOutput, error) {
 	ctx := context.Background()
+	if err := checkPolicyDocumentLength(*input.PolicyDocument); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q: %w", *input.PolicyArn, err)

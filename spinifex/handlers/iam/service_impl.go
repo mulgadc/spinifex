@@ -1287,6 +1287,9 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 		}
 	}
 
+	if err := checkPolicyDocumentLength(*input.PolicyDocument); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q: %w", policyName, err)
@@ -1707,6 +1710,9 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 	userKVKey := accountID + "." + userName
 
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
+		return nil, err
+	}
+	if err := checkPolicyDocumentLength(policyDoc); err != nil {
 		return nil, err
 	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
@@ -2236,6 +2242,15 @@ func policySize(doc string) int {
 	return n
 }
 
+// checkPolicyDocumentLength refuses a PolicyDocument parameter over AWS's API
+// bound with the ValidationError AWS returns, before the document is parsed.
+func checkPolicyDocumentLength(doc string) error {
+	if utf8.RuneCountInString(doc) > maxPolicyDocumentLength {
+		return lengthViolation("policyDocument", fmt.Sprintf("less than or equal to %d", maxPolicyDocumentLength))
+	}
+	return nil
+}
+
 // checkManagedPolicySize refuses a managed policy document over its quota.
 func checkManagedPolicySize(doc string) error {
 	if policySize(doc) > managedPolicySizeQuota {
@@ -2553,13 +2568,8 @@ func validatePolicyVariables(i int, field, value string) error {
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by
-// GetAccountSummary. Spinifex's quota system (handlers/quota) only enforces
-// infrastructure dimensions (vCPUs, VPCs, subnets, EIPs, EBS) and models no IAM
-// entity limits, so these IAM quota values are AWS-parity constants for
-// informational compatibility only, not enforced limits. Resource types
-// Spinifex does not model are reported as 0 rather than omitted so CIS/audit
-// tooling that reads these keys keeps working. Real per-account resource counts
-// are overlaid on top of this table at call time.
+// GetAccountSummary, at AWS's defaults. Unmodelled resource types report 0 so
+// audit tooling finds every key; real per-account counts are overlaid at call time.
 var summaryQuotaDefaults = map[string]int64{
 	// Account-wide quotas (AWS defaults).
 	"UsersQuota":               5000,

@@ -146,6 +146,40 @@ func TestPutInlinePolicy_WhiteSpaceNotCounted(t *testing.T) {
 	}
 }
 
+// A PolicyDocument over AWS's API length bound fails parameter validation, as in
+// AWS, rather than reading as a malformed document.
+func TestPolicyDocumentLength_ValidationError(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	tooLong := strings.Repeat("a", maxPolicyDocumentLength+1)
+	const want = "Member must have length less than or equal to 131072"
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("TooLong"), PolicyDocument: aws.String(tooLong),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+	assert.Contains(t, err.Error(), want)
+
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("Base"), PolicyDocument: aws.String(sizedPolicy(t, 200)),
+	})
+	require.NoError(t, err)
+	_, err = svc.CreatePolicyVersion(testAccountID, &iam.CreatePolicyVersionInput{
+		PolicyArn: out.Policy.Arn, PolicyDocument: aws.String(tooLong),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), want)
+
+	for _, p := range inlinePutters {
+		p.create(t, svc, "long-"+p.entityType)
+		err := p.put(svc, "long-"+p.entityType, "TooLong", tooLong)
+		require.Error(t, err, p.entityType)
+		assert.Contains(t, err.Error(), awserrors.ErrorValidationError, p.entityType)
+		assert.Contains(t, err.Error(), want, p.entityType)
+	}
+}
+
 func TestCreatePolicy_ManagedQuota(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -179,7 +213,8 @@ func TestCreatePolicy_ManagedQuota(t *testing.T) {
 func TestValidatePolicyDocument_Version2008(t *testing.T) {
 	t.Parallel()
 	const legacy = `{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",` +
-		`"Resource":"arn:aws:s3:::home/${unknown}/*","Condition":{"StringLike":{"s3:prefix":"${unknown}/*"}}}]}`
+		`"Resource":"arn:aws:s3:::home/${unknown}/*","Condition":{"StringLike":{"s3:prefix":"${unknown}/*"}}},` +
+		`{"Effect":"Deny","Action":"s3:DeleteObject","NotResource":"arn:aws:s3:::${unknown}/*"}]}`
 	_, err := ValidatePolicyDocument(legacy)
 	require.NoError(t, err)
 

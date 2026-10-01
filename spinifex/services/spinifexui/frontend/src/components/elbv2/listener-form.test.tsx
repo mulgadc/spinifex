@@ -77,6 +77,35 @@ function renderHarness(props: Parameters<typeof Harness>[0]) {
   return renderWithClient(<Harness {...props} />, createTestQueryClient())
 }
 
+function ToggleHarness() {
+  const form = useForm<CreateListenerFormData>({
+    defaultValues: {
+      protocol: "HTTP",
+      port: 80,
+      defaultTargetGroupArn: "",
+    },
+  })
+  return (
+    <>
+      <button
+        onClick={() => {
+          form.setValue("protocol", "HTTPS")
+        }}
+        type="button"
+      >
+        go-https
+      </button>
+      <ListenerForm
+        certificates={CERTS}
+        form={form}
+        protocols={ALL_LISTENER_PROTOCOLS}
+        sslPolicies={POLICIES}
+        targetGroups={TGS}
+      />
+    </>
+  )
+}
+
 describe("ListenerForm", () => {
   it("renders protocol, port, and target-group selectors", () => {
     renderHarness({ targetGroups: TGS })
@@ -113,35 +142,6 @@ describe("ListenerForm", () => {
   // the fields. `useWatch` keeps the subscription reactive — this test fails if
   // it regresses to `watch`.
   it("reveals certificate fields when protocol switches HTTP -> HTTPS at runtime", async () => {
-    function ToggleHarness() {
-      const form = useForm<CreateListenerFormData>({
-        defaultValues: {
-          protocol: "HTTP",
-          port: 80,
-          defaultTargetGroupArn: "",
-        },
-      })
-      return (
-        <>
-          <button
-            onClick={() => {
-              form.setValue("protocol", "HTTPS")
-            }}
-            type="button"
-          >
-            go-https
-          </button>
-          <ListenerForm
-            certificates={CERTS}
-            form={form}
-            protocols={ALL_LISTENER_PROTOCOLS}
-            sslPolicies={POLICIES}
-            targetGroups={TGS}
-          />
-        </>
-      )
-    }
-
     renderWithClient(<ToggleHarness />, createTestQueryClient())
     expect(screen.queryByLabelText("Certificate")).not.toBeInTheDocument()
 

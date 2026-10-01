@@ -70,18 +70,18 @@ import { CreateTargetGroupPage } from "./-components/create-target-group-page"
 
 const VPCS: Vpc[] = [{ VpcId: "vpc-aaa", CidrBlock: "10.0.0.0/16", Tags: [] }]
 
+function setup() {
+  const queryClient = createTestQueryClient()
+  queryClient.setQueryData(["ec2", "vpcs"], { Vpcs: VPCS })
+  return renderWithClient(<CreateTargetGroupPage />, queryClient)
+}
+
 describe("create-target-group route", () => {
   beforeEach(() => {
     sdk.reset()
     routerState.navigate.mockClear()
   })
   afterEach(() => vi.clearAllMocks())
-
-  function setup() {
-    const queryClient = createTestQueryClient()
-    queryClient.setQueryData(["ec2", "vpcs"], { Vpcs: VPCS })
-    return renderWithClient(<CreateTargetGroupPage />, queryClient)
-  }
 
   it("creates a target group and navigates to the detail page on submit", async () => {
     const user = userEvent.setup()

@@ -103,9 +103,7 @@ describe("DBSubnetGroupDetailPage", () => {
       <DBSubnetGroupDetailPage dbSubnetGroupName="orders-subnets" />,
       seed(GROUP),
     )
-    expect(
-      screen.getByText(/modify-db-subnet-group/),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/modify-db-subnet-group/)).toBeInTheDocument()
   })
 
   it("reports a group that does not exist", () => {

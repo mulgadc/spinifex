@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 )
 
 func TestDeclareAndNodes(t *testing.T) {

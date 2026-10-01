@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 
 	"github.com/nats-io/nats.go"

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )

@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/spf13/viper"
 )
 

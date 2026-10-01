@@ -1,4 +1,4 @@
-// Package clustersize holds one fact and the one number derived from it: how
+// Package clustersize holds one state-tier policy fact and the one number derived from it: how
 // many nodes this process believes the cluster has, and therefore how many
 // nodes each of its JetStream streams is replicated across.
 //

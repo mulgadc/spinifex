@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -399,9 +400,9 @@ func TestModifyDBSubnetGroup_KeepsTheOmittedDescriptionTagsAndCreatedAt(t *testi
 	require.Len(t, after.Subnets, 2)
 }
 
-// The group's VPC is derived from its subnets, so a set wholly in another VPC
-// moves it rather than leaving a stale VpcId that placement would act on.
-func TestModifyDBSubnetGroup_FollowsTheNewSubnetsVPC(t *testing.T) {
+// AWS refuses a set wholly in another VPC rather than moving the group, even
+// when nothing uses it.
+func TestModifyDBSubnetGroup_RefusesAMoveToAnotherVPC(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	h.network.subnets = append(h.network.subnets, &ec2.Subnet{
@@ -412,10 +413,32 @@ func TestModifyDBSubnetGroup_FollowsTheNewSubnetsVPC(t *testing.T) {
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
 	require.NoError(t, err)
 
-	out, err := h.svc.ModifyDBSubnetGroup(t.Context(),
+	_, err = h.svc.ModifyDBSubnetGroup(t.Context(),
 		modifySubnetGroupInput(testSubnetGroup, "subnet-other"), testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, "vpc-other01", aws.StringValue(out.DBSubnetGroup.VpcId))
+	rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	require.NoError(t, err)
+	assert.Equal(t, testDefaultVPC, rec.VpcID)
+}
+
+// AWS reads an empty description on modify as absent, unlike create, where it
+// is refused.
+func TestModifyDBSubnetGroup_KeepsTheDescriptionWhenEmpty(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+
+	input := modifySubnetGroupInput(testSubnetGroup, "subnet-alpha")
+	input.DBSubnetGroupDescription = aws.String("")
+	out, err := h.svc.ModifyDBSubnetGroup(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "Database subnets", aws.StringValue(out.DBSubnetGroup.DBSubnetGroupDescription))
 }
 
 // A refused modify is checked in full before the write, so the stored group is
@@ -427,7 +450,9 @@ func TestModifyDBSubnetGroup_RejectsWhatCreateRejects(t *testing.T) {
 		want   string
 	}{
 		{"NoName", func(in *rds.ModifyDBSubnetGroupInput) { in.DBSubnetGroupName = nil }, awserrors.ErrorInvalidParameterValue},
-		{"EmptyDescription", func(in *rds.ModifyDBSubnetGroupInput) { in.DBSubnetGroupDescription = aws.String("") }, awserrors.ErrorInvalidParameterValue},
+		{"LongDescription", func(in *rds.ModifyDBSubnetGroupInput) {
+			in.DBSubnetGroupDescription = aws.String(strings.Repeat("d", maxDBGroupDescriptionLen+1))
+		}, awserrors.ErrorInvalidParameterValue},
 		{"NoSubnets", func(in *rds.ModifyDBSubnetGroupInput) { in.SubnetIds = nil }, awserrors.ErrorInvalidParameterValue},
 		{"MissingSubnet", func(in *rds.ModifyDBSubnetGroupInput) {
 			in.SubnetIds = aws.StringSlice([]string{"subnet-alpha", "subnet-nowhere"})

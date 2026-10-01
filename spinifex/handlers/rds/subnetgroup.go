@@ -132,9 +132,9 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups, Marker: next}, nil
 }
 
-// SubnetIds is the group's complete new subnet set, resolved under create's
-// rules, and an omitted description keeps the stored one. A lost CAS replays
-// against the fresh record, so a concurrent tag write or delete is not undone.
+// SubnetIds is the group's complete new subnet set and must stay in the group's
+// VPC, as AWS requires. An omitted or empty description keeps the stored one. A
+// lost CAS replays against the fresh record, so a concurrent write is not undone.
 func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSubnetGroupInput, accountID string) (*rds.ModifyDBSubnetGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -143,8 +143,9 @@ func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSu
 	if name == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBSubnetGroupName is required")
 	}
-	if input.DBSubnetGroupDescription != nil {
-		if err := validateDBGroupDescription("DBSubnetGroupDescription", *input.DBSubnetGroupDescription); err != nil {
+	description := aws.StringValue(input.DBSubnetGroupDescription)
+	if description != "" {
+		if err := validateDBGroupDescription("DBSubnetGroupDescription", description); err != nil {
 			return nil, err
 		}
 	}
@@ -169,11 +170,14 @@ func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSu
 		if err != nil {
 			return nil, err
 		}
-		if input.DBSubnetGroupDescription != nil {
-			rec.Description = *input.DBSubnetGroupDescription
+		if vpcID != rec.VpcID {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"The new Subnets are not in the same Vpc as the existing subnet group")
+		}
+		if description != "" {
+			rec.Description = description
 		}
 		rec.Subnets = subnets
-		rec.VpcID = vpcID
 		rec.UpdatedAt = time.Now().UTC()
 
 		err = updateJSON(ctx, kv, key, rev, rec)

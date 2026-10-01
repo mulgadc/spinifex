@@ -49,14 +49,23 @@ var allConditionKeys = []string{
 // One value per operator that the leaf validator accepts, so a rejection can
 // only come from the operator/key allowlist and not from the value.
 var operatorValues = map[string]string{
-	iampolicy.OpStringEquals: "alice",
-	iampolicy.OpStringLike:   "ali*",
-	iampolicy.OpIPAddress:    "10.0.0.0/8",
-	iampolicy.OpBool:         "true",
+	iampolicy.OpStringEquals:              "alice",
+	iampolicy.OpStringNotEquals:           "alice",
+	iampolicy.OpStringEqualsIgnoreCase:    "alice",
+	iampolicy.OpStringNotEqualsIgnoreCase: "alice",
+	iampolicy.OpStringLike:                "ali*",
+	iampolicy.OpStringNotLike:             "ali*",
+	iampolicy.OpIPAddress:                 "10.0.0.0/8",
+	iampolicy.OpNotIPAddress:              "10.0.0.0/8",
+	iampolicy.OpBool:                      "true",
+	// Implemented, but no supported key is ARN-valued, so every pair below is
+	// rejected until one is.
+	iampolicy.OpArnEquals:    "arn:aws:iam::000000000001:user/alice",
+	iampolicy.OpArnLike:      "arn:aws:iam::000000000001:user/*",
+	iampolicy.OpArnNotEquals: "arn:aws:iam::000000000001:user/alice",
+	iampolicy.OpArnNotLike:   "arn:aws:iam::000000000001:user/*",
 	// Operators the evaluator does not implement. Accepting one would store a
 	// restriction that compares false forever.
-	"StringNotEquals": "alice",
-	"ArnLike":         "arn:aws:iam::000000000001:user/alice",
 	"NumericLessThan": "3",
 	"DateGreaterThan": "2026-01-01T00:00:00Z",
 }

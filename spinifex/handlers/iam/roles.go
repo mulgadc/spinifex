@@ -373,6 +373,9 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
 		return nil, err
 	}
+	if err := checkPolicyDocumentLength(policyDoc); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q on role %q: %w", policyName, roleName, err)
@@ -388,6 +391,9 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		changed = role.InlinePolicies[policyName] != policyDoc
 		if !changed {
 			return false, nil
+		}
+		if err := checkInlinePolicySize("role", roleName, rolePolicySizeQuota, role.InlinePolicies, policyName, policyDoc); err != nil {
+			return false, err
 		}
 		role.InlinePolicies[policyName] = policyDoc
 		return true, nil

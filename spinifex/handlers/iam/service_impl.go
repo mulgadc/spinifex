@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -1286,9 +1287,15 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 		}
 	}
 
+	if err := checkPolicyDocumentLength(*input.PolicyDocument); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(*input.PolicyDocument); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q: %w", policyName, err)
+	}
+	if err := checkManagedPolicySize(*input.PolicyDocument); err != nil {
+		return nil, err
 	}
 
 	if err := validateTags(input.Tags, exactKeys); err != nil {
@@ -1705,6 +1712,9 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
 		return nil, err
 	}
+	if err := checkPolicyDocumentLength(policyDoc); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q on user %q: %w", policyName, userName, err)
@@ -1712,6 +1722,9 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 
 	user, err := s.getUser(ctx, accountID, userName)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkInlinePolicySize("user", userName, userPolicySizeQuota, user.InlinePolicies, policyName, policyDoc); err != nil {
 		return nil, err
 	}
 
@@ -2204,7 +2217,64 @@ func parseCreatedAt(raw string) time.Time {
 	return t
 }
 
-const maxPolicyDocumentSize = 6144
+// maxPolicyDocumentLength is AWS's API bound on a PolicyDocument parameter. The
+// per-type limits below are the quotas a valid document is held to.
+const maxPolicyDocumentLength = 131072
+
+// AWS's policy size quotas, in characters excluding white space. Inline limits
+// apply to the sum of an entity's inline policies.
+const (
+	managedPolicySizeQuota = 6144
+	userPolicySizeQuota    = 2048
+	groupPolicySizeQuota   = 5120
+	rolePolicySizeQuota    = 10240
+)
+
+// policySize is a document's size as AWS counts it against the quotas: its
+// characters, leaving out white space.
+func policySize(doc string) int {
+	n := 0
+	for _, r := range doc {
+		if !unicode.IsSpace(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// checkPolicyDocumentLength refuses a PolicyDocument parameter over AWS's API
+// bound with the ValidationError AWS returns, before the document is parsed.
+func checkPolicyDocumentLength(doc string) error {
+	if utf8.RuneCountInString(doc) > maxPolicyDocumentLength {
+		return lengthViolation("policyDocument", fmt.Sprintf("less than or equal to %d", maxPolicyDocumentLength))
+	}
+	return nil
+}
+
+// checkManagedPolicySize refuses a managed policy document over its quota.
+func checkManagedPolicySize(doc string) error {
+	if policySize(doc) > managedPolicySizeQuota {
+		return awserrors.Errorf(awserrors.ErrorIAMLimitExceeded, "Cannot exceed quota for PolicySize: %d", managedPolicySizeQuota)
+	}
+	return nil
+}
+
+// checkInlinePolicySize refuses putting doc as policyName when the entity's
+// inline policies would then exceed quota in total. A policy of the same name
+// is replaced, so only the new document counts.
+func checkInlinePolicySize(entityType, entityName string, quota int, inline map[string]string, policyName, doc string) error {
+	total := policySize(doc)
+	for name, existing := range inline {
+		if name != policyName {
+			total += policySize(existing)
+		}
+	}
+	if total > quota {
+		return awserrors.Errorf(awserrors.ErrorIAMLimitExceeded,
+			"Maximum policy size of %d bytes exceeded for %s %s", quota, entityType, entityName)
+	}
+	return nil
+}
 
 // isIAMNameChar returns true if c is allowed in IAM user/policy names.
 func isIAMNameChar(c byte) bool {
@@ -2288,8 +2358,8 @@ func validatePath(path string) error {
 
 // ValidatePolicyDocument parses and validates an IAM policy document JSON string.
 func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
-	if len(docJSON) > maxPolicyDocumentSize {
-		return nil, fmt.Errorf("policy document exceeds maximum size of %d bytes", maxPolicyDocumentSize)
+	if len(docJSON) > maxPolicyDocumentLength {
+		return nil, fmt.Errorf("policy document exceeds maximum length of %d", maxPolicyDocumentLength)
 	}
 
 	var doc PolicyDocument
@@ -2297,9 +2367,11 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 
-	if doc.Version != "2012-10-17" {
+	if doc.Version != iampolicy.Version2012 && doc.Version != iampolicy.Version2008 {
 		return nil, fmt.Errorf("unsupported policy version: %q", doc.Version)
 	}
+	// Under 2008-10-17 a ${...} reference is literal text, so it cannot be unresolvable.
+	resolvesVariables := doc.Version == iampolicy.Version2012
 
 	if len(doc.Statement) == 0 {
 		return nil, fmt.Errorf("policy must contain at least one statement")
@@ -2318,7 +2390,7 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 		if err := validateSelectorEntries(i, stmt); err != nil {
 			return nil, err
 		}
-		if err := validateStatementRestrictions(i, stmt); err != nil {
+		if err := validateStatementRestrictions(i, stmt, resolvesVariables); err != nil {
 			return nil, err
 		}
 	}
@@ -2362,19 +2434,22 @@ func validateSelectorEntries(i int, stmt Statement) error {
 
 // validateStatementRestrictions rejects the clauses the evaluator cannot enforce,
 // so an identity policy is never accepted with an inert restriction on it.
-// Conditions inside the supported allowlist are accepted and enforced.
-func validateStatementRestrictions(i int, stmt Statement) error {
+// Conditions inside the supported allowlist are accepted and enforced. Policy
+// variables are checked only when the document's Version resolves them.
+func validateStatementRestrictions(i int, stmt Statement, resolvesVariables bool) error {
 	if isRawJSONNonEmpty(stmt.Principal) {
 		return fmt.Errorf("statement %d: Principal is not valid on an identity policy; use a resource or trust policy instead", i)
 	}
-	for _, resource := range stmt.Resource {
-		if err := validatePolicyVariables(i, "Resource", resource); err != nil {
-			return err
+	if resolvesVariables {
+		for _, resource := range stmt.Resource {
+			if err := validatePolicyVariables(i, "Resource", resource); err != nil {
+				return err
+			}
 		}
-	}
-	for _, resource := range stmt.NotResource {
-		if err := validatePolicyVariables(i, "NotResource", resource); err != nil {
-			return err
+		for _, resource := range stmt.NotResource {
+			if err := validatePolicyVariables(i, "NotResource", resource); err != nil {
+				return err
+			}
 		}
 	}
 	for op, keys := range stmt.Condition {
@@ -2382,7 +2457,7 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 			if !iampolicy.SupportedCondition(op, key) {
 				return fmt.Errorf("statement %d: Condition operator %q on key %q is not supported in this release%s", i, op, key, unsupportedConditionKeyReason(key))
 			}
-			if err := validateConditionValues(i, op, key, values); err != nil {
+			if err := validateConditionValues(i, op, key, values, resolvesVariables); err != nil {
 				return err
 			}
 		}
@@ -2407,7 +2482,7 @@ func unsupportedConditionKeyReason(key string) string {
 // validateConditionValues rejects leaf values the matcher can only ever compare
 // false. An allowlisted operator over an unparseable value is still an inert
 // restriction, which is the failure this validation exists to prevent.
-func validateConditionValues(i int, op, key string, values ConditionValue) error {
+func validateConditionValues(i int, op, key string, values ConditionValue, resolvesVariables bool) error {
 	if len(values) == 0 {
 		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
 	}
@@ -2423,8 +2498,10 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 			iampolicy.OpNumericEquals, iampolicy.OpNumericNotEquals, iampolicy.OpNumericLessThan,
 			iampolicy.OpNumericLessThanEquals, iampolicy.OpNumericGreaterThan, iampolicy.OpNumericGreaterThanEquals:
 		default:
-			if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
-				return err
+			if resolvesVariables {
+				if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
+					return err
+				}
 			}
 		}
 		switch base {
@@ -2491,13 +2568,8 @@ func validatePolicyVariables(i int, field, value string) error {
 }
 
 // summaryQuotaDefaults holds the static SummaryMap entries returned by
-// GetAccountSummary. Spinifex's quota system (handlers/quota) only enforces
-// infrastructure dimensions (vCPUs, VPCs, subnets, EIPs, EBS) and models no IAM
-// entity limits, so these IAM quota values are AWS-parity constants for
-// informational compatibility only, not enforced limits. Resource types
-// Spinifex does not model are reported as 0 rather than omitted so CIS/audit
-// tooling that reads these keys keeps working. Real per-account resource counts
-// are overlaid on top of this table at call time.
+// GetAccountSummary, at AWS's defaults. Unmodelled resource types report 0 so
+// audit tooling finds every key; real per-account counts are overlaid at call time.
 var summaryQuotaDefaults = map[string]int64{
 	// Account-wide quotas (AWS defaults).
 	"UsersQuota":               5000,
@@ -2515,12 +2587,12 @@ var summaryQuotaDefaults = map[string]int64{
 	"AttachedPoliciesPerGroupQuota":   10,
 	"AttachedPoliciesPerRoleQuota":    10,
 	"SigningCertificatesPerUserQuota": 2,
-	"UserPolicySizeQuota":             2048,
-	"GroupPolicySizeQuota":            5120,
-	"PolicySizeQuota":                 6144,
+	"UserPolicySizeQuota":             userPolicySizeQuota,
+	"GroupPolicySizeQuota":            groupPolicySizeQuota,
+	"PolicySizeQuota":                 managedPolicySizeQuota,
 	"VersionsPerPolicyQuota":          5,
 	"AssumeRolePolicySizeQuota":       maxTrustPolicyDocumentSize,
-	"RolePolicySizeQuota":             10240,
+	"RolePolicySizeQuota":             rolePolicySizeQuota,
 
 	// AWS's default: STS global endpoint tokens valid only in default Regions.
 	"GlobalEndpointTokenVersion": 1,

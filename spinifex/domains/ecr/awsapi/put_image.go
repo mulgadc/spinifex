@@ -33,7 +33,7 @@ func PutImage(ctx context.Context, writer ManifestWriter, accountID string, body
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
 	}
-	if err := validateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
+	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
 	}
 	if req.ImageManifest == "" {

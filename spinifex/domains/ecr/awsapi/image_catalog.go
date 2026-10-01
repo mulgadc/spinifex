@@ -31,7 +31,17 @@ type ManifestWriter interface {
 	StoreManifest(ctx context.Context, account, repository, reference, contentType string, body []byte) (digest string, err error)
 }
 
-func validateRepositoryScope(repositoryName, registryID, accountID string) error {
+// ImageDeleter is the registry capability used by BatchDeleteImage. The
+// registry owns tag-versus-digest deletion and storage reclamation; this action
+// owns ECR's batch response shape.
+type ImageDeleter interface {
+	DeleteImage(ctx context.Context, account, repository, tag, digest string) (resolvedDigest string, err error)
+}
+
+// ValidateRepositoryScope validates a repository name and refuses a registryId
+// that names another account. AWS ECR action adapters and gateway-resident
+// transitional actions share this account-boundary rule.
+func ValidateRepositoryScope(repositoryName, registryID, accountID string) error {
 	if err := ValidateRepositoryName(repositoryName); err != nil {
 		return err
 	}

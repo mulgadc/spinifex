@@ -26,7 +26,7 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
 	}
-	if err := validateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
+	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
 	}
 

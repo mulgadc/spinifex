@@ -34,7 +34,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 	if err := decodeJSONBody(r, &req); err != nil {
 		return "", nil, nil, err
 	}
-	if err := validateRepoAndRegistry(req.RepositoryName, req.RegistryID, accountID); err != nil {
+	if err := awsapi.ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return "", nil, nil, err
 	}
 

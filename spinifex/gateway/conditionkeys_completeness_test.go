@@ -58,6 +58,7 @@ var operatorValues = map[string]string{
 	iampolicy.OpIPAddress:                 "10.0.0.0/8",
 	iampolicy.OpNotIPAddress:              "10.0.0.0/8",
 	iampolicy.OpBool:                      "true",
+	iampolicy.OpNull:                      "true",
 	// Implemented, but no supported key is ARN-valued, so every pair below is
 	// rejected until one is.
 	iampolicy.OpArnEquals:    "arn:aws:iam::000000000001:user/alice",
@@ -68,6 +69,16 @@ var operatorValues = map[string]string{
 	// restriction that compares false forever.
 	"NumericLessThan": "3",
 	"DateGreaterThan": "2026-01-01T00:00:00Z",
+}
+
+// withIfExists adds the IfExists form of every operator, so the gate below covers
+// the suffixed operators too, NullIfExists among the ones it must reject.
+func withIfExists(values map[string]string) map[string]string {
+	all := maps.Clone(values)
+	for op, value := range values {
+		all[op+iampolicy.IfExistsSuffix] = value
+	}
+	return all
 }
 
 // emittedKeys drives requestConditionKeys with everything a request can carry,
@@ -145,7 +156,7 @@ func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
 // policy an operator cannot write.
 func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.T) {
 	for _, key := range allConditionKeys {
-		for op, value := range operatorValues {
+		for op, value := range withIfExists(operatorValues) {
 			doc := conditionDocument(t, op, key, value)
 			_, err := handlers_iam.ValidatePolicyDocument(doc)
 

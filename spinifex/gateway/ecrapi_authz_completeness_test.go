@@ -6,7 +6,7 @@ package gateway
 import (
 	"testing"
 
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -14,15 +14,15 @@ import (
 // with a silent account-wide grant. It asserts both directions, so a scope left
 // behind by a deleted or renamed action fails too.
 func TestECRScopeTableIsExhaustive(t *testing.T) {
-	for action := range gateway_ecrapi.Actions {
-		assert.True(t, gateway_ecrapi.HasScope(action),
-			"ecr action %q has no resource scope entry: add one to ecrScopes in gateway/ecrapi/authz.go", action)
+	for action := range awsapi.Actions {
+		assert.True(t, awsapi.HasScope(action),
+			"ecr action %q has no resource scope entry: add one to ecrScopes in domains/ecr/awsapi/authz.go", action)
 	}
 
-	for _, action := range gateway_ecrapi.ScopedActions() {
-		_, ok := gateway_ecrapi.Actions[action]
+	for _, action := range awsapi.ScopedActions() {
+		_, ok := awsapi.Actions[action]
 		assert.True(t, ok,
-			"ecrScopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/ecrapi/authz.go", action)
+			"ecrScopes has an entry for %q, which the dispatch table does not serve: remove it from domains/ecr/awsapi/authz.go", action)
 	}
 }
 
@@ -31,8 +31,8 @@ func TestECRScopeTableIsExhaustive(t *testing.T) {
 // and, more to the point, would never have had its resources scoped.
 func TestECRInlineActionsAreInTheNamespace(t *testing.T) {
 	for action := range ecrInlineActions {
-		_, ok := gateway_ecrapi.Actions[action]
+		_, ok := awsapi.Actions[action]
 		assert.True(t, ok,
-			"inline ECR handler %q is not in gateway_ecrapi.Actions, so ECR_Request rejects it as InvalidAction", action)
+			"inline ECR handler %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
 	}
 }

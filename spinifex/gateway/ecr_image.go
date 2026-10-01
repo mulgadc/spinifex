@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 // maxImageBatch is the per-call cap on imageIds for the batch image actions.
@@ -84,7 +84,7 @@ func (gw *GatewayConfig) ecrImageAccount(r *http.Request) (string, error) {
 // validateRepoAndRegistry rejects a malformed repository name and a registryId
 // targeting another account.
 func validateRepoAndRegistry(name, registryID, accountID string) error {
-	if err := gateway_ecrapi.ValidateRepositoryName(name); err != nil {
+	if err := awsapi.ValidateRepositoryName(name); err != nil {
 		return err
 	}
 	if registryID != "" && registryID != accountID {
@@ -96,10 +96,10 @@ func validateRepoAndRegistry(name, registryID, accountID string) error {
 func decodeJSONBody(r *http.Request, dst any) error {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
 	return nil
 }
@@ -147,7 +147,7 @@ func (gw *GatewayConfig) handleListImages(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.ListImagesOutput{ImageIds: ids})
+	awsapi.WriteJSONResponse(w, &ecr.ListImagesOutput{ImageIds: ids})
 	return nil
 }
 
@@ -212,7 +212,7 @@ func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Req
 		return errors.New(awserrors.ErrorImageNotFound)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.DescribeImagesOutput{ImageDetails: details})
+	awsapi.WriteJSONResponse(w, &ecr.DescribeImagesOutput{ImageDetails: details})
 	return nil
 }
 
@@ -233,7 +233,7 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 		return err
 	}
 	if len(req.ImageIds) > maxImageBatch {
-		return gateway_ecrapi.MaxItemsError("imageIds", maxImageBatch)
+		return awsapi.MaxItemsError("imageIds", maxImageBatch)
 	}
 
 	var images []*ecr.Image
@@ -271,7 +271,7 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 		images = append(images, out)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.BatchGetImageOutput{Images: images, Failures: failures})
+	awsapi.WriteJSONResponse(w, &ecr.BatchGetImageOutput{Images: images, Failures: failures})
 	return nil
 }
 
@@ -292,7 +292,7 @@ func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) 
 		return err
 	}
 	if req.ImageManifest == "" {
-		return gateway_ecrapi.RequiredParameterError("imageManifest")
+		return awsapi.RequiredParameterError("imageManifest")
 	}
 
 	ref := req.ImageTag
@@ -315,7 +315,7 @@ func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) 
 	if req.ImageTag != "" {
 		image.ImageId.ImageTag = aws.String(req.ImageTag)
 	}
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.PutImageOutput{Image: image})
+	awsapi.WriteJSONResponse(w, &ecr.PutImageOutput{Image: image})
 	return nil
 }
 
@@ -336,7 +336,7 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 		return err
 	}
 	if len(req.ImageIds) > maxImageBatch {
-		return gateway_ecrapi.MaxItemsError("imageIds", maxImageBatch)
+		return awsapi.MaxItemsError("imageIds", maxImageBatch)
 	}
 
 	var deleted []*ecr.ImageIdentifier
@@ -364,7 +364,7 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 		deleted = append(deleted, out)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.BatchDeleteImageOutput{ImageIds: deleted, Failures: failures})
+	awsapi.WriteJSONResponse(w, &ecr.BatchDeleteImageOutput{ImageIds: deleted, Failures: failures})
 	return nil
 }
 
@@ -396,7 +396,7 @@ func mapStoreManifestError(ctx context.Context, err error, repo string) error {
 		case "NAME_UNKNOWN":
 			return errors.New(awserrors.ErrorRepositoryNotFound)
 		default:
-			return gateway_ecrapi.ConstraintError("imageManifest", mErr.Msg)
+			return awsapi.ConstraintError("imageManifest", mErr.Msg)
 		}
 	}
 	slog.ErrorContext(ctx, "PutImage: store manifest failed", "repo", repo, "err", err)

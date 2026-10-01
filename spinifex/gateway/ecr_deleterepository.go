@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 // deleteRepositoryRequest is the camelCase AWS JSON 1.1 input shape. force=true
@@ -36,13 +36,13 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteRepository: failed to read body", "err", err)
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
 	var req deleteRepositoryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
-	if err := gateway_ecrapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+	if err := awsapi.ValidateRepositoryName(req.RepositoryName); err != nil {
 		return err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
@@ -78,7 +78,7 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{
+	awsapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{
 		Repository: gw.buildRepository(accountID, req.RepositoryName, meta),
 	})
 	return nil

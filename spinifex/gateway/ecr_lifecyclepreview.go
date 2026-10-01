@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 // lifecyclePreviewRequest is the camelCase AWS JSON 1.1 input shared by the two
@@ -65,7 +65,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 
 	expiries, err := handlers_ecr.EvaluateLifecyclePolicy([]byte(policyText), images, time.Now().UTC())
 	if err != nil {
-		return "", nil, nil, gateway_ecrapi.InvalidLifecyclePolicyError()
+		return "", nil, nil, awsapi.InvalidLifecyclePolicyError()
 	}
 	return policyText, expiries, &req, nil
 }
@@ -78,7 +78,7 @@ func (gw *GatewayConfig) handleStartLifecyclePolicyPreview(w http.ResponseWriter
 	if err != nil {
 		return err
 	}
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.StartLifecyclePolicyPreviewOutput{
+	awsapi.WriteJSONResponse(w, &ecr.StartLifecyclePolicyPreviewOutput{
 		RegistryId:          aws.String(accountID),
 		RepositoryName:      aws.String(req.RepositoryName),
 		LifecyclePolicyText: aws.String(policyText),
@@ -105,7 +105,7 @@ func (gw *GatewayConfig) handleGetLifecyclePolicyPreview(w http.ResponseWriter, 
 			ImageTags:           aws.StringSlice(e.Tags),
 		})
 	}
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.GetLifecyclePolicyPreviewOutput{
+	awsapi.WriteJSONResponse(w, &ecr.GetLifecyclePolicyPreviewOutput{
 		RegistryId:          aws.String(accountID),
 		RepositoryName:      aws.String(req.RepositoryName),
 		LifecyclePolicyText: aws.String(policyText),

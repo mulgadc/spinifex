@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 // putImageTagMutabilityRequest is the camelCase AWS JSON 1.1 input shape.
@@ -35,13 +35,13 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "PutImageTagMutability: failed to read body", "err", err)
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
 	var req putImageTagMutabilityRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
-	if err := gateway_ecrapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+	if err := awsapi.ValidateRepositoryName(req.RepositoryName); err != nil {
 		return err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
@@ -51,9 +51,9 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 	switch req.ImageTagMutability {
 	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
 	case "":
-		return gateway_ecrapi.RequiredParameterError("imageTagMutability")
+		return awsapi.RequiredParameterError("imageTagMutability")
 	default:
-		return gateway_ecrapi.EnumValueError("imageTagMutability", req.ImageTagMutability,
+		return awsapi.EnumValueError("imageTagMutability", req.ImageTagMutability,
 			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
 	}
 
@@ -73,7 +73,7 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.PutImageTagMutabilityOutput{
+	awsapi.WriteJSONResponse(w, &ecr.PutImageTagMutabilityOutput{
 		RegistryId:         aws.String(accountID),
 		RepositoryName:     aws.String(req.RepositoryName),
 		ImageTagMutability: aws.String(meta.TagMutability()),

@@ -1,7 +1,7 @@
 // Package gateway_ecr is the HTTP-side glue for the OCI Distribution Spec v2
 // registry surface (/v2/*) served by awsgw. It speaks the OCI error envelope
 // ({"errors":[{code,message,detail}]}), not the AWS JSON 1.1 envelope used by
-// the ECR control plane (see package gateway_ecrapi). Handlers currently return
+// the ECR control plane (see package awsapi). Handlers currently return
 // 501 Unsupported; the storage and auth-bridge layers replace them as they land.
 package gateway_ecr
 

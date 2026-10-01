@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 // describeRepositoriesRequest is the camelCase AWS JSON 1.1 input shape. The SDK
@@ -36,12 +36,12 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeRepositories: failed to read body", "err", err)
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
 	var req describeRepositoriesRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
-			return gateway_ecrapi.MalformedBodyError()
+			return awsapi.MalformedBodyError()
 		}
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
@@ -71,7 +71,7 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 		repos = append(repos, gw.buildRepository(accountID, name, meta))
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.DescribeRepositoriesOutput{Repositories: repos})
+	awsapi.WriteJSONResponse(w, &ecr.DescribeRepositoriesOutput{Repositories: repos})
 	return nil
 }
 

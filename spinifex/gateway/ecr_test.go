@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +47,7 @@ func TestECRActionsMap_CoreActionsRegistered(t *testing.T) {
 		"PutImage", "InitiateLayerUpload", "UploadLayerPart", "CompleteLayerUpload",
 	}
 	for _, action := range core {
-		_, ok := gateway_ecrapi.Actions[action]
+		_, ok := awsapi.Actions[action]
 		assert.True(t, ok, "action %q should be registered", action)
 	}
 }

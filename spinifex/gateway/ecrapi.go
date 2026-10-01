@@ -8,14 +8,14 @@ import (
 	"net/http"
 	"strings"
 
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 type ecrInlineHandler func(*GatewayConfig, http.ResponseWriter, *http.Request) error
 
 // ecrInlineActions is the authoritative inventory of ECR operations handled
-// directly by the gateway rather than relayed through gateway_ecrapi.Actions.
+// directly by the gateway rather than relayed through awsapi.Actions.
 // Keeping dispatch and coverage on the same map prevents the generated
 // operation report from classifying an inline implementation as a stub.
 var ecrInlineActions = map[string]ecrInlineHandler{
@@ -51,7 +51,7 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorMissingAction)
 	}
 
-	handler, ok := gateway_ecrapi.Actions[action]
+	handler, ok := awsapi.Actions[action]
 	if !ok {
 		slog.Debug("ECR: unknown action", "action", action)
 		return errors.New(awserrors.ErrorInvalidAction)
@@ -73,7 +73,7 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	resources, err := gateway_ecrapi.ResourceARNs(action, gw.Region, accountID, body)
+	resources, err := awsapi.ResourceARNs(action, gw.Region, accountID, body)
 	if err != nil {
 		return err
 	}
@@ -93,6 +93,6 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, output)
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }

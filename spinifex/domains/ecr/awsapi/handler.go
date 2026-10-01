@@ -1,12 +1,12 @@
-// Package gateway_ecrapi is the HTTP-side glue for the ECR control plane: the
-// AWS JSON 1.1 surface dispatched by X-Amz-Target
-// (AmazonEC2ContainerRegistry_V20150921.<Action>), matching aws-sdk-go's
-// service/ecr request shape. It is distinct from package gateway_ecr, which
-// serves the OCI Distribution registry (/v2/*).
+// Package awsapi owns ECR's AWS JSON 1.1 action surface: the
+// X-Amz-Target action inventory, request validation, resource-scope derivation
+// and NATS-backed action handlers. It matches aws-sdk-go's service/ecr request
+// shape. Generic gateway code retains HTTP routing, authentication context and
+// policy enforcement; the ECR OCI Distribution registry is a separate adapter.
 //
 // The full action namespace is registered as the API contract; every action
 // resolves to the shared NotImplemented stub until its real handler lands.
-package gateway_ecrapi
+package awsapi
 
 import (
 	"context"

@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 )
 
 // createRepositoryRequest is the camelCase AWS JSON 1.1 input shape. ecr.Tag
@@ -55,13 +55,13 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateRepository: failed to read body", "err", err)
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
 	var req createRepositoryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return gateway_ecrapi.MalformedBodyError()
+		return awsapi.MalformedBodyError()
 	}
-	if err := gateway_ecrapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+	if err := awsapi.ValidateRepositoryName(req.RepositoryName); err != nil {
 		return err
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
@@ -102,7 +102,7 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.CreateRepositoryOutput{
+	awsapi.WriteJSONResponse(w, &ecr.CreateRepositoryOutput{
 		Repository: gw.buildRepository(accountID, req.RepositoryName, meta),
 	})
 	return nil
@@ -115,7 +115,7 @@ func tagMapFromInput(in []*ecr.Tag) (map[string]string, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
-	if err := gateway_ecrapi.ValidateTags(in); err != nil {
+	if err := awsapi.ValidateTags(in); err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(in))
@@ -139,7 +139,7 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"encryptionType KMS is not supported: no customer-managed key is used, and repositories are already encrypted at rest under a server-managed AES-256 key")
 	default:
-		return "", gateway_ecrapi.EnumValueError("encryptionConfiguration.encryptionType", cfg.EncryptionType,
+		return "", awsapi.EnumValueError("encryptionConfiguration.encryptionType", cfg.EncryptionType,
 			handlers_ecr.EncryptionTypeAES256, handlers_ecr.EncryptionTypeKMS)
 	}
 }
@@ -153,7 +153,7 @@ func normalizeTagMutability(v string) (string, error) {
 	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
 		return v, nil
 	default:
-		return "", gateway_ecrapi.EnumValueError("imageTagMutability", v,
+		return "", awsapi.EnumValueError("imageTagMutability", v,
 			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
 	}
 }

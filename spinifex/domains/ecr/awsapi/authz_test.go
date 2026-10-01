@@ -1,13 +1,13 @@
-package gateway_ecrapi_test
+package awsapi_test
 
 import (
 	"encoding/json"
 	"strconv"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func ecrARN(resource string) string {
 
 func resolve(t *testing.T, action, body string) []string {
 	t.Helper()
-	resources, err := gateway_ecrapi.ResourceARNs(action, testRegion, testAccountID, []byte(body))
+	resources, err := awsapi.ResourceARNs(action, testRegion, testAccountID, []byte(body))
 	require.NoError(t, err)
 	return resources
 }
@@ -32,14 +32,14 @@ func resolve(t *testing.T, action, body string) []string {
 // a silent account-wide grant. Both directions, so a scope left behind by a
 // deleted or renamed action fails too.
 func TestScopeTableIsExhaustive(t *testing.T) {
-	for action := range gateway_ecrapi.Actions {
-		assert.True(t, gateway_ecrapi.HasScope(action),
-			"ecr action %q has no resource scope entry: add one to ecrScopes in gateway/ecrapi/authz.go", action)
+	for action := range awsapi.Actions {
+		assert.True(t, awsapi.HasScope(action),
+			"ecr action %q has no resource scope entry: add one to ecrScopes in domains/ecr/awsapi/authz.go", action)
 	}
-	for _, action := range gateway_ecrapi.ScopedActions() {
-		_, served := gateway_ecrapi.Actions[action]
+	for _, action := range awsapi.ScopedActions() {
+		_, served := awsapi.Actions[action]
 		assert.True(t, served,
-			"ecrScopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/ecrapi/authz.go", action)
+			"ecrScopes has an entry for %q, which the dispatch table does not serve: remove it from domains/ecr/awsapi/authz.go", action)
 	}
 }
 
@@ -87,7 +87,7 @@ func TestResourceARNs_UnparseableOrAbsentIdentifierAuthorizesAccountWide(t *test
 // An action that is served but has no entry fails closed rather than defaulting
 // to an account-wide grant.
 func TestResourceARNs_UnknownActionIsRejected(t *testing.T) {
-	_, err := gateway_ecrapi.ResourceARNs("MadeUpAction", testRegion, testAccountID, nil)
+	_, err := awsapi.ResourceARNs("MadeUpAction", testRegion, testAccountID, nil)
 	require.Error(t, err)
 }
 
@@ -112,11 +112,11 @@ func TestResourceARNs_OversizedListIsRejected(t *testing.T) {
 		return []byte(`{"repositoryNames":` + string(names) + `}`)
 	}
 
-	_, err := gateway_ecrapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
+	_, err := awsapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
 		namesBody(query.MaxSliceLen+1))
 	require.EqualError(t, err, awserrors.ErrorMalformedQueryString)
 
-	resources, err := gateway_ecrapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
+	resources, err := awsapi.ResourceARNs("DescribeRepositories", testRegion, testAccountID,
 		namesBody(query.MaxSliceLen))
 	require.NoError(t, err)
 	assert.Len(t, resources, query.MaxSliceLen)
@@ -127,7 +127,7 @@ func TestResourceARNs_OversizedListIsRejected(t *testing.T) {
 // different repository than the handler acts on.
 func TestResourceARNs_FieldSpelledTwoWaysIsRejected(t *testing.T) {
 	for range 50 {
-		_, err := gateway_ecrapi.ResourceARNs("DeleteRepository", testRegion, testAccountID,
+		_, err := awsapi.ResourceARNs("DeleteRepository", testRegion, testAccountID,
 			[]byte(`{"repositoryName":"dev","RepositoryName":"prod"}`))
 		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 	}

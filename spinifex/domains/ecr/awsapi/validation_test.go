@@ -1,4 +1,4 @@
-package gateway_ecrapi_test
+package awsapi_test
 
 import (
 	"strings"
@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,24 +37,24 @@ func TestValidateRepositoryName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			requireInvalidParameter(t, gateway_ecrapi.ValidateRepositoryName(tc.input), tc.want)
+			requireInvalidParameter(t, awsapi.ValidateRepositoryName(tc.input), tc.want)
 		})
 	}
-	assert.NoError(t, gateway_ecrapi.ValidateRepositoryName("team/app"))
+	assert.NoError(t, awsapi.ValidateRepositoryName("team/app"))
 }
 
 func TestValidateTags(t *testing.T) {
 	requireInvalidParameter(t,
-		gateway_ecrapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env")}, {Value: aws.String("prod")}}),
+		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env")}, {Value: aws.String("prod")}}),
 		"1 validation error detected: Value null at 'tags.2.member.key' failed to satisfy constraint: Member must not be null")
 	requireInvalidParameter(t,
-		gateway_ecrapi.ValidateTags([]*ecr.Tag{{Key: aws.String("")}}),
+		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("")}}),
 		"1 validation error detected: Value '' at 'tags.1.member.key' failed to satisfy constraint: Member must have length greater than or equal to 1")
-	assert.NoError(t, gateway_ecrapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env"), Value: aws.String("")}}))
+	assert.NoError(t, awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env"), Value: aws.String("")}}))
 }
 
 func TestResourceARNs_AmbiguousBodyNamesTheFault(t *testing.T) {
-	_, err := gateway_ecrapi.ResourceARNs("DeleteRepository", "ap-southeast-2", "123456789012",
+	_, err := awsapi.ResourceARNs("DeleteRepository", "ap-southeast-2", "123456789012",
 		[]byte(`{"repositoryName":"dev","RepositoryName":"prod"}`))
 	requireInvalidParameter(t, err, "The request body names the same field more than once in different letter case")
 }

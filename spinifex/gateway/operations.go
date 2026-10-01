@@ -4,7 +4,7 @@ import (
 	"maps"
 	"slices"
 
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 )
@@ -23,8 +23,8 @@ type ServiceOperationInventory struct {
 // dispatch S3 operations and delegates that REST surface to Predastore.
 func AWSOperationInventory() map[string]ServiceOperationInventory {
 	ecrInline := mapKeys(ecrInlineActions)
-	ecrRegistered := union(mapKeys(gateway_ecrapi.Actions), ecrInline)
-	ecrStubbed := without(gateway_ecrapi.StubbedActionNames(), ecrInline)
+	ecrRegistered := union(mapKeys(awsapi.Actions), ecrInline)
+	ecrStubbed := without(awsapi.StubbedActionNames(), ecrInline)
 	return map[string]ServiceOperationInventory{
 		"acm": {
 			Registered: mapKeys(acmActions),
@@ -35,7 +35,7 @@ func AWSOperationInventory() map[string]ServiceOperationInventory {
 		"ecr": {
 			Registered:  ecrRegistered,
 			Stubbed:     ecrStubbed,
-			Unsupported: gateway_ecrapi.UnsupportedActionNames(),
+			Unsupported: awsapi.UnsupportedActionNames(),
 		},
 		"ecs": {
 			Registered: mapKeys(gateway_ecs.Actions),

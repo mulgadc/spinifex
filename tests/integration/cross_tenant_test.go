@@ -18,9 +18,9 @@ import (
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/aws/aws-sdk-go/service/iam"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
@@ -160,7 +160,7 @@ func crossTenantCases() []crossTenantCase {
 		{
 			service: "ecr", action: "ListTagsForResource",
 			arnFor: ecrRepositoryARN, shape: boundaryReanchored,
-			request: jsonTarget(gateway_ecrapi.TargetPrefix+".ListTagsForResource", func(resourceARN string) string {
+			request: jsonTarget(awsapi.TargetPrefix+".ListTagsForResource", func(resourceARN string) string {
 				return `{"resourceArn":"` + resourceARN + `"}`
 			}),
 		},
@@ -384,7 +384,7 @@ func scopedServices() []scopedService {
 
 		// Only the three tag actions read an ARN; every other ECR action names
 		// its repository by bare name.
-		{name: "ecr", actions: gateway_ecrapi.ScopedActions(), uncased: ecrUncased()},
+		{name: "ecr", actions: awsapi.ScopedActions(), uncased: ecrUncased()},
 
 		// Same shape as ECR: the tag actions read an ARN, the rest name a
 		// cluster, nodegroup or addon by path segment.

@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 )
 
@@ -56,7 +56,7 @@ func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *h
 	authToken := base64.StdEncoding.EncodeToString([]byte("AWS:" + token))
 	proxyEndpoint := "https://" + gw.ecrRegistryHost(accountID)
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.GetAuthorizationTokenOutput{
+	awsapi.WriteJSONResponse(w, &ecr.GetAuthorizationTokenOutput{
 		AuthorizationData: []*ecr.AuthorizationData{{
 			AuthorizationToken: aws.String(authToken),
 			ProxyEndpoint:      aws.String(proxyEndpoint),

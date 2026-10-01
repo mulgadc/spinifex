@@ -1,4 +1,4 @@
-package gateway_ecrapi
+package awsapi
 
 //test:in-package — the connection and repository seeding helpers these share
 // with the rest of the package's tests are unexported, as is the request shape

@@ -1,4 +1,4 @@
-package gateway_ecrapi
+package awsapi
 
 import (
 	"context"

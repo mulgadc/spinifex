@@ -108,6 +108,18 @@ func TestIAMRolesAndProfiles(t *testing.T) {
 	require.Equal(t, "updated", aws.StringValue(got.Role.Description))
 	require.Equal(t, int64(7200), aws.Int64Value(got.Role.MaxSessionDuration))
 
+	// UpdateRoleDescription — returns the updated role, unlike UpdateRole.
+	descOut, err := iamCli.UpdateRoleDescription(&iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String(iamRoleAppName),
+		Description: aws.String("described"),
+	})
+	require.NoError(t, err, "update-role-description")
+	require.Equal(t, "described", aws.StringValue(descOut.Role.Description))
+	require.Equal(t, int64(7200), aws.Int64Value(descOut.Role.MaxSessionDuration))
+	got, err = iamCli.GetRole(&iam.GetRoleInput{RoleName: aws.String(iamRoleAppName)})
+	require.NoError(t, err, "get-role after update-role-description")
+	require.Equal(t, "described", aws.StringValue(got.Role.Description))
+
 	// The MaxSessionDuration range guard (3600-43200) is unreachable here: the
 	// SDK refuses values below 3600 before dispatch. handlers/iam covers it in
 	// TestRole_MaxSessionDurationBounds.

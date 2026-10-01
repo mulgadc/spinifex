@@ -2902,7 +2902,8 @@
           "UntagUser",
           "UpdateAccessKey",
           "UpdateAssumeRolePolicy",
-          "UpdateRole"
+          "UpdateRole",
+          "UpdateRoleDescription"
         ],
         "implemented": [
           "AddRoleToInstanceProfile",
@@ -2984,7 +2985,8 @@
           "UntagUser",
           "UpdateAccessKey",
           "UpdateAssumeRolePolicy",
-          "UpdateRole"
+          "UpdateRole",
+          "UpdateRoleDescription"
         ],
         "stubbed": [],
         "unsupported": [],
@@ -3079,7 +3081,6 @@
           "UpdateGroup",
           "UpdateLoginProfile",
           "UpdateOpenIDConnectProviderThumbprint",
-          "UpdateRoleDescription",
           "UpdateSAMLProvider",
           "UpdateSSHPublicKey",
           "UpdateServerCertificate",

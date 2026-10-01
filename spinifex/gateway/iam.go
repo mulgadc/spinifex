@@ -152,6 +152,9 @@ var iamActions = map[string]iamAction{
 	"UpdateRole": iamHandler(func(accountID string, input *iam.UpdateRoleInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.UpdateRole(accountID, input, gw.IAMService)
 	}),
+	"UpdateRoleDescription": iamHandler(func(accountID string, input *iam.UpdateRoleDescriptionInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.UpdateRoleDescription(accountID, input, gw.IAMService)
+	}),
 	"UpdateAssumeRolePolicy": iamHandler(func(accountID string, input *iam.UpdateAssumeRolePolicyInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.UpdateAssumeRolePolicy(accountID, input, gw.IAMService)
 	}),

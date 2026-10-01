@@ -68,6 +68,22 @@ func UpdateRole(accountID string, input *iam.UpdateRoleInput, svc handlers_iam.I
 	return svc.UpdateRole(accountID, input)
 }
 
+func UpdateRoleDescription(accountID string, input *iam.UpdateRoleDescriptionInput, svc handlers_iam.IAMService) (*iam.UpdateRoleDescriptionOutput, error) {
+	if input.RoleName == nil || *input.RoleName == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	// Description may be empty, which clears it, but must be present.
+	if input.Description == nil {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	out, err := svc.UpdateRoleDescription(accountID, input)
+	if err != nil {
+		return nil, err
+	}
+	encodeRoleDocuments(out.Role)
+	return out, nil
+}
+
 func UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput, svc handlers_iam.IAMService) (*iam.UpdateAssumeRolePolicyOutput, error) {
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

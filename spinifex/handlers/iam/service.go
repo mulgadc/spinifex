@@ -48,6 +48,7 @@ type IAMService interface {
 	ListRoles(accountID string, input *iam.ListRolesInput) (*iam.ListRolesOutput, error)
 	DeleteRole(accountID string, input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error)
 	UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error)
+	UpdateRoleDescription(accountID string, input *iam.UpdateRoleDescriptionInput) (*iam.UpdateRoleDescriptionOutput, error)
 	UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error)
 
 	// Role policies — managed + inline — account-scoped

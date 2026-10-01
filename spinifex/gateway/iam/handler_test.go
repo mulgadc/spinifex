@@ -122,6 +122,9 @@ func (s *stubIAMService) DeleteRole(_ string, _ *iam.DeleteRoleInput) (*iam.Dele
 func (s *stubIAMService) UpdateRole(_ string, _ *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
 	return &iam.UpdateRoleOutput{}, nil
 }
+func (s *stubIAMService) UpdateRoleDescription(_ string, in *iam.UpdateRoleDescriptionInput) (*iam.UpdateRoleDescriptionOutput, error) {
+	return &iam.UpdateRoleDescriptionOutput{Role: &iam.Role{RoleName: in.RoleName, Description: in.Description}}, nil
+}
 func (s *stubIAMService) UpdateAssumeRolePolicy(_ string, _ *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
 	return &iam.UpdateAssumeRolePolicyOutput{}, nil
 }

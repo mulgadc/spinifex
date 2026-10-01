@@ -957,7 +957,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## iam
 
-`2010-05-08` — 80 of 180 modelled operations implemented (44.4%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
+`2010-05-08` — 81 of 180 modelled operations implemented (45.0%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1037,7 +1037,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `UpdateGroup`
 - `UpdateLoginProfile`
 - `UpdateOpenIDConnectProviderThumbprint`
-- `UpdateRoleDescription`
 - `UpdateSAMLProvider`
 - `UpdateServerCertificate`
 - `UpdateUser`

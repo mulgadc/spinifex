@@ -222,7 +222,16 @@ fi
 
 if [ "$DRY_RUN" = 1 ]; then
     tf plan -no-color "${tf_vars[@]}" | tail -30
-    log "dry run: would install Spinifex on $NODES node(s), form the cluster,$([ "$SKIP_POOL" = 1 ] && echo " configure no external pool,") $([ "$SKIP_WORKLOAD" = 1 ] && echo "launch no guests" || echo "run the $WORKBOOK workbook"), then destroy"
+    plan="install Spinifex on $NODES node(s), form the cluster"
+    [ "$SKIP_POOL" = 1 ] && plan="$plan, configure no external pool"
+    if [ "$SKIP_WORKLOAD" = 1 ]; then
+        plan="$plan, launch no guests"
+    elif [ "$WORKBOOKS_SET" = 1 ]; then
+        plan="$plan, run the workbooks '$WORKBOOKS'"
+    else
+        plan="$plan, run the driver's default workbooks"
+    fi
+    log "dry run: would $plan, then destroy"
     exit 0
 fi
 

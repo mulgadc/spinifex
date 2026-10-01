@@ -13,9 +13,13 @@
 #                     published installer says nothing about one.
 #   WORKBOOKS         Workbooks to run on each topology. Default: the driver's own
 #                     list. Set to "" to skip the workbook phase entirely.
-#   OCI_INSTANCE_PRINCIPAL  1 to authenticate the node's allocator as the instance
-#                     principal. Needs the dynamic group; without it no external
-#                     address can be allocated and the workbook phase is skipped.
+#   OCI_INSTANCE_PRINCIPAL  Authenticate the node's allocator as the instance
+#                     principal. Default 1, and it needs the tenancy's dynamic
+#                     group to exist.
+#   OCI_NO_EXTERNAL_POOL    1 to form with no allocator at all, for a tenancy whose
+#                     dynamic group does not exist yet. The allocator and every
+#                     workbook are then recorded SKIPPED, never PASS, so a green
+#                     run with this set is not a claim about guest networking.
 #   OCI_SSH_PUBLIC_KEY / OCI_SSH_PRIVATE_KEY   Paths. Default ~/.ssh/oci-spx[.pub].
 #   OCI_ARTIFACT_DIR  Where logs and the verdict land. Default ./.e2e-oci-<stamp>.
 #   OCI_KEEP_ON_FAIL  1 to leave a failed topology up for inspection. Off by
@@ -146,7 +150,14 @@ RUN_RC=0
 for topology in $TOPOLOGIES; do
     args=(--topology "$topology" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
     [ "$DRY_RUN" = 1 ] && args+=(--dry-run)
-    [ "${OCI_INSTANCE_PRINCIPAL:-0}" = 1 ] && args+=(--instance-principal) || args+=(--no-external-pool)
+    # Two separate choices. --no-external-pool is the one that forms without any
+    # allocator, for a tenancy whose dynamic group does not exist yet; it records
+    # the allocator and the workbooks as SKIPPED rather than passing them.
+    if [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
+        args+=(--no-external-pool)
+    elif [ "${OCI_INSTANCE_PRINCIPAL:-1}" = 1 ]; then
+        args+=(--instance-principal)
+    fi
     [ -n "$DISTRO_TARBALL" ] && args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
     [ "${OCI_KEEP_ON_FAIL:-0}" = 1 ] && args+=(--keep-on-fail)
     [ -n "${WORKBOOKS+x}" ] && args+=(--workbooks "$WORKBOOKS")

@@ -28,6 +28,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -159,6 +160,10 @@ type GatewayConfig struct {
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *ecrregistry.Registry
+	// ECRRegistryActions serves registry-backed AWS JSON image actions. It is
+	// composed from the OCI registry at startup; nil is a composition fault for
+	// those actions rather than a fallback to the generic NotImplemented table.
+	ECRRegistryActions *awsapi.RegistryActionService
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).

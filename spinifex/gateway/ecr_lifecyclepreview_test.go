@@ -25,7 +25,7 @@ func TestStartLifecyclePolicyPreview_Override(t *testing.T) {
 	seedTaggedImage(t, gw, "team/app", "v1")
 	seedTaggedImage(t, gw, "team/app", "v2")
 
-	w, err := callImage(t, gw, (*GatewayConfig).handleStartLifecyclePolicyPreview, previewBody("team/app", previewExpireOldest))
+	w, err := callImage(t, gw, "StartLifecyclePolicyPreview", previewBody("team/app", previewExpireOldest))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 	var out ecr.StartLifecyclePolicyPreviewOutput
@@ -40,7 +40,7 @@ func TestGetLifecyclePolicyPreview_Override(t *testing.T) {
 	seedTaggedImage(t, gw, "team/app", "v2")
 	seedTaggedImage(t, gw, "team/app", "v3")
 
-	w, err := callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/app", previewExpireOldest))
+	w, err := callImage(t, gw, "GetLifecyclePolicyPreview", previewBody("team/app", previewExpireOldest))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -74,17 +74,17 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 	seedTaggedImage(t, gw, "team/app", "v1")
 
 	// Missing repo.
-	_, err := callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/ghost", previewExpireOldest))
+	_, err := callImage(t, gw, "GetLifecyclePolicyPreview", previewBody("team/ghost", previewExpireOldest))
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", err.Error())
 
 	// Malformed override policy.
-	_, err = callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/app", "not-json"))
+	_, err = callImage(t, gw, "GetLifecyclePolicyPreview", previewBody("team/app", "not-json"))
 	require.Error(t, err)
 	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 
 	// Cross-account.
-	_, err = callImage(t, gw, (*GatewayConfig).handleStartLifecyclePolicyPreview, `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":`+strconvQuotePreview(previewExpireOldest)+`}`)
+	_, err = callImage(t, gw, "StartLifecyclePolicyPreview", `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":`+strconvQuotePreview(previewExpireOldest)+`}`)
 	require.Error(t, err)
 	assert.Equal(t, "AccessDenied", err.Error())
 }

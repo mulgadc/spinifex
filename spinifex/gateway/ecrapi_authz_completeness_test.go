@@ -1,5 +1,5 @@
-//test:in-package — ecrInlineActions is unexported here, and ECR dispatch is the
-// union of it and the ecrapi namespace.
+//test:in-package — ecrInlineActions is unexported here, and ECR dispatch also
+// composes the ECR registry-action capability.
 
 package gateway
 
@@ -27,12 +27,18 @@ func TestECRScopeTableIsExhaustive(t *testing.T) {
 }
 
 // ECR_Request resolves the action against the ecrapi namespace before it reaches
-// the inline table, so an inline handler outside that namespace is unreachable —
-// and, more to the point, would never have had its resources scoped.
-func TestECRInlineActionsAreInTheNamespace(t *testing.T) {
+// either a transitional HTTP adapter or a composed capability, so an action
+// outside that namespace is unreachable — and, more to the point, would never
+// have had its resources scoped.
+func TestECRComposedActionsAreInTheNamespace(t *testing.T) {
 	for action := range ecrInlineActions {
 		_, ok := awsapi.Actions[action]
 		assert.True(t, ok,
 			"inline ECR handler %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
+	}
+	for _, action := range awsapi.RegistryActionNames() {
+		_, ok := awsapi.Actions[action]
+		assert.True(t, ok,
+			"composed ECR registry action %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
 	}
 }

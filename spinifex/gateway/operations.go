@@ -23,8 +23,9 @@ type ServiceOperationInventory struct {
 // dispatch S3 operations and delegates that REST surface to Predastore.
 func AWSOperationInventory() map[string]ServiceOperationInventory {
 	ecrInline := mapKeys(ecrInlineActions)
-	ecrRegistered := union(mapKeys(awsapi.Actions), ecrInline)
-	ecrStubbed := without(awsapi.StubbedActionNames(), ecrInline)
+	ecrComposed := union(ecrInline, awsapi.RegistryActionNames())
+	ecrRegistered := union(mapKeys(awsapi.Actions), ecrComposed)
+	ecrStubbed := without(awsapi.StubbedActionNames(), ecrComposed)
 	return map[string]ServiceOperationInventory{
 		"acm": {
 			Registered: mapKeys(acmActions),

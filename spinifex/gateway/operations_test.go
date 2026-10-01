@@ -19,7 +19,7 @@ func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 	require.Contains(t, inventory["ecs"].Stubbed, "UpdateCluster")
 
 	// These operations are NotImplemented in the relay table but intercepted
-	// by ECR_Request's authoritative inline dispatch map.
+	// by ECR_Request's transitional adapter or composed capability inventory.
 	require.Contains(t, inventory["ecr"].Registered, "GetAuthorizationToken")
 	require.NotContains(t, inventory["ecr"].Stubbed, "GetAuthorizationToken")
 	require.NotContains(t, inventory["ecr"].Stubbed, "DescribeRepositories")

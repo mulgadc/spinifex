@@ -68,8 +68,9 @@ func TestECRRequest_UnknownAction(t *testing.T) {
 }
 
 // A registered-but-unimplemented action resolves to the 501 stub until its
-// handler lands. Repository and image actions may be direct domain handlers or
-// gateway adapters, so ListRepositories stands in as a still-stubbed action.
+// handler lands. Repository actions may use a transitional gateway adapter and
+// image actions a composed registry capability, so ListRepositories stands in
+// as a still-stubbed action.
 func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	err := gw.ECR_Request(httptest.NewRecorder(),

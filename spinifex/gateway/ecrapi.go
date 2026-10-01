@@ -23,11 +23,6 @@ var ecrInlineActions = map[string]ecrInlineHandler{
 	"DescribeRepositories":        (*GatewayConfig).handleDescribeRepositories,
 	"CreateRepository":            (*GatewayConfig).handleCreateRepository,
 	"DeleteRepository":            (*GatewayConfig).handleDeleteRepository,
-	"ListImages":                  (*GatewayConfig).handleListImages,
-	"DescribeImages":              (*GatewayConfig).handleDescribeImages,
-	"BatchGetImage":               (*GatewayConfig).handleBatchGetImage,
-	"PutImage":                    (*GatewayConfig).handlePutImage,
-	"BatchDeleteImage":            (*GatewayConfig).handleBatchDeleteImage,
 	"StartLifecyclePolicyPreview": (*GatewayConfig).handleStartLifecyclePolicyPreview,
 	"GetLifecyclePolicyPreview":   (*GatewayConfig).handleGetLifecyclePolicyPreview,
 }
@@ -78,6 +73,19 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 	}
 	if err := gw.checkPolicyResources(r, "ecr", action, resources); err != nil {
 		return err
+	}
+
+	if awsapi.IsRegistryAction(action) {
+		if gw.ECRRegistryActions == nil {
+			slog.Error("ECR registry action: OCI registry capability not configured", "action", action)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		output, err := gw.ECRRegistryActions.Execute(r.Context(), action, accountID, body)
+		if err != nil {
+			return err
+		}
+		awsapi.WriteJSONResponse(w, output)
+		return nil
 	}
 
 	if inline, ok := ecrInlineActions[action]; ok {

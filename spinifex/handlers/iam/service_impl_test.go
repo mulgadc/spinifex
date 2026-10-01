@@ -2321,6 +2321,25 @@ func TestValidatePolicyDocument_DateOperators(t *testing.T) {
 	}
 }
 
+// Numeric values take an integer or decimal, with an optional sign and exponent,
+// as a string or a JSON number, on s3:max-keys and aws:EpochTime.
+func TestValidatePolicyDocument_NumericOperators(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"NumericLessThanEquals":{"s3:max-keys":"10"}}`,
+		`{"NumericGreaterThan":{"s3:max-keys":100}}`,
+		`{"NumericEquals":{"s3:max-keys":["+10","1e1","10.0"]}}`,
+		`{"NumericNotEquals":{"s3:max-keys":".5"}}`,
+		`{"NumericLessThan":{"aws:EpochTime":1790856000}}`,
+		`{"NumericGreaterThanEqualsIfExists":{"s3:max-keys":"-1.5e2"}}`,
+		`{"Null":{"s3:max-keys":"true"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
 func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
 	t.Parallel()
 	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
@@ -2443,6 +2462,14 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 		{"DateEquals variable", `{"DateEquals":{"aws:CurrentTime":"${aws:CurrentTime}"}}`, "not an ISO 8601 date or epoch seconds"},
 		{"DateLessThanIfExists empty", `{"DateLessThanIfExists":{"aws:EpochTime":""}}`, "not an ISO 8601 date or epoch seconds"},
 		{"DateGreaterThan on a string key", `{"DateGreaterThan":{"aws:username":"2026"}}`, "is not supported in this release"},
+		{"NumericLessThan prose", `{"NumericLessThan":{"s3:max-keys":"ten"}}`, "is not a number"},
+		{"NumericEquals hex", `{"NumericEquals":{"s3:max-keys":"0x0A"}}`, "is not a number"},
+		{"NumericEquals padded", `{"NumericEquals":{"s3:max-keys":" 10"}}`, "is not a number"},
+		{"NumericEquals variable", `{"NumericEquals":{"aws:EpochTime":"${aws:EpochTime}"}}`, "is not a number"},
+		{"NumericGreaterThanIfExists empty", `{"NumericGreaterThanIfExists":{"s3:max-keys":""}}`, "is not a number"},
+		{"NumericLessThan scale overflow", `{"NumericLessThan":{"s3:max-keys":"1e2147483648"}}`, "is not a number"},
+		{"NumericLessThan on a date key", `{"NumericLessThan":{"aws:CurrentTime":"10"}}`, "is not supported in this release"},
+		{"NumericLessThan on MFA age", `{"NumericLessThan":{"aws:MultiFactorAuthAge":"3600"}}`, "is not supported in this release"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

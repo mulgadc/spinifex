@@ -2414,12 +2414,14 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 	// An IfExists form takes its base operator's values.
 	base, _ := iampolicy.BaseOperator(op)
 	for _, v := range values {
-		// Only the string and ARN operators expand variables; a reference in a
-		// Bool, Null, IpAddress or date value is already rejected as unparseable below.
+		// Only the string and ARN operators expand variables; a reference in a Bool,
+		// Null, IpAddress, date or numeric value is already rejected as unparseable below.
 		switch base {
 		case iampolicy.OpIPAddress, iampolicy.OpNotIPAddress, iampolicy.OpBool, iampolicy.OpNull,
 			iampolicy.OpDateEquals, iampolicy.OpDateNotEquals, iampolicy.OpDateLessThan,
-			iampolicy.OpDateLessThanEquals, iampolicy.OpDateGreaterThan, iampolicy.OpDateGreaterThanEquals:
+			iampolicy.OpDateLessThanEquals, iampolicy.OpDateGreaterThan, iampolicy.OpDateGreaterThanEquals,
+			iampolicy.OpNumericEquals, iampolicy.OpNumericNotEquals, iampolicy.OpNumericLessThan,
+			iampolicy.OpNumericLessThanEquals, iampolicy.OpNumericGreaterThan, iampolicy.OpNumericGreaterThanEquals:
 		default:
 			if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
 				return err
@@ -2447,6 +2449,11 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 			if _, err := iampolicy.ParseDate(v); err != nil {
 				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not an ISO 8601 date or epoch seconds",
 					i, op, key, v)
+			}
+		case iampolicy.OpNumericEquals, iampolicy.OpNumericNotEquals, iampolicy.OpNumericLessThan,
+			iampolicy.OpNumericLessThanEquals, iampolicy.OpNumericGreaterThan, iampolicy.OpNumericGreaterThanEquals:
+			if _, err := iampolicy.ParseNumber(v); err != nil {
+				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not a number", i, op, key, v)
 			}
 		}
 	}

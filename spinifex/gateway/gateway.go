@@ -679,6 +679,8 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	if v, ok := principalTypeCondition(principal.principalType); ok {
 		keys[iampolicy.KeyPrincipalType] = v
 	}
+	// The server clock, never a request header, as aws:CurrentTime is in AWS.
+	keys.SetRequestTime(time.Now())
 	return keys
 }
 

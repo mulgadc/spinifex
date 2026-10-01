@@ -28,6 +28,8 @@ var gatewayDoorKeys = []string{
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeySourceIP,
 	iampolicy.KeyPrincipalType,
+	iampolicy.KeyCurrentTime,
+	iampolicy.KeyEpochTime,
 }
 
 // Every condition key the evaluator names, so the write-path gate below covers
@@ -41,6 +43,8 @@ var allConditionKeys = []string{
 	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalType,
 	iampolicy.KeyPassedToService,
+	iampolicy.KeyCurrentTime,
+	iampolicy.KeyEpochTime,
 	// Deliberately outside the allowlist: there is no MFA in the stack, so the
 	// key could never be true. It is here to prove the validator says no.
 	"aws:MultiFactorAuthPresent",
@@ -59,6 +63,12 @@ var operatorValues = map[string]string{
 	iampolicy.OpNotIPAddress:              "10.0.0.0/8",
 	iampolicy.OpBool:                      "true",
 	iampolicy.OpNull:                      "true",
+	iampolicy.OpDateEquals:                "2026-01-01T00:00:00Z",
+	iampolicy.OpDateNotEquals:             "2026-01-01T00:00:00Z",
+	iampolicy.OpDateLessThan:              "2026-01-01T00:00:00Z",
+	iampolicy.OpDateLessThanEquals:        "2026-01-01T00:00:00Z",
+	iampolicy.OpDateGreaterThan:           "1767225600",
+	iampolicy.OpDateGreaterThanEquals:     "1767225600",
 	// Implemented, but no supported key is ARN-valued, so every pair below is
 	// rejected until one is.
 	iampolicy.OpArnEquals:    "arn:aws:iam::000000000001:user/alice",
@@ -68,7 +78,6 @@ var operatorValues = map[string]string{
 	// Operators the evaluator does not implement. Accepting one would store a
 	// restriction that compares false forever.
 	"NumericLessThan": "3",
-	"DateGreaterThan": "2026-01-01T00:00:00Z",
 }
 
 // withIfExists adds the IfExists form of every operator, so the gate below covers

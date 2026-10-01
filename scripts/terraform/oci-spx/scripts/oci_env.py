@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare OCI-profile Terraform environment variables in this repo's .venv.
+"""Prepare OCI Terraform environment variables from a profile or the environment.
+
+Standard library only, deliberately. It once used the OCI SDK, which meant a
+virtualenv, which meant python3-venv on every host that runs it -- and banksia
+did not have it. Terraform's own provider makes the OCI calls.
 
 Examples:
   eval "$(python3 scripts/oci_env.py --shell)"
@@ -12,27 +16,15 @@ import argparse
 import configparser
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
-import venv
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
-VENV_PYTHON = REPOSITORY / ".venv" / "bin" / "python"
-REQUIREMENTS = REPOSITORY / "requirements.txt"
 REQUESTED_PROFILE = "apacanzset03child03"
 FALLBACK_PROFILE = "apacanzset03child3"
-
-
-def ensure_venv() -> None:
-    """Create, populate, then re-execute from this repository's virtualenv."""
-    if Path(sys.executable).resolve() == VENV_PYTHON.resolve():
-        return
-    if not VENV_PYTHON.exists():
-        venv.EnvBuilder(with_pip=True).create(VENV_PYTHON.parent.parent)
-    subprocess.check_call([str(VENV_PYTHON), "-m", "pip", "install", "--quiet", "-r", str(REQUIREMENTS)])
-    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
 def load_profile(config_path: Path, requested_profile: str) -> tuple[str, dict[str, str]]:
@@ -49,14 +41,16 @@ def load_profile(config_path: Path, requested_profile: str) -> tuple[str, dict[s
         else:
             raise ValueError(f"OCI profile {profile!r} was not found in {config_path}")
 
-    # Validate through the OCI SDK installed in the dedicated virtualenv.
-    import oci
-
-    values = oci.config.from_file(str(config_path), profile)
+    values = {key: value.strip() for key, value in parser.items(profile)}
     required = ("tenancy", "user", "fingerprint", "key_file", "region")
     missing = [key for key in required if not values.get(key)]
     if missing:
         raise ValueError(f"Missing OCI profile values: {', '.join(missing)}")
+    # ~ in key_file is the OCI CLI's own convention and configparser does not expand it.
+    values["key_file"] = str(Path(values["key_file"]).expanduser())
+    if not Path(values["key_file"]).is_file():
+        raise FileNotFoundError(f"key_file in profile {profile} does not exist: {values['key_file']}")
+    check_credential_shape(values, source=str(config_path), names=CONFIG_SOURCE)
     return profile, values
 
 
@@ -90,13 +84,15 @@ def load_environment() -> dict[str, str] | None:
         raise ValueError("OCI_PRIVATE_KEY is neither a PEM nor base64-encoded PEM")
     # Stripped because `echo` into a secret store appends a newline, and the SDK
     # then calls the value malformed without saying which one or why.
-    return {
+    values = {
         "tenancy": os.environ["OCI_TENANCY_OCID"].strip(),
         "user": os.environ["OCI_USER_OCID"].strip(),
         "fingerprint": os.environ["OCI_FINGERPRINT"].strip(),
         "key_content": key.strip() + "\n",
         "region": os.environ["OCI_REGION"].strip(),
     }
+    check_credential_shape(values, source="the environment", names=ENVIRONMENT_SOURCE)
+    return values
 
 
 # Which input to go and fix, named the way the person reading the failure set it.
@@ -107,32 +103,28 @@ ENVIRONMENT_SOURCE = {
     "key_content": "OCI_PRIVATE_KEY",
     "region": "OCI_REGION",
 }
+CONFIG_SOURCE = {key: key for key in ENVIRONMENT_SOURCE} | {"key_content": "key_file"}
+FINGERPRINT = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){15}$")
 
 
-def tenancy_home_region(values: dict[str, str]) -> str:
-    """Read the home region from OCI rather than assuming the profile region."""
-    import oci
+def check_credential_shape(values: dict[str, str], source: str, names: dict[str, str]) -> None:
+    """Reject a malformed credential here rather than as an OCI 401 later.
 
-    # The first call made, so a bad credential surfaces here. Name the input
-    # rather than letting an SDK traceback be the whole diagnostic in a job log.
-    try:
-        client = oci.identity.IdentityClient(values)
-    except (oci.exceptions.InvalidConfig, oci.exceptions.InvalidPrivateKey) as exc:
-        from_environment = "key_content" in values
-        where = "the environment" if from_environment else "~/.oci/config"
-        if isinstance(exc, oci.exceptions.InvalidPrivateKey):
-            field = ENVIRONMENT_SOURCE["key_content"] if from_environment else "key_file"
-            raise ValueError(f"the OCI credential in {where} is not usable: {field} is not a private key") from exc
-        faults = ", ".join(
-            f"{ENVIRONMENT_SOURCE.get(field, field) if from_environment else field} is {problem}"
-            for field, problem in sorted(exc.args[0].items())
-        )
-        raise ValueError(f"the OCI credential in {where} is not usable: {faults}") from exc
-    subscriptions = client.list_region_subscriptions(values["tenancy"]).data
-    home = next((item.region_name for item in subscriptions if item.is_home_region), None)
-    if not home:
-        raise ValueError("OCI did not return a tenancy home region")
-    return home
+    Every fault names the input the reader set, because the alternative is a
+    401 forty seconds into a Terraform run, which says nothing about which of
+    five values is wrong. A newline from `echo` into a secret store is the
+    common one, and it is stripped before this runs.
+    """
+    faults = []
+    for field in ("tenancy", "user"):
+        if not values.get(field, "").startswith("ocid1."):
+            faults.append(f"{names[field]} is not an OCID")
+    if not FINGERPRINT.match(values.get("fingerprint", "")):
+        faults.append(f"{names['fingerprint']} is not a 16-byte hex fingerprint")
+    if not values.get("region"):
+        faults.append(f"{names['region']} is empty")
+    if faults:
+        raise ValueError(f"the OCI credential in {source} is not usable: {', '.join(faults)}")
 
 
 def terraform_environment(
@@ -147,7 +139,10 @@ def terraform_environment(
         "TF_VAR_user_ocid": values["user"],
         "TF_VAR_fingerprint": values["fingerprint"],
         "TF_VAR_region": region_override or values["region"],
-        "TF_VAR_home_region": tenancy_home_region(values),
+        # A tenancy's home region is a fixed property of the tenancy, so it is an
+        # input rather than something to rediscover on every run. IAM resources
+        # have to be created against it; see the phase 12 note in the plan.
+        "TF_VAR_home_region": os.environ.get("OCI_HOME_REGION") or region_override or values["region"],
     }
     # One of the two, never both: the provider rejects a key given twice, and the
     # variable validation in variables.tf says so before OCI is called at all.
@@ -187,7 +182,6 @@ def main() -> int:
     if args.shell and args.command:
         arg_parser.error("--shell and a command cannot be used together")
 
-    ensure_venv()
     values = load_environment()
     if values is not None:
         profile = "environment"
@@ -217,7 +211,7 @@ def main() -> int:
         return 0
 
     if not args.command:
-        print(f"Loaded OCI profile {profile} for region {environment['TF_VAR_region']}; virtualenv: {VENV_PYTHON.parent.parent}")
+        print(f"Loaded OCI profile {profile} for region {environment['TF_VAR_region']}")
         return 0
 
     command = args.command[1:] if args.command[0] == "--" else args.command

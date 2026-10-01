@@ -120,31 +120,10 @@ mkdir -p "$STATE_ROOT"
 STATE_DIR="$STATE_ROOT/.validate-$TOPOLOGY"
 RESULTS="$STATE_DIR/results.txt"
 
-# The OCI SDK is not on a stock runner image and is not a system package here
-# either, so the harness owns an interpreter that has it rather than asking every
-# host to be prepared. Resolved once, on first use, so --dry-run needs nothing.
-PYTHON=""
-python_bin() {
-    if [ -z "$PYTHON" ]; then
-        if python3 -c 'import oci' 2>/dev/null; then
-            PYTHON=python3
-        else
-            [ -x "$STATE_ROOT/.venv/bin/python3" ] || {
-                log "creating the OCI SDK virtualenv"
-                python3 -m venv "$STATE_ROOT/.venv" >&2
-                "$STATE_ROOT/.venv/bin/pip" install --quiet --disable-pip-version-check \
-                    -r "$HERE/requirements.txt" >&2 || die "could not install $HERE/requirements.txt"
-            }
-            PYTHON="$STATE_ROOT/.venv/bin/python3"
-        fi
-    fi
-    printf '%s\n' "$PYTHON"
-}
-
 # A separate state directory per topology, so two topologies can be built from one
 # checkout without one destroying the other's instances.
 tf() {
-    "$(python_bin)" "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" -- \
+    python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" -- \
         terraform -chdir="$HERE" "$@"
 }
 

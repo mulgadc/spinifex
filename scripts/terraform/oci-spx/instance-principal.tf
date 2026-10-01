@@ -10,6 +10,7 @@
 # and nothing here is per-node.
 
 resource "oci_identity_dynamic_group" "nodes" {
+  provider       = oci.home
   count          = var.enable_instance_principal ? 1 : 0
   compartment_id = var.tenancy_ocid
   name           = "${var.deployment_name}-nodes"
@@ -24,6 +25,7 @@ resource "oci_identity_dynamic_group" "nodes" {
 # private IPs on a node's own VNIC and attaches public IPs to them, which is what
 # these three verbs cover; nothing here grants compute, storage or identity.
 resource "oci_identity_policy" "nodes" {
+  provider       = oci.home
   count          = var.enable_instance_principal ? 1 : 0
   compartment_id = var.compartment_ocid
   name           = "${var.deployment_name}-nodes-network"

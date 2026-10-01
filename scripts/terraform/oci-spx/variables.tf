@@ -24,10 +24,11 @@ variable "region" {
   type    = string
   default = "ap-sydney-1"
 }
-# Unused. Kept declared because scripts/oci_env.py discovers and exports it, and
-# there are no identity resources left that need the home-region endpoint.
+# OCI serves IAM writes from the tenancy home region, which is not necessarily
+# where we build: the dynamic group and policy in instance-principal.tf go through
+# the oci.home provider. Unset means the two are the same region.
 variable "home_region" {
-  description = "Unused. The tenancy home region, exported by the Python environment tool."
+  description = "Tenancy home region, for IAM writes. Defaults to var.region; set OCI_HOME_REGION when they differ."
   type        = string
   default     = null
   nullable    = true

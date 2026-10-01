@@ -31,7 +31,7 @@ Every resource is prefixed with `deployment_name` (default `spinifex`), so nothi
 
 ## Quick Start
 
-Prerequisites: Terraform, Python 3, OCI credentials in `~/.oci/config`, and the public and private halves of the SSH key. The Python helper creates and uses this repository's isolated `.venv` and installs [requirements.txt](requirements.txt).
+Prerequisites: Terraform, Python 3, OCI credentials in `~/.oci/config` or the environment, and the public and private halves of the SSH key. The Python helper is standard library only, so there is nothing to install: it once used the OCI SDK, which meant a virtualenv and therefore `python3-venv` on every host that runs it.
 
 ```bash
 cd scripts/terraform/oci-spx
@@ -53,10 +53,8 @@ python3 scripts/oci_env.py --ssh-public-key-path <path_to_public_ssh_key> -- ter
 
 | Item | Purpose |
 | --- | --- |
-| `scripts/oci_env.py` | Loads OCI profile inputs, discovers the tenancy home region, exports Terraform variables, and runs Terraform in the repository `.venv`. |
-| `requirements.txt` | Python dependency set for the environment helper. |
+| `scripts/oci_env.py` | Loads the credential from a profile or the environment, checks its shape, exports Terraform variables, and runs Terraform. |
 | `terraform.tfvars.example` | Example non-secret Terraform inputs. Copy it to untracked `terraform.auto.tfvars` for local overrides. |
-| `.venv/` | Repository-local virtual environment; generated locally and not committed. |
 | `terraform.tfstate` | Terraform state; generated locally unless a remote backend is configured. Do not commit it. |
 
 The helper defaults to OCI profile `apacanzset03child03`. If it is absent and `apacanzset03child3` is locally configured, the helper explicitly falls back to that profile. Override either setting when needed:
@@ -125,7 +123,6 @@ flowchart TB
 ├── outputs.tf           # OCIDs and policy outputs
 ├── versions.tf          # Terraform and provider version constraints
 ├── terraform.tfvars.example
-├── requirements.txt
 └── scripts/oci_env.py   # Python environment and Terraform command helper
 ```
 

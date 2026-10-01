@@ -59,12 +59,17 @@ jobs:
     # Three topologies including a bare-metal build, each with its own install,
     # formation and workbook pass. The sweep still runs if this fires.
     timeout-minutes: 300
-    env:
-      # Outside github.workspace on purpose. actions/checkout runs git clean -ffdx,
-      # which on a persistent runner would delete the Terraform state of a killed
-      # run before the next sweep could read it, leaving instances nothing can find.
-      OCI_STATE_ROOT: ${{ runner.workspace }}/oci-state
     steps:
+      # Set here rather than in a job-level env block: the runner context is not
+      # available at job level, only from a step onwards, and a workflow that
+      # references it there is rejected as invalid before any job starts.
+      #
+      # Outside github.workspace on purpose. The checkout wipes untracked files, so
+      # on a persistent runner it would delete the Terraform state of a killed run
+      # before the next sweep could read it, leaving instances nothing can find.
+      - name: Put the Terraform state outside the checkout
+        run: echo "OCI_STATE_ROOT=$RUNNER_WORKSPACE/oci-state" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           path: spinifex

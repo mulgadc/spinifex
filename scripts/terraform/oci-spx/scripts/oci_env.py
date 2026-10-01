@@ -88,20 +88,47 @@ def load_environment() -> dict[str, str] | None:
         key = base64.b64decode(key).decode()
     if "-----BEGIN" not in key:
         raise ValueError("OCI_PRIVATE_KEY is neither a PEM nor base64-encoded PEM")
+    # Stripped because `echo` into a secret store appends a newline, and the SDK
+    # then calls the value malformed without saying which one or why.
     return {
-        "tenancy": os.environ["OCI_TENANCY_OCID"],
-        "user": os.environ["OCI_USER_OCID"],
-        "fingerprint": os.environ["OCI_FINGERPRINT"],
-        "key_content": key,
-        "region": os.environ["OCI_REGION"],
+        "tenancy": os.environ["OCI_TENANCY_OCID"].strip(),
+        "user": os.environ["OCI_USER_OCID"].strip(),
+        "fingerprint": os.environ["OCI_FINGERPRINT"].strip(),
+        "key_content": key.strip() + "\n",
+        "region": os.environ["OCI_REGION"].strip(),
     }
+
+
+# Which input to go and fix, named the way the person reading the failure set it.
+ENVIRONMENT_SOURCE = {
+    "tenancy": "OCI_TENANCY_OCID",
+    "user": "OCI_USER_OCID",
+    "fingerprint": "OCI_FINGERPRINT",
+    "key_content": "OCI_PRIVATE_KEY",
+    "region": "OCI_REGION",
+}
 
 
 def tenancy_home_region(values: dict[str, str]) -> str:
     """Read the home region from OCI rather than assuming the profile region."""
     import oci
 
-    subscriptions = oci.identity.IdentityClient(values).list_region_subscriptions(values["tenancy"]).data
+    # The first call made, so a bad credential surfaces here. Name the input
+    # rather than letting an SDK traceback be the whole diagnostic in a job log.
+    try:
+        client = oci.identity.IdentityClient(values)
+    except (oci.exceptions.InvalidConfig, oci.exceptions.InvalidPrivateKey) as exc:
+        from_environment = "key_content" in values
+        where = "the environment" if from_environment else "~/.oci/config"
+        if isinstance(exc, oci.exceptions.InvalidPrivateKey):
+            field = ENVIRONMENT_SOURCE["key_content"] if from_environment else "key_file"
+            raise ValueError(f"the OCI credential in {where} is not usable: {field} is not a private key") from exc
+        faults = ", ".join(
+            f"{ENVIRONMENT_SOURCE.get(field, field) if from_environment else field} is {problem}"
+            for field, problem in sorted(exc.args[0].items())
+        )
+        raise ValueError(f"the OCI credential in {where} is not usable: {faults}") from exc
+    subscriptions = client.list_region_subscriptions(values["tenancy"]).data
     home = next((item.region_name for item in subscriptions if item.is_home_region), None)
     if not home:
         raise ValueError("OCI did not return a tenancy home region")

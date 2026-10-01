@@ -4,21 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
-	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
-
-// ImageCatalog is the read-only ECR registry capability ListImages needs. The
-// OCI Distribution adapter owns the concrete registry and storage wiring; the
-// AWS adapter owns the ECR JSON request and response shapes.
-type ImageCatalog interface {
-	ListImages(ctx context.Context, account, repository string) ([]ecrregistry.ImageRecord, error)
-}
 
 type listImagesRequest struct {
 	RepositoryName string           `json:"repositoryName"`
@@ -34,9 +24,6 @@ type tagStatusFilter struct {
 // optionally filtering tagged or untagged manifests. Each tag is an AWS image
 // identifier; an untagged manifest is represented by its digest only.
 func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, body []byte) (*ecr.ListImagesOutput, error) {
-	if catalog == nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
 	var req listImagesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
@@ -48,13 +35,9 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
-	records, err := catalog.ListImages(ctx, accountID, req.RepositoryName)
-	if errors.Is(err, handlers_ecr.ErrNotFound) {
-		return nil, errors.New(awserrors.ErrorRepositoryNotFound)
-	}
+	records, err := listImageRecords(ctx, catalog, accountID, req.RepositoryName)
 	if err != nil {
-		slog.ErrorContext(ctx, "ECR ListImages: list images failed", "repository", req.RepositoryName, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		return nil, err
 	}
 
 	status := ""

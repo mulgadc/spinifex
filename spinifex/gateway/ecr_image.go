@@ -7,11 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -20,21 +18,12 @@ import (
 // maxImageBatch is the per-call cap on imageIds for the batch image actions.
 const maxImageBatch = 100
 
-// imageIdentifier is the AWS JSON 1.1 {imageDigest, imageTag} pair.
+// imageIdentifier is the AWS JSON 1.1 {imageDigest, imageTag} pair used by
+// the remaining gateway image-action adapters. It will leave with those
+// actions; DescribeImages has its domain-local input shape already.
 type imageIdentifier struct {
 	ImageDigest string `json:"imageDigest"`
 	ImageTag    string `json:"imageTag"`
-}
-
-type tagStatusFilter struct {
-	TagStatus string `json:"tagStatus"`
-}
-
-type describeImagesRequest struct {
-	RepositoryName string            `json:"repositoryName"`
-	RegistryID     string            `json:"registryId"`
-	ImageIds       []imageIdentifier `json:"imageIds"`
-	Filter         *tagStatusFilter  `json:"filter"`
 }
 
 type batchGetImageRequest struct {
@@ -119,68 +108,24 @@ func (gw *GatewayConfig) handleListImages(w http.ResponseWriter, r *http.Request
 	return nil
 }
 
-// handleDescribeImages returns detailed metadata for the repo's images,
-// optionally narrowed to the requested imageIds.
+// handleDescribeImages adapts the authenticated HTTP request to the ECR
+// DescribeImages action. The ECR AWS adapter owns request and response
+// semantics; gateway supplies the configured OCI registry capability.
 func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
 	}
-	var req describeImagesRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		return err
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return awsapi.MalformedBodyError()
 	}
-	if err := validateRepoAndRegistry(req.RepositoryName, req.RegistryID, accountID); err != nil {
-		return err
-	}
-
-	records, err := gw.ecrListImages(ctx, accountID, req.RepositoryName)
+	output, err := awsapi.DescribeImages(ctx, gw.ECRRegistry, accountID, body)
 	if err != nil {
 		return err
 	}
-
-	wanted := func(rec ecrregistry.ImageRecord) bool {
-		if len(req.ImageIds) == 0 {
-			return true
-		}
-		for _, id := range req.ImageIds {
-			if id.ImageDigest != "" && id.ImageDigest == rec.Digest {
-				return true
-			}
-			if id.ImageTag != "" && slices.Contains(rec.Tags, id.ImageTag) {
-				return true
-			}
-		}
-		return false
-	}
-
-	details := make([]*ecr.ImageDetail, 0, len(records))
-	for _, rec := range records {
-		if !wanted(rec) {
-			continue
-		}
-		detail := &ecr.ImageDetail{
-			RegistryId:             aws.String(accountID),
-			RepositoryName:         aws.String(req.RepositoryName),
-			ImageDigest:            aws.String(rec.Digest),
-			ImageSizeInBytes:       aws.Int64(rec.Size),
-			ImageManifestMediaType: aws.String(rec.MediaType),
-		}
-		if !rec.PushedAt.IsZero() {
-			detail.ImagePushedAt = aws.Time(rec.PushedAt)
-		}
-		for _, tag := range rec.Tags {
-			detail.ImageTags = append(detail.ImageTags, aws.String(tag))
-		}
-		details = append(details, detail)
-	}
-
-	if len(req.ImageIds) > 0 && len(details) == 0 {
-		return errors.New(awserrors.ErrorImageNotFound)
-	}
-
-	awsapi.WriteJSONResponse(w, &ecr.DescribeImagesOutput{ImageDetails: details})
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }
 
@@ -334,20 +279,6 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 
 	awsapi.WriteJSONResponse(w, &ecr.BatchDeleteImageOutput{ImageIds: deleted, Failures: failures})
 	return nil
-}
-
-// ecrListImages resolves the repo's image records, mapping a missing repo to
-// RepositoryNotFound and any other backend fault to ServerInternal.
-func (gw *GatewayConfig) ecrListImages(ctx context.Context, accountID, repo string) ([]ecrregistry.ImageRecord, error) {
-	records, err := gw.ECRRegistry.ListImages(ctx, accountID, repo)
-	if errors.Is(err, handlers_ecr.ErrNotFound) {
-		return nil, errors.New(awserrors.ErrorRepositoryNotFound)
-	}
-	if err != nil {
-		slog.ErrorContext(ctx, "ECR image action: list images failed", "repo", repo, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	return records, nil
 }
 
 // mapStoreManifestError translates the OCI manifest-store error codes into AWS

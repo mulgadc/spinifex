@@ -436,11 +436,18 @@ ssh_node "${HOSTS[0]}" '
 
 # WORKBOOKS unset leaves the driver on its own default list, which is the list the
 # nightly judges every other platform by.
-ssh_node "${HOSTS[0]}" "chmod +x ~/run-tofu-examples-e2e.sh; \
-    WORKBOOK_DIR=\$HOME/workbooks $([ "$WORKBOOKS_SET" = 1 ] && printf 'WORKBOOKS=%q' "$WORKBOOKS") \
-    ~/run-tofu-examples-e2e.sh" \
-    > "$STATE_DIR/workbooks.log" 2>&1
-wb_rc=$?
-tail -40 "$STATE_DIR/workbooks.log"
-[ "$wb_rc" = 0 ] || die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"
-record "workbooks: PASS ($(grep -c '^--- PASS' "$STATE_DIR/workbooks.log") of $(grep -c '^=== RUN' "$STATE_DIR/workbooks.log"))"
+workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
+[ "$WORKBOOKS_SET" = 1 ] && workbook_env="$workbook_env $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
+
+# if !, not a $? read after the fact: under set -e a failing ssh never reaches the
+# next line, which is the one that prints the driver's own diagnostics.
+if ssh_node "${HOSTS[0]}" "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
+    > "$STATE_DIR/workbooks.log" 2>&1; then
+    passed="$(grep -c '^--- PASS' "$STATE_DIR/workbooks.log" || true)"
+    ran="$(grep -c '^=== RUN' "$STATE_DIR/workbooks.log" || true)"
+    record "workbooks: PASS ($passed of $ran)"
+else
+    tail -60 "$STATE_DIR/workbooks.log"
+    grep -E '^--- (PASS|FAIL)' "$STATE_DIR/workbooks.log" | sed 's/^/  /' || true
+    die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"
+fi

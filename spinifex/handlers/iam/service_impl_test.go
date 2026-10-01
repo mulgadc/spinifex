@@ -2302,6 +2302,25 @@ func TestValidatePolicyDocument_NullAndIfExists(t *testing.T) {
 	}
 }
 
+// Date values take either W3C ISO 8601 or epoch seconds, the latter as a JSON
+// number too, on both date-valued keys.
+func TestValidatePolicyDocument_DateOperators(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"DateGreaterThan":{"aws:CurrentTime":"2026-10-01T12:00:00Z"}}`,
+		`{"DateLessThan":{"aws:CurrentTime":"2027-01-01"}}`,
+		`{"DateEquals":{"aws:EpochTime":"2026-10-01"}}`,
+		`{"DateNotEquals":{"aws:EpochTime":1790856000}}`,
+		`{"DateLessThanEquals":{"aws:EpochTime":["1790856000","2026-10-01T22:00+10:00"]}}`,
+		`{"DateGreaterThanEqualsIfExists":{"aws:CurrentTime":"2026-10-01T12:00:00.5Z"}}`,
+		`{"Null":{"aws:CurrentTime":"false"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
 func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
 	t.Parallel()
 	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
@@ -2418,6 +2437,12 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 		{"BoolIfExists yes", `{"BoolIfExists":{"aws:SecureTransport":"yes"}}`, "not true or false"},
 		{"StringEqualsIfExists unknown variable", `{"StringEqualsIfExists":{"aws:username":"${aws:bogus}"}}`, `references policy variable "aws:bogus"`},
 		{"NullIfExists", `{"NullIfExists":{"aws:username":"true"}}`, "is not supported in this release"},
+		{"DateGreaterThan prose", `{"DateGreaterThan":{"aws:CurrentTime":"next week"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateLessThan no time zone", `{"DateLessThan":{"aws:CurrentTime":"2026-10-01T12:00:00"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateEquals fractional epoch", `{"DateEquals":{"aws:EpochTime":"1790856000.5"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateEquals variable", `{"DateEquals":{"aws:CurrentTime":"${aws:CurrentTime}"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateLessThanIfExists empty", `{"DateLessThanIfExists":{"aws:EpochTime":""}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateGreaterThan on a string key", `{"DateGreaterThan":{"aws:username":"2026"}}`, "is not supported in this release"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

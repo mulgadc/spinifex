@@ -18,6 +18,10 @@ func DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGrou
 	return handlers_rds.NewNATSService(nc).DescribeDBSubnetGroups(ctx, input, caller.AccountID)
 }
 
+func ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSubnetGroupInput, nc *nats.Conn, caller Caller) (any, error) {
+	return handlers_rds.NewNATSService(nc).ModifyDBSubnetGroup(ctx, input, caller.AccountID)
+}
+
 func DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, nc *nats.Conn, caller Caller) (any, error) {
 	return handlers_rds.NewNATSService(nc).DeleteDBSubnetGroup(ctx, input, caller.AccountID)
 }

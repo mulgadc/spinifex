@@ -111,7 +111,7 @@ func TestRDSFullAccessShim_GrantsTheCustomerSurface(t *testing.T) {
 		"rds:DeleteDBInstance", "rds:RebootDBInstance", "rds:StartDBInstance", "rds:StopDBInstance",
 		"rds:CreateDBSnapshot", "rds:DeleteDBSnapshot", "rds:RestoreDBInstanceFromDBSnapshot",
 		"rds:DescribeDBInstanceAutomatedBackups",
-		"rds:CreateDBSubnetGroup", "rds:DeleteDBSubnetGroup",
+		"rds:CreateDBSubnetGroup", "rds:ModifyDBSubnetGroup", "rds:DeleteDBSubnetGroup",
 		"rds:CreateDBParameterGroup", "rds:ModifyDBParameterGroup", "rds:DescribeDBParameters",
 		"rds:DeleteDBParameterGroup",
 		"rds:AddTagsToResource", "rds:RemoveTagsFromResource", "rds:ListTagsForResource",

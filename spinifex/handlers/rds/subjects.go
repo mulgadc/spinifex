@@ -49,6 +49,7 @@ const (
 	// none of them drives a VM and all take the default budget.
 	SubjectCreateDBSubnetGroup    = "rds.CreateDBSubnetGroup"
 	SubjectDescribeDBSubnetGroups = "rds.DescribeDBSubnetGroups"
+	SubjectModifyDBSubnetGroup    = "rds.ModifyDBSubnetGroup"
 	SubjectDeleteDBSubnetGroup    = "rds.DeleteDBSubnetGroup"
 
 	SubjectCreateDBParameterGroup    = "rds.CreateDBParameterGroup"

@@ -672,18 +672,18 @@ async function settledSnapshot(qc: QueryClient, identifier: string) {
   return await qc.query(rdsDBSnapshotQueryOptions(identifier))
 }
 
+async function settledInstance(qc: QueryClient) {
+  const { result } = renderHarness(qc)
+  await result.current.create.mutateAsync(CREATE_FORM)
+  await statusOf(qc)
+  await statusOf(qc)
+  return result
+}
+
 describe("RDS snapshot flow (mocked SDK)", () => {
   beforeEach(() => {
     sdk.reset()
   })
-
-  async function settledInstance(qc: QueryClient) {
-    const { result } = renderHarness(qc)
-    await result.current.create.mutateAsync(CREATE_FORM)
-    await statusOf(qc)
-    await statusOf(qc)
-    return result
-  }
 
   it("snapshots → polls to available → restores → deletes the snapshot", async () => {
     const qc = createQueryClient()

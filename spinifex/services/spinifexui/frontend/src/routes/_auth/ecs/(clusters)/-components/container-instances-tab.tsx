@@ -49,12 +49,13 @@ export function ContainerInstancesTab({
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [showProvision, setShowProvision] = useState(false)
 
+  const onSuccess = () => {
+    setPending(null)
+  }
+
   function handleConfirm() {
     if (!pending) {
       return
-    }
-    const onSuccess = () => {
-      setPending(null)
     }
     if (pending.action === "deregister") {
       deregister.mutate(

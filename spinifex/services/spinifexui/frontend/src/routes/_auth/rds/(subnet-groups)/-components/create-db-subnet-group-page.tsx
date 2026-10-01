@@ -116,8 +116,7 @@ export function CreateDBSubnetGroupPage() {
           />
           <FieldDescription>
             Letters, digits and hyphens, starting with a letter. The name cannot
-            be changed later, and there is no ModifyDBSubnetGroup — editing a
-            group means deleting and recreating it.
+            be changed later.
           </FieldDescription>
           <FieldError errors={[errors.dbSubnetGroupName]} />
         </Field>

@@ -66,6 +66,27 @@ func TestSubnetAndParameterGroups(t *testing.T) {
 			"subnet %s must report the zone it is actually in", aws.StringValue(s.SubnetIdentifier))
 	}
 
+	// What Terraform sends on a description change: the full subnet set again.
+	harness.Phase(t, "Modifying DB subnet group %q", subnetGroup)
+	modifiedSubnets, err := f.AWS.RDS.ModifyDBSubnetGroup(&rds.ModifyDBSubnetGroupInput{
+		DBSubnetGroupName:        aws.String(subnetGroup),
+		DBSubnetGroupDescription: aws.String("rds e2e subnet group, modified"),
+		SubnetIds:                aws.StringSlice(subnetIDs),
+	})
+	require.NoError(t, err, "modify-db-subnet-group")
+	require.NotNil(t, modifiedSubnets.DBSubnetGroup)
+	assert.Equal(t, "rds e2e subnet group, modified", aws.StringValue(modifiedSubnets.DBSubnetGroup.DBSubnetGroupDescription))
+	assert.Equal(t, aws.StringValue(createdSubnets.DBSubnetGroup.DBSubnetGroupArn),
+		aws.StringValue(modifiedSubnets.DBSubnetGroup.DBSubnetGroupArn))
+	assert.ElementsMatch(t, subnetIDs, groupSubnetIDs(modifiedSubnets.DBSubnetGroup))
+	describedSubnets, err := f.AWS.RDS.DescribeDBSubnetGroups(&rds.DescribeDBSubnetGroupsInput{
+		DBSubnetGroupName: aws.String(subnetGroup),
+	})
+	require.NoError(t, err, "describe-db-subnet-groups after the modify")
+	require.Len(t, describedSubnets.DBSubnetGroups, 1)
+	assert.Equal(t, "rds e2e subnet group, modified",
+		aws.StringValue(describedSubnets.DBSubnetGroups[0].DBSubnetGroupDescription))
+
 	harness.Phase(t, "Creating DB parameter group %q", paramGroup)
 	_, err = f.AWS.RDS.CreateDBParameterGroup(&rds.CreateDBParameterGroupInput{
 		DBParameterGroupName:   aws.String(paramGroup),

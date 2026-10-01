@@ -19,7 +19,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **26 operations** in the RDS `2014-10-31` API model.
+Spinifex implements **27 operations** in the RDS `2014-10-31` API model.
 
 ### Engines
 
@@ -95,6 +95,7 @@ A parameter whose omission would create a false safety, security or availability
 | `ListTagsForResource` |
 | `ModifyDBInstance` |
 | `ModifyDBParameterGroup` |
+| `ModifyDBSubnetGroup` |
 | `RebootDBInstance` |
 | `RemoveTagsFromResource` |
 | `RestoreDBInstanceFromDBSnapshot` |

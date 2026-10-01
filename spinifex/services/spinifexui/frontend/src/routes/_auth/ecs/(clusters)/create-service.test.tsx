@@ -57,24 +57,24 @@ import { CreateServicePage } from "./-components/create-service-page"
 const TASK_DEF_ARN =
   "arn:aws:ecs:ap-southeast-2:123456789012:task-definition/app:1"
 
+function setup() {
+  const qc = createTestQueryClient()
+  qc.setQueryData(["ecs", "task-definitions"], [TASK_DEF_ARN])
+  qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
+  qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
+  qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
+  qc.setQueryData(["ecs", "task-definitions", "app:1"], {
+    networkMode: "bridge",
+  })
+  return renderWithClient(<CreateServicePage cluster="web" />, qc)
+}
+
 describe("create-service route", () => {
   beforeEach(() => {
     sdk.reset()
     routerState.navigate.mockClear()
   })
   afterEach(() => vi.clearAllMocks())
-
-  function setup() {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["ecs", "task-definitions"], [TASK_DEF_ARN])
-    qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
-    qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
-    qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
-    qc.setQueryData(["ecs", "task-definitions", "app:1"], {
-      networkMode: "bridge",
-    })
-    return renderWithClient(<CreateServicePage cluster="web" />, qc)
-  }
 
   it("creates a REPLICA service without a load balancer and navigates back", async () => {
     const user = userEvent.setup()

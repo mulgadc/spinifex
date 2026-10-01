@@ -73,53 +73,53 @@ import { LoadBalancerDetailPage } from "../-components/load-balancer-detail-page
 
 const LB_ARN = "arn:lb:1"
 
+function seed() {
+  const qc = createTestQueryClient()
+  qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], {
+    LoadBalancers: [
+      {
+        LoadBalancerArn: LB_ARN,
+        LoadBalancerName: "my-alb",
+        DNSName: "my-alb.example",
+        Type: "application",
+        Scheme: "internet-facing",
+        IpAddressType: "ipv4",
+        VpcId: "vpc-aaa",
+        State: { Code: "active" },
+        AvailabilityZones: [{ ZoneName: "az-1", SubnetId: "subnet-a" }],
+        SecurityGroups: ["sg-1"],
+      },
+    ],
+  })
+  qc.setQueryData(["elbv2", "loadBalancers", LB_ARN, "attributes"], {
+    Attributes: [{ Key: "deletion_protection.enabled", Value: "false" }],
+  })
+  qc.setQueryData(["elbv2", "tags", LB_ARN], {
+    TagDescriptions: [
+      {
+        ResourceArn: LB_ARN,
+        Tags: [{ Key: "env", Value: "prod" }],
+      },
+    ],
+  })
+  qc.setQueryData(["elbv2", "listeners", LB_ARN], { Listeners: [] })
+  qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
+  qc.setQueryData(["ec2", "subnets"], {
+    Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
+  })
+  qc.setQueryData(["ec2", "securityGroups"], {
+    SecurityGroups: [
+      { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-aaa" },
+    ],
+  })
+  return qc
+}
+
 describe("load-balancer detail route", () => {
   beforeEach(() => {
     sdk.reset()
   })
   afterEach(() => vi.clearAllMocks())
-
-  function seed() {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN], {
-      LoadBalancers: [
-        {
-          LoadBalancerArn: LB_ARN,
-          LoadBalancerName: "my-alb",
-          DNSName: "my-alb.example",
-          Type: "application",
-          Scheme: "internet-facing",
-          IpAddressType: "ipv4",
-          VpcId: "vpc-aaa",
-          State: { Code: "active" },
-          AvailabilityZones: [{ ZoneName: "az-1", SubnetId: "subnet-a" }],
-          SecurityGroups: ["sg-1"],
-        },
-      ],
-    })
-    qc.setQueryData(["elbv2", "loadBalancers", LB_ARN, "attributes"], {
-      Attributes: [{ Key: "deletion_protection.enabled", Value: "false" }],
-    })
-    qc.setQueryData(["elbv2", "tags", LB_ARN], {
-      TagDescriptions: [
-        {
-          ResourceArn: LB_ARN,
-          Tags: [{ Key: "env", Value: "prod" }],
-        },
-      ],
-    })
-    qc.setQueryData(["elbv2", "listeners", LB_ARN], { Listeners: [] })
-    qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [] })
-    qc.setQueryData(["ec2", "subnets"], {
-      Subnets: [{ SubnetId: "subnet-a", CidrBlock: "10.0.1.0/24", Tags: [] }],
-    })
-    qc.setQueryData(["ec2", "securityGroups"], {
-      SecurityGroups: [
-        { GroupId: "sg-1", GroupName: "default", VpcId: "vpc-aaa" },
-      ],
-    })
-    return qc
-  }
 
   it("renders overview fields for the LB", () => {
     renderWithClient(<LoadBalancerDetailPage arn={LB_ARN} />, seed())

@@ -199,14 +199,14 @@ describe("CreateDBInstancePage system image gating", () => {
   })
 })
 
-describe("CreateDBInstancePage fields", () => {
-  function renderForm() {
-    return renderWithClient(
-      <CreateDBInstancePage />,
-      seed([image("postgres"), image("mariadb")]),
-    )
-  }
+function renderForm() {
+  return renderWithClient(
+    <CreateDBInstancePage />,
+    seed([image("postgres"), image("mariadb")]),
+  )
+}
 
+describe("CreateDBInstancePage fields", () => {
   it.each([
     "DB instance identifier",
     "Engine",

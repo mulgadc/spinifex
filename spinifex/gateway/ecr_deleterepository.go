@@ -1,30 +1,18 @@
 package gateway
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// deleteRepositoryRequest is the camelCase AWS JSON 1.1 input shape. force=true
-// allows deleting a repository that still contains images.
-type deleteRepositoryRequest struct {
-	RepositoryName string `json:"repositoryName"`
-	RegistryID     string `json:"registryId"`
-	Force          bool   `json:"force"`
-}
-
-// handleDeleteRepository removes a repository in the caller account. Without
-// force, a repository that still holds images is rejected with
-// RepositoryNotEmptyException. The KV metadata (meta, policy, tags, manifests)
-// is cascaded; predastore blob reclamation is deferred to a separate GC pass.
+// handleDeleteRepository adapts the authenticated HTTP request to the ECR AWS
+// action. ECR lifecycle rules and metadata operations belong to the domain
+// adapter; gateway retains HTTP and auth-context handling.
 func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	accountID, _ := ctx.Value(ctxAccountID).(string)
@@ -38,48 +26,10 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 		slog.ErrorContext(ctx, "DeleteRepository: failed to read body", "err", err)
 		return awsapi.MalformedBodyError()
 	}
-	var req deleteRepositoryRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return awsapi.MalformedBodyError()
-	}
-	if err := awsapi.ValidateRepositoryName(req.RepositoryName); err != nil {
+	output, err := awsapi.DeleteRepository(ctx, gw.NATSConn, gw.ecrRepositoryEndpoint(), accountID, body)
+	if err != nil {
 		return err
 	}
-	if req.RegistryID != "" && req.RegistryID != accountID {
-		return errors.New(awserrors.ErrorAccessDenied)
-	}
-
-	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
-	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
-	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return errors.New(awserrors.ErrorRepositoryNotFound)
-		}
-		slog.ErrorContext(ctx, "DeleteRepository: get repo failed", "repo", req.RepositoryName, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	if !req.Force {
-		manifests, err := store.ListManifests(ctx, accountID, req.RepositoryName)
-		if err != nil {
-			slog.ErrorContext(ctx, "DeleteRepository: list manifests failed", "repo", req.RepositoryName, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-		if len(manifests) > 0 {
-			return errors.New(awserrors.ErrorRepositoryNotEmpty)
-		}
-	}
-
-	if err := store.DeleteRepo(ctx, accountID, req.RepositoryName); err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return errors.New(awserrors.ErrorRepositoryNotFound)
-		}
-		slog.ErrorContext(ctx, "DeleteRepository: delete repo failed", "repo", req.RepositoryName, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	awsapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{
-		Repository: gw.ecrRepositoryEndpoint().RepositoryFromMeta(accountID, req.RepositoryName, meta),
-	})
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }

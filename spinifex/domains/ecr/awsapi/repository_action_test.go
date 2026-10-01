@@ -27,7 +27,10 @@ func newRepositoryActionTestConn(t *testing.T) *nats.Conn {
 	svc := handlers_ecr.NewKVMetaService(js)
 	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
 	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
+	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoDelete, svc.RepoDelete)
 	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoList, svc.RepoList)
+	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectManifestPut, svc.ManifestPut)
+	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectManifestList, svc.ManifestList)
 	return nc
 }
 

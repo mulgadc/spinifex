@@ -9,6 +9,10 @@
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
 #   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm".
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
+#   OCI_VERSION       With OCI_SOURCE=release, install this exact release tag and
+#                     ignore OCI_CHANNEL. Preferred for anything repeatable: a tag
+#                     resolves by redirect, while the dev channel resolves through a
+#                     rate-limited GitHub API call that 404s when it trips.
 #   OCI_CHANNEL       With OCI_SOURCE=release, which published channel to install:
 #                     latest (default) or dev, the newest prerelease. dev is the
 #                     path our cloud contacts are given, so it is worth testing.
@@ -46,6 +50,7 @@ MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm}"
 SOURCE="${OCI_SOURCE:-tree}"
 CHANNEL="${OCI_CHANNEL:-latest}"
+INSTALL_VERSION="${OCI_VERSION:-}"
 REF="${SPX_REF:-$(git -C "$SPINIFEX_ROOT" rev-parse --abbrev-ref HEAD)}"
 SSH_PUBLIC_KEY="${OCI_SSH_PUBLIC_KEY:-$HOME/.ssh/oci-spx.pub}"
 SSH_PRIVATE_KEY="${OCI_SSH_PRIVATE_KEY:-$HOME/.ssh/oci-spx}"
@@ -95,6 +100,8 @@ case "$CHANNEL" in
     *) die "OCI_CHANNEL must be latest or dev, got '$CHANNEL'" ;;
 esac
 # Saying release+dev and tree at once is two different artifacts in one verdict.
+[ "$SOURCE" = tree ] && [ -n "$INSTALL_VERSION" ] \
+    && die "OCI_VERSION needs OCI_SOURCE=release: a tree build installs the ref, not a published tag"
 [ "$SOURCE" = tree ] && [ "$CHANNEL" != latest ] \
     && die "OCI_CHANNEL=$CHANNEL needs OCI_SOURCE=release: a tree build installs the ref, not a channel"
 
@@ -182,7 +189,13 @@ for topology in $TOPOLOGIES; do
         args+=(--instance-principal)
     fi
     [ -n "$DISTRO_TARBALL" ] && args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
-    [ "$SOURCE" = release ] && args+=(--channel "$CHANNEL")
+    if [ "$SOURCE" = release ]; then
+        if [ -n "$INSTALL_VERSION" ]; then
+            args+=(--version "$INSTALL_VERSION")
+        else
+            args+=(--channel "$CHANNEL")
+        fi
+    fi
     [ -n "${OCI_CREDENTIAL_HOOK:-}" ] && args+=(--credential-hook "$OCI_CREDENTIAL_HOOK")
     [ "${OCI_KEEP_ON_FAIL:-0}" = 1 ] && args+=(--keep-on-fail)
     [ -n "${WORKBOOKS+x}" ] && args+=(--workbooks "$WORKBOOKS")
@@ -207,7 +220,7 @@ done
 sweep
 
 echo
-log "=== $REF on OCI ($SOURCE build$([ "$SOURCE" = release ] && echo ", $CHANNEL channel")) ==="
+log "=== $REF on OCI ($SOURCE build$([ "$SOURCE" = release ] && { [ -n "$INSTALL_VERSION" ] && echo ", $INSTALL_VERSION" || echo ", $CHANNEL channel"; })) ==="
 cat "$VERDICT"
 if [ "$RUN_RC" = 0 ] && ! grep -q FAIL "$VERDICT"; then
     log "PASS"

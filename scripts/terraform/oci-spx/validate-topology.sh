@@ -28,6 +28,7 @@ SETUP_SH=""
 # so --workbooks "" can deliberately mean "run none".
 WORKBOOKS_SET=0
 CHANNEL=latest
+INSTALL_VERSION=""
 WORKBOOKS=""
 
 # Shapes and counts per topology. Named here rather than passed in, because the
@@ -69,6 +70,10 @@ workbook against it, then destroys everything.
   --workbooks LIST        Space-separated workbooks for the published driver to
                           run on the cluster. Empty means run none; omitted means
                           the driver's own default list.
+  --version TAG           Install this exact release tag. Preferred over
+                          --channel dev for anything repeatable: a tag resolves
+                          by redirect, while the dev channel resolves through a
+                          rate-limited GitHub API call that 404s when it trips.
   --distro PATH           Install this distro tarball instead of the published
                           release, so what is proved is the ref it was built from.
   --setup-sh PATH         setup.sh to pair with --distro. Both or neither.
@@ -91,6 +96,7 @@ while [ $# -gt 0 ]; do
         --ssh-private-key) SSH_PRIVATE_KEY="${2:?}"; shift 2 ;;
         --workbooks) WORKBOOKS_SET=1; WORKBOOKS="${2-}"; shift 2 ;;
         --channel) CHANNEL="${2-}"; shift 2 ;;
+        --version) INSTALL_VERSION="${2:?}"; shift 2 ;;
         --distro) DISTRO="${2:?}"; shift 2 ;;
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
@@ -307,7 +313,7 @@ for host in "${HOSTS[@]}"; do
     # cloud-init being finished does not mean apt is: the apt-daily timers and
     # unattended-upgrades run on their own schedule and hold the dpkg lock, which
     # the installer then fails on. Wait for the lock rather than fight it.
-    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' bash -s" \
+    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' INSTALL_VERSION='$INSTALL_VERSION' bash -s" \
         > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
 set -e
@@ -327,7 +333,16 @@ else
     # The real customer path, including the checksum step a local tarball skips.
     # The environment variable rather than --channel: the installer served by
     # install.mulgadc.com is the latest release's, so it predates the flag.
-    curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL="$CHANNEL" bash
+    #
+    # A tag goes in as VERSION, not CHANNEL. Only the dev channel resolves through
+    # an unauthenticated GitHub API call, which is rate limited per source address
+    # and returns 404 once it trips -- indistinguishable from a missing asset. A
+    # tagged path is a plain redirect, so it does not have that failure mode.
+    if [ -n "$INSTALL_VERSION" ]; then
+        curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_VERSION="$INSTALL_VERSION" bash
+    else
+        curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL="$CHANNEL" bash
+    fi
 fi
 sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 REMOTE
@@ -367,7 +382,12 @@ record "formation: PASS"
 # this repository knows what it does: an API-key deployment needs a credential on
 # each node, and a credential belongs to the operator, not to a checked-in script.
 # Skipped under instance principal, which needs no handoff at all.
-if [ -n "$CREDENTIAL_HOOK" ] && [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    # Named here rather than left to the allocator gate. Without a credential that
+    # gate still fails, but it fails thirty retries later reporting a missing log
+    # line, which reads as a datapath fault rather than the obvious cause.
+    [ -n "$CREDENTIAL_HOOK" ] \
+        || die "this deployment authenticates with an API key and no credential hook is set, so no node can reach the OCI API; set --credential-hook or OCI_CREDENTIAL_HOOK, or use an instance principal"
     [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
     log "running the credential hook"
     # Arguments, not a file: the hook is told where the nodes are and how to reach
@@ -404,6 +424,31 @@ sudo systemctl restart spinifex.target
 REMOTE
 done
 
+# Everything needed to tell the three allocator faults apart, and deliberately no
+# credential: the config file and the PEM are reported as mode and size only, which
+# distinguishes absent from unreadable without copying either into a log that is
+# attached to a CI run.
+allocator_diagnostics() {
+    local host="$1"
+    ssh_node "$host" '
+        echo "=== spinifex-daemon: the allocator (ocinet) lives here ==="
+        sudo journalctl -u spinifex-daemon --since -20min --no-pager | grep -i "ocinet\|external VNIC\|allocator\|oci" | tail -40
+        echo "=== spinifex-vpcd: consumes the addresses, does not allocate them ==="
+        sudo journalctl -u spinifex-vpcd --since -20min --no-pager | tail -40
+        echo "=== external_pools as configured ==="
+        sudo sed -n "/\[\[network.external_pools\]\]/,\$p" /etc/spinifex/spinifex.toml
+        echo "=== credential files (mode and size, never content) ==="
+        sudo stat -c "%n %A %s bytes owner=%U:%G" \
+            /etc/spinifex/oci/config /etc/spinifex/oci/oci_api_key.pem 2>&1
+        echo "=== the bridge MAC the allocator matches on ==="
+        ip -br link show
+        echo "=== MACs IMDS reports for this instance VNICs ==="
+        curl -sf -H "Authorization: Bearer Oracle" \
+            http://169.254.169.254/opc/v2/vnics/ | tr "," "\n" | grep -i "macAddr\|privateIp" || \
+            echo "IMDS unreachable -- check the remap, Spinifex claims 169.254.169.254 itself"
+    ' 2>&1
+}
+
 # resolved the external VNIC is the line that proves the credential works, the
 # compartment is right and br-wan's MAC matched a real VNIC. A node missing it
 # accepts allocate-address and then fails it.
@@ -415,13 +460,23 @@ else
     for host in "${HOSTS[@]}"; do
         found=0
         for _ in $(seq 1 30); do
-            if ssh_node "$host" "sudo journalctl -u spinifex-vpcd --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
+            # spinifex-daemon, not spinifex-vpcd: the allocator is built in the
+            # daemon, and vpcd only consumes the addresses it hands out. Gating on
+            # vpcd's journal failed a node whose allocator was working.
+            if ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
                 found=1
                 break
             fi
             sleep 10
         done
-        [ "$found" = 1 ] || die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address"
+        if [ "$found" != 1 ]; then
+            # Before the teardown, because the teardown is what destroys the only
+            # copy. Three unrelated faults land here -- a credential the SDK would
+            # not load, a bridge MAC matching no VNIC, and a pool vpcd never read --
+            # and they are indistinguishable from the missing log line alone.
+            allocator_diagnostics "$host" > "$STATE_DIR/allocator-$host.log" 2>&1 || true
+            die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address. Diagnostics: $STATE_DIR/allocator-$host.log"
+        fi
         log "$host allocator ready"
     done
     record "oci allocator: PASS"
@@ -482,9 +537,38 @@ ssh_node "${HOSTS[0]}" '
 workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
 [ "$WORKBOOKS_SET" = 1 ] && workbook_env="$workbook_env $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
 
+# A VCN does not reflect its own public addresses back into itself: a node asking
+# for one gets nothing, whatever the guest is serving. Recorded rather than gated,
+# because the remedy below is right either way — a customer reaches a guest from
+# outside, which is where this script already runs.
+if ssh_node "${HOSTS[0]}" \
+    "bash -c 'exec 3<>/dev/tcp/${HOSTS[${#HOSTS[@]}-1]}/22' 2>/dev/null"; then
+    record "vcn hairpin: present (a node can reach a public address in its own VCN)"
+else
+    record "vcn hairpin: absent, so public addresses are probed from this host"
+fi
+
+# Remote dynamic forward: the node gets a SOCKS5 proxy on this port whose egress
+# is this host, outside the VCN. It gives the driver the customer's vantage point
+# for public addresses without moving the driver off the node, where its ovn-nbctl,
+# journalctl and spx diagnostics have to run. The subnet's own allow list does not
+# need a new entry: ssh from here already works, and its rules are per-CIDR for
+# every protocol.
+PUBLIC_PROXY_PORT="${PUBLIC_PROXY_PORT:-1080}"
+workbook_env="$workbook_env E2E_PUBLIC_PROXY=127.0.0.1:$PUBLIC_PROXY_PORT"
+
+# ExitOnForwardFailure, so a port already in use stops the run here instead of
+# handing the driver a proxy that is not there. Keepalives because this one
+# connection carries the proxy for the whole suite, and a dropped forward would
+# read as every remaining public address going dark at once.
+#
 # if !, not a $? read after the fact: under set -e a failing ssh never reaches the
 # next line, which is the one that prints the driver's own diagnostics.
-if ssh_node "${HOSTS[0]}" "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
+if ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+    -o ExitOnForwardFailure=yes -R "$PUBLIC_PROXY_PORT" "ubuntu@${HOSTS[0]}" \
+    "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
     > "$STATE_DIR/workbooks.log" 2>&1; then
     passed="$(grep -c '^--- PASS' "$STATE_DIR/workbooks.log" || true)"
     ran="$(grep -c '^=== RUN' "$STATE_DIR/workbooks.log" || true)"

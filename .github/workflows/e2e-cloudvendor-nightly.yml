@@ -28,6 +28,12 @@ on:
         required: false
         type: boolean
         default: false
+      auth:
+        description: "How nodes reach the OCI API: instance_principal (needs the tenancy dynamic group) or api_key (needs the credential hook)"
+        required: false
+        default: instance_principal
+        type: choice
+        options: [instance_principal, api_key]
       no_external_pool:
         description: "Form without the OCI allocator. Skips every workbook needing a public address."
         required: false
@@ -126,12 +132,20 @@ jobs:
           OCI_TOPOLOGIES: ${{ inputs.topologies }}
           OCI_SOURCE: ${{ inputs.source }}
           OCI_CHANNEL: ${{ inputs.channel }}
-          # 1 unless the dispatch asked to form without the allocator, which is the
-          # only way to run before the tenancy's dynamic group exists. The run then
-          # records the allocator and the workbooks as SKIPPED rather than passing
-          # them, so a green run with this set is not a claim about guest networking.
-          OCI_INSTANCE_PRINCIPAL: ${{ inputs.no_external_pool && '0' || '1' }}
+          # Independent of the pool, deliberately. These were one switch, which made
+          # the combination we actually need -- an API key with the allocator running
+          # -- impossible to ask for, so public-IP allocation went untested.
+          OCI_INSTANCE_PRINCIPAL: ${{ inputs.auth == 'api_key' && '0' || '1' }}
+          # Skipping the pool records the allocator and every public-address workbook
+          # as SKIPPED, so a green run with this set is not a claim about guest
+          # networking. It exists for a formation-only check, not as a way past a
+          # missing credential.
           OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
+          # Only an API-key run needs one: an instance principal is the node's own
+          # certificate, so there is nothing to hand over. Unset is not an error, and
+          # the allocator gate then fails rather than passing a node that cannot
+          # authenticate.
+          OCI_CREDENTIAL_HOOK: ${{ inputs.auth == 'api_key' && vars.OCI_CREDENTIAL_HOOK || '' }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
           OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
           # Through the environment, never interpolated into the script below: a

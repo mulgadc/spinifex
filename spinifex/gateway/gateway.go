@@ -168,6 +168,9 @@ type GatewayConfig struct {
 	// policy-store and image-catalog composition prevents the OCI registry from
 	// becoming a broad ECR control-plane service.
 	ECRLifecyclePreview *awsapi.LifecyclePreviewActionService
+	// ECRRepositoryActions serves repository metadata actions from the composed
+	// metadata store and advertised endpoint profile.
+	ECRRepositoryActions *awsapi.RepositoryActionService
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).

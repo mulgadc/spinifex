@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/nats-io/nats.go"
 )
 
 // describeRepositoriesRequest is the camelCase AWS JSON 1.1 input shape. The
@@ -27,7 +26,10 @@ type describeRepositoriesRequest struct {
 //
 // The caller supplies the advertised endpoint profile because it is deployment
 // composition, rather than ECR resource state.
-func DescribeRepositories(ctx context.Context, nc *nats.Conn, endpoint RepositoryEndpoint, accountID string, body []byte) (*ecr.DescribeRepositoriesOutput, error) {
+func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint RepositoryEndpoint, accountID string, body []byte) (*ecr.DescribeRepositoriesOutput, error) {
+	if store == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	var req describeRepositoriesRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -38,7 +40,6 @@ func DescribeRepositories(ctx context.Context, nc *nats.Conn, endpoint Repositor
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
 	names := req.RepositoryNames
 	if len(names) == 0 {
 		var err error

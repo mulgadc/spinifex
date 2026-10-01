@@ -12,16 +12,17 @@ import (
 
 func TestCreateRepository_PersistsConfiguredMetadata(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
+	store := handlers_ecr.NewNATSMetaStore(nc)
 	body := []byte(`{"repositoryName":"team/app","imageTagMutability":"IMMUTABLE","tags":[{"Key":"environment","Value":"test"}],"imageScanningConfiguration":{"scanOnPush":true}}`)
 
-	out, err := CreateRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, body)
+	out, err := CreateRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, body)
 	require.NoError(t, err)
 	require.NotNil(t, out.Repository)
 	assert.Equal(t, "team/app", *out.Repository.RepositoryName)
 	assert.Equal(t, "IMMUTABLE", *out.Repository.ImageTagMutability)
 	assert.True(t, *out.Repository.ImageScanningConfiguration.ScanOnPush)
 
-	meta, err := handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
+	meta, err := store.GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
 	require.NoError(t, err)
 	assert.Equal(t, handlers_ecr.TagMutabilityImmutable, meta.ImageTagMutability)
 	assert.Equal(t, map[string]string{"environment": "test"}, meta.Tags)
@@ -30,7 +31,8 @@ func TestCreateRepository_PersistsConfiguredMetadata(t *testing.T) {
 
 func TestCreateRepository_RejectsInvalidRequestsAndDuplicates(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	_, err := CreateRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	store := handlers_ecr.NewNATSMetaStore(nc)
+	_, err := CreateRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -46,7 +48,7 @@ func TestCreateRepository_RejectsInvalidRequestsAndDuplicates(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := CreateRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(tc.body))
+			_, err := CreateRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(tc.body))
 			require.Error(t, err)
 			assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err))
 		})

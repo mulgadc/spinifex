@@ -14,14 +14,15 @@ import (
 
 func TestDeleteRepository_RemovesEmptyRepository(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
+	store := handlers_ecr.NewNATSMetaStore(nc)
 	seedRepositoryForAction(t, nc, "team/app")
 
-	out, err := DeleteRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	out, err := DeleteRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 	require.NotNil(t, out.Repository)
 	assert.Equal(t, "team/app", *out.Repository.RepositoryName)
 
-	_, err = handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
+	_, err = store.GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
 	require.ErrorIs(t, err, handlers_ecr.ErrNotFound)
 }
 
@@ -33,17 +34,18 @@ func TestDeleteRepository_ProtectsNonEmptyRepositoryUnlessForced(t *testing.T) {
 		Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/json", Size: 7, PushedAt: time.Now(),
 	}))
 
-	_, err := DeleteRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	_, err := DeleteRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorRepositoryNotEmpty, awserrors.ValidErrorCodeFromError(err))
 
-	out, err := DeleteRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app","force":true}`))
+	out, err := DeleteRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app","force":true}`))
 	require.NoError(t, err)
 	assert.Equal(t, "team/app", *out.Repository.RepositoryName)
 }
 
 func TestDeleteRepository_ValidatesRequest(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
+	store := handlers_ecr.NewNATSMetaStore(nc)
 	cases := []struct {
 		name string
 		body string
@@ -56,7 +58,7 @@ func TestDeleteRepository_ValidatesRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := DeleteRepository(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(tc.body))
+			_, err := DeleteRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(tc.body))
 			require.Error(t, err)
 			assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err))
 		})

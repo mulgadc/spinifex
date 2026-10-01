@@ -20,9 +20,6 @@ type ecrInlineHandler func(*GatewayConfig, http.ResponseWriter, *http.Request) e
 // operation report from classifying an inline implementation as a stub.
 var ecrInlineActions = map[string]ecrInlineHandler{
 	"GetAuthorizationToken": (*GatewayConfig).handleGetAuthorizationToken,
-	"DescribeRepositories":  (*GatewayConfig).handleDescribeRepositories,
-	"CreateRepository":      (*GatewayConfig).handleCreateRepository,
-	"DeleteRepository":      (*GatewayConfig).handleDeleteRepository,
 }
 
 // ecrActionFromTarget extracts the action suffix from an X-Amz-Target header.
@@ -91,6 +88,18 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		output, err := gw.ECRLifecyclePreview.Execute(r.Context(), action, accountID, body)
+		if err != nil {
+			return err
+		}
+		awsapi.WriteJSONResponse(w, output)
+		return nil
+	}
+	if awsapi.IsRepositoryAction(action) {
+		if gw.ECRRepositoryActions == nil {
+			slog.Error("ECR repository action: capabilities not configured", "action", action)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		output, err := gw.ECRRepositoryActions.Execute(r.Context(), action, accountID, body)
 		if err != nil {
 			return err
 		}

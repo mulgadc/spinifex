@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/nats-io/nats.go"
 )
 
 // createRepositoryRequest is the camelCase AWS JSON 1.1 input shape. ecr.Tag
@@ -40,7 +39,10 @@ type encryptionConfigurationInput struct {
 //
 // The advertised endpoint is deployment composition rather than ECR resource
 // state, so the caller supplies it to project the AWS response.
-func CreateRepository(ctx context.Context, nc *nats.Conn, endpoint RepositoryEndpoint, accountID string, body []byte) (*ecr.CreateRepositoryOutput, error) {
+func CreateRepository(ctx context.Context, store RepositoryStore, endpoint RepositoryEndpoint, accountID string, body []byte) (*ecr.CreateRepositoryOutput, error) {
+	if store == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	var req createRepositoryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
@@ -64,7 +66,6 @@ func CreateRepository(ctx context.Context, nc *nats.Conn, endpoint RepositoryEnd
 		return nil, err
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err == nil {
 		return nil, errors.New(awserrors.ErrorRepositoryAlreadyExists)
 	} else if !errors.Is(err, handlers_ecr.ErrNotFound) {

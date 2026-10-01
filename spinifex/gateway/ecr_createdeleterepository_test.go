@@ -11,6 +11,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -32,24 +33,27 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	gw := &GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
+		ECRRepositoryActions: awsapi.NewRepositoryActionService(handlers_ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+			Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+		}),
 	}
 	return gw, nc
 }
 
-func ecrLifecycleRequest(t *testing.T, gw *GatewayConfig, handler func(*GatewayConfig, http.ResponseWriter, *http.Request) error, body string) (*httptest.ResponseRecorder, error) {
+func ecrRepositoryRequest(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	return w, handler(gw, w, req.WithContext(ctx))
+	return w, gw.ECR_Request(w, req.WithContext(ctx))
 }
 
 func createRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
-	return ecrLifecycleRequest(t, gw, (*GatewayConfig).handleCreateRepository, body)
+	return ecrRepositoryRequest(t, gw, "CreateRepository", body)
 }
 
 func deleteRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
-	return ecrLifecycleRequest(t, gw, (*GatewayConfig).handleDeleteRepository, body)
+	return ecrRepositoryRequest(t, gw, "DeleteRepository", body)
 }
 
 type repoOut struct {
@@ -177,7 +181,7 @@ func TestCreateRepository_BadNameCarriesAWSMessage(t *testing.T) {
 }
 
 // noAccountRequest builds a request without the auth-context account ID, which
-// both handlers reject with ServerInternal before touching the store.
+// generic ECR dispatch rejects with InternalError before touching the store.
 func noAccountRequest(body string) *http.Request {
 	return httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 }
@@ -185,9 +189,11 @@ func noAccountRequest(body string) *http.Request {
 func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
-	err := gw.handleCreateRepository(httptest.NewRecorder(), noAccountRequest(`{"repositoryName":"team/app"}`))
+	req := noAccountRequest(`{"repositoryName":"team/app"}`)
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".CreateRepository")
+	err := gw.ECR_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
+	assert.Equal(t, "InternalError", err.Error())
 
 	_, err = createRepo(t, gw, `{`)
 	require.Error(t, err)
@@ -197,9 +203,11 @@ func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
-	err := gw.handleDeleteRepository(httptest.NewRecorder(), noAccountRequest(`{"repositoryName":"team/app"}`))
+	req := noAccountRequest(`{"repositoryName":"team/app"}`)
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".DeleteRepository")
+	err := gw.ECR_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
+	assert.Equal(t, "InternalError", err.Error())
 
 	_, err = deleteRepo(t, gw, `{`)
 	require.Error(t, err)
@@ -270,4 +278,16 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 	wd := httptest.NewRecorder()
 	require.NoError(t, gw.ECR_Request(wd, del))
 	assert.Equal(t, http.StatusOK, wd.Code)
+}
+
+func TestRepositoryActions_MissingComposition(t *testing.T) {
+	gw := &GatewayConfig{
+		Region:         ecrTestRegion,
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
+	}
+
+	_, err := ecrRepositoryRequest(t, gw, "CreateRepository", `{"repositoryName":"team/app"}`)
+	require.Error(t, err)
+	assert.Equal(t, "ServerInternal", err.Error())
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/nats-io/nats.go"
 )
 
 // deleteRepositoryRequest is the camelCase AWS JSON 1.1 input shape. force
@@ -24,7 +23,10 @@ type deleteRepositoryRequest struct {
 // a repository with image manifests returns RepositoryNotEmptyException. The
 // metadata service cascades repository records; object blob reclamation is
 // intentionally deferred to the separate garbage-collection path.
-func DeleteRepository(ctx context.Context, nc *nats.Conn, endpoint RepositoryEndpoint, accountID string, body []byte) (*ecr.DeleteRepositoryOutput, error) {
+func DeleteRepository(ctx context.Context, store RepositoryStore, endpoint RepositoryEndpoint, accountID string, body []byte) (*ecr.DeleteRepositoryOutput, error) {
+	if store == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	var req deleteRepositoryRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
@@ -36,7 +38,6 @@ func DeleteRepository(ctx context.Context, nc *nats.Conn, endpoint RepositoryEnd
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {

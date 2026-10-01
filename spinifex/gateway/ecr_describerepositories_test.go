@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -56,15 +56,18 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	return &GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
+		ECRRepositoryActions: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
+			Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+		}),
 	}
 }
 
 func describeReposRequest(t *testing.T, gw *GatewayConfig, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", body)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.handleDescribeRepositories(w, req.WithContext(ctx)))
+	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
 	return w
 }
 
@@ -124,11 +127,10 @@ func TestECRRegistryHost_AppendsAdvertisedPort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{
-				Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+			endpoint := awsapi.RepositoryEndpoint{
+				Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 				RegistryHost: tc.registryHost, RegistryPort: tc.port,
 			}
-			endpoint := gw.ecrRepositoryEndpoint()
 			assert.Equal(t, tc.want, endpoint.RegistryURIHost(ecrTestAccount))
 			assert.Equal(t, tc.want+"/team/app", endpoint.RepositoryURI(ecrTestAccount, "team/app"))
 		})
@@ -146,18 +148,18 @@ func TestDescribeRepositories_NameFilter(t *testing.T) {
 
 func TestDescribeRepositories_MissingNamedRepo(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repositoryNames":["team/ghost"]}`))
+	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"repositoryNames":["team/ghost"]}`)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.handleDescribeRepositories(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.ECR_Request(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", err.Error())
 }
 
 func TestDescribeRepositories_CrossAccountDenied(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"registryId":"999999999999"}`))
+	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"registryId":"999999999999"}`)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.handleDescribeRepositories(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.ECR_Request(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "AccessDenied", err.Error())
 }

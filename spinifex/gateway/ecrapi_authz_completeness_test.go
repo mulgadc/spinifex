@@ -46,4 +46,9 @@ func TestECRComposedActionsAreInTheNamespace(t *testing.T) {
 		assert.True(t, ok,
 			"composed ECR lifecycle-preview action %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
 	}
+	for _, action := range awsapi.RepositoryActionNames() {
+		_, ok := awsapi.Actions[action]
+		assert.True(t, ok,
+			"composed ECR repository action %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
+	}
 }

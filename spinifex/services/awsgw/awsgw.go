@@ -312,6 +312,12 @@ func launchService(config *config.ClusterConfig) error {
 	if registryHost == "" && isConcreteRegistryHost(nodeConfig.AdvertiseIP) {
 		registryHost = nodeConfig.AdvertiseIP
 	}
+	ecrEndpoint := awsapi.RepositoryEndpoint{
+		Region:         nodeConfig.Region,
+		ServicesDomain: config.AWS.ServicesDomain,
+		RegistryHost:   registryHost,
+		RegistryPort:   registryPort,
+	}
 
 	// Bedrock provider credentials: per-account keys live in the
 	// bedrock-credentials KV bucket; OCHRE_ANTHROPIC_API_KEY seeds an optional
@@ -456,6 +462,7 @@ func launchService(config *config.ClusterConfig) error {
 		ECRRegistry:             ecrRegistry,
 		ECRRegistryActions:      awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
 		ECRLifecyclePreview:     awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
+		ECRRepositoryActions:    awsapi.NewRepositoryActionService(ecrMeta, ecrEndpoint),
 		ECRTokenIssuer:          ecrauth.NewIssuer(signingKey, ecrAudience),
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
 		BedrockCredentials:      bedrockCredentials,

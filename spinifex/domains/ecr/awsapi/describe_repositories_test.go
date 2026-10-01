@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,10 +12,11 @@ import (
 
 func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
+	store := handlers_ecr.NewNATSMetaStore(nc)
 	seedRepositoryForAction(t, nc, "team/app")
 	seedRepositoryForAction(t, nc, "team/web")
 
-	out, err := DescribeRepositories(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{}`))
+	out, err := DescribeRepositories(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{}`))
 	require.NoError(t, err)
 	require.Len(t, out.Repositories, 2)
 
@@ -30,6 +32,7 @@ func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 
 func TestDescribeRepositories_ValidatesRequestAndRepository(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
+	store := handlers_ecr.NewNATSMetaStore(nc)
 	seedRepositoryForAction(t, nc, "team/app")
 
 	cases := []struct {
@@ -43,7 +46,7 @@ func TestDescribeRepositories_ValidatesRequestAndRepository(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := DescribeRepositories(context.Background(), nc, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(tc.body))
+			_, err := DescribeRepositories(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(tc.body))
 			require.Error(t, err)
 			assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err))
 		})

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"

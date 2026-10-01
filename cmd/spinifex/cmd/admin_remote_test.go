@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/cmd/spinifex/cmd"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

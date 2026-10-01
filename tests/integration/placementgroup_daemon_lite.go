@@ -5,7 +5,7 @@ package integration
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"

@@ -4,9 +4,9 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

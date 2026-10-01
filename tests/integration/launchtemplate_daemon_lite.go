@@ -5,7 +5,7 @@ package integration
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	"github.com/stretchr/testify/require"
 )

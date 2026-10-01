@@ -7,9 +7,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // The security-group surface the system ENI's group is ensured through. Narrow

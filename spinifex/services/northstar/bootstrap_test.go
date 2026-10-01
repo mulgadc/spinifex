@@ -14,7 +14,7 @@ import (
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

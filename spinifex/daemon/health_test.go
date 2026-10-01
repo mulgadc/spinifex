@@ -17,7 +17,7 @@ import (
 	"time"
 
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

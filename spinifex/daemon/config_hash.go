@@ -1,6 +1,6 @@
 package daemon
 
-import "github.com/mulgadc/spinifex/spinifex/config"
+import "github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 
 // sharedClusterData contains exactly the cluster-wide configuration inputs to
 // computeConfigHash. Node-local top-level fields must remain excluded so every

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"

@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 )
 
 // NameserverSeeds derives one nameserver (nsN → node IP) per cluster node that

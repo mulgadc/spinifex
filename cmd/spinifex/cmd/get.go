@@ -14,7 +14,7 @@ import (
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/pterm/pterm"

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 )
 
 // HostsZone reports whether northstar hosts a zone covering domain — the zone

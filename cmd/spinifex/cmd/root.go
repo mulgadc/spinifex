@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

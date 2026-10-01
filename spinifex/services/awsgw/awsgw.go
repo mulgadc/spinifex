@@ -20,7 +20,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"

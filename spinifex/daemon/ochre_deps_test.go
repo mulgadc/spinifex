@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -3,10 +3,10 @@ package service
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
-	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
+	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/stretchr/testify/assert"

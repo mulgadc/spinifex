@@ -10,7 +10,7 @@ import (
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/nats-io/nats.go"
 	toml "github.com/pelletier/go-toml/v2"
 )

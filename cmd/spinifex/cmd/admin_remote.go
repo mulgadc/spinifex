@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"

@@ -39,7 +39,7 @@ func runAttachDetachPhase(t *testing.T, fix *harness.Fixture, c *harness.AWSClie
 	instanceType, arch := harness.DiscoverNanoInstanceType(t, fix)
 	ami := harness.DiscoverUbuntuAMI(t, fix, arch)
 	vpc := harness.EnsureDefaultVPC(t, fix)
-	keyName, _ := harness.EnsureKeyPair(t, fix, t.TempDir())
+	keyName, _ := harness.EnsureKeyPair(t, fix)
 
 	instanceID := harness.EnsureInstance(t, fix, harness.InstanceSpec{
 		AMIID:        ami,

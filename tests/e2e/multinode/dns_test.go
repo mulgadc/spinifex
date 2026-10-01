@@ -14,7 +14,7 @@ import (
 
 	"github.com/miekg/dns"
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	spinconfig "github.com/mulgadc/spinifex/spinifex/config"
+	spinconfig "github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"

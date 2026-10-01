@@ -22,7 +22,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/ini.v1"

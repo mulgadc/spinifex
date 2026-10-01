@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // One shared Bedrock system VPC per region holds every serving VM's primary

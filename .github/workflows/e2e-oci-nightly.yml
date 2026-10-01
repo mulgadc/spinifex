@@ -59,7 +59,16 @@ jobs:
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          repositories: mulga
+          # Six repositories, not one. The checkout below needs mulga; the other
+          # five are what build-install-artifacts.sh clones, and every one of them
+          # is private, so an unauthenticated clone fails rather than degrading.
+          repositories: |
+            mulga
+            spinifex
+            predastore
+            viperblock
+            northstar
+            bluebottle
 
       # build-install-artifacts.sh lives in mulga. The workbooks and their driver
       # are in spinifex, so only the one directory is needed here.
@@ -69,6 +78,18 @@ jobs:
           path: mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
+
+      # The builder clones by https and takes no credential argument, so the token
+      # has to reach git itself. Scoped to our organisation, and the runner is
+      # ephemeral and single-tenant, so the config dies with the job.
+      - name: Authenticate git for the private sub-repos
+        env:
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git config --global \
+            url."https://x-access-token:$GH_APP_TOKEN@github.com/mulgadc/".insteadOf \
+            "https://github.com/mulgadc/"
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -110,12 +131,16 @@ jobs:
           OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
           OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
+          # Through the environment, never interpolated into the script below: a
+          # dispatch input is attacker-controlled text as far as the shell is
+          # concerned, and a quote in it would otherwise end the string.
+          WORKBOOKS_INPUT: ${{ inputs.workbooks }}
         run: |
           set -uo pipefail
           # WORKBOOKS is exported only when the dispatch named some: the harness
           # distinguishes unset (the driver's default list) from empty (run none).
-          if [ -n "${{ inputs.workbooks }}" ]; then export WORKBOOKS='${{ inputs.workbooks }}'; fi
-          ./e2e-oci.sh 2>&1 | tee "${{ runner.temp }}/e2e-oci.log"
+          if [ -n "$WORKBOOKS_INPUT" ]; then export WORKBOOKS="$WORKBOOKS_INPUT"; fi
+          ./e2e-oci.sh 2>&1 | tee "$RUNNER_TEMP/e2e-oci.log"
           exit "${PIPESTATUS[0]}"
 
       # always(), and before the artifact upload: an OCI bare-metal host left
@@ -135,11 +160,20 @@ jobs:
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci-sweep
         run: ./e2e-oci.sh --sweep-only
 
+      # Named files rather than a directory glob, for two reasons. The artifact
+      # directory also holds the distro tarball and the test archive, which are
+      # hundreds of megabytes and reproducible from the ref; and the per-topology
+      # state directories hold terraform.tfstate, which is never an artifact.
       - name: Upload the run
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-oci-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/e2e-oci*
+            ${{ runner.temp }}/e2e-oci.log
+            ${{ runner.temp }}/e2e-oci/*.log
+            ${{ runner.temp }}/e2e-oci/verdict.txt
+            ${{ runner.temp }}/e2e-oci-sweep/*.log
+            spinifex/scripts/terraform/oci-spx/.validate-*/*.log
+            spinifex/scripts/terraform/oci-spx/.validate-*/*.txt
           retention-days: 14

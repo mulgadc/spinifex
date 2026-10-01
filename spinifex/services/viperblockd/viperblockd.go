@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -328,9 +329,9 @@ func New(config any) (svc *Service, err error) {
 // AES-GCM tag under the volume's current StateSeqNum, so the caller MUST own the
 // volume exclusively (live mounted VB, or a freshly opened detached one) to keep
 // the GCM nonce unique.
-func applyConfigUpdate(ctx context.Context, vb *viperblock.VB, req types.EBSConfigUpdateRequest) error {
+func applyConfigUpdate(ctx context.Context, vb *viperblock.VB, volumeConfig json.RawMessage) error {
 	var vc viperblock.VolumeConfig
-	if err := json.Unmarshal(req.VolumeConfig, &vc); err != nil {
+	if err := json.Unmarshal(volumeConfig, &vc); err != nil {
 		return fmt.Errorf("unmarshal VolumeConfig: %w", err)
 	}
 	vb.VolumeConfig = vc
@@ -349,19 +350,19 @@ func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandl
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 
-		var req types.EBSConfigUpdateRequest
+		var req viperblocklegacyv1.EBSConfigUpdateRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			slog.ErrorContext(ctx, "Failed to unmarshal ebs.config message", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Error: fmt.Sprintf("bad request: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeName, Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
-		if err := applyConfigUpdate(ctx, vb, req); err != nil {
+		if err := applyConfigUpdate(ctx, vb, req.VolumeConfig); err != nil {
 			slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", volumeName, "err", err)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Error: err.Error()})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeName, Error: err.Error()})
 			return
 		}
 		slog.Info("ebs.config: live VB state updated", "volume", volumeName)
-		respondJSON(msg, types.EBSConfigUpdateResponse{Volume: volumeName, Success: true})
+		respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeName, Success: true})
 	}
 }
 
@@ -947,15 +948,15 @@ func launchService(cfg *Config) (err error) {
 	// mounted anywhere). A detached volume has no live writer, so any worker may
 	// open it exclusively and reseal. A mount that raced in is still handled by
 	// preferring the live VB when this node happens to own it.
-	if _, err := nc.QueueSubscribe("ebs.config", "spinifex-workers", func(msg *nats.Msg) {
+	if _, err := nc.QueueSubscribe(viperblocklegacyv1.ConfigUpdateSubject, "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 
-		var req types.EBSConfigUpdateRequest
+		var req viperblocklegacyv1.EBSConfigUpdateRequest
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			slog.ErrorContext(ctx, "Failed to unmarshal ebs.config message", "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
@@ -965,7 +966,7 @@ func launchService(cfg *Config) (err error) {
 			err := fmt.Errorf("invalid volume name %q", req.Volume)
 			slog.ErrorContext(ctx, "ebs.config: refusing invalid volume name", "volume", req.Volume)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
 			return
 		}
 
@@ -980,14 +981,14 @@ func launchService(cfg *Config) (err error) {
 		cfg.mu.Unlock()
 
 		if live != nil {
-			if err := applyConfigUpdate(ctx, live, req); err != nil {
+			if err := applyConfigUpdate(ctx, live, req.VolumeConfig); err != nil {
 				slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", req.Volume, "err", err)
 				utils.MarkSpanError(span, err)
-				respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
+				respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
 				return
 			}
 			slog.InfoContext(ctx, "ebs.config: live VB state updated (fallback path)", "volume", req.Volume)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
 			return
 		}
 
@@ -995,23 +996,23 @@ func launchService(cfg *Config) (err error) {
 		if err != nil {
 			slog.ErrorContext(ctx, "ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
 			return
 		}
 		defer cfg.releaseVolumeLease(ctx, lease)
 
-		applyErr := applyConfigUpdate(ctx, vb, req)
+		applyErr := applyConfigUpdate(ctx, vb, req.VolumeConfig)
 		if closeErr := vb.CloseCtx(ctx); closeErr != nil {
 			slog.ErrorContext(ctx, "ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)
 		}
 		if applyErr != nil {
 			slog.ErrorContext(ctx, "ebs.config: detached volume update failed", "volume", req.Volume, "err", applyErr)
 			utils.MarkSpanError(span, applyErr)
-			respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Error: applyErr.Error()})
+			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: applyErr.Error()})
 			return
 		}
 		slog.InfoContext(ctx, "ebs.config: detached volume state updated", "volume", req.Volume)
-		respondJSON(msg, types.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
+		respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
 	}); err != nil {
 		return fmt.Errorf("failed to subscribe to ebs.config: %w", err)
 	}

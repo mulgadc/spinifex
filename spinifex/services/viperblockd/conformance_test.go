@@ -14,7 +14,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 )
 

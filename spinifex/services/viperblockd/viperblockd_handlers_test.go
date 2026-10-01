@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/file"
@@ -57,7 +58,7 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	configSub, err := nc.Subscribe("ebs.config.vol-del-test", func(msg *nats.Msg) {})
+	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject("vol-del-test"), func(msg *nats.Msg) {})
 	require.NoError(t, err)
 
 	cfg := setupTestConfig(t, natsURL)
@@ -549,7 +550,7 @@ func TestIntegration_EBSDeleteWithVBInstance(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "vol-del-vb.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
 
-	configSub, err := nc.Subscribe("ebs.config.vol-del-vb", func(msg *nats.Msg) {})
+	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject("vol-del-vb"), func(msg *nats.Msg) {})
 	require.NoError(t, err)
 
 	cfg := setupTestConfig(t, natsURL)
@@ -600,7 +601,7 @@ func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "vol-unmount-vb.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("fake"), 0600))
 
-	configSub, err := nc.Subscribe("ebs.config.vol-unmount-vb", func(msg *nats.Msg) {})
+	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject("vol-unmount-vb"), func(msg *nats.Msg) {})
 	require.NoError(t, err)
 
 	cfg := setupTestConfig(t, natsURL)

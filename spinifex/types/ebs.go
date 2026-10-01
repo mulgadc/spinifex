@@ -1,9 +1,6 @@
 package types
 
-import (
-	"encoding/json"
-	"sync"
-)
+import "sync"
 
 type EBSRequests struct {
 	Requests []EBSRequest `json:"Requests" mapstructure:"ebs_requests"`
@@ -62,22 +59,6 @@ type EBSDeleteRequest struct {
 }
 
 type EBSDeleteResponse struct {
-	Volume  string `json:"Volume"`
-	Success bool   `json:"Success"`
-	Error   string `json:"Error"`
-}
-
-// EBSConfigUpdateRequest carries a control-plane VolumeConfig update for an
-// encrypted volume. config.json is a sealed VBState; only the master-key holder
-// (viperblockd) can reseal it, so the EC2 edge ships the new config here instead
-// of rewriting the object directly. VolumeConfig is a marshaled
-// viperblock.VolumeConfig (RawMessage keeps this package dependency-free).
-type EBSConfigUpdateRequest struct {
-	Volume       string          `json:"Volume"`
-	VolumeConfig json.RawMessage `json:"VolumeConfig"`
-}
-
-type EBSConfigUpdateResponse struct {
 	Volume  string `json:"Volume"`
 	Success bool   `json:"Success"`
 	Error   string `json:"Error"`

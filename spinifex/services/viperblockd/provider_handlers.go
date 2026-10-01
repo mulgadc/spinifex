@@ -17,6 +17,7 @@ import (
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
@@ -718,7 +719,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("marshal volume config: %v", err)})
 		return
 	}
-	if err := applyConfigUpdate(ctx, vb, types.EBSConfigUpdateRequest{Volume: req.VolumeID, VolumeConfig: rawConfig}); err != nil {
+	if err := applyConfigUpdate(ctx, vb, rawConfig); err != nil {
 		slog.Error("ebs.provider.volume.expand: apply config update failed", "volume", req.VolumeID, "err", err)
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("apply config update: %v", err)})
 		return
@@ -1553,7 +1554,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 	// Subscribe to volume-specific config-update topic so encrypted-volume
 	// metadata writes route to this node's live VB (the StateSeqNum owner).
-	configSub, err := nc.Subscribe(fmt.Sprintf("ebs.config.%s", volumeName), makeConfigUpdateHandler(vb, volumeName))
+	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject(volumeName), makeConfigUpdateHandler(vb, volumeName))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to subscribe to volume config topic", "volume", volumeName, "err", err)
 	}

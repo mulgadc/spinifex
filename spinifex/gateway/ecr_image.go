@@ -30,12 +30,6 @@ type tagStatusFilter struct {
 	TagStatus string `json:"tagStatus"`
 }
 
-type listImagesRequest struct {
-	RepositoryName string           `json:"repositoryName"`
-	RegistryID     string           `json:"registryId"`
-	Filter         *tagStatusFilter `json:"filter"`
-}
-
 type describeImagesRequest struct {
 	RepositoryName string            `json:"repositoryName"`
 	RegistryID     string            `json:"registryId"`
@@ -104,50 +98,24 @@ func decodeJSONBody(r *http.Request, dst any) error {
 	return nil
 }
 
-// handleListImages returns every imageId in the repo, honoring an optional
-// TAGGED/UNTAGGED filter. Tagged manifests yield one entry per tag; untagged
-// manifests yield a digest-only entry.
+// handleListImages adapts the authenticated HTTP request to the ECR ListImages
+// action. The ECR AWS adapter owns request and response semantics; gateway
+// supplies the configured OCI registry capability.
 func (gw *GatewayConfig) handleListImages(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
 	}
-	var req listImagesRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		return err
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return awsapi.MalformedBodyError()
 	}
-	if err := validateRepoAndRegistry(req.RepositoryName, req.RegistryID, accountID); err != nil {
-		return err
-	}
-
-	records, err := gw.ecrListImages(ctx, accountID, req.RepositoryName)
+	output, err := awsapi.ListImages(ctx, gw.ECRRegistry, accountID, body)
 	if err != nil {
 		return err
 	}
-
-	status := ""
-	if req.Filter != nil {
-		status = req.Filter.TagStatus
-	}
-	ids := make([]*ecr.ImageIdentifier, 0, len(records))
-	for _, rec := range records {
-		if len(rec.Tags) == 0 {
-			if status == ecr.TagStatusTagged {
-				continue
-			}
-			ids = append(ids, &ecr.ImageIdentifier{ImageDigest: aws.String(rec.Digest)})
-			continue
-		}
-		if status == ecr.TagStatusUntagged {
-			continue
-		}
-		for _, tag := range rec.Tags {
-			ids = append(ids, &ecr.ImageIdentifier{ImageDigest: aws.String(rec.Digest), ImageTag: aws.String(tag)})
-		}
-	}
-
-	awsapi.WriteJSONResponse(w, &ecr.ListImagesOutput{ImageIds: ids})
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }
 

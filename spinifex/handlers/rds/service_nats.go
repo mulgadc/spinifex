@@ -147,6 +147,11 @@ func (s *NATSService) DescribeDBSubnetGroups(ctx context.Context, input *rds.Des
 		SubjectDescribeDBSubnetGroups, input, defaultTimeout, accountID)
 }
 
+func (s *NATSService) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSubnetGroupInput, accountID string) (*rds.ModifyDBSubnetGroupOutput, error) {
+	return utils.NATSRequest[rds.ModifyDBSubnetGroupOutput](ctx, s.nc,
+		SubjectModifyDBSubnetGroup, input, defaultTimeout, accountID)
+}
+
 func (s *NATSService) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, accountID string) (*rds.DeleteDBSubnetGroupOutput, error) {
 	return utils.NATSRequest[rds.DeleteDBSubnetGroupOutput](ctx, s.nc,
 		SubjectDeleteDBSubnetGroup, input, defaultTimeout, accountID)

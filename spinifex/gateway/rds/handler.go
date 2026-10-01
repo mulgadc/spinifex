@@ -122,6 +122,7 @@ var actions = map[string]actionDef{
 	// Subnet groups.
 	"CreateDBSubnetGroup":    {handler: typed(CreateDBSubnetGroup)},
 	"DescribeDBSubnetGroups": {handler: typed(DescribeDBSubnetGroups)},
+	"ModifyDBSubnetGroup":    {handler: typed(ModifyDBSubnetGroup), scopes: []*resourceScope{dbSubnetGroupScope}},
 	"DeleteDBSubnetGroup":    {handler: typed(DeleteDBSubnetGroup), scopes: []*resourceScope{dbSubnetGroupScope}},
 
 	// Parameter groups. DescribeDBParameters is scoped despite being a describe:

@@ -132,6 +132,63 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups, Marker: next}, nil
 }
 
+// SubnetIds is the group's complete new subnet set, resolved under create's
+// rules, and an omitted description keeps the stored one. A lost CAS replays
+// against the fresh record, so a concurrent tag write or delete is not undone.
+func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSubnetGroupInput, accountID string) (*rds.ModifyDBSubnetGroupOutput, error) {
+	if input == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
+	}
+	name := aws.StringValue(input.DBSubnetGroupName)
+	if name == "" {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBSubnetGroupName is required")
+	}
+	if input.DBSubnetGroupDescription != nil {
+		if err := validateDBGroupDescription("DBSubnetGroupDescription", *input.DBSubnetGroupDescription); err != nil {
+			return nil, err
+		}
+	}
+
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	// Read first so a missing group is reported as such rather than as whatever
+	// the subnet resolution would have objected to.
+	if _, _, err := getDBSubnetGroup(ctx, kv, name); err != nil {
+		return nil, err
+	}
+	subnets, vpcID, err := s.resolveGroupSubnets(ctx, accountID, aws.StringValueSlice(input.SubnetIds))
+	if err != nil {
+		return nil, err
+	}
+
+	key := DBSubnetGroupKey(name)
+	for range tagWriteAttempts {
+		rec, rev, err := getDBSubnetGroup(ctx, kv, name)
+		if err != nil {
+			return nil, err
+		}
+		if input.DBSubnetGroupDescription != nil {
+			rec.Description = *input.DBSubnetGroupDescription
+		}
+		rec.Subnets = subnets
+		rec.VpcID = vpcID
+		rec.UpdatedAt = time.Now().UTC()
+
+		err = updateJSON(ctx, kv, key, rev, rec)
+		if err == nil {
+			slog.InfoContext(ctx, "rds: DB subnet group modified",
+				"dbSubnetGroup", name, "accountId", accountID, "vpcId", vpcID, "subnets", len(subnets))
+			return &rds.ModifyDBSubnetGroupOutput{DBSubnetGroup: s.projectSubnetGroup(rec)}, nil
+		}
+		if !errors.Is(err, kvstore.ErrConflict) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("rds: update of %s contended after %d attempts", key, tagWriteAttempts)
+}
+
 // Refused while any instance still names the group, including one that is only
 // deleting: releasing it early would let a teardown lose the record of where its
 // ENI was placed, and would make destroy ordering ambiguous.

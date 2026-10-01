@@ -336,3 +336,145 @@ func TestCreateDBInstance_RejectsAnUnknownSubnetGroup(t *testing.T) {
 	assert.False(t, h.recordExists(t, testDBInstanceID),
 		"a rejected create must reserve nothing")
 }
+
+func modifySubnetGroupInput(name string, subnetIDs ...string) *rds.ModifyDBSubnetGroupInput {
+	return &rds.ModifyDBSubnetGroupInput{
+		DBSubnetGroupName: aws.String(name),
+		SubnetIds:         aws.StringSlice(subnetIDs),
+	}
+}
+
+// SubnetIds is the whole new set, as Terraform sends it, so a subnet left out
+// of the request leaves the group.
+func TestModifyDBSubnetGroup_ReplacesTheSubnetSetAndDescription(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+
+	input := modifySubnetGroupInput(testSubnetGroup, "subnet-zebra")
+	input.DBSubnetGroupDescription = aws.String("Moved subnets")
+	out, err := h.svc.ModifyDBSubnetGroup(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	group := out.DBSubnetGroup
+	require.NotNil(t, group)
+	assert.Equal(t, "Moved subnets", aws.StringValue(group.DBSubnetGroupDescription))
+	assert.Equal(t, FormatARN(ResourceKindDBSubnetGroup, testRegion, testAccountID, testSubnetGroup),
+		aws.StringValue(group.DBSubnetGroupArn))
+	require.Len(t, group.Subnets, 1)
+	assert.Equal(t, "subnet-zebra", aws.StringValue(group.Subnets[0].SubnetIdentifier))
+
+	described, err := h.svc.DescribeDBSubnetGroups(t.Context(),
+		&rds.DescribeDBSubnetGroupsInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, group, described.DBSubnetGroups[0], "the response and a later describe must agree")
+}
+
+// Only the subnets and description are the request's to change: tags added
+// through the tagging API and the creation time survive the write.
+func TestModifyDBSubnetGroup_KeepsTheOmittedDescriptionTagsAndCreatedAt(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	create := subnetGroupInput(testSubnetGroup, "subnet-alpha")
+	create.Tags = []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), create, testAccountID)
+	require.NoError(t, err)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	before, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	require.NoError(t, err)
+
+	_, err = h.svc.ModifyDBSubnetGroup(t.Context(),
+		modifySubnetGroupInput(testSubnetGroup, "subnet-alpha", "subnet-zebra"), testAccountID)
+	require.NoError(t, err)
+
+	after, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	require.NoError(t, err)
+	assert.Equal(t, "Database subnets", after.Description)
+	assert.Equal(t, map[string]string{"env": "prod"}, after.Tags)
+	assert.True(t, before.CreatedAt.Equal(after.CreatedAt))
+	assert.False(t, after.UpdatedAt.Before(before.UpdatedAt))
+	require.Len(t, after.Subnets, 2)
+}
+
+// The group's VPC is derived from its subnets, so a set wholly in another VPC
+// moves it rather than leaving a stale VpcId that placement would act on.
+func TestModifyDBSubnetGroup_FollowsTheNewSubnetsVPC(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	h.network.subnets = append(h.network.subnets, &ec2.Subnet{
+		SubnetId:         aws.String("subnet-other"),
+		VpcId:            aws.String("vpc-other01"),
+		AvailabilityZone: aws.String(testZone),
+	})
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+
+	out, err := h.svc.ModifyDBSubnetGroup(t.Context(),
+		modifySubnetGroupInput(testSubnetGroup, "subnet-other"), testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "vpc-other01", aws.StringValue(out.DBSubnetGroup.VpcId))
+}
+
+// A refused modify is checked in full before the write, so the stored group is
+// exactly as it was.
+func TestModifyDBSubnetGroup_RejectsWhatCreateRejects(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*rds.ModifyDBSubnetGroupInput)
+		want   string
+	}{
+		{"NoName", func(in *rds.ModifyDBSubnetGroupInput) { in.DBSubnetGroupName = nil }, awserrors.ErrorInvalidParameterValue},
+		{"EmptyDescription", func(in *rds.ModifyDBSubnetGroupInput) { in.DBSubnetGroupDescription = aws.String("") }, awserrors.ErrorInvalidParameterValue},
+		{"NoSubnets", func(in *rds.ModifyDBSubnetGroupInput) { in.SubnetIds = nil }, awserrors.ErrorInvalidParameterValue},
+		{"MissingSubnet", func(in *rds.ModifyDBSubnetGroupInput) {
+			in.SubnetIds = aws.StringSlice([]string{"subnet-alpha", "subnet-nowhere"})
+		}, awserrors.ErrorDBSubnetInvalid},
+		{"CrossAccountSubnet", func(in *rds.ModifyDBSubnetGroupInput) {
+			in.SubnetIds = aws.StringSlice([]string{"subnet-foreign"})
+		}, awserrors.ErrorDBSubnetInvalid},
+		{"CrossVPCSet", func(in *rds.ModifyDBSubnetGroupInput) {
+			in.SubnetIds = aws.StringSlice([]string{"subnet-alpha", "subnet-other"})
+		}, awserrors.ErrorDBSubnetInvalid},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCreateHarness(t, testBaseDomain)
+			h.network.subnets = append(h.network.subnets, &ec2.Subnet{
+				SubnetId:         aws.String("subnet-other"),
+				VpcId:            aws.String("vpc-other01"),
+				AvailabilityZone: aws.String(testZone),
+			})
+			_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+			require.NoError(t, err)
+
+			input := modifySubnetGroupInput(testSubnetGroup, "subnet-zebra")
+			tc.mutate(input)
+			_, err = h.svc.ModifyDBSubnetGroup(t.Context(), input, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, awserrors.ValidErrorCodeFromError(err),
+				"the code has to survive resolution or the client sees a 500")
+
+			kv, err := h.svc.bucket(t.Context(), testAccountID)
+			require.NoError(t, err)
+			rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+			require.NoError(t, err)
+			require.Len(t, rec.Subnets, 1)
+			assert.Equal(t, "subnet-alpha", rec.Subnets[0].SubnetID)
+			assert.Equal(t, "Database subnets", rec.Description)
+		})
+	}
+}
+
+func TestModifyDBSubnetGroup_RejectsAnUnknownName(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+
+	_, err := h.svc.ModifyDBSubnetGroup(t.Context(), modifySubnetGroupInput("absent", "subnet-alpha"), testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+}

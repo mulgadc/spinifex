@@ -1077,7 +1077,7 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 
 ## rds
 
-`2014-10-31` — 26 of 164 modelled operations implemented (15.9%), 0 stubbed, 4 not applicable, 5 registered outside the pinned model.
+`2014-10-31` — 27 of 164 modelled operations implemented (16.5%), 0 stubbed, 4 not applicable, 5 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1176,7 +1176,6 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 - `ModifyDBShardGroup`
 - `ModifyDBSnapshot`
 - `ModifyDBSnapshotAttribute`
-- `ModifyDBSubnetGroup`
 - `ModifyEventSubscription`
 - `ModifyGlobalCluster`
 - `ModifyIntegration`

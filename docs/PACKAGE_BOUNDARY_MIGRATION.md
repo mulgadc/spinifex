@@ -201,6 +201,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `5e7311eb2` | `spinifex/gateway/ecr` | `spinifex/domains/ecr/registry` | The OCI Distribution v2 protocol adapter is ECR data-plane ownership. Focused registry, gateway/AWS-gateway and tagged integration validation passed. |
 | `474c07316` | `spinifex/gateway/ecrauth` | `spinifex/domains/ecr/auth` | ECR token claims, issuer/verifier, encrypted signing-key persistence and rotation are ECR credential ownership. Focused, gateway/AWS-gateway and tagged integration validation passed. |
 | `f59b40ad1` | Gateway `DescribeRepositories` action semantics | `spinifex/domains/ecr/awsapi.DescribeRepositories` | Request validation, account scope, repository metadata lookup and AWS response projection are ECR AWS-action ownership. Gateway retains authenticated HTTP adaptation and response writing. Focused domain, gateway dispatch and tagged integration compilation passed. |
+| `c558872e8` | Gateway `CreateRepository` action semantics | `spinifex/domains/ecr/awsapi.CreateRepository` | Request decoding, input defaults and validation, duplicate detection, account-scoped metadata persistence and AWS response projection are ECR AWS-action ownership. Gateway retains authenticated HTTP adaptation and response writing. Focused domain, gateway lifecycle and tagged integration validation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
@@ -2392,6 +2393,8 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 		{"numeric bool", `{"Bool":{"aws:SecureTransport":1}}`, "not true or false"},
 		{"yes", `{"Bool":{"aws:SecureTransport":"yes"}}`, "not true or false"},
 		{"empty array", `{"IpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+		{"NotIpAddress hostname", `{"NotIpAddress":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"NotIpAddress empty array", `{"NotIpAddress":{"aws:SourceIp":[]}}`, "has no value"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2401,6 +2404,38 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
+	}
+}
+
+// No supported key carries an Arn operator yet, so the write path cannot reach
+// this arm; it is exercised directly so the key that unlocks it lands validated.
+func TestValidateConditionValues_ArnOperators(t *testing.T) {
+	t.Parallel()
+	const key = "aws:SourceArn"
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{"exact ARN", "arn:aws:ecs:us-east-1:111122223333:task/c/abc", ""},
+		{"wildcard components", "arn:aws:ecs:*:111122223333:*", ""},
+		{"resource with colons", "arn:aws:logs:us-east-1:111122223333:log-group:app:*", ""},
+		{"variable", "arn:aws:iam::${aws:PrincipalAccount}:role/*", ""},
+		{"too few components", "arn:aws:ecs:*", "not an ARN of six colon-separated components"},
+		{"bare wildcard", "*", "not an ARN of six colon-separated components"},
+		{"unknown variable", "arn:aws:iam::${aws:bogus}:role/*", `references policy variable "aws:bogus"`},
+	}
+	for _, op := range []string{
+		iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike,
+	} {
+		for _, tt := range tests {
+			err := validateConditionValues(0, op, key, ConditionValue{tt.value})
+			if tt.wantErr == "" {
+				assert.NoError(t, err, "%s %s", op, tt.name)
+				continue
+			}
+			assert.ErrorContains(t, err, tt.wantErr, "%s %s", op, tt.name)
+		}
 	}
 }
 
@@ -2422,6 +2457,15 @@ func TestValidatePolicyDocument_RejectsUnresolvableVariables(t *testing.T) {
 		{"MFA in a StringLike value",
 			`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
 			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringNotEquals value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringNotEquals":{"aws:username":"${aws:MultiFactorAuthPresent}"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringNotLike value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringNotLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"unterminated in a StringEqualsIgnoreCase value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringEqualsIgnoreCase":{"aws:username":"${aws:username"}}`,
+			"unterminated policy variable reference"},
 		{"unknown key", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:bogus}/*"`,
 			`references policy variable "aws:bogus"`},
 		{"condition key that is not substitutable",

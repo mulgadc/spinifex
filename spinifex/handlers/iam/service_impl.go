@@ -2410,15 +2410,22 @@ func validateConditionValues(i int, op, key string, values ConditionValue) error
 		return fmt.Errorf("statement %d: Condition operator %q on key %q has no value", i, op, key)
 	}
 	for _, v := range values {
-		// Only the string operators expand variables; a reference in a Bool or
-		// IpAddress value is already rejected as unparseable below.
-		if op == iampolicy.OpStringEquals || op == iampolicy.OpStringLike {
+		// Only the string and ARN operators expand variables; a reference in a
+		// Bool or IpAddress value is already rejected as unparseable below.
+		switch op {
+		case iampolicy.OpIPAddress, iampolicy.OpNotIPAddress, iampolicy.OpBool:
+		default:
 			if err := validatePolicyVariables(i, fmt.Sprintf("Condition %s on key %q", op, key), v); err != nil {
 				return err
 			}
 		}
 		switch op {
-		case iampolicy.OpIPAddress:
+		case iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike:
+			if _, ok := iampolicy.SplitARN(v); !ok {
+				return fmt.Errorf("statement %d: Condition %s on key %q: %q is not an ARN of six colon-separated components",
+					i, op, key, v)
+			}
+		case iampolicy.OpIPAddress, iampolicy.OpNotIPAddress:
 			if _, prefixErr := netip.ParsePrefix(v); prefixErr != nil {
 				if _, addrErr := netip.ParseAddr(v); addrErr != nil {
 					return fmt.Errorf("statement %d: Condition %s on key %q: %q is not a valid IP address or CIDR block",

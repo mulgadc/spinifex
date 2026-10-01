@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
@@ -53,7 +54,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -1446,13 +1446,13 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req types.EBSDeleteRequest
+		var req viperblocklegacyv1.EBSDeleteRequest
 		json.Unmarshal(msg.Data, &req)
 		mu.Lock()
 		ebsDeletedVolumes[req.Volume] = true
 		done := len(ebsDeletedVolumes) == expectedDeletes
 		mu.Unlock()
-		resp := types.EBSDeleteResponse{Volume: req.Volume, Success: true}
+		resp := viperblocklegacyv1.EBSDeleteResponse{Volume: req.Volume, Success: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 		if done {
@@ -1465,8 +1465,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	instance := &vm.VM{
 		ID:        "i-test-dot",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-root", Boot: true, DeleteOnTermination: true},
 				{Name: "vol-root-efi", EFI: true},
 			},
@@ -1503,13 +1503,13 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req types.EBSDeleteRequest
+		var req viperblocklegacyv1.EBSDeleteRequest
 		json.Unmarshal(msg.Data, &req)
 		mu.Lock()
 		ebsDeletedVolumes[req.Volume] = true
 		done := len(ebsDeletedVolumes) == expectedDeletes
 		mu.Unlock()
-		resp := types.EBSDeleteResponse{Volume: req.Volume, Success: true}
+		resp := viperblocklegacyv1.EBSDeleteResponse{Volume: req.Volume, Success: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 		if done {
@@ -1522,8 +1522,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	instance := &vm.VM{
 		ID:        "i-test-no-delete",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-keep", Boot: true, DeleteOnTermination: false},
 				{Name: "vol-keep-efi", EFI: true},
 			},
@@ -1586,8 +1586,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	instance := &vm.VM{
 		ID:        "i-test-boot-delete",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: true},
 			},
 		},
@@ -1624,8 +1624,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	instance := &vm.VM{
 		ID:        "i-test-boot-detach",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: false},
 			},
 		},
@@ -1664,8 +1664,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 	instance := &vm.VM{
 		ID:        "i-test-data-detach",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1728,8 +1728,8 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 		Teardown: map[string]string{
 			vm.TeardownVolumes: string(vm.TeardownFailed),
 		},
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: true},
 			},
 		},
@@ -1789,8 +1789,8 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 		Teardown: map[string]string{
 			vm.TeardownVolumes: string(vm.TeardownFailed),
 		},
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1853,8 +1853,8 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 		AccountID:      testAccountID,
 		Status:         vm.StateShuttingDown,
 		ShuttingDownAt: time.Now().Add(-15 * time.Minute), // past the stuck-terminate backstop timeout
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -2000,8 +2000,8 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 			},
 		},
 		QMPClient: &qmp.QMPClient{}, // nil encoder/decoder
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2091,7 +2091,7 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 
 		// Add a boot volume to the instance
 		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, types.EBSRequest{
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 			Name: bootVolumeID,
 			Boot: true,
 		})
@@ -2126,7 +2126,7 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		efiVolumeID := "vol-efi-protected"
 
 		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, types.EBSRequest{
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 			Name: efiVolumeID,
 			EFI:  true,
 		})
@@ -2321,8 +2321,8 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       "vol-root",
 					Boot:       true,
@@ -2341,10 +2341,10 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	// Subscribe a mock ebs.unmount handler
 	ebsUnmountCalled := make(chan string, 1)
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
 		ebsUnmountCalled <- req.Name
-		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2467,8 +2467,8 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2481,7 +2481,7 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 
 	// Mock ebs.unmount
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2581,8 +2581,8 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2671,8 +2671,8 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdh",
@@ -2684,7 +2684,7 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2747,8 +2747,8 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 		AccountID:    testAccountID,
 		Instance:     &ec2.Instance{},
 		QMPClient:    qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf", // stale entry from before stop
@@ -2761,7 +2761,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 
 	// Mock ebs.mount to return success with a new NBDURI
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-		resp := types.EBSMountResponse{URI: "nbd://new:2222"}
+		resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://new:2222"}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2804,7 +2804,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 
 	// Direct unit test: simulate what the fixed attach handler does
 	instance.EBSRequests.Mu.Lock()
-	newReq := types.EBSRequest{
+	newReq := viperblocklegacyv1.EBSRequest{
 		Name:       volumeID,
 		DeviceName: "/dev/sdg",
 		NBDURI:     "nbd://new:2222",
@@ -3318,17 +3318,17 @@ func TestVolumeMounterAdapter_UnmountOne_Success(t *testing.T) {
 	unmountCalled := make(chan string, 1)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
 		unmountCalled <- req.Name
-		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(t.Context(), "", types.EBSRequest{
+	adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{
 		Name:       "vol-rollback-test",
 		DeviceName: "/dev/sdf",
 	})
@@ -3351,14 +3351,14 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Error: "unmount failed: device busy"}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Error: "unmount failed: device busy"}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-rollback-err"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-rollback-err"}),
 		"an ebs.unmount error response must propagate so DetachVolume can keep the volume attached")
 }
 
@@ -3371,14 +3371,14 @@ func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Mounted: true}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Mounted: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-still-mounted"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-still-mounted"}),
 		"a still-mounted response must propagate as an error")
 }
 
@@ -3392,7 +3392,7 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 	nc.Close()
 
 	adapter := newVolumeMounterAdapter(nc, "node-1", nil)
-	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-timeout"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-timeout"}),
 		"a failed ebs.unmount request must propagate as an error")
 }
 
@@ -3442,9 +3442,9 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
-		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 		if req.Name == "vol-fail" {
 			resp.Error = "seal volume: predastore unreachable"
 		}
@@ -3456,8 +3456,8 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 
 	inst := &vm.VM{
 		ID: "i-1",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
 		},
 	}
 	err = adapter.Unmount(t.Context(), inst)
@@ -3481,10 +3481,10 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	volState := &recordingVolState{}
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
 
-	sub, err := daemon.natsConn.Subscribe(adapter.topic("unmount"), func(msg *nats.Msg) {
-		var req types.EBSRequest
+	sub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
-		resp := types.EBSUnMountResponse{
+		resp := viperblocklegacyv1.EBSUnMountResponse{
 			Volume:   req.Name,
 			NotFound: true,
 			Error:    fmt.Sprintf("Volume %s not found", req.Name),
@@ -3498,8 +3498,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	inst := &vm.VM{
 		ID:        "i-unmount-retry",
 		AccountID: "000000000042",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-boot-retry", Boot: true, EFI: false},
 				{Name: "vol-data-retry", Boot: false, EFI: false},
 			},
@@ -3520,22 +3520,22 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 // gated DetachVolume path (unmountOne) and the tolerated teardown path (Unmount).
 func TestUnmountResponseError(t *testing.T) {
 	t.Run("success (not mounted, no error)", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: false})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", Mounted: false})
 		require.NoError(t, unmountResponseError(data))
 	})
 	t.Run("seal error propagates", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Error: "seal volume: boom"})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", Error: "seal volume: boom"})
 		require.Error(t, unmountResponseError(data))
 	})
 	t.Run("still mounted propagates", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: true})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", Mounted: true})
 		require.Error(t, unmountResponseError(data))
 	})
 	t.Run("malformed payload propagates", func(t *testing.T) {
 		require.Error(t, unmountResponseError([]byte("not json")))
 	})
 	t.Run("not found treated as idempotent success", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", NotFound: true, Error: "Volume v not found"})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", NotFound: true, Error: "Volume v not found"})
 		require.NoError(t, unmountResponseError(data),
 			"a NotFound response means the seal already completed on a prior request; a timeout-then-retry must not be treated as a failure")
 	})
@@ -3559,7 +3559,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 		{
 			name: "MountResponseError",
 			respondVol2: func(msg *nats.Msg) {
-				resp := types.EBSMountResponse{Error: "simulated mount failure"}
+				resp := viperblocklegacyv1.EBSMountResponse{Error: "simulated mount failure"}
 				data, _ := json.Marshal(resp)
 				msg.Respond(data)
 			},
@@ -3580,13 +3580,13 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 			mountSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-				var req types.EBSRequest
+				var req viperblocklegacyv1.EBSRequest
 				require.NoError(t, json.Unmarshal(msg.Data, &req))
 				if req.Name == "vol-2" {
 					tt.respondVol2(msg)
 					return
 				}
-				resp := types.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
+				resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
 				data, _ := json.Marshal(resp)
 				msg.Respond(data)
 			})
@@ -3595,10 +3595,10 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 
 			unmounted := make(chan string, 3)
 			unmountSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-				var req types.EBSRequest
+				var req viperblocklegacyv1.EBSRequest
 				require.NoError(t, json.Unmarshal(msg.Data, &req))
 				unmounted <- req.Name
-				resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+				resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 				data, _ := json.Marshal(resp)
 				msg.Respond(data)
 			})
@@ -3608,8 +3608,8 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 			instance := &vm.VM{
 				ID:        "i-mount-rollback",
 				AccountID: testAccountID,
-				EBSRequests: types.EBSRequests{
-					Requests: []types.EBSRequest{
+				EBSRequests: vm.EBSRequests{
+					Requests: []viperblocklegacyv1.EBSRequest{
 						{Name: "vol-1"},
 						{Name: "vol-2"},
 						{Name: "vol-3"},
@@ -3641,15 +3641,15 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	mountSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		require.NoError(t, json.Unmarshal(msg.Data, &req))
 		if req.Name == "vol-2" {
-			resp := types.EBSMountResponse{Error: "primary mount failure"}
+			resp := viperblocklegacyv1.EBSMountResponse{Error: "primary mount failure"}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 			return
 		}
-		resp := types.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
+		resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -3657,7 +3657,7 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	defer mountSub.Unsubscribe()
 
 	unmountSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Error: "rollback unmount failed"}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Error: "rollback unmount failed"}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -3667,8 +3667,8 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	instance := &vm.VM{
 		ID:        "i-rollback-failure",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-1"},
 				{Name: "vol-2"},
 			},

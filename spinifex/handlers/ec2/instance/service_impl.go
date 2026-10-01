@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
@@ -32,7 +33,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -1735,7 +1735,7 @@ func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.
 // metadata, which is what DescribeVolumes reports as Attachments[].Device.
 func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
 	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		Boot:                true,
@@ -1749,7 +1749,7 @@ func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOn
 // Attachments[].Device.
 func appendDataEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
 	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 		Name:                volumeID,
 		DeviceName:          deviceName,
 		DeleteOnTermination: deleteOnTermination,
@@ -1884,7 +1884,7 @@ func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID str
 	}
 
 	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, spxtypes.EBSRequest{
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 		Name: efiVolumeName,
 		Boot: false,
 		EFI:  true,
@@ -2871,12 +2871,12 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 	for _, ebsRequest := range instance.EBSRequests.Requests {
 		// Internal volumes (EFI) are always cleaned up via ebs.delete.
 		if ebsRequest.EFI {
-			ebsDeleteData, err := json.Marshal(spxtypes.EBSDeleteRequest{Volume: ebsRequest.Name})
+			ebsDeleteData, err := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to marshal ebs.delete request", "name", ebsRequest.Name, "err", err)
 				continue
 			}
-			deleteMsg, err := s.natsConn.Request("ebs.delete", ebsDeleteData, 30*time.Second)
+			deleteMsg, err := s.natsConn.Request(viperblocklegacyv1.DeleteSubject, ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.WarnContext(ctx, "TerminateStoppedInstance: ebs.delete failed for internal volume", "name", ebsRequest.Name, "err", err)
 			} else {

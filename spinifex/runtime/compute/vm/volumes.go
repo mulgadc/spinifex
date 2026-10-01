@@ -12,7 +12,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -33,7 +32,7 @@ const detachAggregateTimeout = 3 * time.Minute
 // rollbackUnmount unmounts a volume while unwinding a failed AttachVolume.
 // Callers keep the volume non-available when the seal fails so a later attach
 // cannot discard local state that may still be owned by the backend.
-func (m *Manager) rollbackUnmount(ctx context.Context, accountID string, req types.EBSRequest) error {
+func (m *Manager) rollbackUnmount(ctx context.Context, accountID string, req EBSRequest) error {
 	if m.deps.VolumeMounter == nil {
 		return nil
 	}
@@ -59,7 +58,7 @@ func (m *Manager) delIothreadBestEffort(ctx context.Context, instance *VM, iothr
 // rollbackHotAttach removes the QMP block backend before unmounting it. A
 // failed blockdev deletion must leave the NBD server mounted because QEMU still
 // owns it; false tells the caller to retain the fail-closed in-use state.
-func (m *Manager) rollbackHotAttach(ctx context.Context, instance *VM, req types.EBSRequest, nodeName, iothreadID string) bool {
+func (m *Manager) rollbackHotAttach(ctx context.Context, instance *VM, req EBSRequest, nodeName, iothreadID string) bool {
 	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
 		Execute:   "blockdev-del",
 		Arguments: map[string]any{"node-name": nodeName},
@@ -102,7 +101,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		}
 	}
 
-	ebsRequest := types.EBSRequest{
+	ebsRequest := EBSRequest{
 		Name:       volumeID,
 		DeviceName: device,
 	}
@@ -298,7 +297,7 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 	defer instance.attachMu.Unlock()
 
 	instance.EBSRequests.Mu.Lock()
-	var ebsReq types.EBSRequest
+	var ebsReq EBSRequest
 	found := false
 	for _, req := range instance.EBSRequests.Requests {
 		if req.Name == volumeID {

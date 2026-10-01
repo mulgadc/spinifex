@@ -14,7 +14,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -108,7 +107,7 @@ func TestBuildBaseVMConfig_BootMode(t *testing.T) {
 func TestBuildDrives(t *testing.T) {
 	tests := []struct {
 		name          string
-		requests      []types.EBSRequest
+		requests      []EBSRequest
 		cpuCount      int
 		machineType   string
 		wantDrives    []Drive
@@ -125,7 +124,7 @@ func TestBuildDrives(t *testing.T) {
 			// 2 vCPUs resolves to a pool of one, which must keep the scalar
 			// iothread= form: this is the shape every small guest boots with.
 			name: "boot volume, pool of one keeps the scalar iothread",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 			},
 			cpuCount: 2,
@@ -141,7 +140,7 @@ func TestBuildDrives(t *testing.T) {
 			// 4 vCPUs resolves to a pool of two, so the four virtqueues are
 			// split across two host threads rather than served by one.
 			name: "boot volume, four vCPUs map their queues across a pool of two",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 			},
 			cpuCount: 4,
@@ -155,7 +154,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "EFI volume emits pflash unit=1",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 			},
 			cpuCount: 2,
@@ -165,7 +164,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "missing NBDURI returns error",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-bad"},
 			},
 			cpuCount: 2,
@@ -173,7 +172,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "missing NBDURI on EFI returns error",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-efi-bad", EFI: true},
 			},
 			cpuCount: 2,
@@ -181,7 +180,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "data volume with a recorded HotplugPort keeps it and emits a named blockdev+device",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock", HotplugPort: 3},
 			},
 			cpuCount:      2,
@@ -196,7 +195,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "data volume with HotplugPort unset gets the lowest free port allocated and written back",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-data-b", NBDURI: "nbd:unix:/tmp/data-b.sock"},
 			},
 			cpuCount:      2,
@@ -211,7 +210,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "two data volumes with HotplugPort unset in one call get distinct ports",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-data-c", NBDURI: "nbd:unix:/tmp/data-c.sock"},
 				{Name: "vol-data-d", NBDURI: "nbd:unix:/tmp/data-d.sock"},
 			},
@@ -232,14 +231,14 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "data volume errors when the hot-plug port pool is exhausted",
-			requests: func() []types.EBSRequest {
-				reqs := make([]types.EBSRequest, 0, EBSHotPlugSlotCount+1)
+			requests: func() []EBSRequest {
+				reqs := make([]EBSRequest, 0, EBSHotPlugSlotCount+1)
 				for i := 1; i <= EBSHotPlugSlotCount; i++ {
-					reqs = append(reqs, types.EBSRequest{
+					reqs = append(reqs, EBSRequest{
 						Name: fmt.Sprintf("vol-filler-%d", i), NBDURI: "nbd:unix:/tmp/filler.sock", HotplugPort: i,
 					})
 				}
-				reqs = append(reqs, types.EBSRequest{Name: "vol-overflow", NBDURI: "nbd:unix:/tmp/overflow.sock"})
+				reqs = append(reqs, EBSRequest{Name: "vol-overflow", NBDURI: "nbd:unix:/tmp/overflow.sock"})
 				return reqs
 			}(),
 			cpuCount: 2,
@@ -247,7 +246,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name: "mixed boot + EFI + data: boot and EFI keep the legacy -drive shape",
-			requests: []types.EBSRequest{
+			requests: []EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock", HotplugPort: 3},
@@ -275,7 +274,7 @@ func TestBuildDrives(t *testing.T) {
 		},
 		{
 			name:     "empty requests",
-			requests: []types.EBSRequest{},
+			requests: []EBSRequest{},
 			cpuCount: 2,
 		},
 	}
@@ -459,7 +458,7 @@ func TestRun_VolumeStateFailureRollsBackBeforeQEMU(t *testing.T) {
 	instance := &VM{
 		ID:     "i-state-fail",
 		Status: StatePending,
-		EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{{
+		EBSRequests: EBSRequests{Requests: []EBSRequest{{
 			Name: "vol-1", DeviceName: "/dev/sda1", Boot: true,
 		}}},
 	}
@@ -1263,7 +1262,7 @@ func TestQMPGreetingTimeout(t *testing.T) {
 	// opens the drive across the object store before its monitor answers, and
 	// the default deadline is shorter than a cold open costs on a cluster that
 	// has just lost a node — which is the only time a recovery launch happens.
-	nbd := &VM{EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{
+	nbd := &VM{EBSRequests: EBSRequests{Requests: []EBSRequest{
 		{Name: "vol-boot", NBDURI: "nbd+unix:///?socket=/run/spinifex/nbd/boot.sock", Boot: true},
 	}}}
 	assert.Equal(t, qmpNBDGreetingTimeout, qmpGreetingTimeout(nbd),
@@ -1309,7 +1308,7 @@ func TestQMPGreetingTimeout(t *testing.T) {
 func TestQMPGreetingTimeoutAddsBothCosts(t *testing.T) {
 	// EBSRequests carries a mutex, so each VM gets its own rather than a copy.
 	withDrive := func(v *VM) *VM {
-		v.EBSRequests.Requests = []types.EBSRequest{
+		v.EBSRequests.Requests = []EBSRequest{
 			{Name: "vol-boot", NBDURI: "nbd+unix:///?socket=/run/spinifex/nbd/boot.sock", Boot: true},
 		}
 		return v

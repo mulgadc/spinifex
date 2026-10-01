@@ -6,7 +6,6 @@ package vm
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +47,7 @@ func TestForgetSuperseded_GivesUpTheVolumesWithoutSealingThem(t *testing.T) {
 	m.SetDeps(Deps{NodeID: "node-1", StateStore: newFakeStateStore(), VolumeMounter: mounter})
 
 	instance := &VM{ID: "i-moved", InstanceType: "t3.micro"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-root"}}
+	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root"}}
 	m.Insert(instance)
 
 	m.ForgetSuperseded(instance)
@@ -69,7 +68,7 @@ func TestForgetSuperseded_DropsTheInstanceEvenIfTheVolumesRefuse(t *testing.T) {
 	m.SetDeps(Deps{NodeID: "node-1", StateStore: newFakeStateStore(), VolumeMounter: mounter})
 
 	instance := &VM{ID: "i-moved", InstanceType: "t3.micro"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-root"}}
+	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root"}}
 	m.Insert(instance)
 
 	m.ForgetSuperseded(instance)

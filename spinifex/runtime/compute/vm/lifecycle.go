@@ -21,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -376,7 +375,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 // mistake a live writer for an available volume.
 func (m *Manager) markAttachedVolumesInUse(instance *VM) error {
 	instance.EBSRequests.Mu.Lock()
-	requests := append([]types.EBSRequest(nil), instance.EBSRequests.Requests...)
+	requests := append([]EBSRequest(nil), instance.EBSRequests.Requests...)
 	instance.EBSRequests.Mu.Unlock()
 
 	for _, ebsReq := range requests {
@@ -901,7 +900,7 @@ func qmpGreetingTimeout(v *VM) time.Duration {
 // monitor answers. Every production guest boots from one; a VM without is a
 // unit test.
 func hasNetworkBackedDrive(v *VM) bool {
-	return slices.ContainsFunc(v.EBSRequests.Requests, func(req types.EBSRequest) bool {
+	return slices.ContainsFunc(v.EBSRequests.Requests, func(req EBSRequest) bool {
 		return req.NBDURI != ""
 	})
 }
@@ -1460,7 +1459,7 @@ type driveConfig struct {
 // (state written before hot-plug port accounting existed, or a volume
 // attached at RunInstances time) gets one allocated and written back, so a
 // later relaunch reuses the same port instead of reallocating it.
-func buildDrives(requests []types.EBSRequest, cpuCount int, machineType string) (driveConfig, error) {
+func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (driveConfig, error) {
 	var cfg driveConfig
 
 	for i := range requests {

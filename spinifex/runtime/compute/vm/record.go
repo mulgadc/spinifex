@@ -6,7 +6,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // InstanceRecord is the persisted form of an instance under the per-resource
@@ -95,9 +94,9 @@ type InstanceStatus struct {
 	// The request slices are carried without their mutexes: a lock is process
 	// state, not something a record describes. The wrappers are rebuilt with
 	// fresh locks on the way back.
-	EBSRequests       []types.EBSRequest `json:"ebs_requests,omitempty"`
-	ENIAvailableSlots []int              `json:"eni_available_slots,omitempty"`
-	ENIAttachedByID   map[string]int     `json:"eni_attached_by_id,omitempty"`
+	EBSRequests       []EBSRequest   `json:"ebs_requests,omitempty"`
+	ENIAvailableSlots []int          `json:"eni_available_slots,omitempty"`
+	ENIAttachedByID   map[string]int `json:"eni_attached_by_id,omitempty"`
 }
 
 // Record projects a VM onto the persisted record. QMPClient and the request

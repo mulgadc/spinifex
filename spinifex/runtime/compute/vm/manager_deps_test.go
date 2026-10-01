@@ -6,8 +6,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // fakeStateStore is a minimal in-memory StateStore used to verify Deps wiring.
@@ -178,7 +176,7 @@ func (f *fakeVolumeMounter) Abandon(_ context.Context, v *VM, _ string) error {
 	return err
 }
 
-func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *types.EBSRequest) error {
+func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *EBSRequest) error {
 	f.mu.Lock()
 	f.mountedOne = append(f.mountedOne, req.Name)
 	mountOneErr := f.mountOneErr
@@ -193,7 +191,7 @@ func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *types.EBS
 	return nil
 }
 
-func (f *fakeVolumeMounter) UnmountOne(_ context.Context, _ string, req types.EBSRequest) error {
+func (f *fakeVolumeMounter) UnmountOne(_ context.Context, _ string, req EBSRequest) error {
 	f.mu.Lock()
 	f.unmountedOne = append(f.unmountedOne, req.Name)
 	err := f.unmountOneErr

@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -24,7 +25,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -1858,7 +1858,7 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 			DisableApiTermination: aws.Bool(true),
 		},
 	}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-001", DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -1969,7 +1969,7 @@ func TestTerminateStoppedInstance_RetriesStoppedDelete(t *testing.T) {
 func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	id := "i-vol"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-user-001", DeleteOnTermination: true},
 		{Name: "vol-keep-001", DeleteOnTermination: false},
 	}
@@ -1992,7 +1992,7 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 	id := "i-teardown-done"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2016,7 +2016,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *testing.T) {
 	id := "i-teardown-failed"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-root-002", Boot: true, DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2041,7 +2041,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *te
 func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
 	id := "i-nondot-boot"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-root-nondot", Boot: true, DeleteOnTermination: false},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2065,7 +2065,7 @@ func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.
 func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.T) {
 	id := "i-nondot-data"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-data-nondot", DeleteOnTermination: false},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2087,7 +2087,7 @@ func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.
 func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *testing.T) {
 	id := "i-nondot-gone"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-data-gone", DeleteOnTermination: false},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2105,7 +2105,7 @@ func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *test
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
 	id := "i-no-vd"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-user-001", DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2119,7 +2119,7 @@ func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
 func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
 	id := "i-int-vol"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []spxtypes.EBSRequest{
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-efi-001", EFI: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2127,7 +2127,7 @@ func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
 	nc := embeddedNATS(t)
 	var ebsDeleted []string
 	sub, err := nc.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req spxtypes.EBSDeleteRequest
+		var req viperblocklegacyv1.EBSDeleteRequest
 		_ = json.Unmarshal(msg.Data, &req)
 		ebsDeleted = append(ebsDeleted, req.Volume)
 		_ = msg.Respond([]byte(`{"Success":true}`))
@@ -2676,11 +2676,15 @@ func TestStartStoppedInstance_ClaimConflict(t *testing.T) {
 // fails fast and deterministically without touching a real qemu process.
 type raceVolumeMounter struct{}
 
-func (raceVolumeMounter) Mount(context.Context, *vm.VM) error                           { return nil }
-func (raceVolumeMounter) Unmount(context.Context, *vm.VM) error                         { return nil }
-func (raceVolumeMounter) Abandon(context.Context, *vm.VM, string) error                 { return nil }
-func (raceVolumeMounter) MountOne(context.Context, string, *spxtypes.EBSRequest) error  { return nil }
-func (raceVolumeMounter) UnmountOne(context.Context, string, spxtypes.EBSRequest) error { return nil }
+func (raceVolumeMounter) Mount(context.Context, *vm.VM) error           { return nil }
+func (raceVolumeMounter) Unmount(context.Context, *vm.VM) error         { return nil }
+func (raceVolumeMounter) Abandon(context.Context, *vm.VM, string) error { return nil }
+func (raceVolumeMounter) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
+	return nil
+}
+func (raceVolumeMounter) UnmountOne(context.Context, string, viperblocklegacyv1.EBSRequest) error {
+	return nil
+}
 
 // TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
 // the double-start bug this claim closes: two nodes (or a forwarded call

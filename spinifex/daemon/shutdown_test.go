@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -671,14 +671,14 @@ func TestHandleShutdownDrain(t *testing.T) {
 // stubEBSUnmount answers the daemon's ebs.<node>.unmount subject with a fixed
 // response, standing in for viperblockd. Returns the volumes it was asked to
 // unmount once the subscription has been drained.
-func stubEBSUnmount(t *testing.T, d *Daemon, resp types.EBSUnMountResponse) func() []string {
+func stubEBSUnmount(t *testing.T, d *Daemon, resp viperblocklegacyv1.EBSUnMountResponse) func() []string {
 	t.Helper()
 	var (
 		mu      sync.Mutex
 		volumes []string
 	)
 	sub, err := d.natsConn.Subscribe("ebs."+d.node+".unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		require.NoError(t, json.Unmarshal(msg.Data, &req))
 		mu.Lock()
 		volumes = append(volumes, req.Name)
@@ -704,7 +704,7 @@ func stubEBSUnmount(t *testing.T, d *Daemon, resp types.EBSUnMountResponse) func
 // a boot volume attached, and drain-stopped rather than operator-stopped.
 func drainRunningInstance(id, volume string) *vm.VM {
 	instance := &vm.VM{ID: id, Status: vm.StateRunning, AccountID: "111122223333"}
-	instance.EBSRequests.Requests = []types.EBSRequest{
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: volume, VolType: ebspolicy.VolumeTypeGP3, Boot: true},
 	}
 	return instance
@@ -723,7 +723,7 @@ func TestHandleShutdownDrain_SealFailure(t *testing.T) {
 		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
-		unmounted := stubEBSUnmount(t, daemon, types.EBSUnMountResponse{
+		unmounted := stubEBSUnmount(t, daemon, viperblocklegacyv1.EBSUnMountResponse{
 			Mounted: true,
 			Error:   "seal volume to predastore: transfer stalled: idle timeout",
 		})
@@ -762,7 +762,7 @@ func TestHandleShutdownDrain_SealFailure(t *testing.T) {
 		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
-		unmounted := stubEBSUnmount(t, daemon, types.EBSUnMountResponse{})
+		unmounted := stubEBSUnmount(t, daemon, viperblocklegacyv1.EBSUnMountResponse{})
 		instance := drainRunningInstance("i-drain-seal-ok", "vol-drain-seal-ok")
 		daemon.vmMgr.Insert(instance)
 

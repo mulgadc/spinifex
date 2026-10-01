@@ -11,7 +11,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,8 +103,8 @@ func TestDetachVolume_KeysStateOnTheInstanceAccount(t *testing.T) {
 	m.Insert(&VM{
 		ID: "i-1", Status: StateRunning, Instance: &ec2.Instance{},
 		QMPClient: qmpClient, AccountID: stateAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		EBSRequests: EBSRequests{
+			Requests: []EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
 		},
 	})
 

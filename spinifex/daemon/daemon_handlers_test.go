@@ -42,7 +42,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -3153,7 +3152,7 @@ func TestDetachVolume_BootVolumeRejected(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 	}
-	instance.EBSRequests.Requests = []types.EBSRequest{
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-boot-001", Boot: true, DeviceName: "/dev/sda1"},
 	}
 	daemon.vmMgr.Insert(instance)
@@ -3197,7 +3196,7 @@ func TestDetachVolume_DeviceMismatch(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 	}
-	instance.EBSRequests.Requests = []types.EBSRequest{
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
 		{Name: "vol-mismatch-001", DeviceName: "/dev/sdf"},
 	}
 	daemon.vmMgr.Insert(instance)

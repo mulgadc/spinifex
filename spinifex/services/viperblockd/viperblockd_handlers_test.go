@@ -10,7 +10,6 @@ import (
 	"time"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/file"
 	"github.com/nats-io/nats.go"
@@ -74,11 +73,11 @@ func TestIntegration_EBSDeleteMountedVolume(t *testing.T) {
 
 	startTestService(t, cfg)
 
-	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-del-test"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: "vol-del-test"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 
 	assert.Equal(t, "vol-del-test", resp.Volume)
@@ -115,11 +114,11 @@ func TestIntegration_EBSDeleteUnmountedVolume(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-not-mounted"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: "vol-not-mounted"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.True(t, resp.Success)
 }
@@ -156,11 +155,11 @@ func TestIntegration_EBSDeleteRemovesLocalVolumeDirectory(t *testing.T) {
 	defer nc.Close()
 
 	for _, volume := range []string{"vol-residual-test", "vol-residual-test-efi"} {
-		reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: volume})
+		reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: volume})
 		msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 		require.NoError(t, err)
 
-		var resp types.EBSDeleteResponse
+		var resp viperblocklegacyv1.EBSDeleteResponse
 		require.NoError(t, json.Unmarshal(msg.Data, &resp))
 		assert.True(t, resp.Success)
 
@@ -192,11 +191,11 @@ func TestIntegration_EBSDeleteEmptyVolumeNameDoesNotWipeBaseDir(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: ""})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ""})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.False(t, resp.Success, "an empty volume name must not report success")
 	assert.NotEmpty(t, resp.Error)
@@ -229,11 +228,11 @@ func TestIntegration_EBSDeleteRejectsPathTraversal(t *testing.T) {
 	defer nc.Close()
 
 	for _, name := range []string{"../..", "a/b"} {
-		reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: name})
+		reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: name})
 		msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 		require.NoError(t, err)
 
-		var resp types.EBSDeleteResponse
+		var resp viperblocklegacyv1.EBSDeleteResponse
 		require.NoError(t, json.Unmarshal(msg.Data, &resp))
 		assert.False(t, resp.Success, "volume name %q must not report success", name)
 		assert.NotEmpty(t, resp.Error, "volume name %q must return an error", name)
@@ -265,11 +264,11 @@ func TestIntegration_EBSDeleteValidNameLeavesSiblingsUntouched(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-target"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: "vol-target"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.True(t, resp.Success)
 	assert.Empty(t, resp.Error)
@@ -300,7 +299,7 @@ func TestIntegration_EBSDeleteInvalidJSON(t *testing.T) {
 	msg, err := nc.Request("ebs.delete", []byte("not json {{{"), 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Contains(t, resp.Error, "bad request:")
 }
@@ -420,11 +419,11 @@ func TestIntegration_EBSUnmountRemovesSocket(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSRequest{Name: "vol-unmount-socket"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-unmount-socket"})
 	msg, err := nc.Request("ebs.test-node.unmount", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Empty(t, resp.Error)
 
@@ -457,11 +456,11 @@ func TestIntegration_EBSDeleteRemovesSocket(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-del-socket"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: "vol-del-socket"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.True(t, resp.Success)
 	assert.False(t, fileExistsCheck(socketPath))
@@ -524,7 +523,7 @@ func TestIntegration_EBSUnmountInvalidJSON(t *testing.T) {
 	msg, err := nc.Request("ebs.test-node.unmount", []byte("not json {{{"), 1*time.Second)
 	require.NoError(t, err, "handler should respond even on invalid JSON")
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Contains(t, resp.Error, "bad request")
 }
@@ -566,11 +565,11 @@ func TestIntegration_EBSDeleteWithVBInstance(t *testing.T) {
 
 	startTestService(t, cfg)
 
-	reqData, _ := json.Marshal(types.EBSDeleteRequest{Volume: "vol-del-vb"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: "vol-del-vb"})
 	msg, err := nc.Request("ebs.delete", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSDeleteResponse
+	var resp viperblocklegacyv1.EBSDeleteResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.True(t, resp.Success)
 	assert.Empty(t, resp.Error)
@@ -617,11 +616,11 @@ func TestIntegration_EBSUnmountWithVBInstance(t *testing.T) {
 
 	startTestService(t, cfg)
 
-	reqData, _ := json.Marshal(types.EBSRequest{Name: "vol-unmount-vb"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-unmount-vb"})
 	msg, err := nc.Request("ebs.test-node.unmount", reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Equal(t, "vol-unmount-vb", resp.Volume)
 	assert.False(t, resp.Mounted)
@@ -662,12 +661,12 @@ func TestIntegration_EBSUnmountDualPublish(t *testing.T) {
 	require.NoError(t, err)
 	nc.Flush()
 
-	reqData, _ := json.Marshal(types.EBSRequest{Name: "vol-dual-pub"})
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-dual-pub"})
 	msg, err := nc.Request("ebs.test-node.unmount", reqData, 3*time.Second)
 	require.NoError(t, err)
 
 	// Verify direct reply
-	var directResp types.EBSUnMountResponse
+	var directResp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &directResp))
 	assert.Equal(t, "vol-dual-pub", directResp.Volume)
 	assert.False(t, directResp.Mounted)
@@ -675,7 +674,7 @@ func TestIntegration_EBSUnmountDualPublish(t *testing.T) {
 	// Verify broadcast response received
 	select {
 	case broadcastMsg := <-broadcastCh:
-		var broadcastResp types.EBSUnMountResponse
+		var broadcastResp viperblocklegacyv1.EBSUnMountResponse
 		require.NoError(t, json.Unmarshal(broadcastMsg.Data, &broadcastResp))
 		assert.Equal(t, "vol-dual-pub", broadcastResp.Volume)
 	case <-time.After(2 * time.Second):

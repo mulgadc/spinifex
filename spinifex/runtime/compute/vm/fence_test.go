@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +18,7 @@ func vmUsingVolume(id, volumeID string) *VM {
 		ID:          id,
 		Status:      StateRunning,
 		Instance:    &ec2.Instance{},
-		EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{{Name: volumeID}}},
+		EBSRequests: EBSRequests{Requests: []EBSRequest{{Name: volumeID}}},
 	}
 }
 
@@ -109,7 +108,7 @@ func TestInstanceUsingVolume_MatchesOnAnyAttachedVolume(t *testing.T) {
 	instance := &VM{
 		ID:     "i-multi",
 		Status: StateRunning,
-		EBSRequests: types.EBSRequests{Requests: []types.EBSRequest{
+		EBSRequests: EBSRequests{Requests: []EBSRequest{
 			{Name: "vol-root"}, {Name: "vol-data"},
 		}},
 	}

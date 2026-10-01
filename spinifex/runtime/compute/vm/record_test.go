@@ -12,7 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -236,7 +235,7 @@ func populatedVM() *vm.VM {
 
 		QMPClient: &qmp.QMPClient{},
 	}
-	v.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-1", Boot: true}}
+	v.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-1", Boot: true}}
 	v.ENIRequests.AvailableSlots = []int{1, 2}
 	v.ENIRequests.AttachedByENIID = map[string]int{"eni-1": 0}
 	return v

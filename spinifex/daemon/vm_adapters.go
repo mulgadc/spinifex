@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -20,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -114,10 +114,6 @@ func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeState
 	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
 }
 
-func (a *volumeMounterAdapter) topic(action string) string {
-	return fmt.Sprintf("ebs.%s.%s", a.node, action)
-}
-
 // ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
 // ctx and injecting it into the message headers so viperblockd's consumer span
 // (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
@@ -185,7 +181,7 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 			return rollback(err)
 		}
 
-		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("mount"), ebsMountRequest, 30*time.Second)
+		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.MountSubject(a.node), ebsMountRequest, 30*time.Second)
 
 		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
 
@@ -199,7 +195,7 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 			return rollback(err)
 		}
 
-		var ebsMountResponse types.EBSMountResponse
+		var ebsMountResponse viperblocklegacyv1.EBSMountResponse
 		if err := json.Unmarshal(reply.Data, &ebsMountResponse); err != nil {
 			slog.Error("Failed to unmarshal volume response:", "err", err)
 			return rollback(err)
@@ -239,7 +235,7 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		// volume must NOT go available, because a reattach on a node without
 		// the local WAL would find no checkpoint (bad superblock).
 		sealed := true
-		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
+		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.UnmountSubject(a.node), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
@@ -320,18 +316,18 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 
 // MountOne sends ebs.mount for a single request and writes the resolved
 // NBDURI back into req.NBDURI. Used by hot-attach (Manager.AttachVolume).
-func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *types.EBSRequest) error {
+func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal ebs.mount request: %w", err)
 	}
 
-	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, a.topic("mount"), payload, 30*time.Second)
+	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.MountSubject(a.node), payload, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("ebs.mount NATS request: %w", err)
 	}
 
-	var resp types.EBSMountResponse
+	var resp viperblocklegacyv1.EBSMountResponse
 	if err := json.Unmarshal(reply.Data, &resp); err != nil {
 		return fmt.Errorf("unmarshal ebs.mount response: %w", err)
 	}
@@ -349,7 +345,7 @@ func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, r
 // UnmountOne sends ebs.unmount and returns any error. The handler seals the
 // volume's block map to predastore, so the caller decides whether a failure
 // blocks the volume's available transition.
-func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req types.EBSRequest) error {
+func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
 	if err := a.unmountOne(ctx, accountID, req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return err
@@ -359,12 +355,12 @@ func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string,
 }
 
 // unmountOne sends ebs.unmount and returns any error.
-func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req types.EBSRequest) error {
+func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, a.topic("unmount"), payload, unmountSealTimeout)
+	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.UnmountSubject(a.node), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
@@ -378,7 +374,7 @@ func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string,
 // reports NotFound once the seal itself has completed, so a retry landing
 // here is an idempotent success, not a failure.
 func unmountResponseError(data []byte) error {
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("unmarshal unmount response: %w", err)
 	}
@@ -730,7 +726,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 		// viperblockd processes. S3 data is cleaned up via the parent root
 		// volume's DeleteVolume (which removes the -efi/ prefix).
 		if ebsRequest.EFI {
-			ebsDeleteData, err := json.Marshal(types.EBSDeleteRequest{Volume: ebsRequest.Name})
+			ebsDeleteData, err := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.Error("Failed to marshal ebs.delete request for internal volume",
 					"name", ebsRequest.Name, "err", err)
@@ -741,7 +737,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 			// of which has a caller to inherit a trace from. The account still
 			// comes off the instance, so the work stays attributable.
 			deleteMsg, err := ebsRequestWithTrace(context.Background(), a.d.natsConn, instance.AccountID,
-				"ebs.delete", ebsDeleteData, 30*time.Second)
+				viperblocklegacyv1.DeleteSubject, ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)

@@ -18,7 +18,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // InstanceHealthState tracks crash detection and auto-restart metadata for a VM.
@@ -87,8 +86,8 @@ type VM struct {
 	InstanceType string        `json:"instance_type"`
 	Config       Config        `json:"config"`
 
-	EBSRequests types.EBSRequests `json:"ebs_requests"`
-	ENIRequests ENIRequests       `json:"eni_requests"`
+	EBSRequests EBSRequests `json:"ebs_requests"`
+	ENIRequests ENIRequests `json:"eni_requests"`
 
 	QMPClient *qmp.QMPClient `json:"-"`
 

@@ -18,7 +18,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +28,7 @@ import (
 // failures can identify which entry tripped a probe.
 func withNBDRequests(id string, status InstanceState, uris ...string) *VM {
 	v := &VM{ID: id, Status: status}
-	v.EBSRequests.Requests = make([]types.EBSRequest, len(uris))
+	v.EBSRequests.Requests = make([]EBSRequest, len(uris))
 	for i, uri := range uris {
 		v.EBSRequests.Requests[i].Name = "vol-" + string(rune('a'+i))
 		v.EBSRequests.Requests[i].NBDURI = uri
@@ -646,10 +645,10 @@ func (f *recoveryMounter) Mount(_ context.Context, v *VM) error {
 	return nil
 }
 
-func (f *recoveryMounter) Unmount(context.Context, *VM) error                         { return nil }
-func (f *recoveryMounter) Abandon(context.Context, *VM, string) error                 { return nil }
-func (f *recoveryMounter) MountOne(context.Context, string, *types.EBSRequest) error  { return nil }
-func (f *recoveryMounter) UnmountOne(context.Context, string, types.EBSRequest) error { return nil }
+func (f *recoveryMounter) Unmount(context.Context, *VM) error                   { return nil }
+func (f *recoveryMounter) Abandon(context.Context, *VM, string) error           { return nil }
+func (f *recoveryMounter) MountOne(context.Context, string, *EBSRequest) error  { return nil }
+func (f *recoveryMounter) UnmountOne(context.Context, string, EBSRequest) error { return nil }
 
 var _ VolumeMounter = (*recoveryMounter)(nil)
 
@@ -1187,7 +1186,7 @@ func TestReconnectInstance(t *testing.T) {
 		attachQMPForReconnect = func(_ *Manager, v *VM) error { fakeAttachQMP(t, v); return nil }
 
 		instance := &VM{ID: "i-reconnect-vol", Status: StatePending}
-		instance.EBSRequests.Requests = []types.EBSRequest{
+		instance.EBSRequests.Requests = []EBSRequest{
 			{Name: "vol-root", Boot: true},
 			{Name: "vol-data", Boot: false, DeviceName: "/dev/sdf"},
 		}

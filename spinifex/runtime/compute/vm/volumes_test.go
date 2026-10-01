@@ -18,7 +18,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -262,8 +261,8 @@ func TestNextAvailableDevice(t *testing.T) {
 			name: "existing EBSRequests skipped",
 			instance: &VM{
 				Instance: &ec2.Instance{},
-				EBSRequests: types.EBSRequests{
-					Requests: []types.EBSRequest{
+				EBSRequests: EBSRequests{
+					Requests: []EBSRequest{
 						{Name: "vol-1", DeviceName: "/dev/sdf"},
 					},
 				},
@@ -278,8 +277,8 @@ func TestNextAvailableDevice(t *testing.T) {
 						{DeviceName: aws.String("/dev/sdf")},
 					},
 				},
-				EBSRequests: types.EBSRequests{
-					Requests: []types.EBSRequest{
+				EBSRequests: EBSRequests{
+					Requests: []EBSRequest{
 						{Name: "vol-1", DeviceName: "/dev/sdg"},
 					},
 				},
@@ -317,8 +316,8 @@ func TestNextAvailableDevice(t *testing.T) {
 		{
 			name: "empty DeviceName in EBSRequests ignored",
 			instance: &VM{
-				EBSRequests: types.EBSRequests{
-					Requests: []types.EBSRequest{
+				EBSRequests: EBSRequests{
+					Requests: []EBSRequest{
 						{DeviceName: ""},
 						{DeviceName: "/dev/sdf"},
 					},
@@ -452,7 +451,7 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 func TestDetachVolume_DeviceGuards(t *testing.T) {
 	tests := []struct {
 		name           string
-		req            types.EBSRequest
+		req            EBSRequest
 		requestDevice  string
 		expectQMP      bool
 		wantErr        error
@@ -460,32 +459,32 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 	}{
 		{
 			name:          "boot volume rejected",
-			req:           types.EBSRequest{Name: "vol-boot", Boot: true, DeviceName: "/dev/sdf"},
+			req:           EBSRequest{Name: "vol-boot", Boot: true, DeviceName: "/dev/sdf"},
 			requestDevice: "",
 			wantErr:       ErrVolumeNotDetachable,
 		},
 		{
 			name:          "EFI volume rejected",
-			req:           types.EBSRequest{Name: "vol-efi", EFI: true, DeviceName: "/dev/sdf"},
+			req:           EBSRequest{Name: "vol-efi", EFI: true, DeviceName: "/dev/sdf"},
 			requestDevice: "",
 			wantErr:       ErrVolumeNotDetachable,
 		},
 		{
 			name:           "device mismatch surfaces expected and actual",
-			req:            types.EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
+			req:            EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
 			requestDevice:  "/dev/sdg",
 			wantErr:        ErrVolumeDeviceMismatch,
 			wantErrSubstrs: []string{"/dev/sdg", "/dev/sdf"},
 		},
 		{
 			name:          "empty device skips cross-check and proceeds",
-			req:           types.EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
+			req:           EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
 			requestDevice: "",
 			expectQMP:     true,
 		},
 		{
 			name:          "matching device passes cross-check and proceeds",
-			req:           types.EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
+			req:           EBSRequest{Name: "vol-1", DeviceName: "/dev/sdf"},
 			requestDevice: "/dev/sdf",
 			expectQMP:     true,
 		},
@@ -507,8 +506,8 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 				Status:    StateRunning,
 				Instance:  &ec2.Instance{},
 				QMPClient: qmpClient,
-				EBSRequests: types.EBSRequests{
-					Requests: []types.EBSRequest{tt.req},
+				EBSRequests: EBSRequests{
+					Requests: []EBSRequest{tt.req},
 				},
 			})
 
@@ -566,8 +565,8 @@ func TestDetachVolume_SealFailureGatesAvailable(t *testing.T) {
 		Status:    StateRunning,
 		Instance:  &ec2.Instance{},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		EBSRequests: EBSRequests{
+			Requests: []EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
 		},
 	})
 
@@ -1494,8 +1493,8 @@ func TestDetachVolume_WaitsForDeviceDeletedBeforeBlockdevDel(t *testing.T) {
 		Status:    StateRunning,
 		Instance:  &ec2.Instance{},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		EBSRequests: EBSRequests{
+			Requests: []EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
 		},
 	})
 
@@ -1543,8 +1542,8 @@ func TestDetachVolume_DeviceDeletedTimeout_FallsBackToRetry(t *testing.T) {
 		Status:    StateRunning,
 		Instance:  &ec2.Instance{},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		EBSRequests: EBSRequests{
+			Requests: []EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
 		},
 	})
 
@@ -1581,8 +1580,8 @@ func TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals(t *testing.T) {
 		Status:    StateRunning,
 		Instance:  &ec2.Instance{},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		EBSRequests: EBSRequests{
+			Requests: []EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
 		},
 	})
 
@@ -1617,8 +1616,8 @@ func TestDetachVolume_BlockdevDelAlreadyRemoved_IdempotentSuccess(t *testing.T) 
 		Status:    StateRunning,
 		Instance:  &ec2.Instance{},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
+		EBSRequests: EBSRequests{
+			Requests: []EBSRequest{{Name: "vol-1", DeviceName: "/dev/sdf"}},
 		},
 	})
 

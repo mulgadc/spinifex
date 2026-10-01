@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +47,7 @@ func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
 	headerCh := make(chan nats.Header, 1)
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
 		headerCh <- msg.Header
-		resp := types.EBSMountResponse{URI: "nbd://traced-vol"}
+		resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://traced-vol"}
 		data, marshalErr := json.Marshal(resp)
 		require.NoError(t, marshalErr)
 		require.NoError(t, msg.Respond(data))
@@ -56,7 +56,7 @@ func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	req := &types.EBSRequest{Name: "vol-traced", DeviceName: "/dev/sdf"}
+	req := &viperblocklegacyv1.EBSRequest{Name: "vol-traced", DeviceName: "/dev/sdf"}
 	require.NoError(t, adapter.MountOne(t.Context(), "", req))
 
 	hdr := <-headerCh
@@ -79,7 +79,7 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 		_, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 
-		resp := types.EBSUnMountResponse{}
+		resp := viperblocklegacyv1.EBSUnMountResponse{}
 		data, marshalErr := json.Marshal(resp)
 		require.NoError(t, marshalErr)
 		require.NoError(t, msg.Respond(data))
@@ -88,7 +88,7 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	require.NoError(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-linked"}))
+	require.NoError(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-linked"}))
 
 	spans := sr.Ended()
 	require.Len(t, spans, 2, "expected one producer span and one consumer span")
@@ -121,7 +121,7 @@ func mountOnceOn(t *testing.T, nc *nats.Conn, subject string) <-chan nats.Header
 	headerCh := make(chan nats.Header, 1)
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		headerCh <- msg.Header
-		data, marshalErr := json.Marshal(types.EBSMountResponse{URI: "nbd://vol"})
+		data, marshalErr := json.Marshal(viperblocklegacyv1.EBSMountResponse{URI: "nbd://vol"})
 		require.NoError(t, marshalErr)
 		require.NoError(t, msg.Respond(data))
 	})
@@ -140,7 +140,7 @@ func TestEbsRequestWithTrace_JoinsTheCallersTrace(t *testing.T) {
 
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
-	require.NoError(t, adapter.MountOne(ctx, "000000000042", &types.EBSRequest{Name: "vol-ctx"}))
+	require.NoError(t, adapter.MountOne(ctx, "000000000042", &viperblocklegacyv1.EBSRequest{Name: "vol-ctx"}))
 	caller.End()
 
 	var producer sdktrace.ReadOnlySpan
@@ -167,7 +167,7 @@ func TestEbsRequestWithTrace_CarriesTheAccount(t *testing.T) {
 
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 	instance := &vm.VM{ID: "i-acct", AccountID: "000000000042"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-acct"}}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-acct"}}
 	require.NoError(t, adapter.Mount(t.Context(), instance))
 
 	assert.Equal(t, "000000000042", (<-headerCh).Get(utils.AccountIDHeader),
@@ -192,7 +192,7 @@ func TestEbsRequestWithTrace_OmitsAnAbsentAccount(t *testing.T) {
 	headerCh := mountOnceOn(t, daemon.natsConn, "ebs.node-1.mount")
 
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	require.NoError(t, adapter.MountOne(t.Context(), "", &types.EBSRequest{Name: "vol-none"}))
+	require.NoError(t, adapter.MountOne(t.Context(), "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
 
 	assert.Empty(t, (<-headerCh).Get(utils.AccountIDHeader),
 		"an unattributed request must not carry a blank account header")

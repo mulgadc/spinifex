@@ -21,7 +21,6 @@ import (
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
@@ -718,16 +717,16 @@ func launchService(cfg *Config) (err error) {
 		slog.Info("Waiting for EBS events (single-node mode)")
 	}
 
-	if _, err := nc.QueueSubscribe("ebs.delete", "spinifex-workers", func(msg *nats.Msg) {
+	if _, err := nc.QueueSubscribe(viperblocklegacyv1.DeleteSubject, "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 		slog.InfoContext(ctx, "Received ebs.delete message")
 
-		var ebsRequest types.EBSDeleteRequest
+		var ebsRequest viperblocklegacyv1.EBSDeleteRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
 			slog.ErrorContext(ctx, "Failed to unmarshal ebs.delete message", "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSDeleteResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSDeleteResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
@@ -738,11 +737,11 @@ func launchService(cfg *Config) (err error) {
 		if err != nil {
 			slog.ErrorContext(ctx, "ebs.delete: refusing invalid volume name", "volume", ebsRequest.Volume, "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSDeleteResponse{Volume: ebsRequest.Volume, Error: fmt.Sprintf("invalid volume name: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSDeleteResponse{Volume: ebsRequest.Volume, Error: fmt.Sprintf("invalid volume name: %v", err)})
 			return
 		}
 
-		response := types.EBSDeleteResponse{Volume: ebsRequest.Volume, Success: true}
+		response := viperblocklegacyv1.EBSDeleteResponse{Volume: ebsRequest.Volume, Success: true}
 
 		// Find and clean up the mounted volume if it exists
 		cfg.mu.Lock()
@@ -809,10 +808,7 @@ func launchService(cfg *Config) (err error) {
 	}
 
 	// Subscribe to node-specific unmount topic if NodeName is set, otherwise fall back to generic queue group
-	unmountTopic := "ebs.unmount"
-	if cfg.NodeName != "" {
-		unmountTopic = fmt.Sprintf("ebs.%s.unmount", cfg.NodeName)
-	}
+	unmountTopic := viperblocklegacyv1.UnmountSubject(cfg.NodeName)
 	unmountSubscribe := func(topic string, handler nats.MsgHandler) (*nats.Subscription, error) {
 		if cfg.NodeName != "" {
 			return nc.Subscribe(topic, handler)
@@ -824,16 +820,16 @@ func launchService(cfg *Config) (err error) {
 		defer span.End()
 		slog.InfoContext(ctx, "Received message")
 
-		var ebsRequest types.EBSRequest
+		var ebsRequest viperblocklegacyv1.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
 			slog.ErrorContext(ctx, "Failed to unmarshal ebs.unmount message", "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSUnMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSUnMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
 		ebsResponse, _ := unmountVolume(ctx, cfg, ebsRequest.Name)
-		respondAndPublish(msg, nc, "ebs.unmount.response", ebsResponse)
+		respondAndPublish(msg, nc, viperblocklegacyv1.UnmountResponseSubject, ebsResponse)
 	}); err != nil {
 		return fmt.Errorf("failed to subscribe to %s: %w", unmountTopic, err)
 	}
@@ -1001,10 +997,7 @@ func launchService(cfg *Config) (err error) {
 	// snapshot requests are routed to the node that owns the volume.
 
 	// Subscribe to node-specific mount topic if NodeName is set, otherwise fall back to generic queue group
-	mountTopic := "ebs.mount"
-	if cfg.NodeName != "" {
-		mountTopic = fmt.Sprintf("ebs.%s.mount", cfg.NodeName)
-	}
+	mountTopic := viperblocklegacyv1.MountSubject(cfg.NodeName)
 	mountSubscribe := func(topic string, handler nats.MsgHandler) (*nats.Subscription, error) {
 		if cfg.NodeName != "" {
 			return nc.Subscribe(topic, handler)
@@ -1016,11 +1009,11 @@ func launchService(cfg *Config) (err error) {
 		defer span.End()
 		slog.InfoContext(ctx, "Received message:")
 
-		var ebsRequest types.EBSRequest
+		var ebsRequest viperblocklegacyv1.EBSRequest
 		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
 			slog.ErrorContext(ctx, "Failed to unmarshal ebs.mount message", "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
@@ -1034,12 +1027,12 @@ func launchService(cfg *Config) (err error) {
 			err := fmt.Errorf("invalid volume name %q", ebsRequest.Name)
 			slog.ErrorContext(ctx, "ebs.mount: refusing invalid volume name", "volume", ebsRequest.Name)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSMountResponse{Error: err.Error()})
+			respondJSON(msg, viperblocklegacyv1.EBSMountResponse{Error: err.Error()})
 			return
 		}
 
 		ebsResponse, _ := mountVolume(ctx, cfg, nc, ebsRequest.Name, false)
-		respondAndPublish(msg, nc, "ebs.mount.response", ebsResponse)
+		respondAndPublish(msg, nc, viperblocklegacyv1.MountResponseSubject, ebsResponse)
 		if ebsResponse.Mounted {
 			slog.Debug("Sent ebs.mount response")
 		}

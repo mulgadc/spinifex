@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -331,17 +330,17 @@ func TestExtractHotplugPort(t *testing.T) {
 }
 
 func TestFreeHotplugEBSPort(t *testing.T) {
-	mk := func(ports ...int) []types.EBSRequest {
-		reqs := make([]types.EBSRequest, 0, len(ports))
+	mk := func(ports ...int) []EBSRequest {
+		reqs := make([]EBSRequest, 0, len(ports))
 		for _, p := range ports {
-			reqs = append(reqs, types.EBSRequest{HotplugPort: p})
+			reqs = append(reqs, EBSRequest{HotplugPort: p})
 		}
 		return reqs
 	}
 
 	tests := []struct {
 		name string
-		reqs []types.EBSRequest
+		reqs []EBSRequest
 		want int
 	}{
 		{name: "empty pool returns 1", reqs: nil, want: 1},
@@ -358,9 +357,9 @@ func TestFreeHotplugEBSPort(t *testing.T) {
 	}
 
 	t.Run("exhausted pool returns 0", func(t *testing.T) {
-		full := make([]types.EBSRequest, 0, EBSHotPlugSlotCount)
+		full := make([]EBSRequest, 0, EBSHotPlugSlotCount)
 		for p := 1; p <= EBSHotPlugSlotCount; p++ {
-			full = append(full, types.EBSRequest{HotplugPort: p})
+			full = append(full, EBSRequest{HotplugPort: p})
 		}
 		assert.Equal(t, 0, freeHotplugEBSPort(full))
 	})
@@ -411,7 +410,7 @@ func TestLogGuestDeviceMap_LeavesBlockDeviceMappingsAlone(t *testing.T) {
 		},
 		QMPClient: qmpClient,
 	}
-	instance.EBSRequests.Requests = []types.EBSRequest{
+	instance.EBSRequests.Requests = []EBSRequest{
 		{Name: "vol-root", Boot: true},
 		{Name: "vol-1", DeviceName: "/dev/sdf"},
 	}

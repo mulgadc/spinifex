@@ -35,6 +35,22 @@ every modification has reached its owning mount.
 The route carries `EBSSyncRequest` and `EBSSyncResponse`. Their JSON shape and
 the queue-group route are compatibility behaviour.
 
+## Volume lifecycle routes
+
+`MountSubject(node)` and `UnmountSubject(node)` retain the deployed mount and
+unmount routes. With a node name they address that node's Viperblockd process
+(`ebs.<node>.mount` or `ebs.<node>.unmount`); without one they retain the
+single-node `spinifex-workers` queue-group routes. Both carry `EBSRequest`.
+`EBSMountResponse` supplies the exported NBD URI, while
+`EBSUnMountResponse` reports the seal result. The response broadcasts remain
+`ebs.mount.response` and `ebs.unmount.response` alongside ordinary
+request/reply replies.
+
+`DeleteSubject` retains the `ebs.delete` queue-group route. It carries
+`EBSDeleteRequest` and responds with `EBSDeleteResponse` after Viperblockd has
+removed its local state and export. These routes and JSON shapes are deployed
+legacy compatibility behaviour, not a generic EBS-provider interface.
+
 This package does not authorize requests, validate a volume ID, store volume
 state, or define the generic storage-provider API. Those concerns remain with
 the consuming daemon, the EC2 domain, and `providers/ebs` respectively.

@@ -12,8 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/nats-io/nats.go"
@@ -28,11 +28,13 @@ type refusingMounter struct{}
 
 func (refusingMounter) Mount(context.Context, *vm.VM) error   { return errors.New("no volumes here") }
 func (refusingMounter) Unmount(context.Context, *vm.VM) error { return nil }
-func (refusingMounter) MountOne(context.Context, string, *types.EBSRequest) error {
+func (refusingMounter) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
 	return nil
 }
-func (refusingMounter) Abandon(context.Context, *vm.VM, string) error              { return nil }
-func (refusingMounter) UnmountOne(context.Context, string, types.EBSRequest) error { return nil }
+func (refusingMounter) Abandon(context.Context, *vm.VM, string) error { return nil }
+func (refusingMounter) UnmountOne(context.Context, string, viperblocklegacyv1.EBSRequest) error {
+	return nil
+}
 
 // startFixture builds a stopped instance whose address went back to the pool,
 // wired to fakes for everything the re-assignment touches. vmMgr.Run always

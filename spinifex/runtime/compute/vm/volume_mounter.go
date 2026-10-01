@@ -2,8 +2,6 @@ package vm
 
 import (
 	"context"
-
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // VolumeMounter mounts and unmounts the EBS volumes attached to a VM. The
@@ -36,9 +34,9 @@ type VolumeMounter interface {
 	// MountOne sends ebs.mount for a single request and writes the resolved
 	// NBDURI back into req.NBDURI on success. Used by hot-attach. accountID
 	// names the owner, which a lone request carries no instance to supply.
-	MountOne(ctx context.Context, accountID string, req *types.EBSRequest) error
+	MountOne(ctx context.Context, accountID string, req *EBSRequest) error
 	// UnmountOne sends ebs.unmount for a single request and returns any error.
 	// ebs.unmount drives the synchronous block-map seal to predastore, so hot
 	// detach gates the volume's available transition on the returned error.
-	UnmountOne(ctx context.Context, accountID string, req types.EBSRequest) error
+	UnmountOne(ctx context.Context, accountID string, req EBSRequest) error
 }

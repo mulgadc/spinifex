@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 )
 
 // pciAddrRegexp extracts the device index from a boot-time QDev path.
@@ -235,7 +234,7 @@ func nextAvailableDevice(instance *VM) string {
 // devices by id, not by bus, so a live query-block scan cannot tell which port
 // is occupied. Callers must hold the EBSRequests lock; serialize the matching
 // device_add under attachMu so allocation and use are atomic.
-func freeHotplugEBSPort(reqs []types.EBSRequest) int {
+func freeHotplugEBSPort(reqs []EBSRequest) int {
 	used := make(map[int]bool, len(reqs))
 	for _, r := range reqs {
 		if r.HotplugPort > 0 {

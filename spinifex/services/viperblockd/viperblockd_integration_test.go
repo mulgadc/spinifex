@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
@@ -235,7 +235,7 @@ func TestIntegration_EBSMountRequest(t *testing.T) {
 	nc.Flush()
 
 	// Create mount request
-	request := types.EBSRequest{
+	request := viperblocklegacyv1.EBSRequest{
 		Name:    "vol-test-001",
 		VolType: "gp3",
 		Boot:    false,
@@ -254,7 +254,7 @@ func TestIntegration_EBSMountRequest(t *testing.T) {
 		return
 	}
 
-	var response types.EBSMountResponse
+	var response viperblocklegacyv1.EBSMountResponse
 	err = json.Unmarshal(msg.Data, &response)
 	assert.NoError(t, err)
 
@@ -301,7 +301,7 @@ func TestIntegration_EBSUnmountRequest(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Create unmount request
-	request := types.EBSRequest{
+	request := viperblocklegacyv1.EBSRequest{
 		Name: "vol-test-unmount",
 	}
 
@@ -314,7 +314,7 @@ func TestIntegration_EBSUnmountRequest(t *testing.T) {
 	assert.NotNil(t, msg)
 
 	// Parse response
-	var response types.EBSUnMountResponse
+	var response viperblocklegacyv1.EBSUnMountResponse
 	err = json.Unmarshal(msg.Data, &response)
 	assert.NoError(t, err)
 
@@ -352,7 +352,7 @@ func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
 	defer nc.Close()
 
 	// Create unmount request for non-existent volume
-	request := types.EBSRequest{
+	request := viperblocklegacyv1.EBSRequest{
 		Name: "vol-does-not-exist",
 	}
 
@@ -365,7 +365,7 @@ func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
 	assert.NotNil(t, msg)
 
 	// Parse response
-	var response types.EBSUnMountResponse
+	var response viperblocklegacyv1.EBSUnMountResponse
 	err = json.Unmarshal(msg.Data, &response)
 	assert.NoError(t, err)
 
@@ -401,14 +401,14 @@ func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-retry-unmount"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-retry-unmount"})
 	require.NoError(t, err)
 
 	// First call: volume is mounted, no local WAL to seal (not created via
 	// createMockVolumeState), so it completes and is dropped from MountedVolumes.
 	msg, err := nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
 	require.NoError(t, err)
-	var first types.EBSUnMountResponse
+	var first viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &first))
 	assert.Empty(t, first.Error)
 	assert.False(t, first.NotFound)
@@ -418,7 +418,7 @@ func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing
 	// idempotent seal rather than a hard failure.
 	msg, err = nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
 	require.NoError(t, err)
-	var retry types.EBSUnMountResponse
+	var retry viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &retry))
 	assert.True(t, retry.NotFound, "a retry after a completed unmount must report NotFound")
 }
@@ -459,13 +459,13 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-seal-fail"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-seal-fail"})
 	require.NoError(t, err)
 
 	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.NotEmpty(t, resp.Error, "a seal failure must surface as an error, not a silent success")
 	assert.False(t, resp.NotFound, "a failed seal must not report NotFound")
@@ -511,13 +511,13 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-clean-receipt"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-clean-receipt"})
 	require.NoError(t, err)
 
 	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Empty(t, resp.Error, "a receipt on the healthy path must not surface as an unmount error")
 	assert.Equal(t, int32(0), sealCalls.Load(), "a receipt present with no local WAL must not trigger the fallback seal")
@@ -562,13 +562,13 @@ func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-state-and-receipt"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-state-and-receipt"})
 	require.NoError(t, err)
 
 	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Empty(t, resp.Error)
 	assert.Equal(t, int32(1), sealCalls.Load(), "a surviving local WAL must trigger the fallback seal regardless of any receipt")
@@ -604,13 +604,13 @@ func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-aux-efi"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-aux-efi"})
 	require.NoError(t, err)
 
 	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Empty(t, resp.Error)
 	assert.Equal(t, int32(0), sealCalls.Load(), "an auxiliary volume must never be sealed, even with local state present")
@@ -646,13 +646,13 @@ func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-no-state-no-receipt"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-no-state-no-receipt"})
 	require.NoError(t, err)
 
 	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Empty(t, resp.Error)
 	assert.Equal(t, int32(0), sealCalls.Load(), "neither state nor receipt must not trigger the fallback seal")
@@ -683,7 +683,7 @@ func TestIntegration_EBSMountClearsStaleSealReceipt(t *testing.T) {
 	defer nc.Close()
 	nc.Flush()
 
-	requestData, err := json.Marshal(types.EBSRequest{Name: "vol-mount-clear", VolType: "gp3"})
+	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-mount-clear", VolType: "gp3"})
 	require.NoError(t, err)
 
 	// Fire-and-forget: the mount will fail deep in the mocked S3 backend, but
@@ -726,7 +726,7 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 	errorCount := 0
 
 	for _, name := range volumeNames {
-		request := types.EBSRequest{
+		request := viperblocklegacyv1.EBSRequest{
 			Name:    name,
 			VolType: "gp3",
 		}
@@ -744,7 +744,7 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 			continue
 		}
 
-		var response types.EBSMountResponse
+		var response viperblocklegacyv1.EBSMountResponse
 		if err := json.Unmarshal(msg.Data, &response); err == nil {
 			successCount++
 			// We expect errors in responses due to mocked backend
@@ -788,7 +788,7 @@ func TestIntegration_MessageSubscriptions(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, msg)
 
-	var response types.EBSUnMountResponse
+	var response viperblocklegacyv1.EBSUnMountResponse
 	err = json.Unmarshal(msg.Data, &response)
 	assert.NoError(t, err)
 
@@ -837,7 +837,7 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test that service is responsive
-	request := types.EBSRequest{Name: "test"}
+	request := viperblocklegacyv1.EBSRequest{Name: "test"}
 	requestData, _ := json.Marshal(request)
 
 	_, err = nc.Request("ebs.test-node.unmount", requestData, 2*time.Second)
@@ -871,13 +871,13 @@ func TestIntegration_GenericTopicRouting(t *testing.T) {
 	defer nc.Close()
 
 	// Send to generic topic (not ebs.{node}.unmount)
-	request := types.EBSRequest{Name: "vol-generic"}
+	request := viperblocklegacyv1.EBSRequest{Name: "vol-generic"}
 	requestData, _ := json.Marshal(request)
 
 	msg, err := nc.Request("ebs.unmount", requestData, 3*time.Second)
 	assert.NoError(t, err)
 
-	var response types.EBSUnMountResponse
+	var response viperblocklegacyv1.EBSUnMountResponse
 	assert.NoError(t, json.Unmarshal(msg.Data, &response))
 	assert.Equal(t, "vol-generic", response.Volume)
 	assert.False(t, response.Mounted)
@@ -906,7 +906,7 @@ func TestIntegration_MountAuxiliaryVolumeSuffix(t *testing.T) {
 	nc.Flush()
 
 	// Send mount request for auxiliary volume (will fail at S3 backend, but validates routing)
-	request := types.EBSRequest{
+	request := viperblocklegacyv1.EBSRequest{
 		Name:    "vol-test-cloudinit",
 		VolType: "gp3",
 	}
@@ -920,7 +920,7 @@ func TestIntegration_MountAuxiliaryVolumeSuffix(t *testing.T) {
 		return
 	}
 
-	var response types.EBSMountResponse
+	var response viperblocklegacyv1.EBSMountResponse
 	assert.NoError(t, json.Unmarshal(msg.Data, &response))
 	// Expect an error because S3 backend is mocked, but the request was processed
 	assert.NotEmpty(t, response.Error)

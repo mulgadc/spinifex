@@ -21,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	vbtypes "github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -1346,7 +1345,7 @@ func mountErrRetryable(err error) bool {
 // starts (or fails to start) nbdkit for volumeName and registers the result
 // in cfg.MountedVolumes; it does not publish a response, that stays with the
 // caller.
-func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (types.EBSMountResponse, error) {
+func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (viperblocklegacyv1.EBSMountResponse, error) {
 	// A volume this node already exports must not get a second nbdkit, which
 	// is the double-writer hazard the provider boundary exists to prevent.
 	// The guard lives here rather than in one handler because the legacy
@@ -1366,10 +1365,10 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 			// the other mode cannot be answered with the running export.
 			if mv.ReadOnly != readOnly {
 				err := fmt.Errorf("volume %s is already mounted read_only=%t on this node", volumeName, mv.ReadOnly)
-				return types.EBSMountResponse{Error: err.Error()}, err
+				return viperblocklegacyv1.EBSMountResponse{Error: err.Error()}, err
 			}
 			slog.InfoContext(ctx, "ebs.mount: already mounted, returning existing export", "volume", volumeName, "uri", mv.NBDURI)
-			return types.EBSMountResponse{URI: mv.NBDURI, Mounted: true}, nil
+			return viperblocklegacyv1.EBSMountResponse{URI: mv.NBDURI, Mounted: true}, nil
 		}
 	}
 
@@ -1380,7 +1379,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	ctx, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
 		trace.WithAttributes(attribute.String("volume.id", volumeName)))
 
-	var ebsResponse types.EBSMountResponse
+	var ebsResponse viperblocklegacyv1.EBSMountResponse
 	ebsResponse.Mounted = false
 	defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
 
@@ -1587,13 +1586,13 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 // re-attempts the seal; a volume with no matching entry gets
 // response.NotFound set instead of a bare error, so callers can tell "never
 // mounted here" apart from "seal failed".
-func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.EBSUnMountResponse, error) {
+func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperblocklegacyv1.EBSUnMountResponse, error) {
 	ctx, unmountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.unmount",
 		trace.WithAttributes(attribute.String("volume.id", volumeName)))
 
 	// Find the volume and extract references while holding the lock,
 	// then release before calling VB.Close() (which does heavy S3 I/O).
-	var ebsResponse types.EBSUnMountResponse
+	var ebsResponse viperblocklegacyv1.EBSUnMountResponse
 	defer func() { endSpanWithResponseError(unmountSpan, ebsResponse.Error) }()
 	var matched MountedVolume
 	var matchIdx = -1
@@ -1608,7 +1607,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 	cfg.mu.Unlock()
 
 	if matchIdx >= 0 {
-		ebsResponse = types.EBSUnMountResponse{
+		ebsResponse = viperblocklegacyv1.EBSUnMountResponse{
 			Volume:  matched.Name,
 			Mounted: false,
 		}
@@ -1714,7 +1713,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 		// daemon owns for this volume is a leak whatever left it behind.
 		reaped := reapUnregisteredNbdkit(ctx, cfg, volumeName)
 
-		ebsResponse = types.EBSUnMountResponse{
+		ebsResponse = viperblocklegacyv1.EBSUnMountResponse{
 			Volume:   volumeName,
 			Error:    fmt.Sprintf("Volume %s not found", volumeName),
 			NotFound: true,

@@ -203,18 +203,61 @@ func TestDescribeDBInstances_EchoesOmittedInertSettingsAsDisabled(t *testing.T) 
 	assert.Zero(t, aws.Int64Value(out.DBInstances[0].MonitoringInterval))
 }
 
-// A filter nobody implemented is refused rather than dropped: dropping it
-// returns exactly the rows the caller asked to exclude.
-func TestDescribeDBInstances_RejectsAnUnrecognizedFilter(t *testing.T) {
+// AWS refuses a name it does not document for this call, and an ill-formed
+// domain identifier, rather than dropping the filter.
+func TestDescribeDBInstances_RejectsUnrecognizedFiltersAndBadDomains(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, "")
 	seedCreated(t, h, testDBInstanceID)
 
-	_, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
-		Filters: []*rds.Filter{{Name: aws.String("engine"), Values: aws.StringSlice([]string{"postgres"})}},
-	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	for name, tc := range map[string]struct {
+		filter *rds.Filter
+		msg    string
+	}{
+		"unknown name": {&rds.Filter{Name: aws.String("snapshot-type"), Values: aws.StringSlice([]string{"manual"})},
+			"Unrecognized filter name: snapshot-type"},
+		"domain without prefix": {&rds.Filter{Name: aws.String(filterDomain), Values: aws.StringSlice([]string{"nope"})},
+			"is not a valid Domain identifier"},
+		"non-ASCII domain": {&rds.Filter{Name: aws.String(filterDomain), Values: aws.StringSlice([]string{"d-é"})},
+			"is not a valid Domain identifier"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+				Filters: []*rds.Filter{tc.filter},
+			}, testAccountID)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+			assert.Contains(t, err.Error(), tc.msg)
+		})
+	}
+}
+
+// engine narrows like the identifiers do; no instance is in a cluster or a
+// directory domain, so a well-formed value for either matches nothing.
+func TestDescribeDBInstances_FiltersOnEngineClusterAndDomain(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, "")
+	rec := seedCreated(t, h, testDBInstanceID)
+
+	for name, tc := range map[string]struct {
+		filter *rds.Filter
+		want   int
+	}{
+		"own engine":   {&rds.Filter{Name: aws.String(filterEngine), Values: aws.StringSlice([]string{"mariadb", rec.Engine})}, 1},
+		"other engine": {&rds.Filter{Name: aws.String(filterEngine), Values: aws.StringSlice([]string{"mariadb"})}, 0},
+		"cluster":      {&rds.Filter{Name: aws.String(filterDBClusterID), Values: aws.StringSlice([]string{"any-cluster"})}, 0},
+		"domain":       {&rds.Filter{Name: aws.String(filterDomain), Values: aws.StringSlice([]string{"d-1234567890"})}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
+				Filters: []*rds.Filter{tc.filter},
+			}, testAccountID)
+			require.NoError(t, err)
+			assert.Len(t, out.DBInstances, tc.want)
+		})
+	}
 }
 
 // A named instance and a filter that excludes it disagree; reporting the

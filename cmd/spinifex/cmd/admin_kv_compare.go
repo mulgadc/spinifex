@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"sort"
@@ -153,11 +154,7 @@ func compareNodeDigests(nodes []nodeDigest) (kvCompareResult, error) {
 			byName[d.Name] = append(byName[d.Name], v)
 		}
 	}
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(byName))
 
 	var res kvCompareResult
 	for _, name := range names {

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,8 +92,10 @@ func GenerateXMLPayload(locationName string, payload any) any {
 // NormalizeXMLOutput returns a copy of output with every nil slice field
 // (recursively) replaced by a non-nil empty slice, since aws-sdk-go's
 // xmlutil.BuildXML omits a nil slice's container element entirely but
-// renders an empty one for a non-nil empty slice, unlike real AWS.
-func NormalizeXMLOutput(output any) any {
+// renders an empty one for a non-nil empty slice. AWS renders most empty lists
+// but omits some; asSet names those fields, per struct type, and they are
+// left as the handler set them so a nil one stays omitted.
+func NormalizeXMLOutput(output any, asSet map[reflect.Type][]string) any {
 	v := reflect.ValueOf(output)
 	if !v.IsValid() {
 		return output
@@ -101,33 +104,34 @@ func NormalizeXMLOutput(output any) any {
 	// can only Set fields through an addressable Value.
 	ptr := reflect.New(v.Type())
 	ptr.Elem().Set(v)
-	normalizeNilSlices(ptr.Elem())
+	normalizeNilSlices(ptr.Elem(), asSet)
 	return ptr.Elem().Interface()
 }
 
 // normalizeNilSlices walks v in place, turning nil slice fields into empty
 // ones and recursing into structs, pointers, and existing slice elements.
-func normalizeNilSlices(v reflect.Value) {
+func normalizeNilSlices(v reflect.Value, asSet map[reflect.Type][]string) {
 	switch v.Kind() {
 	case reflect.Pointer:
 		if !v.IsNil() {
-			normalizeNilSlices(v.Elem())
+			normalizeNilSlices(v.Elem(), asSet)
 		}
 	case reflect.Struct:
-		for _, field := range v.Fields() {
+		keep := asSet[v.Type()]
+		for sf, field := range v.Fields() {
 			switch field.Kind() {
 			case reflect.Slice:
 				if field.IsNil() {
-					if field.CanSet() {
+					if field.CanSet() && !slices.Contains(keep, sf.Name) {
 						field.Set(reflect.MakeSlice(field.Type(), 0, 0))
 					}
 				} else {
 					for j := 0; j < field.Len(); j++ {
-						normalizeNilSlices(field.Index(j))
+						normalizeNilSlices(field.Index(j), asSet)
 					}
 				}
 			case reflect.Pointer, reflect.Struct:
-				normalizeNilSlices(field)
+				normalizeNilSlices(field, asSet)
 			}
 		}
 	}

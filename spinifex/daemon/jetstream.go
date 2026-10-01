@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -83,7 +82,6 @@ type JetStreamManager struct {
 	records     *kvstore.Store[vm.InstanceRecord] // i.<id>, instance-state bucket
 	termRecords *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
 	clusterKV   jetstream.KeyValue                // spinifex-cluster-state
-	replicas    int
 	obs         KVSyncObserver
 	running     runningSetState
 }
@@ -117,28 +115,23 @@ func (m *JetStreamManager) KVHealthy() bool {
 }
 
 // NewJetStreamManager creates a new JetStreamManager from a NATS connection.
-// replicas specifies the number of replicas for the KV bucket (typically matches cluster node count).
-func NewJetStreamManager(nc *nats.Conn, replicas int) (*JetStreamManager, error) {
+func NewJetStreamManager(nc *nats.Conn) (*JetStreamManager, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, err
 	}
 
-	return &JetStreamManager{
-		js:       js,
-		replicas: replicas,
-	}, nil
+	return &JetStreamManager{js: js}, nil
 }
 
 // instanceStateConfig describes the instance-state bucket. Extracted so the
 // bucket can be rebuilt against a different JetStream client without the
 // description drifting from the one InitKVBucket creates.
-func instanceStateConfig(replicas int) kvstore.Config {
+func instanceStateConfig() kvstore.Config {
 	return kvstore.Config{
 		Name:        InstanceStateBucket,
 		Description: "Spinifex instance state storage",
 		History:     1,
-		Replicas:    replicas,
 		// The owning node republishes its record on its next write, so an
 		// emptied bucket costs a sync rather than the records themselves.
 		RecreateIfMissing: true,
@@ -150,12 +143,11 @@ func instanceStateConfig(replicas int) kvstore.Config {
 }
 
 // terminatedInstanceConfig describes the terminated-instances bucket.
-func terminatedInstanceConfig(replicas int) kvstore.Config {
+func terminatedInstanceConfig() kvstore.Config {
 	return kvstore.Config{
 		Name:              TerminatedInstanceBucket,
 		Description:       "Terminated instances (auto-expire after 1 hour)",
 		History:           1,
-		Replicas:          replicas,
 		TTL:               1 * time.Hour,
 		RecreateIfMissing: true,
 		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
@@ -176,7 +168,7 @@ func (m *JetStreamManager) setInstanceStateBucket(b *kvstore.Bucket) {
 
 // InitKVBucket initializes the KV bucket, creating it if it doesn't exist.
 func (m *JetStreamManager) InitKVBucket() error {
-	m.setInstanceStateBucket(kvstore.NewBucket(m.js, instanceStateConfig(m.replicas)))
+	m.setInstanceStateBucket(kvstore.NewBucket(m.js, instanceStateConfig()))
 
 	// Opened eagerly: a bucket that cannot be created must fail startup here,
 	// not on the first write, and Tier 1 boot must not reach cluster KV at all.
@@ -185,12 +177,11 @@ func (m *JetStreamManager) InitKVBucket() error {
 }
 
 // clusterStateConfig describes the cluster-state bucket.
-func clusterStateConfig(replicas int) kvstore.Config {
+func clusterStateConfig() kvstore.Config {
 	return kvstore.Config{
 		Name:        ClusterStateBucket,
 		Description: "Spinifex cluster state (heartbeats, shutdown markers, service maps)",
 		History:     1,
-		Replicas:    replicas,
 		TTL:         1 * time.Hour,
 		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
 			return migrate.DefaultRegistry.RunKV(ctx, ClusterStateBucket, kv, ClusterStateBucketVersion)
@@ -204,7 +195,7 @@ func clusterStateConfig(replicas int) kvstore.Config {
 // The handle is kept rather than the Bucket: this one holds several unrelated
 // record types under one namespace, and its callers still read it as raw keys.
 func (m *JetStreamManager) InitClusterStateBucket() error {
-	kv, err := kvstore.NewBucket(m.js, clusterStateConfig(m.replicas)).KV(context.Background())
+	kv, err := kvstore.NewBucket(m.js, clusterStateConfig()).KV(context.Background())
 	if err != nil {
 		return err
 	}
@@ -215,7 +206,7 @@ func (m *JetStreamManager) InitClusterStateBucket() error {
 // InitTerminatedInstanceBucket initializes the terminated-instances KV bucket with a 1-hour TTL.
 // JetStream automatically purges keys after 1 hour, matching AWS behavior for terminated instances.
 func (m *JetStreamManager) InitTerminatedInstanceBucket() error {
-	m.term = kvstore.New[vm.VM](m.js, terminatedInstanceConfig(m.replicas))
+	m.term = kvstore.New[vm.VM](m.js, terminatedInstanceConfig())
 	// A second view over the same handle, for the same reason the instance-state
 	// bucket carries several.
 	m.termRecords = kvstore.On[vm.InstanceRecord](m.term.Bucket)
@@ -518,63 +509,6 @@ func (m *JetStreamManager) DeleteState(nodeID string) error {
 	}
 
 	slog.Debug("Deleted state from JetStream KV", "key", key)
-	return nil
-}
-
-// UpdateReplicas updates the replica count for ALL JetStream KV buckets.
-// It iterates over every KV_* stream and bumps replicas to match the cluster size.
-// This ensures service buckets (IAM, VPC, IGW, etc.) are replicated alongside daemon buckets.
-// This should be called when new nodes join the cluster.
-func (m *JetStreamManager) UpdateReplicas(newReplicas int) error {
-	if m.js == nil {
-		return errors.New("JetStream context not initialized")
-	}
-
-	m.replicas = newReplicas
-
-	ctx := context.Background()
-	// Iterate all streams and update any KV-backed stream (prefixed "KV_")
-	updated := 0
-	lister := m.js.StreamNames(ctx)
-	for name := range lister.Name() {
-		if !strings.HasPrefix(name, "KV_") {
-			continue
-		}
-
-		stream, err := m.js.Stream(ctx, name)
-		if err != nil {
-			slog.Warn("Failed to open stream", "stream", name, "error", err)
-			continue
-		}
-		info, err := stream.Info(ctx)
-		if err != nil {
-			slog.Warn("Failed to get stream info", "stream", name, "error", err)
-			continue
-		}
-
-		if info.Config.Replicas >= newReplicas {
-			continue
-		}
-
-		oldReplicas := info.Config.Replicas
-		info.Config.Replicas = newReplicas
-		if _, err := m.js.UpdateStream(ctx, info.Config); err != nil {
-			slog.Warn("Failed to update KV bucket replicas", "stream", name, "error", err)
-			continue
-		}
-
-		bucket := strings.TrimPrefix(name, "KV_")
-		slog.Info("Updated KV bucket replicas", "bucket", bucket, "oldReplicas", oldReplicas, "newReplicas", newReplicas)
-		updated++
-	}
-	if err := lister.Err(); err != nil {
-		return fmt.Errorf("list JetStream streams: %w", err)
-	}
-
-	if updated > 0 {
-		slog.Info("KV replication update complete", "bucketsUpdated", updated, "replicas", newReplicas)
-	}
-
 	return nil
 }
 

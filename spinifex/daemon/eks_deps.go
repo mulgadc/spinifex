@@ -36,11 +36,7 @@ func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
 			"err", err)
 		return nil
 	}
-	clusterSize := 1
-	if d.clusterConfig != nil {
-		clusterSize = len(d.clusterConfig.Nodes)
-	}
-	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey, clusterSize)
+	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey)
 	if iamErr != nil {
 		slog.Warn("System role ensurer: IAM service init failed (retried on next launch); system VMs fall back to baked static creds",
 			"err", iamErr)
@@ -61,10 +57,8 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 	}
 
 	internalSuffix := ""
-	clusterSize := 1
 	if d.clusterConfig != nil {
 		internalSuffix = d.clusterConfig.AWS.ServicesDomain
-		clusterSize = len(d.clusterConfig.Nodes)
 	}
 
 	gatewayCA := ""
@@ -84,7 +78,6 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		GatewayBaseURL:      d.resolveGatewayBaseURL(),
 		Region:              d.config.Region,
 		HolderID:            d.node,
-		ClusterSize:         clusterSize,
 		InternalSuffix:      internalSuffix,
 		SystemGatewayURL:    d.resolveSystemGatewayBaseURL(),
 		SystemAccessKey:     d.config.Predastore.AccessKey,

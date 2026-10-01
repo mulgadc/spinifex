@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 
@@ -162,10 +163,7 @@ func embedGuardrailTexts(ctx context.Context, embedder Embedder, modelID string,
 // not a single centroid, so one strong phrase match is enough even when the
 // topic's examples are otherwise diverse.
 func topicSemanticHit(textVectors, topicPhraseVectors [][]float32, threshold float64) bool {
-	for _, tv := range textVectors {
-		if maxCosineSimilarity(tv, topicPhraseVectors) >= threshold {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(textVectors, func(tv []float32) bool {
+		return maxCosineSimilarity(tv, topicPhraseVectors) >= threshold
+	})
 }

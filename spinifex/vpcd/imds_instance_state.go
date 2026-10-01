@@ -86,7 +86,7 @@ type recordLoader interface {
 // this node does not hold locally resolves to nothing, and IMDS serves that as
 // "no such instance" — a guest that boots with no key and no error anywhere.
 func newInstanceRecordLoader(ctx context.Context, nc *nats.Conn) (recordLoader, error) {
-	jsm, err := daemon.NewJetStreamManager(nc, 1)
+	jsm, err := daemon.NewJetStreamManager(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream manager: %w", err)
 	}

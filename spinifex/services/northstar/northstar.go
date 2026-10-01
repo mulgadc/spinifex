@@ -126,31 +126,3 @@ func (svc *Service) subscribeReload() {
 	}
 	slog.Info("northstar: subscribed to live zone reload", "subject", handlers_dns.SubjectZoneReload)
 }
-
-// Stop signals a running northstar service via its PID file.
-func (svc *Service) Stop() error {
-	return utils.StopProcessAt(svc.Config.BasePath, serviceName)
-}
-
-// Status returns the status of the northstar service.
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.BasePath, serviceName)
-}
-
-// Shutdown gracefully shuts down the in-process server, falling back to Stop.
-func (svc *Service) Shutdown() error {
-	if svc.server != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return svc.server.Shutdown(ctx)
-	}
-	return svc.Stop()
-}
-
-// Reload re-reads the zone database without restarting the listeners.
-func (svc *Service) Reload() error {
-	if svc.server != nil {
-		return svc.server.Reload()
-	}
-	return nil
-}

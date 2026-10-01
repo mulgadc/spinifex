@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -49,6 +50,7 @@ type PlacementGroupServiceImpl struct {
 	config   *config.Config
 	natsConn *nats.Conn
 	kv       jetstream.KeyValue
+	region   string
 }
 
 // NewPlacementGroupServiceImplWithNATS creates a placement group service with NATS JetStream.
@@ -66,12 +68,18 @@ func NewPlacementGroupServiceImplWithNATS(ctx context.Context, cfg *config.Confi
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketPlacementGroups, err)
 	}
 
+	region := config.DefaultAWSRegion
+	if cfg != nil && cfg.Region != "" {
+		region = cfg.Region
+	}
+
 	slog.Info("Placement group service initialized with JetStream KV", "bucket", KVBucketPlacementGroups)
 
 	return &PlacementGroupServiceImpl{
 		config:   cfg,
 		natsConn: natsConn,
 		kv:       kv,
+		region:   region,
 	}, nil
 }
 
@@ -123,7 +131,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 	// Atomic create-if-not-exists to prevent TOCTOU race on duplicate names
 	if _, err := s.kv.Create(ctx, key, data); err != nil {
 		// Create fails if key already exists
-		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupDuplicate)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupDuplicate, "The placement group '%s' already exists.", groupName)
 	}
 
 	slog.InfoContext(ctx, "CreatePlacementGroup completed", "groupId", groupID, "groupName", groupName, "strategy", strategy, "accountID", accountID)
@@ -144,7 +152,8 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+		// Lower case, unlike DescribePlacementGroups' message for the same code.
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The placement group '%s' is unknown.", groupName)
 	}
 
 	var record PlacementGroupRecord
@@ -252,9 +261,20 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 				found[*g.GroupName] = true
 			}
 		}
-		for name := range nameSet {
-			if !found[name] {
-				return nil, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
+		for _, name := range input.GroupNames {
+			if name != nil && !found[*name] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The Placement Group '%s' is unknown.", *name)
+			}
+		}
+	}
+	if len(idSet) > 0 {
+		found := make(map[string]bool)
+		for _, g := range groups {
+			found[aws.StringValue(g.GroupId)] = true
+		}
+		for _, id := range input.GroupIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The Placement Group '%s' is unknown.", *id)
 			}
 		}
 	}
@@ -269,7 +289,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 // pgMatchesFilters checks whether a placement group record matches all parsed awsfilters.
 func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -293,30 +313,11 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 			if !awsfilters.MatchesAny(values, record.GroupName) {
 				return false
 			}
-		case "tag-key":
-			if !pgMatchesAnyTag(record.Tags, values, func(k, _ string) string { return k }) {
-				return false
-			}
-		case "tag-value":
-			if !pgMatchesAnyTag(record.Tags, values, func(_, v string) string { return v }) {
-				return false
-			}
 		default:
 			return false
 		}
 	}
 	return awsfilters.MatchesTags(filters, record.Tags)
-}
-
-// pgMatchesAnyTag reports whether any tag's selected field (key or value)
-// matches any of the filter values.
-func pgMatchesAnyTag(tags map[string]string, values []string, field func(k, v string) string) bool {
-	for k, v := range tags {
-		if awsfilters.MatchesAny(values, field(k, v)) {
-			return true
-		}
-	}
-	return false
 }
 
 const maxCASRetries = 5
@@ -568,6 +569,7 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 // recordToEC2 converts an internal record to the AWS SDK PlacementGroup type.
 func (s *PlacementGroupServiceImpl) recordToEC2(record *PlacementGroupRecord) *ec2.PlacementGroup {
 	pg := &ec2.PlacementGroup{
+		GroupArn:  aws.String(arn.FormatEC2(arn.EC2PlacementGroup, s.region, record.AccountID, record.GroupName)),
 		GroupId:   aws.String(record.GroupId),
 		GroupName: aws.String(record.GroupName),
 		Strategy:  aws.String(record.Strategy),

@@ -45,7 +45,7 @@ func newTestCache(t *testing.T, mutate ...func(*Config)) (*Cache, jetstream.KeyV
 	require.NoError(t, err)
 
 	cfg := Config{
-		Bucket:            kvstore.Config{Name: bucket, History: 1, Replicas: 1},
+		Bucket:            kvstore.Config{Name: bucket, History: 1},
 		Prefix:            testPrefix,
 		VisibleToCaller:   instance.IsInstanceVisibleToCaller,
 		FallbackAccountID: utils.GlobalAccountID,
@@ -256,7 +256,7 @@ func TestPeriodicResync_TTLExpiredRecordRemovedWithNoWatchEvent(t *testing.T) {
 	require.NoError(t, err)
 
 	c := New(js, Config{
-		Bucket:            kvstore.Config{Name: bucket, History: 1, Replicas: 1},
+		Bucket:            kvstore.Config{Name: bucket, History: 1},
 		Prefix:            testPrefix,
 		VisibleToCaller:   instance.IsInstanceVisibleToCaller,
 		FallbackAccountID: utils.GlobalAccountID,

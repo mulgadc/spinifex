@@ -26,8 +26,44 @@ func TestCheckPredastoreReady_HTTPSServing(t *testing.T) {
 	u, err := url.Parse(srv.URL)
 	require.NoError(t, err)
 
-	d := &Daemon{config: &config.Config{Predastore: config.PredastoreConfig{Host: u.Host}}}
+	d := &Daemon{config: &config.Config{
+		Predastore: config.PredastoreConfig{Host: u.Host},
+		NATS:       config.NATSConfig{CACert: writeServerCA(t, srv)},
+	}}
 	assert.True(t, d.checkPredastoreReady())
+}
+
+// TestCheckPredastoreReady_UntrustedCert asserts an endpoint whose cert the
+// cluster CA did not sign is not ready, even though it answers HTTPS.
+func TestCheckPredastoreReady_UntrustedCert(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	d := &Daemon{config: &config.Config{
+		Predastore: config.PredastoreConfig{Host: u.Host},
+		NATS:       config.NATSConfig{CACert: writeUntrustedCA(t)},
+	}}
+	assert.False(t, d.checkPredastoreReady())
+}
+
+// TestCheckPredastoreReady_NoClusterCA asserts a node without a configured
+// cluster CA fails closed instead of probing unverified.
+func TestCheckPredastoreReady_NoClusterCA(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+
+	d := &Daemon{config: &config.Config{Predastore: config.PredastoreConfig{Host: u.Host}}}
+	assert.False(t, d.checkPredastoreReady())
 }
 
 // TestCheckPredastoreReady_ClosedPort asserts a port nothing is listening on

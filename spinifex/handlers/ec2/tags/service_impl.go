@@ -14,13 +14,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/config"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -34,6 +35,9 @@ var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 
 // Ensure TagsServiceImpl can both project and clear vpc/subnet/sg/eni record tags.
 var _ handlers_ec2_vpc.CentralTagStore = (*TagsServiceImpl)(nil)
+
+// Ensure TagsServiceImpl can both project and clear key-pair record tags.
+var _ handlers_ec2_key.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
 // per resource, scoped by account in the key.
@@ -176,13 +180,6 @@ func (s *TagsServiceImpl) getResourceTags(ctx context.Context, accountID, resour
 	return s.legacyTags(ctx, accountID, resourceID)
 }
 
-// PutResourceTags overwrites the stored tag set for a resource. Used to
-// project an instance record's tags (the source of truth) into the central
-// store so describe-tags agrees with describe-instances.
-func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
-	return s.putTags(ctx, accountID, resourceID, tags)
-}
-
 // DeleteAllTags removes the stored tags for a resource, so describe-tags stops
 // reporting a resource that is gone. Instance terminate uses it while the
 // terminated record keeps its own tags until TTL; the vpc delete paths use it
@@ -285,6 +282,8 @@ var describeTagsValidFilters = map[string]bool{
 	"resource-type": true,
 	"key":           true,
 	"value":         true,
+	"tag-key":       true,
+	"tag-value":     true,
 }
 
 // DescribeTags returns tags matching the specified awsfilters.
@@ -333,6 +332,14 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 			if !awsfilters.MatchesAny(filters["value"], value) {
 				continue
 			}
+			// On DescribeTags, AWS applies tag-key and tag-value to each tag row,
+			// exactly as it applies key and value.
+			if !awsfilters.MatchesAny(filters["tag-key"], key) || !awsfilters.MatchesAny(filters["tag-value"], value) {
+				continue
+			}
+			if !rowMatchesTagFilters(filters, key, value) {
+				continue
+			}
 
 			tags = append(tags, &ec2.TagDescription{
 				ResourceId:   aws.String(resourceID),
@@ -348,6 +355,22 @@ func (s *TagsServiceImpl) DescribeTags(ctx context.Context, input *ec2.DescribeT
 	return &ec2.DescribeTagsOutput{
 		Tags: tags,
 	}, nil
+}
+
+// rowMatchesTagFilters applies each tag:<key> filter to one tag row, as
+// tag-key and tag-value are applied here: the row must be that key, with a
+// value the filter names.
+func rowMatchesTagFilters(filters map[string][]string, key, value string) bool {
+	for name, values := range filters {
+		tagKey, ok := strings.CutPrefix(name, "tag:")
+		if !ok {
+			continue
+		}
+		if key != tagKey || !awsfilters.MatchesAny(values, value) {
+			return false
+		}
+	}
+	return true
 }
 
 // DeleteTags removes tags from the specified resources.

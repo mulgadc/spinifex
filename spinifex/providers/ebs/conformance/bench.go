@@ -181,5 +181,8 @@ func benchCapabilities(b *testing.B, provider ebsprovider.EBSProvider) ebsprovid
 	if err != nil {
 		b.Fatalf("get capabilities: %v", err)
 	}
+	if resp == nil {
+		b.Fatal("get capabilities: provider returned a nil response with a nil error")
+	}
 	return resp.Capabilities
 }

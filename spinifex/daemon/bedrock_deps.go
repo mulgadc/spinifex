@@ -22,11 +22,7 @@ func (d *Daemon) buildBedrockLaunchDeps() handlers_bedrock.LaunchDeps {
 	if err != nil {
 		slog.Warn("Bedrock: jetstream init failed; serving VMs cannot resolve staged weights", "err", err)
 	} else {
-		clusterSize := 1
-		if d.clusterConfig != nil {
-			clusterSize = len(d.clusterConfig.Nodes)
-		}
-		weights = gateway_bedrock.NewWeightsStore(js, clusterSize)
+		weights = gateway_bedrock.NewWeightsStore(js)
 	}
 
 	return handlers_bedrock.LaunchDeps{

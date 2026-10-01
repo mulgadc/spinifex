@@ -15,8 +15,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// defaultOfferingsPerPage caps a request that names no MaxResults.
-const defaultOfferingsPerPage = 1000
+// defaultPageSize caps a paged request that names no MaxResults.
+const defaultPageSize = 1000
 
 var describeInstanceTypeOfferingsValidFilters = map[string]bool{
 	"instance-type": true,
@@ -50,7 +50,7 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 
 	// No capacity filter: an offering is what the platform supports, not what
 	// has a free slot at this instant.
-	catalogue, err := DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{}, natsConn, expectedNodes, accountID)
+	catalogue, err := DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{}, natsConn, expectedNodes, nil, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 		return *offerings[i].Location < *offerings[j].Location
 	})
 
-	page, nextToken, err := pageOfferings(offerings, input.NextToken, input.MaxResults)
+	page, nextToken, err := pageByOffset(offerings, input.NextToken, input.MaxResults)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstanceTypeOfferings: invalid NextToken", "next_token", aws.StringValue(input.NextToken))
 		return nil, err
@@ -121,9 +121,9 @@ func offeringLocations(locationType, region, az string) ([]string, error) {
 	return locations, nil
 }
 
-// pageOfferings slices one page out of a sorted offering set, using an opaque
-// integer offset as the token. The last page carries a nil token.
-func pageOfferings(offerings []*ec2.InstanceTypeOffering, token *string, maxResults *int64) ([]*ec2.InstanceTypeOffering, *string, error) {
+// pageByOffset slices one page out of a sorted set, using an opaque integer
+// offset as the token. The last page carries a nil token.
+func pageByOffset[T any](items []T, token *string, maxResults *int64) ([]T, *string, error) {
 	start := 0
 	if aws.StringValue(token) != "" {
 		n, err := strconv.Atoi(*token)
@@ -132,18 +132,18 @@ func pageOfferings(offerings []*ec2.InstanceTypeOffering, token *string, maxResu
 		}
 		start = n
 	}
-	if start > len(offerings) {
-		start = len(offerings)
+	if start > len(items) {
+		start = len(items)
 	}
 
-	size := defaultOfferingsPerPage
+	size := defaultPageSize
 	if maxResults != nil && *maxResults > 0 {
 		size = int(*maxResults)
 	}
 
 	end := start + size
-	if end >= len(offerings) {
-		return offerings[start:], nil, nil
+	if end >= len(items) {
+		return items[start:], nil, nil
 	}
-	return offerings[start:end], aws.String(strconv.Itoa(end)), nil
+	return items[start:end], aws.String(strconv.Itoa(end)), nil
 }

@@ -214,3 +214,44 @@ func TestIssuerProviderARNRoundTrip(t *testing.T) {
 		t.Fatal("round-trip key mismatch")
 	}
 }
+
+// The messages are the ones AWS returned; the lists are checked before the Url.
+func TestCreateOpenIDConnectProvider_ListEntryLengths(t *testing.T) {
+	t.Parallel()
+	const (
+		clientIDMsg   = "1 validation error detected: Value at 'clientIDList' failed to satisfy constraint: Member must satisfy constraint: [Member must have length less than or equal to 255, Member must have length greater than or equal to 1]"
+		thumbprintMsg = "1 validation error detected: Value at 'thumbprintList' failed to satisfy constraint: Member must satisfy constraint: [Member must have length less than or equal to 40, Member must have length greater than or equal to 40]"
+	)
+	thumbprint := strings.Repeat("9", 40)
+	cases := []struct {
+		name        string
+		clientIDs   []string
+		thumbprints []string
+		wantMsg     string
+	}{
+		{"empty client ID", []string{"sts.amazonaws.com", ""}, []string{thumbprint}, clientIDMsg},
+		{"256-character client ID", []string{strings.Repeat("c", 256)}, []string{thumbprint}, clientIDMsg},
+		{"39-character thumbprint", []string{"sts.amazonaws.com"}, []string{strings.Repeat("9", 39)}, thumbprintMsg},
+		{"41-character thumbprint", []string{"sts.amazonaws.com"}, []string{thumbprint, strings.Repeat("9", 41)}, thumbprintMsg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+			_, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
+				Url: aws.String("http://not-https.example.com"), ClientIDList: aws.StringSlice(tc.clientIDs), ThumbprintList: aws.StringSlice(tc.thumbprints),
+			})
+			requireIAMError(t, err, awserrors.ErrorValidationError, tc.wantMsg)
+		})
+	}
+
+	svc := setupTestIAMService(t)
+	_, err := svc.CreateOpenIDConnectProvider(testAccountID, &iam.CreateOpenIDConnectProviderInput{
+		Url:            aws.String("https://oidc.example.com/id/BOUNDS"),
+		ClientIDList:   aws.StringSlice([]string{"c", strings.Repeat("c", 255)}),
+		ThumbprintList: aws.StringSlice([]string{thumbprint}),
+	})
+	if err != nil {
+		t.Fatalf("entries at the length bounds: %v", err)
+	}
+}

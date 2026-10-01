@@ -20,7 +20,7 @@ func TestNoopWeightsResolver_ResolvesNothing(t *testing.T) {
 // snapshot: ("", false, nil), not an error.
 func TestWeightsStore_ResolveMiss(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	snapshotID, ok, err := store.Resolve(context.Background(), "meta.llama3-2-1b-instruct-v1:0")
 	require.NoError(t, err)
@@ -33,7 +33,7 @@ func TestWeightsStore_ResolveMiss(t *testing.T) {
 // Resolve.
 func TestWeightsStore_PutAndResolve_KV(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -49,7 +49,7 @@ func TestWeightsStore_PutAndResolve_KV(t *testing.T) {
 // history.
 func TestWeightsStore_PutOverwritesPrevious(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -66,7 +66,7 @@ func TestWeightsStore_PutOverwritesPrevious(t *testing.T) {
 // reports ok=false, not an error.
 func TestWeightsStore_GetWeights_Miss(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	entry, ok, err := store.GetWeights(context.Background(), "meta.llama3-2-1b-instruct-v1:0")
 	require.NoError(t, err)
@@ -80,7 +80,7 @@ func TestWeightsStore_GetWeights_Miss(t *testing.T) {
 // snapshot it is about to replace.
 func TestWeightsStore_GetWeights_ReturnsSourceURIAndSnapshot(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -100,7 +100,7 @@ func TestWeightsStore_GetWeights_ReturnsSourceURIAndSnapshot(t *testing.T) {
 // both GetWeights and ListWeights.
 func TestWeightsStore_PutWeightsWithRevision_RoundTrips(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeightsWithRevision(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://ochre-weights/meta-llama/Llama-3.2-1B-Instruct/abc123/", "snap-0001", "abc123def456"))
@@ -121,7 +121,7 @@ func TestWeightsStore_PutWeightsWithRevision_RoundTrips(t *testing.T) {
 // SourceRevision, not fail or fabricate one.
 func TestWeightsStore_PutWeights_LeavesSourceRevisionEmpty(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -136,7 +136,7 @@ func TestWeightsStore_PutWeights_LeavesSourceRevisionEmpty(t *testing.T) {
 // bucket must report an empty list, not an error (jetstream.ErrNoKeysFound).
 func TestWeightsStore_ListWeights_Empty(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	entries, err := store.ListWeights(context.Background())
 	require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestWeightsStore_ListWeights_Empty(t *testing.T) {
 // base64url KV key), its source URI and its snapshot ID, sorted by model ID.
 func TestWeightsStore_ListWeights_ReturnsAllStaged(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -167,7 +167,7 @@ func TestWeightsStore_ListWeights_ReturnsAllStaged(t *testing.T) {
 // DeleteWeights drops the record and Resolve reports not-found afterwards.
 func TestWeightsStore_DeleteWeights_RemovesEntry(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	ctx := context.Background()
 	require.NoError(t, store.PutWeights(ctx, "meta.llama3-2-1b-instruct-v1:0", "s3://models/llama-3.2-1b/", "snap-0001"))
@@ -184,7 +184,7 @@ func TestWeightsStore_DeleteWeights_RemovesEntry(t *testing.T) {
 // must not error on a missing key either.
 func TestWeightsStore_DeleteWeights_NeverStagedIsNotAnError(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	store := NewWeightsStore(testutil.NewJetStream(t, nc), 1)
+	store := NewWeightsStore(testutil.NewJetStream(t, nc))
 
 	require.NoError(t, store.DeleteWeights(context.Background(), "meta.llama3-2-1b-instruct-v1:0"))
 }
@@ -208,7 +208,7 @@ func TestSetWeightsResolver_NilRestoresNoop(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestWeightsStore_RequiresJetStream(t *testing.T) {
-	store := NewWeightsStore(nil, 1)
+	store := NewWeightsStore(nil)
 	ctx := context.Background()
 
 	_, _, err := store.Resolve(ctx, "meta.llama3-2-1b-instruct-v1:0")

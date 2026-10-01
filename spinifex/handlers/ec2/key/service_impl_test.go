@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -178,6 +179,7 @@ func TestCreateKeyPair_ED25519(t *testing.T) {
 
 	// ED25519 has no PEM representation, so it stays in the OpenSSH container.
 	assert.Contains(t, *out.KeyMaterial, "BEGIN OPENSSH PRIVATE KEY")
+	assert.True(t, strings.HasSuffix(*out.KeyMaterial, "-----END OPENSSH PRIVATE KEY-----\n"))
 }
 
 func TestCreateKeyPair_RSA(t *testing.T) {
@@ -195,6 +197,7 @@ func TestCreateKeyPair_RSA(t *testing.T) {
 	// PKCS#1 PEM, as AWS returns it: get-password-data --priv-launch-key cannot
 	// read the OpenSSH container ssh-keygen writes by default.
 	assert.Contains(t, *out.KeyMaterial, "BEGIN RSA PRIVATE KEY")
+	assert.True(t, strings.HasSuffix(*out.KeyMaterial, "-----END RSA PRIVATE KEY-----"), "AWS ends RSA material without a newline")
 
 	// The key is generated per-run, so the digest is not knowable in advance.
 	// Recompute it from the private key the caller was handed: that is what pins
@@ -252,7 +255,7 @@ func TestCreateKeyPair_Duplicate(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorInvalidKeyPairDuplicate, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairDuplicate, "The keypair already exists")
 }
 
 func TestCreateKeyPair_InvalidKeyType(t *testing.T) {
@@ -267,6 +270,36 @@ func TestCreateKeyPair_InvalidKeyType(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 	assert.Equal(t, "1 validation error detected: Value 'dsa' at 'keyType' failed to satisfy constraint: Member must satisfy enum value set: [rsa, ed25519]", msg)
+}
+
+func TestCreateKeyPair_KeyFormat(t *testing.T) {
+	svc, store := newTestKeyService()
+
+	for _, tc := range []struct {
+		format, msg string
+	}{
+		{"ppk", "The ppk key format is not supported; use pem."},
+		{"der", "1 validation error detected: Value 'der' at 'keyFormat' failed to satisfy constraint: Member must satisfy enum value set: [pem, ppk]"},
+	} {
+		out, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+			KeyName:   aws.String("fmt-" + tc.format),
+			KeyFormat: aws.String(tc.format),
+		}, testAccountID)
+		assert.Nil(t, out)
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+		assert.Equal(t, tc.msg, msg)
+	}
+	assert.Zero(t, store.Count(), "a rejected format must not store a key")
+
+	out, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+		KeyName:   aws.String("fmt-pem"),
+		KeyFormat: aws.String("pem"),
+		KeyType:   aws.String("rsa"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(*out.KeyMaterial, "-----BEGIN RSA PRIVATE KEY-----"))
 }
 
 // ============================================================
@@ -344,7 +377,7 @@ func TestImportKeyPair_Duplicate(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Nil(t, out)
-	assert.Equal(t, awserrors.ErrorInvalidKeyPairDuplicate, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairDuplicate, "The keypair already exists")
 }
 
 func TestImportKeyPair_InvalidKeyName(t *testing.T) {
@@ -433,7 +466,7 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 				PublicKeyMaterial: []byte(tt.publicKey),
 			}, testAccountID)
 			require.Error(t, err)
-			assert.Equal(t, tt.expectedErrMsg, err.Error())
+			assertAWSError(t, err, tt.expectedErrMsg, "Key is not in valid OpenSSH public key format")
 
 			// Rejection must precede the upload, or the guest is served material
 			// the API refused.
@@ -457,7 +490,8 @@ func TestDeleteKeyPair_ByKeyName(t *testing.T) {
 		KeyName: aws.String("to-delete-by-name"),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.NotNil(t, result)
+	assert.True(t, aws.BoolValue(result.Return))
+	assert.Equal(t, aws.StringValue(imported.KeyPairId), aws.StringValue(result.KeyPairId))
 
 	// Verify public key removed from S3
 	keyPath := "keys/" + testAccountID + "/to-delete-by-name"
@@ -485,7 +519,8 @@ func TestDeleteKeyPair_ByKeyPairId(t *testing.T) {
 		KeyPairId: imported.KeyPairId,
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.NotNil(t, result)
+	assert.True(t, aws.BoolValue(result.Return))
+	assert.Equal(t, aws.StringValue(imported.KeyPairId), aws.StringValue(result.KeyPairId))
 
 	// Verify public key removed from S3
 	keyPath := "keys/" + testAccountID + "/to-delete-by-id"
@@ -512,7 +547,8 @@ func TestDeleteKeyPairIdempotent(t *testing.T) {
 			KeyName: aws.String("no-such-key"),
 		}, testAccountID)
 		require.NoError(t, err)
-		assert.NotNil(t, result)
+		assert.True(t, aws.BoolValue(result.Return))
+		assert.Nil(t, result.KeyPairId, "no key was deleted, so none is named")
 	})
 
 	t.Run("NonExistentKeyPairId", func(t *testing.T) {
@@ -520,7 +556,8 @@ func TestDeleteKeyPairIdempotent(t *testing.T) {
 			KeyPairId: aws.String("key-0123456789abcdef0"),
 		}, testAccountID)
 		require.NoError(t, err)
-		assert.NotNil(t, result)
+		assert.True(t, aws.BoolValue(result.Return))
+		assert.Nil(t, result.KeyPairId, "no key was deleted, so none is named")
 	})
 }
 
@@ -649,6 +686,73 @@ func TestDescribeKeyPairs_LegacyED25519Record(t *testing.T) {
 		testLegacyED25519Fingerprint)
 }
 
+// AWS returns PublicKey only when asked, as one line ending in a newline whose
+// comment is the key pair's name, replacing any comment the caller imported.
+func TestDescribeKeyPairs_IncludePublicKey_Imported(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	_, err := svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
+		KeyName:           aws.String("imported"),
+		PublicKeyMaterial: []byte(testED25519PubKey + " tf-user@julian-wattle"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		IncludePublicKey: aws.Bool(true),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.KeyPairs, 1)
+	assert.Equal(t, testED25519PubKey+" imported\n", aws.StringValue(out.KeyPairs[0].PublicKey))
+
+	for _, input := range []*ec2.DescribeKeyPairsInput{{}, {IncludePublicKey: aws.Bool(false)}} {
+		out, err := svc.DescribeKeyPairs(context.Background(), input, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.KeyPairs, 1)
+		assert.Nil(t, out.KeyPairs[0].PublicKey)
+	}
+}
+
+func TestDescribeKeyPairs_IncludePublicKey_Created(t *testing.T) {
+	svc, _ := newTestKeyService()
+
+	for _, keyType := range []string{"ed25519", "rsa"} {
+		created, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+			KeyName: aws.String(keyType + "-created"),
+			KeyType: aws.String(keyType),
+		}, testAccountID)
+		require.NoError(t, err)
+		signer, err := ssh.ParsePrivateKey([]byte(aws.StringValue(created.KeyMaterial)))
+		require.NoError(t, err)
+
+		out, err := svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+			KeyNames:         []*string{created.KeyName},
+			IncludePublicKey: aws.Bool(true),
+		}, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.KeyPairs, 1)
+
+		want := strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(signer.PublicKey())), "\n") + " " + keyType + "-created\n"
+		assert.Equal(t, want, aws.StringValue(out.KeyPairs[0].PublicKey))
+	}
+}
+
+// A listed key whose public half cannot be read fails the call rather than
+// describing it without the PublicKey that was asked for.
+func TestDescribeKeyPairs_IncludePublicKey_MissingMaterial(t *testing.T) {
+	svc, store := newTestKeyService()
+	importTestKey(t, svc, "half-deleted")
+	_, err := store.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String("keys/" + testAccountID + "/half-deleted"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DescribeKeyPairs(context.Background(), &ec2.DescribeKeyPairsInput{
+		IncludePublicKey: aws.Bool(true),
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+}
+
 func TestDescribeKeyPairs_FilterByKeyName(t *testing.T) {
 	svc, _ := newTestKeyService()
 
@@ -691,7 +795,7 @@ func TestDescribeKeyPairs_NotFound_ByKeyName(t *testing.T) {
 		KeyNames: []*string{aws.String("does-not-exist")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairNotFound, "The key pair 'does-not-exist' does not exist")
 }
 
 // TestDescribeKeyPairs_NotFound_ByKeyPairId is the KeyPairIds counterpart of
@@ -705,7 +809,7 @@ func TestDescribeKeyPairs_NotFound_ByKeyPairId(t *testing.T) {
 		KeyPairIds: []*string{aws.String("key-doesnotexist")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidKeyPair.NotFound")
+	assertAWSError(t, err, awserrors.ErrorInvalidKeyPairNotFound, "The keyPairId 'key-doesnotexist' does not exist")
 }
 
 // TestDescribeKeyPairs_NotFound_PartialMatch asserts that naming one existing
@@ -1100,4 +1204,51 @@ func TestDescribeKeyPairs_AWSFilterWildcard(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, out.KeyPairs, 2)
+}
+
+type failingCentralTagStore struct{ puts, deletes int }
+
+func (f *failingCentralTagStore) PutResourceTags(context.Context, string, string, map[string]string) error {
+	f.puts++
+	return errors.New("tag store down")
+}
+
+func (f *failingCentralTagStore) DeleteAllTags(context.Context, string, string) error {
+	f.deletes++
+	return errors.New("tag store down")
+}
+
+// The key pair exists once its records are written, so a central tag store
+// failure is logged and never fails create, import or delete.
+func TestKeyPair_CentralTagStoreFailureDoesNotFailOperation(t *testing.T) {
+	svc, _ := newTestKeyService()
+	central := &failingCentralTagStore{}
+	svc.SetCentralTagStore(central)
+	spec := []*ec2.TagSpecification{{
+		ResourceType: aws.String("key-pair"),
+		Tags:         []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("k")}},
+	}}
+
+	_, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
+		KeyName: aws.String("created"), TagSpecifications: spec,
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.ImportKeyPair(context.Background(), &ec2.ImportKeyPairInput{
+		KeyName: aws.String("imported"), PublicKeyMaterial: []byte(testED25519PubKey), TagSpecifications: spec,
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("created")}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, central.puts)
+	assert.Equal(t, 1, central.deletes)
+}
+
+// assertAWSError checks the code a client receives and the message with it.
+func assertAWSError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, msg)
 }

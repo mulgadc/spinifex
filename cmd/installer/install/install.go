@@ -870,7 +870,7 @@ func fireInstallCallback() {
 		return
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url) //nolint:noctx // installer has no context; best-effort fire-and-forget
+	resp, err := client.Get(url)
 	if err != nil {
 		slog.Warn("fireInstallCallback: request failed", "url", url, "err", err)
 		return

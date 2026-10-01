@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -49,11 +50,6 @@ type EKSServiceDeps struct {
 	GatewayBaseURL string
 	Region         string
 	HolderID       string
-
-	// ClusterSize is the daemon's node count, used as the JetStream replica
-	// count for the lazily-created per-account and leader KV buckets so they
-	// match the cluster's other R3 streams instead of staying stuck at R1.
-	ClusterSize int
 
 	// InternalSuffix is the AWS-parity internal DNS suffix (e.g. spinifex.internal)
 	// used to compose the worker's ECR registry host.
@@ -305,7 +301,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	// The leader bucket outlives every request, so its open is bounded by the
 	// service's own background context rather than a caller's.
 	ctx, cancel := context.WithCancel(context.Background())
-	leaderKV, err := InitLeaderBucket(ctx, js, max(deps.ClusterSize, 1))
+	leaderKV, err := InitLeaderBucket(ctx, js)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -509,7 +505,7 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	if err := s.requireOrchestrationDeps("CreateCluster"); err != nil {
 		return nil, err
 	}
-	if err := validateCreateClusterInput(input); err != nil {
+	if err := validateCreateClusterInput(input, accountID); err != nil {
 		return nil, err
 	}
 	name := aws.StringValue(input.Name)
@@ -519,7 +515,7 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	if err != nil {
 		return nil, logCreateErr(name, accountID, "jetstream", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, logCreateErr(name, accountID, "get account bucket", err)
 	}
@@ -1051,7 +1047,7 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
@@ -1070,7 +1066,7 @@ func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListCluste
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "jetstream")
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "get account bucket")
 	}
@@ -1117,7 +1113,7 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
@@ -1536,7 +1532,7 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}
@@ -1801,12 +1797,9 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 
 // hasAssociatedPolicy reports whether the entry has the given policy ARN bound.
 func hasAssociatedPolicy(rec *AccessEntryRecord, policyARN string) bool {
-	for _, p := range rec.AssociatedPolicies {
-		if p.PolicyARN == policyARN {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(rec.AssociatedPolicies, func(p AssociatedAccessPolicy) bool {
+		return p.PolicyARN == policyARN
+	})
 }
 
 // accessPolicyName extracts the policy short name from its ARN
@@ -2002,22 +1995,18 @@ func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (j
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	return GetOrCreateAccountBucket(ctx, js, accountID)
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN
 // (arn:aws:eks:<region>:<acct>:cluster/<name>), reporting false for any other
 // ARN shape (e.g. nodegroup) the tag store does not back.
 func clusterNameFromARN(arn string) (string, bool) {
-	const prefix = "arn:aws:eks:"
-	if !strings.HasPrefix(arn, prefix) {
+	service, _, _, resource, ok := resourcearn.Split(arn)
+	if !ok || service != "eks" {
 		return "", false
 	}
-	parts := strings.SplitN(arn, ":", 6)
-	if len(parts) != 6 {
-		return "", false
-	}
-	resType, name, found := strings.Cut(parts[5], "/")
+	resType, name, found := strings.Cut(resource, "/")
 	if !found || resType != "cluster" || name == "" {
 		return "", false
 	}
@@ -2028,15 +2017,11 @@ func clusterNameFromARN(arn string) (string, bool) {
 // (arn:aws:eks:<region>:<acct>:nodegroup/<cluster>/<ng>/<uuid>), reporting false
 // for any other ARN shape.
 func nodegroupRefFromARN(arn string) (string, string, bool) {
-	const prefix = "arn:aws:eks:"
-	if !strings.HasPrefix(arn, prefix) {
+	service, _, _, resource, ok := resourcearn.Split(arn)
+	if !ok || service != "eks" {
 		return "", "", false
 	}
-	parts := strings.SplitN(arn, ":", 6)
-	if len(parts) != 6 {
-		return "", "", false
-	}
-	resType, rest, found := strings.Cut(parts[5], "/")
+	resType, rest, found := strings.Cut(resource, "/")
 	if !found || resType != "nodegroup" {
 		return "", "", false
 	}
@@ -2060,11 +2045,12 @@ func eksTagErr(err error) error {
 
 func notImpl() error { return errors.New(awserrors.ErrorNotImplemented) }
 
-func validateCreateClusterInput(input *eks.CreateClusterInput) error {
+func validateCreateClusterInput(input *eks.CreateClusterInput, accountID string) error {
 	if input == nil || input.Name == nil || *input.Name == "" {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if input.RoleArn == nil || !strings.HasPrefix(*input.RoleArn, "arn:aws:iam:") {
+	// The cluster role must be a role in the caller's own account.
+	if roleAccount, _, err := auth.ParseRoleARN(aws.StringValue(input.RoleArn)); err != nil || roleAccount != accountID {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if input.ResourcesVpcConfig == nil || len(input.ResourcesVpcConfig.SubnetIds) == 0 {
@@ -2232,7 +2218,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		slog.Error("spawnReconciler: jetstream", "err", err)
 		return
 	}
-	acctKV, err := GetOrCreateAccountBucket(s.bgCtx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(s.bgCtx, js, accountID)
 	if err != nil {
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return

@@ -90,7 +90,7 @@ func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeConfigMap),
 	}
-	err := validateCreateClusterInput(in)
+	err := validateCreateClusterInput(in, testAccountID)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorInvalidParameter, code)
@@ -104,7 +104,7 @@ func TestValidateCreateClusterInput_RejectsJunkAuthMode(t *testing.T) {
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String("NOT_A_REAL_MODE"),
 	}
-	err := validateCreateClusterInput(in)
+	err := validateCreateClusterInput(in, testAccountID)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorInvalidParameter, code)
@@ -119,7 +119,7 @@ func TestValidateCreateClusterInput_AcceptsAPIAndConfigMapAuthMode(t *testing.T)
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeApiAndConfigMap),
 	}
-	require.NoError(t, validateCreateClusterInput(in))
+	require.NoError(t, validateCreateClusterInput(in, testAccountID))
 }
 
 func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
@@ -127,17 +127,17 @@ func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeApi),
 	}
-	require.NoError(t, validateCreateClusterInput(in))
+	require.NoError(t, validateCreateClusterInput(in, testAccountID))
 }
 
 // An unset accessConfig (or an unset authenticationMode within it) must stay
 // valid — it defaults to API, exactly as an explicit "API" does.
 func TestValidateCreateClusterInput_AcceptsUnsetAuthMode(t *testing.T) {
 	in := createInput("alpha")
-	require.NoError(t, validateCreateClusterInput(in))
+	require.NoError(t, validateCreateClusterInput(in, testAccountID))
 
 	in.AccessConfig = &eks.CreateAccessConfigRequest{}
-	require.NoError(t, validateCreateClusterInput(in))
+	require.NoError(t, validateCreateClusterInput(in, testAccountID))
 }
 
 // A create request with no subnets is malformed and must be rejected before any
@@ -145,10 +145,10 @@ func TestValidateCreateClusterInput_AcceptsUnsetAuthMode(t *testing.T) {
 func TestValidateCreateClusterInput_RejectsMissingSubnetIds(t *testing.T) {
 	in := createInput("alpha")
 	in.ResourcesVpcConfig = &eks.VpcConfigRequest{}
-	require.EqualError(t, validateCreateClusterInput(in), awserrors.ErrorInvalidParameterValue)
+	require.EqualError(t, validateCreateClusterInput(in, testAccountID), awserrors.ErrorInvalidParameterValue)
 
 	in.ResourcesVpcConfig = nil
-	require.EqualError(t, validateCreateClusterInput(in), awserrors.ErrorInvalidParameterValue)
+	require.EqualError(t, validateCreateClusterInput(in, testAccountID), awserrors.ErrorInvalidParameterValue)
 }
 
 // DescribeCluster on an absent cluster must reach the KV lookup (full deps
@@ -223,7 +223,7 @@ func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 func seedTestCluster(t *testing.T, svc *EKSServiceImpl, cluster string) {
 	t.Helper()
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: cluster, Status: ClusterStatusActive}))
 }
@@ -414,7 +414,7 @@ func TestAccessPolicy_DisassociateRemovesProjectedGroup(t *testing.T) {
 	require.NoError(t, err)
 
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	rec, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
@@ -461,7 +461,7 @@ func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
 func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:cluster/c1"
@@ -503,7 +503,7 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 	svc := setupTestService(t)
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/ng1/abc123"
@@ -579,4 +579,17 @@ func TestEKSServiceImpl_TagsUnsupportedARNNotImplemented(t *testing.T) {
 
 	_, err = svc.ListTagsForResource(context.Background(), &eks.ListTagsForResourceInput{ResourceArn: aws.String(fpARN)}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorNotImplemented)
+}
+
+// The cluster role must be a role in the caller's own account.
+func TestValidateCreateClusterInput_RejectsRoleOutsideCallerAccount(t *testing.T) {
+	for _, roleARN := range []string{
+		"arn:aws:iam::999999999999:role/eks-cluster",
+		"arn:aws:iam::" + testAccountID + ":user/eks-cluster",
+		"arn:aws:iam:",
+	} {
+		in := createInput("alpha")
+		in.RoleArn = aws.String(roleARN)
+		require.EqualError(t, validateCreateClusterInput(in, testAccountID), awserrors.ErrorInvalidParameterValue, roleARN)
+	}
 }

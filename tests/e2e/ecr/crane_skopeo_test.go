@@ -22,7 +22,7 @@ const ociCmdTimeout = 2 * time.Minute
 func writeLayerTar(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "layer.tar")
-	fh, err := os.Create(path) //nolint:gosec // test-controlled path under TmpDir
+	fh, err := os.Create(path)
 	require.NoError(t, err)
 	defer fh.Close()
 

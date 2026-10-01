@@ -131,12 +131,7 @@ var modelCache sync.Map
 
 // Services returns the supported service identifiers in stable order.
 func Services() []Service {
-	services := make([]Service, 0, len(modelFiles))
-	for service := range modelFiles {
-		services = append(services, service)
-	}
-	slices.Sort(services)
-	return services
+	return slices.Sorted(maps.Keys(modelFiles))
 }
 
 // Load parses and indexes the embedded model for service. Each service is

@@ -232,9 +232,9 @@ func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket,
 // creating it on first use at the given replica count (clamped to a minimum
 // of 1). Idempotent: subsequent calls with the same accountID return the
 // existing handle.
-func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string, replicas int) (jetstream.KeyValue, error) {
+func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, bucket, KVBucketEKSAccountHistory, replicas)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, KVBucketEKSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}
@@ -245,13 +245,11 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 }
 
 // InitLeaderBucket creates (or attaches to) the shared spinifex-eks-leader
-// bucket used for per-cluster reconciler leader-lease CAS locks, at the given
-// replica count (clamped to a minimum of 1).
-func InitLeaderBucket(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.KeyValue, error) {
+// bucket used for per-cluster reconciler leader-lease CAS locks.
+func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
 	return kvlease.OpenBucket(ctx, js, kvlease.BucketConfig{
-		Name:     KVBucketEKSLeader,
-		TTL:      KVBucketEKSLeaderTTL,
-		Replicas: max(replicas, 1),
-		Version:  KVBucketEKSLeaderVersion,
+		Name:    KVBucketEKSLeader,
+		TTL:     KVBucketEKSLeaderTTL,
+		Version: KVBucketEKSLeaderVersion,
 	})
 }

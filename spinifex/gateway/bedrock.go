@@ -235,7 +235,7 @@ func (gw *GatewayConfig) bedrockLoggingConfigStore() *gateway_bedrock.LoggingCon
 	if gw.BedrockLoggingConfig != nil {
 		return gw.BedrockLoggingConfig
 	}
-	return gateway_bedrock.NewLoggingConfigStore(nil, 1)
+	return gateway_bedrock.NewLoggingConfigStore(nil)
 }
 
 // bedrockRecorder returns gw.BedrockRecorder, or the no-op fallback when no
@@ -269,7 +269,7 @@ func (gw *GatewayConfig) bedrockProvisionedStore() *gateway_bedrock.ProvisionedS
 	if gw.BedrockProvisioned != nil {
 		return gw.BedrockProvisioned
 	}
-	return gateway_bedrock.NewProvisionedStore(nil, 1, gw.Region, nil)
+	return gateway_bedrock.NewProvisionedStore(nil, gw.Region, nil)
 }
 
 // bedrockGuardrailStore returns gw.BedrockGuardrails, or a store backed by no
@@ -281,7 +281,7 @@ func (gw *GatewayConfig) bedrockGuardrailStore() *gateway_bedrock.GuardrailStore
 	if gw.BedrockGuardrails != nil {
 		return gw.BedrockGuardrails
 	}
-	return gateway_bedrock.NewGuardrailStore(nil, 1, gw.Region)
+	return gateway_bedrock.NewGuardrailStore(nil, gw.Region)
 }
 
 // bedrockEndpointResolver returns the registry-backed resolver when one is

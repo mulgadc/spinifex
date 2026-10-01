@@ -3,7 +3,9 @@ package oci
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 	"sync"
 )
 
@@ -71,22 +73,14 @@ func (f *Fake) SeedPublicIP(p PublicIP) {
 func (f *Fake) PrivateIPs() []PrivateIP {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]PrivateIP, 0, len(f.privateIPs))
-	for _, p := range f.privateIPs {
-		out = append(out, p)
-	}
-	return out
+	return slices.Collect(maps.Values(f.privateIPs))
 }
 
 // PublicIPs returns a snapshot.
 func (f *Fake) PublicIPs() []PublicIP {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]PublicIP, 0, len(f.publicIPs))
-	for _, p := range f.publicIPs {
-		out = append(out, p)
-	}
-	return out
+	return slices.Collect(maps.Values(f.publicIPs))
 }
 
 // FailOp stages err for the next call to op. Locked, so a test may stage one

@@ -31,7 +31,7 @@ func TestClusterShutdownStateKVRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitClusterStateBucket()
 	require.NoError(t, err)

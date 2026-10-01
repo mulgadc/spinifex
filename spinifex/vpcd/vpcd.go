@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -210,26 +211,6 @@ func (svc *Service) Start() (int, error) {
 	}
 
 	return os.Getpid(), nil
-}
-
-// Stop stops the vpcd service.
-func (svc *Service) Stop() error {
-	return utils.StopProcessAt(svc.Config.BaseDir, serviceName)
-}
-
-// Status returns the vpcd service status.
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.BaseDir, serviceName)
-}
-
-// Shutdown gracefully shuts down the vpcd service.
-func (svc *Service) Shutdown() error {
-	return svc.Stop()
-}
-
-// Reload reloads the vpcd service configuration.
-func (svc *Service) Reload() error {
-	return nil
 }
 
 // checkBrInt verifies the OVS integration bridge (br-int) exists.
@@ -863,14 +844,9 @@ func startDHCPManagerIfNeeded(ctx context.Context, nc *nats.Conn, js jetstream.J
 	if cfg == nil || cfg.ExternalMode == "" {
 		return nil, nil, nil
 	}
-	wantDHCP := false
-	for _, p := range cfg.ExternalPools {
-		if p.Source == external.SourceDHCP {
-			wantDHCP = true
-			break
-		}
-	}
-	if !wantDHCP {
+	if !slices.ContainsFunc(cfg.ExternalPools, func(p external.ExternalPoolConfig) bool {
+		return p.Source == external.SourceDHCP
+	}) {
 		return nil, nil, nil
 	}
 

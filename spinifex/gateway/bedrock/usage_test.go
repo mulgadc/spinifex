@@ -21,7 +21,7 @@ const (
 func newTestUsageStore(t *testing.T) *UsageStore {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	return NewUsageStore(testutil.NewJetStream(t, nc), 1)
+	return NewUsageStore(testutil.NewJetStream(t, nc))
 }
 
 // TestMicroUSDCost_Arithmetic covers D12's integer accrual, including
@@ -184,7 +184,7 @@ func TestUsageConsumer_Run_RedeliveredRecordDoesNotDoubleCount(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := EnsureInvocationStream(ctx, js, 1)
+	_, err := EnsureInvocationStream(ctx, js)
 	require.NoError(t, err)
 	consumer, err := EnsureUsageConsumer(ctx, js)
 	require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestUsageConsumer_Run_RedeliveredRecordDoesNotDoubleCount(t *testing.T) {
 	_, err = js.Publish(ctx, InvocationStreamSubject, payload)
 	require.NoError(t, err)
 
-	usage := NewUsageStore(js, 1)
+	usage := NewUsageStore(js)
 	uc := NewUsageConsumer(usage, nil)
 	done := make(chan struct{})
 	go func() {
@@ -243,7 +243,7 @@ func TestUsageConsumer_Run_UnknownModelStillRecordsTokensCostUnknown(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := EnsureInvocationStream(ctx, js, 1)
+	_, err := EnsureInvocationStream(ctx, js)
 	require.NoError(t, err)
 	consumer, err := EnsureUsageConsumer(ctx, js)
 	require.NoError(t, err)
@@ -258,7 +258,7 @@ func TestUsageConsumer_Run_UnknownModelStillRecordsTokensCostUnknown(t *testing.
 	_, err = js.Publish(ctx, InvocationStreamSubject, payload)
 	require.NoError(t, err)
 
-	usage := NewUsageStore(js, 1)
+	usage := NewUsageStore(js)
 	uc := NewUsageConsumer(usage, nil)
 	done := make(chan struct{})
 	go func() {
@@ -293,7 +293,7 @@ func TestBillingPeriod_MonthlyFormat(t *testing.T) {
 // JetStream client: both the counter bucket and the dedupe bucket must report
 // the misconfiguration rather than panic on a nil handle.
 func TestUsageStore_RequiresJetStream(t *testing.T) {
-	store := NewUsageStore(nil, 1)
+	store := NewUsageStore(nil)
 	ctx := context.Background()
 
 	_, _, err := store.Get(ctx, "000000000001", "m", "2026-08")

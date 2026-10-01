@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -136,7 +137,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	slog.InfoContext(ctx, "CreateInternetGateway completed", "internetGatewayId", igwID, "accountID", accountID)
 
 	return &ec2.CreateInternetGatewayOutput{
-		InternetGateway: s.recordToEC2(&record),
+		InternetGateway: s.recordToEC2(&record, accountID),
 	}, nil
 }
 
@@ -155,7 +156,7 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		// tolerates it on destroy); destroy orchestration tolerates it too.
 		// A transient read error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+			return nil, igwNotFoundError(igwID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -165,12 +166,11 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Cannot delete an attached IGW. The VPC is named because a pending
-	// attachment is hidden from describes, so the caller has no other way to
-	// learn what it must detach from.
+	// Cannot delete an attached IGW. AWS's message does not name the VPC, and
+	// a pending attachment is hidden from describes, so the log names it.
 	if record.VpcId != "" {
-		return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-			"the internet gateway is attached to %s and must be detached first", record.VpcId)
+		slog.WarnContext(ctx, "DeleteInternetGateway: gateway is attached", "internetGatewayId", igwID, "vpcId", record.VpcId)
+		return nil, awserrors.HasDependencies("internetGateway", igwID)
 	}
 
 	if err := s.igwKV.Delete(ctx, key); err != nil {
@@ -182,16 +182,30 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 	return &ec2.DeleteInternetGatewayOutput{}, nil
 }
 
+var describeIGWPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter InternetGatewayIds cannot be used with the parameter MaxResults",
+}
+
 // describeIGWValidFilters defines the set of filter names accepted by DescribeInternetGateways.
 var describeIGWValidFilters = map[string]bool{
 	"internet-gateway-id": true,
 	"attachment.vpc-id":   true,
 	"attachment.state":    true,
+	"tag-key":             true,
+	"tag-value":           true,
 }
 
 // DescribeInternetGateways lists Internet Gateways, optionally filtered by ID.
 func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, accountID string) (*ec2.DescribeInternetGatewaysOutput, error) {
 	var igws []*ec2.InternetGateway
+
+	// Validated but not paged: AWS's paging of DescribeInternetGateways is unobserved.
+	if _, err := describeIGWPaging.Parse(input.MaxResults, input.NextToken, len(input.InternetGatewayIds)); err != nil {
+		return nil, err
+	}
 
 	igwIDs := make(map[string]bool)
 	for _, id := range input.InternetGatewayIds {
@@ -242,14 +256,14 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 			continue
 		}
 
-		igws = append(igws, s.recordToEC2(&record))
+		igws = append(igws, s.recordToEC2(&record, accountID))
 		foundIDs[record.InternetGatewayId] = true
 	}
 
 	// Return error if specific IDs were requested but not found
-	for id := range igwIDs {
-		if !foundIDs[id] {
-			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+	for _, id := range input.InternetGatewayIds {
+		if id != nil && !foundIDs[*id] {
+			return nil, igwNotFoundError(*id)
 		}
 	}
 
@@ -263,7 +277,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 // igwMatchesFilters checks whether an IGWRecord satisfies all parsed awsfilters.
 func igwMatchesFilters(record *IGWRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 
@@ -309,7 +323,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+		return nil, igwNotFoundError(igwID)
 	}
 
 	var record IGWRecord
@@ -318,7 +332,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	}
 
 	if record.VpcId != "" {
-		return nil, errors.New(awserrors.ErrorResourceAlreadyAssociated)
+		return nil, awserrors.Errorf(awserrors.ErrorResourceAlreadyAssociated, "resource %s is already attached to network %s", igwID, record.VpcId)
 	}
 
 	// Verify the caller owns the target VPC (fail-closed if KV unavailable)
@@ -328,7 +342,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 	}
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
 		slog.WarnContext(ctx, "AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 
 	record.VpcId = vpcID
@@ -371,7 +385,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+		return nil, igwNotFoundError(igwID)
 	}
 
 	var record IGWRecord
@@ -443,7 +457,7 @@ func (s *IGWServiceImpl) CreateAttachedInternetGateway(ctx context.Context, acco
 		return false, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
-		return false, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return false, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 
 	key := utils.AccountKey(accountID, igwID)
@@ -569,9 +583,10 @@ func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey, vpcID s
 	return nil
 }
 
-func (s *IGWServiceImpl) recordToEC2(record *IGWRecord) *ec2.InternetGateway {
+func (s *IGWServiceImpl) recordToEC2(record *IGWRecord, accountID string) *ec2.InternetGateway {
 	igw := &ec2.InternetGateway{
 		InternetGatewayId: aws.String(record.InternetGatewayId),
+		OwnerId:           aws.String(accountID),
 	}
 
 	// AWS returns no attachment at all unless one exists, so a requested but
@@ -611,4 +626,8 @@ func (s *IGWServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	return utils.MirrorKVRecordTags(context.Background(), s.igwKV, accountID, "igw-", input.Resources,
 		func(r *IGWRecord) *map[string]string { return &r.Tags },
 		utils.RemoveTagsMut(input))
+}
+
+func igwNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidInternetGatewayIDNotFound, "internetGateway", id)
 }

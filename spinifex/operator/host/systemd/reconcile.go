@@ -9,11 +9,12 @@ package systemd
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -54,23 +55,17 @@ type Result struct {
 // HasChanges reports whether any unit is missing or stale — i.e. whether
 // applying (DryRun: false) would write anything to disk.
 func (r Result) HasChanges() bool {
-	for _, s := range r.Statuses {
-		if s.Action == ActionInstall || s.Action == ActionReplace {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(r.Statuses, func(s UnitStatus) bool {
+		return s.Action == ActionInstall || s.Action == ActionReplace
+	})
 }
 
 // HasConflicts reports whether any unit is at the current version but was
 // modified on disk — drift Reconcile deliberately refuses to overwrite.
 func (r Result) HasConflicts() bool {
-	for _, s := range r.Statuses {
-		if s.Action == ActionConflict {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(r.Statuses, func(s UnitStatus) bool {
+		return s.Action == ActionConflict
+	})
 }
 
 // ErrRootRequired is returned when Reconcile has pending changes but root
@@ -103,12 +98,7 @@ var systemctlDaemonReload = func() error {
 }
 
 func sortedUnitNames() []string {
-	names := make([]string, 0, len(Units))
-	for n := range Units {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(Units))
 }
 
 // Reconcile compares each embedded unit (Units, generated from

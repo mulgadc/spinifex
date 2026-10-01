@@ -4,14 +4,15 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
@@ -88,22 +90,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-func (svc *Service) Stop() (err error) {
-	return utils.StopProcessAt(svc.Config.NodeBaseDir(), serviceName)
-}
-
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.NodeBaseDir(), serviceName)
-}
-
-func (svc *Service) Shutdown() (err error) {
-	return svc.Stop()
-}
-
-func (svc *Service) Reload() (err error) {
-	return nil
-}
-
 // awsgwTOML is the top-level structure of awsgw.toml used to extract the
 // ratelimit and quota sections. Other fields are parsed elsewhere (e.g. region,
 // debug).
@@ -152,53 +138,15 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 // openAccountUsageBucket opens (or idempotently creates) the gateway-owned
 // per-account vCPU usage bucket. History is 1: each account key holds a single
 // CAS-updated integer counter, so no revision beyond the latest is worth keeping.
-func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager, replicas int) (jetstream.KeyValue, error) {
-	kv, err := js.KeyValue(ctx, handlers_quota.KVBucketAccountUsage)
-	if err == nil {
-		return kv, nil
-	}
-	if !errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, fmt.Errorf("open account usage bucket: %w", err)
-	}
-
-	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:   handlers_quota.KVBucketAccountUsage,
-		History:  1,
-		Replicas: max(replicas, 1),
-	})
-	if errors.Is(err, jetstream.ErrBucketExists) {
-		return js.KeyValue(ctx, handlers_quota.KVBucketAccountUsage)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("create account usage bucket: %w", err)
-	}
-	return kv, nil
+func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucket(ctx, js, handlers_quota.KVBucketAccountUsage, 1)
 }
 
 // openAccountQuotaBucket opens (or idempotently creates) the per-account quota
 // override bucket. History is 1: each key holds the current override set, and
 // no earlier revision of a limit is worth keeping.
-func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager, replicas int) (jetstream.KeyValue, error) {
-	kv, err := js.KeyValue(ctx, handlers_quota.KVBucketAccountQuota)
-	if err == nil {
-		return kv, nil
-	}
-	if !errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, fmt.Errorf("open account quota bucket: %w", err)
-	}
-
-	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:   handlers_quota.KVBucketAccountQuota,
-		History:  1,
-		Replicas: max(replicas, 1),
-	})
-	if errors.Is(err, jetstream.ErrBucketExists) {
-		return js.KeyValue(ctx, handlers_quota.KVBucketAccountQuota)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("create account quota bucket: %w", err)
-	}
-	return kv, nil
+func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucket(ctx, js, handlers_quota.KVBucketAccountQuota, 1)
 }
 
 func launchService(config *config.ClusterConfig) error {
@@ -241,14 +189,14 @@ func launchService(config *config.ClusterConfig) error {
 	// Initialize IAM service with NATS KV backend (required for auth).
 	// On multi-node clusters, JetStream KV requires cluster quorum which may
 	// not be available yet if nodes start concurrently. Retry with backoff.
-	iamService, err := handlers_iam.NewIAMServiceWithRetry(janitorCtx, natsConn, masterKey, len(config.Nodes))
+	iamService, err := handlers_iam.NewIAMServiceWithRetry(janitorCtx, natsConn, masterKey)
 	if err != nil {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
 
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.
-	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, len(config.Nodes))
+	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey)
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}
@@ -340,7 +288,7 @@ func launchService(config *config.ClusterConfig) error {
 	if err != nil {
 		return fmt.Errorf("jetstream client: %w", err)
 	}
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, js, masterKey, len(config.Nodes))
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, js, masterKey)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
 	}
@@ -370,19 +318,19 @@ func launchService(config *config.ClusterConfig) error {
 	if key := os.Getenv("OCHRE_ANTHROPIC_API_KEY"); key != "" {
 		bedrockPlatformDefaults["anthropic"] = key
 	}
-	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, len(config.Nodes), bedrockPlatformDefaults)
+	bedrockCredentials := gateway_bedrock.NewCredentialStore(js, masterKey, bedrockPlatformDefaults)
 
 	// Bedrock self-host weights: a model's serving spec (VRAM, instance type,
 	// vLLM args) ships in-tree, but which staged snapshot serves it is
 	// deployment-local state. tieredCatalog/GetFoundationModel read this
 	// through the package-level resolver rather than a parameter, since they
 	// are called from gateway/bedrock.go's fixed-arity route table.
-	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js, len(config.Nodes)))
+	gateway_bedrock.SetWeightsResolver(gateway_bedrock.NewWeightsStore(js))
 
 	// Bedrock model access: grants live in the bedrock-model-access KV bucket
 	// and are deny-by-default, so a fresh deployment serves no models until an
 	// operator grants them (spx admin ochre access grant).
-	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, len(config.Nodes))
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
 
 	// Deny-by-default would otherwise leave a fresh install with a catalog
 	// nobody can see, so seed the platform admin account — the operator's own
@@ -434,13 +382,13 @@ func launchService(config *config.ClusterConfig) error {
 	// gateway_bedrock's narrow EndpointProvisioner (see provisioned_adapter.go
 	// for why the adapter, not handlers_bedrock.EndpointService, is what
 	// gateway_bedrock depends on).
-	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, len(config.Nodes), nodeConfig.Region,
+	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, nodeConfig.Region,
 		handlers_bedrock.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
 
 	// Bedrock guardrails: control-plane CRUD only at this stage — the record
 	// stores the full policy config so a later stage's filter engine and
 	// inference enforcement can read it back, but nothing enforces it yet.
-	bedrockGuardrails := gateway_bedrock.NewGuardrailStore(js, len(config.Nodes), nodeConfig.Region)
+	bedrockGuardrails := gateway_bedrock.NewGuardrailStore(js, nodeConfig.Region)
 
 	// bedrock-agent knowledge-base + data-source resource metadata: gateway-
 	// owned (D-arch), opened directly against JetStream the same way the
@@ -456,8 +404,8 @@ func launchService(config *config.ClusterConfig) error {
 	// deliveryConsumer to any account with a configured destination bucket
 	// and a metadata-only log line. bedrockLoggingConfig separately gates
 	// whether the record written to that bucket includes body text.
-	bedrockLoggingConfig := gateway_bedrock.NewLoggingConfigStore(js, len(config.Nodes))
-	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js, len(config.Nodes)); err != nil {
+	bedrockLoggingConfig := gateway_bedrock.NewLoggingConfigStore(js)
+	if _, err := gateway_bedrock.EnsureInvocationStream(janitorCtx, js); err != nil {
 		return fmt.Errorf("bedrock: ensure invocation stream: %w", err)
 	}
 	deliveryConsumer, err := gateway_bedrock.EnsureDeliveryConsumer(janitorCtx, js)
@@ -472,8 +420,8 @@ func launchService(config *config.ClusterConfig) error {
 	// updates per-account/model/period counters, deduping on RequestID so
 	// at-least-once redelivery never double-counts. bedrockPrices resolves
 	// KV price overrides over the catalog's in-tree defaults.
-	bedrockUsage := gateway_bedrock.NewUsageStore(js, len(config.Nodes))
-	bedrockPrices := gateway_bedrock.NewPriceStore(js, len(config.Nodes))
+	bedrockUsage := gateway_bedrock.NewUsageStore(js)
+	bedrockPrices := gateway_bedrock.NewPriceStore(js)
 	usageConsumer, err := gateway_bedrock.EnsureUsageConsumer(janitorCtx, js)
 	if err != nil {
 		return fmt.Errorf("bedrock: ensure usage metering consumer: %w", err)
@@ -483,10 +431,7 @@ func launchService(config *config.ClusterConfig) error {
 	// nodeIDs is the configured cluster node set, in the same namespace as the
 	// daemon reply header, so a fan-out's completeness can be judged by
 	// responder identity rather than by count.
-	nodeIDs := make([]string, 0, len(config.Nodes))
-	for nodeID := range config.Nodes {
-		nodeIDs = append(nodeIDs, nodeID)
-	}
+	nodeIDs := slices.Collect(maps.Keys(config.Nodes))
 
 	gw := gateway.GatewayConfig{
 		Debug:                   nodeConfig.AWSGW.Debug,
@@ -528,7 +473,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, js, masterKey, len(config.Nodes), gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, js, masterKey, gw.ECRTokenIssuer, gw.ECRTokenVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}
@@ -544,11 +489,11 @@ func launchService(config *config.ClusterConfig) error {
 	// config builds a no-op Service whose Exempt short-circuits every check.
 	var usageBucket, quotaOverrides jetstream.KeyValue
 	if quotaCfg.Enabled {
-		usageBucket, err = openAccountUsageBucket(janitorCtx, js, len(config.Nodes))
+		usageBucket, err = openAccountUsageBucket(janitorCtx, js)
 		if err != nil {
 			return fmt.Errorf("init account usage bucket: %w", err)
 		}
-		quotaOverrides, err = openAccountQuotaBucket(janitorCtx, js, len(config.Nodes))
+		quotaOverrides, err = openAccountQuotaBucket(janitorCtx, js)
 		if err != nil {
 			return fmt.Errorf("init account quota bucket: %w", err)
 		}
@@ -572,13 +517,13 @@ func launchService(config *config.ClusterConfig) error {
 	// quotaCfg.Enabled); this loop only pushes a periodic observability
 	// snapshot to KV and is itself a no-op when the RPM dimension is
 	// disabled.
-	go gw.Quota.RunBedrockRPMSync(janitorCtx, js, len(config.Nodes))
+	go gw.Quota.RunBedrockRPMSync(janitorCtx, js)
 
 	// Instance cache: a read-only informer over the live instance record space,
 	// started now so it is warm well before anything reads it. The describe
 	// path still serves from the fan-out and KV; only status synthesis reads it.
 	instanceCache := instancecache.New(js, instancecache.Config{
-		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: len(config.Nodes)},
+		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
 		Prefix:            daemon.InstanceRecordPrefix,
 		VisibleToCaller:   handlers_ec2_instance.IsInstanceVisibleToCaller,
 		FallbackAccountID: utils.GlobalAccountID,
@@ -590,7 +535,7 @@ func launchService(config *config.ClusterConfig) error {
 	gw.InstanceStatus = gateway_ec2_instance.StatusSynthesis{
 		Records: instanceCache,
 		Liveness: instancecache.NewLiveness(js, kvstore.Config{
-			Name: daemon.ClusterStateBucket, History: 1, Replicas: len(config.Nodes),
+			Name: daemon.ClusterStateBucket, History: 1,
 		}),
 	}
 
@@ -636,7 +581,7 @@ func launchService(config *config.ClusterConfig) error {
 func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsConn *nats.Conn,
 	js jetstream.JetStream, accounts handlers_quota.AccountLister, replicas int) {
 	holder, _ := os.Hostname()
-	cfg := kvstore.Config{Name: daemon.InstanceStateBucket, History: 1, Replicas: replicas}
+	cfg := kvstore.Config{Name: daemon.InstanceStateBucket, History: 1}
 	list := handlers_quota.RecordVCPULister(
 		kvstore.New[vm.InstanceRecord](js, cfg), daemon.InstanceRecordPrefix)
 

@@ -21,9 +21,9 @@ func newStateReconcilerHarness(t *testing.T, opts ...ReconcilerOption) (*Cluster
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	leaderKV, err := InitLeaderBucket(t.Context(), js, 1)
+	leaderKV, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
-	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(t.Context(), acctKV, sampleClusterMeta("alpha")))
 

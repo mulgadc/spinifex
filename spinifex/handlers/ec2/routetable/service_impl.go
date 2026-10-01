@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -91,7 +94,7 @@ func (s *RouteTableServiceImpl) getRouteTable(ctx context.Context, accountID, rt
 	entry, err := s.rtbKV.Get(ctx, utils.AccountKey(accountID, rtbID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+			return nil, rtbNotFoundError(rtbID)
 		}
 		slog.ErrorContext(ctx, "Failed to read route table from KV", "routeTableId", rtbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -145,7 +148,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 	case err == nil:
 		return nil
 	case errors.Is(err, errRTBAbsent):
-		return errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+		return rtbNotFoundError(rtbID)
 	case errors.Is(err, errRTBContended):
 		// Contended rather than broken.
 		slog.ErrorContext(ctx, "Route table CAS retries exhausted under contention",
@@ -168,7 +171,7 @@ func (s *RouteTableServiceImpl) mutateRouteTableCAS(ctx context.Context, account
 func (s *RouteTableServiceImpl) getVPCCidr(ctx context.Context, accountID, vpcID string) (string, error) {
 	entry, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID))
 	if err != nil {
-		return "", errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return "", awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 	var vpcRecord handlers_ec2_vpc.VPCRecord
 	if err := json.Unmarshal(entry.Value(), &vpcRecord); err != nil {
@@ -550,7 +553,8 @@ func (s *RouteTableServiceImpl) CreateRouteTable(ctx context.Context, input *ec2
 	}
 
 	return &ec2.CreateRouteTableOutput{
-		RouteTable: recordToEC2(record),
+		RouteTable:  recordToEC2(record),
+		ClientToken: input.ClientToken,
 	}, nil
 }
 
@@ -569,13 +573,13 @@ func (s *RouteTableServiceImpl) DeleteRouteTable(ctx context.Context, input *ec2
 	}
 
 	if record.IsMain {
-		return nil, errors.New(awserrors.ErrorDependencyViolation)
+		return nil, awserrors.HasDependencies("routeTable", rtbID)
 	}
 
 	// Check for non-main associations (subnets still using this table)
 	for _, assoc := range record.Associations {
 		if !assoc.Main && assoc.SubnetId != "" {
-			return nil, errors.New(awserrors.ErrorDependencyViolation)
+			return nil, awserrors.HasDependencies("routeTable", rtbID)
 		}
 	}
 
@@ -585,6 +589,13 @@ func (s *RouteTableServiceImpl) DeleteRouteTable(ctx context.Context, input *ec2
 
 	slog.InfoContext(ctx, "DeleteRouteTable completed", "routeTableId", rtbID, "accountID", accountID)
 	return &ec2.DeleteRouteTableOutput{}, nil
+}
+
+var describeRouteTablesPaging = paging.EC2{
+	MaxResults: 100,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 100.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter RouteTableIds cannot be used with the parameter MaxResults",
 }
 
 var describeRouteTablesValidFilters = map[string]bool{
@@ -599,10 +610,17 @@ var describeRouteTablesValidFilters = map[string]bool{
 	"route.state":                            true,
 	"route.origin":                           true,
 	"owner-id":                               true,
+	"tag-key":                                true,
+	"tag-value":                              true,
 }
 
 // DescribeRouteTables lists route tables, optionally filtered.
 func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInput, accountID string) (*ec2.DescribeRouteTablesOutput, error) {
+	// Validated but not paged: AWS's paging of DescribeRouteTables is unobserved.
+	if _, err := describeRouteTablesPaging.Parse(input.MaxResults, input.NextToken, len(input.RouteTableIds)); err != nil {
+		return nil, err
+	}
+
 	rtbIDs := make(map[string]bool)
 	for _, id := range input.RouteTableIds {
 		if id != nil {
@@ -658,9 +676,9 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 	}
 
 	// Return error if specific IDs were requested but not found
-	for id := range rtbIDs {
-		if !foundIDs[id] {
-			return nil, errors.New(awserrors.ErrorInvalidRouteTableIDNotFound)
+	for _, id := range input.RouteTableIds {
+		if id != nil && !foundIDs[*id] {
+			return nil, rtbNotFoundError(*id)
 		}
 	}
 
@@ -670,6 +688,44 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 }
 
 // CreateRoute adds a route to a route table.
+// gatewayNotFoundError is AWS's answer to a route naming a gateway that does
+// not exist, whatever the gateway's type.
+// checkRouteOutsideVPC rejects a gateway route whose destination is, or lies
+// inside, one of the VPC's CIDR blocks (the table's local routes). AWS allows
+// only an interface or instance there, which Spinifex does not route to.
+func checkRouteOutsideVPC(record *RouteTableRecord, destCidr string) error {
+	dest, parseErr := netip.ParsePrefix(destCidr)
+	if parseErr != nil {
+		return nil //nolint:nilerr // an unparseable destination is not a VPC-range conflict
+	}
+	for _, r := range record.Routes {
+		if r.GatewayId != "local" {
+			continue
+		}
+		vpc, err := netip.ParsePrefix(r.DestinationCidrBlock)
+		if err != nil {
+			continue
+		}
+		if dest.Bits() >= vpc.Bits() && vpc.Contains(dest.Addr()) {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"The destination CIDR block %s is equal to or more specific than one of this VPC's CIDR blocks. This route can target only an interface or an instance.", destCidr)
+		}
+	}
+	return nil
+}
+
+func rtbNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidRouteTableIDNotFound, "routeTable", id)
+}
+
+func associationNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidAssociationIDNotFound, "association", id)
+}
+
+func gatewayNotFoundError(id string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID '%s' does not exist", id)
+}
+
 func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -686,14 +742,10 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		return nil, err
 	}
 
-	// Check for duplicate destination
-	for _, r := range record.Routes {
-		if r.DestinationCidrBlock == destCidr {
-			return nil, errors.New(awserrors.ErrorRouteAlreadyExists)
-		}
-	}
-
+	// AWS validates the target, then the destination, then looks for an
+	// existing route, so events are held back until all three pass.
 	var route RouteRecord
+	var publish func()
 
 	switch {
 	case input.GatewayId != nil && *input.GatewayId != "":
@@ -701,7 +753,7 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		// Verify IGW exists and is attached to the same VPC
 		igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
 		if err != nil {
-			return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
+			return nil, gatewayNotFoundError(igwID)
 		}
 		var igwRecord handlers_ec2_igw.IGWRecord
 		if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
@@ -722,7 +774,9 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 
 		// Publish vpc.add-igw-route events for each subnet associated with this
 		// route table so the network subscriber installs per-subnet egress policies.
-		s.publishIGWRouteEvents(ctx, accountID, "vpc.add-igw-route", record, igwRecord.VpcId, igwID, destCidr)
+		publish = func() {
+			s.publishIGWRouteEvents(ctx, accountID, "vpc.add-igw-route", record, igwRecord.VpcId, igwID, destCidr)
+		}
 
 	case input.NatGatewayId != nil && *input.NatGatewayId != "":
 		natgwID := *input.NatGatewayId
@@ -750,11 +804,31 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		}
 
 		// Publish vpc.add-nat-gateway events for each subnet associated with this route table
-		s.publishNatGatewayEvents(ctx, accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp, destCidr)
+		publish = func() {
+			s.publishNatGatewayEvents(ctx, accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp, destCidr)
+		}
 
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
+
+	if err := checkRouteOutsideVPC(record, destCidr); err != nil {
+		return nil, err
+	}
+
+	// A repeat of an existing route (same destination, same target) is a
+	// successful no-op; a different target is a conflict.
+	for _, r := range record.Routes {
+		if r.DestinationCidrBlock != destCidr {
+			continue
+		}
+		if r.GatewayId == route.GatewayId && r.NatGatewayId == route.NatGatewayId {
+			return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorRouteAlreadyExists, "The route identified by %s already exists.", destCidr)
+	}
+
+	publish()
 
 	record.Routes = append(record.Routes, route)
 
@@ -800,7 +874,7 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 		}
 	}
 	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorInvalidRouteNotFound)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidRouteNotFound, "no route with destination-cidr-block %s in route table %s", destCidr, rtbID)
 	}
 
 	departing := record.Routes[idx]
@@ -853,6 +927,23 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		return nil, err
 	}
 
+	// V1: only GatewayId target supported
+	if input.GatewayId == nil || *input.GatewayId == "" {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	igwID := *input.GatewayId
+
+	// AWS reports a missing gateway ahead of a missing route.
+	igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
+	if err != nil {
+		return nil, gatewayNotFoundError(igwID)
+	}
+	var igwRecord handlers_ec2_igw.IGWRecord
+	if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	idx := -1
 	for i, r := range record.Routes {
 		if r.DestinationCidrBlock == destCidr {
@@ -861,28 +952,12 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		}
 	}
 	if idx < 0 {
-		return nil, errors.New(awserrors.ErrorInvalidRouteNotFound)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"There is no route defined for '%s' in the route table. Use CreateRoute instead.", destCidr)
 	}
 
 	if record.Routes[idx].GatewayId == "local" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	// V1: only GatewayId target supported
-	if input.GatewayId == nil || *input.GatewayId == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	igwID := *input.GatewayId
-
-	// Verify IGW exists and is attached to same VPC
-	igwEntry, err := s.igwKV.Get(ctx, utils.AccountKey(accountID, igwID))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidInternetGatewayIDNotFound)
-	}
-	var igwRecord handlers_ec2_igw.IGWRecord
-	if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if igwRecord.VpcId != record.VpcId {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1006,7 +1081,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+			return nil, associationNotFoundError(assocID)
 		}
 		slog.ErrorContext(ctx, "Failed to list route table keys", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1071,7 +1146,7 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 		}
 	}
 
-	return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+	return nil, associationNotFoundError(assocID)
 }
 
 // ReplaceRouteTableAssociation atomically moves a subnet from one route table to another.
@@ -1097,7 +1172,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 	keys, err := s.rtbKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+			return nil, associationNotFoundError(assocID)
 		}
 		slog.ErrorContext(ctx, "Failed to list route table keys", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1189,13 +1264,13 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 		}
 	}
 
-	return nil, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+	return nil, associationNotFoundError(assocID)
 }
 
 // rtbMatchesFilters checks if a route table record matches all parsed awsfilters.
 func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -1208,92 +1283,53 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 				return false
 			}
 		case "association.main":
-			hasMain := false
-			for _, a := range record.Associations {
-				if a.Main {
-					hasMain = true
-					break
-				}
-			}
+			hasMain := slices.ContainsFunc(record.Associations, func(a AssociationRecord) bool {
+				return a.Main
+			})
 			wantMain := awsfilters.MatchesAny(values, "true")
 			if wantMain != hasMain {
 				return false
 			}
 		case "association.route-table-association-id":
-			found := false
-			for _, a := range record.Associations {
-				if awsfilters.MatchesAny(values, a.AssociationId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Associations, func(a AssociationRecord) bool {
+				return awsfilters.MatchesAny(values, a.AssociationId)
+			}) {
 				return false
 			}
 		case "association.subnet-id":
-			found := false
-			for _, a := range record.Associations {
-				if awsfilters.MatchesAny(values, a.SubnetId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Associations, func(a AssociationRecord) bool {
+				return awsfilters.MatchesAny(values, a.SubnetId)
+			}) {
 				return false
 			}
 		case "route.destination-cidr-block":
-			found := false
-			for _, r := range record.Routes {
-				if awsfilters.MatchesAny(values, r.DestinationCidrBlock) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, r.DestinationCidrBlock)
+			}) {
 				return false
 			}
 		case "route.gateway-id":
-			found := false
-			for _, r := range record.Routes {
-				if awsfilters.MatchesAny(values, r.GatewayId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, r.GatewayId)
+			}) {
 				return false
 			}
 		case "route.nat-gateway-id":
-			found := false
-			for _, r := range record.Routes {
-				if awsfilters.MatchesAny(values, r.NatGatewayId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, r.NatGatewayId)
+			}) {
 				return false
 			}
 		case "route.state":
-			found := false
-			for _, r := range record.Routes {
-				if awsfilters.MatchesAny(values, r.State) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, r.State)
+			}) {
 				return false
 			}
 		case "route.origin":
-			found := false
-			for _, r := range record.Routes {
-				if awsfilters.MatchesAny(values, r.Origin) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, r.Origin)
+			}) {
 				return false
 			}
 		case "owner-id":

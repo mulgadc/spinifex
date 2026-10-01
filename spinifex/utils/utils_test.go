@@ -162,7 +162,7 @@ func TestExecProcessAndKill(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Kill the process
-	err = StopProcess("utilsunittest")
+	err = StopProcessAt("", "utilsunittest")
 	assert.NoError(t, err)
 
 	// Test PID file removed
@@ -722,36 +722,6 @@ func TestForceKillProcess_AlreadyExitedIsSuccess(t *testing.T) {
 		"an already-exited process satisfies the request, it does not fail it")
 }
 
-func TestStopProcess(t *testing.T) {
-	// Create and start a test process
-	cmd := exec.Command("sleep", "60")
-	err := cmd.Start()
-	require.NoError(t, err)
-
-	// Write PID file
-	testName := "stopprocess-test"
-	err = WritePidFile(testName, cmd.Process.Pid)
-	require.NoError(t, err)
-
-	// Reap in background so StopProcess can detect termination
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_ = cmd.Wait()
-	})
-
-	err = StopProcess(testName)
-	assert.NoError(t, err)
-	wg.Wait()
-
-	// Verify PID file was removed
-	_, err = ReadPidFile(testName)
-	assert.Error(t, err, "PID file should be removed")
-
-	// Test stopping non-existent process
-	err = StopProcess("nonexistent-process")
-	assert.Error(t, err, "Should error when stopping non-existent process")
-}
-
 // Test file extraction process
 
 func TestExtractDiskImageFromFile(t *testing.T) {
@@ -994,7 +964,7 @@ func TestWritePidFileTo(t *testing.T) {
 }
 
 func TestWritePidFileTo_EmptyDir(t *testing.T) {
-	// With empty dir, should fall back to default pidPath()
+	// With empty dir, should fall back to default RuntimeDir()
 	cmd := exec.Command("cat")
 	require.NoError(t, cmd.Start())
 	defer cmd.Process.Kill()
@@ -1115,7 +1085,7 @@ func TestRuntimeDir(t *testing.T) {
 
 func TestPidPath_XDG(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/tmp/test-xdg-runtime")
-	assert.Equal(t, "/tmp/test-xdg-runtime", pidPath())
+	assert.Equal(t, "/tmp/test-xdg-runtime", RuntimeDir())
 }
 
 func TestPidPath_HomeSpinifexFallback(t *testing.T) {
@@ -1126,14 +1096,14 @@ func TestPidPath_HomeSpinifexFallback(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("HOME", tmpHome)
 
-	assert.Equal(t, spinifexDir, pidPath())
+	assert.Equal(t, spinifexDir, RuntimeDir())
 }
 
 func TestPidPath_TempDirFallback(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("HOME", "/nonexistent-home-dir-utils-test")
 
-	assert.Equal(t, os.TempDir(), pidPath())
+	assert.Equal(t, os.TempDir(), RuntimeDir())
 }
 
 func TestExtractDiskImagePath_NoMatch(t *testing.T) {
@@ -1170,39 +1140,6 @@ func TestGeneratePidFile_InvalidPath(t *testing.T) {
 
 func TestReadPidFileFrom_EmptyDir(t *testing.T) {
 	_, err := ReadPidFileFrom("", fmt.Sprintf("nonexistent-service-%d", time.Now().UnixNano()))
-	assert.Error(t, err)
-}
-
-func TestServiceStatus_Stopped(t *testing.T) {
-	dir := t.TempDir()
-	status, err := ServiceStatus(dir, fmt.Sprintf("no-such-svc-%d", time.Now().UnixNano()))
-	require.NoError(t, err)
-	assert.Equal(t, "stopped", status)
-}
-
-func TestServiceStatus_Running(t *testing.T) {
-	dir := t.TempDir()
-
-	cmd := exec.Command("sleep", "60")
-	require.NoError(t, cmd.Start())
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	require.NoError(t, WritePidFileTo(dir, "running-svc", cmd.Process.Pid))
-
-	status, err := ServiceStatus(dir, "running-svc")
-	require.NoError(t, err)
-	assert.Equal(t, fmt.Sprintf("running (pid: %d)", cmd.Process.Pid), status)
-}
-
-func TestServiceStatus_CorruptPidFile(t *testing.T) {
-	dir := t.TempDir()
-	// Write a non-numeric pid file — ReadPidFileFrom should fail to parse it.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad-svc.pid"), []byte("not-a-pid"), 0o644))
-
-	_, err := ServiceStatus(dir, "bad-svc")
 	assert.Error(t, err)
 }
 
@@ -1891,11 +1828,11 @@ type normalizeOuter struct {
 
 func TestNormalizeXMLOutput_InvalidValue(t *testing.T) {
 	var output any
-	assert.Nil(t, NormalizeXMLOutput(output))
+	assert.Nil(t, NormalizeXMLOutput(output, nil))
 }
 
 func TestNormalizeXMLOutput_TopLevelNilSlice(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
 	require.NotNil(t, out.Names)
 	assert.Empty(t, out.Names)
 }
@@ -1903,28 +1840,39 @@ func TestNormalizeXMLOutput_TopLevelNilSlice(t *testing.T) {
 func TestNormalizeXMLOutput_NestedPointerStruct(t *testing.T) {
 	out := NormalizeXMLOutput(normalizeOuter{
 		Nested: &normalizeInner{},
-	}).(normalizeOuter)
+	}, nil).(normalizeOuter)
 	require.NotNil(t, out.Nested)
 	require.NotNil(t, out.Nested.Tags, "nil slice inside a pointer field must be normalized")
 	assert.Empty(t, out.Nested.Tags)
 }
 
 func TestNormalizeXMLOutput_NestedValueStruct(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
 	require.NotNil(t, out.Value.Tags, "nil slice inside a nested struct field must be normalized")
 }
 
 func TestNormalizeXMLOutput_RecursesIntoSliceElements(t *testing.T) {
 	out := NormalizeXMLOutput(normalizeOuter{
 		Children: []*normalizeInner{{}, {Tags: []string{"a"}}},
-	}).(normalizeOuter)
+	}, nil).(normalizeOuter)
 	require.Len(t, out.Children, 2)
 	require.NotNil(t, out.Children[0].Tags, "nil slice inside a slice element must be normalized")
 	assert.Equal(t, []string{"a"}, out.Children[1].Tags, "an already-populated slice element must be left untouched")
 }
 
+func TestNormalizeXMLOutput_AsSetFieldsKeepNil(t *testing.T) {
+	asSet := map[reflect.Type][]string{reflect.TypeFor[normalizeInner](): {"Tags"}}
+	out := NormalizeXMLOutput(normalizeOuter{
+		Nested:   &normalizeInner{},
+		Children: []*normalizeInner{{Tags: []string{}}},
+	}, asSet).(normalizeOuter)
+	assert.Nil(t, out.Nested.Tags, "a nil as-set field must stay nil so BuildXML omits it")
+	require.NotNil(t, out.Children[0].Tags, "an empty as-set field must stay empty so BuildXML renders it")
+	require.NotNil(t, out.Names, "fields outside asSet are still normalized")
+}
+
 func TestNormalizeXMLOutput_NilPointerFieldUntouched(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}).(normalizeOuter)
+	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
 	assert.Nil(t, out.Nested, "a nil pointer field must not be allocated")
 }
 

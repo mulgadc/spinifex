@@ -34,6 +34,10 @@ const catalogHeadTimeout = 30 * time.Second
 // purpose. It is the check most likely to catch a problem that is not ours,
 // and the sooner it is seen the smaller the window in which a released binary
 // points at a dead URL.
+//
+// utils.WithheldImages is deliberately not walked: those are the entries whose
+// artifact is known to be unpublished, so HEADing them would assert a failure
+// we already know about and hide the ones we do not.
 func runImageCatalogReachable(t *testing.T, _ *Fixture) {
 	harness.Phase(t, "Single — Image catalog URLs still answer")
 

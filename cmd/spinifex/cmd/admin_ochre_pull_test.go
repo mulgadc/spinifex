@@ -470,7 +470,7 @@ func TestResolveHFToken_FallsBackToStoredPlatformCredential(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(baseDir, "config"), 0750))
 	require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(baseDir, "config", "master.key"), masterKey))
 
-	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, 1, nil)
+	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, nil)
 	require.NoError(t, credStore.PutCredential(context.Background(), utils.GlobalAccountID, vendorHuggingFace, "hf_stored_token"))
 
 	cmd := newOchreWeightsPullTestCmd(t, selfHostModelID, testHFRepo, "main", "", "")
@@ -621,7 +621,7 @@ func TestRunOchreCredentialsSet_RoundTripsAndDefaultsToPlatformAccount(t *testin
 	defer verifyConn.Close()
 	verifyJS := testutil.NewJetStream(t, verifyConn)
 
-	credStore := gateway_bedrock.NewCredentialStore(verifyJS, masterKey, 1, nil)
+	credStore := gateway_bedrock.NewCredentialStore(verifyJS, masterKey, nil)
 	token, ok, err := credStore.Resolve(context.Background(), utils.GlobalAccountID, vendorHuggingFace)
 	require.NoError(t, err)
 	require.True(t, ok)

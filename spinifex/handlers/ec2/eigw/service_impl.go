@@ -2,6 +2,7 @@ package handlers_ec2_eigw
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,7 +90,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 	}
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, *input.VpcId)); err != nil {
 		slog.WarnContext(ctx, "CreateEgressOnlyInternetGateway: VPC not found for account", "vpcId", *input.VpcId, "accountID", accountID)
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", *input.VpcId)
 	}
 
 	eigwID := utils.GenerateResourceID("eigw")
@@ -129,7 +130,7 @@ func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.C
 	// Verify the EIGW exists before deleting
 	if _, err := s.eigwKV.Get(ctx, key); err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidEgressOnlyInternetGatewayIdNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidGatewayIDNotFound, "The eigw ID '%s' does not exist", eigwID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -147,6 +148,8 @@ func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.C
 // describeEIGWValidFilters defines the set of filter names accepted by DescribeEgressOnlyInternetGateways.
 var describeEIGWValidFilters = map[string]bool{
 	"egress-only-internet-gateway-id": true,
+	"tag-key":                         true,
+	"tag-value":                       true,
 }
 
 // DescribeEgressOnlyInternetGateways describes Egress-only Internet Gateways.
@@ -164,6 +167,11 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeEgressOnlyInternetGateways: invalid filter", "err", err)
 		return nil, err
+	}
+	for _, id := range input.EgressOnlyInternetGatewayIds {
+		if id != nil && !eigwIDWellFormed(*id) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidEgressOnlyInternetGatewayIdMalformed, "The eigw ID %s is malformed", *id)
+		}
 	}
 
 	prefix := accountID + "."
@@ -210,10 +218,22 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 	}, nil
 }
 
+// eigwIDWellFormed reports whether AWS accepts id as an egress-only gateway ID:
+// "eigw-" and exactly 17 hex digits of either case. A well-formed unknown ID is
+// not an error; the describe returns no gateway for it.
+func eigwIDWellFormed(id string) bool {
+	suffix, ok := strings.CutPrefix(id, "eigw-")
+	if !ok || len(suffix) != 17 {
+		return false
+	}
+	_, err := hex.DecodeString("0" + suffix)
+	return err == nil
+}
+
 // eigwMatchesFilters checks whether an EgressOnlyIGWRecord satisfies all parsed awsfilters.
 func eigwMatchesFilters(record *EgressOnlyIGWRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 

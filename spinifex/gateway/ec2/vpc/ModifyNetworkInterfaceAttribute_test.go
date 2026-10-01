@@ -57,3 +57,16 @@ func TestModifyNetworkInterfaceAttribute_NilNATS(t *testing.T) {
 	}, nil, "123456789012")
 	assert.Error(t, err)
 }
+
+// AWS rejects the combination before judging any one attribute, so disabling
+// source/dest check alongside a description is not reported as Unsupported.
+func TestModifyNetworkInterfaceAttribute_CombinationBeforeUnsupported(t *testing.T) {
+	err := ValidateModifyNetworkInterfaceAttributeInput(&ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String("eni-abc123"),
+		SourceDestCheck:    &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+		Description:        &ec2.AttributeValue{Value: aws.String("desc")},
+	})
+	code, ok := awserrors.ResolveErrorCode(err)
+	assert.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+}

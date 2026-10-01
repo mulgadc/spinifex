@@ -268,7 +268,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		_, _ = c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 			InstanceIds: []*string{aws.String(pubInstanceID)},
 		})
-		_ = waitForInstanceStateSoft(c, pubInstanceID, "terminated", 5*time.Minute)
+		_ = harness.WaitForInstanceStateSoft(c, pubInstanceID, "terminated", 5*time.Minute)
 	})
 	harness.Detail(t, "instance", pubInstanceID)
 
@@ -281,7 +281,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "public_ip", pubIP, "private_ip", pubPrivIP)
 
 	pubOK := t.Run("PublicSubnetEgress", func(t *testing.T) {
-		if !trySSHReady(pubIP, 22, keyPath, sshReadyBudget) {
+		if !sshHealth.TryReady(pubIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("PublicSubnetEgress SSH timeout — vpc=%s igw=%s pub=%s", vpcID, igwID, pubIP),
 				harness.VPCDiagnosticsOpts{
@@ -289,13 +289,13 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 					LogicalIP:   pubPrivIP,
 					ArtifactDir: fix.ArtifactDir(t),
 				})
-			t.Fatalf("SSH handshake %s:22 never completed within %s (see diagnostics above)", pubIP, sshReadyBudget)
+			t.Fatalf("SSH handshake %s:22 never completed within %s (see diagnostics above)", pubIP, harness.SSHReadyBudget)
 		}
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 
 		harness.Step(t, "ssh id (smoke)")
-		idOut := runSSH(t, tgt, "id")
+		idOut := harness.RunSSH(t, tgt, "id")
 		require.Containsf(t, idOut, "ubuntu", "ssh id did not report ubuntu\n%s", idOut)
 
 		// Verify external connectivity through the IGW + 0.0.0.0/0 route. ping
@@ -405,7 +405,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "instance", instanceID, "public_ip", rbPubIP)
 
 		harness.Step(t, "expecting external SSH to instance in fresh-VPC public subnet")
-		if !trySSHReady(rbPubIP, 22, keyPath, sshReadyBudget) {
+		if !sshHealth.TryReady(rbPubIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, instanceID,
 				fmt.Sprintf("RouteBeforeSubnet SSH timeout — vpc=%s igw=%s pub=%s", vID, iID, rbPubIP),
 				harness.VPCDiagnosticsOpts{
@@ -419,7 +419,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		}
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: rbPubIP, Port: 22, KeyPath: keyPath}
-		idOut := runSSH(t, tgt, "id")
+		idOut := harness.RunSSH(t, tgt, "id")
 		assert.Containsf(t, idOut, "ubuntu", "ssh id in fresh-VPC subnet\n%s", idOut)
 	})
 
@@ -442,7 +442,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		_, _ = c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 			InstanceIds: []*string{aws.String(privInstanceID)},
 		})
-		_ = waitForInstanceStateSoft(c, privInstanceID, "terminated", 5*time.Minute)
+		_ = harness.WaitForInstanceStateSoft(c, privInstanceID, "terminated", 5*time.Minute)
 	})
 
 	privInst := harness.WaitForInstanceState(t, c, privInstanceID, "running")
@@ -456,7 +456,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 	// Copy the keypair to the bastion so it can hop into the private guest.
 	harness.Step(t, "scp keypair -> bastion:/tmp/key.pem")
 	scpKey(t, keyPath, pubIP)
-	_ = runSSH(t, bastionTgt, "chmod 600 /tmp/key.pem")
+	_ = harness.RunSSH(t, bastionTgt, "chmod 600 /tmp/key.pem")
 
 	privProbe := fmt.Sprintf(
 		"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "+
@@ -727,7 +727,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		}
 
 		harness.Step(t, "ssh to guest via %s after restart", newIP)
-		if !trySSHReady(newIP, 22, keyPath, sshReadyBudget) {
+		if !sshHealth.TryReady(newIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("StopStartAddress SSH timeout — was=%s now=%s instance=%s", pubIP, newIP, pubInstanceID),
 				harness.VPCDiagnosticsOpts{
@@ -735,9 +735,9 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 					LogicalIP:   pubPrivIP,
 					ArtifactDir: fix.ArtifactDir(t),
 				})
-			t.Fatalf("guest unreachable via %s within %s after restart (see diagnostics above)", newIP, sshReadyBudget)
+			t.Fatalf("guest unreachable via %s within %s after restart (see diagnostics above)", newIP, harness.SSHReadyBudget)
 		}
-		out := runSSH(t, harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}, "id")
+		out := harness.RunSSH(t, harness.SSHTarget{User: "ubuntu", Host: newIP, Port: 22, KeyPath: keyPath}, "id")
 		require.Containsf(t, out, "ubuntu", "ssh after restart did not report ubuntu\n%s", out)
 		harness.Detail(t, "datapath", "reachable_on_new_address_ok")
 
@@ -789,7 +789,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		// association publishes; poll the SSH handshake rather than
 		// asserting immediately.
 		harness.Step(t, "ssh to guest via EIP %s", eipIP)
-		if !trySSHReady(eipIP, 22, keyPath, sshReadyBudget) {
+		if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
 			harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 				fmt.Sprintf("EIP SSH timeout — eip=%s instance=%s", eipIP, pubInstanceID),
 				harness.VPCDiagnosticsOpts{
@@ -797,10 +797,10 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 					LogicalIP:   pubPrivIP,
 					ArtifactDir: fix.ArtifactDir(t),
 				})
-			t.Fatalf("guest unreachable via EIP %s within %s (see diagnostics above)", eipIP, sshReadyBudget)
+			t.Fatalf("guest unreachable via EIP %s within %s (see diagnostics above)", eipIP, harness.SSHReadyBudget)
 		}
 		tgt := harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}
-		idOut := runSSH(t, tgt, "id")
+		idOut := harness.RunSSH(t, tgt, "id")
 		require.Containsf(t, idOut, "ubuntu", "ssh via EIP id did not report ubuntu\n%s", idOut)
 		harness.Detail(t, "datapath", "eip_reachable_ok")
 
@@ -851,7 +851,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				"instance came back on a different address than the Elastic IP associated to it")
 
 			harness.Step(t, "ssh to guest via EIP %s after restart", eipIP)
-			if !trySSHReady(eipIP, 22, keyPath, sshReadyBudget) {
+			if !sshHealth.TryReady(eipIP, 22, keyPath, harness.SSHReadyBudget) {
 				harness.DumpVPCFlowDiagnostics(t, c, pubInstanceID,
 					fmt.Sprintf("EIP SSH timeout after restart — eip=%s instance=%s", eipIP, pubInstanceID),
 					harness.VPCDiagnosticsOpts{
@@ -859,9 +859,9 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 						LogicalIP:   aws.StringValue(started.PrivateIpAddress),
 						ArtifactDir: fix.ArtifactDir(t),
 					})
-				t.Fatalf("guest unreachable via EIP %s within %s after restart (see diagnostics above)", eipIP, sshReadyBudget)
+				t.Fatalf("guest unreachable via EIP %s within %s after restart (see diagnostics above)", eipIP, harness.SSHReadyBudget)
 			}
-			out := runSSH(t, harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}, "id")
+			out := harness.RunSSH(t, harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}, "id")
 			require.Containsf(t, out, "ubuntu", "ssh via EIP after restart did not report ubuntu\n%s", out)
 			harness.Detail(t, "datapath", "eip_reachable_after_restart_ok")
 		})
@@ -958,26 +958,6 @@ func waitForNATGatewayStateSoft(c *harness.AWSClient, id, target string, timeout
 	}
 }
 
-// waitForInstanceStateSoft is the cleanup-time analogue of
-// harness.WaitForInstanceState — no t.Fatal, just polls and returns.
-func waitForInstanceStateSoft(c *harness.AWSClient, id, target string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{
-			InstanceIds: []*string{aws.String(id)},
-		})
-		if err == nil && len(out.Reservations) > 0 && len(out.Reservations[0].Instances) > 0 {
-			if aws.StringValue(out.Reservations[0].Instances[0].State.Name) == target {
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("instance %s did not reach %s within %s", id, target, timeout)
-		}
-		time.Sleep(2 * time.Second)
-	}
-}
-
 // scpKey copies the harness PEM to /tmp/key.pem on the bastion so it can
 // hop into a guest that has no direct SSH ingress of its own.
 func scpKey(t *testing.T, keyPath, host string) {
@@ -1004,7 +984,7 @@ func scpKey(t *testing.T, keyPath, host string) {
 // EventuallyErr budget. The ctx deadline kills ssh regardless of which phase hangs.
 const sshQuietHardTimeout = 30 * time.Second
 
-// runSSHQuiet is the EventuallyErr-friendly variant of runSSH: it returns
+// runSSHQuiet is the EventuallyErr-friendly variant of harness.RunSSH: it returns
 // stdout+stderr and the error rather than calling t.Fatal, so polling
 // loops can iterate on transient failures (cloud-init not done, OVN
 // flow not installed yet, etc).

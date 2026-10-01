@@ -483,7 +483,7 @@ var roleHTTPClient = &http.Client{Timeout: 500 * time.Millisecond}
 
 // fetchNATSRole queries a NATS /varz endpoint and returns "leader", "follower", or "".
 func fetchNATSRole(url string, client *http.Client) string {
-	resp, err := client.Get(url) //nolint:noctx // internal monitoring call
+	resp, err := client.Get(url)
 	if err != nil {
 		slog.Debug("Failed to query NATS monitoring", "err", err)
 		return ""

@@ -235,7 +235,7 @@ func ecsGPUUserData(t *testing.T, env *harness.Env, cluster string) string {
 	t.Helper()
 	caPath, err := harness.ResolveCACert(env)
 	require.NoError(t, err, "resolve CA cert")
-	caBytes, err := os.ReadFile(caPath) //nolint:gosec // CA path from harness env
+	caBytes, err := os.ReadFile(caPath)
 	require.NoError(t, err, "read CA cert")
 
 	var ca strings.Builder

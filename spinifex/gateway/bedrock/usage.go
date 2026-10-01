@@ -98,13 +98,12 @@ type UsageStore struct {
 var _ UsageReader = (*UsageStore)(nil)
 
 // NewUsageStore constructs a UsageStore over the cluster's JetStream client,
-// replicated across replicas nodes.
-func NewUsageStore(js jetstream.JetStream, replicas int) *UsageStore {
+
+func NewUsageStore(js jetstream.JetStream) *UsageStore {
 	return &UsageStore{
 		store: kvstore.New[UsageCounters](js, kvstore.Config{
 			Name:      bedrockUsageBucket,
 			History:   bedrockUsageHistory,
-			Replicas:  replicas,
 			Missing:   "bedrock: usage store has no JetStream client configured",
 			Attempts:  usageCASRetries,
 			Exhausted: usageCASExhausted,

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -127,29 +129,33 @@ type volumeLeases struct {
 	held map[string]*volumeLease
 }
 
-// newVolumeLeases binds the lease bucket, creating it if this is the first
-// node up. owner identifies this node in the entries it writes, and replicas is
-// the cluster size: this bucket decides who may write a volume, so a single
-// replica would put every volume in the cluster behind one node staying up.
-func newVolumeLeases(ctx context.Context, nc *nats.Conn, owner string, replicas int) (*volumeLeases, error) {
+// newVolumeLeases binds the lease bucket, creating it if this is the first node
+// up. owner identifies this node in the entries it writes. This bucket decides
+// who may write a volume, so a single replica would put every volume in the
+// cluster behind one node staying up.
+func newVolumeLeases(ctx context.Context, nc *nats.Conn, owner string) (*volumeLeases, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	// Create-or-update rather than create: a bucket left behind by a build that
-	// made it single-replica is raised here, and a cluster cannot be asked to
-	// lose its leases to be repaired.
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      volumeLeaseBucket,
+	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+		Name:        volumeLeaseBucket,
 		Description: "one entry per volume with a viperblock engine open on it",
 		TTL:         volumeLeaseTTL,
 		History:     1,
-		Replicas:    max(replicas, 1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volume lease bucket: %w", err)
 	}
 	return &volumeLeases{kv: kv, owner: owner, held: make(map[string]*volumeLease)}, nil
+}
+
+// newVolumeLeasesWaiting is newVolumeLeases for a daemon that is starting. On a
+// cold multi-node start every service races JetStream electing a leader, and a
+// refusal that only means "not yet" must not leave this node without storage.
+func newVolumeLeasesWaiting(ctx context.Context, nc *nats.Conn, owner string) (*volumeLeases, error) {
+	return kvstore.OpenWithRetry(ctx, volumeLeaseBucket, kvstore.DefaultOpenWindow,
+		func(ctx context.Context) (*volumeLeases, error) { return newVolumeLeases(ctx, nc, owner) })
 }
 
 // volumeLease is one held lease and the goroutine keeping it alive.

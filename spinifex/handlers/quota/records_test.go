@@ -21,9 +21,8 @@ func recordStore(t *testing.T) *kvstore.Store[vm.InstanceRecord] {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	return kvstore.New[vm.InstanceRecord](testutil.NewJetStream(t, nc), kvstore.Config{
-		Name:     "spinifex-instance-state",
-		History:  1,
-		Replicas: 1,
+		Name:    "spinifex-instance-state",
+		History: 1,
 	})
 }
 

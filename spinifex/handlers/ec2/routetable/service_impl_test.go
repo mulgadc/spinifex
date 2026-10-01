@@ -103,9 +103,11 @@ func TestCreateRouteTable(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 	out, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
-		VpcId: aws.String("vpc-test1"),
+		VpcId:       aws.String("vpc-test1"),
+		ClientToken: aws.String("token-1"),
 	}, testAccountID)
 	require.NoError(t, err)
+	assert.Equal(t, "token-1", aws.StringValue(out.ClientToken), "AWS echoes the request's ClientToken")
 
 	rtb := out.RouteTable
 	assert.NotEmpty(t, *rtb.RouteTableId)
@@ -155,13 +157,42 @@ func TestCreateRouteTable_PersistsTagsForTagFilterDiscovery(t *testing.T) {
 	assert.Equal(t, "cp-private-rt", tags["spinifex:eks-role"])
 }
 
+func TestDescribeRouteTables_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	out, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
+		VpcId: aws.String("vpc-test1"),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String(ec2.ResourceTypeRouteTable),
+			Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestRtb(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: aws.StringSlice([]string{tc.value})}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.RouteTables, 1, tc.name)
+		assert.Equal(t, *out.RouteTable.RouteTableId, *desc.RouteTables[0].RouteTableId, tc.name)
+
+		desc, err = svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: aws.StringSlice([]string{"zz-awsdiff-none"})}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.RouteTables, tc.name)
+	}
+}
+
 func TestCreateRouteTable_VpcNotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-nonexistent"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidVpcIDNotFound)
+	requireAWSError(t, err, awserrors.ErrorInvalidVpcIDNotFound, "The vpc ID 'vpc-nonexistent' does not exist")
 }
 
 func TestDeleteRouteTable(t *testing.T) {
@@ -176,7 +207,7 @@ func TestDeleteRouteTable(t *testing.T) {
 
 	// Should be gone
 	_, err = svc.getRouteTable(t.Context(), testAccountID, rtbID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound)
+	requireAWSError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound, "The routeTable ID '"+rtbID+"' does not exist")
 }
 
 func TestDeleteRouteTable_Main(t *testing.T) {
@@ -188,7 +219,7 @@ func TestDeleteRouteTable_Main(t *testing.T) {
 	_, err = svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(record.RouteTableId),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorDependencyViolation)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+record.RouteTableId+"' has dependencies and cannot be deleted.")
 }
 
 func TestDeleteRouteTable_WithAssociations(t *testing.T) {
@@ -207,7 +238,7 @@ func TestDeleteRouteTable_WithAssociations(t *testing.T) {
 	_, err = svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorDependencyViolation)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+rtbID+"' has dependencies and cannot be deleted.")
 }
 
 func TestDescribeRouteTables(t *testing.T) {
@@ -381,13 +412,47 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Duplicate should fail
-	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+	// Same destination and target: AWS returns success without a second route
+	out, err := svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorRouteAlreadyExists)
+	require.NoError(t, err)
+	assert.True(t, aws.BoolValue(out.Return))
+
+	// Same destination, different target: still a conflict
+	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		NatGatewayId:         aws.String("nat-test1"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorRouteAlreadyExists, "The route identified by 0.0.0.0/0 already exists.")
+
+	// AWS checks the target before the destination: "local" is no gateway
+	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("10.0.0.0/16"),
+		GatewayId:            aws.String("local"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'local' does not exist")
+
+	// A gateway route to the VPC's CIDR, or inside it, is refused before the
+	// existing local route is considered
+	for _, dest := range []string{"10.0.0.0/16", "10.0.5.0/24"} {
+		_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+			RouteTableId:         aws.String(rtbID),
+			DestinationCidrBlock: aws.String(dest),
+			GatewayId:            aws.String("igw-test1"),
+		}, testAccountID)
+		requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+			"The destination CIDR block "+dest+" is equal to or more specific than one of this VPC's CIDR blocks. This route can target only an interface or an instance.")
+	}
+
+	record, err := svc.getRouteTable(t.Context(), testAccountID, rtbID)
+	require.NoError(t, err)
+	require.Len(t, record.Routes, 2)
+	assert.Equal(t, "igw-test1", record.Routes[1].GatewayId)
 }
 
 func TestDeleteRoute(t *testing.T) {
@@ -437,7 +502,7 @@ func TestDeleteRoute_NotFound(t *testing.T) {
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("192.168.0.0/16"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidRouteNotFound)
+	requireAWSError(t, err, awserrors.ErrorInvalidRouteNotFound, "no route with destination-cidr-block 192.168.0.0/16 in route table "+rtbID)
 }
 
 func TestReplaceRoute(t *testing.T) {
@@ -459,6 +524,49 @@ func TestReplaceRoute(t *testing.T) {
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
 	require.NoError(t, err)
+}
+
+func requireAWSError(t *testing.T, err error, code, message string) {
+	t.Helper()
+	got, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, code, got)
+	assert.Equal(t, message, msg)
+}
+
+func TestCreateRoute_MissingGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+
+	_, err := svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		GatewayId:            aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
+}
+
+func TestReplaceRoute_MissingRouteOrGateway(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+
+	_, err := svc.ReplaceRoute(t.Context(), &ec2.ReplaceRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("198.51.100.0/24"),
+		GatewayId:            aws.String("igw-test1"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		"There is no route defined for '198.51.100.0/24' in the route table. Use CreateRoute instead.")
+
+	// AWS reports the missing gateway ahead of the missing route.
+	_, err = svc.ReplaceRoute(t.Context(), &ec2.ReplaceRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("198.51.100.0/24"),
+		GatewayId:            aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
 }
 
 func TestAssociateRouteTable(t *testing.T) {
@@ -1465,4 +1573,23 @@ func TestPublishGateDecisionsForVPC_EmptyVPCNoOp(t *testing.T) {
 
 	assertNoEvents(t, svc, gate, "expected no gate event")
 	assertNoEvents(t, svc, ungate, "expected no ungate event")
+}
+
+func TestDescribeRouteTables_PagingValidation(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	_, err := svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{MaxResults: aws.Int64(101)}, testAccountID)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value ( 101 ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 100.", message)
+
+	_, err = svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+		MaxResults: aws.Int64(5), RouteTableIds: []*string{aws.String("rtb-0123456789abcdef0")},
+	}, testAccountID)
+	code, message, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Equal(t, "The parameter RouteTableIds cannot be used with the parameter MaxResults", message)
 }

@@ -58,21 +58,14 @@ type rerankProvider struct {
 
 var _ Reranker = (*rerankProvider)(nil)
 
-// newRerankProvider constructs a rerankProvider resolving modelID's endpoint
+// NewReranker constructs a rerankProvider resolving modelID's endpoint
 // via endpointResolver on every call, mirroring newEmbeddingsProvider.
-func newRerankProvider(endpointResolver EndpointResolver, modelID string) *rerankProvider {
+func NewReranker(endpointResolver EndpointResolver, modelID string) *rerankProvider {
 	return &rerankProvider{
 		modelID:          modelID,
 		endpointResolver: endpointResolver,
 		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
 	}
-}
-
-// NewReranker is newRerankProvider's exported constructor, for callers
-// outside this package (e.g. the daemon's Ochre vector store wiring) that
-// need a Reranker without reaching into gateway_bedrock's unexported types.
-func NewReranker(endpointResolver EndpointResolver, modelID string) Reranker {
-	return newRerankProvider(endpointResolver, modelID)
 }
 
 // Rerank POSTs query and docs to the reranker model's resolved /rerank

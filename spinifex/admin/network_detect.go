@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/bluebottle/pkg/safecast"
@@ -190,10 +191,7 @@ func isVirtualInterface(name string, defaultRouteDev string) bool {
 		"docker", "br-", "veth", "ovs", "virbr",
 		"tun", "tap", "tailscale", "wg", "lo",
 	}
-	for _, p := range prefixes {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(prefixes, func(p string) bool {
+		return strings.HasPrefix(name, p)
+	})
 }

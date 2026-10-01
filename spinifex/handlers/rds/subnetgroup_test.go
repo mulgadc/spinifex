@@ -1,12 +1,17 @@
 package handlers_rds
 
 import (
+	"bytes"
+	"encoding/json"
+	"encoding/xml"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -178,6 +183,33 @@ func TestDescribeDBSubnetGroups_ListsAndNames(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, named.DBSubnetGroups, 1)
 	assert.Equal(t, "zeta", aws.StringValue(named.DBSubnetGroups[0].DBSubnetGroupName))
+}
+
+// AWS reports SupportedNetworkTypes on the group and SubnetOutpost as {} on each
+// subnet. Read back through the NATS JSON hop and the gateway's XML, as a client
+// sees it, since an empty Outpost that either hop drops reads as absent.
+func TestDescribeDBSubnetGroups_ReportsNetworkTypesAndAnEmptyOutpost(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+	described, err := h.svc.DescribeDBSubnetGroups(t.Context(), &rds.DescribeDBSubnetGroupsInput{}, testAccountID)
+	require.NoError(t, err)
+
+	wire, err := json.Marshal(described)
+	require.NoError(t, err)
+	var relayed rds.DescribeDBSubnetGroupsOutput
+	require.NoError(t, json.Unmarshal(wire, &relayed))
+	body, err := utils.MarshalToXML(utils.GenerateIAMXMLPayload("DescribeDBSubnetGroups", &relayed))
+	require.NoError(t, err)
+	var parsed rds.DescribeDBSubnetGroupsOutput
+	require.NoError(t, xmlutil.UnmarshalXML(&parsed, xml.NewDecoder(bytes.NewReader(body)), "DescribeDBSubnetGroupsResult"))
+
+	require.Len(t, parsed.DBSubnetGroups, 1)
+	group := parsed.DBSubnetGroups[0]
+	assert.Equal(t, []string{"IPV4"}, aws.StringValueSlice(group.SupportedNetworkTypes))
+	require.Len(t, group.Subnets, 1)
+	assert.Equal(t, &rds.Outpost{}, group.Subnets[0].SubnetOutpost)
 }
 
 // A client polling a create would read an empty list as "gone" rather than

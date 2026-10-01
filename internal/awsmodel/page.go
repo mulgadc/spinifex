@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -253,12 +254,7 @@ func validateFrontmatter(owner string, page PageMetadata) error {
 // key rather than by first use, so adding an operation cannot renumber a note
 // that is already published.
 func noteOrder(notes map[string]string) []string {
-	keys := make([]string, 0, len(notes))
-	for key := range notes {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(notes))
 }
 
 // checkNotes rejects a note nothing references and a reference to a note that

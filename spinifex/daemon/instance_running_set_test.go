@@ -234,7 +234,7 @@ func TestWriteRunningSet_SeedsFromWhatIsAlreadyThere(t *testing.T) {
 	writeRunningSet(t, first, runningVM("i-1", "t3.nano"))
 	before := recordRevision(t, nc, "i-1")
 
-	second, err := daemon.NewJetStreamManager(nc, 1)
+	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())
 	writeRunningSet(t, second, runningVM("i-1", "t3.nano"))
@@ -293,7 +293,7 @@ func TestInstanceStateMigration_SplitsTheNodeBlob(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano"), runningVM("i-2", "t3.micro")))
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -314,7 +314,7 @@ func TestInstanceStateMigration_LeavesTheNodeBlobIntact(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"))
@@ -330,7 +330,7 @@ func TestInstanceStateMigration_SeedsAPresenceMarkerPerNode(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -359,7 +359,7 @@ func TestInstanceStateMigration_SplitsEveryNodesBlob(t *testing.T) {
 	_, err = kv.Put(context.Background(), daemon.InstanceStatePrefix+"node-2", data)
 	require.NoError(t, err)
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -383,7 +383,7 @@ func TestInstanceStateMigration_CarriesOwnershipOffTheBlobKey(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano")))
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -401,7 +401,7 @@ func TestInstanceStateMigration_ANodeRecoversAnUnownedRunningSet(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano"), unownedVM("i-2", "t3.micro")))
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -419,7 +419,7 @@ func TestInstanceStateMigration_LeavesAnOwnedRecordAlone(t *testing.T) {
 	moved := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning, LastNode: "node-2"}
 	seedNodeBlobBucket(t, nc, localNode, runningSet(moved))
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -433,13 +433,13 @@ func TestInstanceStateMigration_OwnershipStampIsSafeToRunTwice(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano")))
 
-	first, err := daemon.NewJetStreamManager(nc, 1)
+	first, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, first.InitKVBucket())
 	before := recordRevision(t, nc, "i-1")
 
 	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 4))
-	second, err := daemon.NewJetStreamManager(nc, 1)
+	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())
 
@@ -450,13 +450,13 @@ func TestInstanceStateMigration_BlobSplitIsSafeToRunTwice(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 
-	first, err := daemon.NewJetStreamManager(nc, 1)
+	first, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, first.InitKVBucket())
 	before := recordRevision(t, nc, "i-1")
 
 	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 2))
-	second, err := daemon.NewJetStreamManager(nc, 1)
+	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())
 

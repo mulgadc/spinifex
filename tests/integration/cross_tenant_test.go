@@ -227,6 +227,9 @@ func crossTenantCases() []crossTenantCase {
 //	               a grant on another tenant's resource taking effect.
 func TestCrossTenant_ForeignResourceARNNeverAuthorizes(t *testing.T) {
 	gw := StartGateway(t)
+	// Without the services behind NATS, the own/allowed probes end in
+	// no-responders, which the gateway renders as InternalError.
+	StartServiceDaemonLite(t, gw)
 
 	home, creds := createProbePrincipal(t, gw, "cross-tenant-home")
 	foreign, err := gw.Config.IAMService.CreateAccount("cross-tenant-foreign")

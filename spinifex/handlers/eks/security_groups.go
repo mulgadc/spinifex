@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -479,12 +480,9 @@ func EnsureControlPlaneHAIngress(ctx context.Context, sgp sgProvisioner, account
 // sgHasLBCClusterTag reports whether the SG carries the AWS LoadBalancer
 // Controller ownership tag for this cluster.
 func sgHasLBCClusterTag(g *ec2.SecurityGroup, clusterName string) bool {
-	for _, tag := range g.Tags {
-		if tag != nil && aws.StringValue(tag.Key) == lbcClusterOwnershipTagKey && aws.StringValue(tag.Value) == clusterName {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(g.Tags, func(tag *ec2.Tag) bool {
+		return tag != nil && aws.StringValue(tag.Key) == lbcClusterOwnershipTagKey && aws.StringValue(tag.Value) == clusterName
+	})
 }
 
 func lookupSGByName(ctx context.Context, sgp sgProvisioner, accountID, vpcID, name string) (string, error) {

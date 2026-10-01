@@ -3,7 +3,8 @@
 package harness
 
 import (
-	"sort"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -59,10 +60,5 @@ func (a *AccountCarousel) Get(name string) *Profile {
 func (a *AccountCarousel) Names() []string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := make([]string, 0, len(a.profiles))
-	for k := range a.profiles {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(a.profiles))
 }

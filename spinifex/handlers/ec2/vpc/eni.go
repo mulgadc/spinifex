@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -149,7 +151,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrIPInUse):
-				return nil, errors.New(awserrors.ErrorInvalidIPAddressInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidIPAddressInUse, "The specified address is already in use.")
 			case errors.Is(err, ErrIPOutOfRange):
 				return nil, eniAddressError(*input.PrivateIpAddress, subnet.CidrBlock)
 			default:
@@ -166,7 +168,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	}
 
 	// Generate a deterministic MAC address
-	macAddr := generateENIMac(eniId)
+	macAddr := utils.HashMAC(eniId)
 
 	description := ""
 	if input.Description != nil {
@@ -216,8 +218,10 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
+	groupNames := make(map[string]string)
+	s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
 	return &ec2.CreateNetworkInterfaceOutput{
-		NetworkInterface: s.eniRecordToEC2(&record, accountID),
+		NetworkInterface: s.eniRecordToEC2(&record, accountID, groupNames),
 	}, nil
 }
 
@@ -255,7 +259,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 			if force {
 				return &ec2.DeleteNetworkInterfaceOutput{}, nil
 			}
-			return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+			return nil, eniNotFoundError(eniId)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -350,7 +354,7 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 				if force {
 					return false, nil
 				}
-				return false, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+				return false, eniNotFoundError(eniID)
 			}
 			return false, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -405,18 +409,48 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 	return false, fmt.Errorf("DetachAndDeleteENI: exhausted %d CAS attempts for %s: %w", maxAttempts, eniID, lastErr)
 }
 
-// ModifyNetworkInterfaceAttribute modifies ENI attributes (security groups,
-// description). SourceDestCheck=true is accepted as a no-op.
+// ValidateModifyNetworkInterfaceAttributeAttributes checks the attribute fields
+// of a ModifyNetworkInterfaceAttribute request, which AWS does before it looks
+// the interface up. The gateway and the handler share it so their order agrees.
+func ValidateModifyNetworkInterfaceAttributeAttributes(input *ec2.ModifyNetworkInterfaceAttributeInput) error {
+	var set []string
+	if input.SourceDestCheck != nil {
+		set = append(set, "sourceDestCheck")
+	}
+	if input.Description != nil {
+		set = append(set, "description")
+	}
+	if len(input.Groups) > 0 {
+		set = append(set, "securityGroups")
+	}
+	if len(set) == 0 {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(set) > 1 {
+		return multipleAttributesError(set)
+	}
+	// Disabling source/dest check is unsupported: OVN port security enforces it.
+	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
+	return nil
+}
+
+// multipleAttributesError is AWS's answer to a Modify*Attribute request that
+// sets more than one attribute. AWS's name order is not stable; this one is.
+func multipleAttributesError(names []string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
+		"Fields for multiple attribute types specified: %s", strings.Join(names, ", "))
+}
+
+// ModifyNetworkInterfaceAttribute modifies one ENI attribute (security groups
+// or description). SourceDestCheck=true is accepted as a no-op.
 func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if len(input.Groups) == 0 && input.Description == nil && input.SourceDestCheck == nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	// Disabling source/dest check is unsupported: OVN port security enforces it.
-	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
-		return nil, errors.New(awserrors.ErrorUnsupported)
+	if err := ValidateModifyNetworkInterfaceAttributeAttributes(input); err != nil {
+		return nil, err
 	}
 
 	eniId := *input.NetworkInterfaceId
@@ -424,7 +458,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return nil, eniNotFoundError(eniId)
 	}
 
 	var record ENIRecord
@@ -474,6 +508,13 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
 }
 
+var describeNetworkInterfacesPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter NetworkInterfaceIds cannot be used with the parameter MaxResults",
+}
+
 var describeNetworkInterfacesValidFilters = map[string]bool{
 	"network-interface-id":     true,
 	"subnet-id":                true,
@@ -487,10 +528,17 @@ var describeNetworkInterfacesValidFilters = map[string]bool{
 	"attachment.attachment-id": true,
 	"attachment.instance-id":   true,
 	"attachment.status":        true,
+	"tag-key":                  true,
+	"tag-value":                true,
 }
 
 // DescribeNetworkInterfaces lists ENIs with optional awsfilters.
 func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, accountID string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	pageReq, err := describeNetworkInterfacesPaging.Parse(input.MaxResults, input.NextToken, len(input.NetworkInterfaceIds))
+	if err != nil {
+		return nil, err
+	}
+
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeNetworkInterfacesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNetworkInterfaces: invalid filter", "err", err)
@@ -498,10 +546,14 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 	}
 
 	enis := make([]*ec2.NetworkInterface, 0)
+	groupNames := make(map[string]string)
 
 	eniIDs := make(map[string]bool)
 	for _, id := range input.NetworkInterfaceIds {
 		if id != nil {
+			if err := eniIDMalformedError(*id); err != nil {
+				return nil, err
+			}
 			eniIDs[*id] = true
 		}
 	}
@@ -539,7 +591,8 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 			continue
 		}
 
-		enis = append(enis, s.eniRecordToEC2(&record, accountID))
+		s.fillSGNames(ctx, accountID, record.SecurityGroupIds, groupNames)
+		enis = append(enis, s.eniRecordToEC2(&record, accountID, groupNames))
 	}
 
 	// If specific ENI IDs were requested but not found, return error
@@ -550,24 +603,27 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 				found[*eni.NetworkInterfaceId] = true
 			}
 		}
-		for id := range eniIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		for _, id := range input.NetworkInterfaceIds {
+			if id != nil && !found[*id] {
+				return nil, eniNotFoundError(*id)
 			}
 		}
 	}
+
+	enis, nextToken := paging.EC2Page(enis, func(e *ec2.NetworkInterface) string { return *e.NetworkInterfaceId }, pageReq)
 
 	slog.InfoContext(ctx, "DescribeNetworkInterfaces completed", "count", len(enis), "accountID", accountID)
 
 	return &ec2.DescribeNetworkInterfacesOutput{
 		NetworkInterfaces: enis,
+		NextToken:         nextToken,
 	}, nil
 }
 
 // eniMatchesFilters checks whether an ENI record matches all parsed awsfilters.
 func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -596,14 +652,9 @@ func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 				return false
 			}
 		case "group-id":
-			found := false
-			for _, sgId := range record.SecurityGroupIds {
-				if awsfilters.MatchesAny(values, sgId) {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(record.SecurityGroupIds, func(sgId string) bool {
+				return awsfilters.MatchesAny(values, sgId)
+			}) {
 				return false
 			}
 		case "mac-address":
@@ -647,7 +698,7 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return "", errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return "", eniNotFoundError(eniId)
 	}
 
 	var record ENIRecord
@@ -689,7 +740,7 @@ func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string)
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return eniNotFoundError(eniId)
 	}
 
 	var record ENIRecord
@@ -725,7 +776,7 @@ func (s *VPCServiceImpl) getENIRecord(ctx context.Context, accountID, eniId stri
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return ENIRecord{}, errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return ENIRecord{}, eniNotFoundError(eniId)
 	}
 	var record ENIRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
@@ -745,7 +796,7 @@ func (s *VPCServiceImpl) updateENI(ctx context.Context, accountID, eniId string,
 	key := utils.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+		return eniNotFoundError(eniId)
 	}
 	var record ENIRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
@@ -958,8 +1009,32 @@ func (s *VPCServiceImpl) updateENIPublicIP(ctx context.Context, accountID, eniId
 	return nil
 }
 
-// eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface.
-func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec2.NetworkInterface {
+// fillSGNames records in names the name of each group in ids it does not
+// already hold. A group that cannot be read is recorded as "", so it is listed
+// without a name and not looked up again.
+func (s *VPCServiceImpl) fillSGNames(ctx context.Context, accountID string, ids []string, names map[string]string) {
+	for _, id := range ids {
+		if _, ok := names[id]; ok {
+			continue
+		}
+		names[id] = ""
+		entry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, id))
+		if err != nil {
+			slog.WarnContext(ctx, "fillSGNames: SG read failed", "groupId", id, "err", err)
+			continue
+		}
+		var rec SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.WarnContext(ctx, "fillSGNames: SG unmarshal failed", "groupId", id, "err", err)
+			continue
+		}
+		names[id] = rec.GroupName
+	}
+}
+
+// eniRecordToEC2 converts an ENI record to an EC2 NetworkInterface, naming
+// each security group from groupNames.
+func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, groupNames map[string]string) *ec2.NetworkInterface {
 	// ENIs with spinifex:managed-by tag are system-managed (e.g. by ELBv2)
 	requesterManaged := record.Tags["spinifex:managed-by"] != ""
 
@@ -988,11 +1063,20 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec
 	if len(record.SecurityGroupIds) > 0 {
 		groups := make([]*ec2.GroupIdentifier, 0, len(record.SecurityGroupIds))
 		for _, sgId := range record.SecurityGroupIds {
-			groups = append(groups, &ec2.GroupIdentifier{
-				GroupId: aws.String(sgId),
-			})
+			group := &ec2.GroupIdentifier{GroupId: aws.String(sgId)}
+			if name := groupNames[sgId]; name != "" {
+				group.GroupName = aws.String(name)
+			}
+			groups = append(groups, group)
 		}
 		eni.Groups = groups
+	}
+
+	if s.privateDNSName != nil && record.PrivateIpAddress != "" {
+		if name := s.privateDNSName(record.PrivateIpAddress); name != "" {
+			eni.PrivateDnsName = aws.String(name)
+			eni.PrivateIpAddresses[0].PrivateDnsName = aws.String(name)
+		}
 	}
 
 	if record.PublicIpAddress != "" {
@@ -1014,11 +1098,6 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string) *ec
 	eni.TagSet = utils.MapToEC2Tags(record.Tags)
 
 	return eni
-}
-
-// generateENIMac creates a locally-administered unicast MAC address from an ENI ID.
-func generateENIMac(eniId string) string {
-	return utils.HashMAC(eniId)
 }
 
 // portEventPayload is the wire shape for vpc.create-port / vpc.delete-port.
@@ -1111,7 +1190,7 @@ func (s *VPCServiceImpl) validateSGAttachment(ctx context.Context, accountID str
 	for _, sgId := range sgIds {
 		sgEntry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, sgId))
 		if err != nil {
-			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return sgNotFoundError(sgId)
 		}
 		var sg SecurityGroupRecord
 		if err := json.Unmarshal(sgEntry.Value(), &sg); err != nil {

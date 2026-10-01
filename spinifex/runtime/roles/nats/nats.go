@@ -47,22 +47,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-func (svc *Service) Stop() (err error) {
-	return utils.StopProcessAt(svc.Config.DataDir, serviceName)
-}
-
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.DataDir, serviceName)
-}
-
-func (svc *Service) Shutdown() (err error) {
-	return svc.Stop()
-}
-
-func (svc *Service) Reload() (err error) {
-	return nil
-}
-
 func launchService(config *Config) (err error) {
 	// Create proper server options
 	var opts *server.Options

@@ -262,6 +262,36 @@ func TestMatchesTags_EmptyFilters(t *testing.T) {
 	}
 }
 
+func TestMatchesTags_TagKeyAndTagValue(t *testing.T) {
+	tags := map[string]string{"Name": "web", "awsdiff": "yes"}
+	cases := []struct {
+		name    string
+		filters map[string][]string
+		want    bool
+	}{
+		{"tag-key present", map[string][]string{"tag-key": {"awsdiff"}}, true},
+		{"tag-key absent", map[string][]string{"tag-key": {"zz-awsdiff-none"}}, false},
+		{"tag-key any of values", map[string][]string{"tag-key": {"missing", "Name"}}, true},
+		{"tag-key wildcard", map[string][]string{"tag-key": {"aws*"}}, true},
+		{"tag-key does not match a value", map[string][]string{"tag-key": {"web"}}, false},
+		{"tag-value on any tag", map[string][]string{"tag-value": {"yes"}}, true},
+		{"tag-value absent", map[string][]string{"tag-value": {"zz-awsdiff-none"}}, false},
+		{"tag-value does not match a key", map[string][]string{"tag-value": {"Name"}}, false},
+		{"tag-key and tag-value from different tags", map[string][]string{"tag-key": {"Name"}, "tag-value": {"yes"}}, true},
+		{"tag-key ANDed with tag:", map[string][]string{"tag-key": {"awsdiff"}, "tag:Name": {"db"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchesTags(tc.filters, tags); got != tc.want {
+				t.Fatalf("MatchesTags(%v) = %v, want %v", tc.filters, got, tc.want)
+			}
+		})
+	}
+	if MatchesTags(map[string][]string{"tag-key": {"*"}}, nil) {
+		t.Fatal("expected an untagged resource to fail tag-key")
+	}
+}
+
 func TestEC2TagsToMap(t *testing.T) {
 	tags := []*ec2.Tag{
 		{Key: aws.String("Env"), Value: aws.String("prod")},

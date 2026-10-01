@@ -48,7 +48,7 @@ var providerObjectStoreFactory = func(cfg *Config) objectstore.ObjectStore {
 	return objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(cfg.S3Host), cfg.Region, cfg.AccessKey, cfg.SecretKey)
 }
 
-// registerProviderSubjects subscribes the ebs.provider.v1.* handlers that
+// RegisterProviderSubjects subscribes the ebs.provider.v1.* handlers that
 // serve the ebsprovider.EBSProvider NATS contract from this daemon, moving
 // viperblock engine construction out of the EC2 control-plane handlers and
 // into the storage daemon that owns BaseDir and the mounted-volume registry.
@@ -57,19 +57,13 @@ var providerObjectStoreFactory = func(cfg *Config) objectstore.ObjectStore {
 // / UnpublishSubject already route to one node), so they are only registered
 // when cfg.NodeName is set; there is no queue-group fallback the way the
 // legacy ebs.mount/ebs.unmount subjects have.
-// RegisterProviderSubjects serves the provider contract from cfg on nc without
-// launching the rest of the daemon. It exists for harnesses that need a real
-// provider behind the control plane, which otherwise has none to call.
+// Exported so harnesses can put a real provider behind the control plane.
 func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
-	return registerProviderSubjects(cfg, nc)
-}
-
-func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	// The lease store has to exist before any subject is served: a handler
 	// that reaches an engine open without one refuses, and refusing every
 	// publish is a worse failure than not starting.
 	if cfg.leases == nil {
-		leases, err := newVolumeLeases(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
+		leases, err := newVolumeLeasesWaiting(context.Background(), nc, cfg.leaseOwner())
 		if err != nil {
 			return fmt.Errorf("volume leases: %w", err)
 		}
@@ -80,7 +74,7 @@ func registerProviderSubjects(cfg *Config, nc *nats.Conn) error {
 	// Same reasoning as the lease store: a mount that cannot consult the dirty
 	// marker cannot tell a stale cross-node start from a routine one.
 	if cfg.dirty == nil {
-		dirty, err := newVolumeDirty(context.Background(), nc, cfg.leaseOwner(), cfg.KVReplicas)
+		dirty, err := newVolumeDirtyWaiting(context.Background(), nc, cfg.leaseOwner())
 		if err != nil {
 			return fmt.Errorf("volume dirty markers: %w", err)
 		}
@@ -1736,7 +1730,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (types.E
 
 // handlePublishVolume serves ebs.provider.v1.<node>.mount, the provider-neutral
 // front for the same nbdkit mount path ebs.mount uses. It is node-addressed
-// (registerProviderSubjects only subscribes it when cfg.NodeName is set), so
+// (RegisterProviderSubjects only subscribes it when cfg.NodeName is set), so
 // unlike the legacy handler there is no queue-group fallback to reason about.
 func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.PublishVolumeRequest

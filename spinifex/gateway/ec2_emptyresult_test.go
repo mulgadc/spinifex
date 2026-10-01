@@ -116,3 +116,73 @@ func TestEC2Describe_NonEmptyResult_Unchanged(t *testing.T) {
 	assert.Contains(t, body, "<keySet>")
 	assert.NotContains(t, body, "<keySet></keySet>", "non-empty KeyPairs must not render as an empty container")
 }
+
+// AWS omits some empty lists rather than rendering them: an untagged
+// CreateKeyPair's tagSet, and an image's tagSet and productCodes. Other empty
+// lists in the same responses are still rendered.
+func TestEC2_ListsAWSOmitsWhenEmpty(t *testing.T) {
+	key := render[ec2.CreateKeyPairInput](t, "CreateKeyPair", ec2.CreateKeyPairOutput{KeyName: aws.String("k")})
+	assert.NotContains(t, key, "tagSet")
+
+	images := render[ec2.DescribeImagesInput](t, "DescribeImages", ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{{ImageId: aws.String("ami-1")}},
+	})
+	assert.NotContains(t, images, "tagSet")
+	assert.NotContains(t, images, "productCodes")
+	assert.Contains(t, images, "<blockDeviceMapping></blockDeviceMapping>")
+
+	tagged := render[ec2.DescribeImagesInput](t, "DescribeImages", ec2.DescribeImagesOutput{
+		Images: []*ec2.Image{{ImageId: aws.String("ami-1"), Tags: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}}}},
+	})
+	// BuildXML emits sibling elements in map order, so key/value may swap.
+	assert.Regexp(t, `<tagSet><item>(<key>k</key><value>v</value>|<value>v</value><key>k</key>)</item></tagSet>`, tagged)
+}
+
+// The network lists AWS omits when empty: an untagged security group's and
+// rule's tagSet, Revoke*'s unknownIpPermissionSet, an interface's prefix
+// lists, and a described VPC's IPv6 association set.
+func TestEC2_NetworkListsAWSOmitsWhenEmpty(t *testing.T) {
+	sg := render[ec2.CreateSecurityGroupInput](t, "CreateSecurityGroup", ec2.CreateSecurityGroupOutput{GroupId: aws.String("sg-1")})
+	assert.NotContains(t, sg, "tagSet")
+
+	groups := render[ec2.DescribeSecurityGroupsInput](t, "DescribeSecurityGroups", ec2.DescribeSecurityGroupsOutput{
+		SecurityGroups: []*ec2.SecurityGroup{{GroupId: aws.String("sg-1")}},
+	})
+	assert.NotContains(t, groups, "tagSet")
+	assert.Contains(t, groups, "<ipPermissions></ipPermissions>")
+
+	auth := render[ec2.AuthorizeSecurityGroupIngressInput](t, "AuthorizeSecurityGroupIngress", ec2.AuthorizeSecurityGroupIngressOutput{
+		SecurityGroupRules: []*ec2.SecurityGroupRule{{SecurityGroupRuleId: aws.String("sgr-1")}},
+	})
+	assert.NotContains(t, auth, "tagSet")
+
+	rules := render[ec2.DescribeSecurityGroupRulesInput](t, "DescribeSecurityGroupRules", ec2.DescribeSecurityGroupRulesOutput{
+		SecurityGroupRules: []*ec2.SecurityGroupRule{{SecurityGroupRuleId: aws.String("sgr-1"), Tags: []*ec2.Tag{}}},
+	})
+	assert.Contains(t, rules, "<tagSet></tagSet>")
+
+	revoke := render[ec2.RevokeSecurityGroupIngressInput](t, "RevokeSecurityGroupIngress", ec2.RevokeSecurityGroupIngressOutput{Return: aws.Bool(true)})
+	assert.NotContains(t, revoke, "unknownIpPermissionSet")
+	revokeEgress := render[ec2.RevokeSecurityGroupEgressInput](t, "RevokeSecurityGroupEgress", ec2.RevokeSecurityGroupEgressOutput{Return: aws.Bool(true)})
+	assert.NotContains(t, revokeEgress, "unknownIpPermissionSet")
+
+	enis := render[ec2.DescribeNetworkInterfacesInput](t, "DescribeNetworkInterfaces", ec2.DescribeNetworkInterfacesOutput{
+		NetworkInterfaces: []*ec2.NetworkInterface{{NetworkInterfaceId: aws.String("eni-1")}},
+	})
+	assert.NotContains(t, enis, "ipv4PrefixSet")
+	assert.NotContains(t, enis, "ipv6PrefixSet")
+	assert.Contains(t, enis, "<groupSet></groupSet>")
+
+	vpcs := render[ec2.DescribeVpcsInput](t, "DescribeVpcs", ec2.DescribeVpcsOutput{Vpcs: []*ec2.Vpc{{VpcId: aws.String("vpc-1")}}})
+	assert.NotContains(t, vpcs, "ipv6CidrBlockAssociationSet")
+
+	created := render[ec2.CreateVpcInput](t, "CreateVpc", ec2.CreateVpcOutput{Vpc: &ec2.Vpc{
+		VpcId:                       aws.String("vpc-1"),
+		Ipv6CidrBlockAssociationSet: []*ec2.VpcIpv6CidrBlockAssociation{},
+	}})
+	assert.Contains(t, created, "<ipv6CidrBlockAssociationSet></ipv6CidrBlockAssociationSet>")
+
+	subnet := render[ec2.CreateSubnetInput](t, "CreateSubnet", ec2.CreateSubnetOutput{Subnet: &ec2.Subnet{SubnetId: aws.String("subnet-1")}})
+	assert.NotContains(t, subnet, "tagSet")
+	assert.Contains(t, subnet, "<ipv6CidrBlockAssociationSet></ipv6CidrBlockAssociationSet>")
+}

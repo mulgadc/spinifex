@@ -78,8 +78,8 @@ type Rotator struct {
 // NewRotator opens the signing-key bucket and builds a rotator that keeps issuer
 // and verifier current. replicas matches the cluster size for first-run bucket
 // creation.
-func NewRotator(ctx context.Context, js jetstream.JetStream, masterKey []byte, replicas int, issuer *Issuer, verifier *Verifier) (*Rotator, error) {
-	kv, err := openSigningBucket(ctx, js, masterKey, replicas)
+func NewRotator(ctx context.Context, js jetstream.JetStream, masterKey []byte, issuer *Issuer, verifier *Verifier) (*Rotator, error) {
+	kv, err := openSigningBucket(ctx, js, masterKey)
 	if err != nil {
 		return nil, err
 	}

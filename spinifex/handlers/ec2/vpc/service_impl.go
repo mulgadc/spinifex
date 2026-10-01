@@ -14,10 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -96,6 +98,10 @@ type VPCServiceImpl struct {
 	// A nil value leaves both unchanged.
 	centralTags CentralTagStore
 
+	// Optional: injected after construction to name interfaces' private
+	// addresses. Nil leaves them unnamed.
+	privateDNSName func(privateIP string) string
+
 	// disableDefaultPublicIP seeds default subnets with MapPublicIpOnLaunch=false
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
 	// the AWS-faithful default of true.
@@ -115,6 +121,13 @@ func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV jetstream.Key
 	s.eipKV = eipKV
 }
 
+// SetPrivateDNSNamer injects how a private address is named, so an interface
+// reports the same PrivateDnsName as the instance using it. Nil, or a namer
+// that answers "", leaves interfaces unnamed.
+func (s *VPCServiceImpl) SetPrivateDNSNamer(namer func(privateIP string) string) {
+	s.privateDNSName = namer
+}
+
 // SetCentralTagStore injects the central tag store so create paths project
 // their record tags into it and delete paths clear them. Nil leaves both
 // unchanged.
@@ -130,6 +143,15 @@ func (s *VPCServiceImpl) localAZ() string {
 		return ""
 	}
 	return s.config.AZ
+}
+
+// region returns the configured AWS region, falling back to the default when
+// no config or region is wired.
+func (s *VPCServiceImpl) region() string {
+	if s.config == nil || s.config.Region == "" {
+		return config.DefaultAWSRegion
+	}
+	return s.config.Region
 }
 
 // NewVPCServiceImplWithNATS creates a VPC service with NATS JetStream for persistence.
@@ -244,22 +266,27 @@ func (s *VPCServiceImpl) nextVNI(ctx context.Context) (int64, error) {
 	return allocated, nil
 }
 
+// invalidCIDRBlockError is AWS's answer to a CidrBlock that does not parse.
+func invalidCIDRBlockError(cidr string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"Value (%s) for parameter cidrBlock is invalid. This is not a valid CIDR block.", cidr)
+}
+
 // CreateVpc creates a new VPC.
 func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInput, accountID string) (*ec2.CreateVpcOutput, error) {
 	if input.CidrBlock == nil || *input.CidrBlock == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	// Validate CIDR block
 	_, ipNet, err := net.ParseCIDR(*input.CidrBlock)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcRange)
+		return nil, invalidCIDRBlockError(*input.CidrBlock)
 	}
 
 	// AWS allows /16 to /28 for VPC CIDR blocks
 	ones, _ := ipNet.Mask.Size()
 	if ones < 16 || ones > 28 {
-		return nil, errors.New(awserrors.ErrorInvalidVpcRange)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidVpcRange, "The CIDR '%s' is invalid.", *input.CidrBlock)
 	}
 
 	// Allocate VNI for overlay network
@@ -312,16 +339,18 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	return &ec2.CreateVpcOutput{
-		Vpc: s.vpcRecordToEC2(&record, accountID),
-	}, nil
+	// AWS renders the empty IPv6 association list on CreateVpc only;
+	// DescribeVpcs omits it.
+	vpc := s.vpcRecordToEC2(&record, accountID)
+	vpc.Ipv6CidrBlockAssociationSet = []*ec2.VpcIpv6CidrBlockAssociation{}
+	return &ec2.CreateVpcOutput{Vpc: vpc}, nil
 }
 
 // requireVPCExists returns InvalidVpcID.NotFound if the VPC doesn't exist for
 // this account.
 func (s *VPCServiceImpl) requireVPCExists(ctx context.Context, accountID, vpcId string) error {
 	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcId)); err != nil {
-		return errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return vpcNotFoundError(vpcId)
 	}
 	return nil
 }
@@ -340,7 +369,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 		// tolerates it on destroy); destroy orchestration tolerates it too.
 		// A transient read error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+			return nil, vpcNotFoundError(vpcID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -376,8 +405,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if subnet.VpcId == vpcID {
-			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent subnet %s that must be deleted first", subnet.SubnetId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent subnet", "vpcId", vpcID, "subnetId", subnet.SubnetId)
+			return nil, awserrors.HasDependencies("vpc", vpcID)
 		}
 	}
 
@@ -413,8 +442,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			continue
 		}
 		if !sg.IsDefault {
-			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent security group %s that must be deleted first", sg.GroupId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent security group", "vpcId", vpcID, "groupId", sg.GroupId)
+			return nil, awserrors.HasDependencies("vpc", vpcID)
 		}
 		defaultSGId = sg.GroupId
 	}
@@ -454,8 +483,8 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 			continue
 		}
 		if !rtb.IsMain {
-			return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent route table %s that must be deleted first", rtb.RouteTableId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has a dependent route table", "vpcId", vpcID, "routeTableId", rtb.RouteTableId)
+			return nil, awserrors.HasDependencies("vpc", vpcID)
 		}
 	}
 
@@ -548,8 +577,8 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if igw.VpcId == vpcID {
-			return awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the VPC has a dependent internet gateway %s that must be detached first", igw.InternetGatewayId)
+			slog.WarnContext(ctx, "DeleteVpc: VPC has an attached internet gateway", "vpcId", vpcID, "internetGatewayId", igw.InternetGatewayId)
+			return awserrors.HasDependencies("vpc", vpcID)
 		}
 	}
 
@@ -569,6 +598,8 @@ var describeVpcsValidFilters = map[string]bool{
 	"isDefault":                         true,
 	"owner-id":                          true,
 	"cidr-block-association.cidr-block": true,
+	"tag-key":                           true,
+	"tag-value":                         true,
 }
 
 // SupportsDescribeVpcsFilter reports whether DescribeVpcs accepts a filter name.
@@ -582,6 +613,11 @@ func SupportsDescribeVpcsFilter(name string) bool {
 // DescribeVpcs describes VPCs.
 func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVpcsInput, accountID string) (*ec2.DescribeVpcsOutput, error) {
 	var vpcs []*ec2.Vpc
+
+	// Validated but not paged: AWS's paging of DescribeVpcs is unobserved.
+	if _, err := describeVpcsPaging.Parse(input.MaxResults, input.NextToken, len(input.VpcIds)); err != nil {
+		return nil, err
+	}
 
 	vpcIDs := make(map[string]bool)
 	for _, id := range input.VpcIds {
@@ -641,9 +677,9 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 				found[*vpc.VpcId] = true
 			}
 		}
-		for id := range vpcIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		for _, id := range input.VpcIds {
+			if id != nil && !found[*id] {
+				return nil, vpcNotFoundError(*id)
 			}
 		}
 	}
@@ -666,26 +702,27 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 
 	vpcID := *input.VpcId
 
+	// AWS rejects an unparseable CIDR before it looks the VPC up.
+	_, subnetNet, err := net.ParseCIDR(*input.CidrBlock)
+	if err != nil {
+		return nil, invalidCIDRBlockError(*input.CidrBlock)
+	}
+
 	// Verify VPC exists and belongs to this account
 	vpcEntry, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID))
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, vpcNotFoundError(vpcID)
 	}
 
 	var vpcRecord VPCRecord
 	if err := json.Unmarshal(vpcEntry.Value(), &vpcRecord); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	// Validate subnet CIDR
-	_, subnetNet, err := net.ParseCIDR(*input.CidrBlock)
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetRange)
-	}
 
 	// AWS allows /16 to /28 for subnet CIDR blocks
 	ones, _ := subnetNet.Mask.Size()
 	if ones < 16 || ones > 28 {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetRange)
+		return nil, subnetRangeError(*input.CidrBlock)
 	}
 
 	// Verify subnet CIDR is within VPC CIDR
@@ -695,7 +732,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	}
 
 	if !vpcNet.Contains(subnetNet.IP) {
-		return nil, errors.New(awserrors.ErrorInvalidSubnetRange)
+		return nil, subnetRangeError(*input.CidrBlock)
 	}
 
 	// Check for CIDR conflicts with existing subnets in this VPC (same account)
@@ -728,7 +765,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 			continue
 		}
 		if existingNet.Contains(subnetNet.IP) || subnetNet.Contains(existingNet.IP) {
-			return nil, errors.New(awserrors.ErrorInvalidSubnetConflict)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetConflict, "The CIDR '%s' conflicts with another subnet", *input.CidrBlock)
 		}
 	}
 
@@ -793,7 +830,7 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 		// destroy); destroy orchestration tolerates it too. A transient read
 		// error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetIDNotFound, "The subnet ID '%s' does not exist", subnetID)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -858,7 +895,7 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 			continue
 		}
 		if record.SubnetId == subnetID && eniIsLiveAttachment(&record) {
-			return errors.New(awserrors.ErrorDependencyViolation)
+			return awserrors.HasDependencies("subnet", subnetID)
 		}
 	}
 	return nil
@@ -955,6 +992,11 @@ func (s *VPCServiceImpl) clearRouteTableAssociationsForSubnet(ctx context.Contex
 func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error) {
 	var subnets []*ec2.Subnet
 
+	pageReq, err := describeSubnetsPaging.Parse(input.MaxResults, input.NextToken, len(input.SubnetIds))
+	if err != nil {
+		return nil, err
+	}
+
 	subnetIDs := make(map[string]bool)
 	for _, id := range input.SubnetIds {
 		if id != nil {
@@ -1021,17 +1063,20 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 				found[*subnet.SubnetId] = true
 			}
 		}
-		for id := range subnetIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+		for _, id := range input.SubnetIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidSubnetIDNotFound, "The subnet ID '%s' does not exist", *id)
 			}
 		}
 	}
 
+	subnets, nextToken := paging.EC2Page(subnets, func(s *ec2.Subnet) string { return *s.SubnetId }, pageReq)
+
 	slog.InfoContext(ctx, "DescribeSubnets completed", "count", len(subnets), "accountID", accountID)
 
 	return &ec2.DescribeSubnetsOutput{
-		Subnets: subnets,
+		Subnets:   subnets,
+		NextToken: nextToken,
 	}, nil
 }
 
@@ -1149,7 +1194,7 @@ func (s *VPCServiceImpl) updateRecordTags(ctx context.Context, accountID, resour
 // vpcMatchesFilters checks whether a VPCRecord satisfies all parsed awsfilters.
 func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 
@@ -1181,6 +1226,20 @@ func vpcMatchesFilters(record *VPCRecord, accountID string, filters map[string][
 	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
+var describeVpcsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter VpcIds cannot be used with the parameter MaxResults",
+}
+
+var describeSubnetsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value smaller than or equal to 1000.",
+	TooSmall:   "Value ( %d ) for parameter MaxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:    "The parameter SubnetIds cannot be used with the parameter MaxResults",
+}
+
 // describeSubnetsValidFilters defines the set of filter names accepted by DescribeSubnets.
 var describeSubnetsValidFilters = map[string]bool{
 	"subnet-id":         true,
@@ -1189,12 +1248,14 @@ var describeSubnetsValidFilters = map[string]bool{
 	"cidr-block":        true,
 	"state":             true,
 	"default-for-az":    true,
+	"tag-key":           true,
+	"tag-value":         true,
 }
 
 // subnetMatchesFilters checks whether a SubnetRecord satisfies all parsed awsfilters.
 func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 
@@ -1261,6 +1322,18 @@ func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs in
 		AvailableIpAddressCount: aws.Int64(int64(availableIPs)),
 		OwnerId:                 aws.String(accountID),
 		MapPublicIpOnLaunch:     aws.Bool(record.MapPublicIpOnLaunch),
+		SubnetArn:               aws.String(arn.FormatEC2(arn.EC2Subnet, s.region(), accountID, record.SubnetId)),
+		// Spinifex subnets are IPv4-only with no customer-owned pool, and
+		// instances are named ip-<a-b-c-d> with no resource-name records.
+		AssignIpv6AddressOnCreation: aws.Bool(false),
+		EnableDns64:                 aws.Bool(false),
+		Ipv6Native:                  aws.Bool(false),
+		MapCustomerOwnedIpOnLaunch:  aws.Bool(false),
+		PrivateDnsNameOptionsOnLaunch: &ec2.PrivateDnsNameOptionsOnLaunch{
+			HostnameType:                    aws.String(ec2.HostnameTypeIpName),
+			EnableResourceNameDnsARecord:    aws.Bool(false),
+			EnableResourceNameDnsAAAARecord: aws.Bool(false),
+		},
 	}
 
 	subnet.Tags = utils.MapToEC2Tags(record.Tags)
@@ -1309,8 +1382,21 @@ func (s *VPCServiceImpl) ModifyVpcAttribute(ctx context.Context, input *ec2.Modi
 	if input.VpcId == nil || *input.VpcId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.EnableDnsHostnames == nil && input.EnableDnsSupport == nil && input.EnableNetworkAddressUsageMetrics == nil {
+	var set []string
+	if input.EnableDnsSupport != nil {
+		set = append(set, "enableDnsSupport")
+	}
+	if input.EnableDnsHostnames != nil {
+		set = append(set, "enableDnsHostnames")
+	}
+	if input.EnableNetworkAddressUsageMetrics != nil {
+		set = append(set, "enableNetworkAddressUsageMetrics")
+	}
+	if len(set) == 0 {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(set) > 1 {
+		return nil, multipleAttributesError(set)
 	}
 
 	vpcID := *input.VpcId
@@ -1318,7 +1404,7 @@ func (s *VPCServiceImpl) ModifyVpcAttribute(ctx context.Context, input *ec2.Modi
 
 	entry, err := s.vpcKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, vpcNotFoundError(vpcID)
 	}
 
 	var record VPCRecord
@@ -1366,7 +1452,7 @@ func (s *VPCServiceImpl) DescribeVpcAttribute(ctx context.Context, input *ec2.De
 
 	entry, err := s.vpcKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVpcIDNotFound)
+		return nil, vpcNotFoundError(vpcID)
 	}
 
 	var record VPCRecord

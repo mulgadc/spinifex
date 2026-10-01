@@ -167,11 +167,11 @@ type bedrockRPMSnapshot struct {
 // RunBedrockRPMSync periodically snapshots every account this gateway has
 // rate-limited into kv, until ctx is cancelled. A no-op when the RPM
 // dimension is disabled, so a default-off deployment starts no ticker.
-func (s *Service) RunBedrockRPMSync(ctx context.Context, js jetstream.JetStream, replicas int) {
+func (s *Service) RunBedrockRPMSync(ctx context.Context, js jetstream.JetStream) {
 	if s == nil || !s.limits.RequestsPerMinuteEnabled {
 		return
 	}
-	kv, err := kvutil.GetOrCreateBucketWithReplicas(ctx, js, KVBucketBedrockRPMUsage, 1, replicas)
+	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketBedrockRPMUsage, 1)
 	if err != nil {
 		slog.Warn("bedrock rpm sync: open usage bucket failed, sync disabled", "err", err)
 		return

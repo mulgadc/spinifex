@@ -148,12 +148,12 @@ func TestListPolicyVersions_PagesNewestFirst(t *testing.T) {
 		return got
 	}
 
-	first, err := gateway_iam.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2)}, svc)
+	first, err := gateway_iam.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), MaxItems: aws.Int64(2)}, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"v10", "v9"}, ids(first))
 	assert.True(t, aws.BoolValue(first.IsTruncated))
 
-	second, err := gateway_iam.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2), Marker: first.Marker}, svc)
+	second, err := gateway_iam.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), MaxItems: aws.Int64(2), Marker: first.Marker}, svc)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"v2"}, ids(second))
 	assert.False(t, aws.BoolValue(second.IsTruncated))
@@ -169,7 +169,7 @@ func TestListEntitiesForPolicy_PagesAcrossAllThreeLists(t *testing.T) {
 			PolicyGroups: []*iam.PolicyGroup{{GroupName: aws.String("g1")}},
 		}
 	}}
-	input := &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String("arn"), MaxItems: aws.Int64(2)}
+	input := &iam.ListEntitiesForPolicyInput{PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), MaxItems: aws.Int64(2)}
 
 	first, err := gateway_iam.ListEntitiesForPolicy(testAccountID, input, svc)
 	require.NoError(t, err)

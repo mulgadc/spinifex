@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -29,7 +30,7 @@ func setupTestIAMService(t *testing.T) *IAMServiceImpl {
 	masterKey, err := GenerateMasterKey()
 	require.NoError(t, err)
 
-	svc, err := NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	svc, err := NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 	return svc
 }
@@ -386,7 +387,7 @@ func TestCreateUser_InvalidName_TooLong(t *testing.T) {
 		UserName: aws.String(longName),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreateUser_InvalidName_BadChars(t *testing.T) {
@@ -422,7 +423,7 @@ func TestCreatePolicy_InvalidName(t *testing.T) {
 		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 func TestCreatePolicy_InvalidPath(t *testing.T) {
@@ -436,6 +437,25 @@ func TestCreatePolicy_InvalidPath(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+}
+
+// AWS refuses an empty Path, as every other Create* does, and checks it before
+// the policy document.
+func TestCreatePolicy_EmptyPathRefusedBeforeDocument(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("EmptyPath"), PolicyDocument: aws.String("{"), Path: aws.String(""),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
+
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("NoPath"), PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "/", aws.StringValue(out.Policy.Path))
 }
 
 func TestValidatePolicyDocument_TooLarge(t *testing.T) {
@@ -1264,7 +1284,7 @@ func TestCreatePolicy_InvalidTag(t *testing.T) {
 		Tags:           []*iam.Tag{{Key: aws.String(""), Value: aws.String("x")}},
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMInvalidInput)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 
 	// The rejected policy must not have been stored.
 	_, err = svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
@@ -1700,6 +1720,37 @@ func TestDeletePolicy_AttachedConflict_Group(t *testing.T) {
 // ListEntitiesForPolicy Tests
 // ============================================================================
 
+// The messages are the ones AWS returned for the same values.
+func TestListPolicyCalls_EnumViolations(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const (
+		scopeMsg = "1 validation error detected: Value at 'scope' failed to satisfy constraint: Member must satisfy enum value set: [All, Local, AWS]"
+		usageMsg = "1 validation error detected: Value at 'policyUsageFilter' failed to satisfy constraint: Member must satisfy enum value set: [PermissionsBoundary, PermissionsPolicy]"
+	)
+	_, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{Scope: aws.String("Bogus")})
+	requireIAMError(t, err, awserrors.ErrorValidationError, scopeMsg)
+	_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{PolicyUsageFilter: aws.String("Bogus")})
+	requireIAMError(t, err, awserrors.ErrorValidationError, usageMsg)
+	_, err = svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), PolicyUsageFilter: aws.String("Bogus"),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError, usageMsg)
+
+	for _, scope := range iam.PolicyScopeType_Values() {
+		_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{Scope: aws.String(scope)})
+		require.NoError(t, err, scope)
+	}
+	for _, usage := range iam.PolicyUsageType_Values() {
+		_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{PolicyUsageFilter: aws.String(usage)})
+		require.NoError(t, err, usage)
+		_, err = svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+			PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), PolicyUsageFilter: aws.String(usage),
+		})
+		require.NoError(t, err, usage)
+	}
+}
+
 func TestListEntitiesForPolicy_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -2002,6 +2053,78 @@ func TestListAttachedUserPolicies(t *testing.T) {
 	assert.True(t, names["ListPolicy2"])
 }
 
+func TestListAttachedPolicies_FilterByPathPrefix(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	root := createTestPolicy(t, svc, "RootPolicy")
+	team, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("TeamPolicy"), Path: aws.String("/team/a/"), PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	createTestUser(t, svc, "u")
+	createTestRole(t, svc, "r")
+	createTestGroup(t, svc, "g")
+	for _, arn := range []*string{root.Arn, team.Policy.Arn} {
+		_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("u"), PolicyArn: arn})
+		require.NoError(t, err)
+		_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("r"), PolicyArn: arn})
+		require.NoError(t, err)
+		_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("g"), PolicyArn: arn})
+		require.NoError(t, err)
+	}
+
+	list := map[string]func(prefix *string) ([]*iam.AttachedPolicy, error){
+		"user": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{UserName: aws.String("u"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+		"role": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String("r"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+		"group": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedGroupPolicies(testAccountID, &iam.ListAttachedGroupPoliciesInput{GroupName: aws.String("g"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+	}
+	cases := []struct {
+		prefix *string
+		want   []string
+	}{
+		{nil, []string{"RootPolicy", "TeamPolicy"}},
+		{aws.String("/"), []string{"RootPolicy", "TeamPolicy"}},
+		{aws.String("/team/"), []string{"TeamPolicy"}},
+		{aws.String("/other/"), nil},
+	}
+	for identity, fn := range list {
+		for _, tc := range cases {
+			got, err := fn(tc.prefix)
+			require.NoError(t, err)
+			var names []string
+			for _, p := range got {
+				names = append(names, aws.StringValue(p.PolicyName))
+			}
+			assert.ElementsMatch(t, tc.want, names, "%s with PathPrefix %v", identity, aws.StringValue(tc.prefix))
+		}
+	}
+}
+
+func TestPolicyPathFromARN(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "/", policyPathFromARN("arn:aws:iam::aws:policy/ReadOnlyAccess"))
+	assert.Equal(t, "/service-role/", policyPathFromARN("arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"))
+	assert.Equal(t, "/team/a/", policyPathFromARN("arn:aws:iam::000000000000:policy/team/a/TeamPolicy"))
+}
+
 func TestListAttachedUserPolicies_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -2162,6 +2285,42 @@ func TestValidatePolicyDocument_SupportedCondition(t *testing.T) {
 		doc.Statement[0].Condition["IpAddress"]["aws:SourceIp"])
 }
 
+// Null takes a JSON boolean or its string form, and IfExists forms reach the
+// write path on the keys their base operator does.
+func TestValidatePolicyDocument_NullAndIfExists(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"Null":{"aws:username":true}}`,
+		`{"Null":{"s3:prefix":"false"}}`,
+		`{"StringEqualsIfExists":{"aws:username":"alice"}}`,
+		`{"NotIpAddressIfExists":{"aws:SourceIp":"10.0.0.0/8"}}`,
+		`{"BoolIfExists":{"aws:SecureTransport":"true"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
+// Date values take either W3C ISO 8601 or epoch seconds, the latter as a JSON
+// number too, on both date-valued keys.
+func TestValidatePolicyDocument_DateOperators(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"DateGreaterThan":{"aws:CurrentTime":"2026-10-01T12:00:00Z"}}`,
+		`{"DateLessThan":{"aws:CurrentTime":"2027-01-01"}}`,
+		`{"DateEquals":{"aws:EpochTime":"2026-10-01"}}`,
+		`{"DateNotEquals":{"aws:EpochTime":1790856000}}`,
+		`{"DateLessThanEquals":{"aws:EpochTime":["1790856000","2026-10-01T22:00+10:00"]}}`,
+		`{"DateGreaterThanEqualsIfExists":{"aws:CurrentTime":"2026-10-01T12:00:00.5Z"}}`,
+		`{"Null":{"aws:CurrentTime":"false"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
 func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
 	t.Parallel()
 	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
@@ -2196,12 +2355,62 @@ func TestValidatePolicyDocument_RejectsPrincipal(t *testing.T) {
 	assert.Contains(t, err.Error(), "Principal is not valid on an identity policy")
 }
 
-func TestValidatePolicyDocument_RejectsNotAction(t *testing.T) {
+func TestValidatePolicyDocument_Selectors(t *testing.T) {
 	t.Parallel()
-	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*",
-	 "NotAction":"sts:AssumeRole"}]}`)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "NotAction blocks are not supported")
+	tests := []struct {
+		name    string
+		stmt    string
+		wantErr string
+	}{
+		{"NotAction", `"NotAction":"iam:*","Resource":"*"`, ""},
+		{"NotResource", `"Action":"s3:*","NotResource":["arn:aws:s3:::secret","arn:aws:s3:::secret/*"]`, ""},
+		{"NotAction and NotResource", `"NotAction":"iam:*","NotResource":"arn:aws:s3:::secret/*"`, ""},
+		{"NotResource with a variable", `"Action":"s3:*","NotResource":"arn:aws:s3:::home/${aws:username}/*"`, ""},
+		{"Action and NotAction", `"Action":"*","NotAction":"sts:AssumeRole","Resource":"*"`, "Action and NotAction cannot both be specified"},
+		{"Resource and NotResource", `"Action":"*","Resource":"*","NotResource":"arn:aws:s3:::public/*"`, "Resource and NotResource cannot both be specified"},
+		{"NotResource with an unknown variable", `"Action":"s3:*","NotResource":"arn:aws:s3:::${aws:PrincipalOrgID}/*"`, "NotResource"},
+		{"empty NotAction entry", `"NotAction":"","Resource":"*"`, "must be prefaced by a vendor"},
+		{"NotAction without a vendor", `"NotAction":["iam"],"Resource":"*"`, "must be prefaced by a vendor"},
+		{"NotAction with an empty name", `"NotAction":"iam:","Resource":"*"`, "must be prefaced by a vendor"},
+		{"Action without a vendor", `"Action":"RunInstances","Resource":"*"`, "must be prefaced by a vendor"},
+		{"empty NotResource entry", `"Action":"s3:*","NotResource":[""]`, "must be in ARN format"},
+		{"NotResource not an ARN", `"Action":"s3:*","NotResource":"secret-bucket"`, "must be in ARN format"},
+		{"Resource not an ARN", `"Action":"s3:*","Resource":"secret-bucket"`, "must be in ARN format"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, effect := range []string{"Allow", "Deny"} {
+				_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"` + effect + `",` + tc.stmt + `}]}`)
+				if tc.wantErr == "" {
+					assert.NoError(t, err, effect)
+				} else {
+					require.Error(t, err, effect)
+					assert.Contains(t, err.Error(), tc.wantErr, effect)
+				}
+			}
+		})
+	}
+}
+
+// NotAction reaches CreatePolicy as an accepted identity policy, and both
+// selectors together come back as MalformedPolicyDocument.
+func TestCreatePolicy_NotAction(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("PowerUser"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotAction":"iam:*","Resource":"*"}]}`),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("Both"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","NotAction":"iam:*","Resource":"*"}]}`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
 // An allowlisted operator over a malformed value is still an inert grant: the
@@ -2220,6 +2429,20 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 		{"numeric bool", `{"Bool":{"aws:SecureTransport":1}}`, "not true or false"},
 		{"yes", `{"Bool":{"aws:SecureTransport":"yes"}}`, "not true or false"},
 		{"empty array", `{"IpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+		{"NotIpAddress hostname", `{"NotIpAddress":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"NotIpAddress empty array", `{"NotIpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+		{"Null yes", `{"Null":{"aws:username":"yes"}}`, "not true or false"},
+		{"Null variable", `{"Null":{"aws:username":"${aws:username}"}}`, "not true or false"},
+		{"IpAddressIfExists hostname", `{"IpAddressIfExists":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"BoolIfExists yes", `{"BoolIfExists":{"aws:SecureTransport":"yes"}}`, "not true or false"},
+		{"StringEqualsIfExists unknown variable", `{"StringEqualsIfExists":{"aws:username":"${aws:bogus}"}}`, `references policy variable "aws:bogus"`},
+		{"NullIfExists", `{"NullIfExists":{"aws:username":"true"}}`, "is not supported in this release"},
+		{"DateGreaterThan prose", `{"DateGreaterThan":{"aws:CurrentTime":"next week"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateLessThan no time zone", `{"DateLessThan":{"aws:CurrentTime":"2026-10-01T12:00:00"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateEquals fractional epoch", `{"DateEquals":{"aws:EpochTime":"1790856000.5"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateEquals variable", `{"DateEquals":{"aws:CurrentTime":"${aws:CurrentTime}"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateLessThanIfExists empty", `{"DateLessThanIfExists":{"aws:EpochTime":""}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateGreaterThan on a string key", `{"DateGreaterThan":{"aws:username":"2026"}}`, "is not supported in this release"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2229,6 +2452,38 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
+	}
+}
+
+// No supported key carries an Arn operator yet, so the write path cannot reach
+// this arm; it is exercised directly so the key that unlocks it lands validated.
+func TestValidateConditionValues_ArnOperators(t *testing.T) {
+	t.Parallel()
+	const key = "aws:SourceArn"
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{"exact ARN", "arn:aws:ecs:us-east-1:111122223333:task/c/abc", ""},
+		{"wildcard components", "arn:aws:ecs:*:111122223333:*", ""},
+		{"resource with colons", "arn:aws:logs:us-east-1:111122223333:log-group:app:*", ""},
+		{"variable", "arn:aws:iam::${aws:PrincipalAccount}:role/*", ""},
+		{"too few components", "arn:aws:ecs:*", "not an ARN of six colon-separated components"},
+		{"bare wildcard", "*", "not an ARN of six colon-separated components"},
+		{"unknown variable", "arn:aws:iam::${aws:bogus}:role/*", `references policy variable "aws:bogus"`},
+	}
+	for _, op := range []string{
+		iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike,
+	} {
+		for _, tt := range tests {
+			err := validateConditionValues(0, op, key, ConditionValue{tt.value})
+			if tt.wantErr == "" {
+				assert.NoError(t, err, "%s %s", op, tt.name)
+				continue
+			}
+			assert.ErrorContains(t, err, tt.wantErr, "%s %s", op, tt.name)
+		}
 	}
 }
 
@@ -2250,6 +2505,15 @@ func TestValidatePolicyDocument_RejectsUnresolvableVariables(t *testing.T) {
 		{"MFA in a StringLike value",
 			`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
 			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringNotEquals value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringNotEquals":{"aws:username":"${aws:MultiFactorAuthPresent}"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringNotLike value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringNotLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"unterminated in a StringEqualsIgnoreCase value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringEqualsIgnoreCase":{"aws:username":"${aws:username"}}`,
+			"unterminated policy variable reference"},
 		{"unknown key", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:bogus}/*"`,
 			`references policy variable "aws:bogus"`},
 		{"condition key that is not substitutable",
@@ -2322,14 +2586,6 @@ func TestValidatePolicyDocument_RejectsUnsupportedAlongsideSupported(t *testing.
 	assert.Contains(t, err.Error(), "aws:PrincipalOrgID")
 }
 
-func TestValidatePolicyDocument_RejectsNotResource(t *testing.T) {
-	t.Parallel()
-	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*",
-	 "NotResource":"arn:aws:s3:::public/*"}]}`)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "NotResource blocks are not supported")
-}
-
 // ============================================================================
 // Sensitive Data Not Logged Tests
 // ============================================================================
@@ -2381,7 +2637,7 @@ func TestSensitiveDataNotLogged_MasterKey(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := GenerateMasterKey()
 	require.NoError(t, err)
-	_, err = NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	_, err = NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	logOutput := buf.String()
@@ -2460,8 +2716,8 @@ func TestInputValidation_PathLength(t *testing.T) {
 func TestInputValidation_PolicyDocumentSize(t *testing.T) {
 	t.Parallel()
 	// 6144 bytes — should pass
-	filler6144 := strings.Repeat("a", 6144-len(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"`)-len(`"}]}`))
-	doc6144 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + filler6144 + `"}]}`
+	filler6144 := strings.Repeat("a", 6144-len(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::`)-len(`"}]}`))
+	doc6144 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::` + filler6144 + `"}]}`
 	assert.Len(t, doc6144, 6144)
 	_, err := ValidatePolicyDocument(doc6144)
 	assert.NoError(t, err, "6144-byte policy document should be valid")
@@ -2584,7 +2840,7 @@ func TestIsIAMNameChar(t *testing.T) {
 func TestValidateIAMName(t *testing.T) {
 	t.Parallel()
 	const charset = "It must contain only alphanumeric characters and/or the following: +=,.@_-"
-	invalid, validation := awserrors.ErrorIAMInvalidInput, awserrors.ErrorValidationError
+	validation := awserrors.ErrorValidationError
 	tests := []struct {
 		name     string
 		field    string
@@ -2598,10 +2854,10 @@ func TestValidateIAMName(t *testing.T) {
 		{"valid single char", "userName", "a", 64, "", ""},
 		{"valid at max length", "userName", strings.Repeat("a", 64), 64, "", ""},
 		{"valid policy at max length", "policyName", strings.Repeat("x", 128), 128, "", ""},
-		{"empty", "userName", "", 64, invalid,
-			"1 validation error detected: Value '' at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
-		{"too long", "policyName", strings.Repeat("x", 129), 128, invalid,
-			"1 validation error detected: Value '" + strings.Repeat("x", 129) + "' at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
+		{"empty", "userName", "", 64, validation,
+			"1 validation error detected: Value at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
+		{"too long", "policyName", strings.Repeat("x", 129), 128, validation,
+			"1 validation error detected: Value at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
 		{"space", "userName", "bad name!", 64, validation, "The specified value for userName is invalid. " + charset},
 		{"slash", "roleName", "alice/bob", 64, validation, "The specified value for roleName is invalid. " + charset},
 		{"colon", "groupName", "alice:bob", 128, validation, "The specified value for groupName is invalid. " + charset},
@@ -2632,7 +2888,7 @@ func TestValidatePath(t *testing.T) {
 	t.Parallel()
 	const shape = "The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters."
 	tooLong := "/" + strings.Repeat("a", 511) + "/"
-	invalid, validation := awserrors.ErrorIAMInvalidInput, awserrors.ErrorValidationError
+	validation := awserrors.ErrorValidationError
 	tests := []struct {
 		name     string
 		input    string
@@ -2646,8 +2902,8 @@ func TestValidatePath(t *testing.T) {
 		{"empty string", "", validation, shape},
 		{"just text", "noslash", validation, shape},
 		{"max length 512", "/" + strings.Repeat("a", 510) + "/", "", ""},
-		{"over max length 513", tooLong, invalid,
-			"1 validation error detected: Value '" + tooLong + "' at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
+		{"over max length 513", tooLong, validation,
+			"1 validation error detected: Value at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

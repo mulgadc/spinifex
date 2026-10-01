@@ -66,7 +66,7 @@ func runWANEgressSMTPBlock(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
 	harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-	require.Truef(t, trySSHReady(pubIP, 22, keyPath, sshReadyBudget),
+	require.Truef(t, sshHealth.TryReady(pubIP, 22, keyPath, harness.SSHReadyBudget),
 		"tcp/22 to %s never became reachable after authorizing ingress", pubIP)
 	tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
 

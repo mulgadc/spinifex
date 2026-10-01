@@ -13,7 +13,7 @@ import (
 func TestLoadRecoveryDirective_AbsentIsZeroNone(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	d, err := LoadRecoveryDirective(t.Context(), acctKV, "alpha", "i-missing")
@@ -25,7 +25,7 @@ func TestLoadRecoveryDirective_AbsentIsZeroNone(t *testing.T) {
 func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	first, err := StoreRecoveryDirective(t.Context(), acctKV, "alpha", "i-0", RecoveryActionClusterReset, "", false)
@@ -46,7 +46,7 @@ func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 func TestStoreRecoveryDirective_SnapshotRequiredRoundTrips(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 
 	stored, err := StoreRecoveryDirective(t.Context(), acctKV, "alpha", "i-seed", RecoveryActionClusterReset, "etcd-frequent-20260709T010000Z.snap", true)

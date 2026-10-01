@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/spf13/viper"
 )
 
@@ -65,7 +67,7 @@ type AWSConfig struct {
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
 type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
-	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp" or "oci"
+	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp", "oci" or "exoscale"
 	BindBridge string   `mapstructure:"bind_bridge"` // Linux bridge for DHCP DORA (source=dhcp only)
 	DHCPMAC    string   `mapstructure:"dhcp_mac"`    // DHCP client MAC strategy: "derived" (default) or "interface" (source=dhcp only)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
@@ -92,6 +94,20 @@ type ExternalPool struct {
 	OCIPublicIPPool  string `mapstructure:"oci_public_ip_pool"` // Public IP pool OCID for BYOIP (optional)
 	OCIConfigFile    string `mapstructure:"oci_config_file"`    // API-key config file (optional; defaults to ~/.oci/config)
 	OCIConfigProfile string `mapstructure:"oci_config_profile"` // Profile within that file (optional; defaults to DEFAULT)
+
+	// Exoscale names the zone and the instance its Elastic IPs attach to
+	// (source=exoscale only). Calls go through the exo CLI, so the instance ID
+	// is configured rather than read from metadata the IMDS endpoint shadows.
+	ExoscaleZone       string `mapstructure:"exoscale_zone"`        // Zone the EIPs are created in, e.g. "de-fra-1"
+	ExoscaleInstanceID string `mapstructure:"exoscale_instance_id"` // Exoscale instance UUID of this node
+	ExoscaleConfigFile string `mapstructure:"exoscale_config_file"` // exo CLI config holding the API key (optional; see exoscale.DefaultConfigFile)
+	ExoscaleAccount    string `mapstructure:"exoscale_account"`     // Account name within that file (optional; the file's default)
+	ExoscaleBinary     string `mapstructure:"exoscale_binary"`      // Absolute path to exo (optional; see exoscale.DefaultBinary)
+}
+
+// hasExoscaleKeys reports whether any exoscale_* key is set.
+func (p ExternalPool) hasExoscaleKeys() bool {
+	return p.ExoscaleZone != "" || p.ExoscaleInstanceID != "" || p.ExoscaleConfigFile != "" || p.ExoscaleAccount != "" || p.ExoscaleBinary != ""
 }
 
 // DefaultUnderlayMTU is the standard Ethernet payload, and the assumption a
@@ -605,6 +621,24 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 		return nil, err
 	}
 
+	// Every process that creates a KV bucket loads the cluster config first, so
+	// this is the one place the node count can be declared without a service
+	// being able to forget to. Buckets refuse to be created until it has been.
+	//
+	// A conflicting second load is reported rather than refused, because this
+	// function also reads config files that are not this process's own cluster —
+	// an installer inspecting a peer's, a tool rendering one. The first
+	// declaration stands either way, so nothing that already created a bucket can
+	// have the count changed underneath it.
+	if err := clustersize.Declare(len(config.Nodes)); err != nil {
+		slog.Warn("Ignoring a cluster size that disagrees with the one already declared; the first one stands",
+			"loaded_nodes", len(config.Nodes), "declared_nodes", clustersize.Nodes(), "error", err)
+	}
+	if len(config.Nodes) > 1 && len(config.Nodes) < clustersize.MinHANodes {
+		slog.Warn("This cluster has too few nodes to survive losing one, so its state is replicated to a single node",
+			"nodes", len(config.Nodes), "ha_minimum", clustersize.MinHANodes)
+	}
+
 	return &config, nil
 }
 
@@ -656,6 +690,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 	for _, p := range cc.Network.ExternalPools {
 		if p.Source != "oci" && (p.OCICompartmentID != "" || p.OCIVNICID != "" || p.OCIVNICIface != "" || p.OCISubnetID != "" || p.OCIPublicIPPool != "" || p.OCIConfigFile != "" || p.OCIConfigProfile != "") {
 			return fmt.Errorf("config: [[network.external_pools]] %q: oci_* keys are only valid with source=\"oci\"", p.Name)
+		}
+		if p.Source != "exoscale" && p.hasExoscaleKeys() {
+			return fmt.Errorf("config: [[network.external_pools]] %q: exoscale_* keys are only valid with source=\"exoscale\"", p.Name)
 		}
 		switch p.DHCPMAC {
 		case "", "derived", "interface":
@@ -712,8 +749,30 @@ func validateClusterConfig(cc *ClusterConfig) error {
 				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires [network] external_mode = \"nat\" (routed); OCI VNICs accept only their own MAC, so pool mode's per-VPC gateway MACs are dropped by the provider", p.Name)
 			}
 			continue
+		case "exoscale":
+			if p.ExoscaleZone == "" || p.ExoscaleInstanceID == "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"exoscale\" requires exoscale_zone and exoscale_instance_id", p.Name)
+			}
+			if p.ExoscaleBinary != "" && !filepath.IsAbs(p.ExoscaleBinary) {
+				return fmt.Errorf("config: [[network.external_pools]] %q: exoscale_binary must be an absolute path, got %q", p.Name, p.ExoscaleBinary)
+			}
+			if p.BindBridge != "" || p.DHCPMAC != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge/dhcp_mac are only valid with source=\"dhcp\"", p.Name)
+			}
+			if p.RangeStart != "" || p.RangeEnd != "" || p.Gateway != "" || p.GatewayIP != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: range_start/range_end/gateway/gateway_ip not allowed with source=\"exoscale\" (Exoscale picks the address)", p.Name)
+			}
+			if p.GwLrpRangeStart != "" || p.GwLrpRangeEnd != "" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"exoscale\" (an EIP per VPC gateway would exhaust the per-organisation quota)", p.Name)
+			}
+			// An Exoscale instance answers ARP only from its own MAC and drops
+			// unknown MACs, so pool mode's per-VPC gateway MACs never reach the wire.
+			if cc.Network.ExternalMode != "nat" {
+				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"exoscale\" requires [network] external_mode = \"nat\" (routed); Exoscale instances accept only their own MAC, so pool mode's per-VPC gateway MACs are dropped by the provider", p.Name)
+			}
+			continue
 		default:
-			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\" or \"oci\"", p.Name, p.Source)
+			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\", \"oci\" or \"exoscale\"", p.Name, p.Source)
 		}
 		if p.RangeStart == "" || p.RangeEnd == "" {
 			continue

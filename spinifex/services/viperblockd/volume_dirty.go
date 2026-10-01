@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -26,27 +28,31 @@ type volumeDirty struct {
 }
 
 // newVolumeDirty binds the dirty bucket, creating it if this is the first node
-// up. owner identifies this node in the entries it writes, and replicas is the
-// cluster size: this is read on the mount path, so a single replica would make
-// every mount depend on one node being up.
-func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string, replicas int) (*volumeDirty, error) {
+// up. owner identifies this node in the entries it writes. This is read on the
+// mount path, so a single replica would make every mount in the cluster depend
+// on one node being up.
+func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDirty, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	// Create-or-update rather than create: a bucket left behind by a build that
-	// made it single-replica is raised here, and a cluster cannot be asked to
-	// lose its markers to be repaired.
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      vbwire.DirtyBucket,
+	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+		Name:        vbwire.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,
-		Replicas:    max(replicas, 1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volume dirty bucket: %w", err)
 	}
 	return &volumeDirty{kv: kv, owner: owner}, nil
+}
+
+// newVolumeDirtyWaiting is newVolumeDirty for a daemon that is starting, for the
+// same reason as newVolumeLeasesWaiting: a cold cluster has no stream leader
+// yet, and one refused open must not decide that this node has no storage.
+func newVolumeDirtyWaiting(ctx context.Context, nc *nats.Conn, owner string) (*volumeDirty, error) {
+	return kvstore.OpenWithRetry(ctx, vbwire.DirtyBucket, kvstore.DefaultOpenWindow,
+		func(ctx context.Context) (*volumeDirty, error) { return newVolumeDirty(ctx, nc, owner) })
 }
 
 // mark records that this node holds writes for volumeName at generation.
@@ -234,7 +240,7 @@ func (cfg *Config) reportVolumeTakeover(ctx context.Context, volumeName string, 
 	slog.WarnContext(ctx, "opening a volume whose writes were last held by another node, from the backend checkpoint instead",
 		"volume", volumeName, "previous_owner", record.Owner,
 		"unsealed_since", record.Since.Format(time.RFC3339), "previous_reason", record.Reason)
-	otelsetup.RecordVolumeTakeover(ctx)
+	telemetry.RecordVolumeTakeover(ctx)
 
 	// Take the marker over. The previous owner's copy is now behind this one,
 	// so if that node returns it must not be treated as the better source.

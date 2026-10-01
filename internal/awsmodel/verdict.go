@@ -135,9 +135,7 @@ func DecodeRequestResult(service Service, status int, header http.Header, body [
 }
 
 func trimErrorCode(code string) string {
-	if separator := strings.Index(code, ":"); separator >= 0 {
-		code = code[:separator]
-	}
+	code, _, _ = strings.Cut(code, ":")
 	if separator := strings.LastIndex(code, "#"); separator >= 0 {
 		code = code[separator+1:]
 	}

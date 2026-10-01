@@ -7,8 +7,10 @@ package gateway
 import (
 	"crypto/tls"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
@@ -26,6 +28,8 @@ var gatewayDoorKeys = []string{
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeySourceIP,
 	iampolicy.KeyPrincipalType,
+	iampolicy.KeyCurrentTime,
+	iampolicy.KeyEpochTime,
 }
 
 // Every condition key the evaluator names, so the write-path gate below covers
@@ -38,6 +42,9 @@ var allConditionKeys = []string{
 	iampolicy.KeyPrincipalAccount,
 	iampolicy.KeyUserID,
 	iampolicy.KeyPrincipalType,
+	iampolicy.KeyPassedToService,
+	iampolicy.KeyCurrentTime,
+	iampolicy.KeyEpochTime,
 	// Deliberately outside the allowlist: there is no MFA in the stack, so the
 	// key could never be true. It is here to prove the validator says no.
 	"aws:MultiFactorAuthPresent",
@@ -46,16 +53,41 @@ var allConditionKeys = []string{
 // One value per operator that the leaf validator accepts, so a rejection can
 // only come from the operator/key allowlist and not from the value.
 var operatorValues = map[string]string{
-	iampolicy.OpStringEquals: "alice",
-	iampolicy.OpStringLike:   "ali*",
-	iampolicy.OpIPAddress:    "10.0.0.0/8",
-	iampolicy.OpBool:         "true",
+	iampolicy.OpStringEquals:              "alice",
+	iampolicy.OpStringNotEquals:           "alice",
+	iampolicy.OpStringEqualsIgnoreCase:    "alice",
+	iampolicy.OpStringNotEqualsIgnoreCase: "alice",
+	iampolicy.OpStringLike:                "ali*",
+	iampolicy.OpStringNotLike:             "ali*",
+	iampolicy.OpIPAddress:                 "10.0.0.0/8",
+	iampolicy.OpNotIPAddress:              "10.0.0.0/8",
+	iampolicy.OpBool:                      "true",
+	iampolicy.OpNull:                      "true",
+	iampolicy.OpDateEquals:                "2026-01-01T00:00:00Z",
+	iampolicy.OpDateNotEquals:             "2026-01-01T00:00:00Z",
+	iampolicy.OpDateLessThan:              "2026-01-01T00:00:00Z",
+	iampolicy.OpDateLessThanEquals:        "2026-01-01T00:00:00Z",
+	iampolicy.OpDateGreaterThan:           "1767225600",
+	iampolicy.OpDateGreaterThanEquals:     "1767225600",
+	// Implemented, but no supported key is ARN-valued, so every pair below is
+	// rejected until one is.
+	iampolicy.OpArnEquals:    "arn:aws:iam::000000000001:user/alice",
+	iampolicy.OpArnLike:      "arn:aws:iam::000000000001:user/*",
+	iampolicy.OpArnNotEquals: "arn:aws:iam::000000000001:user/alice",
+	iampolicy.OpArnNotLike:   "arn:aws:iam::000000000001:user/*",
 	// Operators the evaluator does not implement. Accepting one would store a
 	// restriction that compares false forever.
-	"StringNotEquals": "alice",
-	"ArnLike":         "arn:aws:iam::000000000001:user/alice",
 	"NumericLessThan": "3",
-	"DateGreaterThan": "2026-01-01T00:00:00Z",
+}
+
+// withIfExists adds the IfExists form of every operator, so the gate below covers
+// the suffixed operators too, NullIfExists among the ones it must reject.
+func withIfExists(values map[string]string) map[string]string {
+	all := maps.Clone(values)
+	for op, value := range values {
+		all[op+iampolicy.IfExistsSuffix] = value
+	}
+	return all
 }
 
 // emittedKeys drives requestConditionKeys with everything a request can carry,
@@ -117,10 +149,7 @@ func TestRequestConditionKeys_EveryEmittedKeyIsUsableInAPolicy(t *testing.T) {
 // The door's key set as a whole, so a key gained or lost here is a deliberate
 // change made at both doors rather than a drift between them.
 func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
-	emitted := make([]string, 0, len(gatewayDoorKeys))
-	for key := range emittedKeys(t) {
-		emitted = append(emitted, key)
-	}
+	emitted := slices.Collect(maps.Keys(emittedKeys(t)))
 	assert.ElementsMatch(t, gatewayDoorKeys, emitted,
 		"the AWS gateway door key set changed: update predastore's mirror in "+
 			"internal/gate/conditionkeys_completeness_test.go and the door table in bluebottle's door_test.go")
@@ -136,7 +165,7 @@ func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
 // policy an operator cannot write.
 func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.T) {
 	for _, key := range allConditionKeys {
-		for op, value := range operatorValues {
+		for op, value := range withIfExists(operatorValues) {
 			doc := conditionDocument(t, op, key, value)
 			_, err := handlers_iam.ValidatePolicyDocument(doc)
 

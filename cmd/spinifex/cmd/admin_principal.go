@@ -188,13 +188,14 @@ func describePrincipal(svc handlers_iam.IAMService, accountID, userName string) 
 }
 
 // principalPolicyActions returns the actions an inline policy allows, shortened
-// to the method name. An undecodable document reports nothing rather than
-// guessing, and the listing shows the user with no grants.
+// to the method name. A NotAction grant is one entry naming what it excludes.
+// An undecodable document reports nothing rather than guessing.
 func principalPolicyActions(document string) []string {
 	var doc struct {
 		Statement []struct {
-			Effect string                   `json:"Effect"`
-			Action handlers_iam.StringOrArr `json:"Action"`
+			Effect    string                   `json:"Effect"`
+			Action    handlers_iam.StringOrArr `json:"Action"`
+			NotAction handlers_iam.StringOrArr `json:"NotAction"`
 		} `json:"Statement"`
 	}
 	if err := json.Unmarshal([]byte(document), &doc); err != nil {
@@ -208,6 +209,13 @@ func principalPolicyActions(document string) []string {
 		}
 		for _, action := range stmt.Action {
 			actions = append(actions, strings.TrimPrefix(action, adminPrincipalService+":"))
+		}
+		if len(stmt.NotAction) > 0 {
+			excluded := make([]string, 0, len(stmt.NotAction))
+			for _, action := range stmt.NotAction {
+				excluded = append(excluded, strings.TrimPrefix(action, adminPrincipalService+":"))
+			}
+			actions = append(actions, "NotAction("+strings.Join(excluded, ", ")+")")
 		}
 	}
 	sort.Strings(actions)

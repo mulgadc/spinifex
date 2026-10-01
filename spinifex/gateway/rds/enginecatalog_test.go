@@ -219,13 +219,25 @@ func TestDescribeOrderableDBInstanceOptions_RejectANonBooleanVpcFilter(t *testin
 	}
 }
 
+// AWS's answers: names are compared case-sensitively and checked before the
+// values, and a missing name is reported as "null".
 func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 	cases := []struct {
 		name  string
 		query map[string]string
+		code  string
+		msg   string
 	}{
-		{"no values", map[string]string{"Filters.Filter.1.Name": "engine"}},
-		{"no name", map[string]string{"Filters.Filter.1.Values.Value.1": "postgres"}},
+		{"no values", map[string]string{"Filters.Filter.1.Name": "engine"},
+			awserrors.ErrorInvalidParameterCombination, "The values list cannot be null for the filter engine."},
+		{"empty values", map[string]string{"Filters.Filter.1.Name": "engine", "Filters.Filter.1.Values": ""},
+			awserrors.ErrorInvalidParameterCombination, "The values list cannot be null for the filter engine."},
+		{"no name", map[string]string{"Filters.Filter.1.Values.Value.1": "postgres"},
+			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: null"},
+		{"name case", map[string]string{"Filters.Filter.1.Name": "Engine", "Filters.Filter.1.Values.Value.1": "postgres"},
+			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: Engine"},
+		{"unknown name without values", map[string]string{"Filters.Filter.1.Name": "bogus"},
+			awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: bogus"},
 	}
 
 	for _, tc := range cases {
@@ -233,15 +245,38 @@ func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 			tc.query["Action"] = "DescribeDBEngineVersions"
 			_, err := Dispatch(t.Context(), "DescribeDBEngineVersions", tc.query, nil, testCaller, testEnv)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+			assert.Contains(t, err.Error(), tc.code)
+			assert.Contains(t, err.Error(), tc.msg)
 		})
 	}
 }
 
-// Neither action ever issues a Marker, so one in a request was fabricated by the
-// caller. This diverges from the other RDS describes, which parse and ignore it,
-// because those may one day paginate and these two never will.
-func TestDescribeCatalogs_RejectAMarker(t *testing.T) {
+// Following each Marker returns the whole catalog once, in the unpaged order,
+// with the Marker surviving the XML round trip.
+func TestDescribeOrderableDBInstanceOptions_PagesTheCatalog(t *testing.T) {
+	nc := newStubbedNATS(t)
+	var classes []string
+	marker := ""
+	for {
+		query := map[string]string{"Action": "DescribeOrderableDBInstanceOptions", "Engine": "postgres", "MaxRecords": "2"}
+		if marker != "" {
+			query["Marker"] = marker
+		}
+		body, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", query, nc, testCaller, testEnv)
+		require.NoError(t, err)
+		var out rds.DescribeOrderableDBInstanceOptionsOutput
+		require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)),
+			"DescribeOrderableDBInstanceOptionsResult"))
+		require.LessOrEqual(t, len(out.OrderableDBInstanceOptions), 2)
+		classes = append(classes, classNames(out.OrderableDBInstanceOptions)...)
+		if marker = aws.StringValue(out.Marker); marker == "" {
+			break
+		}
+	}
+	assert.Equal(t, handlers_rds.SupportedInstanceClasses(), classes)
+}
+
+func TestDescribeCatalogs_RejectAMarkerTheyDidNotIssue(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, action := range []string{"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions"} {
 		t.Run(action, func(t *testing.T) {
@@ -250,7 +285,6 @@ func TestDescribeCatalogs_RejectAMarker(t *testing.T) {
 			}, nc, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
-			assert.Contains(t, err.Error(), "Marker")
 		})
 	}
 }

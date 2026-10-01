@@ -51,8 +51,24 @@ func newPatternSampler(pattern string) (*patternSampler, error) {
 	return sampler, err
 }
 
+// re2Equivalents rewrite model patterns that use lookahead, which Go regexp
+// lacks, as patterns matching the same strings.
+var re2Equivalents = map[string]string{
+	// ACM DomainNameString: labels start and end alphanumeric, the last has two
+	// or more characters, with an optional leading wildcard label.
+	`^(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])$`: `^(\*\.)?([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]$`,
+}
+
+// re2Pattern spells a model pattern in Go regexp syntax.
+func re2Pattern(pattern string) string {
+	if equivalent, ok := re2Equivalents[pattern]; ok {
+		return equivalent
+	}
+	return javaEscape.ReplaceAllString(pattern, `\x{$1}`)
+}
+
 func compilePatternSampler(pattern string) (*patternSampler, error) {
-	pattern = javaEscape.ReplaceAllString(pattern, `\x{$1}`)
+	pattern = re2Pattern(pattern)
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, err

@@ -522,7 +522,7 @@ func (d *Daemon) newLiveness() *instancecache.Liveness {
 	if d.jsManager == nil || d.jsManager.js == nil {
 		return nil
 	}
-	return instancecache.NewLiveness(d.jsManager.js, clusterStateConfig(d.jsManager.replicas))
+	return instancecache.NewLiveness(d.jsManager.js, clusterStateConfig())
 }
 
 // forgetSupersededInstances drops any local copy of an instance the records say

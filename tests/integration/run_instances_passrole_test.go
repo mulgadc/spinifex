@@ -114,7 +114,7 @@ func testInstanceProfilePassRole(t *testing.T, path string) {
 	// No PassRole grant: denied before any NATS dispatch, so no daemon stub
 	// is needed for this call to resolve promptly.
 	_, err = sessionCli.EC2.RunInstances(runInput)
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	// An explicit path-scoped deny must override an otherwise unrestricted grant.
 	denyPolicy, err := iamCli.CreatePolicy(&iam.CreatePolicyInput{
@@ -131,12 +131,12 @@ func testInstanceProfilePassRole(t *testing.T, path string) {
 	})
 	require.NoError(t, err)
 	_, err = sessionCli.EC2.RunInstances(runInput)
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 	_, err = sessionCli.EC2.AssociateIamInstanceProfile(&ec2.AssociateIamInstanceProfileInput{
 		InstanceId:         aws.String("i-0123456789abcdef0"),
 		IamInstanceProfile: runInput.IamInstanceProfile,
 	})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 	_, err = iamCli.DetachRolePolicy(&iam.DetachRolePolicyInput{
 		RoleName:  callerRoleOut.Role.RoleName,
 		PolicyArn: denyPolicy.Policy.Arn,

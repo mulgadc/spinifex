@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -96,12 +97,9 @@ func hasPinnedPrivateIP(input *ec2.RunInstancesInput) bool {
 	if aws.StringValue(nic.PrivateIpAddress) != "" {
 		return true
 	}
-	for _, spec := range nic.PrivateIpAddresses {
-		if spec != nil && aws.StringValue(spec.PrivateIpAddress) != "" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(nic.PrivateIpAddresses, func(spec *ec2.PrivateIpAddressSpecification) bool {
+		return spec != nil && aws.StringValue(spec.PrivateIpAddress) != ""
+	})
 }
 
 // RunInstances validates input, resolves any IAM instance profile (normalising
@@ -313,10 +311,7 @@ func isKnownInstanceType(ctx context.Context, natsConn *nats.Conn, instanceType 
 	if err != nil || result == nil {
 		return false
 	}
-	for _, t := range result.InstanceTypes {
-		if t.InstanceType != nil && *t.InstanceType == instanceType {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(result.InstanceTypes, func(t *ec2.InstanceTypeInfo) bool {
+		return t.InstanceType != nil && *t.InstanceType == instanceType
+	})
 }

@@ -3,7 +3,8 @@ package loadgen
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -102,12 +103,7 @@ var DefaultOps = []string{"DescribeInstances", "DescribeVpcs", "DescribeVolumes"
 
 // OpNames lists every operation the registry knows, for the usage text.
 func OpNames() []string {
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(registry))
 }
 
 // ResolveOps turns names into operations, rejecting an unknown one rather than
@@ -135,22 +131,16 @@ func ResolveOps(names []string) ([]Op, error) {
 // NeedsVPC reports whether any selected operation acts on a tenant resource,
 // so the caller knows whether to pay for discovery before the run starts.
 func NeedsVPC(ops []Op) bool {
-	for _, op := range ops {
-		if op.Name == "CreateTags" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ops, func(op Op) bool {
+		return op.Name == "CreateTags"
+	})
 }
 
 // NeedsVolume reports whether any selected operation needs a volume id.
 func NeedsVolume(ops []Op) bool {
-	for _, op := range ops {
-		if op.Name == "DescribeVolumesByID" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ops, func(op Op) bool {
+		return op.Name == "DescribeVolumesByID"
+	})
 }
 
 // ResolveVolume finds one volume for the target to ask about by id. A tenant

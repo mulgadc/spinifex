@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 )
 
@@ -233,13 +234,9 @@ func waitForPCIDevice(dc DeviceController, deviceID string, wantPresent bool) er
 		if err != nil {
 			return fmt.Errorf("query-pci attempt %d: %w", attempt, err)
 		}
-		found := false
-		for _, d := range devs {
-			if d.QDevID == deviceID {
-				found = true
-				break
-			}
-		}
+		found := slices.ContainsFunc(devs, func(d PCIDevice) bool {
+			return d.QDevID == deviceID
+		})
 		if found == wantPresent {
 			return nil
 		}

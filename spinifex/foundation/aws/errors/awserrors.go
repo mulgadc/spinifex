@@ -314,7 +314,7 @@ var (
 	ErrorInvalidVpcPeeringConnectionIDNotFound                = "InvalidVpcPeeringConnectionID.NotFound"
 	ErrorInvalidVpcPeeringConnectionIdMalformed               = "InvalidVpcPeeringConnectionId.Malformed"
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled = "InvalidVpcPeeringConnectionState.DnsHostnamesDisabled"
-	ErrorInvalidVpcRange                                      = "InvalidVpcRange"
+	ErrorInvalidVpcRange                                      = "InvalidVpc.Range"
 	ErrorInvalidVpcState                                      = "InvalidVpcState"
 	ErrorInvalidVpnConnectionInvalidState                     = "InvalidVpnConnection.InvalidState"
 	ErrorInvalidVpnConnectionInvalidType                      = "InvalidVpnConnection.InvalidType"
@@ -577,7 +577,7 @@ func ValidErrorCode(code string) string {
 
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
 func ResolveErrorCode(err error) (string, bool) {
-	code, _, ok := resolveErrorDetail(err)
+	code, _, ok := ResolveErrorDetail(err)
 	return code, ok
 }
 
@@ -585,12 +585,6 @@ func ResolveErrorCode(err error) (string, bool) {
 // plus the message the producing call site attached via Errorf, if any. A
 // generic %w wrapper added purely for internal context carries no message.
 func ResolveErrorDetail(err error) (code, message string, ok bool) {
-	return resolveErrorDetail(err)
-}
-
-// resolveErrorDetail is the shared unwrap-tree walk behind ResolveErrorCode
-// and ResolveErrorDetail.
-func resolveErrorDetail(err error) (code, message string, ok bool) {
 	if err == nil {
 		return "", "", false
 	}
@@ -604,14 +598,14 @@ func resolveErrorDetail(err error) (code, message string, ok bool) {
 
 	if joined, isJoined := err.(interface{ Unwrap() []error }); isJoined {
 		for _, inner := range joined.Unwrap() {
-			if c, m, found := resolveErrorDetail(inner); found {
+			if c, m, found := ResolveErrorDetail(inner); found {
 				return c, m, true
 			}
 		}
 		return "", "", false
 	}
 	if wrapped, isWrapped := err.(interface{ Unwrap() error }); isWrapped {
-		return resolveErrorDetail(wrapped.Unwrap())
+		return ResolveErrorDetail(wrapped.Unwrap())
 	}
 	return "", "", false
 }
@@ -640,6 +634,18 @@ func Errorf(code, format string, args ...any) error {
 	return outer
 }
 
+// IDNotFound returns code with EC2's not-found message for one resource ID,
+// "The <kind> ID '<id>' does not exist".
+func IDNotFound(code, kind, id string) error {
+	return Errorf(code, "The %s ID '%s' does not exist", kind, id)
+}
+
+// HasDependencies returns DependencyViolation with EC2's message for a
+// resource that cannot be deleted while others depend on it.
+func HasDependencies(kind, id string) error {
+	return Errorf(ErrorDependencyViolation, "The %s '%s' has dependencies and cannot be deleted.", kind, id)
+}
+
 // retryableError wraps a registered code with a suggested Retry-After
 // duration, for a 503 that a client can expect to clear on its own within a
 // bounded window (e.g. a warm-up race) rather than an open-ended outage.
@@ -658,7 +664,7 @@ func RetryAfter(code string, d time.Duration) error {
 }
 
 // ResolveRetryAfter returns the Retry-After duration attached to err via
-// RetryAfter, if any, walking the same unwrap tree resolveErrorDetail does.
+// RetryAfter, if any, walking the same unwrap tree ResolveErrorDetail does.
 func ResolveRetryAfter(err error) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
@@ -1012,7 +1018,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidNetworkLoadBalancerArnNotFound:                 {HTTPCode: 404, Message: "The specified Network Load Balancer ARN does not exist."},
 	ErrorInvalidNextToken:                                      {HTTPCode: 400, Message: "The specified NextToken is not valid."},
 	ErrorInvalidOptionConflict:                                 {HTTPCode: 409, Message: "A VPN connection between the virtual private gateway and the customer gateway already exists."},
-	ErrorInvalidPaginationToken:                                {HTTPCode: 403, Message: "The specified pagination token is not valid or is expired."},
+	ErrorInvalidPaginationToken:                                {HTTPCode: 400, Message: "The specified pagination token is not valid or is expired."},
 	ErrorInvalidParameter:                                      {HTTPCode: 400, Message: "A parameter specified in a request is not valid, is unsupported, or cannot be used. The returned message provides an explanation of the error value. For example, if you are launching an instance, you can't specify a security group and subnet that are in different VPCs."},
 	ErrorInvalidParameterCombination:                           {HTTPCode: 400, Message: "Indicates an incorrect combination of parameters, or a missing parameter. For example, trying to terminate an instance without specifying the instance ID."},
 	ErrorInvalidParameterDependency:                            {HTTPCode: 400, Message: "Indicates an incorrect combination of parameters, or a missing parameter. For example, trying to terminate an instance without specifying the instance ID."},
@@ -1069,7 +1075,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidSubnetConflict:                                 {HTTPCode: 409, Message: "The specified CIDR block conflicts with that of another subnet in your VPC."},
 	ErrorInvalidSubnetRange:                                    {HTTPCode: 400, Message: "The CIDR block you've specified for the subnet is not valid. The allowed block size is between a /28 netmask and /16 netmask."},
 	ErrorInvalidSubnetIDMalformed:                              {HTTPCode: 400, Message: "The specified subnet ID is malformed. Ensure that you specify the ID in the form subnet-xxxxxxxxxxxxxxxxx"},
-	ErrorInvalidSubnetIDNotFound:                               {HTTPCode: 404, Message: "or InvalidSubnetId.NotFound \tThe specified subnet does not exist."},
+	ErrorInvalidSubnetIDNotFound:                               {HTTPCode: 404, Message: "The specified subnet does not exist."},
 	ErrorInvalidTagKeyMalformed:                                {HTTPCode: 400, Message: "The specified tag key is not valid. Tag keys cannot be empty or null, and cannot start with aws:."},
 	ErrorInvalidTargetArnUnknown:                               {HTTPCode: 404, Message: "The specified ARN for the specified user or role is not valid or does not exist."},
 	ErrorInvalidTargetException:                                {HTTPCode: 404, Message: "The specified TargetId is not valid, does not exist, or is in another organization. You can only generate an account status report for declarative policies in your own organization. Ensure that you specify the TargetId in one of the following forms: r-xxxx, ou-xxxx-xxxxxxxx, or a 12-digit account ID in the form xxxxxxxxxxxx."},
@@ -1097,7 +1103,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidVpcPeeringConnectionIDNotFound:                 {HTTPCode: 404, Message: "The specified VPC peering connection ID does not exist."},
 	ErrorInvalidVpcPeeringConnectionIdMalformed:                {HTTPCode: 400, Message: "The specified VPC peering connection ID is malformed. Ensure that you provide the ID in the form pcx-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled:  {HTTPCode: 400, Message: "To enable DNS hostname resolution for the VPC peering connection, DNS hostname support must be enabled for the VPCs."},
-	ErrorInvalidVpcRange:                                       {HTTPCode: 400, Message: "The specified CIDR block range is not valid. The block range must be between a /28 netmask and /16 netmask. For more information, see VPC CIDR blocks."},
+	ErrorInvalidVpcRange:                                       {HTTPCode: 400, Message: "The CIDR block is invalid."},
 	ErrorInvalidVpcState:                                       {HTTPCode: 400, Message: "The specified VPC already has a virtual private gateway attached to it."},
 	ErrorInvalidVpnConnectionInvalidState:                      {HTTPCode: 400, Message: "The VPN connection must be in the available state to complete the request."},
 	ErrorInvalidVpnConnectionInvalidType:                       {HTTPCode: 400, Message: "The specified VPN connection does not support static routes."},

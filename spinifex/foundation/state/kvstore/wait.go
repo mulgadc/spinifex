@@ -6,7 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // DefaultOpenWindow is how long OpenWithRetry keeps trying. Long enough to
@@ -38,11 +39,16 @@ func OpenWithRetry[T any](ctx context.Context, what string, window time.Duration
 		if err == nil {
 			if attempt > 1 {
 				slog.InfoContext(ctx, "kvstore: opened after retrying", "what", what,
-					"attempts", attempt, "waited_ms", otelsetup.Millis(time.Since(started)))
+					"attempts", attempt, "waited_ms", telemetry.Millis(time.Since(started)))
 			}
 			return v, nil
 		}
 
+		// An undeclared cluster size does not become declared by waiting, so it
+		// surfaces now rather than as the last error of an exhausted window.
+		if clustersize.Permanent(err) {
+			return zero, fmt.Errorf("open %s: %w", what, err)
+		}
 		if ctx.Err() != nil {
 			return zero, fmt.Errorf("open %s: %w", what, ctx.Err())
 		}
@@ -52,7 +58,7 @@ func OpenWithRetry[T any](ctx context.Context, what string, window time.Duration
 		}
 
 		slog.WarnContext(ctx, "kvstore: not ready, retrying", "what", what,
-			"attempt", attempt, "window_ms", otelsetup.Millis(window), "err", err)
+			"attempt", attempt, "window_ms", telemetry.Millis(window), "err", err)
 
 		select {
 		case <-ctx.Done():

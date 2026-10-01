@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -51,11 +52,15 @@ const (
 )
 
 // EnsureInvocationStream idempotently creates (or updates) the invocation
-// stream. Safe to call from every gateway node at boot. replicas must match
-// the cluster's node count: at replicas=1, losing the one node holding this
-// stream loses billing/audit records even though the control plane survives
-// on the others, defeating the point of using JetStream over a lossy buffer.
-func EnsureInvocationStream(ctx context.Context, js jetstream.JetStream, replicas int) (jetstream.Stream, error) {
+// stream, replicated across the cluster. Safe to call from every gateway node
+// at boot. On one replica, losing the one node holding this stream loses
+// billing and audit records even though the control plane survives on the
+// others, defeating the point of using JetStream over a lossy buffer.
+func EnsureInvocationStream(ctx context.Context, js jetstream.JetStream) (jetstream.Stream, error) {
+	replicas, err := clustersize.Replicas()
+	if err != nil {
+		return nil, fmt.Errorf("ensure invocation stream: %w", err)
+	}
 	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:      InvocationStreamName,
 		Subjects:  []string{InvocationStreamSubject},
@@ -310,12 +315,11 @@ type LoggingConfigStore struct {
 var _ LoggingConfigReader = (*LoggingConfigStore)(nil)
 
 // NewLoggingConfigStore constructs a LoggingConfigStore.
-func NewLoggingConfigStore(js jetstream.JetStream, replicas int) *LoggingConfigStore {
+func NewLoggingConfigStore(js jetstream.JetStream) *LoggingConfigStore {
 	return &LoggingConfigStore{store: kvstore.New[LoggingConfig](js, kvstore.Config{
-		Name:     bedrockLoggingConfigBucket,
-		History:  bedrockLoggingConfigHistory,
-		Replicas: replicas,
-		Missing:  "bedrock: logging config store has no JetStream client configured",
+		Name:    bedrockLoggingConfigBucket,
+		History: bedrockLoggingConfigHistory,
+		Missing: "bedrock: logging config store has no JetStream client configured",
 	})}
 }
 

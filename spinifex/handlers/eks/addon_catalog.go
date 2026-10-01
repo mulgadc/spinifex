@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 )
 
@@ -111,11 +112,7 @@ func (s AddonSpec) supportsVersion(version string) bool {
 
 // catalogSpecs returns the catalog entries sorted by name for stable output.
 func catalogSpecs() []AddonSpec {
-	names := make([]string, 0, len(addonCatalog))
-	for n := range addonCatalog {
-		names = append(names, n)
-	}
-	slices.Sort(names)
+	names := slices.Sorted(maps.Keys(addonCatalog))
 	out := make([]AddonSpec, 0, len(names))
 	for _, n := range names {
 		out = append(out, addonCatalog[n])

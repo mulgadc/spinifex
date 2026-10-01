@@ -20,7 +20,7 @@ const (
 func newGuardrailTestStore(t *testing.T) *GuardrailStore {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return NewGuardrailStore(js, 1, ptTestRegion)
+	return NewGuardrailStore(js, ptTestRegion)
 }
 
 // createGuardrailInput builds a minimal valid CreateGuardrailInput carrying

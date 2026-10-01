@@ -35,3 +35,28 @@ func TestPlatformFromDetails(t *testing.T) {
 		})
 	}
 }
+
+func TestUsageOperationFromDetails(t *testing.T) {
+	tests := []struct {
+		platformDetails string
+		want            string
+	}{
+		{platformDetails: "Linux/UNIX", want: "RunInstances"},
+		{platformDetails: "Windows", want: "RunInstances:0002"},
+		{platformDetails: "Ubuntu Pro Linux", want: "RunInstances:0g00"},
+		{platformDetails: "Windows BYOL", want: ""},
+		{platformDetails: "", want: ""},
+	}
+	for _, tt := range tests {
+		got := UsageOperationFromDetails(tt.platformDetails)
+		if tt.want == "" {
+			if got != nil {
+				t.Errorf("UsageOperationFromDetails(%q) = %q, want nil", tt.platformDetails, *got)
+			}
+			continue
+		}
+		if got == nil || *got != tt.want {
+			t.Errorf("UsageOperationFromDetails(%q) = %v, want %q", tt.platformDetails, got, tt.want)
+		}
+	}
+}

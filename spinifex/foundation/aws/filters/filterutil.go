@@ -4,6 +4,7 @@ package filters
 
 import (
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -48,18 +49,34 @@ func MatchesAny(filterValues []string, value string) bool {
 	if len(filterValues) == 0 {
 		return true
 	}
-	for _, pattern := range filterValues {
-		if MatchWildcard(pattern, value) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(filterValues, func(pattern string) bool {
+		return MatchWildcard(pattern, value)
+	})
 }
 
-// MatchesTags checks whether a resource's tags satisfy all tag:Key filters in the map.
-// Each tag:Key filter uses OR logic across its values, with wildcard support.
+// IsTagFilter reports whether MatchesTags evaluates the named filter, so a
+// resource matcher's switch can skip it.
+func IsTagFilter(name string) bool {
+	return strings.HasPrefix(name, "tag:") || name == "tag-key" || name == "tag-value"
+}
+
+// MatchesTags checks whether a resource's tags satisfy every tag:Key, tag-key
+// and tag-value filter in the map. Each filter uses OR logic across its values,
+// with wildcard support; tag-key and tag-value match any one of the tags.
 func MatchesTags(filters map[string][]string, tags map[string]string) bool {
 	for name, values := range filters {
+		switch name {
+		case "tag-key":
+			if !matchesAnyTag(tags, values, func(k, _ string) string { return k }) {
+				return false
+			}
+			continue
+		case "tag-value":
+			if !matchesAnyTag(tags, values, func(_, v string) string { return v }) {
+				return false
+			}
+			continue
+		}
 		tagKey, ok := strings.CutPrefix(name, "tag:")
 		if !ok {
 			continue
@@ -73,6 +90,17 @@ func MatchesTags(filters map[string][]string, tags map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// matchesAnyTag reports whether any tag's selected field (key or value)
+// matches any of the filter values.
+func matchesAnyTag(tags map[string]string, values []string, field func(k, v string) string) bool {
+	for k, v := range tags {
+		if MatchesAny(values, field(k, v)) {
+			return true
+		}
+	}
+	return false
 }
 
 // EC2TagsToMap converts []*ec2.Tag to map[string]string for MatchesTags.

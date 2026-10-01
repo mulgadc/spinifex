@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -28,10 +30,6 @@ type BucketConfig struct {
 	// does not park the key forever. It must match the lease's own Config.TTL.
 	TTL time.Duration
 
-	// Replicas is the replica count applied on a genuine first creation only.
-	// Zero leaves it to the server, which means one.
-	Replicas int
-
 	// Version runs the registered schema migrations for the bucket after it is
 	// opened. Zero skips them, for a bucket holding nothing but lease keys.
 	Version int
@@ -42,18 +40,32 @@ type BucketConfig struct {
 //
 // Attach before create, because callers re-open this on every reconcile tick:
 // CreateKeyValue against a bucket that already exists is a STREAM.CREATE the
-// meta leader answers with an error, so creating first bills one per tick. It is
-// also what makes Replicas mean "on first creation" rather than a config change
-// against a live bucket.
+// meta leader answers with an error, so creating first bills one per tick.
+//
+// A leader lease is the worst thing here to lose to a single node. Nobody can
+// acquire a lease whose bucket has no quorum, so every reconciler that shares
+// it stops at once, cluster-wide, at exactly the moment a node has failed.
 func OpenBucket(ctx context.Context, js jetstream.JetStream, cfg BucketConfig) (jetstream.KeyValue, error) {
+	replicas, err := clustersize.Replicas()
+	if err != nil {
+		return nil, fmt.Errorf("kvlease: open or create lease bucket %s: %w", cfg.Name, err)
+	}
+
 	kv, err := js.KeyValue(ctx, cfg.Name)
-	if errors.Is(err, jetstream.ErrBucketNotFound) {
+	switch {
+	case errors.Is(err, jetstream.ErrBucketNotFound):
 		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
 			Bucket:   cfg.Name,
 			History:  1,
 			TTL:      cfg.TTL,
-			Replicas: cfg.Replicas,
+			Replicas: replicas,
 		})
+	case err == nil:
+		// A failed raise must not fail the open. This runs on every reconcile
+		// tick, so refusing here would stop every reconciler sharing the bucket
+		// — the outage this replica count exists to prevent — over a bucket that
+		// is present and quorate at the count it already has.
+		kvutil.TryRaiseBucketReplicas(ctx, js, cfg.Name, replicas)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kvlease: open or create lease bucket %s: %w", cfg.Name, err)
@@ -63,7 +75,7 @@ func OpenBucket(ctx context.Context, js jetstream.JetStream, cfg BucketConfig) (
 			return nil, fmt.Errorf("migrate %s: %w", cfg.Name, err)
 		}
 	}
-	slog.DebugContext(ctx, "kvlease: lease bucket ready", "bucket", cfg.Name, "ttl_ms", otelsetup.Millis(cfg.TTL))
+	slog.DebugContext(ctx, "kvlease: lease bucket ready", "bucket", cfg.Name, "ttl_ms", telemetry.Millis(cfg.TTL))
 	return kv, nil
 }
 
@@ -81,6 +93,11 @@ func NATSBucket(nc *nats.Conn, bucket string, ttl time.Duration) BucketFunc {
 			kv, err := OpenBucket(ctx, js, BucketConfig{Name: bucket, TTL: ttl})
 			if err == nil {
 				return kv, nil
+			}
+			// An undeclared cluster size does not become declared by waiting, so
+			// it surfaces now rather than after the whole retry window.
+			if clustersize.Permanent(err) {
+				return nil, err
 			}
 			if time.Now().After(deadline) {
 				return nil, fmt.Errorf("kvlease: KV bucket %q unreachable after %s: %w", bucket, bucketRetryFor, err)

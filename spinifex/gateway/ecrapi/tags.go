@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sort"
+	"maps"
+	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -123,11 +124,7 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 	if err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0, len(meta.Tags))
-	for k := range meta.Tags {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(meta.Tags))
 	tags := make([]*ecr.Tag, 0, len(keys))
 	for _, k := range keys {
 		tags = append(tags, &ecr.Tag{Key: aws.String(k), Value: aws.String(meta.Tags[k])})

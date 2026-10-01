@@ -27,11 +27,11 @@ type VectorRow struct {
 // stored metadata, source provenance, and cosine similarity Score in [0,1]
 // (D8; 1 - cosine_distance).
 type QueryResult struct {
-	Chunk        string
-	Metadata     map[string]any
-	SourceKey    string
-	SourceOffset int
-	Score        float32
+	Chunk        string         `json:"Chunk"`
+	Metadata     map[string]any `json:"Metadata"`
+	SourceKey    string         `json:"SourceKey"`
+	SourceOffset int            `json:"SourceOffset"`
+	Score        float32        `json:"Score"`
 }
 
 // defaultQueryK and maxQueryK bound Query's k (D8/D10): k<=0 defaults to

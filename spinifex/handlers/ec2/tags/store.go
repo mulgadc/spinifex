@@ -96,10 +96,10 @@ func (s *TagsServiceImpl) mutateTags(ctx context.Context, accountID, resourceID 
 	return err
 }
 
-// putTags replaces a resource's whole tag set. It still goes through the CAS
-// loop so a concurrent merge is overwritten as a whole rather than interleaved
-// with it, which is what a caller projecting an authoritative record wants.
-func (s *TagsServiceImpl) putTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
+// PutResourceTags overwrites the stored tag set for a resource, projecting an
+// authoritative record (an instance's tags) into the central store. It goes
+// through the CAS loop so a concurrent merge is overwritten whole, not interleaved.
+func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error {
 	data, err := encodeTags(tags)
 	if err != nil {
 		return err

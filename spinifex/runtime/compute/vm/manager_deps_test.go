@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"slices"
 	"sync"
 
 	"github.com/mulgadc/spinifex/spinifex/types"
@@ -76,11 +77,7 @@ func (f *fakeStateStore) DeleteStoppedInstance(id string) error {
 func (f *fakeStateStore) ListStoppedInstances() ([]*VM, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]*VM, 0, len(f.stopped))
-	for _, v := range f.stopped {
-		out = append(out, v)
-	}
-	return out, nil
+	return slices.Collect(maps.Values(f.stopped)), nil
 }
 
 // ClaimStoppedInstance mimics the real atomic-delete claim for tests: under
@@ -107,11 +104,7 @@ func (f *fakeStateStore) WriteTerminatedInstance(id string, v *VM) error {
 func (f *fakeStateStore) ListTerminatedInstances() ([]*VM, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]*VM, 0, len(f.terminated))
-	for _, v := range f.terminated {
-		out = append(out, v)
-	}
-	return out, nil
+	return slices.Collect(maps.Values(f.terminated)), nil
 }
 
 func (f *fakeStateStore) DeleteTerminatedInstance(id string) error {

@@ -234,7 +234,7 @@ func TestIAMAccessKeyLifecycle(t *testing.T) {
 // TestIAMUserAuthentication builds a scoped AWS client with alice's key and
 // confirms signing is honoured (active key) / rejected (deactivated key, bad
 // secret, bogus ID). Alice has no policy, so the authenticated call is
-// authz-denied — AccessDenied (not an authn error) proves the active key
+// authz-denied — UnauthorizedOperation (not an authn error) proves the active key
 // signed and was accepted. The final root DescribeInstances call needs the
 // EC2 daemon subjects stubbed since it actually dispatches over NATS; every
 // other assertion here is rejected before dispatch.
@@ -252,11 +252,11 @@ func TestIAMUserAuthentication(t *testing.T) {
 	aliceSecret := aws.StringValue(k.AccessKey.SecretAccessKey)
 
 	// Active, correctly-signed key with no policy: the request authenticates
-	// then default-denies. AccessDenied (vs the InvalidClientTokenId /
+	// then default-denies. UnauthorizedOperation (vs the InvalidClientTokenId /
 	// SignatureDoesNotMatch below) is the signal that authn succeeded.
 	aliceCli := gw.ClientsWithCreds(t, aliceKeyID, aliceSecret)
 	_, err = aliceCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	_, err = iamCli.UpdateAccessKey(&iam.UpdateAccessKeyInput{
 		UserName:    aws.String(iamUserAlice),
@@ -487,7 +487,7 @@ func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
 	// --- Enforcement ---
 
 	_, err = charlieCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 	_, err = charlieCli.IAM.ListUsers(&iam.ListUsersInput{})
 	requireAWSErrorCode(t, err, "AccessDenied")
 
@@ -499,7 +499,7 @@ func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
 	require.NoError(t, err, "alice iam:ListUsers")
 
 	_, err = aliceCli.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 	_, err = aliceCli.IAM.CreateUser(&iam.CreateUserInput{UserName: aws.String("hack")})
 	requireAWSErrorCode(t, err, "AccessDenied")
 
@@ -508,7 +508,7 @@ func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
 	_, err = bobCli.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{})
 	require.NoError(t, err, "bob ec2:DescribeKeyPairs")
 	_, err = bobCli.EC2.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: []*string{aws.String("i-fake")}})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 	_, err = bobCli.IAM.ListUsers(&iam.ListUsersInput{})
 	requireAWSErrorCode(t, err, "AccessDenied")
 
@@ -533,7 +533,7 @@ func TestIAMPolicyAttachmentEnforcement(t *testing.T) {
 	_, err = aliceCli.EC2.DescribeKeyPairs(&ec2.DescribeKeyPairsInput{})
 	require.NoError(t, err, "alice ec2:DescribeKeyPairs (Describe*)")
 	_, err = aliceCli.EC2.CreateKeyPair(&ec2.CreateKeyPairInput{KeyName: aws.String("x")})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 	_, err = aliceCli.IAM.ListUsers(&iam.ListUsersInput{})
 	requireAWSErrorCode(t, err, "AccessDenied")
 
@@ -583,7 +583,7 @@ func TestIAMPolicyLifecycle(t *testing.T) {
 	_, err = iamCli.DetachUserPolicy(&iam.DetachUserPolicyInput{UserName: aws.String(iamUserAlice), PolicyArn: aws.String(descAllArn)})
 	require.NoError(t, err, "detach EC2DescribeAll")
 	_, err = aliceCli.EC2.DescribeInstances(&ec2.DescribeInstancesInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	_, err = iamCli.DeletePolicy(&iam.DeletePolicyInput{PolicyArn: aws.String(denyArn)})
 	requireAWSErrorCode(t, err, "DeleteConflict")

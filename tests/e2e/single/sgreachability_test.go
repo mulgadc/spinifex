@@ -85,7 +85,7 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 		// No ingress rules yet; egress is allow-all by default so only inbound
 		// is gated. Probe a short window to confirm the default-deny ACL is
 		// applied and stable. This overlaps guest boot, and Authorize below
-		// still pays the full boot wait via trySSHReady, so a longer window
+		// still pays the full boot wait via sshHealth.TryReady, so a longer window
 		// buys little extra coverage.
 		harness.Step(t, "asserting tcp/22 stays blocked under default-deny SG")
 		deadline := time.Now().Add(10 * time.Second)
@@ -99,12 +99,12 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 	authorizeOK := t.Run("Authorize", func(t *testing.T) {
 		harness.Step(t, "authorizing tcp/22 ingress, expecting reachability")
 		harness.AuthorizeSSHIngress(t, fix.AWS, sgID)
-		require.Truef(t, trySSHReady(pubIP, 22, keyPath, sshReadyBudget),
+		require.Truef(t, sshHealth.TryReady(pubIP, 22, keyPath, harness.SSHReadyBudget),
 			"tcp/22 to %s never became reachable after authorizing ingress — "+
 				"default subnet egress/IGW datapath is broken", pubIP)
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: pubIP, Port: 22, KeyPath: keyPath}
-		idOut := runSSH(t, tgt, "id")
+		idOut := harness.RunSSH(t, tgt, "id")
 		assert.Containsf(t, idOut, "ubuntu", "ssh id after authorize\n%s", idOut)
 	})
 	if !authorizeOK {
@@ -193,7 +193,7 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 	harness.Detail(t, "probe_wan", wanIP)
 
 	probeWAN := func() string {
-		out, _ := runSSHCombined(tgt, fmt.Sprintf("ping -c 3 -W 2 %s", wanIP))
+		out, _ := harness.RunSSHCombined(tgt, fmt.Sprintf("ping -c 3 -W 2 %s", wanIP))
 		return out
 	}
 

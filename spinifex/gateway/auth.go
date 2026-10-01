@@ -14,9 +14,10 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -71,7 +72,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 						"sourceIP", clientIP,
 						"requestTime", signingTime(r),
 						"serverTime", time.Now().UTC().Format("20060102T150405Z"),
-						"max_skew_ms", otelsetup.Millis(sigv4.MaxClockSkew))
+						"max_skew_ms", telemetry.Millis(sigv4.MaxClockSkew))
 					// Anonymous: the request was rejected before its key id was parsed,
 					// so there is no client identity for the lockout to protect.
 					gw.RateLimiter.RecordFailure(clientIP, anonymousAttempt)
@@ -521,7 +522,7 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
-		_, _ = w.Write(GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID))
+		_, _ = w.Write(gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message))
 		return
 	}
 

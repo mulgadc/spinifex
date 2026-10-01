@@ -210,7 +210,7 @@ func TestAdmitSelfHost_OnDemandAdmitsThenThrottles(t *testing.T) {
 // resolving committed ModelUnits surfaces as that error, never masquerading as
 // a throttle or admitting the request.
 func TestAdmitSelfHost_CommittedUnitsErrorPropagates(t *testing.T) {
-	store := NewProvisionedStore(nil, 1, ptTestRegion, newStubEndpointProvisioner())
+	store := NewProvisionedStore(nil, ptTestRegion, newStubEndpointProvisioner())
 
 	release, err := admitSelfHost(context.Background(), store, ptCallerAccount, selfHostTestModel,
 		catalogEntry{MaxConcurrency: 1})
@@ -282,7 +282,7 @@ func TestCommittedModelUnits_EmptyAccountReturnsZero(t *testing.T) {
 // TestCommittedModelUnits_BucketErrorPropagates asserts an unusable store
 // surfaces its error rather than silently reading zero committed units.
 func TestCommittedModelUnits_BucketErrorPropagates(t *testing.T) {
-	store := NewProvisionedStore(nil, 1, ptTestRegion, newStubEndpointProvisioner())
+	store := NewProvisionedStore(nil, ptTestRegion, newStubEndpointProvisioner())
 	_, err := committedModelUnits(context.Background(), store, ptCallerAccount, selfHostTestModel)
 	require.Error(t, err)
 }

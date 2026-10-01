@@ -225,42 +225,6 @@ var predastoreStartCmd = &cobra.Command{
 	},
 }
 
-var predastoreStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the predastore service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping predastore service...")
-
-		// Only the pid directory matters here: Stop finds the running process
-		// through it, and start wrote the file there.
-		service, err := service.New("predastore", &predastore.Config{
-			BasePath: viper.GetString("predastore-base-path"),
-		})
-
-		if err != nil {
-			return fmt.Errorf("create predastore service: %w", err)
-		}
-
-		if err = service.Stop(); err != nil {
-			return fmt.Errorf("stop predastore service: %w", err)
-		}
-
-		fmt.Println("Predastore service stopped")
-		return nil
-	},
-}
-
-var predastoreStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the predastore service",
-	Run: func(cmd *cobra.Command, args []string) {
-		// Add your status logic here
-		fmt.Println("Predastore service status: ...")
-	},
-}
-
 // Repeat for viperblock.
 var viperblockStartCmd = &cobra.Command{
 	Use:           "start",
@@ -384,7 +348,6 @@ var viperblockStartCmd = &cobra.Command{
 			SecretKey:         nodeConfig.Predastore.SecretKey,
 			BaseDir:           nodeConfig.Predastore.BaseDir,
 			NodeName:          clusterConfig.Node,
-			KVReplicas:        len(clusterConfig.Nodes),
 			ShardWAL:          shardWAL,
 			GCEnabled:         gcEnabled,
 			WALBaseDir:        nodeConfig.Viperblock.WALBaseDir,
@@ -411,37 +374,6 @@ var viperblockStartCmd = &cobra.Command{
 
 		fmt.Println("Viperblock service started")
 		return nil
-	},
-}
-
-var viperblockStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the viperblock service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping viperblock service...")
-
-		service, err := service.New("viperblock", &viperblockd.Config{})
-
-		if err != nil {
-			return fmt.Errorf("create viperblock service: %w", err)
-		}
-
-		if err = service.Stop(); err != nil {
-			return fmt.Errorf("stop viperblock service: %w", err)
-		}
-
-		fmt.Println("Viperblock service stopped")
-		return nil
-	},
-}
-
-var viperblockStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the viperblock service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Viperblock service status: ...")
 	},
 }
 
@@ -519,37 +451,6 @@ var qemunbdStartCmd = &cobra.Command{
 	},
 }
 
-var qemunbdStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the qemunbd service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping qemunbd service...")
-
-		service, err := service.New("qemunbd", &qemunbdd.Config{})
-
-		if err != nil {
-			return fmt.Errorf("create qemunbd service: %w", err)
-		}
-
-		if err = service.Stop(); err != nil {
-			return fmt.Errorf("stop qemunbd service: %w", err)
-		}
-
-		fmt.Println("qemunbd service stopped")
-		return nil
-	},
-}
-
-var qemunbdStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the qemunbd service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("qemunbd service status: ...")
-	},
-}
-
 // Repeat for nats.
 var natsStartCmd = &cobra.Command{
 	Use:           "start",
@@ -587,37 +488,6 @@ var natsStartCmd = &cobra.Command{
 		}
 		fmt.Println("NATS service started")
 		return nil
-	},
-}
-
-var natsStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the nats service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping nats service...")
-
-		service, err := service.New("nats", &nats.Config{})
-
-		if err != nil {
-			return fmt.Errorf("create nats service: %w", err)
-		}
-
-		if err = service.Stop(); err != nil {
-			return fmt.Errorf("stop nats service: %w", err)
-		}
-
-		fmt.Println("Nats service stopped")
-		return nil
-	},
-}
-
-var natsStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the nats service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Nats service status: ...")
 	},
 }
 
@@ -680,37 +550,6 @@ var spinifexStartCmd = &cobra.Command{
 		}
 		fmt.Println("Spinifex service started")
 		return nil
-	},
-}
-
-var spinifexStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the spinifex service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping spinifex service...")
-
-		service, err := service.New("spinifex", &config.ClusterConfig{})
-
-		if err != nil {
-			return fmt.Errorf("create spinifex service: %w", err)
-		}
-
-		if err = service.Stop(); err != nil {
-			return fmt.Errorf("stop spinifex service: %w", err)
-		}
-
-		fmt.Println("Spinifex service stopped")
-		return nil
-	},
-}
-
-var spinifexStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the spinifex service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Spinifex service status: ...")
 	},
 }
 
@@ -786,37 +625,6 @@ var awsgwStartCmd = &cobra.Command{
 	},
 }
 
-var awsgwStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the awsgw service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping awsgw service...")
-
-		service, err := service.New("awsgw", &config.ClusterConfig{})
-
-		if err != nil {
-			return fmt.Errorf("create awsgw service: %w", err)
-		}
-
-		if err = service.Stop(); err != nil {
-			return fmt.Errorf("stop awsgw service: %w", err)
-		}
-
-		fmt.Println("AWSGW service stopped")
-		return nil
-	},
-}
-
-var awsgwStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the awsgw service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("AWSGW service status: ...")
-	},
-}
-
 // consoleRegion is the region the console signs with. awsgw pins signature
 // verification to this same node field, so reading it from anywhere else —
 // including the cluster-wide [aws] region — would let the two drift and fail
@@ -873,50 +681,6 @@ var spinifexUIStartCmd = &cobra.Command{
 			return fmt.Errorf("start spinifex-ui service: %w", err)
 		}
 		fmt.Println("spinifex-ui service started")
-		return nil
-	},
-}
-
-var spinifexUIStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the spinifex-ui service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping spinifex-ui service...")
-
-		svc, err := service.New("spinifex-ui", &spinifexui.Config{})
-
-		if err != nil {
-			return fmt.Errorf("create spinifex-ui service: %w", err)
-		}
-
-		if err = svc.Stop(); err != nil {
-			return fmt.Errorf("stop spinifex-ui service: %w", err)
-		}
-		fmt.Println("spinifex-ui service stopped")
-		return nil
-	},
-}
-
-var spinifexUIStatusCmd = &cobra.Command{
-	Use:           "status",
-	Short:         "Get status of the spinifex-ui service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		svc, err := service.New("spinifex-ui", &spinifexui.Config{})
-
-		if err != nil {
-			return fmt.Errorf("create spinifex-ui service: %w", err)
-		}
-
-		status, err := svc.Status()
-		if err != nil {
-			return fmt.Errorf("get spinifex-ui service status: %w", err)
-		}
-
-		fmt.Println("spinifex-ui service status:", status)
 		return nil
 	},
 }
@@ -1048,35 +812,6 @@ var vpcdStartCmd = &cobra.Command{
 	},
 }
 
-var vpcdStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the vpcd service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping vpcd service...")
-
-		svc, err := service.New("vpcd", &vpcd.Config{})
-		if err != nil {
-			return fmt.Errorf("create vpcd service: %w", err)
-		}
-
-		if err = svc.Stop(); err != nil {
-			return fmt.Errorf("stop vpcd service: %w", err)
-		}
-		fmt.Println("vpcd service stopped")
-		return nil
-	},
-}
-
-var vpcdStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the vpcd service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("vpcd service status: ...")
-	},
-}
-
 var northstarCmd = &cobra.Command{
 	Use:   "northstar",
 	Short: "Manage the northstar (DNS) service",
@@ -1199,35 +934,6 @@ func resolveNorthstarConfigPath(nodePath, override string) string {
 	return nodePath
 }
 
-var northstarStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the northstar service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping northstar service...")
-
-		svc, err := service.New("northstar", &northstar.Config{})
-		if err != nil {
-			return fmt.Errorf("create northstar service: %w", err)
-		}
-
-		if err = svc.Stop(); err != nil {
-			return fmt.Errorf("stop northstar service: %w", err)
-		}
-		fmt.Println("northstar service stopped")
-		return nil
-	},
-}
-
-var northstarStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the northstar service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("northstar service status: ...")
-	},
-}
-
 var qmpCollectorCmd = &cobra.Command{
 	Use:   "qmp-collector",
 	Short: "Manage the qmp-collector (guest metrics) service",
@@ -1268,34 +974,6 @@ var qmpCollectorStartCmd = &cobra.Command{
 		}
 		fmt.Println("qmp-collector service started")
 		return nil
-	},
-}
-
-var qmpCollectorStopCmd = &cobra.Command{
-	Use:           "stop",
-	Short:         "Stop the qmp-collector service",
-	SilenceErrors: true,
-	SilenceUsage:  true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("Stopping qmp-collector service...")
-
-		svc, err := service.New("qmp-collector", &qmpcollector.Config{})
-		if err != nil {
-			return fmt.Errorf("create qmp-collector service: %w", err)
-		}
-		if err = svc.Stop(); err != nil {
-			return fmt.Errorf("stop qmp-collector service: %w", err)
-		}
-		fmt.Println("qmp-collector service stopped")
-		return nil
-	},
-}
-
-var qmpCollectorStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Get status of the qmp-collector service",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("qmp-collector service status: ...")
 	},
 }
 
@@ -1428,8 +1106,6 @@ func init() {
 	bindPredastoreCollisionEnv()
 
 	predastoreCmd.AddCommand(predastoreStartCmd)
-	predastoreCmd.AddCommand(predastoreStopCmd)
-	predastoreCmd.AddCommand(predastoreStatusCmd)
 
 	serviceCmd.AddCommand(viperblockCmd)
 
@@ -1455,8 +1131,6 @@ func init() {
 	viper.BindPFlag("viperblock-debug", viperblockCmd.PersistentFlags().Lookup("debug"))
 
 	viperblockCmd.AddCommand(viperblockStartCmd)
-	viperblockCmd.AddCommand(viperblockStopCmd)
-	viperblockCmd.AddCommand(viperblockStatusCmd)
 
 	serviceCmd.AddCommand(qemunbdCmd)
 
@@ -1465,15 +1139,11 @@ func init() {
 	viper.BindPFlag("qemunbd-debug", qemunbdCmd.PersistentFlags().Lookup("debug"))
 
 	qemunbdCmd.AddCommand(qemunbdStartCmd)
-	qemunbdCmd.AddCommand(qemunbdStopCmd)
-	qemunbdCmd.AddCommand(qemunbdStatusCmd)
 
 	// Nats
 	serviceCmd.AddCommand(natsCmd)
 
 	natsCmd.AddCommand(natsStartCmd)
-	natsCmd.AddCommand(natsStopCmd)
-	natsCmd.AddCommand(natsStatusCmd)
 
 	// Add NATS flags
 	natsCmd.PersistentFlags().Int("port", 4222, "NATS server port")
@@ -1495,8 +1165,6 @@ func init() {
 	serviceCmd.AddCommand(spinifexCmd)
 
 	spinifexCmd.AddCommand(spinifexStartCmd)
-	spinifexCmd.AddCommand(spinifexStopCmd)
-	spinifexCmd.AddCommand(spinifexStatusCmd)
 
 	spinifexCmd.PersistentFlags().String("wal-dir", "", "Write-ahead log (WAL) directory. Place on high-speed NVMe disk, or tmpfs for development.")
 	viper.BindEnv("wal-dir", "SPINIFEX_WAL_DIR")
@@ -1519,8 +1187,6 @@ func init() {
 	bindAwsgwCollisionEnv()
 
 	awsgwCmd.AddCommand(awsgwStartCmd)
-	awsgwCmd.AddCommand(awsgwStopCmd)
-	awsgwCmd.AddCommand(awsgwStatusCmd)
 
 	// spinifex-ui
 	serviceCmd.AddCommand(spinifexUICmd)
@@ -1550,15 +1216,11 @@ func init() {
 	viper.BindPFlag("spinifex-ui-ochre-enabled", spinifexUICmd.PersistentFlags().Lookup("ochre-enabled"))
 
 	spinifexUICmd.AddCommand(spinifexUIStartCmd)
-	spinifexUICmd.AddCommand(spinifexUIStopCmd)
-	spinifexUICmd.AddCommand(spinifexUIStatusCmd)
 
 	// vpcd
 	serviceCmd.AddCommand(vpcdCmd)
 
 	vpcdCmd.AddCommand(vpcdStartCmd)
-	vpcdCmd.AddCommand(vpcdStopCmd)
-	vpcdCmd.AddCommand(vpcdStatusCmd)
 
 	// northstar
 	serviceCmd.AddCommand(northstarCmd)
@@ -1568,13 +1230,9 @@ func init() {
 	viper.BindPFlag("northstar-config", northstarCmd.PersistentFlags().Lookup("northstar-config"))
 
 	northstarCmd.AddCommand(northstarStartCmd)
-	northstarCmd.AddCommand(northstarStopCmd)
-	northstarCmd.AddCommand(northstarStatusCmd)
 
 	// qmp-collector
 	serviceCmd.AddCommand(qmpCollectorCmd)
 
 	qmpCollectorCmd.AddCommand(qmpCollectorStartCmd)
-	qmpCollectorCmd.AddCommand(qmpCollectorStopCmd)
-	qmpCollectorCmd.AddCommand(qmpCollectorStatusCmd)
 }

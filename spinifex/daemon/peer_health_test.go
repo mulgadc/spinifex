@@ -2,11 +2,20 @@ package daemon
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,8 +29,9 @@ import (
 // /health responses, returning the cluster config the daemon-under-test should
 // see plus a handle to flip each peer up or down at runtime.
 type peerHealthFixture struct {
-	peers []*peerStub
-	cfg   *config.ClusterConfig
+	peers  []*peerStub
+	cfg    *config.ClusterConfig
+	caPath string
 }
 
 type peerStub struct {
@@ -61,6 +71,7 @@ func newPeerHealthFixture(t *testing.T, peerCount int) *peerHealthFixture {
 			Daemon:      config.DaemonConfig{Host: "0.0.0.0:" + port},
 		}
 		f.peers = append(f.peers, stub)
+		f.caPath = writeServerCA(t, stub.srv)
 	}
 	f.cfg = &config.ClusterConfig{Node: "node-self", Nodes: nodes}
 	return f
@@ -74,6 +85,40 @@ func daemonForPeerHealth(t *testing.T, cfg *config.ClusterConfig) (*Daemon, cont
 	d := &Daemon{ctx: ctx, cancel: cancel, clusterConfig: cfg}
 	t.Cleanup(cancel)
 	return d, cancel
+}
+
+// writeServerCA writes srv's self-signed cert as a PEM CA file, standing in for
+// the cluster CA. Every httptest TLS server shares that one cert.
+func writeServerCA(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	return writePEMCert(t, srv.Certificate().Raw)
+}
+
+// writeUntrustedCA writes a freshly generated self-signed CA that signed none
+// of the httptest servers' certs.
+func writeUntrustedCA(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "untrusted test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	return writePEMCert(t, der)
+}
+
+func writePEMCert(t *testing.T, der []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+	return path
 }
 
 func TestPeerCount_SingleNode(t *testing.T) {
@@ -194,6 +239,7 @@ func TestMonitorPeerReachability_EndToEnd(t *testing.T) {
 	}
 	f := newPeerHealthFixture(t, 2)
 	d, cancel := daemonForPeerHealth(t, f.cfg)
+	d.config = &config.Config{NATS: config.NATSConfig{CACert: f.caPath}}
 
 	for _, p := range f.peers {
 		p.setHealthy(false)
@@ -210,4 +256,48 @@ func TestMonitorPeerReachability_EndToEnd(t *testing.T) {
 	require.Eventually(t, d.peersReachable.Load,
 		peerProbeInterval+peerProbeTimeout+time.Second, 50*time.Millisecond,
 		"peersReachable should flip true when any peer comes back")
+}
+
+// TestMonitorPeerReachability_UntrustedPeerCert asserts a peer whose cert the
+// cluster CA did not sign counts as unreachable, even while serving 200.
+func TestMonitorPeerReachability_UntrustedPeerCert(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ticker-driven peer probe test in short mode")
+	}
+	f := newPeerHealthFixture(t, 1)
+	d, cancel := daemonForPeerHealth(t, f.cfg)
+	d.config = &config.Config{NATS: config.NATSConfig{CACert: writeUntrustedCA(t)}}
+	d.peersReachable.Store(true)
+
+	go d.monitorPeerReachability()
+	defer cancel()
+
+	require.Eventually(t, func() bool { return !d.peersReachable.Load() },
+		peerProbeTimeout+time.Second, 50*time.Millisecond,
+		"a peer presenting an untrusted cert must not count as reachable")
+}
+
+// TestMonitorPeerReachability_NoCAKeepsPeersReachable asserts a node that
+// cannot load the cluster CA stops probing rather than declaring every peer
+// unreachable and dropping out of cluster mode.
+func TestMonitorPeerReachability_NoCAKeepsPeersReachable(t *testing.T) {
+	f := newPeerHealthFixture(t, 2)
+	for _, p := range f.peers {
+		p.setHealthy(false)
+	}
+	d, _ := daemonForPeerHealth(t, f.cfg)
+	d.config = &config.Config{}
+	d.peersReachable.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		d.monitorPeerReachability()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitorPeerReachability kept running without a cluster CA")
+	}
+	assert.True(t, d.peersReachable.Load())
 }

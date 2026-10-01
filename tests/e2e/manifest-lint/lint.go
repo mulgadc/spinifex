@@ -21,7 +21,9 @@ package manifestlint
 
 import (
 	"bufio"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -75,11 +77,7 @@ func WriteBaseline(path string, keys []string) error {
 	for _, k := range keys {
 		uniq[k] = true
 	}
-	out := make([]string, 0, len(uniq))
-	for k := range uniq {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := slices.Sorted(maps.Keys(uniq))
 
 	var b strings.Builder
 	b.WriteString("# manifest-lint baseline — pre-existing drift accepted by the ratchet.\n")

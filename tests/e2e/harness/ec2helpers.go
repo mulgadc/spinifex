@@ -3,10 +3,8 @@
 package harness
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,25 +70,7 @@ func InstancePrivateIP(t *testing.T, c *AWSClient, instanceID string) string {
 func LsblkRootGiB(t *testing.T, tgt SSHTarget) int {
 	t.Helper()
 	cmd := `SRC=$(findmnt -n -o SOURCE /); PKN=$(lsblk -n -o PKNAME "$SRC" 2>/dev/null | head -1); DEV=${PKN:-$(basename "$SRC")}; lsblk -b -d -n -o SIZE "/dev/$DEV"`
-	args := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-p", strconv.Itoa(tgt.Port),
-		"-i", tgt.KeyPath,
-		tgt.User + "@" + tgt.Host,
-		cmd,
-	}
-	var stdout, stderr bytes.Buffer
-	sshCmd := exec.Command("ssh", args...)
-	sshCmd.Stdout = &stdout
-	sshCmd.Stderr = &stderr
-	if err := sshCmd.Run(); err != nil {
-		t.Fatalf("ssh lsblk %s@%s:%d failed: %v\nstderr: %s", tgt.User, tgt.Host, tgt.Port, err, stderr.String())
-	}
-	raw := strings.TrimSpace(stdout.String())
+	raw := strings.TrimSpace(RunSSH(t, tgt, cmd))
 	bytesN, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		t.Fatalf("ssh lsblk %s@%s:%d: parse %q: %v", tgt.User, tgt.Host, tgt.Port, raw, err)

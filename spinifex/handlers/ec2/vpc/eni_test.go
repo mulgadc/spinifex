@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +47,46 @@ func TestCreateNetworkInterface(t *testing.T) {
 	assert.Equal(t, "available", *eni.Status)
 	assert.Equal(t, "10.0.1.4", *eni.PrivateIpAddress)
 	assert.NotEmpty(t, *eni.MacAddress)
+}
+
+func TestNetworkInterface_NamesGroupsAndPrivateAddress(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	sgId := createTestSG(t, svc, vpcId, "web")
+
+	// Without a namer an interface carries no private name.
+	unnamed := createTestENI(t, svc, subnetId)
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(unnamed)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+	assert.Nil(t, desc.NetworkInterfaces[0].PrivateDnsName)
+
+	svc.SetPrivateDNSNamer(func(ip string) string { return "name-of-" + ip })
+	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(subnetId),
+		Groups:   []*string{aws.String(sgId)},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err = svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{out.NetworkInterface.NetworkInterfaceId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.NetworkInterfaces, 1)
+
+	for name, eni := range map[string]*ec2.NetworkInterface{"create": out.NetworkInterface, "describe": desc.NetworkInterfaces[0]} {
+		want := "name-of-" + aws.StringValue(eni.PrivateIpAddress)
+		assert.Equal(t, want, aws.StringValue(eni.PrivateDnsName), name)
+		require.Len(t, eni.PrivateIpAddresses, 1, name)
+		assert.Equal(t, want, aws.StringValue(eni.PrivateIpAddresses[0].PrivateDnsName), name)
+		require.Len(t, eni.Groups, 1, name)
+		assert.Equal(t, sgId, aws.StringValue(eni.Groups[0].GroupId), name)
+		assert.Equal(t, "web", aws.StringValue(eni.Groups[0].GroupName), name)
+	}
 }
 
 func TestCreateNetworkInterface_SequentialIPs(t *testing.T) {
@@ -178,7 +217,7 @@ func TestCreateNetworkInterface_RequestedPrivateIPRaceHasOneWinner(t *testing.T)
 		switch {
 		case err == nil:
 			successes++
-		case err.Error() == awserrors.ErrorInvalidIPAddressInUse:
+		case awserrors.IsErrorCode(err, awserrors.ErrorInvalidIPAddressInUse):
 			conflicts++
 		default:
 			t.Fatalf("unexpected error: %v", err)
@@ -413,9 +452,30 @@ func TestDescribeNetworkInterfaces_NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	_, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
-		NetworkInterfaceIds: []*string{aws.String("eni-nonexistent")},
+		NetworkInterfaceIds: []*string{aws.String("eni-0000000000000dead")},
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
+	requireAWSError(t, err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, "The networkInterface ID 'eni-0000000000000dead' does not exist")
+}
+
+func TestDescribeNetworkInterfaces_MalformedID(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	describe := func(ids ...string) error {
+		_, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+			NetworkInterfaceIds: aws.StringSlice(ids),
+		}, testAccountID)
+		return err
+	}
+
+	for _, id := range []string{"eni-xyz", "eni-", "eni-ABC"} {
+		requireAWSError(t, describe(id), awserrors.ErrorInvalidNetworkInterfaceIdMalformed, fmt.Sprintf("Invalid id: %q", id))
+	}
+	requireAWSError(t, describe("foo"), awserrors.ErrorInvalidNetworkInterfaceIdMalformed, `Invalid id: "foo" (expecting "eni-...")`)
+	// Unlike a group ID, any length of lowercase hex is merely unknown.
+	for _, id := range []string{"eni-12345", "eni-000000000000000000001"} {
+		requireAWSCode(t, describe(id), awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+	}
+	requireAWSCode(t, describe("eni-0aaaaaaa", "eni-xyz"), awserrors.ErrorInvalidNetworkInterfaceIdMalformed)
 }
 
 func TestAttachENI(t *testing.T) {
@@ -629,20 +689,6 @@ func TestDetachAndDeleteENI_AbsentForceFalse_ReturnsNotFound(t *testing.T) {
 	assert.ErrorContains(t, err, "InvalidNetworkInterfaceID.NotFound")
 }
 
-func TestGenerateENIMac(t *testing.T) {
-	t.Parallel()
-	mac := generateENIMac("eni-test123")
-	hw, err := net.ParseMAC(mac)
-	require.NoError(t, err)
-	assert.Equal(t, byte(0x02), hw[0]&0x03)
-
-	// Same input produces same MAC
-	assert.Equal(t, mac, generateENIMac("eni-test123"))
-
-	// Different input produces different MAC
-	assert.NotEqual(t, mac, generateENIMac("eni-test456"))
-}
-
 // --- Filter tests ---
 
 func TestDescribeNetworkInterfaces_FilterByVpcId(t *testing.T) {
@@ -830,8 +876,8 @@ func TestModifyNetworkInterfaceAttribute_SecurityGroups(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
-	sg1 := createTestSG(t, svc, vpcId, "sg-one")
-	sg2 := createTestSG(t, svc, vpcId, "sg-two")
+	sg1 := createTestSG(t, svc, vpcId, "grp-one")
+	sg2 := createTestSG(t, svc, vpcId, "grp-two")
 
 	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(eniId),
@@ -855,8 +901,8 @@ func TestModifyNetworkInterfaceAttribute_PublishesUpdatePortSGs(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
-	sg1 := createTestSG(t, svc, vpcId, "sg-mod-1")
-	sg2 := createTestSG(t, svc, vpcId, "sg-mod-2")
+	sg1 := createTestSG(t, svc, vpcId, "grp-mod-1")
+	sg2 := createTestSG(t, svc, vpcId, "grp-mod-2")
 
 	eventCh := make(chan *nats.Msg, 1)
 	sub, err := nc.Subscribe("vpc.update-port-sgs", func(msg *nats.Msg) {
@@ -913,7 +959,7 @@ func TestCreateNetworkInterface_PublishesEventCarriesSGs(t *testing.T) {
 	svc, nc := setupTestVPCServiceWithNC(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	sgA := createTestSG(t, svc, vpcId, "sg-evt-A")
+	sgA := createTestSG(t, svc, vpcId, "grp-evt-A")
 
 	eventCh := make(chan *nats.Msg, 1)
 	sub, err := nc.Subscribe("vpc.create-port", func(msg *nats.Msg) {
@@ -1062,8 +1108,8 @@ func TestCreateNetworkInterface_WithSecurityGroups(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
-	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
+	sgA := createTestSG(t, svc, vpcId, "grp-aaa")
+	sgB := createTestSG(t, svc, vpcId, "grp-bbb")
 
 	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
 		SubnetId: aws.String(subnetId),
@@ -1222,8 +1268,8 @@ func TestDescribeNetworkInterfaces_FilterByGroupId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
-	sgA := createTestSG(t, svc, vpcId, "sg-aaa")
-	sgB := createTestSG(t, svc, vpcId, "sg-bbb")
+	sgA := createTestSG(t, svc, vpcId, "grp-aaa")
+	sgB := createTestSG(t, svc, vpcId, "grp-bbb")
 
 	// Create ENI with security groups
 	out, err := svc.CreateNetworkInterface(context.Background(), &ec2.CreateNetworkInterfaceInput{
@@ -1465,7 +1511,7 @@ func TestValidateSGAttachment_TooMany(t *testing.T) {
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgs := make([]string, 6)
 	for i := range sgs {
-		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("sg-%d", i))
+		sgs[i] = createTestSG(t, svc, vpcID, fmt.Sprintf("grp-%d", i))
 	}
 
 	err := svc.validateSGAttachment(t.Context(), testAccountID, sgs, vpcID)
@@ -1508,7 +1554,7 @@ func TestModifyNetworkInterfaceAttribute_VpcdError_Propagated(t *testing.T) {
 	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
 	eniId := createTestENI(t, svc, subnetId)
-	sg1 := createTestSG(t, svc, vpcId, "sg-mod-fail-1")
+	sg1 := createTestSG(t, svc, vpcId, "grp-mod-fail-1")
 
 	// Swap the stub's vpc.update-port-sgs reply to an error in-place so
 	// there's exactly one responder (no race with a layered subscriber).
@@ -1551,4 +1597,23 @@ func TestUpdateENIPublicIP_NotFound(t *testing.T) {
 	err := svc.UpdateENIPublicIP(testAccountID, "eni-missing", "203.0.113.8", "amazon")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "eni-missing")
+}
+
+// AWS checks the attribute combination before it looks the interface up, and
+// its order of names is unstable, so only the names are asserted.
+func TestModifyNetworkInterfaceAttribute_MultipleAttributes(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+
+	_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String("eni-nonexistent"),
+		Groups:             []*string{aws.String("sg-111")},
+		Description:        &ec2.AttributeValue{Value: aws.String("desc")},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Contains(t, msg, "Fields for multiple attribute types specified: ")
+	assert.Contains(t, msg, "description")
+	assert.Contains(t, msg, "securityGroups")
 }

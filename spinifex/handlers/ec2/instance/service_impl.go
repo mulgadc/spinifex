@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2031,22 +2032,16 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 
 // matchTagKey returns true if any tag key on the resource matches any of the filter values.
 func matchTagKey(tags []*ec2.Tag, values []string) bool {
-	for _, t := range tags {
-		if t.Key != nil && awsfilters.MatchesAny(values, *t.Key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Key != nil && awsfilters.MatchesAny(values, *t.Key)
+	})
 }
 
 // matchTagValue returns true if any tag value on the resource matches any of the filter values.
 func matchTagValue(tags []*ec2.Tag, values []string) bool {
-	for _, t := range tags {
-		if t.Value != nil && awsfilters.MatchesAny(values, *t.Value) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Value != nil && awsfilters.MatchesAny(values, *t.Value)
+	})
 }
 
 // DescribeInstances returns instances on this node visible to the caller's account.
@@ -2123,10 +2118,7 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 		}
 	})
 
-	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
-	for _, reservation := range reservationMap {
-		reservations = append(reservations, reservation)
-	}
+	reservations := slices.Collect(maps.Values(reservationMap))
 
 	slog.InfoContext(ctx, "DescribeInstances completed", "count", len(reservations))
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
@@ -2249,10 +2241,7 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
 	}
 
-	reservations := make([]*ec2.Reservation, 0, len(reservationMap))
-	for _, reservation := range reservationMap {
-		reservations = append(reservations, reservation)
-	}
+	reservations := slices.Collect(maps.Values(reservationMap))
 
 	slog.InfoContext(ctx, opName+" completed", "count", len(reservations))
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil

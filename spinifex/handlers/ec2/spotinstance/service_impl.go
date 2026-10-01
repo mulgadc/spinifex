@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,24 +72,12 @@ func NewSpotInstanceServiceImplWithNATS(ctx context.Context, cfg *config.Config,
 // getOrCreateTerminalBucket opens the terminal bucket without changing its
 // existing replica or placement configuration, creating it only when absent.
 func getOrCreateTerminalBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	kv, err := js.KeyValue(ctx, KVBucketSpotRequestsTerminal)
-	if err == nil {
-		return kv, nil
-	}
-	if !errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, err
-	}
-
-	kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      KVBucketSpotRequestsTerminal,
+	return kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+		Name:        KVBucketSpotRequestsTerminal,
 		Description: "Terminal Spot Instance Requests (auto-expire after 1 hour)",
 		History:     1,
 		TTL:         spotTerminalTTL,
 	})
-	if errors.Is(err, jetstream.ErrBucketExists) {
-		return js.KeyValue(ctx, KVBucketSpotRequestsTerminal)
-	}
-	return kv, err
 }
 
 // PutSpotInstanceRequests stores each request in the active bucket.
@@ -372,12 +361,9 @@ func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string
 }
 
 func sirMatchesTagKey(tags []*ec2.Tag, values []string) bool {
-	for _, t := range tags {
-		if t.Key != nil && awsfilters.MatchesAny(values, *t.Key) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Key != nil && awsfilters.MatchesAny(values, *t.Key)
+	})
 }
 
 // launchSpec returns the request's launch specification, or an empty one when

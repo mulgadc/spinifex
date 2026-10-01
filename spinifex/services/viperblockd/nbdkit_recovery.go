@@ -373,12 +373,9 @@ func cmdlineReferencesEndpoint(cmdline []byte, disc discoveredNbdkit) bool {
 
 	if disc.Socket != "" {
 		needle := []byte(disc.Socket)
-		for _, arg := range args {
-			if bytes.Contains(arg, needle) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(args, func(arg []byte) bool {
+			return bytes.Contains(arg, needle)
+		})
 	}
 
 	if disc.Port <= 0 {

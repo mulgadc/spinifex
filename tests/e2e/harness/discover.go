@@ -65,11 +65,11 @@ func DiscoverNanoInstanceType(t *testing.T, fx *Fixture) (instanceType, arch str
 	if err != nil {
 		t.Fatalf("DiscoverNanoInstanceType: %v", err)
 	}
-	parts := strings.SplitN(combined, "|", 2)
-	if len(parts) != 2 {
+	instanceType, arch, ok := strings.Cut(combined, "|")
+	if !ok {
 		t.Fatalf("DiscoverNanoInstanceType: malformed memo value %q", combined)
 	}
-	return parts[0], parts[1]
+	return instanceType, arch
 }
 
 // DiscoverUbuntuAMI returns the AMI ID for the architecture-appropriate Ubuntu

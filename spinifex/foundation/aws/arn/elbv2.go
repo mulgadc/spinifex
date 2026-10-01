@@ -70,18 +70,18 @@ type ParsedELBv2 struct {
 // arn:aws:elasticloadbalancing ARN naming one of the four resource types: an
 // ARN this stack never builds has no resource it can correctly stand for.
 func ParseELBv2(value string) (ParsedELBv2, bool) {
-	parts := strings.SplitN(value, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "elasticloadbalancing" {
+	service, region, account, rest, ok := Split(value)
+	if !ok || service != "elasticloadbalancing" {
 		return ParsedELBv2{}, false
 	}
-	rawKind, resource, found := strings.Cut(parts[5], "/")
+	rawKind, resource, found := strings.Cut(rest, "/")
 	if !found || rawKind == "" {
 		return ParsedELBv2{}, false
 	}
 	kind := ELBv2ResourceType(rawKind)
 	switch kind {
 	case ELBv2LoadBalancer, ELBv2TargetGroup, ELBv2Listener, ELBv2ListenerRule:
-		return ParsedELBv2{Region: parts[3], AccountID: parts[4], Kind: kind, Resource: resource}, true
+		return ParsedELBv2{Region: region, AccountID: account, Kind: kind, Resource: resource}, true
 	default:
 		return ParsedELBv2{}, false
 	}

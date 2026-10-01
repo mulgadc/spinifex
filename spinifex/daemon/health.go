@@ -165,7 +165,7 @@ func computePredastoreHealth(ctx context.Context, d *Daemon) string {
 		return probeLocalGate(ctx, d, cfg, hostID)
 	}
 
-	rootCAs, err := loadPredastoreTrustRoot(d)
+	rootCAs, err := loadClusterTrustRoot(d)
 	if err != nil {
 		slog.Warn("predastore health probe: could not load cluster CA", "err", err)
 		return predastoreHealthUnreachable
@@ -332,11 +332,11 @@ func predastoreConfigPath(daemonConfigPath string) string {
 	return filepath.Join(filepath.Dir(daemonConfigPath), "predastore", "predastore.toml")
 }
 
-// loadPredastoreTrustRoot returns the cluster CA pool predastore's meta
-// replicas are issued from — the same CA (d.config.NATS.CACert, conventionally
-// /etc/spinifex/ca.pem) the daemon already trusts NATS peers with.
-func loadPredastoreTrustRoot(d *Daemon) (*x509.CertPool, error) {
-	if d.config.NATS.CACert == "" {
+// loadClusterTrustRoot returns the cluster CA pool (d.config.NATS.CACert,
+// conventionally /etc/spinifex/ca.pem) that issues every node's server cert:
+// daemon peers, predastore replicas and NATS alike.
+func loadClusterTrustRoot(d *Daemon) (*x509.CertPool, error) {
+	if d.config == nil || d.config.NATS.CACert == "" {
 		return nil, fmt.Errorf("cluster CA not configured (nats.cacert)")
 	}
 	return utils.LoadCertPool(d.config.NATS.CACert)

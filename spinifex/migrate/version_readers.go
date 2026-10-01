@@ -42,9 +42,7 @@ func (r *TOMLVersionReader) ReadVersion(path string) (int, error) {
 	}
 
 	// Handle "1.0" style — take the integer part before the dot.
-	if idx := strings.Index(raw, "."); idx >= 0 {
-		raw = raw[:idx]
-	}
+	raw, _, _ = strings.Cut(raw, ".")
 
 	v, err := strconv.Atoi(raw)
 	if err != nil {

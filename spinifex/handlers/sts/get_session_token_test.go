@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -79,29 +80,47 @@ func TestGetSessionToken_NilInput_DefaultsToTwelveHours(t *testing.T) {
 	assertStoredDuration(t, svc, out, getSessionTokenDefaultDuration)
 }
 
-func TestGetSessionToken_DurationClamp(t *testing.T) {
+func TestGetSessionToken_DurationBounds(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
-	cases := []struct {
-		name      string
-		requested int64
-		want      int64
-	}{
-		{"below_minimum_clamps_up", minDurationSeconds - 1, minDurationSeconds},
-		{"at_minimum", minDurationSeconds, minDurationSeconds},
-		{"in_range", 7200, 7200},
-		{"at_maximum", getSessionTokenMaxDuration, getSessionTokenMaxDuration},
-		{"above_maximum_clamps_down", getSessionTokenMaxDuration + 1, getSessionTokenMaxDuration},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, seconds := range []int64{minDurationSeconds, 7200, getSessionTokenMaxDuration} {
+		t.Run(fmt.Sprintf("accepts_%d", seconds), func(t *testing.T) {
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
-				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(tc.requested)})
+				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(seconds)})
 			require.NoError(t, err)
-			assertStoredDuration(t, svc, out, tc.want)
+			assertStoredDuration(t, svc, out, seconds)
 		})
 	}
+
+	refused := []struct {
+		seconds    int64
+		constraint string
+	}{
+		{minDurationSeconds - 1, "Member must have value greater than or equal to 900"},
+		{getSessionTokenMaxDuration + 1, "Member must have value less than or equal to 129600"},
+	}
+	for _, tc := range refused {
+		t.Run(fmt.Sprintf("refuses_%d", tc.seconds), func(t *testing.T) {
+			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
+				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(tc.seconds)})
+			requireAWSError(t, err, awserrors.ErrorValidationError, fmt.Sprintf(
+				"1 validation error detected: Value '%d' at 'durationSeconds' failed to satisfy constraint: %s", tc.seconds, tc.constraint))
+			assert.Nil(t, out)
+		})
+	}
+}
+
+// A session caller is refused AccessDenied, but only once its input is valid.
+func TestGetSessionToken_ConstraintsCheckedBeforeCaller(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	_, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, "ASIAEXAMPLEAAAAAAAAA",
+		&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(899), TokenCode: aws.String("")})
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"2 validation errors detected: Value '899' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value greater than or equal to 900; "+
+			"Value '' at 'tokenCode' failed to satisfy constraint: Member must have length greater than or equal to 6")
 }
 
 func TestGetSessionToken_RejectsNonUserAndSessionCallers(t *testing.T) {
@@ -146,6 +165,15 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID, tc.input)
 			requireMFANotSupported(t, err)
+			assert.Nil(t, out)
+		})
+	}
+
+	for _, tc := range mfaConstraintCases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
+				&sts.GetSessionTokenInput{SerialNumber: tc.serialNumber, TokenCode: tc.tokenCode})
+			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 			assert.Nil(t, out)
 		})
 	}

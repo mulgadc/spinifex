@@ -18,14 +18,10 @@ const bundleAgentEnvDir = "/etc/conf.d/bedrock-bundle"
 // instance reads from. A model id's ':' and '.' are not valid systemd
 // instance-name characters, so the id is folded to a safe one first.
 func memberEnvPath(modelID string) string {
-	return bundleAgentEnvDir + "/" + sanitizeMemberInstanceName(modelID) + ".env"
+	return bundleAgentEnvDir + "/" + memberInstanceNameReplacer.Replace(modelID) + ".env"
 }
 
 var memberInstanceNameReplacer = strings.NewReplacer(":", "_", "/", "_", ".", "_")
-
-func sanitizeMemberInstanceName(modelID string) string {
-	return memberInstanceNameReplacer.Replace(modelID)
-}
 
 // engineForFamily selects which serving engine a family runs under: familyMeta
 // always runs vLLM, every other family (familyTEI included) runs TEI. Mirrors

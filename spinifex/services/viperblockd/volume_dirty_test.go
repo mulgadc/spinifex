@@ -20,7 +20,7 @@ func newTestDirty(t *testing.T, natsURL, owner string) *volumeDirty {
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
-	dirty, err := newVolumeDirty(t.Context(), nc, owner, 1)
+	dirty, err := newVolumeDirty(t.Context(), nc, owner)
 	require.NoError(t, err)
 	return dirty
 }

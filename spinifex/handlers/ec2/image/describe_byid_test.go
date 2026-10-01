@@ -160,6 +160,41 @@ func TestDescribeImagesByID_SystemAMIIsVisibleToEveryAccount(t *testing.T) {
 	assert.Equal(t, "amazon", aws.StringValue(out.Images[0].ImageOwnerAlias))
 }
 
+// A system image renders as AWS's public, Amazon-owned images do, and the
+// is-public filter reads the rendered value; a private image stays private.
+func TestDescribeImagesByID_SystemAMIRendersPublicAmazon(t *testing.T) {
+	tests := []struct {
+		name       string
+		ownerAlias string
+		wantPublic bool
+		wantAlias  string
+	}{
+		{name: "system image", ownerAlias: "system", wantPublic: true, wantAlias: "amazon"},
+		{name: "own image", ownerAlias: byIDAccount, wantPublic: false, wantAlias: byIDAccount},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := recordingstore.New()
+			svc := handlers_ec2_image.NewImageServiceImplWithStore(store, byIDBucket)
+			putByIDAMI(t, store, byIDAMIDoc(byIDImage, tt.ownerAlias))
+
+			out, err := svc.DescribeImages(t.Context(), &ec2.DescribeImagesInput{
+				ImageIds: aws.StringSlice([]string{byIDImage}),
+				Filters: []*ec2.Filter{{
+					Name: aws.String("is-public"), Values: aws.StringSlice([]string{strconv.FormatBool(tt.wantPublic)}),
+				}},
+			}, byIDAccount)
+
+			require.NoError(t, err)
+			require.Len(t, out.Images, 1)
+			img := out.Images[0]
+			assert.Equal(t, tt.wantPublic, aws.BoolValue(img.Public))
+			assert.Equal(t, tt.wantAlias, aws.StringValue(img.ImageOwnerAlias))
+			assert.Equal(t, "RunInstances", aws.StringValue(img.UsageOperation))
+		})
+	}
+}
+
 // The Owners parameter is matched against the resolved owner, and a named image
 // that no owner selects is not-found rather than an empty success.
 func TestDescribeImagesByID_OwnerFilters(t *testing.T) {

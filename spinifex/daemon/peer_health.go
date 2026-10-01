@@ -55,10 +55,17 @@ func (d *Daemon) monitorPeerReachability() {
 		return
 	}
 
+	// Without the CA every probe would fail, flipping the node to partitioned;
+	// leave peersReachable at its initial true instead.
+	rootCAs, err := loadClusterTrustRoot(d)
+	if err != nil {
+		slog.Error("peer reachability probe disabled: could not load cluster CA", "err", err)
+		return
+	}
 	client := &http.Client{
 		Timeout: peerProbeTimeout,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed per-node certs (matches harness DaemonClient)
+			TLSClientConfig: &tls.Config{RootCAs: rootCAs},
 		},
 	}
 	defer client.CloseIdleConnections()

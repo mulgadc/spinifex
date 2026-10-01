@@ -89,20 +89,22 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 }
 
 // A named group that does not exist is an error, matching AWS; an unnamed
-// request lists the account's groups.
+// request lists the account's groups. Filters is not read: AWS ignores it here,
+// even an unknown or malformed entry.
 func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGroupsInput, accountID string) (*rds.DescribeDBSubnetGroupsOutput, error) {
+	if input == nil {
+		input = &rds.DescribeDBSubnetGroupsInput{}
+	}
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	if input != nil {
-		if name := aws.StringValue(input.DBSubnetGroupName); name != "" {
-			rec, _, err := getDBSubnetGroup(ctx, kv, name)
-			if err != nil {
-				return nil, err
-			}
-			return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: []*rds.DBSubnetGroup{s.projectSubnetGroup(rec)}}, nil
+	if name := aws.StringValue(input.DBSubnetGroupName); name != "" {
+		rec, _, err := getDBSubnetGroup(ctx, kv, name)
+		if err != nil {
+			return nil, err
 		}
+		return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: []*rds.DBSubnetGroup{s.projectSubnetGroup(rec)}}, nil
 	}
 
 	names, err := listNames(ctx, kv, DBSubnetGroupsPrefix())
@@ -123,7 +125,11 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 		}
 		groups = append(groups, s.projectSubnetGroup(&rec))
 	}
-	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups}, nil
+	groups, next, err := Page(groups, subnetGroupPageKey, input.MaxRecords, input.Marker)
+	if err != nil {
+		return nil, err
+	}
+	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups, Marker: next}, nil
 }
 
 // Refused while any instance still names the group, including one that is only
@@ -280,11 +286,15 @@ func (s *Service) projectSubnetGroup(rec *DBSubnetGroupRecord) *rds.DBSubnetGrou
 		DBSubnetGroupArn:         aws.String(FormatARN(ResourceKindDBSubnetGroup, s.region, rec.AccountID, rec.Name)),
 		SubnetGroupStatus:        aws.String(subnetGroupStatusComplete),
 		VpcId:                    aws.String(rec.VpcID),
+		SupportedNetworkTypes:    aws.StringSlice([]string{networkTypeIPv4}),
 	}
 	for _, subnet := range rec.Subnets {
+		// Empty rather than nil: AWS reports SubnetOutpost as {} on every subnet,
+		// and the XML marshaller omits a nil pointer entirely.
 		member := &rds.Subnet{
 			SubnetIdentifier: aws.String(subnet.SubnetID),
 			SubnetStatus:     aws.String("Active"),
+			SubnetOutpost:    &rds.Outpost{},
 		}
 		if subnet.AvailabilityZone != "" {
 			member.SubnetAvailabilityZone = &rds.AvailabilityZone{Name: aws.String(subnet.AvailabilityZone)}

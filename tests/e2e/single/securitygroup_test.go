@@ -3,10 +3,7 @@
 package single
 
 import (
-	"bytes"
-	"os/exec"
 	"regexp"
-	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -39,29 +36,4 @@ func authorizeAllowAllEgress(c *harness.AWSClient, sgID string) error {
 		IpPermissions: []*ec2.IpPermission{allowAllEgressPermission()},
 	})
 	return err
-}
-
-// runSSHCombined runs `command` over SSH against tgt and returns combined
-// stdout+stderr regardless of exit status. Unlike runSSH (instance_test.go)
-// it does not t.Fatal on non-zero exit — needed because `ping` legitimately
-// exits non-zero when packets are dropped, which is the expected outcome of
-// the revoke test.
-func runSSHCombined(tgt harness.SSHTarget, command string) (string, error) {
-	args := []string{
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-p", strconv.Itoa(tgt.Port),
-		"-i", tgt.KeyPath,
-		tgt.User + "@" + tgt.Host,
-		command,
-	}
-	var combined bytes.Buffer
-	cmd := exec.Command("ssh", args...)
-	cmd.Stdout = &combined
-	cmd.Stderr = &combined
-	err := cmd.Run()
-	return combined.String(), err
 }

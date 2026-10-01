@@ -9,8 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -84,6 +85,7 @@ func TestCreateInternetGateway(t *testing.T) {
 	assert.Equal(t, "igw-", (*out.InternetGateway.InternetGatewayId)[:4])
 	// Should not have attachments when created
 	assert.Empty(t, out.InternetGateway.Attachments)
+	assert.Equal(t, testAccountID, aws.StringValue(out.InternetGateway.OwnerId))
 }
 
 func TestCreateInternetGateway_WithTags(t *testing.T) {
@@ -171,7 +173,37 @@ func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
 	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "DependencyViolation")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The internetGateway '"+igwID+"' has dependencies and cannot be deleted.")
+
+	// Attaching again names the gateway and the network it is on
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorResourceAlreadyAssociated, "resource "+igwID+" is already attached to network vpc-test123")
+}
+
+func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	createTestIGW(t, svc)
+
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String("igw-0000000000000dead")},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
+
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
+}
+
+func requireAWSError(t *testing.T, err error, code, message string) {
+	t.Helper()
+	got, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, code, got)
+	assert.Equal(t, message, msg)
 }
 
 func TestDescribeInternetGateways_All(t *testing.T) {
@@ -195,6 +227,7 @@ func TestDescribeInternetGateways_ByID(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.InternetGateways, 1)
 	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+	assert.Equal(t, testAccountID, aws.StringValue(desc.InternetGateways[0].OwnerId))
 }
 
 func TestDescribeInternetGateways_Empty(t *testing.T) {
@@ -948,6 +981,35 @@ func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.InternetGateway.InternetGatewayId, *desc.InternetGateways[0].InternetGatewayId)
 }
 
+func TestDescribeInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("internet-gateway"),
+				Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestIGW(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.InternetGateways, 1, tc.name)
+		assert.Equal(t, *out.InternetGateway.InternetGatewayId, *desc.InternetGateways[0].InternetGatewayId, tc.name)
+
+		desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.InternetGateways, tc.name)
+	}
+}
+
 func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
 	svc, nc := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
@@ -1028,4 +1090,23 @@ func TestAttachInternetGateway_NoGatePublisher_NoOp(t *testing.T) {
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
 	require.NoError(t, err)
+}
+
+func TestDescribeInternetGateways_PagingValidation(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		MaxResults: aws.Int64(5), InternetGatewayIds: []*string{aws.String("igw-0123456789abcdef0")},
+	}, testAccountID)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Equal(t, "The parameter InternetGatewayIds cannot be used with the parameter MaxResults", message)
+
+	_, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		NextToken: aws.String("garbage"),
+	}, testAccountID)
+	code, _, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 }

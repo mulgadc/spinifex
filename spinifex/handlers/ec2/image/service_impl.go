@@ -295,6 +295,7 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		Architecture:       aws.String(amiMeta.Architecture),
 		PlatformDetails:    aws.String(amiMeta.PlatformDetails),
 		Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
+		UsageOperation:     utils.UsageOperationFromDetails(amiMeta.PlatformDetails),
 		CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
 		RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 		VirtualizationType: aws.String(amiMeta.Virtualization),
@@ -304,6 +305,13 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		State:              aws.String(amiImageState(amiMeta.State)),
 		ImageType:          aws.String("machine"),
 		Hypervisor:         aws.String("xen"),
+	}
+
+	// A system image stands where AWS's public, Amazon-owned images do. Only the
+	// rendered values change: the stored alias still identifies it as system.
+	if isSystemAMI {
+		image.Public = aws.Bool(true)
+		image.ImageOwnerAlias = aws.String("amazon")
 	}
 
 	// RegisterImage takes BootMode as an optional input, so an AMI can

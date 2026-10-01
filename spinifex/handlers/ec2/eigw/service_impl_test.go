@@ -6,8 +6,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,7 +134,10 @@ func TestDeleteEgressOnlyInternetGateway_NotFound(t *testing.T) {
 	_, err := svc.DeleteEgressOnlyInternetGateway(context.Background(), &ec2.DeleteEgressOnlyInternetGatewayInput{
 		EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent"),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidEgressOnlyInternetGatewayId.NotFound")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidGatewayIDNotFound, code)
+	assert.Equal(t, "The eigw ID 'eigw-nonexistent' does not exist", msg)
 }
 
 func TestDeleteEgressOnlyInternetGateway_MissingID(t *testing.T) {
@@ -270,6 +274,36 @@ func TestDescribeEgressOnlyInternetGateways_FilterByTag(t *testing.T) {
 	assert.Equal(t, *out.EgressOnlyInternetGateway.EgressOnlyInternetGatewayId, *desc.EgressOnlyInternetGateways[0].EgressOnlyInternetGatewayId)
 }
 
+func TestDescribeEgressOnlyInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc := setupTestEIGWService(t)
+	out, err := svc.CreateEgressOnlyInternetGateway(context.Background(), &ec2.CreateEgressOnlyInternetGatewayInput{
+		VpcId: aws.String("vpc-tagged"),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("egress-only-internet-gateway"),
+				Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestEIGW(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeEgressOnlyInternetGateways(context.Background(), &ec2.DescribeEgressOnlyInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.EgressOnlyInternetGateways, 1, tc.name)
+		assert.Equal(t, *out.EgressOnlyInternetGateway.EgressOnlyInternetGatewayId, *desc.EgressOnlyInternetGateways[0].EgressOnlyInternetGatewayId, tc.name)
+
+		desc, err = svc.DescribeEgressOnlyInternetGateways(context.Background(), &ec2.DescribeEgressOnlyInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.EgressOnlyInternetGateways, tc.name)
+	}
+}
+
 // TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected tests that creating an EIGW in another account's VPC is rejected.
 func TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	// Set up with manual NATS to get VPC KV access
@@ -302,4 +336,25 @@ func TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.NotNil(t, out.EgressOnlyInternetGateway)
+}
+
+func TestDescribeEgressOnlyInternetGateways_MalformedID(t *testing.T) {
+	svc := setupTestEIGWService(t)
+	describe := func(ids ...string) error {
+		_, err := svc.DescribeEgressOnlyInternetGateways(context.Background(), &ec2.DescribeEgressOnlyInternetGatewaysInput{
+			EgressOnlyInternetGatewayIds: aws.StringSlice(ids),
+		}, testAccountID)
+		return err
+	}
+
+	for _, id := range []string{"eigw-xyz", "eigw-12345", "eigw-0000000000000001", "eigw-000000000000000001", "foo"} {
+		err := describe(id)
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, "error %v carries no AWS code", err)
+		assert.Equal(t, awserrors.ErrorInvalidEgressOnlyInternetGatewayIdMalformed, code)
+		assert.Equal(t, "The eigw ID "+id+" is malformed", msg)
+	}
+	// Exactly 17 hex digits of either case is well formed, and unknown is not an error.
+	assert.NoError(t, describe("eigw-00000000000000001"))
+	assert.NoError(t, describe("eigw-0AAAAAAAAAAAAAAA1"))
 }

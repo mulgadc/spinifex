@@ -41,13 +41,13 @@ func TestLoadOrCreateSigningKey_CreatesThenReloads(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	key1, verify1, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key1, verify1, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	require.NotEmpty(t, key1.Kid)
 	require.Contains(t, verify1, key1.Kid)
 
 	// Second call must reload the same persisted key, not mint a new one.
-	key2, verify2, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key2, verify2, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, key1.Kid, key2.Kid, "persisted signing key must be reused")
 	assert.Len(t, verify2, 1)
@@ -60,7 +60,7 @@ func TestLoadOrCreateSigningKey_SkipsAnUnreadableKey(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	good, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	good, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	kv, err := js.KeyValue(t.Context(), SigningBucket)
@@ -68,7 +68,7 @@ func TestLoadOrCreateSigningKey_SkipsAnUnreadableKey(t *testing.T) {
 	_, err = kv.Put(t.Context(), signingKeyName("stale-kid"), []byte("not decryptable with this master key"))
 	require.NoError(t, err)
 
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, good.Kid, key.Kid, "the readable key must still be active")
 	assert.Len(t, verify, 1, "an unreadable key contributes no verify key")
@@ -80,14 +80,14 @@ func TestLoadOrCreateSigningKey_SkipsAKeyDeletedWhileReading(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	good, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	good, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	kv, err := js.KeyValue(t.Context(), SigningBucket)
 	require.NoError(t, err)
 	require.NoError(t, kv.Delete(t.Context(), signingKeyName("never-existed")))
 
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	assert.Equal(t, good.Kid, key.Kid)
 	assert.Len(t, verify, 1)
@@ -100,14 +100,14 @@ func TestLoadOrCreateSigningKey_FailsWhenNoKeyDecrypts(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	_, err := openSigningBucket(t.Context(), js, testMasterKey, 1)
+	_, err := openSigningBucket(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	kv, err := js.KeyValue(t.Context(), SigningBucket)
 	require.NoError(t, err)
 	_, err = kv.Put(t.Context(), signingKeyName("stale-kid"), []byte("not decryptable with this master key"))
 	require.NoError(t, err)
 
-	_, _, err = LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	_, _, err = LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "master key does not match")
 
@@ -119,7 +119,7 @@ func TestLoadOrCreateSigningKey_FailsWhenNoKeyDecrypts(t *testing.T) {
 func TestLoadOrCreateSigningKey_StoresEncrypted(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	kv, err := js.KeyValue(t.Context(), SigningBucket)
@@ -133,14 +133,14 @@ func TestLoadOrCreateSigningKey_StoresEncrypted(t *testing.T) {
 func TestLoadOrCreateSigningKey_EmptyMasterKeyRejected(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	_, _, err := LoadOrCreateSigningKey(t.Context(), js, nil, 1)
+	_, _, err := LoadOrCreateSigningKey(t.Context(), js, nil)
 	require.Error(t, err)
 }
 
 func TestIssuerVerifier_RoundTrip(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	iss := NewIssuer(key, testAudience)
@@ -158,7 +158,7 @@ func TestIssuerVerifier_RoundTrip(t *testing.T) {
 func TestIssuer_MintRequiresAccountID(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	p := samplePrincipal()
@@ -174,7 +174,7 @@ func TestIssuer_MintRequiresAccountID(t *testing.T) {
 func TestMint_RequiresCompleteIdentityPointer(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 	iss := NewIssuer(key, testAudience)
 
@@ -208,7 +208,7 @@ func TestSupportedPrincipalType(t *testing.T) {
 func TestVerifier_RejectsWrongAudience(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	tok, _, err := NewIssuer(key, testAudience).Mint(samplePrincipal())
@@ -221,7 +221,7 @@ func TestVerifier_RejectsWrongAudience(t *testing.T) {
 func TestVerifier_RejectsUnknownKid(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, _, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	tok, _, err := NewIssuer(key, testAudience).Mint(samplePrincipal())
@@ -235,7 +235,7 @@ func TestVerifier_RejectsUnknownKid(t *testing.T) {
 func TestVerifier_RejectsExpiredToken(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	// Hand-mint an already-expired token with the same signing key.
@@ -263,7 +263,7 @@ func TestVerifier_RejectsExpiredToken(t *testing.T) {
 func TestVerifier_RejectsIncompleteIdentityPointer(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	base := func() Claims {
@@ -310,7 +310,7 @@ func TestVerifier_RejectsIncompleteIdentityPointer(t *testing.T) {
 func TestVerifier_RejectsNonES256(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	_, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey, 1)
+	_, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
 	require.NoError(t, err)
 
 	// HS256 token must be refused regardless of signature.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -88,12 +89,9 @@ func GetNBGlobalIPSec(nbAddr string) (bool, error) {
 
 func isNBUnreachable(msg string) bool {
 	lower := strings.ToLower(msg)
-	for _, pattern := range nbUnreachablePatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(nbUnreachablePatterns, func(pattern string) bool {
+		return strings.Contains(lower, pattern)
+	})
 }
 
 // SetNBGlobalIPSec writes NB_Global.ipsec, triggering ovn-controller to add

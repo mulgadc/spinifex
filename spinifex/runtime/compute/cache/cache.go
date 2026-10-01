@@ -260,6 +260,9 @@ func (c *Cache) setActive(lw *liveWatcher) {
 	c.watcherMu.Unlock()
 }
 
+// markResynced is called with c.mu held, so the mark is published by the same
+// unlock that publishes readiness. A reader that takes the lock and sees a
+// ready cache cannot then be told the cache has never resynced.
 func (c *Cache) markResynced() {
 	c.lastResync.Store(time.Now().UnixNano())
 	c.degraded.Store(false)
@@ -455,6 +458,7 @@ func (c *Cache) installSync(lw *liveWatcher, entries map[string]*vm.VM, index ma
 	c.mu.Lock()
 	c.entries, c.index = entries, index
 	c.ready = true
+	c.markResynced()
 	c.mu.Unlock()
 	c.setActive(lw)
 	go c.drain(lw)
@@ -481,7 +485,6 @@ func (c *Cache) resyncUntilSuccess(ctx context.Context, oldLw *liveWatcher) *liv
 			continue
 		}
 		c.installSync(lw, entries, index, oldLw)
-		c.markResynced()
 		return lw
 	}
 }
@@ -509,7 +512,6 @@ func (c *Cache) periodicResync(ctx context.Context) {
 		return
 	}
 	c.installSync(lw, entries, index, oldLw)
-	c.markResynced()
 }
 
 // replaceWatcher retires a dead watcher and installs a fresh one under the

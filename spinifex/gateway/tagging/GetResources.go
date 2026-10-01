@@ -250,14 +250,9 @@ func matchesAllTagFilters(tags []*rgt.Tag, filters []*rgt.TagFilter) bool {
 		if len(f.Values) == 0 {
 			continue
 		}
-		matched := false
-		for _, v := range f.Values {
-			if aws.StringValue(v) == val {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		if !slices.ContainsFunc(f.Values, func(v *string) bool {
+			return aws.StringValue(v) == val
+		}) {
 			return false
 		}
 	}

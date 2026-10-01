@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ import (
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
+	"github.com/mulgadc/spinifex/spinifex/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -69,6 +71,7 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/network/external/exonet"
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
@@ -1460,6 +1463,12 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			OCIPublicIPPool:  p.OCIPublicIPPool,
 			OCIConfigFile:    p.OCIConfigFile,
 			OCIConfigProfile: p.OCIConfigProfile,
+
+			ExoscaleZone:       p.ExoscaleZone,
+			ExoscaleInstanceID: p.ExoscaleInstanceID,
+			ExoscaleConfigFile: p.ExoscaleConfigFile,
+			ExoscaleAccount:    p.ExoscaleAccount,
+			ExoscaleBinary:     p.ExoscaleBinary,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true
@@ -1507,6 +1516,31 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 	}
 	if len(d.ociAllocators) > 0 {
 		go d.runOCIAffinityLoop()
+	}
+	return nil
+}
+
+// installExoscaleAllocators builds one allocator per source="exoscale" pool
+// and reconciles it before it serves. As with OCI, Allocate creates the EIP
+// before recording it, and this pass is the only thing that finds one a crash
+// left behind — on a five-EIP quota, one leak is a fifth of the capacity.
+func (d *Daemon) installExoscaleAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceExoscale) {
+		alloc, err := exonet.FromPoolConfig(d.ctx, js, p)
+		if err != nil {
+			return fmt.Errorf("build Exoscale allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		res, err := alloc.Reconcile(d.ctx)
+		if err != nil {
+			slog.Error("Exoscale allocator reconcile failed; leaked elastic IPs may be billing",
+				"pool", p.Name, "err", err)
+			continue
+		}
+		slog.Info("Exoscale allocator ready", "pool", p.Name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
 	}
 	return nil
 }
@@ -1670,14 +1704,18 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("connect NATS: %w", err)
 	}
 
-	if err := d.initJetStream(); err != nil {
-		return fmt.Errorf("initialize JetStream: %w", err)
+	// Declared before JetStream, not after: initJetStream creates buckets, and
+	// bucket creation refuses until the count is known. A daemon assembled in a
+	// test may never have gone through config.LoadConfig, which is where a real
+	// process declares it from this same source.
+	if d.clusterConfig != nil {
+		if err := clustersize.Declare(len(d.clusterConfig.Nodes)); err != nil {
+			return err
+		}
 	}
 
-	// Set the default KV replica count before any handler creates a bucket, so
-	// lazily-created buckets are born at cluster-size replication instead of R1.
-	if d.clusterConfig != nil {
-		kvutil.SetDefaultKVReplicas(len(d.clusterConfig.Nodes))
+	if err := d.initJetStream(); err != nil {
+		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
@@ -1751,6 +1789,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
 	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config, tagsKV)
+	// Key pairs keep their creation tags in their own metadata; project them so
+	// describe-tags sees them, and clear them when the key pair is deleted.
+	d.keyService.SetCentralTagStore(d.tagsService)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
 		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
@@ -1801,6 +1842,12 @@ func (d *Daemon) startCluster() error {
 	// describe-tags agrees with each resource's own describe from birth and
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
+	// Name interfaces as their instances are named, so the two agree.
+	region, internalDomain := d.config.Region, handlers_dns.ResolveInternalDomain(d.config)
+	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {
+		_, private := handlers_dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
+		return private
+	})
 
 	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
 		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
@@ -1840,6 +1887,9 @@ func (d *Daemon) startCluster() error {
 			}
 			if ociErr := d.installOCIAllocators(ipam, js); ociErr != nil {
 				return nil, ociErr
+			}
+			if exoErr := d.installExoscaleAllocators(ipam, js); exoErr != nil {
+				return nil, exoErr
 			}
 			return ipam, nil
 		})
@@ -2359,11 +2409,7 @@ func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
 	if err != nil {
 		return nil, err
 	}
-	vms := make([]*vm.VM, 0, len(running))
-	for _, v := range running {
-		vms = append(vms, v)
-	}
-	return vms, nil
+	return slices.Collect(maps.Values(running)), nil
 }
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests
@@ -2400,7 +2446,7 @@ func (d *Daemon) initJetStream() error {
 	for {
 		attempt++
 		var err error
-		d.jsManager, err = NewJetStreamManager(d.natsConn, 1)
+		d.jsManager, err = NewJetStreamManager(d.natsConn)
 		if err == nil {
 			err = d.jsManager.InitKVBucket()
 		}
@@ -2415,8 +2461,18 @@ func (d *Daemon) initJetStream() error {
 
 		if err == nil {
 			d.jsManager.SetSyncObserver(d)
-			slog.Info("JetStream KV stores initialized successfully", "replicas", 1, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			// Replicas cannot be undeclared here: bucket creation refuses
+			// before it, so reaching this line means it was declared.
+			replicas, _ := clustersize.Replicas()
+			slog.Info("JetStream KV stores initialized successfully", "replicas", replicas, "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			break
+		}
+
+		// A misdeclared cluster size is not something quorum arrives and fixes,
+		// so waiting for it spends the whole budget and then reports a quorum
+		// problem that was never the cause.
+		if clustersize.Permanent(err) {
+			return fmt.Errorf("initialize JetStream: %w", err)
 		}
 
 		elapsed := time.Since(start)
@@ -2434,15 +2490,20 @@ func (d *Daemon) initJetStream() error {
 	return nil
 }
 
-// upgradeJetStreamReplicas bumps KV_* stream replication to match the cluster
-// size. Runs after all buckets are created and the cluster is ready.
+// upgradeJetStreamReplicas raises every KV bucket to the cluster's replica
+// count. Runs after all buckets are created and the cluster is ready, which is
+// when a bucket created by whichever node got there first can be repaired.
 func (d *Daemon) upgradeJetStreamReplicas() {
-	clusterSize := len(d.clusterConfig.Nodes)
-	if clusterSize <= 1 || d.jsManager == nil {
+	if d.jsManager == nil || d.jsManager.js == nil {
 		return
 	}
-	if err := d.jsManager.UpdateReplicas(clusterSize); err != nil {
-		slog.Warn("Failed to upgrade JetStream replicas", "targetReplicas", clusterSize, "error", err)
+	raised, err := kvutil.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
+	if err != nil {
+		slog.Warn("Failed to raise KV bucket replicas to the cluster's node count", "error", err)
+		return
+	}
+	if raised > 0 {
+		slog.Info("Raised KV buckets to the cluster's replica count", "buckets", raised)
 	}
 }
 
@@ -2551,15 +2612,6 @@ func (d *Daemon) checkViperblockReady() bool {
 	return err == nil
 }
 
-// predastoreReadinessClient is hoisted to package scope so the 2s readiness
-// poll loop doesn't build a fresh transport every call. Verification is off
-// because the probe authenticates nothing and reads no data.
-var predastoreReadinessClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // readiness probe only, no data exchanged
-	},
-}
-
 // checkPredastoreReady reports whether predastore is serving HTTPS, not just
 // listening. Any response counts as ready, including the 401/403 an S3
 // endpoint returns for this deliberately unsigned request.
@@ -2572,11 +2624,18 @@ func (d *Daemon) checkPredastoreReady() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	rootCAs, err := loadClusterTrustRoot(d)
+	if err != nil {
+		slog.Warn("predastore readiness probe: could not load cluster CA", "err", err)
+		return false
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: rootCAs}}}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+"/", nil)
 	if err != nil {
 		return false
 	}
-	resp, err := predastoreReadinessClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return false
 	}
@@ -3525,13 +3584,9 @@ func probeGPU() gpuProbeResult {
 
 	// MIG-enabled GPUs are capable without vfio-pci: the NVIDIA driver owns
 	// isolation via the mdev subsystem, so vfio-pci is not required.
-	hasMIG := false
-	for _, d := range r.Devices {
-		if d.MIGEnabled {
-			hasMIG = true
-			break
-		}
-	}
+	hasMIG := slices.ContainsFunc(r.Devices, func(d gpu.GPUDevice) bool {
+		return d.MIGEnabled
+	})
 	r.Capable = len(r.Devices) > 0 && ((r.IOMMUActive && r.VFIOPresent) || hasMIG)
 	return r
 }

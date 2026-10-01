@@ -41,7 +41,7 @@ func createDaemonWithJetStream(t *testing.T) *Daemon {
 	daemon.config = &config.Config{BaseDir: tmpDir, DataDir: tmpDir}
 
 	daemon.natsConn = nc
-	daemon.jsManager, err = NewJetStreamManager(nc, 1)
+	daemon.jsManager, err = NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, daemon.jsManager.InitKVBucket())
 	require.NoError(t, daemon.jsManager.InitClusterStateBucket())
@@ -254,7 +254,7 @@ func TestEveryState_CanReachTerminated(t *testing.T) {
 			continue
 		}
 
-		visited := map[vm.InstanceState]bool{start: true} //nolint:exhaustive // BFS seed — populated dynamically
+		visited := map[vm.InstanceState]bool{start: true}
 		queue := []vm.InstanceState{start}
 		found := false
 
@@ -415,7 +415,7 @@ func TestTransitionState_ConcurrentTransitions(t *testing.T) {
 
 // reachableStates returns all states reachable from start via BFS.
 func reachableStates(start vm.InstanceState) map[vm.InstanceState]bool {
-	visited := map[vm.InstanceState]bool{start: true} //nolint:exhaustive // BFS seed — populated dynamically
+	visited := map[vm.InstanceState]bool{start: true}
 	queue := []vm.InstanceState{start}
 	for len(queue) > 0 {
 		current := queue[0]

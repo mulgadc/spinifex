@@ -23,11 +23,11 @@ func FormatACMCertificate(region, accountID, id string) string {
 // The id keeps everything after the first "/". Truncating at the last one would
 // let a grant on certificate/<a> authorize a request naming certificate/<a>/<b>.
 func ParseACMCertificateID(certARN string) (string, bool) {
-	parts := strings.SplitN(certARN, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "acm" {
+	service, _, _, resource, ok := Split(certARN)
+	if !ok || service != "acm" {
 		return "", false
 	}
-	kind, id, found := strings.Cut(parts[5], "/")
+	kind, id, found := strings.Cut(resource, "/")
 	if !found || ACMResourceType(kind) != ACMCertificate || id == "" {
 		return "", false
 	}

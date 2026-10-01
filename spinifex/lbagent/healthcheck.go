@@ -76,7 +76,7 @@ func probeHTTP(t HealthTarget) bool {
 	}
 
 	url := fmt.Sprintf("%s://%s%s", scheme, t.Address, path)
-	resp, err := client.Get(url) //nolint:noctx // short fixed-timeout probe
+	resp, err := client.Get(url)
 	if err != nil {
 		slog.Warn("HTTP probe failed", "url", url, "err", err)
 		return false

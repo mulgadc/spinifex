@@ -117,10 +117,11 @@ func TestEIP_AssociateByNetworkInterfaceID_NotFound(t *testing.T) {
 
 	_, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 		AllocationId:       aws.String(allocID),
-		NetworkInterfaceId: aws.String("eni-doesnotexist"),
+		NetworkInterfaceId: aws.String("eni-0000000000000dead"),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, err.Error())
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, code)
 
 	// The allocation must survive a failed association.
 	addr := describeEIP(t, svc, allocID)

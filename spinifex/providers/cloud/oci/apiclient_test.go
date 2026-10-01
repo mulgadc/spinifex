@@ -70,10 +70,10 @@ func TestListPrivateIPsFollowsEveryPage(t *testing.T) {
 	c, seen := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("page") {
 		case "":
-			w.Header().Set("opc-next-page", "page2")
+			w.Header().Set("Opc-Next-Page", "page2")
 			_, _ = w.Write([]byte(`[{"id":"p1","ipAddress":"10.200.0.100","vnicId":"v1"}]`))
 		case "page2":
-			w.Header().Set("opc-next-page", "page3")
+			w.Header().Set("Opc-Next-Page", "page3")
 			_, _ = w.Write([]byte(`[{"id":"p2","ipAddress":"10.200.0.101","vnicId":"v1"}]`))
 		default:
 			_, _ = w.Write([]byte(`[{"id":"p3","ipAddress":"10.200.0.102","vnicId":"v1"}]`))

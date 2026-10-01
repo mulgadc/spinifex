@@ -36,6 +36,7 @@ import (
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/nats-io/nats.go"
 )
 
 // EC2Handler processes parsed query args and returns XML response bytes.
@@ -105,13 +106,28 @@ func ec2Handler[In any](handler func(ctx context.Context, input *In, gw *Gateway
 	}
 }
 
+// ec2ListsAsSet names the list fields AWS omits when empty instead of
+// rendering them. Each is rendered as its handler set it, so nil omits it.
+var ec2ListsAsSet = map[reflect.Type][]string{
+	reflect.TypeFor[ec2.CreateKeyPairOutput]():              {"Tags"},
+	reflect.TypeFor[ec2.Image]():                            {"Tags", "ProductCodes"},
+	reflect.TypeFor[ec2.CreateSecurityGroupOutput]():        {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroup]():                    {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroupRule]():                {"Tags"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupIngressOutput](): {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupEgressOutput]():  {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.NetworkInterface]():                 {"Ipv4Prefixes", "Ipv6Prefixes"},
+	reflect.TypeFor[ec2.Vpc]():                              {"Ipv6CidrBlockAssociationSet"},
+	reflect.TypeFor[ec2.Subnet]():                           {"Tags"},
+}
+
 // marshalEC2Response renders an EC2 handler's output into the action's XML
 // envelope. Every EC2 action funnels through here (via ec2Handler and
 // ec2HandlerWithReq), so wire-format fixes belong here, not in each handler.
 func marshalEC2Response(action string, output any) ([]byte, error) {
 	// BuildXML omits a nil slice's container element entirely but renders an
-	// empty one for a non-nil empty slice; AWS always renders the latter.
-	normalized := utils.NormalizeXMLOutput(output)
+	// empty one for a non-nil empty slice; AWS mostly renders the latter.
+	normalized := utils.NormalizeXMLOutput(output, ec2ListsAsSet)
 	// The SDK's generated output structs never carry a RequestId field.
 	withRequestID := utils.WithRequestID(normalized, uuid.NewV4().String())
 	payload := utils.GenerateXMLPayload(action+"Response", withRequestID)
@@ -174,7 +190,7 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
+			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
 		launchQuotaCheck := func() error {
 			return gw.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
@@ -192,7 +208,7 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"AssociateIamInstanceProfile": ec2HandlerWithReq(func(ctx context.Context, input *ec2.AssociateIamInstanceProfileInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
+			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
 		return gateway_ec2_instance.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
 	}),
@@ -201,7 +217,7 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
+			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
 		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
 	}),
@@ -227,7 +243,7 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_instance.TerminateInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceTypes": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, accountID)
 	}),
 	"DescribeInstanceTypeOfferings": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_instance.DescribeInstanceTypeOfferings(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID, gw.Region, gw.AZ)
@@ -349,7 +365,9 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_volume.DetachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAccountAttributes": ec2Handler(func(ctx context.Context, input *ec2.DescribeAccountAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DescribeAccountAttributes(input)
+		return gateway_ec2_account.DescribeAccountAttributes(input, func() (string, error) {
+			return defaultVPCID(ctx, gw.NATSConn, accountID)
+		})
 	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_account.EnableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
@@ -455,7 +473,7 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"RequestSpotInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RequestSpotInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
-			return gw.checkPolicyResources(r, "iam", "PassRole", []string{roleARN})
+			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
 		return gateway_ec2_spotinstance.RequestSpotInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
 	}),
@@ -619,7 +637,26 @@ var ec2Actions = map[string]ec2Action{
 	}),
 }
 
-// ec2LocalActions are actions that don't require NATS.
+// defaultVPCID returns the ID of accountID's default VPC, or "" when it has
+// none, as the account's own DescribeVpcs sees it.
+func defaultVPCID(ctx context.Context, natsConn *nats.Conn, accountID string) (string, error) {
+	if natsConn == nil {
+		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("is-default"), Values: aws.StringSlice([]string{"true"})}},
+	}, natsConn, accountID)
+	if err != nil {
+		return "", err
+	}
+	if len(out.Vpcs) == 0 {
+		return "", nil
+	}
+	return aws.StringValue(out.Vpcs[0].VpcId), nil
+}
+
+// ec2LocalActions are actions that don't require NATS. DescribeAccountAttributes
+// needs it only for default-vpc.
 var ec2LocalActions = map[string]bool{
 	"DescribeRegions":           true,
 	"DescribeAvailabilityZones": true,
@@ -674,10 +711,21 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 	if err := gw.checkPolicyResources(r, "ec2", action, resources); err != nil {
+		// EC2 answers a policy denial with UnauthorizedOperation, not AccessDenied.
+		if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorAccessDenied {
+			return errors.New(awserrors.ErrorUnauthorizedOperation)
+		}
+		return err
+	}
+	// AWS refuses a bad tag resource type even on a DryRun request.
+	if err := validateTagSpecificationTypes(action, input); err != nil {
 		return err
 	}
 	if dryRunRequested(input) {
 		return errors.New(awserrors.ErrorDryRunOperation)
+	}
+	if err := validateMaxResults(action, input); err != nil {
+		return err
 	}
 
 	if gw.NATSConn == nil && !ec2LocalActions[action] {
@@ -686,6 +734,11 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 
 	xmlOutput, err := handler.dispatch(action, input, gw, accountID, r)
 	if err != nil {
+		// A gateway iam:PassRole denial is EC2's UnauthorizedOperation too; an
+		// AccessDenied a daemon returns is left as it is.
+		if _, denied := errors.AsType[*identityPolicyDenialError](err); denied {
+			return errors.New(awserrors.ErrorUnauthorizedOperation)
+		}
 		return err
 	}
 

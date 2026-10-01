@@ -596,9 +596,21 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 				found[*addr.AllocationId] = true
 			}
 		}
-		for id := range allocIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		for _, id := range input.AllocationIds {
+			if id != nil && !found[*id] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidAllocationIDNotFound, "The allocation ID '%s' does not exist", *id)
+			}
+		}
+	}
+
+	if len(publicIPs) > 0 {
+		found := make(map[string]bool)
+		for _, addr := range addresses {
+			found[aws.StringValue(addr.PublicIp)] = true
+		}
+		for _, ip := range input.PublicIps {
+			if ip != nil && !found[*ip] {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidAddressNotFound, "Address '%s' not found.", *ip)
 			}
 		}
 	}

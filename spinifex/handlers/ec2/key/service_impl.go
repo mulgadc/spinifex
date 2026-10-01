@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -41,6 +42,45 @@ type KeyServiceImpl struct {
 	config     *config.Config
 	store      objectstore.ObjectStore
 	bucketName string
+
+	// Optional: injected after construction. Nil leaves the central tag store
+	// untouched by create, import and delete.
+	centralTags CentralTagStore
+}
+
+// CentralTagStore keeps the central tag index in step with key-pair records, so
+// DescribeTags sees creation tags. Implemented by handlers/ec2/tags.TagsServiceImpl.
+type CentralTagStore interface {
+	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
+	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
+}
+
+// SetCentralTagStore injects the central tag store that create and import
+// project their tags into and delete clears.
+func (s *KeyServiceImpl) SetCentralTagStore(st CentralTagStore) {
+	s.centralTags = st
+}
+
+// projectRecordTags writes creation tags into the central tag store. A failure
+// is logged, not returned: the key pair already exists.
+func (s *KeyServiceImpl) projectRecordTags(ctx context.Context, accountID, keyPairID string, tags map[string]string) {
+	if s.centralTags == nil || len(tags) == 0 {
+		return
+	}
+	if err := s.centralTags.PutResourceTags(ctx, accountID, keyPairID, tags); err != nil {
+		slog.ErrorContext(ctx, "central tag store write failed", "keyPairId", keyPairID, "err", err)
+	}
+}
+
+// clearRecordTags drops a deleted key pair's central tags. Call it only once the
+// delete has succeeded; a failure is logged, since the key pair is already gone.
+func (s *KeyServiceImpl) clearRecordTags(ctx context.Context, accountID, keyPairID string) {
+	if s.centralTags == nil {
+		return
+	}
+	if err := s.centralTags.DeleteAllTags(ctx, accountID, keyPairID); err != nil {
+		slog.ErrorContext(ctx, "central tag store clear failed", "keyPairId", keyPairID, "err", err)
+	}
 }
 
 // NewKeyServiceImpl creates a new daemon-side key service.
@@ -93,7 +133,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	if err == nil {
 		// Object exists - return duplicate error
 		slog.ErrorContext(ctx, "Key pair already exists", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
+		return nil, errDuplicateKeyPair()
 	}
 
 	// Determine key type (default: ed25519, optional: rsa). This deviates from
@@ -109,6 +149,20 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		default:
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 				"1 validation error detected: Value '%s' at 'keyType' failed to satisfy constraint: Member must satisfy enum value set: [rsa, ed25519]", *input.KeyType)
+		}
+	}
+
+	// A declared divergence: AWS returns a PuTTY key for ppk, Spinifex refuses
+	// it rather than silently returning a PEM the caller did not ask for.
+	if input.KeyFormat != nil {
+		switch *input.KeyFormat {
+		case ec2.KeyFormatPem:
+		case ec2.KeyFormatPpk:
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"The ppk key format is not supported; use pem.")
+		default:
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"1 validation error detected: Value '%s' at 'keyFormat' failed to satisfy constraint: Member must satisfy enum value set: [pem, ppk]", *input.KeyFormat)
 		}
 	}
 
@@ -156,10 +210,17 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 
 	// Build response (similar to AWS EC2)
 	keyPairID := utils.GenerateResourceID("key")
-	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
+	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
+	tags := utils.MapToEC2Tags(tagMap)
+	// AWS ends RSA material at its END line, while OpenSSH-format Ed25519
+	// material keeps the trailing newline.
+	keyMaterial := string(privateKeyData)
+	if keyType == "rsa" {
+		keyMaterial = strings.TrimSuffix(keyMaterial, "\n")
+	}
 	output := &ec2.CreateKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
-		KeyMaterial:    aws.String(string(privateKeyData)),
+		KeyMaterial:    aws.String(keyMaterial),
 		KeyName:        aws.String(keyName),
 		KeyPairId:      aws.String(keyPairID),
 		Tags:           tags,
@@ -184,6 +245,8 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+
+	s.projectRecordTags(ctx, accountID, keyPairID, tagMap)
 
 	slog.InfoContext(ctx, "Key pair created successfully", "keyName", keyName, "fingerprint", fingerprint, "keyPairId", keyPairID)
 
@@ -353,6 +416,17 @@ func (s *KeyServiceImpl) storeKeyPairMetadata(ctx context.Context, accountID, ke
 	return nil
 }
 
+// errDuplicateKeyPair is AWS's error for a name already in use, on create and
+// import alike.
+func errDuplicateKeyPair() error {
+	return awserrors.Errorf(awserrors.ErrorInvalidKeyPairDuplicate, "The keypair already exists")
+}
+
+// errInvalidKeyFormat is AWS's error for import material it cannot use.
+func errInvalidKeyFormat() error {
+	return awserrors.Errorf(awserrors.ErrorInvalidKeyFormat, "Key is not in valid OpenSSH public key format")
+}
+
 // getKeyNameFromKeyPairId retrieves the key name by directly reading the metadata file for a given keyPairId.
 func (s *KeyServiceImpl) getKeyNameFromKeyPairId(ctx context.Context, accountID, keyPairID string) (string, error) {
 	metadataPath := fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)
@@ -511,6 +585,20 @@ func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string
 	return material, nil
 }
 
+// describedPublicKey returns the stored key as AWS reports it: one OpenSSH
+// line whose comment is the key pair's name, whatever comment was imported.
+func (s *KeyServiceImpl) describedPublicKey(accountID, keyName string) (string, error) {
+	material, err := s.GetPublicKeyMaterial(accountID, keyName)
+	if err != nil {
+		return "", err
+	}
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(material))
+	if err != nil {
+		return "", fmt.Errorf("parse public key %s: %w", keyName, err)
+	}
+	return fmt.Sprintf("%s %s\n", bytes.TrimSpace(ssh.MarshalAuthorizedKey(publicKey)), keyName), nil
+}
+
 // DeleteKeyPair removes a key pair (both public key and metadata from S3).
 func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKeyPairInput, accountID string) (*ec2.DeleteKeyPairOutput, error) {
 	if input == nil {
@@ -538,7 +626,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 			// AWS DeleteKeyPair is idempotent — return success for non-existent keys
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
 				slog.DebugContext(ctx, "DeleteKeyPair: key pair not found, returning success (idempotent)", "keyPairId", keyPairID)
-				return &ec2.DeleteKeyPairOutput{}, nil
+				return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true)}, nil
 			}
 			slog.ErrorContext(ctx, "Failed to get keyName from keyPairId", "keyPairId", keyPairID, "err", err)
 			return nil, err
@@ -558,7 +646,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 			// AWS DeleteKeyPair is idempotent — return success for non-existent keys
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
 				slog.DebugContext(ctx, "DeleteKeyPair: key pair not found, returning success (idempotent)", "keyName", keyName)
-				return &ec2.DeleteKeyPairOutput{}, nil
+				return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true)}, nil
 			}
 			slog.ErrorContext(ctx, "Failed to find keyPairId from keyName", "keyName", keyName, "err", err)
 			return nil, err
@@ -591,9 +679,12 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	s.clearRecordTags(ctx, accountID, keyPairID)
+
 	slog.InfoContext(ctx, "Key pair deleted successfully", "keyName", keyName, "keyPairId", keyPairID)
 
-	return &ec2.DeleteKeyPairOutput{}, nil
+	// AWS names the key only when one was actually deleted.
+	return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true), KeyPairId: aws.String(keyPairID)}, nil
 }
 
 // DescribeKeyPairs lists available key pairs by reading metadata files from S3
@@ -687,28 +778,18 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 
 		// Filter by KeyName if specified
 		if len(input.KeyNames) > 0 {
-			found := false
-			for _, filterName := range input.KeyNames {
-				if filterName != nil && metadata.KeyName != nil && *filterName == *metadata.KeyName {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(input.KeyNames, func(filterName *string) bool {
+				return filterName != nil && metadata.KeyName != nil && *filterName == *metadata.KeyName
+			}) {
 				continue
 			}
 		}
 
 		// Filter by KeyPairId if specified
 		if len(input.KeyPairIds) > 0 {
-			found := false
-			for _, filterID := range input.KeyPairIds {
-				if filterID != nil && metadata.KeyPairId != nil && *filterID == *metadata.KeyPairId {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.ContainsFunc(input.KeyPairIds, func(filterID *string) bool {
+				return filterID != nil && metadata.KeyPairId != nil && *filterID == *metadata.KeyPairId
+			}) {
 				continue
 			}
 		}
@@ -735,6 +816,15 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 			continue
 		}
 
+		if aws.BoolValue(input.IncludePublicKey) && metadata.KeyName != nil {
+			publicKey, err := s.describedPublicKey(accountID, *metadata.KeyName)
+			if err != nil {
+				slog.ErrorContext(ctx, "DescribeKeyPairs: failed to read public key", "keyName", *metadata.KeyName, "err", err)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			keyPairInfo.PublicKey = aws.String(publicKey)
+		}
+
 		keyPairs = append(keyPairs, keyPairInfo)
 	}
 
@@ -753,12 +843,12 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 		}
 		for _, name := range input.KeyNames {
 			if name != nil && !foundNames[*name] {
-				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidKeyPairNotFound, "The key pair '%s' does not exist", *name)
 			}
 		}
 		for _, id := range input.KeyPairIds {
 			if id != nil && !foundIDs[*id] {
-				return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidKeyPairNotFound, "The keyPairId '%s' does not exist", *id)
 			}
 		}
 	}
@@ -834,7 +924,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	if err == nil {
 		// Object exists - return duplicate error
 		slog.ErrorContext(ctx, "Key pair already exists", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyPairDuplicate)
+		return nil, errDuplicateKeyPair()
 	}
 
 	// The material is stored verbatim and later served to instances as their
@@ -852,7 +942,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	publicKeyData := bytes.TrimSpace(input.PublicKeyMaterial)
 	if bytes.ContainsAny(publicKeyData, "\r\n") {
 		slog.ErrorContext(ctx, "Public key material is not a single key", "keyName", keyName)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	// Parse the authorized-key line ("ssh-rsa AAAAB... comment"), which also
@@ -860,7 +950,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	publicKey, _, options, _, err := ssh.ParseAuthorizedKey(publicKeyData)
 	if err != nil {
 		slog.ErrorContext(ctx, "Invalid public key format", "keyName", keyName, "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	// An option prefix ("command=...", "from=...") is not covered by the
@@ -868,13 +958,13 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	// launched with this key pair. Refuse to import access the API cannot report.
 	if len(options) > 0 {
 		slog.ErrorContext(ctx, "Public key material carries authorized_keys options", "keyName", keyName, "options", options)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	keyType, err := keyPairType(publicKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "Unsupported key type", "algorithm", publicKey.Type(), "keyName", keyName, "err", err)
-		return nil, errors.New(awserrors.ErrorInvalidKeyFormat)
+		return nil, errInvalidKeyFormat()
 	}
 
 	fingerprint, err := importedKeyFingerprint(publicKey)
@@ -898,7 +988,8 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	keyPairID := utils.GenerateResourceID("key")
 
 	// Build response output
-	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "key-pair"))
+	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
+	tags := utils.MapToEC2Tags(tagMap)
 	output := &ec2.ImportKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
@@ -925,6 +1016,8 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+
+	s.projectRecordTags(ctx, accountID, keyPairID, tagMap)
 
 	slog.InfoContext(ctx, "Key pair imported successfully", "keyName", keyName, "fingerprint", fingerprint, "keyPairId", keyPairID, "keyType", keyType)
 

@@ -4,8 +4,10 @@ package single
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -118,13 +120,13 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 
 		addr := net.JoinHostPort(host, strconv.Itoa(port))
 		harness.Step(t, "waiting for SSH handshake %s", addr)
-		waitForSSHHandshake(t, host, port, keyPath)
+		sshHealth.WaitReady(t, host, port, keyPath)
 		_ = addr
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 		harness.Step(t, "ssh id")
-		idOut := runSSH(t, tgt, "id")
+		idOut := harness.RunSSH(t, tgt, "id")
 		assert.Containsf(t, idOut, "ubuntu", "ssh id should report ubuntu\n%s", idOut)
 
 		harness.Step(t, "lsblk root-volume cross-check vs API")
@@ -149,7 +151,7 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 		harness.Detail(t, "guest_gib", guestGiB, "api_gib", apiGiB)
 
 		harness.Step(t, "ssh hostname")
-		hn := strings.TrimSpace(runSSH(t, tgt, "hostname"))
+		hn := strings.TrimSpace(harness.RunSSH(t, tgt, "hostname"))
 		// Bash uses `spinifex-vm-<first 8 hex chars of instance ID>` and treats
 		// a missing prefix as a non-fatal warning. Replicate the soft check via
 		// t.Logf rather than asserting — the spx hostname format is not part of
@@ -249,7 +251,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 
 	t.Run("HotplugENI", func(t *testing.T) {
 		harness.SkipIfNoOVN(t)
-		requireSSHHealthy(t)
+		sshHealth.Require(t)
 
 		tgt := resolveGuestSSHTarget(t, fix, instanceID, keyPath)
 		def := harness.EnsureDefaultVPC(t, fix.Harness)
@@ -473,11 +475,11 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		host, port := harness.InstancePublicSSHHost(t, runInst)
 		harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
-		waitForSSHReady(t, host, port, keyPath)
+		sshHealth.WaitReady(t, host, port, keyPath)
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 		harness.Step(t, "ssh nproc")
-		nprocOut := strings.TrimSpace(runSSH(t, tgt, "nproc"))
+		nprocOut := strings.TrimSpace(harness.RunSSH(t, tgt, "nproc"))
 		vmVCPUs, err := strconv.ParseInt(nprocOut, 10, 64)
 		require.NoErrorf(t, err, "parse nproc output %q", nprocOut)
 		require.Equalf(t, expectedVCPUs, vmVCPUs,
@@ -485,7 +487,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		harness.Detail(t, "vm_vcpus", vmVCPUs)
 
 		harness.Step(t, "ssh MemTotal")
-		memOut := strings.TrimSpace(runSSH(t, tgt, "awk '/MemTotal/ {print $2}' /proc/meminfo"))
+		memOut := strings.TrimSpace(harness.RunSSH(t, tgt, "awk '/MemTotal/ {print $2}' /proc/meminfo"))
 		vmMemKB, err := strconv.ParseInt(memOut, 10, 64)
 		require.NoErrorf(t, err, "parse MemTotal output %q", memOut)
 		vmMemMiB := vmMemKB / 1024
@@ -520,7 +522,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		runInst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 
 		host, port := harness.InstancePublicSSHHost(t, runInst)
-		waitForSSHReady(t, host, port, keyPath)
+		sshHealth.WaitReady(t, host, port, keyPath)
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 		gotSha := harness.GuestReadSentinelSha(t, tgt, "/dev/disk/by-label/"+guestChurnSentinelLabel, guestChurnSentinelLabel)
 		require.Equalf(t, wantSha, gotSha, "sha256 mismatch after stop/start")
@@ -530,12 +532,12 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 	t.Run("Reboot", func(t *testing.T) {
 		inst := describeSingletonInstance(t, fix, instanceID)
 		host, port := harness.InstancePublicSSHHost(t, inst)
-		waitForSSHReady(t, host, port, keyPath)
+		sshHealth.WaitReady(t, host, port, keyPath)
 
 		// The boot ID is what proves a reboot happened. Uptime cannot on its
 		// own: a reboot is asynchronous, so the guest answering shortly after
 		// the call may still be the one that has not shut down yet.
-		preBootID := strings.TrimSpace(runSSH(t,
+		preBootID := strings.TrimSpace(harness.RunSSH(t,
 			harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath},
 			"cat /proc/sys/kernel/random/boot_id"))
 		require.NotEmpty(t, preBootID, "guest returned an empty boot ID before the reboot")
@@ -579,7 +581,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		require.NotEmpty(t, descPost.Reservations[0].Instances, "no instances post-reboot")
 		postInst := descPost.Reservations[0].Instances[0]
 		host, port = harness.InstancePublicSSHHost(t, postInst)
-		waitForSSHReady(t, host, port, keyPath)
+		sshHealth.WaitReady(t, host, port, keyPath)
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 		waitForNewBootID(t, tgt, preBootID)
@@ -587,7 +589,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		// Now that the guest is known to be on a new boot, uptime is a second
 		// reading of the same fact rather than a guess at it.
 		harness.Step(t, "ssh uptime")
-		uptimeOut := strings.TrimSpace(runSSH(t, tgt, "cat /proc/uptime | cut -d. -f1"))
+		uptimeOut := strings.TrimSpace(harness.RunSSH(t, tgt, "cat /proc/uptime | cut -d. -f1"))
 		uptimeSecs, err := strconv.ParseInt(uptimeOut, 10, 64)
 		require.NoErrorf(t, err, "parse uptime output %q", uptimeOut)
 		require.LessOrEqualf(t, uptimeSecs, int64(120),
@@ -665,7 +667,7 @@ func resolveGuestSSHTarget(t *testing.T, fix *Fixture, instanceID, keyPath strin
 	t.Helper()
 	inst := describeSingletonInstance(t, fix, instanceID)
 	host, port := harness.InstancePublicSSHHost(t, inst)
-	waitForSSHReady(t, host, port, keyPath)
+	sshHealth.WaitReady(t, host, port, keyPath)
 	return harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 }
 
@@ -692,11 +694,7 @@ func guestMACSet(t *testing.T, tgt harness.SSHTarget) map[string]struct{} {
 
 // setKeys returns the keys of a string set as a slice for log/Detail output.
 func setKeys(m map[string]struct{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
+	return slices.Collect(maps.Keys(m))
 }
 
 // describeENI returns the single ENI record for eniID, erroring if absent.

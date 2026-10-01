@@ -134,7 +134,7 @@ func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	harness.Detail(t, "instance_id", instanceID, "ssh_host", host, "ssh_port", port)
-	waitForSSHReady(t, host, port, keyPath)
+	sshHealth.WaitReady(t, host, port, keyPath)
 	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 	harness.Step(t, "guest: template user-data ran")

@@ -3,6 +3,7 @@ package handlers_ec2_vpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,7 @@ func TestCreateSecurityGroup_Success(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.NotEmpty(t, *out.GroupId)
+	assert.Nil(t, out.Tags, "AWS omits Tags from an untagged CreateSecurityGroup")
 }
 
 func TestCreateSecurityGroup_MissingGroupName(t *testing.T) {
@@ -93,8 +95,7 @@ func TestCreateSecurityGroup_DuplicateName(t *testing.T) {
 		GroupName: aws.String("dup-sg"),
 		VpcId:     aws.String(vpcID),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.Duplicate")
+	requireAWSError(t, err, awserrors.ErrorInvalidGroupDuplicate, "The security group 'dup-sg' already exists for VPC '"+vpcID+"'")
 }
 
 // --- DeleteSecurityGroup ---
@@ -132,8 +133,8 @@ func TestDescribeSecurityGroups_All(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSG(t, svc, vpcID, "sg-a")
-	createTestSG(t, svc, vpcID, "sg-b")
+	createTestSG(t, svc, vpcID, "grp-a")
+	createTestSG(t, svc, vpcID, "grp-b")
 
 	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -178,10 +179,33 @@ func TestDescribeSecurityGroups_NotFound(t *testing.T) {
 	svc := setupTestVPCService(t)
 
 	_, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
-		GroupIds: []*string{aws.String("sg-nonexistent")},
+		GroupIds: []*string{aws.String("sg-0000000000000dead")},
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.NotFound")
+	requireAWSError(t, err, awserrors.ErrorInvalidGroupNotFound, "The security group 'sg-0000000000000dead' does not exist")
+}
+
+// The shapes below are the answers AWS gave for each ID; a 17-digit ID is
+// always treated as unknown here, though AWS decodes some of those as Malformed.
+func TestDescribeSecurityGroups_MalformedID(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	describe := func(ids ...string) error {
+		_, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+			GroupIds: aws.StringSlice(ids),
+		}, testAccountID)
+		return err
+	}
+
+	for _, id := range []string{"sg-xyz", "sg-", "sg-0AAAAAAAAAAAAAAA1", "sg-000000001", "sg-0000000000000001", "sg-000000000000000001"} {
+		requireAWSError(t, describe(id), awserrors.ErrorInvalidGroupIdMalformed, fmt.Sprintf("Invalid id: %q", id))
+	}
+	requireAWSError(t, describe("foo"), awserrors.ErrorInvalidGroupIdMalformed, `Invalid id: "foo" (expecting "sg-...")`)
+	for _, id := range []string{"sg-a", "sg-0aaaaaaa", "sg-01234567890abcdef"} {
+		requireAWSCode(t, describe(id), awserrors.ErrorInvalidGroupNotFound)
+	}
+
+	// A malformed ID wins over an unknown one, wherever it sits.
+	requireAWSCode(t, describe("sg-0aaaaaaa", "sg-xyz"), awserrors.ErrorInvalidGroupIdMalformed)
 }
 
 // --- AuthorizeSecurityGroupIngress ---
@@ -405,6 +429,34 @@ func TestRevokeSecurityGroupEgress_Success(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRevokeSecurityGroupEgress_AllProtocolIgnoresPorts: DescribeSecurityGroups
+// reports no ports on an all-protocol rule, so a caller revoking it may send
+// -1/-1 (as the UI does) and must still match the stored rule.
+func TestRevokeSecurityGroupEgress_AllProtocolIgnoresPorts(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "revoke-egress-ports-sg")
+
+	_, err := svc.RevokeSecurityGroupEgress(context.Background(), &ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+			FromPort:   aws.Int64(-1),
+			ToPort:     aws.Int64(-1),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		GroupIds: []*string{aws.String(sgID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1)
+	assert.Empty(t, desc.SecurityGroups[0].IpPermissionsEgress)
+}
+
 func TestRevokeSecurityGroupEgress_NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -583,29 +635,25 @@ func ingressRuleIDReferencing(t *testing.T, svc *VPCServiceImpl, sgID, srcSG str
 	return ""
 }
 
-// TestDeleteSecurityGroup_DependencyViolationNamesENI pins that the refusal
-// identifies the attached ENI. A bare code forces the blocking id to be
-// recovered by cross-referencing the whole ENI table after the fact.
-func TestDeleteSecurityGroup_DependencyViolationNamesENI(t *testing.T) {
+// TestDeleteSecurityGroup_DependencyViolationForENI pins AWS's refusal for a
+// group still attached to an interface, which names the group, not the ENI.
+func TestDeleteSecurityGroup_DependencyViolationForENI(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.0.1.0/24")
 	sgID := createTestSG(t, svc, vpcID, "attached-sg")
-	eniID := createAutoENI(t, svc, subnetID, "i-holder", []string{sgID}, time.Hour)
+	createAutoENI(t, svc, subnetID, "i-holder", []string{sgID}, time.Hour)
 
 	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
-	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
-	assert.ErrorContains(t, err, eniID, "the refusal must name the blocking ENI")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+sgID+" has a dependent object")
 }
 
-// TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG pins the same
-// for the SourceSG case: the group holding the rule is named, not just the code.
-func TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG(t *testing.T) {
+// TestDeleteSecurityGroup_DependencyViolationForReferencingSG pins the same
+// answer for a group another group's rule references.
+func TestDeleteSecurityGroup_DependencyViolationForReferencingSG(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
@@ -617,10 +665,7 @@ func TestDeleteSecurityGroup_DependencyViolationNamesReferencingSG(t *testing.T)
 	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(targetSG),
 	}, testAccountID)
-	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
-	assert.ErrorContains(t, err, holderSG, "the refusal must name the referencing security group")
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+targetSG+" has a dependent object")
 }
 
 // TestRevokeSecurityGroupIngress_ByRuleID_BreaksMutualReferenceTeardown
@@ -879,7 +924,7 @@ func TestSGRulesToIpPermissions_IPv6RoundTrip(t *testing.T) {
 	perms := sgRulesToIpPermissions([]SGRule{
 		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
 		{IpProtocol: "-1", CidrIpv6: "::/0"},
-	})
+	}, testAccountID)
 	require.Len(t, perms, 1)
 	require.Len(t, perms[0].IpRanges, 1)
 	require.Len(t, perms[0].Ipv6Ranges, 1)
@@ -894,7 +939,7 @@ func TestSGRulesToIpPermissions_Conversion(t *testing.T) {
 		{IpProtocol: "-1", SourceSG: "sg-other"},
 	}
 
-	perms := sgRulesToIpPermissions(rules)
+	perms := sgRulesToIpPermissions(rules, testAccountID)
 	require.Len(t, perms, 2)
 
 	// Order is non-deterministic (map-based), find each by protocol
@@ -913,8 +958,11 @@ func TestSGRulesToIpPermissions_Conversion(t *testing.T) {
 	assert.Len(t, tcpPerm.IpRanges, 1)
 
 	require.NotNil(t, allPerm, "should have all-traffic permission")
+	assert.Nil(t, allPerm.FromPort, "AWS omits ports on an all-protocol permission")
+	assert.Nil(t, allPerm.ToPort)
 	assert.Len(t, allPerm.UserIdGroupPairs, 1)
 	assert.Equal(t, "sg-other", *allPerm.UserIdGroupPairs[0].GroupId)
+	assert.Equal(t, testAccountID, aws.StringValue(allPerm.UserIdGroupPairs[0].UserId))
 }
 
 func TestSGRuleKey(t *testing.T) {
@@ -1272,8 +1320,8 @@ func TestDescribeSecurityGroups_FilterByVpcId(t *testing.T) {
 	svc := setupTestVPCService(t)
 	vpc1 := createTestVPC(t, svc, "10.0.0.0/16")
 	vpc2 := createTestVPC(t, svc, "172.16.0.0/16")
-	createTestSG(t, svc, vpc1, "sg-in-vpc1")
-	createTestSG(t, svc, vpc2, "sg-in-vpc2")
+	createTestSG(t, svc, vpc1, "grp-in-vpc1")
+	createTestSG(t, svc, vpc2, "grp-in-vpc2")
 
 	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
@@ -1325,13 +1373,13 @@ func TestDescribeSecurityGroups_FilterMultipleValues_OR(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	createTestSG(t, svc, vpcID, "sg-alpha")
-	createTestSG(t, svc, vpcID, "sg-beta")
-	createTestSG(t, svc, vpcID, "sg-gamma")
+	createTestSG(t, svc, vpcID, "grp-alpha")
+	createTestSG(t, svc, vpcID, "grp-beta")
+	createTestSG(t, svc, vpcID, "grp-gamma")
 
 	out, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
-			{Name: aws.String("group-name"), Values: []*string{aws.String("sg-alpha"), aws.String("sg-gamma")}},
+			{Name: aws.String("group-name"), Values: []*string{aws.String("grp-alpha"), aws.String("grp-gamma")}},
 		},
 	}, testAccountID)
 	require.NoError(t, err)
@@ -1403,6 +1451,9 @@ func TestDescribeSecurityGroups_FilterByTag(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
+	require.Len(t, out.Tags, 1, "CreateSecurityGroup echoes the requested tags")
+	assert.Equal(t, "Env", aws.StringValue(out.Tags[0].Key))
+	assert.Equal(t, "prod", aws.StringValue(out.Tags[0].Value))
 
 	createTestSG(t, svc, vpcID, "untagged-sg")
 
@@ -1414,6 +1465,39 @@ func TestDescribeSecurityGroups_FilterByTag(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, desc.SecurityGroups, 1)
 	assert.Equal(t, *out.GroupId, *desc.SecurityGroups[0].GroupId)
+}
+
+func TestDescribeSecurityGroups_FilterByTagKeyAndTagValue(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	out, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("tagged-sg"),
+		Description: aws.String("tagged"),
+		VpcId:       aws.String(vpcID),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("security-group"),
+			Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestSG(t, svc, vpcID, "untagged-sg")
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.SecurityGroups, 1, tc.name)
+		assert.Equal(t, *out.GroupId, *desc.SecurityGroups[0].GroupId, tc.name)
+
+		desc, err = svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.SecurityGroups, tc.name)
+	}
 }
 
 func TestDescribeSecurityGroups_FilterNoResults(t *testing.T) {
@@ -1488,8 +1572,31 @@ func TestCreateSecurityGroup_RejectsReservedDefaultName(t *testing.T) {
 		Description: aws.String("user-supplied"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidGroup.Reserved")
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "Cannot use reserved security group name: default")
+}
+
+func TestCreateSecurityGroup_RejectsSgPrefixedName(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	_, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("sg-foo"),
+		Description: aws.String("d"),
+		VpcId:       aws.String(vpcID),
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value (sg-foo) for parameter GroupName is invalid. Group names may not be in the format sg-*.", msg)
+
+	// AWS reports a missing VPC ahead of the name.
+	_, err = svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("sg-foo"),
+		Description: aws.String("d"),
+		VpcId:       aws.String("vpc-nonexistent"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, awserrors.ErrorInvalidVpcIDNotFound)
 }
 
 func TestDeleteSecurityGroup_RejectsDefault(t *testing.T) {
@@ -1501,8 +1608,12 @@ func TestDeleteSecurityGroup_RejectsDefault(t *testing.T) {
 	_, err := svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(sgID),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CannotDelete")
+	requireAWSError(t, err, awserrors.ErrorCannotDelete, `the specified group: "`+sgID+`" name: "default" cannot be deleted by a user`)
+
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{
+		GroupId: aws.String("sg-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidGroupNotFound, "The security group 'sg-0000000000000dead' does not exist")
 }
 
 func TestDeleteSecurityGroup_RejectsAttachedToENI(t *testing.T) {
@@ -1553,14 +1664,10 @@ func TestDeleteVpc_BlocksOnNonDefaultSG(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-	sgID := createTestSG(t, svc, vpcID, "user-sg")
+	createTestSG(t, svc, vpcID, "user-sg")
 
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "DependencyViolation")
-	// The message must name the blocking security group so the caller knows
-	// what to delete first, not just that something is blocking.
-	assert.Contains(t, err.Error(), sgID)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
 }
 
 func TestDeleteVpc_CascadesDefaultSG(t *testing.T) {
@@ -2200,7 +2307,7 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 	dstSG := createTestSG(t, svc, vpcID, "dest")
 
 	proto := "tcp"
-	_, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+	authOut, err := svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(dstSG),
 		IpPermissions: []*ec2.IpPermission{{
 			IpProtocol:       &proto,
@@ -2210,6 +2317,8 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 		}},
 	}, testAccountID)
 	require.NoError(t, err)
+	require.Len(t, authOut.SecurityGroupRules, 1)
+	assert.Nil(t, authOut.SecurityGroupRules[0].Tags, "Authorize* omits Tags on an untagged rule")
 
 	out, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("group-id"), Values: []*string{aws.String(dstSG)}}},
@@ -2221,11 +2330,12 @@ func TestDescribeSecurityGroupRules_ReferencedGroupInfo(t *testing.T) {
 		if r.ReferencedGroupInfo != nil {
 			require.NotNil(t, r.ReferencedGroupInfo.GroupId)
 			require.NotNil(t, r.ReferencedGroupInfo.UserId)
-			require.NotNil(t, r.ReferencedGroupInfo.VpcId)
 			assert.Equal(t, srcSG, *r.ReferencedGroupInfo.GroupId)
 			assert.Equal(t, testAccountID, *r.ReferencedGroupInfo.UserId)
-			assert.Equal(t, vpcID, *r.ReferencedGroupInfo.VpcId)
+			assert.Nil(t, r.ReferencedGroupInfo.VpcId, "AWS names no VpcId for a same-VPC reference")
 			assert.Nil(t, r.CidrIpv4)
+			assert.NotNil(t, r.Tags, "DescribeSecurityGroupRules lists an untagged rule with empty Tags")
+			assert.Empty(t, r.Tags)
 			found = true
 		}
 	}
@@ -2285,8 +2395,43 @@ func TestAuthorizeSecurityGroupIngress_RejectsContentDuplicate(t *testing.T) {
 		GroupId:       aws.String(sgID),
 		IpPermissions: []*ec2.IpPermission{perm},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidPermission.Duplicate")
+	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate,
+		`the specified rule "peer: 10.0.0.0/24, TCP, from port: 22, to port: 22, ALLOW" already exists`)
+
+	// The default egress rule, re-added, is described without ports
+	_, err = svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("-1"),
+			IpRanges:   []*ec2.IpRange{{CidrIp: aws.String("0.0.0.0/0")}},
+		}},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate, `the specified rule "peer: 0.0.0.0/0, ALL, ALLOW" already exists`)
+
+	icmp := &ec2.IpPermission{
+		IpProtocol: aws.String("icmp"), FromPort: aws.Int64(8), ToPort: aws.Int64(-1),
+		IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
+	}
+	for range 2 {
+		_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{icmp},
+		}, testAccountID)
+	}
+	requireAWSError(t, err, awserrors.ErrorInvalidPermissionDuplicate, `the specified rule "peer: 10.0.0.0/24, ICMP, type: 8, code: ALL, ALLOW" already exists`)
+
+	_, err = svc.AuthorizeSecurityGroupIngress(context.Background(), &ec2.AuthorizeSecurityGroupIngressInput{
+		GroupId: aws.String(sgID),
+		IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: &proto, FromPort: aws.Int64(22), ToPort: aws.Int64(22),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/33")}},
+		}},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "CIDR block 10.0.0.0/33 is malformed")
+
+	_, err = svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		SecurityGroupRuleIds: []*string{aws.String("sgr-0000000000000dead")},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidSecurityGroupRuleIdNotFound, "The security group rule ID 'sgr-0000000000000dead' does not exist")
 }
 
 func TestDescribeSecurityGroupRules_InvalidFilter(t *testing.T) {
@@ -2441,6 +2586,13 @@ func TestDescribeSecurityGroupRules_FiltersByTag(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, byKey.SecurityGroupRules, 1)
 	assert.Equal(t, taggedID, aws.StringValue(byKey.SecurityGroupRules[0].SecurityGroupRuleId))
+
+	byTagValue, err := svc.DescribeSecurityGroupRules(context.Background(), &ec2.DescribeSecurityGroupRulesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag-value"), Values: []*string{aws.String("alb")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byTagValue.SecurityGroupRules, 1)
+	assert.Equal(t, taggedID, aws.StringValue(byTagValue.SecurityGroupRules[0].SecurityGroupRuleId))
 }
 
 func TestDescribeSecurityGroupRules_AllProtocolReportsMinusOnePorts(t *testing.T) {

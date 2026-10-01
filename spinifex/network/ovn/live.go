@@ -349,7 +349,7 @@ func (c *LiveClient) CreateLogicalSwitchPortInGroups(ctx context.Context, switch
 	ops := append(createOps, switchMutateOps...)
 
 	for _, pgName := range portGroupNames {
-		pg, err := c.getPortGroup(ctx, pgName)
+		pg, err := c.GetPortGroup(ctx, pgName)
 		if err != nil {
 			return fmt.Errorf("get port group %s for port add: %w", pgName, err)
 		}
@@ -1370,7 +1370,7 @@ func (c *LiveClient) CreatePortGroup(ctx context.Context, name string, ports []s
 }
 
 func (c *LiveClient) EnsurePortGroup(ctx context.Context, name string, ports []string) (*nbdb.PortGroup, bool, error) {
-	if existing, err := c.getPortGroup(ctx, name); err == nil {
+	if existing, err := c.GetPortGroup(ctx, name); err == nil {
 		return existing, false, nil
 	}
 	pg := &nbdb.PortGroup{
@@ -1404,7 +1404,7 @@ func (c *LiveClient) waitForCachedPortGroup(ctx context.Context, name string) (*
 	deadline := time.Now().Add(ensureRefetchTimeout)
 	var lastErr error
 	for {
-		v, err := c.getPortGroup(ctx, name)
+		v, err := c.GetPortGroup(ctx, name)
 		if err == nil {
 			return v, nil
 		}
@@ -1421,7 +1421,7 @@ func (c *LiveClient) waitForCachedPortGroup(ctx context.Context, name string) (*
 }
 
 func (c *LiveClient) DeletePortGroup(ctx context.Context, name string) error {
-	pg, err := c.getPortGroup(ctx, name)
+	pg, err := c.GetPortGroup(ctx, name)
 	if err != nil {
 		return fmt.Errorf("delete port group lookup: %w", err)
 	}
@@ -1446,7 +1446,7 @@ func (c *LiveClient) UpdatePortGroupMemberships(ctx context.Context, lspName str
 
 	var ops []ovsdb.Operation
 	appendPGOps := func(pgName, mutator string) error {
-		pg, err := c.getPortGroup(ctx, pgName)
+		pg, err := c.GetPortGroup(ctx, pgName)
 		if err != nil {
 			return fmt.Errorf("port group %s lookup: %w", pgName, err)
 		}
@@ -1479,7 +1479,8 @@ func (c *LiveClient) UpdatePortGroupMemberships(ctx context.Context, lspName str
 	return nil
 }
 
-func (c *LiveClient) getPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
+// GetPortGroup returns the named port group.
+func (c *LiveClient) GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
 	var pgs []nbdb.PortGroup
 	err := c.client.WhereCache(func(pg *nbdb.PortGroup) bool {
 		return pg.Name == name
@@ -1491,11 +1492,6 @@ func (c *LiveClient) getPortGroup(ctx context.Context, name string) (*nbdb.PortG
 		return nil, fmt.Errorf("%w: %q", ErrPortGroupNotFound, name)
 	}
 	return &pgs[0], nil
-}
-
-// GetPortGroup returns the named port group.
-func (c *LiveClient) GetPortGroup(ctx context.Context, name string) (*nbdb.PortGroup, error) {
-	return c.getPortGroup(ctx, name)
 }
 
 func (c *LiveClient) ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, error) {
@@ -1510,7 +1506,7 @@ func (c *LiveClient) ListPortGroups(ctx context.Context) ([]nbdb.PortGroup, erro
 // addresses on the existing row. Wait-op serialises concurrent writers (NB has
 // no unique-Name constraint). Returns the persisted row UUID.
 func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresses []string) (string, error) {
-	if existing, err := c.getAddressSet(ctx, name); err == nil {
+	if existing, err := c.GetAddressSet(ctx, name); err == nil {
 		return existing.UUID, c.convergeAddressSet(ctx, existing, addresses)
 	}
 	as := &nbdb.AddressSet{
@@ -1562,7 +1558,7 @@ func (c *LiveClient) waitForCachedAddressSet(ctx context.Context, name string) (
 	deadline := time.Now().Add(ensureRefetchTimeout)
 	var lastErr error
 	for {
-		v, err := c.getAddressSet(ctx, name)
+		v, err := c.GetAddressSet(ctx, name)
 		if err == nil {
 			return v, nil
 		}
@@ -1580,10 +1576,6 @@ func (c *LiveClient) waitForCachedAddressSet(ctx context.Context, name string) (
 
 // GetAddressSet returns the named address set.
 func (c *LiveClient) GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
-	return c.getAddressSet(ctx, name)
-}
-
-func (c *LiveClient) getAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error) {
 	var sets []nbdb.AddressSet
 	err := c.client.WhereCache(func(as *nbdb.AddressSet) bool {
 		return as.Name == name
@@ -1622,7 +1614,7 @@ func (c *LiveClient) AddACLs(ctx context.Context, portGroupName string, specs []
 	if len(specs) == 0 {
 		return nil
 	}
-	pg, err := c.getPortGroup(ctx, portGroupName)
+	pg, err := c.GetPortGroup(ctx, portGroupName)
 	if err != nil {
 		return fmt.Errorf("add ACLs port group lookup: %w", err)
 	}
@@ -1675,7 +1667,7 @@ func (c *LiveClient) AddACLs(ctx context.Context, portGroupName string, specs []
 // ClearACLs removes every ACL row referenced by the port group and detaches
 // them from the port group's ACLs set in one transaction.
 func (c *LiveClient) ClearACLs(ctx context.Context, portGroupName string) error {
-	pg, err := c.getPortGroup(ctx, portGroupName)
+	pg, err := c.GetPortGroup(ctx, portGroupName)
 	if err != nil {
 		return fmt.Errorf("clear ACLs port group lookup: %w", err)
 	}
@@ -1730,7 +1722,7 @@ func (c *LiveClient) aclSetUnchanged(ctx context.Context, pg *nbdb.PortGroup, sp
 // No-ops when the current ACL set already matches specs, so an unchanged SG does
 // not churn NB rows (and force ovn-northd flow recompute) on every drift tick.
 func (c *LiveClient) ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error {
-	pg, err := c.getPortGroup(ctx, portGroupName)
+	pg, err := c.GetPortGroup(ctx, portGroupName)
 	if err != nil {
 		return fmt.Errorf("replace ACLs port group lookup: %w", err)
 	}

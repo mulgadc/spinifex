@@ -57,13 +57,12 @@ type WeightsStore struct {
 var _ WeightsResolver = (*WeightsStore)(nil)
 
 // NewWeightsStore constructs a WeightsStore over the cluster's JetStream
-// client, replicated across replicas nodes.
-func NewWeightsStore(js jetstream.JetStream, replicas int) *WeightsStore {
+// client.
+func NewWeightsStore(js jetstream.JetStream) *WeightsStore {
 	return &WeightsStore{store: kvstore.New[weightsRecord](js, kvstore.Config{
-		Name:     bedrockWeightsBucket,
-		History:  bedrockWeightsHistory,
-		Replicas: replicas,
-		Missing:  "bedrock: weights store has no JetStream client configured",
+		Name:    bedrockWeightsBucket,
+		History: bedrockWeightsHistory,
+		Missing: "bedrock: weights store has no JetStream client configured",
 	})}
 }
 

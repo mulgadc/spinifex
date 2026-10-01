@@ -27,7 +27,7 @@ const (
 	maxTrustPolicyDocumentSize = 2048
 
 	defaultMaxSessionDuration = int64(3600)
-	minMaxSessionDuration     = int64(900)
+	minMaxSessionDuration     = int64(3600)
 	maxMaxSessionDuration     = int64(43200)
 
 	// Bound on optimistic-concurrency retries when a concurrent writer wins the
@@ -55,6 +55,13 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		}
 	}
 
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+	if err := validateMaxSessionDuration(input.MaxSessionDuration); err != nil {
+		return nil, err
+	}
+
 	// Carry the reason: a bare code cannot tell a caller which statement or key
 	// was refused, and the gateway logs the returned error, so one message
 	// serves both the client and the operator.
@@ -66,9 +73,10 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 	maxSession := defaultMaxSessionDuration
 	if input.MaxSessionDuration != nil {
 		maxSession = *input.MaxSessionDuration
-		if maxSession < minMaxSessionDuration || maxSession > maxMaxSessionDuration {
-			return nil, errors.New(awserrors.ErrorValidationError)
-		}
+	}
+
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
+		return nil, err
 	}
 
 	roleID, err := generateIAMID("AROA")
@@ -210,9 +218,29 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 	return &iam.DeleteRoleOutput{}, nil
 }
 
+// validateMaxSessionDuration enforces the role session limit of one to twelve
+// hours, in seconds, with the ValidationError AWS returns.
+func validateMaxSessionDuration(d *int64) error {
+	switch {
+	case d == nil:
+		return nil
+	case *d < minMaxSessionDuration:
+		return validationError([]string{fmt.Sprintf("Value at 'maxSessionDuration' failed to satisfy constraint: Member must have value greater than or equal to %d", minMaxSessionDuration)})
+	case *d > maxMaxSessionDuration:
+		return validationError([]string{fmt.Sprintf("Value at 'maxSessionDuration' failed to satisfy constraint: Member must have value less than or equal to %d", maxMaxSessionDuration)})
+	}
+	return nil
+}
+
 func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error) {
 	ctx := context.Background()
 	roleName := *input.RoleName
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+	if err := validateMaxSessionDuration(input.MaxSessionDuration); err != nil {
+		return nil, err
+	}
 
 	role, err := s.getRole(ctx, accountID, roleName)
 	if err != nil {
@@ -223,11 +251,7 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 		role.Description = *input.Description
 	}
 	if input.MaxSessionDuration != nil {
-		dur := *input.MaxSessionDuration
-		if dur < minMaxSessionDuration || dur > maxMaxSessionDuration {
-			return nil, errors.New(awserrors.ErrorValidationError)
-		}
-		role.MaxSessionDuration = dur
+		role.MaxSessionDuration = *input.MaxSessionDuration
 	}
 
 	data, err := json.Marshal(role)
@@ -280,7 +304,7 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	// AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy, ...). Store them opaquely
 	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
 	// failing NoSuchEntity. Customer-managed ARNs must still exist.
-	if !isAWSManagedPolicyARN(policyARN) {
+	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
 		if _, err := s.getPolicyByARN(ctx, accountID, policyARN); err != nil {
 			return nil, err
 		}
@@ -329,25 +353,7 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 		return nil, err
 	}
 
-	var attached []*iam.AttachedPolicy
-	for _, arn := range role.AttachedPolicies {
-		if isAWSManagedPolicyARN(arn) {
-			attached = append(attached, &iam.AttachedPolicy{
-				PolicyArn:  aws.String(arn),
-				PolicyName: aws.String(managedPolicyNameFromARN(arn)),
-			})
-			continue
-		}
-		policy, err := s.getPolicyByARN(ctx, accountID, arn)
-		if err != nil {
-			slog.Warn("ListAttachedRolePolicies: policy not found for ARN", "arn", arn, "err", err)
-			continue
-		}
-		attached = append(attached, &iam.AttachedPolicy{
-			PolicyArn:  aws.String(policy.ARN),
-			PolicyName: aws.String(policy.PolicyName),
-		})
-	}
+	attached := s.attachedPolicies(ctx, accountID, role.AttachedPolicies, aws.StringValue(input.PathPrefix))
 
 	return &iam.ListAttachedRolePoliciesOutput{
 		AttachedPolicies: attached,
@@ -465,13 +471,13 @@ func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRoleP
 // TagRole upserts tags on a role under CAS, like the other role writers.
 func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*iam.TagRoleOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, foldedKeys); err != nil {
 		return nil, err
 	}
 
 	roleName := *input.RoleName
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		merged := mergeTags(role.Tags, input.Tags)
+		merged := mergeTags(role.Tags, input.Tags, foldedKeys)
 		if len(merged) > maxTagsPerResource {
 			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
 		}
@@ -488,10 +494,13 @@ func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*ia
 
 // UntagRole removes the named tag keys from a role; unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagRole(accountID string, input *iam.UntagRoleInput) (*iam.UntagRoleOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	roleName := *input.RoleName
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		role.Tags = removeTagKeys(role.Tags, input.TagKeys)
+		role.Tags = removeTagKeys(role.Tags, input.TagKeys, foldedKeys)
 		return true, nil
 	})
 	if err != nil {
@@ -545,14 +554,6 @@ func (s *IAMServiceImpl) GetRolePolicies(accountID, roleName string) ([]PolicyDo
 	}
 
 	return docs, nil
-}
-
-// isAWSManagedPolicyARN reports whether arn is an AWS-managed policy ARN
-// (arn:aws:iam::aws:policy/...). These are not provisioned in Spinifex but are
-// stored and round-tripped opaquely so stock EKS tooling that attaches them
-// works without a backing policy document.
-func isAWSManagedPolicyARN(arn string) bool {
-	return iamarn.IsAWSManagedPolicyARN(arn)
 }
 
 // managedPolicyNameFromARN returns the final path segment of an AWS-managed

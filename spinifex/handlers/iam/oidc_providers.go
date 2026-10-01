@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -49,8 +51,8 @@ func OIDCProviderARN(accountID, issuerHostPath string) string {
 }
 
 // GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
-func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string, replicas int) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucketWithReplicas(ctx, js, IAMAccountBucketName(accountID), 1, max(replicas, 1))
+func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
+	return kvutil.GetOrCreateBucket(ctx, js, IAMAccountBucketName(accountID), 1)
 }
 
 // OIDCProviderRecord is the stored shape of a registered OIDC identity provider.
@@ -120,12 +122,41 @@ func awsStrings(in []*string) []string {
 	return out
 }
 
+// validateOIDCProviderLists checks every client ID and thumbprint against the
+// model's lengths, before the Url as AWS orders them. AWS names each list once,
+// however many of its entries break.
+func validateOIDCProviderLists(clientIDs, thumbprints []*string) error {
+	outside := func(minLen, maxLen int) func(*string) bool {
+		return func(v *string) bool {
+			n := utf8.RuneCountInString(aws.StringValue(v))
+			return v == nil || n < minLen || n > maxLen
+		}
+	}
+	var violations []string
+	if slices.ContainsFunc(clientIDs, outside(1, 255)) {
+		violations = append(violations, "Value at 'clientIDList' failed to satisfy constraint: Member must satisfy constraint: "+
+			"[Member must have length less than or equal to 255, Member must have length greater than or equal to 1]")
+	}
+	if slices.ContainsFunc(thumbprints, outside(40, 40)) {
+		violations = append(violations, "Value at 'thumbprintList' failed to satisfy constraint: Member must satisfy constraint: "+
+			"[Member must have length less than or equal to 40, Member must have length greater than or equal to 40]")
+	}
+	return validationError(violations)
+}
+
 func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput) (*iam.CreateOpenIDConnectProviderOutput, error) {
 	ctx := context.Background()
+	if err := validateOIDCProviderLists(input.ClientIDList, input.ThumbprintList); err != nil {
+		return nil, err
+	}
 	issuer := aws.StringValue(input.Url)
 	if err := validateOIDCProviderURL(issuer); err != nil {
 		slog.Debug("CreateOpenIDConnectProvider: invalid Url", "url", issuer, "err", err)
 		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The specified value for url is invalid: %v", err)
+	}
+
+	if err := validateTags(input.Tags, exactKeys); err != nil {
+		return nil, err
 	}
 
 	record := OIDCProviderRecord{
@@ -140,7 +171,7 @@ func (s *IAMServiceImpl) CreateOpenIDConnectProvider(accountID string, input *ia
 		return nil, fmt.Errorf("marshal OIDC provider: %w", err)
 	}
 
-	kv, err := GetOrCreateIAMAccountBucket(ctx, s.js, accountID, s.replicas)
+	kv, err := GetOrCreateIAMAccountBucket(ctx, s.js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
@@ -261,7 +292,7 @@ func (s *IAMServiceImpl) DeleteOpenIDConnectProvider(accountID string, input *ia
 // read-modify-write Put like the other writers here (no CAS).
 func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput) (*iam.TagOpenIDConnectProviderOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
@@ -271,7 +302,7 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 		return nil, err
 	}
 
-	merged := mergeTags(record.Tags, input.Tags)
+	merged := mergeTags(record.Tags, input.Tags, exactKeys)
 	if len(merged) > maxTagsPerResource {
 		return nil, errors.New(awserrors.ErrorIAMLimitExceeded)
 	}
@@ -288,6 +319,9 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 // UntagOpenIDConnectProvider removes the named tag keys from an OIDC provider;
 // unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput) (*iam.UntagOpenIDConnectProviderOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
 	record, err := s.getOIDCProvider(ctx, accountID, arn)
@@ -295,7 +329,7 @@ func (s *IAMServiceImpl) UntagOpenIDConnectProvider(accountID string, input *iam
 		return nil, err
 	}
 
-	record.Tags = removeTagKeys(record.Tags, input.TagKeys)
+	record.Tags = removeTagKeys(record.Tags, input.TagKeys, exactKeys)
 
 	if err := s.putOIDCProvider(ctx, accountID, record); err != nil {
 		return nil, err

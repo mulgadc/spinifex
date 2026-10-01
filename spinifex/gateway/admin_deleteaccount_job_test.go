@@ -40,7 +40,7 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	for _, subject := range teardownSubjects {

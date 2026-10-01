@@ -428,9 +428,7 @@ func TestPollUntil_TimeoutWrapsLastErr(t *testing.T) {
 
 // Compile-time check: every exported Ensure* compiles with the Fixture.
 // Never invoked at runtime; pure type assertion against the public API.
-//
-//nolint:unused,deadcode // exists only to fail compile when an Ensure* signature drifts
-func _ensureCompileCheck(t *testing.T, fx *Fixture) {
+var _ = func(t *testing.T, fx *Fixture) {
 	_, _ = EnsureKeyPair(t, fx)
 	_ = EnsureAMI(t, fx, AMISource{Existing: "ami-0"})
 	_ = EnsureDefaultVPC(t, fx)

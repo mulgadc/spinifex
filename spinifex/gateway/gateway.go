@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,6 +33,7 @@ import (
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -396,7 +398,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if jsonErrorService(svc) {
-		body := GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID)
+		body := gateway_eks.GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(awserrors.ErrorServiceUnavailable))
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -428,7 +430,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if jsonErrorService(svc) {
-		body := GenerateEKSErrorResponse(errorCode, errorMsg.Message, requestID)
+		body := gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
@@ -577,6 +579,26 @@ func (gw *GatewayConfig) checkPolicy(r *http.Request, service, action string) er
 // checkPolicyResources evaluates every resource against one resolved policy
 // snapshot. Used when one API request authorizes multiple resource ARNs.
 func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action string, resources []string) error {
+	return gw.checkPolicyResourcesWithKeys(r, service, action, resources, nil)
+}
+
+// Service principals an iam:PassRole check reports as iam:PassedToService.
+const (
+	ec2ServicePrincipal      = "ec2.amazonaws.com"
+	ecsTasksServicePrincipal = "ecs-tasks.amazonaws.com"
+	eksServicePrincipal      = "eks.amazonaws.com"
+)
+
+// checkPassRole enforces iam:PassRole on roleARN. iam:PassedToService is fixed
+// by the call site handing the role over, never read from the request.
+func (gw *GatewayConfig) checkPassRole(r *http.Request, roleARN, passedTo string) error {
+	return gw.checkPolicyResourcesWithKeys(r, "iam", "PassRole", []string{roleARN},
+		iampolicy.ConditionKeys{iampolicy.KeyPassedToService: passedTo})
+}
+
+// checkPolicyResourcesWithKeys is checkPolicyResources with action-scoped
+// condition keys layered over the request's own.
+func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, action string, resources []string, actionKeys iampolicy.ConditionKeys) error {
 	// Every dispatcher — query-protocol and REST-JSON alike — reaches this
 	// point with its resolved action, so telemetry enrichment lives here.
 	recordResolvedAction(r.Context(), service, action)
@@ -616,8 +638,9 @@ func (gw *GatewayConfig) checkPolicyResources(r *http.Request, service, action s
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 		userID:            mustCtxString(r, ctxUserID),
 	}
-	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources,
-		requestConditionKeys(r, principal))
+	keys := requestConditionKeys(r, principal)
+	maps.Copy(keys, actionKeys)
+	return gw.evaluatePrincipalPolicyResources(principal, policy.IAMAction(service, action), resources, keys)
 }
 
 // requestConditionKeys resolves the IAM condition context keys available on the
@@ -656,6 +679,8 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	if v, ok := principalTypeCondition(principal.principalType); ok {
 		keys[iampolicy.KeyPrincipalType] = v
 	}
+	// The server clock, never a request header, as aws:CurrentTime is in AWS.
+	keys.SetRequestTime(time.Now())
 	return keys
 }
 
@@ -855,7 +880,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
 	// query/XML services fall through.
 	if jsonErrorService(svc) {
-		body := GenerateEKSErrorResponse(code, errorMsg.Message, requestId)
+		body := gateway_eks.GenerateEKSErrorResponse(code, errorMsg.Message)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(code))

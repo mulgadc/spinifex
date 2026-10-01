@@ -54,22 +54,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-func (svc *Service) Stop() (err error) {
-	return utils.StopProcessAt(svc.Config.BaseDir, serviceName)
-}
-
-func (svc *Service) Status() (string, error) {
-	return utils.ServiceStatus(svc.Config.BaseDir, serviceName)
-}
-
-func (svc *Service) Shutdown() (err error) {
-	return svc.Stop()
-}
-
-func (svc *Service) Reload() (err error) {
-	return nil
-}
-
 // launchService connects to NATS, roots a qcow2 provider at cfg.BaseDir and
 // serves ebs.provider.v1.* until SIGINT/SIGTERM, then unsubscribes. It blocks
 // for the life of the process.

@@ -46,7 +46,7 @@ func TestRekey_MovesInstanceStateRecordsOntoTheDot(t *testing.T) {
 	kv := seedSlashRecord(t, nc, daemon.InstanceStateBucket, 3,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano", LastNode: "node-1"})
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 
@@ -64,7 +64,7 @@ func TestRekey_MovesTerminatedRecordsOntoTheDot(t *testing.T) {
 	kv := seedSlashRecord(t, nc, daemon.TerminatedInstanceBucket, 2,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano", LastNode: "node-1"})
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitTerminatedInstanceBucket())
 

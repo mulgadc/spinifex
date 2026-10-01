@@ -103,7 +103,7 @@ const (
 func newProvisionedTestStore(t *testing.T, endpoint EndpointProvisioner) *ProvisionedStore {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return NewProvisionedStore(js, 1, ptTestRegion, endpoint)
+	return NewProvisionedStore(js, ptTestRegion, endpoint)
 }
 
 func createInput(modelID, name string, units int64) *bedrock.CreateProvisionedModelThroughputInput {

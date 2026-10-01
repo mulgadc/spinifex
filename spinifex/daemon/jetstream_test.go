@@ -40,7 +40,7 @@ func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
 	defer nc.Close()
 
 	// Create JetStreamManager
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err, "Failed to create JetStreamManager")
 
 	// Initialize the KV bucket
@@ -90,7 +90,7 @@ func TestJetStreamManager_LoadState_KeyNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	err = jsm.InitKVBucket()
@@ -112,7 +112,7 @@ func TestJetStreamManager_BucketCreation(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	// InitKVBucket should create the bucket
@@ -134,7 +134,7 @@ func TestJetStreamManager_BucketReconnection(t *testing.T) {
 	nc1, err := nats.Connect(natsURL)
 	require.NoError(t, err)
 
-	jsm1, err := NewJetStreamManager(nc1, 1)
+	jsm1, err := NewJetStreamManager(nc1)
 	require.NoError(t, err)
 
 	err = jsm1.InitKVBucket()
@@ -157,7 +157,7 @@ func TestJetStreamManager_BucketReconnection(t *testing.T) {
 	require.NoError(t, err)
 	defer nc2.Close()
 
-	jsm2, err := NewJetStreamManager(nc2, 1)
+	jsm2, err := NewJetStreamManager(nc2)
 	require.NoError(t, err)
 
 	err = jsm2.InitKVBucket()
@@ -180,7 +180,7 @@ func TestJetStreamManager_DeleteState(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	err = jsm.InitKVBucket()
@@ -222,7 +222,7 @@ func TestJetStreamManager_DeleteState_NonExistent(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	err = jsm.InitKVBucket()
@@ -241,7 +241,7 @@ func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	err = jsm.InitKVBucket()
@@ -289,7 +289,7 @@ func TestJetStreamManager_MultipleNodes(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	err = jsm.InitKVBucket()
@@ -337,7 +337,7 @@ func TestJetStreamManager_KVNotInitialized(t *testing.T) {
 	defer nc.Close()
 
 	// Create JetStreamManager but don't call InitKVBucket
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	testInstances := make(map[string]*vm.VM)
@@ -351,51 +351,6 @@ func TestJetStreamManager_KVNotInitialized(t *testing.T) {
 	assert.Error(t, err, "DeleteState should error when KV not initialized")
 }
 
-// TestJetStreamManager_UpdateReplicas tests updating replica count for the KV bucket.
-func TestJetStreamManager_UpdateReplicas(t *testing.T) {
-	natsURL := sharedJSNATSURL
-
-	nc, err := nats.Connect(natsURL)
-	require.NoError(t, err)
-	defer nc.Close()
-
-	// Create with 1 replica (typical for single node startup)
-	jsm, err := NewJetStreamManager(nc, 1)
-	require.NoError(t, err)
-
-	err = jsm.InitKVBucket()
-	require.NoError(t, err)
-
-	// Verify initial replica count
-	js, _ := jetstream.New(nc)
-	stream, err := js.Stream(t.Context(), "KV_"+InstanceStateBucket)
-	require.NoError(t, err)
-	streamInfo, err := stream.Info(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 1, streamInfo.Config.Replicas, "Should start with 1 replica")
-
-	// Try to update to same replica count (should be a no-op)
-	err = jsm.UpdateReplicas(1)
-	assert.NoError(t, err, "Updating to same replica count should succeed")
-
-	// Note: Increasing replicas beyond 1 requires additional NATS servers in the cluster,
-	// which we don't have in the test environment. In a single-node test server,
-	// attempting to increase replicas will fail with "insufficient resources" error.
-	// This test verifies the basic functionality works.
-}
-
-// TestJetStreamManager_UpdateReplicas_NoInit tests UpdateReplicas when JS not initialized.
-func TestJetStreamManager_UpdateReplicas_NoInit(t *testing.T) {
-	// Test with nil JetStream context
-	jsm := &JetStreamManager{
-		js:       nil,
-		replicas: 1,
-	}
-
-	err := jsm.UpdateReplicas(3)
-	assert.Error(t, err, "UpdateReplicas should error when JetStream not initialized")
-}
-
 // --- Stopped instance KV tests ---
 
 // TestJetStreamManager_WriteAndLoadStoppedInstance tests round-trip write and load of a stopped instance.
@@ -404,7 +359,7 @@ func TestJetStreamManager_WriteAndLoadStoppedInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -439,7 +394,7 @@ func TestJetStreamManager_LoadStoppedInstance_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -455,7 +410,7 @@ func TestJetStreamManager_DeleteStoppedInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -489,7 +444,7 @@ func TestJetStreamManager_ClaimStoppedInstance_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -517,7 +472,7 @@ func TestJetStreamManager_ClaimStoppedInstance_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -537,7 +492,7 @@ func TestJetStreamManager_ClaimStoppedInstance_ConcurrentClaim(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -588,7 +543,7 @@ func TestJetStreamManager_UpdateStoppedInstance_ConflictRetry(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -631,7 +586,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -652,7 +607,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -696,7 +651,7 @@ func TestJetStreamManager_ListStoppedInstances(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -738,7 +693,7 @@ func TestJetStreamManager_StoppedInstances_NoInterference(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -778,7 +733,7 @@ func TestJetStreamManager_StoppedInstance_KVNotInitialized(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	// Don't call InitKVBucket
 
@@ -803,7 +758,7 @@ func TestJetStreamManager_WriteServiceManifest(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitClusterStateBucket()
 	require.NoError(t, err)
@@ -840,7 +795,7 @@ func TestJetStreamManager_WriteServiceManifest_EmptyServices(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitClusterStateBucket()
 	require.NoError(t, err)
@@ -867,7 +822,7 @@ func TestJetStreamManager_WriteServiceManifest_ClusterKVNotInitialized(t *testin
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	// Don't call InitClusterStateBucket
 
@@ -895,7 +850,7 @@ func TestJetStreamManager_WriteState_RecoverAfterStreamLost(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -922,7 +877,7 @@ func TestJetStreamManager_LoadState_RecoverAfterStreamLost(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -941,7 +896,7 @@ func TestJetStreamManager_DeleteState_RecoverAfterStreamLost(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -958,7 +913,7 @@ func TestJetStreamManager_WriteStoppedInstance_RecoverAfterStreamLost(t *testing
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -984,7 +939,7 @@ func TestJetStreamManager_LoadStoppedInstance_RecoverAfterStreamLost(t *testing.
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1002,7 +957,7 @@ func TestJetStreamManager_DeleteStoppedInstance_RecoverAfterStreamLost(t *testin
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1018,7 +973,7 @@ func TestJetStreamManager_ListStoppedInstances_RecoverAfterStreamLost(t *testing
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1055,12 +1010,12 @@ func swapToNonJSContext(t *testing.T, jsm *JetStreamManager) {
 	if jsm.stateB != nil {
 		kv, err := jsm.stateB.KV(t.Context())
 		require.NoError(t, err)
-		jsm.setInstanceStateBucket(kvstore.NewOpenBucket(js, kv, instanceStateConfig(jsm.replicas)))
+		jsm.setInstanceStateBucket(kvstore.NewOpenBucket(js, kv, instanceStateConfig()))
 	}
 	if jsm.term != nil {
 		kv, err := jsm.term.KV(t.Context())
 		require.NoError(t, err)
-		jsm.term = kvstore.Over[vm.VM](js, kv, terminatedInstanceConfig(jsm.replicas))
+		jsm.term = kvstore.Over[vm.VM](js, kv, terminatedInstanceConfig())
 	}
 }
 
@@ -1069,7 +1024,7 @@ func TestJetStreamManager_WriteState_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1087,7 +1042,7 @@ func TestJetStreamManager_LoadState_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1105,7 +1060,7 @@ func TestJetStreamManager_DeleteState_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1122,7 +1077,7 @@ func TestJetStreamManager_WriteStoppedInstance_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1140,7 +1095,7 @@ func TestJetStreamManager_LoadStoppedInstance_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1158,7 +1113,7 @@ func TestJetStreamManager_DeleteStoppedInstance_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1175,7 +1130,7 @@ func TestJetStreamManager_ListStoppedInstances_RecoveryFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	err = jsm.InitKVBucket()
 	require.NoError(t, err)
@@ -1195,7 +1150,7 @@ func TestJetStreamManager_WriteAndLoadTerminatedInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1225,7 +1180,7 @@ func TestJetStreamManager_LoadTerminatedInstance_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1239,7 +1194,7 @@ func TestJetStreamManager_DeleteTerminatedInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1268,7 +1223,7 @@ func TestJetStreamManager_ListTerminatedInstances(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1304,7 +1259,7 @@ func TestJetStreamManager_WriteLoadDeleteTerminatedInstance_RoundTrip(t *testing
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1336,7 +1291,7 @@ func TestJetStreamManager_TerminatedInstance_KVNotInitialized(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	// Don't call InitTerminatedInstanceBucket
 
@@ -1365,7 +1320,7 @@ func TestJetStreamManager_UpdateTerminatedInstance_ConflictRetry(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1414,7 +1369,7 @@ func TestJetStreamManager_UpdateTerminatedInstance_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1432,7 +1387,7 @@ func TestJetStreamManager_WriteStoppedInstance_OverwritesConcurrentValue(t *test
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1470,7 +1425,7 @@ func TestJetStreamManager_WriteTerminatedInstance_RecoverAfterStreamLost(t *test
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1493,7 +1448,7 @@ func TestJetStreamManager_LoadTerminatedInstance_RecoverAfterStreamLost(t *testi
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1509,7 +1464,7 @@ func TestJetStreamManager_DeleteTerminatedInstance_RecoverAfterStreamLost(t *tes
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1524,7 +1479,7 @@ func TestJetStreamManager_ListTerminatedInstances_RecoverAfterStreamLost(t *test
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1540,7 +1495,7 @@ func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	require.NoError(t, jsm.InitKVBucket())
@@ -1570,7 +1525,7 @@ func TestJetStreamManager_ListStoppedInstances_SkipsVersionKey(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1585,7 +1540,7 @@ func TestJetStreamManager_ListTerminatedInstances_SkipsVersionKey(t *testing.T) 
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
 
@@ -1632,7 +1587,7 @@ func TestJetStreamManager_BestEffort_Success_NotifiesObserver(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1651,7 +1606,7 @@ func TestJetStreamManager_BestEffort_PutError_NotifiesObserver(t *testing.T) {
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1675,7 +1630,7 @@ func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1696,7 +1651,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitClusterStateBucket())
 
@@ -1746,7 +1701,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_NotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitClusterStateBucket())
 
@@ -1761,7 +1716,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	// Don't call InitClusterStateBucket
 
@@ -1781,7 +1736,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
 func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1806,7 +1761,7 @@ func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyIsNotFound(t *testing.T
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 	require.NoError(t, jsm.InitTerminatedInstanceBucket())
@@ -1842,7 +1797,7 @@ func TestJetStreamManager_LoadState_UnversionedRecordStillReads(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1867,7 +1822,7 @@ func TestJetStreamManager_LoadState_FutureRecordIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 
@@ -1887,7 +1842,7 @@ func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	jsm, err := NewJetStreamManager(nc, 1)
+	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())
 

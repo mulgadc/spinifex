@@ -398,7 +398,7 @@ func TestPolicyReaperDeletesAPolicyWithSeveralVersions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	const accountID = "000000000042"

@@ -195,7 +195,7 @@ func (s *EKSServiceImpl) nodegroupAcctKV(ctx context.Context, accountID string) 
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID, max(s.deps.ClusterSize, 1))
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get account bucket: %w", err)
 	}

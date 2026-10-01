@@ -34,6 +34,9 @@ func GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput, sv
 }
 
 func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfilesOutput, error) {
+	if err := validatePathPrefix(input.PathPrefix, identityPathPrefix); err != nil {
+		return nil, err
+	}
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
 		return nil, err

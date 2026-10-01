@@ -137,10 +137,10 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceWithRetry(t.Context(), nc, masterKey, 1)
+	iamSvc, err := handlers_iam.NewIAMServiceWithRetry(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, 1)
+	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey)
 	require.NoError(t, err)
 
 	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretAccessKey, masterKey)
@@ -155,10 +155,10 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// ECR auth bridge signing key: reuses the IAM master key to encrypt the
 	// signing key at rest in the same embedded JetStream KV, matching
 	// production's awsgw-keys wiring (services/awsgw/awsgw.go).
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey, 1)
+	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
 	require.NoError(t, err)
 
-	bedrockAccess := gateway_bedrock.NewModelAccessStore(js, 1)
+	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
 
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,

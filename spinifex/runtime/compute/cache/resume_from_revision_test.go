@@ -25,7 +25,7 @@ func TestResumeFromRevision_ReplaysWhatTheSnapshotMissed(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 
-	store := kvstore.New[vm.InstanceRecord](js, kvstore.Config{Name: "resume-bucket", History: 1, Replicas: 1})
+	store := kvstore.New[vm.InstanceRecord](js, kvstore.Config{Name: "resume-bucket", History: 1})
 
 	rec := func(id string) *vm.InstanceRecord {
 		r := &vm.InstanceRecord{}

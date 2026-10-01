@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/paging"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -60,6 +61,16 @@ func normalizeIPProtocol(proto string) (string, error) {
 	return "", fmt.Errorf("invalid IpProtocol %q: supported values are tcp, udp, icmp, -1 (or 6, 17, 1)", proto)
 }
 
+// validateSGRulePorts rejects a tcp or udp rule whose FromPort exceeds its ToPort.
+// Only create paths call it, so a rule stored before the check can still be
+// revoked or re-described by its ports.
+func validateSGRulePorts(proto string, fromPort, toPort int64) error {
+	if (proto == "tcp" || proto == "udp") && fromPort > toPort {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Invalid TCP/UDP port range(%d:%d)", fromPort, toPort)
+	}
+	return nil
+}
+
 // validateSGRule rejects CidrIp values that are non-canonical or IPv6, CidrIpv6
 // values that are non-canonical or IPv4, IpProtocol values the ACL builder
 // cannot express, and SourceSG values not matching the sg-ID format. At least
@@ -75,7 +86,7 @@ func validateSGRule(r SGRule) error {
 	if r.CidrIp != "" {
 		_, ipnet, err := net.ParseCIDR(r.CidrIp)
 		if err != nil {
-			return fmt.Errorf("invalid CidrIp %q: %w", r.CidrIp, err)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "CIDR block %s is malformed", r.CidrIp)
 		}
 		if ipnet.IP.To4() == nil {
 			return fmt.Errorf("invalid CidrIp %q: IPv6 belongs in CidrIpv6", r.CidrIp)
@@ -87,7 +98,7 @@ func validateSGRule(r SGRule) error {
 	if r.CidrIpv6 != "" {
 		_, ipnet, err := net.ParseCIDR(r.CidrIpv6)
 		if err != nil {
-			return fmt.Errorf("invalid CidrIpv6 %q: %w", r.CidrIpv6, err)
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "CIDR block %s is malformed", r.CidrIpv6)
 		}
 		if ipnet.IP.To4() != nil {
 			return fmt.Errorf("invalid CidrIpv6 %q: IPv4 belongs in CidrIp", r.CidrIpv6)
@@ -174,14 +185,17 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	vpcId := *input.VpcId
 	groupName := *input.GroupName
 
-	// "default" is reserved for the per-VPC default SG that CreateVpc
-	// provisions internally. Matches AWS behavior.
-	if groupName == defaultSecurityGroupName {
-		return nil, errors.New(awserrors.ErrorInvalidGroupReserved)
-	}
-
 	if err := s.requireVPCExists(ctx, accountID, vpcId); err != nil {
 		return nil, err
+	}
+	// "default" is reserved for the per-VPC default SG that CreateVpc
+	// provisions internally. AWS checks the VPC first.
+	if groupName == defaultSecurityGroupName {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Cannot use reserved security group name: %s", groupName)
+	}
+	if strings.HasPrefix(groupName, "sg-") {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Value (%s) for parameter GroupName is invalid. Group names may not be in the format sg-*.", groupName)
 	}
 
 	// Check for duplicate group name in the same VPC and enforce the per-VPC
@@ -219,7 +233,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 		}
 		sgsInVPC++
 		if existing.GroupName == groupName {
-			return nil, errors.New(awserrors.ErrorInvalidGroupDuplicate)
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidGroupDuplicate, "The security group '%s' already exists for VPC '%s'", groupName, vpcId)
 		}
 	}
 	if sgsInVPC >= maxSGsPerVPC {
@@ -273,6 +287,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 
 	return &ec2.CreateSecurityGroupOutput{
 		GroupId: aws.String(groupId),
+		Tags:    utils.MapToEC2Tags(record.Tags),
 	}, nil
 }
 
@@ -291,7 +306,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 		// success. Destroy orchestration tolerates it via awserrors.IsNotFound;
 		// a transient read error stays a server error.
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return nil, sgNotFoundError(groupId)
 		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -302,7 +317,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 	}
 
 	if record.IsDefault {
-		return nil, errors.New(awserrors.ErrorCannotDelete)
+		return nil, awserrors.Errorf(awserrors.ErrorCannotDelete, "the specified group: %q name: %q cannot be deleted by a user", groupId, record.GroupName)
 	}
 
 	if err := s.checkSGDependencies(ctx, accountID, groupId); err != nil {
@@ -337,14 +352,14 @@ func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID
 		}
 		entry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, r.SourceSG))
 		if err != nil {
-			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return sgNotFoundError(r.SourceSG)
 		}
 		var rec SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 		if rec.VpcId != ownerVpcId {
-			return errors.New(awserrors.ErrorInvalidGroupNotFound)
+			return sgNotFoundError(r.SourceSG)
 		}
 	}
 	return nil
@@ -381,8 +396,7 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 			// afterwards otherwise means cross-referencing the whole ENI table.
 			slog.WarnContext(ctx, "checkSGDependencies: SG still attached to ENI",
 				"groupId", groupId, "eniId", eni.NetworkInterfaceId, "accountID", accountID)
-			return awserrors.Errorf(awserrors.ErrorDependencyViolation,
-				"the security group has a dependent network interface %s that must be detached first", eni.NetworkInterfaceId)
+			return sgDependentObjectError(groupId)
 		}
 	}
 
@@ -421,16 +435,49 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 	return nil
 }
 
-// sgReferencedByError logs and returns the DependencyViolation naming the SG
-// whose rule still references groupId, so the blocking id survives even when
-// the message does not reach the client.
+// sgReferencedByError logs the SG whose rule still references groupId, since
+// AWS's message does not name it, and returns the DependencyViolation.
 func sgReferencedByError(ctx context.Context, accountID, groupId, referencingGroupId, direction string) error {
 	slog.WarnContext(ctx, "checkSGDependencies: SG referenced by another SG's rule",
 		"groupId", groupId, "referencingGroupId", referencingGroupId,
 		"direction", direction, "accountID", accountID)
-	return awserrors.Errorf(awserrors.ErrorDependencyViolation,
-		"the security group is referenced by a %s rule on security group %s that must be revoked first",
-		direction, referencingGroupId)
+	return sgDependentObjectError(groupId)
+}
+
+// sgDependentObjectError is AWS's answer to deleting a group that an
+// interface or another group's rule still uses; it does not say which.
+func sgDependentObjectError(groupId string) error {
+	return awserrors.Errorf(awserrors.ErrorDependencyViolation, "resource %s has a dependent object", groupId)
+}
+
+// sgRuleDuplicateError is AWS's answer to adding a rule the group already
+// has, which describes the rule by its peer, protocol and ports.
+func sgRuleDuplicateError(rule SGRule) error {
+	peer := rule.CidrIp
+	if peer == "" {
+		peer = rule.CidrIpv6
+	}
+	if peer == "" {
+		peer = rule.SourceSG
+	}
+	var desc string
+	switch rule.IpProtocol {
+	case allProtocols:
+		desc = fmt.Sprintf("peer: %s, ALL, ALLOW", peer)
+	case "icmp":
+		desc = fmt.Sprintf("peer: %s, ICMP, type: %s, code: %s, ALLOW", peer, icmpField(rule.FromPort), icmpField(rule.ToPort))
+	default:
+		desc = fmt.Sprintf("peer: %s, %s, from port: %d, to port: %d, ALLOW", peer, strings.ToUpper(rule.IpProtocol), rule.FromPort, rule.ToPort)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidPermissionDuplicate, "the specified rule %q already exists", desc)
+}
+
+// icmpField renders an ICMP type or code as AWS does, with -1 as ALL.
+func icmpField(v int64) string {
+	if v == -1 {
+		return "ALL"
+	}
+	return strconv.FormatInt(v, 10)
 }
 
 // describeSecurityGroupsValidFilters defines the set of filter names accepted by DescribeSecurityGroups.
@@ -440,11 +487,26 @@ var describeSecurityGroupsValidFilters = map[string]bool{
 	"vpc-id":             true,
 	"description":        true,
 	"ip-permission.cidr": true,
+	"tag-key":            true,
+	"tag-value":          true,
+}
+
+// AWS accepts 5 and 1000 despite the "smaller than" and "greater than" wording.
+var describeSecurityGroupsPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value smaller than 1000.",
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+	WithIDs:    "The parameter securityGroupIdSet cannot be used with the parameter maxResults",
 }
 
 // DescribeSecurityGroups lists security groups with optional awsfilters.
 func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error) {
 	groups := []*ec2.SecurityGroup{}
+
+	pageReq, err := describeSecurityGroupsPaging.Parse(input.MaxResults, input.NextToken, len(input.GroupIds))
+	if err != nil {
+		return nil, err
+	}
 
 	groupIDs := make(map[string]bool)
 	for _, id := range input.GroupIds {
@@ -457,6 +519,14 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroups: invalid filter", "err", err)
 		return nil, err
+	}
+	for _, id := range input.GroupIds {
+		if id == nil {
+			continue
+		}
+		if err := sgIDMalformedError(*id); err != nil {
+			return nil, err
+		}
 	}
 
 	prefix := accountID + "."
@@ -504,24 +574,27 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 				found[*sg.GroupId] = true
 			}
 		}
-		for id := range groupIDs {
-			if !found[id] {
-				return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		for _, id := range input.GroupIds {
+			if id != nil && !found[*id] {
+				return nil, sgNotFoundError(*id)
 			}
 		}
 	}
+
+	groups, nextToken := paging.EC2Page(groups, func(g *ec2.SecurityGroup) string { return *g.GroupId }, pageReq)
 
 	slog.InfoContext(ctx, "DescribeSecurityGroups completed", "count", len(groups), "accountID", accountID)
 
 	return &ec2.DescribeSecurityGroupsOutput{
 		SecurityGroups: groups,
+		NextToken:      nextToken,
 	}, nil
 }
 
 // sgMatchesFilters checks whether a SecurityGroupRecord satisfies all parsed awsfilters.
 func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 
@@ -556,12 +629,9 @@ func sgMatchesFilters(record *SecurityGroupRecord, filters map[string][]string) 
 
 // sgIngressCIDRMatchesAny checks if any ingress rule's CIDR matches any of the filter values.
 func sgIngressCIDRMatchesAny(rules []SGRule, values []string) bool {
-	for _, rule := range rules {
-		if rule.CidrIp != "" && awsfilters.MatchesAny(values, rule.CidrIp) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(rules, func(rule SGRule) bool {
+		return rule.CidrIp != "" && awsfilters.MatchesAny(values, rule.CidrIp)
+	})
 }
 
 // getSecurityGroupsForVpcValidFilters defines the set of filter names accepted
@@ -733,27 +803,37 @@ var describeSecurityGroupRulesValidFilters = map[string]bool{
 	"group-id":               true,
 	"security-group-rule-id": true,
 	"tag-key":                true,
+	"tag-value":              true,
+}
+
+var describeSecurityGroupRulesPaging = paging.EC2{
+	MaxResults:           1000,
+	TooLarge:             "Value ( %d ) for parameter maxResults is invalid. Expecting a value less than or equal to 1000.",
+	TooSmall:             "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than or equal to 5.",
+	WithIDs:              "The parameter 'securityGroupRuleIds' may not be used in combination with 'maxResults'.",
+	PaginationTokenError: true,
 }
 
 // DescribeSecurityGroupRules returns a flat list of SecurityGroupRule objects
 // for the caller's account, optionally narrowed by SecurityGroupRuleIds or
-// awsfilters. MaxResults and NextToken are accepted but ignored.
+// filters, one page at a time.
 func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, accountID string) (*ec2.DescribeSecurityGroupRulesOutput, error) {
-	requested := make(map[string]bool)
-	if input != nil {
-		for _, id := range input.SecurityGroupRuleIds {
-			if id == nil || *id == "" {
-				return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
-			}
-			requested[*id] = true
-		}
+	if input == nil {
+		input = &ec2.DescribeSecurityGroupRulesInput{}
+	}
+	pageReq, err := describeSecurityGroupRulesPaging.Parse(input.MaxResults, input.NextToken, len(input.SecurityGroupRuleIds))
+	if err != nil {
+		return nil, err
 	}
 
-	var filters []*ec2.Filter
-	if input != nil {
-		filters = input.Filters
+	requested := make(map[string]bool)
+	for _, id := range input.SecurityGroupRuleIds {
+		if id == nil || *id == "" {
+			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
+		}
+		requested[*id] = true
 	}
-	parsedFilters, err := awsfilters.ParseFilters(filters, describeSecurityGroupRulesValidFilters)
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSecurityGroupRulesValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeSecurityGroupRules: invalid filter", "err", err)
 		return nil, err
@@ -805,11 +885,18 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 		}
 	}
 
-	if len(requested) > 0 {
-		for id := range requested {
-			if !emitted[id] {
-				return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
-			}
+	for _, id := range input.SecurityGroupRuleIds {
+		if !emitted[*id] {
+			return nil, sgRuleNotFoundError(*id)
+		}
+	}
+
+	rules, nextToken := paging.EC2Page(rules, func(r *ec2.SecurityGroupRule) string { return *r.SecurityGroupRuleId }, pageReq)
+	// AWS lists an untagged rule with empty Tags here, but omits them from
+	// the Authorize* responses that share the rule shape.
+	for _, r := range rules {
+		if r.Tags == nil {
+			r.Tags = []*ec2.Tag{}
 		}
 	}
 
@@ -817,6 +904,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 
 	return &ec2.DescribeSecurityGroupRulesOutput{
 		SecurityGroupRules: rules,
+		NextToken:          nextToken,
 	}, nil
 }
 
@@ -824,7 +912,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 // single rule.
 func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -834,10 +922,6 @@ func sgRuleMatchesFilters(record *SecurityGroupRecord, rule SGRule, filters map[
 			}
 		case "security-group-rule-id":
 			if !awsfilters.MatchesAny(values, rule.RuleId) {
-				return false
-			}
-		case "tag-key":
-			if !sgRuleMatchesTagKey(rule.Tags, values) {
 				return false
 			}
 		default:
@@ -918,17 +1002,6 @@ func findSGRuleByID(rules []SGRule, ruleID string) *SGRule {
 	return nil
 }
 
-// sgRuleMatchesTagKey reports whether the rule carries any of the named tag
-// keys, whatever their values.
-func sgRuleMatchesTagKey(tags map[string]string, keys []string) bool {
-	for key := range tags {
-		if awsfilters.MatchesAny(keys, key) {
-			return true
-		}
-	}
-	return false
-}
-
 // applySGRuleTags stamps the security-group-rule TagSpecification onto every
 // rule an authorize call creates. AWS tags the rules the call creates and no
 // others, so this runs on the new rules alone.
@@ -944,8 +1017,8 @@ func applySGRuleTags(rules []SGRule, specs []*ec2.TagSpecification) []SGRule {
 }
 
 // sgRuleToSecurityGroupRule flattens a stored SGRule into the AWS API shape.
-// accountID supplies GroupOwnerId and ReferencedGroupInfo.UserId; VpcId is
-// derived from the parent record (same-VPC references are enforced on write).
+// accountID supplies GroupOwnerId and ReferencedGroupInfo.UserId. AWS names
+// no VpcId for a same-VPC reference, the only kind Spinifex allows.
 func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgress bool, accountID string) *ec2.SecurityGroupRule {
 	// An all-protocol rule has no ports to report. AWS answers -1 for both;
 	// reporting the stored zeroes offers a caller two ports it never sent.
@@ -976,7 +1049,6 @@ func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgres
 		out.ReferencedGroupInfo = &ec2.ReferencedSecurityGroup{
 			GroupId: aws.String(rule.SourceSG),
 			UserId:  aws.String(accountID),
-			VpcId:   aws.String(record.VpcId),
 		}
 	}
 	return out
@@ -993,7 +1065,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1008,6 +1080,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
+		if _, ok := awserrors.ResolveErrorCode(err); ok {
+			return nil, err
+		}
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 	newRules = applySGRuleTags(newRules, input.TagSpecifications)
@@ -1020,7 +1095,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	}
 	for _, nr := range newRules {
 		if _, ok := existing[sgRuleKey(nr)]; ok {
-			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+			return nil, sgRuleDuplicateError(nr)
 		}
 	}
 	if len(record.IngressRules)+len(newRules) > maxRulesPerSGSide {
@@ -1073,7 +1148,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1088,6 +1163,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
+		if _, ok := awserrors.ResolveErrorCode(err); ok {
+			return nil, err
+		}
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
 	}
 	newRules = applySGRuleTags(newRules, input.TagSpecifications)
@@ -1100,7 +1178,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	}
 	for _, nr := range newRules {
 		if _, ok := existing[sgRuleKey(nr)]; ok {
-			return nil, errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+			return nil, sgRuleDuplicateError(nr)
 		}
 	}
 	if len(record.EgressRules)+len(newRules) > maxRulesPerSGSide {
@@ -1153,7 +1231,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1220,7 +1298,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1341,7 +1419,7 @@ func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID
 	key := utils.AccountKey(accountID, req.groupId)
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return sgNotFoundError(req.groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1417,7 +1495,7 @@ func applySGRuleDescriptions(rules []SGRule, descriptions []*ec2.SecurityGroupRu
 		// absent from this record and so is not-found, never a silent no-op.
 		i, ok := byID[id]
 		if !ok {
-			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+			return nil, sgRuleNotFoundError(id)
 		}
 		if d.Description != nil {
 			out[i].Description = *d.Description
@@ -1534,7 +1612,7 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidGroupNotFound)
+		return nil, sgNotFoundError(groupId)
 	}
 
 	var record SecurityGroupRecord
@@ -1677,7 +1755,7 @@ func checkSGRuleModificationDuplicates(record *SecurityGroupRecord, mods []sgRul
 
 	for i, r := range rules {
 		if !replaced[i] && newKeys[sgRuleKey(r)] {
-			return errors.New(awserrors.ErrorInvalidPermissionDuplicate)
+			return sgRuleDuplicateError(r)
 		}
 	}
 	return nil
@@ -1708,6 +1786,9 @@ func sgRuleRequestToSGRule(req *ec2.SecurityGroupRuleRequest) (SGRule, error) {
 				"Invalid value for portRange. Must specify both from and to ports with TCP/UDP.")
 		}
 		r.FromPort, r.ToPort = *req.FromPort, *req.ToPort
+		if err := validateSGRulePorts(proto, r.FromPort, r.ToPort); err != nil {
+			return SGRule{}, err
+		}
 	case allProtocols:
 		// Stored as 0/0, the form authorize stores for the no-ports case, so the
 		// rule's sgRuleKey matches Terraform's and the default egress rule's.
@@ -1782,8 +1863,11 @@ func sgRuleIDLookupError(id string) error {
 	if SGRuleIDIsMalformed(id) {
 		return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, "Invalid id: %q", id)
 	}
-	return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound,
-		"The security group rule ID '%s' does not exist", id)
+	return sgRuleNotFoundError(id)
+}
+
+func sgRuleNotFoundError(id string) error {
+	return awserrors.IDNotFound(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound, "security group rule", id)
 }
 
 // sgRecordToEC2 converts a SecurityGroupRecord to an EC2 SecurityGroup.
@@ -1794,8 +1878,8 @@ func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID st
 		Description:         aws.String(record.Description),
 		VpcId:               aws.String(record.VpcId),
 		OwnerId:             aws.String(accountID),
-		IpPermissions:       sgRulesToIpPermissions(record.IngressRules),
-		IpPermissionsEgress: sgRulesToIpPermissions(record.EgressRules),
+		IpPermissions:       sgRulesToIpPermissions(record.IngressRules, accountID),
+		IpPermissionsEgress: sgRulesToIpPermissions(record.EgressRules, accountID),
 	}
 
 	sg.Tags = utils.MapToEC2Tags(record.Tags)
@@ -1837,6 +1921,11 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 		}
 		if perm.ToPort != nil {
 			toPort = *perm.ToPort
+		}
+		if mode == sgParseAuthorize {
+			if err := validateSGRulePorts(proto, fromPort, toPort); err != nil {
+				return nil, err
+			}
 		}
 
 		appended := false
@@ -1902,7 +1991,8 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 }
 
 // sgRulesToIpPermissions converts SGRule slice to AWS IpPermission slice.
-func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
+// accountID owns every referenced group, since references stay in one VPC.
+func sgRulesToIpPermissions(rules []SGRule, accountID string) []*ec2.IpPermission {
 	// Group rules by protocol+port range
 	type permKey struct {
 		IpProtocol string
@@ -1915,10 +2005,12 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 		key := permKey{IpProtocol: rule.IpProtocol, FromPort: rule.FromPort, ToPort: rule.ToPort}
 		perm, exists := grouped[key]
 		if !exists {
-			perm = &ec2.IpPermission{
-				IpProtocol: aws.String(rule.IpProtocol),
-				FromPort:   aws.Int64(rule.FromPort),
-				ToPort:     aws.Int64(rule.ToPort),
+			perm = &ec2.IpPermission{IpProtocol: aws.String(rule.IpProtocol)}
+			// AWS omits both ports on an all-protocol permission here, unlike the
+			// -1/-1 that DescribeSecurityGroupRules reports for the same rule.
+			if rule.IpProtocol != allProtocols {
+				perm.FromPort = aws.Int64(rule.FromPort)
+				perm.ToPort = aws.Int64(rule.ToPort)
 			}
 			grouped[key] = perm
 		}
@@ -1938,7 +2030,7 @@ func sgRulesToIpPermissions(rules []SGRule) []*ec2.IpPermission {
 			perm.Ipv6Ranges = append(perm.Ipv6Ranges, ipRange)
 		}
 		if rule.SourceSG != "" {
-			pair := &ec2.UserIdGroupPair{GroupId: aws.String(rule.SourceSG)}
+			pair := &ec2.UserIdGroupPair{GroupId: aws.String(rule.SourceSG), UserId: aws.String(accountID)}
 			if rule.Description != "" {
 				pair.Description = aws.String(rule.Description)
 			}
@@ -2007,7 +2099,11 @@ func removeSGRules(existing, toRemove []SGRule) []SGRule {
 }
 
 // sgRuleKey returns a string key for deduplication/matching of SG rules.
+// An all-protocol rule has no ports, so its stored or requested ports are ignored.
 func sgRuleKey(r SGRule) string {
+	if r.IpProtocol == allProtocols {
+		r.FromPort, r.ToPort = 0, 0
+	}
 	return fmt.Sprintf("%s:%d:%d:%s:%s:%s", r.IpProtocol, r.FromPort, r.ToPort, r.CidrIp, r.CidrIpv6, r.SourceSG)
 }
 
@@ -2036,7 +2132,7 @@ func resolveRuleIDsToRemove(existing []SGRule, ruleIDs []*string) ([]SGRule, err
 		}
 		r, ok := byID[*idp]
 		if !ok {
-			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound)
+			return nil, sgRuleNotFoundError(*idp)
 		}
 		out = append(out, r)
 	}

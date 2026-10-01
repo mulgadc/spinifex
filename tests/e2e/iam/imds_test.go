@@ -104,7 +104,7 @@ type imdsCredDoc struct {
 func runIMDS(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — IMDSv2 Host-Served Instance Metadata")
 	harness.SkipIfNoOVN(t)
-	requireSSHHealthy(t)
+	sshHealth.Require(t)
 
 	adminAccount := harness.IAMAccountID(t, fix.AWS)
 	keyName, keyPath := needKeyPair(t, fix)
@@ -228,7 +228,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 			"public-hostname must be the AWS-shaped EC2 name for public-ipv4")
 
 		harness.Step(t, "resolve IMDS public-hostname %s from the guest", gotHost)
-		resolved := runSSH(t, tgtX, "getent ahostsv4 "+gotHost)
+		resolved := harness.RunSSH(t, tgtX, "getent ahostsv4 "+gotHost)
 		require.Containsf(t, strings.Fields(resolved), pubIP,
 			"public-hostname %s did not resolve to public-ipv4 %s: %s", gotHost, pubIP, resolved)
 	} else {
@@ -420,7 +420,7 @@ func imdsProbe(t *testing.T, fix *Fixture, keyPath string, spec imdsVMSpec) (str
 		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
 			InstanceIds: []*string{aws.String(id)},
 		})
-		_ = waitForInstanceStateSoft(fix.AWS, id, "terminated", 5*time.Minute)
+		_ = harness.WaitForInstanceStateSoft(fix.AWS, id, "terminated", 5*time.Minute)
 	})
 
 	inst := harness.WaitForInstanceState(t, fix.AWS, id, "running")
@@ -430,7 +430,7 @@ func imdsProbe(t *testing.T, fix *Fixture, keyPath string, spec imdsVMSpec) (str
 
 	host, port := harness.InstancePublicSSHHost(t, inst)
 	harness.Step(t, "wait for %s SSH at %s:%d", id, host, port)
-	waitForSSHHandshake(t, host, port, keyPath)
+	sshHealth.WaitReady(t, host, port, keyPath)
 	return id, priv, eni, harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 }
 
@@ -540,34 +540,34 @@ func imdsAssertBootFromIMDS(t *testing.T, tgt harness.SSHTarget, privIP string) 
 	t.Helper()
 	harness.Step(t, "boot-from-IMDS: cloud-init selected the aws (Ec2) datasource")
 	ds := strings.ToLower(strings.TrimSpace(
-		runSSH(t, tgt, "cloud-id 2>/dev/null || cloud-init query --format '{{datasource}}'")))
+		harness.RunSSH(t, tgt, "cloud-id 2>/dev/null || cloud-init query --format '{{datasource}}'")))
 	require.Truef(t, strings.Contains(ds, "aws") || strings.Contains(ds, "ec2"),
 		"cloud-init must report the aws/Ec2 datasource (got %q) — not the retired NoCloud seed", ds)
 
 	harness.Step(t, "boot-from-IMDS: no NoCloud cidata seed device attached")
-	labels := strings.ToLower(runSSH(t, tgt, "lsblk -no LABEL"))
+	labels := strings.ToLower(harness.RunSSH(t, tgt, "lsblk -no LABEL"))
 	require.NotContainsf(t, labels, "cidata",
 		"no cidata-labelled device may be attached — the seed ISO is retired (lsblk LABELs: %q)", labels)
 
 	harness.Step(t, "boot-from-IMDS: login is the AMI stock default user %q", tgt.User)
-	require.Equal(t, tgt.User, strings.TrimSpace(runSSH(t, tgt, "id -un")),
+	require.Equal(t, tgt.User, strings.TrimSpace(harness.RunSSH(t, tgt, "id -un")),
 		"in-guest login must be the AMI stock default user, not a Spinifex-forced account")
 
 	harness.Step(t, "boot-from-IMDS: AWS-form hostname ip-<dashed-ip>")
 	wantHost := "ip-" + strings.ReplaceAll(privIP, ".", "-")
-	gotHost := strings.TrimSpace(runSSH(t, tgt, "hostname"))
+	gotHost := strings.TrimSpace(harness.RunSSH(t, tgt, "hostname"))
 	require.Truef(t, strings.HasPrefix(gotHost, wantHost),
 		"hostname must be the AWS form %q rendered from IMDS local-hostname (got %q)", wantHost, gotHost)
 
 	harness.Step(t, "boot-from-IMDS: primary NIC up with the VPC IP %s", privIP)
-	addrs := runSSH(t, tgt, "ip -4 -o addr show scope global")
+	addrs := harness.RunSSH(t, tgt, "ip -4 -o addr show scope global")
 	require.Containsf(t, addrs, privIP,
 		"the Ec2 datasource must render the primary NIC with the VPC IP %s from IMDS (ip addr: %q)", privIP, addrs)
 
 	harness.Step(t, "boot-from-IMDS: user-data runcmd executed")
 	deadline := time.Now().Add(90 * time.Second)
 	for {
-		out, _ := runSSHCombined(tgt, "cat "+imdsUDDoneFile+" 2>/dev/null")
+		out, _ := harness.RunSSHCombined(tgt, "cat "+imdsUDDoneFile+" 2>/dev/null")
 		if strings.Contains(out, imdsUDMarker) {
 			break
 		}
@@ -777,7 +777,7 @@ func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, subnetID,
 	for {
 		cmd := fmt.Sprintf(
 			`curl -sf -X PUT "%s/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 120"`, metaURL)
-		out, err := runSSHCombined(tgt, cmd)
+		out, err := harness.RunSSHCombined(tgt, cmd)
 		switch {
 		case err != nil:
 			lastErr = fmt.Errorf("token PUT failed: %w (out=%q)", err, out)
@@ -797,11 +797,11 @@ func imdsAwaitToken(t *testing.T, fix *Fixture, tgt harness.SSHTarget, subnetID,
 
 // imdsGet fetches a token-gated path from inside the guest and returns the
 // trimmed body. -sf turns any HTTP >= 400 into a non-zero exit, so a 4xx/5xx
-// fails the test loudly with the server status visible via runSSH's stderr.
+// fails the test loudly with the server status visible via harness.RunSSH's stderr.
 func imdsGet(t *testing.T, tgt harness.SSHTarget, token, path string) string {
 	t.Helper()
 	cmd := fmt.Sprintf(`curl -sf -H "X-aws-ec2-metadata-token: %s" %s%s`, token, metaURL, path)
-	return strings.TrimSpace(runSSH(t, tgt, cmd))
+	return strings.TrimSpace(harness.RunSSH(t, tgt, cmd))
 }
 
 // imdsExpectedPubKey derives the OpenSSH public key (type + base64) the IMDS
@@ -826,7 +826,7 @@ func imdsExpectedPubKey(t *testing.T, pemPath string) (keyType, base64Key string
 // argument (empty for the tokenless probe).
 func imdsCode(tgt harness.SSHTarget, headerArg, path string) string {
 	cmd := fmt.Sprintf(`curl -s -o /dev/null -w '%%{http_code}' %s %s%s`, headerArg, metaURL, path)
-	out, _ := runSSHCombined(tgt, cmd)
+	out, _ := harness.RunSSHCombined(tgt, cmd)
 	return strings.TrimSpace(out)
 }
 

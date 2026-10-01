@@ -48,7 +48,7 @@ func accessGateway(t *testing.T) *GatewayConfig {
 	_, _, js := testutil.StartTestJetStream(t)
 	return &GatewayConfig{
 		DisableLogging:     true,
-		BedrockAccessAdmin: gateway_bedrock.NewModelAccessStore(js, 1),
+		BedrockAccessAdmin: gateway_bedrock.NewModelAccessStore(js),
 		IAMService:         allowAllIAMService(),
 	}
 }

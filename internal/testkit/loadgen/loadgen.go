@@ -12,7 +12,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -503,10 +505,5 @@ func Summary(report *Report) string {
 }
 
 func sortedOps(ops map[string]OpStats) []string {
-	names := make([]string, 0, len(ops))
-	for name := range ops {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(ops))
 }

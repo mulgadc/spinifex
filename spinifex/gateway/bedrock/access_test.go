@@ -72,7 +72,7 @@ func TestAccessKey_EncodesModelID(t *testing.T) {
 // Revoke.
 func TestModelAccessStore_GrantResolveRevoke(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 	ctx := context.Background()
 
 	granted, err := store.Granted(ctx, "000000000001", selfHostTestModel)
@@ -100,7 +100,7 @@ func TestModelAccessStore_GrantResolveRevoke(t *testing.T) {
 
 func TestModelAccessStore_GrantIsIdempotent(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 	ctx := context.Background()
 
 	require.NoError(t, store.Grant(ctx, "000000000001", selfHostTestModel))
@@ -116,7 +116,7 @@ func TestModelAccessStore_GrantIsIdempotent(t *testing.T) {
 // error.
 func TestModelAccessStore_RevokeMissingGrantSucceeds(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 
 	assert.NoError(t, store.Revoke(context.Background(), "000000000001", selfHostTestModel))
 }
@@ -125,7 +125,7 @@ func TestModelAccessStore_RevokeMissingGrantSucceeds(t *testing.T) {
 // reversible, including the ':' that forced it.
 func TestModelAccessStore_List_RoundTripsModelIDs(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 	ctx := context.Background()
 
 	require.NoError(t, store.Grant(ctx, "000000000001", selfHostTestModel))
@@ -143,7 +143,7 @@ func TestModelAccessStore_List_RoundTripsModelIDs(t *testing.T) {
 
 func TestModelAccessStore_ListEmptyAccount(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 
 	models, err := store.List(context.Background(), "000000000009")
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestModelAccessStore_ListEmptyAccount(t *testing.T) {
 // handlers_quota exempts the system account from every quota dimension.
 func TestModelAccessStore_SystemAccountBypassesGrants(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 
 	granted, err := store.Granted(context.Background(), utils.GlobalAccountID, selfHostTestModel)
 	require.NoError(t, err)
@@ -189,7 +189,7 @@ func TestGrantedCatalogEntry_ErrorClasses(t *testing.T) {
 // who then revokes a grant does not have it restored by the next restart.
 func TestSeedAccountGrants_SeedsOnceThenRespectsRevoke(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 	ctx := context.Background()
 	const account = "000000000001"
 
@@ -218,7 +218,7 @@ func TestSeedAccountGrants_SeedsOnceThenRespectsRevoke(t *testing.T) {
 // account to end up with the catalog.
 func TestSeedAccountGrants_LeavesOtherAccountsDenied(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 	ctx := context.Background()
 
 	_, err := store.SeedAccountGrants(ctx, "000000000001", CatalogModelIDs())
@@ -233,7 +233,7 @@ func TestSeedAccountGrants_LeavesOtherAccountsDenied(t *testing.T) {
 // read back as a grant would show up as a bogus model ID in List.
 func TestSeedAccountGrants_MarkerIsNotAGrant(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewModelAccessStore(js, 1)
+	store := NewModelAccessStore(js)
 	ctx := context.Background()
 
 	_, err := store.SeedAccountGrants(ctx, "000000000001", nil)
@@ -248,7 +248,7 @@ func TestSeedAccountGrants_MarkerIsNotAGrant(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestModelAccessStore_RequiresJetStream(t *testing.T) {
-	store := NewModelAccessStore(nil, 1)
+	store := NewModelAccessStore(nil)
 	ctx := context.Background()
 
 	_, err := store.Granted(ctx, "000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0")

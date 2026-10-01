@@ -195,7 +195,7 @@ func TestRunBedrockRPMSync_DisabledNoop(t *testing.T) {
 	s := New(Limits{}, nil)
 	done := make(chan struct{})
 	go func() {
-		s.RunBedrockRPMSync(context.Background(), nil, 1)
+		s.RunBedrockRPMSync(context.Background(), nil)
 		close(done)
 	}()
 	select {

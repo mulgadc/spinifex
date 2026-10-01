@@ -40,6 +40,10 @@ func (s *IAMServiceImpl) CreateInstanceProfile(accountID string, input *iam.Crea
 		}
 	}
 
+	if err := validateTags(input.Tags, exactKeys); err != nil {
+		return nil, err
+	}
+
 	profileID, err := generateIAMID("AIPA")
 	if err != nil {
 		return nil, fmt.Errorf("generate instance profile ID: %w", err)
@@ -261,25 +265,28 @@ func (s *IAMServiceImpl) ResolveInstanceProfile(accountID, nameOrARN string) (*I
 		return s.getInstanceProfile(ctx, accountID, nameOrARN)
 	}
 
-	profileAccountID, profileName, err := parseInstanceProfileARN(nameOrARN)
-	if err != nil {
+	var profile *InstanceProfile
+	_, _, err := auth.ResolveInstanceProfileARN(nameOrARN, func(profileAccountID, profileName string) (string, error) {
+		if profileAccountID != accountID {
+			return "", errors.New(awserrors.ErrorAccessDenied)
+		}
+		p, err := s.getInstanceProfile(ctx, accountID, profileName)
+		if err != nil {
+			return "", err
+		}
+		profile = p
+		return p.ARN, nil
+	})
+	switch {
+	case errors.Is(err, auth.ErrInvalidInstanceProfileARN):
+		return nil, errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
+	case errors.Is(err, auth.ErrInstanceProfileARNMismatch):
+		// A non-canonical spelling names no stored profile.
+		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	case err != nil:
 		return nil, err
 	}
-	if profileAccountID != accountID {
-		return nil, errors.New(awserrors.ErrorAccessDenied)
-	}
-	return s.getInstanceProfile(ctx, accountID, profileName)
-}
-
-// parseInstanceProfileARN extracts accountID and profile name from an IAM
-// instance-profile ARN, reporting every malformed shape as the one AWS error
-// code this API returns.
-func parseInstanceProfileARN(arnStr string) (accountID, name string, err error) {
-	accountID, name, err = auth.ParseInstanceProfileARN(arnStr)
-	if err != nil {
-		return "", "", errors.New(awserrors.ErrorInvalidIamInstanceProfileArnMalformed)
-	}
-	return accountID, name, nil
+	return profile, nil
 }
 
 // TagInstanceProfile upserts tags on an instance profile under CAS, like the
@@ -287,13 +294,13 @@ func parseInstanceProfileARN(arnStr string) (accountID, name string, err error) 
 // RoleName and silently undo a concurrent role attach.
 func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
 	ctx := context.Background()
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateTags(input.Tags, exactKeys); err != nil {
 		return nil, err
 	}
 
 	profileName := *input.InstanceProfileName
 	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
-		merged := mergeTags(p.Tags, input.Tags)
+		merged := mergeTags(p.Tags, input.Tags, exactKeys)
 		if len(merged) > maxTagsPerResource {
 			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
 		}
@@ -311,10 +318,13 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 // UntagInstanceProfile removes the named tag keys from an instance profile;
 // unknown keys are a no-op.
 func (s *IAMServiceImpl) UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	if err := validateTagKeys(input.TagKeys); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
-		kept := removeTagKeys(p.Tags, input.TagKeys)
+		kept := removeTagKeys(p.Tags, input.TagKeys, exactKeys)
 		if len(kept) == len(p.Tags) {
 			return false, nil
 		}

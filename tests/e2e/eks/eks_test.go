@@ -69,7 +69,7 @@ func TestEKS(t *testing.T) {
 	t.Run("DescribeKubeconfigArtifacts", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		path := writeKubeconfig(t, artifacts, fx.Cluster)
-		raw, err := os.ReadFile(path) //nolint:gosec // artifact path built by the test
+		raw, err := os.ReadFile(path)
 		require.NoError(t, err)
 		kc := string(raw)
 		assert.Contains(t, kc, "server: "+aws.StringValue(fx.Cluster.Endpoint), "kubeconfig server = cluster endpoint")
@@ -1018,7 +1018,7 @@ func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, a
 	t.Cleanup(func() { harness.DeleteWorkerEgress(t, c, fx.Egress) })
 
 	harness.Phase(t, "Creating cluster %q", fx.ClusterName)
-	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/%s-role", fx.AccountID, fx.ClusterName)
+	roleArn := harness.CreateEKSClusterRole(t, c, fx.ClusterName+"-role")
 	_, err = c.EKS.CreateCluster(&eks.CreateClusterInput{
 		Name:    aws.String(fx.ClusterName),
 		RoleArn: aws.String(roleArn),

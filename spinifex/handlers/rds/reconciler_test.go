@@ -396,7 +396,7 @@ func TestReconciler_RunHoldsLeadershipIndependentlyOfTheReconcileLoop(t *testing
 	done := make(chan struct{})
 	go func() { defer close(done); h.rec.Run(ctx) }()
 
-	require.Eventually(t, h.rec.isLeader, 2*time.Second, 10*time.Millisecond,
+	require.Eventually(t, h.rec.lease.Held, 2*time.Second, 10*time.Millisecond,
 		"Run must elect without waiting for a reconcile tick")
 
 	cancel()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -125,10 +126,7 @@ func isStoppedInstance(ctx context.Context, instanceID string, natsConn *nats.Co
 		return false
 	}
 
-	for _, res := range output.Reservations {
-		if len(res.Instances) > 0 {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(output.Reservations, func(res *ec2.Reservation) bool {
+		return len(res.Instances) > 0
+	})
 }

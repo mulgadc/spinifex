@@ -29,7 +29,7 @@ func newRecordManagerConn(t *testing.T) (*daemon.JetStreamManager, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, m.InitKVBucket())
 	require.NoError(t, m.InitTerminatedInstanceBucket())
@@ -259,7 +259,7 @@ func TestInstanceRecord_CarriesDeletionTimestamp(t *testing.T) {
 // store: Tier 1 boot runs before cluster KV exists.
 func TestInstanceRecordAccessors_ReportAnUnopenedBucket(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	m, err := daemon.NewJetStreamManager(nc, 1)
+	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 
 	assert.Error(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))

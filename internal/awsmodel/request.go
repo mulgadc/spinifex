@@ -65,22 +65,33 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	if !ok {
 		return RequestPlan{}, fmt.Errorf("awsmodel: %s operation %q is not modelled", service, operationName)
 	}
+	if service == ACM {
+		if _, err := importMaterial(); err != nil {
+			return RequestPlan{}, err
+		}
+	}
 	declared := model.operationErrorCodes(operation)
 	if operation.Input == nil {
 		return RequestPlan{Cases: []RequestCase{{Operation: operationName, Input: map[string]any{}}}, DeclaredErrors: declared}, nil
 	}
 
-	first := model.newRequestGenerator(0, options)
+	// A create or delete names a resource of its own, so it neither collides
+	// with a fixture nor removes one.
+	if strings.HasPrefix(operationName, "Create") || strings.HasPrefix(operationName, "Delete") {
+		options.Fixtures = nil
+	}
+	first := model.newRequestGenerator(operationName, 0, options)
 	full, ok := first.structure(operation.Input.Shape, nil, 0)
 	plan := RequestPlan{Skipped: first.skipped, Unbroken: first.unbroken, DeclaredErrors: declared}
 	if !ok {
 		plan.Skipped = append(plan.Skipped, Skip{Path: "$", Reason: "a required member cannot be generated"})
 		return plan, nil
 	}
-	input := model.shapes[operation.Input.Shape]
+	// Conditionally required members join every request but are never omitted.
+	required := append(slices.Clone(model.shapes[operation.Input.Shape].Required), conditionallyRequired[service][operationName]...)
 	optional := make([]string, 0, len(full))
 	for _, member := range slices.Sorted(maps.Keys(full)) {
-		if !slices.Contains(input.Required, member) {
+		if !slices.Contains(required, member) {
 			optional = append(optional, member)
 		}
 	}
@@ -90,7 +101,7 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 	// what an earlier case created.
 	salt := 0
 	generate := func() (map[string]any, []constraintSite, error) {
-		generator := model.newRequestGenerator(salt, options)
+		generator := model.newRequestGenerator(operationName, salt, options)
 		salt++
 		value, _ := generator.structure(operation.Input.Shape, nil, 0)
 		if len(generator.sites) != len(first.sites) {
@@ -111,7 +122,7 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 			Operation: operationName,
 			Member:    member,
 			Path:      memberPathOf(member),
-			Input:     keepMembers(value, input.Required, member),
+			Input:     keepMembers(value, required, member),
 		})
 	}
 	for index := range first.sites {
@@ -121,10 +132,10 @@ func GenerateRequests(service Service, operationName string, options RequestOpti
 		}
 		site := sites[index]
 		member, _ := site.path[0].(string)
-		if slices.Contains(input.Required, member) {
+		if slices.Contains(required, member) {
 			member = ""
 		}
-		broken, err := site.apply(keepMembers(value, input.Required, member))
+		broken, err := site.apply(keepMembers(value, required, member))
 		if err != nil {
 			return RequestPlan{}, err
 		}
@@ -269,6 +280,7 @@ var generatedTimestamp = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 type requestGenerator struct {
 	model      *Model
+	operation  string
 	options    RequestOptions
 	salt       string
 	saltNumber int
@@ -278,8 +290,8 @@ type requestGenerator struct {
 	visiting   map[string]bool
 }
 
-func (m *Model) newRequestGenerator(salt int, options RequestOptions) *requestGenerator {
-	return &requestGenerator{model: m, options: options, salt: saltLetters(salt), saltNumber: salt, visiting: map[string]bool{}}
+func (m *Model) newRequestGenerator(operation string, salt int, options RequestOptions) *requestGenerator {
+	return &requestGenerator{model: m, operation: operation, options: options, salt: saltLetters(salt), saltNumber: salt, visiting: map[string]bool{}}
 }
 
 // saltLetters spells n in base 26 with lower-case letters, which fit more
@@ -462,6 +474,9 @@ func (g *requestGenerator) mapValue(shape *Shape, path []pathStep, depth int) (a
 func (g *requestGenerator) stringValue(shape *Shape, ref ShapeRef, path []pathStep) (any, bool) {
 	if len(shape.Enum) > 0 {
 		g.site(path, constraintSite{constraint: ConstraintEnum, detail: "value not in enum", replacement: invalidEnumValue(shape.Enum)})
+		if value, ok := g.enumHint(path); ok && slices.Contains(shape.Enum, value) {
+			return value, true
+		}
 		return shape.Enum[0], true
 	}
 
@@ -583,7 +598,10 @@ func invalidEnumValue(values []string) string {
 }
 
 func (g *requestGenerator) integer(shape *Shape, path []pathStep) int64 {
-	value := int64(1)
+	value, ok := g.integerHint(path)
+	if !ok {
+		value = 1
+	}
 	if shape.Min != nil {
 		value = max(value, int64(math.Ceil(*shape.Min)))
 	}
@@ -629,6 +647,9 @@ func (g *requestGenerator) blob(shape *Shape, path []pathStep) []byte {
 		} else {
 			g.leaveUnbroken(path, fmt.Sprintf("max length %g bytes is above the generated limit", *shape.Max))
 		}
+	}
+	if value, ok := g.blobHint(path); ok && len(value) >= minLength && len(value) <= maxLength {
+		return value
 	}
 	return []byte(fitLength("spx"+g.salt, minLength, maxLength))
 }

@@ -176,7 +176,7 @@ func TestSTSAssumeRoleAndGetCallerIdentity(t *testing.T) {
 	// permissions. The granted-policy positive case lives in
 	// TestAssumedRoleControlPlaneEnforcement.
 	_, err = sessionCli.EC2.DescribeRegions(&ec2.DescribeRegionsInput{})
-	requireAWSErrorCode(t, err, "AccessDenied")
+	requireAWSErrorCode(t, err, "UnauthorizedOperation")
 
 	// GetSessionToken is user-only: an assumed-role (ASIA) session must NOT
 	// be able to mint a user session.

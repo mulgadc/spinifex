@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"time"
 )
@@ -270,12 +271,9 @@ func (e *Engine) drainPoll() time.Duration {
 }
 
 func containsResource(resources []Resource, want Resource) bool {
-	for _, resource := range resources {
-		if resource.Kind == want.Kind && resource.ID == want.ID {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(resources, func(resource Resource) bool {
+		return resource.Kind == want.Kind && resource.ID == want.ID
+	})
 }
 
 // SortReapers orders reapers by stage while preserving the caller's order

@@ -341,6 +341,34 @@ func TestDescribeDBSnapshots_FiltersByInstanceAndType(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, byType.DBSnapshots, "nothing in this phase is automated")
+
+	for name, tc := range map[string]struct {
+		filters []*rds.Filter
+		want    []string
+	}{
+		"instance": {[]*rds.Filter{{Name: aws.String("db-instance-id"), Values: aws.StringSlice([]string{"reports-db"})}},
+			[]string{"reports-db-daily"}},
+		"snapshot": {[]*rds.Filter{{Name: aws.String("db-snapshot-id"), Values: aws.StringSlice([]string{testSnapshotID, "nope"})}},
+			[]string{testSnapshotID}},
+		"type": {[]*rds.Filter{{Name: aws.String("snapshot-type"), Values: aws.StringSlice([]string{"shared", SnapshotTypeManual})}},
+			[]string{testSnapshotID, "reports-db-daily"}},
+		"engine": {[]*rds.Filter{{Name: aws.String("engine"), Values: aws.StringSlice([]string{"mariadb"})}}, nil},
+		"every filter must match": {[]*rds.Filter{
+			{Name: aws.String("snapshot-type"), Values: aws.StringSlice([]string{SnapshotTypeManual})},
+			{Name: aws.String("db-instance-id"), Values: aws.StringSlice([]string{testDBID})},
+		}, []string{testSnapshotID}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{Filters: tc.filters}, testAccountID)
+			require.NoError(t, err)
+			var got []string
+			for _, snap := range out.DBSnapshots {
+				got = append(got, aws.StringValue(snap.DBSnapshotIdentifier))
+			}
+			assert.ElementsMatch(t, tc.want, got)
+		})
+	}
 }
 
 // A client polling a create would otherwise read "gone" for "not ready".
@@ -361,10 +389,12 @@ func TestDescribeDBSnapshots_RejectsUnhonouredScoping(t *testing.T) {
 	h := newSnapshotHarness(t, false)
 
 	cases := map[string]*rds.DescribeDBSnapshotsInput{
-		"Filters":       {Filters: []*rds.Filter{{Name: aws.String("engine")}}},
-		"DbiResourceId": {DbiResourceId: aws.String("db-ABC123")},
-		"IncludeShared": {IncludeShared: aws.Bool(true)},
-		"SnapshotType":  {SnapshotType: aws.String("shared")},
+		"dbi-resource-id filter": {Filters: filter("dbi-resource-id", "db-ABC123")},
+		"unknown filter":         {Filters: filter("status", "available")},
+		"bad snapshot-type":      {Filters: filter("snapshot-type", "bogus")},
+		"DbiResourceId":          {DbiResourceId: aws.String("db-ABC123")},
+		"IncludeShared":          {IncludeShared: aws.Bool(true)},
+		"SnapshotType":           {SnapshotType: aws.String("shared")},
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {

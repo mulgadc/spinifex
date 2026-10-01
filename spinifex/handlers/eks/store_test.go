@@ -14,11 +14,11 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv1, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 
-	kv2, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 1)
+	kv2, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 
@@ -36,7 +36,7 @@ func TestGetOrCreateAccountBucket_ReplicasClamped(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID, 0)
+	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, kv)
 
@@ -51,12 +51,12 @@ func TestInitLeaderBucket_Idempotent(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	kv1, err := InitLeaderBucket(t.Context(), js, 1)
+	kv1, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
 	require.NotNil(t, kv1)
 	assert.Equal(t, KVBucketEKSLeader, kv1.Bucket())
 
-	kv2, err := InitLeaderBucket(t.Context(), js, 1)
+	kv2, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
 	require.NotNil(t, kv2)
 	assert.Equal(t, KVBucketEKSLeader, kv2.Bucket())
@@ -68,7 +68,7 @@ func TestInitLeaderBucket_ReplicasClamped(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	kv, err := InitLeaderBucket(t.Context(), js, -1)
+	kv, err := InitLeaderBucket(t.Context(), js)
 	require.NoError(t, err)
 	require.NotNil(t, kv)
 

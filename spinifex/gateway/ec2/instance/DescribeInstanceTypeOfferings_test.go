@@ -44,7 +44,7 @@ func TestDescribeInstanceTypeOfferings_AvailabilityZone(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	serveInstanceTypes(t, nc, "t3.micro", "m5.large")
 
-	types, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, nc, 1, "")
+	types, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, nc, 1, nil, "")
 	require.NoError(t, err)
 	zones, err := gateway_ec2_zone.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
 	require.NoError(t, err)

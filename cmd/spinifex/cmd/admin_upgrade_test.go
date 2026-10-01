@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/operator/host/systemd"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"

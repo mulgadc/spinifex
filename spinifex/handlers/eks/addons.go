@@ -331,7 +331,7 @@ func (s *EKSServiceImpl) addonInstaller() AddonInstaller {
 	if s.deps.AddonInstaller != nil {
 		return s.deps.AddonInstaller
 	}
-	return newStagingInstaller(s.deps.NATSConn, s.deps.ClusterSize)
+	return newStagingInstaller(s.deps.NATSConn)
 }
 
 // markAddonFailed best-effort flips a record to CREATE_FAILED with the error reason.

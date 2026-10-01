@@ -33,7 +33,7 @@ func (s stubLoggingConfigReader) Get(context.Context, string) (LoggingConfig, bo
 
 func TestLoggingConfigStore_PutGetDelete(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewLoggingConfigStore(js, 1)
+	store := NewLoggingConfigStore(js)
 	ctx := context.Background()
 
 	_, ok, err := store.Get(ctx, "000000000001")
@@ -59,7 +59,7 @@ func TestLoggingConfigStore_PutGetDelete(t *testing.T) {
 
 func TestPutModelInvocationLoggingConfiguration_RejectsCloudWatch(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewLoggingConfigStore(js, 1)
+	store := NewLoggingConfigStore(js)
 
 	input := &bedrock.PutModelInvocationLoggingConfigurationInput{
 		LoggingConfig: &bedrock.LoggingConfig{
@@ -74,7 +74,7 @@ func TestPutModelInvocationLoggingConfiguration_RejectsCloudWatch(t *testing.T) 
 
 func TestPutModelInvocationLoggingConfiguration_RequiresBucketWhenDeliveryEnabled(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewLoggingConfigStore(js, 1)
+	store := NewLoggingConfigStore(js)
 
 	input := &bedrock.PutModelInvocationLoggingConfigurationInput{
 		LoggingConfig: &bedrock.LoggingConfig{TextDataDeliveryEnabled: aws.Bool(true)},
@@ -89,7 +89,7 @@ func TestPutModelInvocationLoggingConfiguration_RequiresBucketWhenDeliveryEnable
 // undeliverable as text or image, so it must not slip past the same gate.
 func TestPutModelInvocationLoggingConfiguration_RequiresBucketForEmbeddingDelivery(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewLoggingConfigStore(js, 1)
+	store := NewLoggingConfigStore(js)
 
 	input := &bedrock.PutModelInvocationLoggingConfigurationInput{
 		LoggingConfig: &bedrock.LoggingConfig{EmbeddingDataDeliveryEnabled: aws.Bool(true)},
@@ -105,7 +105,7 @@ func TestPutModelInvocationLoggingConfiguration_RequiresBucketForEmbeddingDelive
 // internal LoggingConfig.
 func TestModelInvocationLoggingConfiguration_RoundTripsViaSDKStructs(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	store := NewLoggingConfigStore(js, 1)
+	store := NewLoggingConfigStore(js)
 	ctx := context.Background()
 
 	putInput := &bedrock.PutModelInvocationLoggingConfigurationInput{
@@ -159,7 +159,7 @@ func TestStreamRecorder_DropsAndCountsWhenStreamMissing(t *testing.T) {
 func TestStreamRecorder_Record_BodyOnlyWhenLoggingEnabled(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
-	_, err := EnsureInvocationStream(ctx, js, 1)
+	_, err := EnsureInvocationStream(ctx, js)
 	require.NoError(t, err)
 	consumer, err := EnsureDeliveryConsumer(ctx, js)
 	require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestDeliveryConsumer_Run_WritesS3AndNeverLogsBodyText(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := EnsureInvocationStream(ctx, js, 1)
+	_, err := EnsureInvocationStream(ctx, js)
 	require.NoError(t, err)
 	consumer, err := EnsureDeliveryConsumer(ctx, js)
 	require.NoError(t, err)
@@ -247,7 +247,7 @@ func TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	_, err := EnsureInvocationStream(ctx, js, 1)
+	_, err := EnsureInvocationStream(ctx, js)
 	require.NoError(t, err)
 	consumer, err := EnsureDeliveryConsumer(ctx, js)
 	require.NoError(t, err)
@@ -294,7 +294,7 @@ func TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestLoggingConfigStore_RequiresJetStream(t *testing.T) {
-	store := NewLoggingConfigStore(nil, 1)
+	store := NewLoggingConfigStore(nil)
 	ctx := context.Background()
 
 	_, _, err := store.Get(ctx, "000000000001")

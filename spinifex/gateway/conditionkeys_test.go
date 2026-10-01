@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -32,8 +33,17 @@ func TestRequestConditionKeys_PopulatesAvailableKeys(t *testing.T) {
 		userID:        "AIDAALICE",
 	}
 
+	before := time.Now().Truncate(time.Second)
 	keys := requestConditionKeys(r, principal)
+	after := time.Now()
 
+	// The request time is the server clock at the call, in both spellings.
+	for _, key := range []string{iampolicy.KeyCurrentTime, iampolicy.KeyEpochTime} {
+		at, err := iampolicy.ParseDate(keys[key])
+		require.NoError(t, err, key)
+		assert.False(t, at.Before(before) || at.After(after), "%s is %s, outside the call", key, at)
+		delete(keys, key)
+	}
 	assert.Equal(t, iampolicy.ConditionKeys{
 		iampolicy.KeySourceIP:         "10.4.1.9",
 		iampolicy.KeySecureTransport:  "true",

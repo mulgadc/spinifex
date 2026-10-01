@@ -157,7 +157,7 @@ func TestEKSGPUPodExposure(t *testing.T) {
 
 	clusterName := fmt.Sprintf("%s-%d", eksGPUClusterPfx, time.Now().Unix())
 	harness.Phase(t, "Creating cluster %q", clusterName)
-	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/%s-role", accountID, clusterName)
+	roleArn := harness.CreateEKSClusterRole(t, c, clusterName+"-role")
 	// e2e:allow-create — the GPU cluster is the subject under test (GPU worker join + device-plugin exposure).
 	_, err = c.EKS.CreateCluster(&eks.CreateClusterInput{
 		Name:    aws.String(clusterName),

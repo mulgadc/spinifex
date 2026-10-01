@@ -18,9 +18,9 @@ func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
-	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
+	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
 	require.NoError(t, err)
-	_, err = handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "222222222222", 1)
+	_, err = handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "222222222222")
 	require.NoError(t, err)
 	_, err = kvutil.GetOrCreateBucket(t.Context(), js, "something-else", 1)
 	require.NoError(t, err)
@@ -51,7 +51,7 @@ func TestAccountWatchBuckets_NoAccountsIsNotAnError(t *testing.T) {
 func TestAccountWatchBuckets_BucketsAreWatchable(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111", 1)
+	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
 	require.NoError(t, err)
 
 	buckets, err := handlers_eks.AccountWatchBuckets(t.Context(), nc)

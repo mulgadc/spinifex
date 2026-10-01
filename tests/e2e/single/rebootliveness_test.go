@@ -34,10 +34,10 @@ func runEarlyRebootLiveness(t *testing.T, fix *Fixture) {
 	instanceID := launchBaselineInstance(t, fix, amiID, instType, keyName, vpc.SubnetID, []string{vpc.SGID})
 	inst := describeSingletonInstance(t, fix, instanceID)
 	host, port := harness.InstancePublicSSHHost(t, inst)
-	waitForSSHReady(t, host, port, keyPath)
+	sshHealth.WaitReady(t, host, port, keyPath)
 	tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
-	bootID := strings.TrimSpace(runSSH(t, tgt, "cat /proc/sys/kernel/random/boot_id"))
+	bootID := strings.TrimSpace(harness.RunSSH(t, tgt, "cat /proc/sys/kernel/random/boot_id"))
 	require.NotEmpty(t, bootID, "fresh guest returned an empty boot ID")
 	waitForCloudInitTarget(t, tgt)
 

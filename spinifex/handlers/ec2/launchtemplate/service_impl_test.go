@@ -7,8 +7,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,7 +85,7 @@ func TestCreateLaunchTemplate_DuplicateName(t *testing.T) {
 		LaunchTemplateData: &ec2.RequestLaunchTemplateData{ImageId: aws.String("ami-1")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateNameAlreadyExistsException, "Launch template name already in use.")
 }
 
 func TestLaunchTemplateNameWithKVUnsafeCharacters(t *testing.T) {
@@ -115,7 +116,7 @@ func TestCreateLaunchTemplate_OrphanNameReclaim(t *testing.T) {
 	lt := createTemplate(t, svc, "orphan", "t3.micro")
 
 	// Simulate a crash after the name claim but with the header lost.
-	require.NoError(t, svc.kv.Delete(t.Context(), headerKey(testAccountID, aws.StringValue(lt.LaunchTemplateId))))
+	require.NoError(t, svc.kv.Delete(t.Context(), utils.AccountKey(testAccountID, aws.StringValue(lt.LaunchTemplateId))))
 
 	// The name index still points at the now-orphaned id; create must reclaim it.
 	out, err := svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{
@@ -158,7 +159,8 @@ func TestDescribeLaunchTemplates_UnknownName(t *testing.T) {
 		LaunchTemplateNames: []*string{aws.String("missing")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateNameNotFoundException, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateNameNotFoundException,
+		"At least one of the launch templates specified in the request does not exist.")
 }
 
 func TestDescribeLaunchTemplates_TagFilter(t *testing.T) {
@@ -331,7 +333,39 @@ func TestDescribeLaunchTemplateVersions_MissingVersion(t *testing.T) {
 		Versions:         []*string{aws.String("99")},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, err.Error())
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound,
+		"Could not find the specified version 99 for the launch template with ID "+aws.StringValue(lt.LaunchTemplateId)+".")
+}
+
+func TestLaunchTemplate_NotFoundMessagesNameTheTemplate(t *testing.T) {
+	svc := setupTestService(t)
+	lt := createTemplate(t, svc, "web", "t3.micro")
+
+	_, err := svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{
+		LaunchTemplateName: aws.String("missing"),
+	}, testAccountID)
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateNameNotFoundException,
+		"The specified launch template, with template name missing, does not exist.")
+
+	_, err = svc.DescribeLaunchTemplateVersions(context.Background(), &ec2.DescribeLaunchTemplateVersionsInput{
+		LaunchTemplateId: aws.String("lt-0123456789abcdef0"),
+	}, testAccountID)
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateIdNotFound,
+		"The specified launch template, with template ID lt-0123456789abcdef0, does not exist.")
+
+	_, err = svc.ModifyLaunchTemplate(context.Background(), &ec2.ModifyLaunchTemplateInput{
+		LaunchTemplateId: lt.LaunchTemplateId,
+		DefaultVersion:   aws.String("42"),
+	}, testAccountID)
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound,
+		"The launch template version 42 is not found for the specified launch template.")
+
+	_, err = svc.CreateLaunchTemplateVersion(context.Background(), &ec2.CreateLaunchTemplateVersionInput{
+		LaunchTemplateId:   lt.LaunchTemplateId,
+		SourceVersion:      aws.String("42"),
+		LaunchTemplateData: &ec2.RequestLaunchTemplateData{InstanceType: aws.String("t3.small")},
+	}, testAccountID)
+	assertAWSError(t, err, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, "Launch template version does not exist.")
 }
 
 func TestDescribeLaunchTemplateVersions_LatestAfterTailDelete(t *testing.T) {
@@ -388,7 +422,8 @@ func TestModifyLaunchTemplate_DefaultToMissingVersion(t *testing.T) {
 		DefaultVersion:   aws.String("42"),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, err.Error())
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, code)
 }
 
 // --- DeleteLaunchTemplateVersions ---
@@ -396,15 +431,23 @@ func TestModifyLaunchTemplate_DefaultToMissingVersion(t *testing.T) {
 func TestDeleteLaunchTemplateVersions_RejectDefault(t *testing.T) {
 	svc := setupTestService(t)
 	lt := createTemplate(t, svc, "web", "t3.micro") // default = v1
-	out, err := svc.DeleteLaunchTemplateVersions(context.Background(), &ec2.DeleteLaunchTemplateVersionsInput{
-		LaunchTemplateId: lt.LaunchTemplateId,
-		Versions:         []*string{aws.String("1")},
+	id := aws.StringValue(lt.LaunchTemplateId)
+	addVersion(t, svc, id, "a", "") // v2
+
+	// The default alongside a deletable version still fails the whole request.
+	_, err := svc.DeleteLaunchTemplateVersions(context.Background(), &ec2.DeleteLaunchTemplateVersionsInput{
+		LaunchTemplateId: aws.String(id),
+		Versions:         []*string{aws.String("2"), aws.String("1")},
 	}, testAccountID)
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "The default version cannot be deleted. Either specify another version as default or delete the launch template.", msg)
+
+	nums, err := svc.listVersionNumbers(t.Context(), testAccountID, id)
 	require.NoError(t, err)
-	assert.Empty(t, out.SuccessfullyDeletedLaunchTemplateVersions)
-	require.Len(t, out.UnsuccessfullyDeletedLaunchTemplateVersions, 1)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue,
-		aws.StringValue(out.UnsuccessfullyDeletedLaunchTemplateVersions[0].ResponseError.Code))
+	assert.ElementsMatch(t, []int64{1, 2}, nums)
 }
 
 func TestDeleteLaunchTemplateVersions_SuccessAndMissing(t *testing.T) {
@@ -421,7 +464,10 @@ func TestDeleteLaunchTemplateVersions_SuccessAndMissing(t *testing.T) {
 	require.Len(t, out.SuccessfullyDeletedLaunchTemplateVersions, 1)
 	assert.Equal(t, int64(2), aws.Int64Value(out.SuccessfullyDeletedLaunchTemplateVersions[0].VersionNumber))
 	require.Len(t, out.UnsuccessfullyDeletedLaunchTemplateVersions, 1)
-	assert.Equal(t, int64(9), aws.Int64Value(out.UnsuccessfullyDeletedLaunchTemplateVersions[0].VersionNumber))
+	missing := out.UnsuccessfullyDeletedLaunchTemplateVersions[0]
+	assert.Equal(t, int64(9), aws.Int64Value(missing.VersionNumber))
+	assert.Equal(t, "launchTemplateVersionDoesNotExist", aws.StringValue(missing.ResponseError.Code))
+	assert.Equal(t, "The launch template version does not exist.", aws.StringValue(missing.ResponseError.Message))
 }
 
 // --- DeleteLaunchTemplate ---
@@ -442,7 +488,8 @@ func TestDeleteLaunchTemplate_RemovesEverything(t *testing.T) {
 		LaunchTemplateIds: []*string{aws.String(id)},
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, err.Error())
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, code)
 
 	// Version bodies and name index gone.
 	nums, err := svc.listVersionNumbers(t.Context(), testAccountID, id)
@@ -461,7 +508,8 @@ func TestDeleteLaunchTemplate_Unknown(t *testing.T) {
 		LaunchTemplateId: aws.String("lt-doesnotexist000"),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, err.Error())
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, code)
 }
 
 func TestResolveHeader_IdNameConflict(t *testing.T) {
@@ -491,4 +539,14 @@ func TestDescribeLaunchTemplates_MalformedId(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdMalformed, err.Error())
+}
+
+// assertAWSError checks the code a client receives and the message with it.
+func assertAWSError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, msg)
 }

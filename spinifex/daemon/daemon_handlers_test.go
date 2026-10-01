@@ -135,7 +135,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 	daemon := createFullTestDaemon(t, natsURL)
 
 	var err error
-	daemon.jsManager, err = NewJetStreamManager(daemon.natsConn, 1)
+	daemon.jsManager, err = NewJetStreamManager(daemon.natsConn)
 	require.NoError(t, err)
 	err = daemon.jsManager.InitKVBucket()
 	require.NoError(t, err)
@@ -611,7 +611,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	subnetID := *subnetOut.Subnet.SubnetId
 
 	sg1Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String("sg-prop-1"),
+		GroupName:   aws.String("grp-prop-1"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
@@ -619,7 +619,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	sg1 = *sg1Out.GroupId
 
 	sg2Out, err := daemon.vpcService.CreateSecurityGroup(t.Context(), &ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String("sg-prop-2"),
+		GroupName:   aws.String("grp-prop-2"),
 		Description: aws.String("test"),
 		VpcId:       aws.String(vpcID),
 	}, testAccountID)
@@ -2648,7 +2648,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 			topic:        "ec2.test.DeleteEgressOnlyIGW",
 			handler:      asMsgHandler(handleNATSRequest(daemon.node, daemon.eigwService.DeleteEgressOnlyInternetGateway)),
 			input:        &ec2.DeleteEgressOnlyInternetGatewayInput{EgressOnlyInternetGatewayId: aws.String("eigw-nonexistent")},
-			expectedCode: awserrors.ErrorInvalidEgressOnlyInternetGatewayIdNotFound,
+			expectedCode: awserrors.ErrorInvalidGatewayIDNotFound,
 		},
 		{
 			name:    "DescribeEgressOnlyInternetGateways",

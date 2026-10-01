@@ -283,11 +283,9 @@ func truncateForTable(s string, maxRunes int) string {
 }
 
 // formatQueryResults renders 'ochre vector query' output: a truncated table
-// by default, or the full response as indented JSON when asJSON is set
-// (D10's "full text via source ref" -- here, via --json).
+// by default, or the full response as indented JSON when asJSON is set.
 func formatQueryResults(results []handlers_ochrevector.QueryResult, asJSON bool) (string, error) {
 	if asJSON {
-		//nolint:musttag // QueryResult is an internal, non-wire Go type (predates this CLI); it round-trips fine on its default field names.
 		data, err := json.MarshalIndent(results, "", "  ")
 		if err != nil {
 			return "", fmt.Errorf("encode results as JSON: %w", err)
@@ -317,7 +315,6 @@ func parseFilterFlag(raw string) (*handlers_ochrevector.Filter, error) {
 		return nil, nil
 	}
 	var f handlers_ochrevector.Filter
-	//nolint:musttag // Filter is the existing filter-AST type (D9); it round-trips fine on its default field names.
 	if err := json.Unmarshal([]byte(raw), &f); err != nil {
 		return nil, fmt.Errorf("decode --filter: %w", err)
 	}

@@ -766,14 +766,37 @@ func TestDescribeDBInstanceAutomatedBackups_RejectsAnUnknownInstance(t *testing.
 	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceNotFound)
 }
 
-// A filter this phase cannot honour is rejected, because a silently
-// unfiltered list reads as a complete answer.
+func TestDescribeDBInstanceAutomatedBackups_FiltersByInstanceAndStatus(t *testing.T) {
+	t.Parallel()
+	h := newSnapshotHarness(t, false)
+	seedInstance(t, h.svc, backupReadyRecord())
+
+	for name, tc := range map[string]struct {
+		filter *rds.Filter
+		want   int
+	}{
+		"own instance":   {&rds.Filter{Name: aws.String("db-instance-id"), Values: aws.StringSlice([]string{testDBID})}, 1},
+		"other instance": {&rds.Filter{Name: aws.String("db-instance-id"), Values: aws.StringSlice([]string{"other-db"})}, 0},
+		"own status":     {&rds.Filter{Name: aws.String("status"), Values: aws.StringSlice([]string{"retained", "creating"})}, 1},
+		"other status":   {&rds.Filter{Name: aws.String("status"), Values: aws.StringSlice([]string{"active"})}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			out, err := h.svc.DescribeDBInstanceAutomatedBackups(t.Context(),
+				&rds.DescribeDBInstanceAutomatedBackupsInput{Filters: []*rds.Filter{tc.filter}}, testAccountID)
+			require.NoError(t, err)
+			assert.Len(t, out.DBInstanceAutomatedBackups, tc.want)
+		})
+	}
+}
+
+// A scope this phase cannot honour is rejected, because a silently unfiltered
+// list reads as a complete answer; so are names and statuses AWS refuses.
 func TestDescribeDBInstanceAutomatedBackups_RejectsUnimplementedFilters(t *testing.T) {
 	cases := map[string]*rds.DescribeDBInstanceAutomatedBackupsInput{
-		"Filters": {Filters: []*rds.Filter{{
-			Name:   aws.String("db-instance-id"),
-			Values: aws.StringSlice([]string{testDBID}),
-		}}},
+		"dbi-resource-id filter":        {Filters: filter("dbi-resource-id", "db-ABCDEF")},
+		"unknown filter":                {Filters: filter("engine", "postgres")},
+		"bad status":                    {Filters: filter("status", "available")},
 		"DbiResourceId":                 {DbiResourceId: aws.String("db-ABCDEF")},
 		"DBInstanceAutomatedBackupsArn": {DBInstanceAutomatedBackupsArn: aws.String("arn:aws:rds:::auto-backup:x")},
 	}

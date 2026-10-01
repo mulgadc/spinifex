@@ -16,7 +16,7 @@ func newLifecycleService(t *testing.T) handlers_iam.IAMService {
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
 
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey, 1)
+	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 	return svc
 }

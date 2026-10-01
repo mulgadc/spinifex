@@ -24,7 +24,7 @@ func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	bucket, err := openAccountUsageBucket(t.Context(), js, 1)
+	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
 	status, err := bucket.Status(t.Context())
 	require.NoError(t, err)
@@ -63,7 +63,7 @@ func instanceRecordBucket(t *testing.T, js jetstream.JetStream) jetstream.KeyVal
 func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	bucket, err := openAccountUsageBucket(t.Context(), js, 1)
+	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
 	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
@@ -99,7 +99,7 @@ func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
 func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	bucket, err := openAccountUsageBucket(t.Context(), js, 1)
+	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
 	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
@@ -135,7 +135,7 @@ func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
 func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	bucket, err := openAccountUsageBucket(t.Context(), js, 1)
+	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
 	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
 

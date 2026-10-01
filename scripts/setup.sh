@@ -1,6 +1,7 @@
 #!/bin/bash
 # Spinifex binary installer
 # Usage: curl -sfL https://install.mulgadc.com | bash
+#        curl -sfL https://install.mulgadc.com | sudo bash -s -- --channel dev
 #
 # Environment variables:
 #   INSTALL_SPINIFEX_CHANNEL   Release channel: latest (default), dev
@@ -1390,10 +1391,21 @@ main() {
         case "$1" in
             --firewall=*) INSTALL_SPINIFEX_FIREWALL="${1#*=}" ;;
             --firewall)   INSTALL_SPINIFEX_FIREWALL="${2:-}"; shift ;;
+            --channel=*)  INSTALL_SPINIFEX_CHANNEL="${1#*=}" ;;
+            --channel)    INSTALL_SPINIFEX_CHANNEL="${2:-}"; shift ;;
+            --version=*)  INSTALL_SPINIFEX_VERSION="${1#*=}" ;;
+            --version)    INSTALL_SPINIFEX_VERSION="${2:-}"; shift ;;
             *) fatal "unknown option: $1" ;;
         esac
         shift
     done
+
+    case "$INSTALL_SPINIFEX_CHANNEL" in
+        latest|dev) ;;
+        # Anything else is passed to the install endpoint as a literal tag, so a
+        # typo would 404 on the download rather than here. Name the two channels.
+        *) fatal "--channel must be 'latest' or 'dev', got: ${INSTALL_SPINIFEX_CHANNEL} (use --version for a specific tag)" ;;
+    esac
 
     case "${INSTALL_SPINIFEX_FIREWALL}" in
         on|off) ;;

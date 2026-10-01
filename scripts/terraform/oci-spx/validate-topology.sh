@@ -26,6 +26,7 @@ SETUP_SH=""
 # Empty means the driver's own default list. Unset is distinguishable from empty,
 # so --workbooks "" can deliberately mean "run none".
 WORKBOOKS_SET=0
+CHANNEL=latest
 WORKBOOKS=""
 
 # Shapes and counts per topology. Named here rather than passed in, because the
@@ -85,6 +86,7 @@ while [ $# -gt 0 ]; do
         --ssh-public-key) SSH_PUBLIC_KEY="${2:?}"; shift 2 ;;
         --ssh-private-key) SSH_PRIVATE_KEY="${2:?}"; shift 2 ;;
         --workbooks) WORKBOOKS_SET=1; WORKBOOKS="${2-}"; shift 2 ;;
+        --channel) CHANNEL="${2-}"; shift 2 ;;
         --distro) DISTRO="${2:?}"; shift 2 ;;
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
@@ -296,7 +298,7 @@ for host in "${HOSTS[@]}"; do
     # cloud-init being finished does not mean apt is: the apt-daily timers and
     # unattended-upgrades run on their own schedule and hold the dpkg lock, which
     # the installer then fails on. Wait for the lock rather than fight it.
-    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' bash -s" \
+    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' bash -s" \
         > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
 set -e
@@ -313,7 +315,9 @@ if [ -n "${DISTRO_NAME:-}" ]; then
     # stock image is not pre-baked, so the dependency stages have to run.
     sudo env INSTALL_SPINIFEX_TARBALL="/tmp/$DISTRO_NAME" bash "/tmp/$SETUP_NAME"
 else
-    curl -sfL https://install.mulgadc.com | sudo bash
+    # The real customer path, including the checksum step a local tarball skips.
+    # --channel dev installs the newest prerelease, which is what our contacts run.
+    curl -sfL https://install.mulgadc.com | sudo bash -s -- --channel "$CHANNEL"
 fi
 sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 REMOTE

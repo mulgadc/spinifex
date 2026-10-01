@@ -41,6 +41,25 @@ func TestStartLifecyclePolicyPreview_EvaluatesOverride(t *testing.T) {
 	assert.Equal(t, ecr.LifecyclePolicyPreviewStatusComplete, *out.Status)
 }
 
+func TestGetLifecyclePolicyPreview_ProjectsExpiryResults(t *testing.T) {
+	catalog := fakeImageCatalog{records: []ecrregistry.ImageRecord{
+		{Digest: "sha256:older", Tags: []string{"v1"}, PushedAt: time.Now().Add(-time.Hour)},
+		{Digest: "sha256:newer", Tags: []string{"v2"}, PushedAt: time.Now()},
+	}}
+	encodedPolicy, err := json.Marshal(lifecyclePreviewPolicy)
+	require.NoError(t, err)
+	body := []byte(`{"repositoryName":"team/app","lifecyclePolicyText":` + string(encodedPolicy) + `}`)
+
+	out, err := GetLifecyclePolicyPreview(context.Background(), fakeLifecyclePolicyStore{}, catalog, "123456789012", body)
+	require.NoError(t, err)
+	assert.Equal(t, ecr.LifecyclePolicyPreviewStatusComplete, *out.Status)
+	require.Len(t, out.PreviewResults, 1)
+	assert.Equal(t, "sha256:older", *out.PreviewResults[0].ImageDigest)
+	assert.Equal(t, int64(7), *out.PreviewResults[0].AppliedRulePriority)
+	require.NotNil(t, out.Summary)
+	assert.Equal(t, int64(1), *out.Summary.ExpiringImageTotalCount)
+}
+
 func TestEvaluateLifecyclePreview_MapsPolicyAndRepositoryFailures(t *testing.T) {
 	cases := []struct {
 		name     string

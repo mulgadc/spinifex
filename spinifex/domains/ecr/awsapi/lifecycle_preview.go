@@ -97,3 +97,32 @@ func StartLifecyclePolicyPreview(ctx context.Context, policies LifecyclePolicySt
 		Status:              aws.String(ecr.LifecyclePolicyPreviewStatusComplete),
 	}, nil
 }
+
+// GetLifecyclePolicyPreview evaluates synchronously and returns every expiry
+// result. v1 has no asynchronous preview-job state, so its status is always
+// COMPLETE when evaluation succeeds.
+func GetLifecyclePolicyPreview(ctx context.Context, policies LifecyclePolicyStore, catalog ImageCatalog, accountID string, body []byte) (*ecr.GetLifecyclePolicyPreviewOutput, error) {
+	preview, err := EvaluateLifecyclePreview(ctx, policies, catalog, accountID, body)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]*ecr.LifecyclePolicyPreviewResult, 0, len(preview.Expiries))
+	for _, expiry := range preview.Expiries {
+		results = append(results, &ecr.LifecyclePolicyPreviewResult{
+			Action:              &ecr.LifecyclePolicyRuleAction{Type: aws.String(ecr.ImageActionTypeExpire)},
+			AppliedRulePriority: aws.Int64(int64(expiry.RulePriority)),
+			ImageDigest:         aws.String(expiry.Digest),
+			ImagePushedAt:       aws.Time(expiry.PushedAt),
+			ImageTags:           aws.StringSlice(expiry.Tags),
+		})
+	}
+	return &ecr.GetLifecyclePolicyPreviewOutput{
+		RegistryId:          aws.String(accountID),
+		RepositoryName:      aws.String(preview.RepositoryName),
+		LifecyclePolicyText: aws.String(preview.LifecyclePolicyText),
+		Status:              aws.String(ecr.LifecyclePolicyPreviewStatusComplete),
+		PreviewResults:      results,
+		Summary:             &ecr.LifecyclePolicyPreviewSummary{ExpiringImageTotalCount: aws.Int64(int64(len(preview.Expiries)))},
+	}, nil
+}

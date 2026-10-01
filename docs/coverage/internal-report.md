@@ -957,7 +957,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## iam
 
-`2010-05-08` — 79 of 180 modelled operations implemented (43.9%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
+`2010-05-08` — 80 of 180 modelled operations implemented (44.4%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1006,7 +1006,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `GetServerCertificate`
 - `GetServiceLastAccessedDetails`
 - `GetServiceLastAccessedDetailsWithEntities`
-- `ListAccountAliases`
 - `ListDelegationRequests`
 - `ListMFADeviceTags`
 - `ListMFADevices`

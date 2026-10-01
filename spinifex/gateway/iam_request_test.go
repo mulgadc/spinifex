@@ -10,11 +10,14 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // flexMockIAMService is a configurable mock with per-method overrides. It
@@ -124,6 +127,9 @@ func (m *flexMockIAMService) GetAccountSummary(accountID string, input *iam.GetA
 		return m.getAccountSummaryFn(accountID, input)
 	}
 	return &iam.GetAccountSummaryOutput{}, nil
+}
+func (m *flexMockIAMService) ListAccountAliases(_ string, _ *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return &iam.ListAccountAliasesOutput{}, nil
 }
 func (m *flexMockIAMService) CreateGroup(_ string, _ *iam.CreateGroupInput) (*iam.CreateGroupOutput, error) {
 	return &iam.CreateGroupOutput{}, nil
@@ -280,6 +286,40 @@ func TestIAMRequest_GetAccountSummary_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "<entry>")
 	assert.Contains(t, xmlStr, "<key>Users</key>")
 	assert.Contains(t, xmlStr, "<value>2</value>")
+}
+
+// realAliasesIAMService answers ListAccountAliases from the real service, which
+// needs no storage, so the test sees the response the gateway actually sends.
+type realAliasesIAMService struct {
+	flexMockIAMService
+}
+
+func (realAliasesIAMService) ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return (&handlers_iam.IAMServiceImpl{}).ListAccountAliases(accountID, input)
+}
+
+// AWS answers an account with no alias with an empty AccountAliases list and
+// IsTruncated false, and no Marker.
+func TestIAMRequest_ListAccountAliases_Empty(t *testing.T) {
+	server := httptest.NewServer(setupIAMRequestHandler(&realAliasesIAMService{}))
+	defer server.Close()
+	client := iam.New(session.Must(session.NewSession(&aws.Config{
+		Credentials: credentials.NewStaticCredentials("test", "test", ""),
+		DisableSSL:  aws.Bool(true),
+		Endpoint:    aws.String(server.URL),
+		MaxRetries:  aws.Int(0),
+		Region:      aws.String("us-east-1"),
+	})))
+
+	out, err := client.ListAccountAliases(&iam.ListAccountAliasesInput{})
+	require.NoError(t, err)
+	assert.Empty(t, out.AccountAliases)
+	assert.False(t, aws.BoolValue(out.IsTruncated))
+	assert.Nil(t, out.Marker)
+
+	_, err = client.ListAccountAliases(&iam.ListAccountAliasesInput{MaxItems: aws.Int64(1001)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
 }
 
 // AWS answers GetRole for a never-used role with an empty <RoleLastUsed/>

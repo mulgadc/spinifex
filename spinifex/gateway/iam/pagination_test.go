@@ -132,6 +132,38 @@ func TestListUsers_RejectsBadPagingBeforeListing(t *testing.T) {
 	}
 }
 
+// listAliasesStub counts calls so a rejected page proves the service never ran.
+type listAliasesStub struct {
+	handlers_iam.IAMService
+
+	calls int
+}
+
+func (s *listAliasesStub) ListAccountAliases(_ string, _ *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	s.calls++
+	return &iam.ListAccountAliasesOutput{AccountAliases: []*string{}}, nil
+}
+
+func TestListAccountAliases_RejectsBadPagingBeforeListing(t *testing.T) {
+	tests := []struct {
+		name  string
+		input *iam.ListAccountAliasesInput
+	}{
+		{"MaxItems zero", &iam.ListAccountAliasesInput{MaxItems: aws.Int64(0)}},
+		{"MaxItems above 1000", &iam.ListAccountAliasesInput{MaxItems: aws.Int64(1001)}},
+		{"undecodable Marker", &iam.ListAccountAliasesInput{Marker: aws.String("not a marker!")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &listAliasesStub{}
+			_, err := gateway_iam.ListAccountAliases(testAccountID, tc.input, svc)
+			require.Error(t, err)
+			assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorValidationError), "got %v", err)
+			assert.Zero(t, svc.calls)
+		})
+	}
+}
+
 func TestListUsers_MaxItemsBoundsAccepted(t *testing.T) {
 	svc := &listStub{users: []string{"a", "b"}}
 	assert.Len(t, listUsers(t, svc, nil, 1).Users, 1)

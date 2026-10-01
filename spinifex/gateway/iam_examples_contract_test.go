@@ -242,6 +242,10 @@ func (svc *echoIAMService) GetAccountSummary(accountID string, input *iam.GetAcc
 	return echoIAMCall[iam.GetAccountSummaryInput, iam.GetAccountSummaryOutput](svc, accountID, input)
 }
 
+func (svc *echoIAMService) ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return echoIAMCall[iam.ListAccountAliasesInput, iam.ListAccountAliasesOutput](svc, accountID, input)
+}
+
 func (svc *echoIAMService) GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error) {
 	if _, ok := svc.wantOutput.(*iam.GetInstanceProfileOutput); !ok {
 		return &iam.GetInstanceProfileOutput{InstanceProfile: &iam.InstanceProfile{}}, nil

@@ -2666,6 +2666,12 @@ func (s *IAMServiceImpl) GetAccountSummary(accountID string, _ *iam.GetAccountSu
 	return &iam.GetAccountSummaryOutput{SummaryMap: summary}, nil
 }
 
+// ListAccountAliases returns no aliases, which is what AWS returns for an account
+// that has none. Spinifex does not serve CreateAccountAlias.
+func (s *IAMServiceImpl) ListAccountAliases(_ string, _ *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
+	return &iam.ListAccountAliasesOutput{AccountAliases: []*string{}}, nil
+}
+
 // countOIDCProviders counts the account's OIDC providers. AWS also counts SAML
 // providers under Providers; Spinifex has none.
 func (s *IAMServiceImpl) countOIDCProviders(ctx context.Context, accountID string) (int64, error) {

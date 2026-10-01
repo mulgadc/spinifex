@@ -136,6 +136,7 @@ var iamScopes = map[string]resourceScope{
 	"ListOpenIDConnectProviders": {source: sourceAccount},
 	"ListGroups":                 {source: sourceAccount},
 	"GetAccountSummary":          {source: sourceAccount},
+	"ListAccountAliases":         {source: sourceAccount},
 }
 
 // HasScope reports whether action has an explicit IAM scope-table entry.

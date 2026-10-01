@@ -323,6 +323,9 @@ var iamActions = map[string]iamAction{
 	"GetAccountSummary": iamHandler(func(accountID string, input *iam.GetAccountSummaryInput, gw *GatewayConfig) (any, error) {
 		return gateway_iam.GetAccountSummary(accountID, input, gw.IAMService)
 	}),
+	"ListAccountAliases": iamHandler(func(accountID string, input *iam.ListAccountAliasesInput, gw *GatewayConfig) (any, error) {
+		return gateway_iam.ListAccountAliases(accountID, input, gw.IAMService)
+	}),
 }
 
 func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) error {

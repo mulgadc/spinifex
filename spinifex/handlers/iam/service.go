@@ -151,4 +151,8 @@ type IAMService interface {
 	// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity
 	// quota values as a SummaryMap. Read-only and account-scoped.
 	GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
+
+	// ListAccountAliases lists the account's aliases. Spinifex has no account
+	// aliases, so every account has none.
+	ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error)
 }

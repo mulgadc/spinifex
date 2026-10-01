@@ -441,6 +441,7 @@ func launchService(config *config.ClusterConfig) error {
 	// responder identity rather than by count.
 	nodeIDs := slices.Collect(maps.Keys(config.Nodes))
 
+	ecrIssuer := ecrauth.NewIssuer(signingKey, ecrAudience)
 	gw := gateway.GatewayConfig{
 		Debug:                   nodeConfig.AWSGW.Debug,
 		DisableLogging:          false,
@@ -463,7 +464,8 @@ func launchService(config *config.ClusterConfig) error {
 		ECRRegistryActions:      awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
 		ECRLifecyclePreview:     awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
 		ECRRepositoryActions:    awsapi.NewRepositoryActionService(ecrMeta, ecrEndpoint),
-		ECRTokenIssuer:          ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenAction:          awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
+		ECRTokenIssuer:          ecrIssuer,
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
 		BedrockCredentials:      bedrockCredentials,
 		BedrockEndpoints:        bedrockEndpoints,

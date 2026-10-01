@@ -1,5 +1,4 @@
-//test:in-package — ecrInlineActions is unexported here, and ECR dispatch also
-// composes the ECR registry-action capability.
+//test:in-package — drives the gateway's ECR action-dispatch invariants.
 
 package gateway
 
@@ -26,16 +25,10 @@ func TestECRScopeTableIsExhaustive(t *testing.T) {
 	}
 }
 
-// ECR_Request resolves the action against the ecrapi namespace before it reaches
-// either a transitional HTTP adapter or a composed capability, so an action
-// outside that namespace is unreachable — and, more to the point, would never
-// have had its resources scoped.
+// ECR_Request resolves every composed action against the ecrapi namespace
+// before dispatch, so an action outside that namespace is unreachable — and,
+// more to the point, would never have had its resources scoped.
 func TestECRComposedActionsAreInTheNamespace(t *testing.T) {
-	for action := range ecrInlineActions {
-		_, ok := awsapi.Actions[action]
-		assert.True(t, ok,
-			"inline ECR handler %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
-	}
 	for _, action := range awsapi.RegistryActionNames() {
 		_, ok := awsapi.Actions[action]
 		assert.True(t, ok,
@@ -50,5 +43,10 @@ func TestECRComposedActionsAreInTheNamespace(t *testing.T) {
 		_, ok := awsapi.Actions[action]
 		assert.True(t, ok,
 			"composed ECR repository action %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
+	}
+	for _, action := range awsapi.AuthorizationTokenActionNames() {
+		_, ok := awsapi.Actions[action]
+		assert.True(t, ok,
+			"composed ECR authorization-token action %q is not in awsapi.Actions, so ECR_Request rejects it as InvalidAction", action)
 	}
 }

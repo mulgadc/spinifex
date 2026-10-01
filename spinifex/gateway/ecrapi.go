@@ -1,9 +1,7 @@
 package gateway
 
 import (
-	"bytes"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,16 +9,6 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
-
-type ecrInlineHandler func(*GatewayConfig, http.ResponseWriter, *http.Request) error
-
-// ecrInlineActions is the authoritative inventory of ECR operations handled
-// directly by the gateway rather than relayed through awsapi.Actions.
-// Keeping dispatch and coverage on the same map prevents the generated
-// operation report from classifying an inline implementation as a stub.
-var ecrInlineActions = map[string]ecrInlineHandler{
-	"GetAuthorizationToken": (*GatewayConfig).handleGetAuthorizationToken,
-}
 
 // ecrActionFromTarget extracts the action suffix from an X-Amz-Target header.
 // Any "<Prefix>.<Action>" or bare "<Action>" form is accepted.
@@ -106,12 +94,22 @@ func (gw *GatewayConfig) ECR_Request(w http.ResponseWriter, r *http.Request) err
 		awsapi.WriteJSONResponse(w, output)
 		return nil
 	}
-
-	if inline, ok := ecrInlineActions[action]; ok {
-		// The inline handlers read r.Body themselves, so it is rewound over the
-		// bytes the gate consumed, the same discipline the auth middleware uses.
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		return inline(gw, w, r)
+	if awsapi.IsAuthorizationTokenAction(action) {
+		if gw.ECRTokenAction == nil {
+			slog.Error("ECR authorization-token action: capabilities not configured")
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		principal, err := ecrAuthorizationPrincipal(r, accountID)
+		if err != nil {
+			slog.Error("GetAuthorizationToken: cannot build canonical caller ARN", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+		output, err := gw.ECRTokenAction.MintFor(principal)
+		if err != nil {
+			return err
+		}
+		awsapi.WriteJSONResponse(w, output)
+		return nil
 	}
 
 	output, err := handler(r.Context(), gw.NATSConn, accountID, body)

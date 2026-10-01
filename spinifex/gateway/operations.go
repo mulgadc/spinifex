@@ -22,10 +22,9 @@ type ServiceOperationInventory struct {
 // operation dispatch tables. S3 is intentionally absent: Spinifex does not
 // dispatch S3 operations and delegates that REST surface to Predastore.
 func AWSOperationInventory() map[string]ServiceOperationInventory {
-	ecrInline := mapKeys(ecrInlineActions)
 	ecrComposed := union(
-		union(union(ecrInline, awsapi.RegistryActionNames()), awsapi.LifecyclePreviewActionNames()),
-		awsapi.RepositoryActionNames(),
+		union(awsapi.RegistryActionNames(), awsapi.LifecyclePreviewActionNames()),
+		union(awsapi.RepositoryActionNames(), awsapi.AuthorizationTokenActionNames()),
 	)
 	ecrRegistered := union(mapKeys(awsapi.Actions), ecrComposed)
 	ecrStubbed := without(awsapi.StubbedActionNames(), ecrComposed)

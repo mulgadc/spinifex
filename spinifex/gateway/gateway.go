@@ -171,6 +171,9 @@ type GatewayConfig struct {
 	// ECRRepositoryActions serves repository metadata actions from the composed
 	// metadata store and advertised endpoint profile.
 	ECRRepositoryActions *awsapi.RepositoryActionService
+	// ECRTokenAction serves GetAuthorizationToken after gateway has constructed
+	// a canonical IAM/STS principal from the authenticated request context.
+	ECRTokenAction *awsapi.AuthorizationTokenActionService
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).

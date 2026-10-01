@@ -23,14 +23,16 @@ import (
 // object store + memory meta) and its composed ECR JSON image-action service.
 func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
-	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewMemoryMetaStore(), ecrTestAccount)
+	meta := handlers_ecr.NewMemoryMetaStore()
+	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
 	return &GatewayConfig{
-		ECRRegistry:        reg,
-		ECRRegistryActions: awsapi.NewRegistryActionService(reg, reg, reg, reg),
-		Region:             ecrTestRegion,
-		InternalSuffix:     ecrTestSuffix,
-		DisableLogging:     true,
-		IAMService:         allowAllIAMService(),
+		ECRRegistry:         reg,
+		ECRRegistryActions:  awsapi.NewRegistryActionService(reg, reg, reg, reg),
+		ECRLifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg),
+		Region:              ecrTestRegion,
+		InternalSuffix:      ecrTestSuffix,
+		DisableLogging:      true,
+		IAMService:          allowAllIAMService(),
 	}
 }
 

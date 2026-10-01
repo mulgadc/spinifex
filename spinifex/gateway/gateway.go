@@ -164,6 +164,10 @@ type GatewayConfig struct {
 	// composed from the OCI registry at startup; nil is a composition fault for
 	// those actions rather than a fallback to the generic NotImplemented table.
 	ECRRegistryActions *awsapi.RegistryActionService
+	// ECRLifecyclePreview serves the lifecycle-preview pair. Its distinct
+	// policy-store and image-catalog composition prevents the OCI registry from
+	// becoming a broad ECR control-plane service.
+	ECRLifecyclePreview *awsapi.LifecyclePreviewActionService
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).

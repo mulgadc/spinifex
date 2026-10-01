@@ -89,6 +89,18 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 	assert.Equal(t, "AccessDenied", err.Error())
 }
 
+func TestLifecyclePreview_MissingComposition(t *testing.T) {
+	gw := &GatewayConfig{
+		Region:         ecrTestRegion,
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
+	}
+
+	_, err := callImage(t, gw, "StartLifecyclePolicyPreview", previewBody("team/app", previewExpireOldest))
+	require.Error(t, err)
+	assert.Equal(t, "ServerInternal", err.Error())
+}
+
 func strconvQuotePreview(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

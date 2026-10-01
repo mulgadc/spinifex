@@ -271,7 +271,8 @@ func launchService(config *config.ClusterConfig) error {
 		nodeConfig.Predastore.AccessKey,
 		nodeConfig.Predastore.SecretKey,
 	)
-	ecrRegistry := ecrregistry.NewRegistry(objStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
+	ecrMeta := ecr.NewNATSMetaStore(natsConn)
+	ecrRegistry := ecrregistry.NewRegistry(objStore, ecrMeta, config.Bootstrap.AccountID)
 
 	// Lifecycle expiry sweep applies each repo's stored lifecycle policy and
 	// deletes the expired set via the registry GC path. It runs here (not the
@@ -454,6 +455,7 @@ func launchService(config *config.ClusterConfig) error {
 		Commit:                  commit,
 		ECRRegistry:             ecrRegistry,
 		ECRRegistryActions:      awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
+		ECRLifecyclePreview:     awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
 		ECRTokenIssuer:          ecrauth.NewIssuer(signingKey, ecrAudience),
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
 		BedrockCredentials:      bedrockCredentials,

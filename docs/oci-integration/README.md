@@ -177,9 +177,21 @@ The overlay, the object shards and the OVN databases all cross **VNIC 0**, insid
 
 Both paths need the same three things: an OCI compartment you can write to, an API key for Spinifex to allocate addresses with, and enough quota to hand out the addresses you plan to use.
 
-### Credentials — v1 uses an operator-provisioned API key
+### Credentials — an instance principal, or an API key
 
-**Instance principal is the better design and is not what v1 uses.** The instance certificate is served at `/opc/v2/identity/cert.pem` and the Go SDK can authenticate as the instance with no key material on disk — but it still needs a dynamic group and a policy authorising it, and on the reference tenancy it authenticated without being authorised for anything. **v1 requires an operator-provisioned API key**, deliberately, to keep the setup a single documented path.
+The allocator needs OCI credentials at runtime, and there are two ways to give it them. **A node with neither forms, passes every health check, and then refuses every launch that wants a public address** with `InsufficientAddressCapacity`, naming no cause outside its own journal.
+
+**An instance principal is the better one, and it is now a one-time setup step.** The instance certificate is served at `/opc/v2/identity/cert.pem` and the Go SDK authenticates as the instance with no key material on disk — but it must also be *authorised*, by a dynamic group and a policy. On the reference tenancy it authenticated without being authorised for anything, which is the failure above. Those two resources live at the tenancy root, so creating them needs a tenancy admin once; every deployment and rebuild afterwards needs only a compartment-scoped user:
+
+```bash
+cd scripts/terraform/oci-spx
+./setup-identity.sh --dry-run     # always first
+./setup-identity.sh               # needs a tenancy-admin OCI profile
+```
+
+Then set `instance_principal = "adopt"` in your tfvars. The dynamic group matches on `instance.compartment.id`, so it covers every node you ever build in that compartment and nothing needs updating when nodes are replaced.
+
+**An API key is the fallback**, and the default, because it needs nothing from a tenancy admin. It has to be installed on every node by hand, and it is key material on disk with a rotation obligation:
 
 ```bash
 # On your workstation, not the node.

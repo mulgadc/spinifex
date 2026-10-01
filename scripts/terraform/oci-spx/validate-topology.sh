@@ -112,6 +112,10 @@ if [ -n "$DISTRO" ] || [ -n "$SETUP_SH" ]; then
     [ -r "$SETUP_SH" ] || die "--setup-sh is not readable: '$SETUP_SH'"
 fi
 
+# adopt, never create: this script's state is destroyed at the end of every run, and
+# the dynamic group and policy outlive every topology. setup-identity.sh owns them.
+PRINCIPAL_MODE=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo adopt || echo off)
+
 SHAPE="${TOPO_SHAPE[$TOPOLOGY]}"
 NODES="${TOPO_NODES[$TOPOLOGY]}"
 # Outside the checkout on a persistent runner, because actions/checkout runs
@@ -135,7 +139,7 @@ tf_state=(-state "$STATE_DIR/terraform.tfstate")
 tf_vars=(
     -var "compute_shape=$SHAPE"
     -var "node_count=$NODES"
-    -var "enable_instance_principal=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo true || echo false)"
+    -var "instance_principal=$PRINCIPAL_MODE"
     "${tf_state[@]}"
 )
 

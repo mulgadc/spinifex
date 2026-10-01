@@ -45,6 +45,11 @@ locals {
   # after the boot disk (mulga-poc has oraclevda1 pointing at sdb1).
   data_device = "/dev/oracleoci/oraclevdb"
 
+  # adopt and create differ only in who creates the dynamic group and policy; a node
+  # authenticates identically either way, because the matching rule covers the whole
+  # compartment and so names no instance.
+  use_instance_principal = var.instance_principal != "off"
+
   # The allocator's pool, staged on each node for spx admin init to pick up. Under
   # instance principal there is no oci_config_file key, because naming one beside a
   # certificate credential is a second source of truth that config load rejects.
@@ -56,7 +61,7 @@ locals {
     "source             = \"oci\"",
     "oci_compartment_id = \"${var.compartment_ocid}\"",
     "oci_vnic_iface     = \"${var.wan_bridge_name}\"",
-    ], var.enable_instance_principal ? [
+    ], local.use_instance_principal ? [
     "oci_auth           = \"instance_principal\"",
     ] : [
     "oci_config_file    = \"/etc/spinifex/oci/config\"",

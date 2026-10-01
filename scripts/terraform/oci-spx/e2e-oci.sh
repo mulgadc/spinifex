@@ -42,6 +42,11 @@ REF="${SPX_REF:-$(git -C "$SPINIFEX_ROOT" rev-parse --abbrev-ref HEAD)}"
 SSH_PUBLIC_KEY="${OCI_SSH_PUBLIC_KEY:-$HOME/.ssh/oci-spx.pub}"
 SSH_PRIVATE_KEY="${OCI_SSH_PRIVATE_KEY:-$HOME/.ssh/oci-spx}"
 ARTIFACT_DIR="${OCI_ARTIFACT_DIR:-$HERE/.e2e-oci-$(date -u +%Y%m%dT%H%M%SZ)}"
+# Exported so validate-topology.sh agrees with the sweep about where state lives.
+# On a persistent runner this belongs outside the checkout: actions/checkout runs
+# git clean -ffdx, which would delete the state of a killed run before the sweep.
+export OCI_STATE_ROOT="${OCI_STATE_ROOT:-$HERE}"
+STATE_ROOT="$OCI_STATE_ROOT"
 SWEEP_ONLY=0
 DRY_RUN=0
 
@@ -87,7 +92,7 @@ VERDICT="$ARTIFACT_DIR/verdict.txt"
 # destroy what one of these runs created.
 sweep() {
     local found=0 dir topology
-    for dir in "$HERE"/.validate-*; do
+    for dir in "$STATE_ROOT"/.validate-*; do
         [ -s "$dir/terraform.tfstate" ] || continue
         python3 -c '
 import json, sys
@@ -95,6 +100,8 @@ state = json.load(open(sys.argv[1]))
 sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
 ' "$dir/terraform.tfstate" 2>/dev/null || continue
         topology="${dir##*/.validate-}"
+        # The child reads OCI_STATE_ROOT from the environment, so it looks in the
+        # same place this loop found the state rather than beside its own script.
         found=1
         log "sweep: $topology still holds resources, destroying"
         if "$HERE/validate-topology.sh" --topology "$topology" --destroy-only \

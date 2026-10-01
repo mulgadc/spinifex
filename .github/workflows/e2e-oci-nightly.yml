@@ -55,6 +55,11 @@ jobs:
     # Three topologies including a bare-metal build, each with its own install,
     # formation and workbook pass. The sweep still runs if this fires.
     timeout-minutes: 300
+    env:
+      # Outside github.workspace on purpose. actions/checkout runs git clean -ffdx,
+      # which on a persistent runner would delete the Terraform state of a killed
+      # run before the next sweep could read it, leaving instances nothing can find.
+      OCI_STATE_ROOT: ${{ runner.workspace }}/oci-state
     steps:
       - uses: actions/checkout@v7
         with:
@@ -169,6 +174,6 @@ jobs:
             ${{ runner.temp }}/e2e-oci/*.log
             ${{ runner.temp }}/e2e-oci/verdict.txt
             ${{ runner.temp }}/e2e-oci-sweep/*.log
-            spinifex/scripts/terraform/oci-spx/.validate-*/*.log
-            spinifex/scripts/terraform/oci-spx/.validate-*/*.txt
+            ${{ runner.workspace }}/oci-state/.validate-*/*.log
+            ${{ runner.workspace }}/oci-state/.validate-*/*.txt
           retention-days: 14

@@ -1,0 +1,126 @@
+name: E2E OCI Nightly
+
+# Dispatched by the same Cloudflare Worker that drives e2e-nightly.yml, once per
+# ref, rather than by a `schedule:` here. GitHub registers a schedule only from
+# the default branch, so a cron in this file could never run `dev` and a feature
+# branch as separate nightlies, and it would always execute the default branch's
+# copy of this file -- leaving a fix to the workflow itself untestable until it
+# had already shipped. A dispatch takes both the file and the source from its ref.
+on:
+  workflow_dispatch:
+    inputs:
+      topologies:
+        description: "Space-separated topologies (blank = vm-single vm-multi bm)"
+        required: false
+      workbooks:
+        description: "Space-separated workbooks (blank = the driver's default list)"
+        required: false
+      source:
+        description: "tree (build this ref) or release (the published installer)"
+        required: false
+        default: tree
+      keep_on_fail:
+        description: "Leave a failed topology up to inspect. It keeps billing."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Every topology is built in one OCI compartment under one set of resource names,
+# so two runs at once would each see the other's instances and the sweep in
+# e2e-oci.sh could destroy a cluster the other run was still testing. Queue the
+# second rather than cancelling it: a dispatch is usually a verification run.
+concurrency:
+  group: e2e-oci
+  cancel-in-progress: false
+
+jobs:
+  oci:
+    # Hosted, not self-hosted: this job only drives Terraform and SSH, and the
+    # work happens on OCI. Nothing here needs a hypervisor.
+    runs-on: ubuntu-26.04
+    # Three topologies including a bare-metal build, each with its own install,
+    # formation and workbook pass. The sweep still runs if this fires.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: spinifex
+
+      # The workbook driver and build-install-artifacts.sh live in mulga, and the
+      # harness reaches for both by relative path.
+      - uses: actions/checkout@v7
+        with:
+          repository: mulgadc/mulga
+          path: mulga
+          token: ${{ secrets.MULGA_CHECKOUT_TOKEN }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      # Written to the runner's own filesystem and nowhere else. The OCI API
+      # credential is not here at all: it reaches Terraform as OCI_PRIVATE_KEY in
+      # the environment, so no key file is ever created.
+      - name: Install the throwaway SSH key
+        env:
+          OCI_E2E_SSH_PRIVATE_KEY: ${{ secrets.OCI_E2E_SSH_PRIVATE_KEY }}
+          OCI_E2E_SSH_PUBLIC_KEY: ${{ secrets.OCI_E2E_SSH_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$OCI_E2E_SSH_PRIVATE_KEY" > ~/.ssh/oci-spx
+          printf '%s\n' "$OCI_E2E_SSH_PUBLIC_KEY" > ~/.ssh/oci-spx.pub
+          chmod 600 ~/.ssh/oci-spx
+          ssh-keygen -y -f ~/.ssh/oci-spx > /dev/null
+
+      - name: Run the OCI topologies
+        working-directory: spinifex/scripts/terraform/oci-spx
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          SPX_REF: ${{ github.ref_name }}
+          OCI_TOPOLOGIES: ${{ inputs.topologies }}
+          OCI_SOURCE: ${{ inputs.source }}
+          OCI_INSTANCE_PRINCIPAL: "1"
+          OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
+          OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
+        run: |
+          set -uo pipefail
+          # WORKBOOKS is exported only when the dispatch named some: the harness
+          # distinguishes unset (the driver's default list) from empty (run none).
+          if [ -n "${{ inputs.workbooks }}" ]; then export WORKBOOKS='${{ inputs.workbooks }}'; fi
+          ./e2e-oci.sh 2>&1 | tee "${{ runner.temp }}/e2e-oci.log"
+          exit "${PIPESTATUS[0]}"
+
+      # always(), and before the artifact upload: an OCI bare-metal host left
+      # running by a cancelled or timed-out job is the most expensive way this
+      # workflow can fail. The sweep works from the Terraform state files, so it
+      # can only destroy what this run created.
+      - name: Sweep anything left behind
+        if: always() && !inputs.keep_on_fail
+        working-directory: spinifex/scripts/terraform/oci-spx
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci-sweep
+        run: ./e2e-oci.sh --sweep-only
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-oci-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/e2e-oci*
+          retention-days: 14

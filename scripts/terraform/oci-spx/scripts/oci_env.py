@@ -60,6 +60,43 @@ def load_profile(config_path: Path, requested_profile: str) -> tuple[str, dict[s
     return profile, values
 
 
+ENVIRONMENT_KEYS = ("OCI_TENANCY_OCID", "OCI_USER_OCID", "OCI_FINGERPRINT", "OCI_PRIVATE_KEY", "OCI_REGION")
+
+
+def load_environment() -> dict[str, str] | None:
+    """Read the credential from the environment, the way a CI runner holds it.
+
+    Returns None when none of the keys are set, so a workstation still falls
+    through to ~/.oci/config. A partial set is an error rather than a fallback:
+    half a credential in the environment means a secret failed to reach the job,
+    and silently using a different one would validate the wrong tenancy.
+    """
+    present = [key for key in ENVIRONMENT_KEYS if os.environ.get(key)]
+    if not present:
+        return None
+    missing = [key for key in ENVIRONMENT_KEYS if not os.environ.get(key)]
+    if missing:
+        raise ValueError(
+            f"OCI credential in the environment is incomplete: {', '.join(present)} set, {', '.join(missing)} missing"
+        )
+    key = os.environ["OCI_PRIVATE_KEY"]
+    # Base64 is accepted because a PEM's newlines do not survive every secret
+    # store. Detected by shape rather than by a second variable to set wrongly.
+    if "-----BEGIN" not in key:
+        import base64
+
+        key = base64.b64decode(key).decode()
+    if "-----BEGIN" not in key:
+        raise ValueError("OCI_PRIVATE_KEY is neither a PEM nor base64-encoded PEM")
+    return {
+        "tenancy": os.environ["OCI_TENANCY_OCID"],
+        "user": os.environ["OCI_USER_OCID"],
+        "fingerprint": os.environ["OCI_FINGERPRINT"],
+        "key_content": key,
+        "region": os.environ["OCI_REGION"],
+    }
+
+
 def tenancy_home_region(values: dict[str, str]) -> str:
     """Read the home region from OCI rather than assuming the profile region."""
     import oci
@@ -79,14 +116,19 @@ def terraform_environment(
     ssh_private_key_path: str | None,
 ) -> dict[str, str]:
     environment = {
-        "OCI_CLI_PROFILE": profile,
         "TF_VAR_tenancy_ocid": values["tenancy"],
         "TF_VAR_user_ocid": values["user"],
         "TF_VAR_fingerprint": values["fingerprint"],
-        "TF_VAR_private_key_path": values["key_file"],
         "TF_VAR_region": region_override or values["region"],
         "TF_VAR_home_region": tenancy_home_region(values),
     }
+    # One of the two, never both: the provider rejects a key given twice, and the
+    # variable validation in variables.tf says so before OCI is called at all.
+    if values.get("key_content"):
+        environment["TF_VAR_private_key"] = values["key_content"]
+    else:
+        environment["OCI_CLI_PROFILE"] = profile
+        environment["TF_VAR_private_key_path"] = values["key_file"]
     if ssh_public_key_path:
         key_path = Path(ssh_public_key_path).expanduser().resolve()
         if not key_path.is_file():
@@ -119,10 +161,21 @@ def main() -> int:
         arg_parser.error("--shell and a command cannot be used together")
 
     ensure_venv()
-    config_path = Path(os.environ.get("OCI_CONFIG_FILE", Path.home() / ".oci" / "config"))
-    if not config_path.is_file():
-        raise FileNotFoundError(f"OCI configuration was not found at {config_path}")
-    profile, values = load_profile(config_path, args.profile)
+    values = load_environment()
+    if values is not None:
+        profile = "environment"
+        # Checked here, before anything calls OCI: --shell prints to stdout, which
+        # in CI is the job log, and this route holds the PEM itself.
+        if args.shell:
+            raise ValueError("--shell cannot be used with a credential from the environment: it would print the key")
+    else:
+        config_path = Path(os.environ.get("OCI_CONFIG_FILE", Path.home() / ".oci" / "config"))
+        if not config_path.is_file():
+            raise FileNotFoundError(
+                f"OCI configuration was not found at {config_path} and the environment holds no credential"
+                f" (set {', '.join(ENVIRONMENT_KEYS)})"
+            )
+        profile, values = load_profile(config_path, args.profile)
     environment = terraform_environment(
         profile,
         values,
@@ -145,7 +198,12 @@ def main() -> int:
         raise ValueError("A command is required after --")
     child_environment = os.environ.copy()
     child_environment.update(environment)
-    print(f"Running with OCI profile {profile} in {environment['TF_VAR_region']}: {' '.join(map(shlex.quote, command))}")
+    # Stderr, because stdout belongs to the wrapped command: a banner there is
+    # indistinguishable from output and corrupts anything that captures it.
+    print(
+        f"Running with OCI profile {profile} in {environment['TF_VAR_region']}: {' '.join(map(shlex.quote, command))}",
+        file=sys.stderr,
+    )
     return subprocess.call(command, cwd=REPOSITORY, env=child_environment)
 
 

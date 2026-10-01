@@ -1,7 +1,23 @@
 variable "tenancy_ocid" { type = string }
 variable "user_ocid" { type = string }
 variable "fingerprint" { type = string }
-variable "private_key_path" { type = string }
+variable "private_key_path" {
+  type    = string
+  default = ""
+}
+
+# The PEM itself, for a CI runner that holds it as a secret in the environment.
+# Exactly one of this and private_key_path is set; the check lives here so a run
+# fails on the input rather than on an OCI 401 forty seconds later.
+variable "private_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+  validation {
+    condition     = (var.private_key == "") != (var.private_key_path == "")
+    error_message = "Set exactly one of private_key (the PEM, for CI) or private_key_path (a file, for a workstation)."
+  }
+}
 # OCI's own region name. Spinifex's region is a separate setting that follows AWS
 # naming, so ap-sydney-1 here beside ap-southeast-2 in spinifex.toml is correct.
 variable "region" {

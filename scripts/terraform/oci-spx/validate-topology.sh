@@ -15,11 +15,18 @@ TOPOLOGY=""
 SSH_PUBLIC_KEY="$HOME/.ssh/oci-spx.pub"
 SSH_PRIVATE_KEY="$HOME/.ssh/oci-spx"
 KEEP=0
+KEEP_ON_FAIL=0
 SKIP_WORKLOAD=0
 SKIP_POOL=0
 DRY_RUN=0
+DESTROY_ONLY=0
 INSTANCE_PRINCIPAL=0
-WORKBOOK="nginx-alb"
+DISTRO=""
+SETUP_SH=""
+# Empty means the driver's own default list. Unset is distinguishable from empty,
+# so --workbooks "" can deliberately mean "run none".
+WORKBOOKS_SET=0
+WORKBOOKS=""
 
 # Shapes and counts per topology. Named here rather than passed in, because the
 # point of a topology is that it is the same every run.
@@ -54,12 +61,19 @@ workbook against it, then destroys everything.
   --instance-principal    Configure the pool with oci_auth="instance_principal"
                           instead of a key file. Needs the dynamic group and
                           policy to exist already; see instance-principal.tf.
-  --workbook NAME         Workbook under docs/terraform-workbooks. Default $WORKBOOK
+  --workbooks LIST        Space-separated workbooks for the published driver to
+                          run on the cluster. Empty means run none; omitted means
+                          the driver's own default list.
+  --distro PATH           Install this distro tarball instead of the published
+                          release, so what is proved is the ref it was built from.
+  --setup-sh PATH         setup.sh to pair with --distro. Both or neither.
   --no-external-pool      Form without an OCI credential: no external pool and no
                           allocator gate. Implies --skip-workload, because a guest
                           with no public address proves nothing a customer wants.
   --skip-workload         Form and verify only; launch no guests.
   --keep                  Leave the infrastructure up. Implies no verdict.
+  --keep-on-fail          Destroy on success, leave a failure up to inspect.
+  --destroy-only          Destroy whatever this topology's state holds, then stop.
   --dry-run               Print the plan and the per-node steps, change nothing.
 EOF
     exit 2
@@ -70,11 +84,15 @@ while [ $# -gt 0 ]; do
         --topology) TOPOLOGY="${2:?}"; shift 2 ;;
         --ssh-public-key) SSH_PUBLIC_KEY="${2:?}"; shift 2 ;;
         --ssh-private-key) SSH_PRIVATE_KEY="${2:?}"; shift 2 ;;
-        --workbook) WORKBOOK="${2:?}"; shift 2 ;;
+        --workbooks) WORKBOOKS_SET=1; WORKBOOKS="${2-}"; shift 2 ;;
+        --distro) DISTRO="${2:?}"; shift 2 ;;
+        --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
         --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
         --keep) KEEP=1; shift ;;
+        --keep-on-fail) KEEP_ON_FAIL=1; shift ;;
+        --destroy-only) DESTROY_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help) usage ;;
         *) die "unknown option $1" ;;
@@ -85,6 +103,12 @@ done
 [ -n "${TOPO_SHAPE[$TOPOLOGY]:-}" ] || die "unknown topology $TOPOLOGY; one of: ${!TOPO_SHAPE[*]}"
 [ -r "$SSH_PUBLIC_KEY" ] || die "no readable SSH public key at $SSH_PUBLIC_KEY"
 [ -r "$SSH_PRIVATE_KEY" ] || die "no readable SSH private key at $SSH_PRIVATE_KEY"
+# Both or neither: a distro with the published setup.sh installs one ref's bytes
+# with another's layout, and that is a cluster nobody can reason about.
+if [ -n "$DISTRO" ] || [ -n "$SETUP_SH" ]; then
+    [ -r "$DISTRO" ] || die "--distro is not readable: '$DISTRO'"
+    [ -r "$SETUP_SH" ] || die "--setup-sh is not readable: '$SETUP_SH'"
+fi
 
 SHAPE="${TOPO_SHAPE[$TOPOLOGY]}"
 NODES="${TOPO_NODES[$TOPOLOGY]}"
@@ -98,18 +122,23 @@ tf() {
         terraform -chdir="$HERE" "$@"
 }
 
+# terraform output takes -state but not -var, so the two sets are kept apart. They
+# were one set once, and the -var made output fail into the default state file.
+tf_state=(-state "$STATE_DIR/terraform.tfstate")
 tf_vars=(
     -var "compute_shape=$SHAPE"
     -var "node_count=$NODES"
     -var "enable_instance_principal=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo true || echo false)"
-    -state "$STATE_DIR/terraform.tfstate"
+    "${tf_state[@]}"
 )
 
 ssh_node() {
     local host="$1"
     shift
+    # LogLevel=ERROR: the host-key warning is unavoidable with a throwaway known-hosts
+    # file, and it lands in the middle of whatever the remote command reported.
     ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o BatchMode=yes -o ConnectTimeout=15 "ubuntu@$host" "$@"
+        -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 "ubuntu@$host" "$@"
 }
 
 record() { printf '%s\n' "$*" >> "$RESULTS"; }
@@ -117,13 +146,7 @@ record() { printf '%s\n' "$*" >> "$RESULTS"; }
 # Teardown is the last assertion, not cleanup: a workbook or a topology that
 # cannot be destroyed is a defect, and it has been one before.
 DESTROY_RC=""
-cleanup() {
-    local rc=$?
-    if [ "$KEEP" = 1 ]; then
-        log "--keep: leaving the infrastructure up, no verdict recorded"
-        return
-    fi
-    [ "$DRY_RUN" = 1 ] && return
+destroy_topology() {
     log "destroying"
     if tf destroy -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/destroy.log" 2>&1; then
         DESTROY_RC=0
@@ -133,6 +156,24 @@ cleanup() {
         record "destroy: FAIL (see $STATE_DIR/destroy.log)"
         log "TEARDOWN FAILED — resources may still be billing. $STATE_DIR/destroy.log"
     fi
+}
+
+cleanup() {
+    local rc=$?
+    if [ "$KEEP" = 1 ]; then
+        log "--keep: leaving the infrastructure up, no verdict recorded"
+        return
+    fi
+    # Only on a failure, and said out loud: the cost of forgetting is an OCI bare
+    # metal host running overnight.
+    if [ "$KEEP_ON_FAIL" = 1 ] && [ "$rc" != 0 ]; then
+        log "--keep-on-fail: $TOPOLOGY FAILED and is being left up. IT IS STILL BILLING."
+        log "destroy it with: $0 --topology $TOPOLOGY --destroy-only"
+        verdict "$rc"
+        return
+    fi
+    [ "$DRY_RUN" = 1 ] && return
+    destroy_topology
     verdict "$rc"
 }
 
@@ -149,9 +190,35 @@ verdict() {
 }
 
 mkdir -p "$STATE_DIR"
+
+if [ "$DESTROY_ONLY" = 1 ]; then
+    log "destroy only: whatever $STATE_DIR/terraform.tfstate holds"
+    destroy_topology
+    [ "$DESTROY_RC" = 0 ] || exit 1
+    exit 0
+fi
+
 : > "$RESULTS"
 
 log "$SHAPE, $NODES node(s), state in $STATE_DIR"
+
+# The directory's own terraform.tfstate belongs to hand-driven runs, not to a
+# topology, and an instance left in it is both a bill and a name that collides
+# with ours in the console. Say so rather than letting it be a surprise.
+if [ -s "$HERE/terraform.tfstate" ]; then
+    stray="$(python3 -c '
+import json, sys
+state = json.load(open(sys.argv[1]))
+for res in state.get("resources", []):
+    if res["type"] != "oci_core_instance":
+        continue
+    for inst in res["instances"]:
+        attrs = inst["attributes"]
+        if attrs.get("state") not in ("TERMINATED", None):
+            print(attrs.get("display_name"), attrs.get("shape"), attrs.get("state"), attrs.get("public_ip"))
+' "$HERE/terraform.tfstate" 2>/dev/null || true)"
+    [ -n "$stray" ] && log "NOTE: the hand-driven state in $HERE still holds: $stray"
+fi
 
 if [ "$DRY_RUN" = 1 ]; then
     tf plan -no-color "${tf_vars[@]}" | tail -30
@@ -168,8 +235,13 @@ tf apply -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/apply.log" 2>&1 \
     || die "terraform apply failed; see $STATE_DIR/apply.log"
 record "build: PASS"
 
-mapfile -t HOSTS < <(tf output -raw "${tf_vars[@]}" hosts_file 2>/dev/null || tf output -raw hosts_file)
-[ "${#HOSTS[@]}" = "$NODES" ] || die "expected $NODES host(s) from the hosts_file output, got ${#HOSTS[@]}"
+mapfile -t HOSTS < <(tf output -raw "${tf_state[@]}" hosts_file) \
+    || die "could not read the hosts_file output from $STATE_DIR/terraform.tfstate"
+[ "${#HOSTS[@]}" = "$NODES" ] || die "expected $NODES host(s) from the hosts_file output, got ${#HOSTS[@]}: ${HOSTS[*]}"
+for host in "${HOSTS[@]}"; do
+    [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
+        || die "the hosts_file output is not an address: '$host' -- something on the wrapper's stdout is in the capture"
+done
 log "hosts: ${HOSTS[*]}"
 
 # cloud-init owns the volume, the ports and br-wan, and all three are units now, so
@@ -197,33 +269,69 @@ for host in "${HOSTS[@]}"; do
 done
 record "cloud-init units: PASS"
 
-# The published installer rather than a build of this tree, so what is proved is
-# what a customer following the guide gets. update-nodes.sh would deploy the
-# working tree, which is a different question.
-log "installing Spinifex on each node"
+# With --distro the bytes are the ref under test; without it they are the published
+# release, which answers a different question -- what a customer following the
+# guide gets today. A nightly judging a branch must pass --distro.
+log "installing Spinifex on each node ($([ -n "$DISTRO" ] && echo "$(basename "$DISTRO")" || echo "published release"))"
 for host in "${HOSTS[@]}"; do
-    ssh_node "$host" '
-        set -e
-        curl -sfL https://install.mulgadc.com | sudo bash
-        sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
-    ' > "$STATE_DIR/install-$host.log" 2>&1 \
+    if [ -n "$DISTRO" ]; then
+        scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -q "$DISTRO" "$SETUP_SH" "ubuntu@$host:/tmp/" \
+            || die "could not copy the distro to $host"
+    fi
+    # cloud-init being finished does not mean apt is: the apt-daily timers and
+    # unattended-upgrades run on their own schedule and hold the dpkg lock, which
+    # the installer then fails on. Wait for the lock rather than fight it.
+    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' bash -s" \
+        > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
+set -e
+for _ in $(seq 1 120); do
+    sudo fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1 || break
+    sleep 5
+done
+sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+    && { echo "the dpkg lock was still held after 10 minutes"; exit 1; }
+if [ -n "${DISTRO_NAME:-}" ]; then
+    # The production setup.sh against the ref's own tarball, which is what the
+    # release and the ISO both run, so there is no separate dev install layout.
+    # No INSTALL_SPINIFEX_SKIP_APT/SKIP_AWS here, unlike the CI hypervisors: an OCI
+    # stock image is not pre-baked, so the dependency stages have to run.
+    sudo env INSTALL_SPINIFEX_TARBALL="/tmp/$DISTRO_NAME" bash "/tmp/$SETUP_NAME"
+else
+    curl -sfL https://install.mulgadc.com | sudo bash
+fi
+sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
+REMOTE
     log "$host installed: $(ssh_node "$host" 'spx version' 2>&1 | head -1)"
 done
 record "install: PASS"
 
-# install-node.sh owns formation, including the join for a cluster, so a topology
-# difference is a host count here rather than a second code path.
-printf '%s\n' "${HOSTS[@]}" > "$STATE_DIR/hosts"
-log "forming the cluster"
-"$REPO_ROOT/scripts/install-node.sh" \
-    --hosts-file "$STATE_DIR/hosts" \
-    --user ubuntu \
-    --identity "$SSH_PRIVATE_KEY" \
-    --external-mode nat \
-    --ipsec off \
-    --yes > "$STATE_DIR/form.log" 2>&1 \
-    || die "formation failed; see $STATE_DIR/form.log"
+# A single node is its own documented path: install-node.sh refuses fewer than two
+# hosts, because there is nothing to join. Both branches use the flags the guide
+# names, so what is validated is what the guide tells a customer to type.
+if [ "$NODES" = 1 ]; then
+    log "initializing the single node"
+    ssh_node "${HOSTS[0]}" '
+        set -e
+        sudo spx admin init --node "$(hostname -s)" --nodes 1 \
+            --region ap-southeast-2 --az ap-southeast-2a \
+            --external-mode=nat --ipsec=false
+        sudo systemctl start spinifex.target
+    ' > "$STATE_DIR/form.log" 2>&1 \
+        || die "single-node init failed; see $STATE_DIR/form.log"
+else
+    printf '%s\n' "${HOSTS[@]}" > "$STATE_DIR/hosts"
+    log "forming the cluster"
+    "$REPO_ROOT/scripts/install-node.sh" \
+        --hosts-file "$STATE_DIR/hosts" \
+        --user ubuntu \
+        --identity "$SSH_PRIVATE_KEY" \
+        --external-mode nat \
+        --ipsec off \
+        --yes > "$STATE_DIR/form.log" 2>&1 \
+        || die "formation failed; see $STATE_DIR/form.log"
+fi
 record "formation: PASS"
 
 # The IMDS remap and the pool are both set-before-first-start, and the remap is the
@@ -276,10 +384,24 @@ else
     record "oci allocator: PASS"
 fi
 
+# Parse the STATUS column, never grep for Ready: NotReady contains it, and that
+# read passed a single-node run whose only node was NotReady on 0.0.0.0. The table
+# is colourised, so the escapes come off first.
+count_ready() {
+    sed 's/\x1b\[[0-9;]*m//g' "$STATE_DIR/nodes.txt" \
+        | awk -F'|' 'NR > 1 { gsub(/^[ \t]+|[ \t]+$/, "", $2); if ($2 == "Ready") n++ } END { print n + 0 }'
+}
+
 log "cluster membership"
-ssh_node "${HOSTS[0]}" 'sudo spx get nodes' | tee "$STATE_DIR/nodes.txt"
-ready="$(grep -c 'Ready' "$STATE_DIR/nodes.txt" || true)"
-[ "$ready" = "$NODES" ] || die "expected $NODES Ready node(s), got $ready"
+ready=0
+for _ in $(seq 1 30); do
+    ssh_node "${HOSTS[0]}" 'sudo spx get nodes' > "$STATE_DIR/nodes.txt" 2>&1 || true
+    ready="$(count_ready)"
+    [ "$ready" = "$NODES" ] && break
+    sleep 10
+done
+cat "$STATE_DIR/nodes.txt"
+[ "$ready" = "$NODES" ] || die "expected $NODES Ready node(s), got $ready; see $STATE_DIR/nodes.txt"
 record "membership: PASS ($ready Ready)"
 
 if [ "$SKIP_WORKLOAD" = 1 ]; then
@@ -288,49 +410,37 @@ if [ "$SKIP_WORKLOAD" = 1 ]; then
     exit 0
 fi
 
-# Run from the node, against 127.0.0.1, because the node certificate carries no SAN
-# for its public address -- a workbook driven from outside the VCN is still blocked.
-log "running the $WORKBOOK workbook"
-WB_SRC="$REPO_ROOT/docs/terraform-workbooks/$WORKBOOK"
-[ -d "$WB_SRC" ] || die "no workbook at $WB_SRC"
-scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -q \
-    -r "$WB_SRC" "ubuntu@${HOSTS[0]}:~/workbook" || die "could not copy the workbook"
+# The same driver the GitHub nightly runs (cell 17), on the same published
+# workbooks, so a workbook that passes on a hypervisor and fails on OCI is a
+# difference in OCI and not in the test. It owns its own per-workbook assertions
+# and destroys each one it builds.
+log "running the published workbooks"
+DRIVER="$REPO_ROOT/tests/e2e/run-tofu-examples-e2e.sh"
+[ -r "$DRIVER" ] || die "no workbook driver at $DRIVER"
+scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -q "$DRIVER" "ubuntu@${HOSTS[0]}:~/run-tofu-examples-e2e.sh" \
+    || die "could not copy the workbook driver"
+scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -qr "$REPO_ROOT/docs/terraform-workbooks" "ubuntu@${HOSTS[0]}:~/workbooks" \
+    || die "could not copy the workbooks"
 
+# Every AMI the workbooks need, imported one at a time so predastore is not asked
+# to absorb parallel uploads. rds-quickstart is the one that needs an appliance.
+log "importing the images the workbooks need"
 ssh_node "${HOSTS[0]}" '
     set -e
-    command -v terraform >/dev/null || {
-        wget -qO /tmp/tf.zip https://releases.hashicorp.com/terraform/1.13.3/terraform_1.13.3_linux_amd64.zip
-        sudo apt-get install -y -qq unzip >/dev/null 2>&1 || true
-        sudo unzip -o -q /tmp/tf.zip -d /usr/local/bin
-    }
-    sudo spx admin images import --name ubuntu-26.04-x86_64 --config /etc/spinifex/spinifex.toml >/dev/null
-    cd ~/workbook
-    export AWS_PROFILE=spinifex AWS_CA_BUNDLE=/etc/spinifex/ca.pem
-    terraform init -no-color >/dev/null
-    terraform apply -no-color -auto-approve
-' > "$STATE_DIR/workbook.log" 2>&1 || die "the $WORKBOOK workbook failed; see $STATE_DIR/workbook.log"
-record "workbook $WORKBOOK: PASS"
+    for img in ubuntu-26.04-x86_64 spinifex-rds-postgres; do
+        sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml >/dev/null
+    done
+' > "$STATE_DIR/images.log" 2>&1 || die "image import failed; see $STATE_DIR/images.log"
 
-# The workbook creating cleanly says nothing about whether it serves traffic, which
-# is the only thing a customer notices.
-log "proving the workbook serves traffic"
-ssh_node "${HOSTS[0]}" '
-    set -e
-    export AWS_PROFILE=spinifex AWS_CA_BUNDLE=/etc/spinifex/ca.pem
-    E="--endpoint-url https://127.0.0.1:9999 --region ap-southeast-2"
-    IP=$(aws elbv2 describe-load-balancers $E --names nginx-alb \
-        --query "LoadBalancers[0].AvailabilityZones[].LoadBalancerAddresses[].IpAddress" --output text | head -1)
-    [ -n "$IP" ] || { echo "the load balancer reported no address"; exit 1; }
-    echo "load balancer address: $IP"
-    for i in $(seq 1 10); do curl -sS -o /dev/null -w "%{http_code}\n" --max-time 10 "http://$IP/"; done | sort | uniq -c
-' > "$STATE_DIR/traffic.log" 2>&1 || die "the workbook created but did not serve traffic; see $STATE_DIR/traffic.log"
-grep -q ' 200$' "$STATE_DIR/traffic.log" || die "no HTTP 200 through the load balancer; see $STATE_DIR/traffic.log"
-record "traffic: PASS"
-
-log "destroying the workbook before the topology, so a leak is attributed to the right one"
-ssh_node "${HOSTS[0]}" '
-    cd ~/workbook
-    export AWS_PROFILE=spinifex AWS_CA_BUNDLE=/etc/spinifex/ca.pem
-    terraform destroy -no-color -auto-approve
-' > "$STATE_DIR/workbook-destroy.log" 2>&1 || die "the workbook would not destroy; see $STATE_DIR/workbook-destroy.log"
-record "workbook teardown: PASS"
+# WORKBOOKS unset leaves the driver on its own default list, which is the list the
+# nightly judges every other platform by.
+ssh_node "${HOSTS[0]}" "chmod +x ~/run-tofu-examples-e2e.sh; \
+    WORKBOOK_DIR=\$HOME/workbooks $([ "$WORKBOOKS_SET" = 1 ] && printf 'WORKBOOKS=%q' "$WORKBOOKS") \
+    ~/run-tofu-examples-e2e.sh" \
+    > "$STATE_DIR/workbooks.log" 2>&1
+wb_rc=$?
+tail -40 "$STATE_DIR/workbooks.log"
+[ "$wb_rc" = 0 ] || die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"
+record "workbooks: PASS ($(grep -c '^--- PASS' "$STATE_DIR/workbooks.log") of $(grep -c '^=== RUN' "$STATE_DIR/workbooks.log"))"

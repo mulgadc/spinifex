@@ -1,8 +1,12 @@
+# A runner gets the key as a value, a workstation as a path. Passing the value
+# means CI never writes key material to disk, so there is nothing to leave behind
+# on a shared runner and nothing to clean up after a cancelled job.
 provider "oci" {
   tenancy_ocid     = var.tenancy_ocid
   user_ocid        = var.user_ocid
   fingerprint      = var.fingerprint
-  private_key_path = var.private_key_path
+  private_key      = var.private_key != "" ? var.private_key : null
+  private_key_path = var.private_key == "" ? var.private_key_path : null
   region           = var.region
 }
 

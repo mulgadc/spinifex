@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/spf13/cobra"
 )
 

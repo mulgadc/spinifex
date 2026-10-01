@@ -11,7 +11,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	statemigrate "github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

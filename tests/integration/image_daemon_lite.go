@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
 // testImageBucket is the bucket name StartImageDaemonLite's ImageServiceImpl

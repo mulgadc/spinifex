@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	natssvc "github.com/mulgadc/spinifex/spinifex/services/nats"
+	natssvc "github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

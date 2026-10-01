@@ -37,6 +37,14 @@ variable "deployment_name" {
     error_message = "deployment_name must be 1-15 lowercase alphanumeric characters starting with a letter, because it is used as the VCN dns_label."
   }
 }
+# Needs a tenancy-admin principal, which is why it is opt-in. See
+# instance-principal.tf for what the policy grants and why it is narrow.
+variable "enable_instance_principal" {
+  description = "Create the dynamic group and policy that let nodes authenticate as themselves, so no OCI API key is installed on any node."
+  type        = bool
+  default     = false
+}
+
 variable "vcn_cidr" {
   description = "VCN address space. A /22 leaves room for the per-node secondary private IPs Spinifex allocates for external addresses."
   type        = string

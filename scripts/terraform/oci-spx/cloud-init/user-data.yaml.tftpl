@@ -21,6 +21,15 @@ write_files:
     content: |
       ${indent(6, service_ports_script)}
 
+  # Staged rather than applied: spinifex.toml does not exist until spx admin init
+  # has run. Holds no secret under instance principal, which is the point of it --
+  # the instance's own certificate is the credential.
+  - path: /etc/spinifex/oci/external-pool.toml
+    owner: root:root
+    permissions: "0644"
+    content: |
+      ${indent(6, oci_pool_fragment)}
+
   # A unit rather than a runcmd so a boot that raced the iSCSI login retries on the
   # next one, and so the ports below can declare a dependency on it. The script
   # polls for the device itself and is safe to re-run.

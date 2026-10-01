@@ -92,6 +92,7 @@ type ExternalPool struct {
 	OCIVNICIface     string `mapstructure:"oci_vnic_iface"`     // Host interface to resolve the VNIC OCID from, instead of oci_vnic_id
 	OCISubnetID      string `mapstructure:"oci_subnet_id"`      // Subnet OCID the private IPs come from (optional; defaults to the VNIC's)
 	OCIPublicIPPool  string `mapstructure:"oci_public_ip_pool"` // Public IP pool OCID for BYOIP (optional)
+	OCIAuth          string `mapstructure:"oci_auth"`           // "config_file" (default) or "instance_principal"
 	OCIConfigFile    string `mapstructure:"oci_config_file"`    // API-key config file (optional; defaults to ~/.oci/config)
 	OCIConfigProfile string `mapstructure:"oci_config_profile"` // Profile within that file (optional; defaults to DEFAULT)
 
@@ -727,6 +728,20 @@ func validateClusterConfig(cc *ClusterConfig) error {
 			// and the addresses would be silently unreachable.
 			if (p.OCIVNICID == "") == (p.OCIVNICIface == "") {
 				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires exactly one of oci_vnic_id or oci_vnic_iface", p.Name)
+			}
+			// Named explicitly rather than inferred, so a node that was meant to
+			// use its own identity and has no dynamic group fails at config load
+			// instead of falling back to a key file nobody installed.
+			switch p.OCIAuth {
+			case "", "config_file", "instance_principal":
+			default:
+				return fmt.Errorf("config: [[network.external_pools]] %q: oci_auth must be \"config_file\" or \"instance_principal\", got %q", p.Name, p.OCIAuth)
+			}
+			// Credentials come from the metadata service under instance principal,
+			// so a config file named beside it is one of two sources of truth and
+			// the one that would be silently ignored.
+			if p.OCIAuth == "instance_principal" && (p.OCIConfigFile != "" || p.OCIConfigProfile != "") {
+				return fmt.Errorf("config: [[network.external_pools]] %q: oci_config_file/oci_config_profile are not valid with oci_auth=\"instance_principal\" (the instance's own certificate is the credential)", p.Name)
 			}
 			if p.BindBridge != "" || p.DHCPMAC != "" {
 				return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge/dhcp_mac are only valid with source=\"dhcp\"", p.Name)

@@ -32,9 +32,10 @@ type ExternalPoolConfig struct {
 	OCIVNICIface     string
 	OCISubnetID      string
 	OCIPublicIPPool  string
-	// OCIConfigFile and OCIConfigProfile select the API-key credentials.
-	// v1 authenticates from a config file rather than as an instance
-	// principal: no dynamic group, no IAM policy, and no metadata read.
+	// OCIAuth selects how the provider authenticates: OCIAuthInstancePrincipal
+	// for the instance's own certificate, or OCIAuthConfigFile (the default) for
+	// an API key, which OCIConfigFile and OCIConfigProfile then locate.
+	OCIAuth          string
 	OCIConfigFile    string
 	OCIConfigProfile string
 	// Exoscale* configure a source="exoscale" pool: the zone the EIPs live in,
@@ -56,6 +57,12 @@ func (p *ExternalPoolConfig) IsOCI() bool {
 	return p != nil && p.Source == SourceOCI
 }
 
+// UsesInstancePrincipal reports whether the OCI provider authenticates as the
+// instance rather than from an API-key config file.
+func (p *ExternalPoolConfig) UsesInstancePrincipal() bool {
+	return p != nil && p.OCIAuth == OCIAuthInstancePrincipal
+}
+
 // IsExoscale reports whether the pool sources IPs from Exoscale Elastic IPs.
 func (p *ExternalPoolConfig) IsExoscale() bool {
 	return p != nil && p.Source == SourceExoscale
@@ -75,6 +82,14 @@ const (
 	// attached through the exo CLI. A manual EIP arrives addressed to itself,
 	// so unlike OCI there is no private half to map.
 	SourceExoscale = "exoscale"
+
+	// OCIAuthConfigFile authenticates from an API-key config file. The default,
+	// because it is what an operator already has from `oci setup config`.
+	OCIAuthConfigFile = "config_file"
+	// OCIAuthInstancePrincipal authenticates as the instance, from the
+	// certificate its metadata service serves. No key material on any node and
+	// nothing to rotate, at the cost of a dynamic group and an IAM policy.
+	OCIAuthInstancePrincipal = "instance_principal"
 
 	// DHCPMACDerived leases with deterministic per-client-id 02:xx MACs.
 	DHCPMACDerived = "derived"

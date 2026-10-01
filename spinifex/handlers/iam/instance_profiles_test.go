@@ -686,6 +686,29 @@ func TestResolveInstanceProfile_ARNNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }
 
+// The store is keyed by name alone, so an ARN that spells a different path
+// must not resolve to the profile its trailing name matches.
+func TestResolveInstanceProfile_NonCanonicalARNRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestInstanceProfile(t, svc, "flat-profile")
+	_, err := svc.CreateInstanceProfile(testAccountID, &iam.CreateInstanceProfileInput{
+		InstanceProfileName: aws.String("pathed-profile"),
+		Path:                aws.String("/team/"),
+	})
+	require.NoError(t, err)
+
+	for _, arn := range []string{
+		"arn:aws:iam::" + testAccountID + ":instance-profile/decoy/flat-profile",
+		"arn:aws:iam::" + testAccountID + ":instance-profile/pathed-profile",
+	} {
+		_, err := svc.ResolveInstanceProfile(testAccountID, arn)
+		require.Error(t, err, arn)
+		// The EC2 gateway maps this to InvalidIamInstanceProfile.NotFound by exact match.
+		assert.Equal(t, awserrors.ErrorIAMNoSuchEntity, err.Error(), arn)
+	}
+}
+
 func TestResolveInstanceProfile_MalformedARN(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

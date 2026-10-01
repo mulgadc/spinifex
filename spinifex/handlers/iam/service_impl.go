@@ -2016,34 +2016,36 @@ func (s *IAMServiceImpl) GetUserPolicies(accountID, userName string) ([]PolicyDo
 // ---------------------------------------------------------------------------
 
 func (s *IAMServiceImpl) getPolicyByARN(ctx context.Context, accountID, policyARN string) (*Policy, error) {
-	_, policyName, err := iamarn.ParsePolicyARN(policyARN)
-	if err != nil {
+	var policy *Policy
+	_, _, err := iamarn.ResolvePolicyARN(policyARN, func(_, policyName string) (string, error) {
+		kvKey := accountID + "." + policyName
+		entry, err := s.policiesBucket.Get(ctx, kvKey)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
+			}
+			return "", fmt.Errorf("get policy: %w", err)
+		}
+		var p Policy
+		if err := json.Unmarshal(entry.Value(), &p); err != nil {
+			return "", fmt.Errorf("unmarshal policy: %w", err)
+		}
+		policy = &p
+		return p.ARN, nil
+	})
+	switch {
+	case errors.Is(err, iamarn.ErrInvalidPolicyARN):
 		// NoSuchEntity is the response contract, so log the parse reason —
 		// otherwise a malformed ARN is indistinguishable from a missing policy.
 		slog.Debug("getPolicyByARN: unparseable policy ARN",
 			"accountID", accountID, "policyArn", policyARN, "err", err)
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-	}
-
-	kvKey := accountID + "." + policyName
-	entry, err := s.policiesBucket.Get(ctx, kvKey)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
-		}
-		return nil, fmt.Errorf("get policy: %w", err)
-	}
-
-	var policy Policy
-	if err := json.Unmarshal(entry.Value(), &policy); err != nil {
-		return nil, fmt.Errorf("unmarshal policy: %w", err)
-	}
-
-	if policy.ARN != policyARN {
+	case errors.Is(err, iamarn.ErrPolicyARNMismatch):
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
+	case err != nil:
+		return nil, err
 	}
-
-	return &policy, nil
+	return policy, nil
 }
 
 // entityRef identifies one principal record found to have a given policy

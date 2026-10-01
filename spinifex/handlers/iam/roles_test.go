@@ -557,6 +557,43 @@ func TestUpdateRole_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }
 
+func TestUpdateRoleDescription(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "desc-role")
+
+	out, err := svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String("desc-role"),
+		Description: aws.String("new description"),
+	})
+	require.NoError(t, err)
+	got, err := svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("desc-role")})
+	require.NoError(t, err)
+	assert.Equal(t, "new description", *got.Role.Description)
+	assert.Equal(t, got.Role, out.Role, "output carries the role in the GetRole shape")
+
+	_, err = svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String("desc-role"),
+		Description: aws.String(""),
+	})
+	require.NoError(t, err)
+	got, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("desc-role")})
+	require.NoError(t, err)
+	assert.Empty(t, aws.StringValue(got.Role.Description))
+}
+
+func TestUpdateRoleDescription_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String("ghost"),
+		Description: aws.String("never"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
 func TestUpdateAssumeRolePolicy(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -1599,6 +1636,8 @@ func TestRoleAndPolicy_DescriptionLength(t *testing.T) {
 	})
 	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
 	_, err = svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{RoleName: aws.String("missing"), Description: tooLong})
+	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
+	_, err = svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{RoleName: aws.String("missing"), Description: tooLong})
 	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
 	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
 		PolicyName: aws.String("p"), PolicyDocument: aws.String("{"), Description: tooLong,

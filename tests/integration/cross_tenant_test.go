@@ -518,7 +518,7 @@ func iamUncased() map[string]string {
 		"PutGroupPolicy", "PutRolePolicy", "PutUserPolicy", "RemoveRoleFromInstanceProfile",
 		"RemoveUserFromGroup", "TagInstanceProfile", "TagRole", "TagUser",
 		"UntagInstanceProfile", "UntagRole", "UntagUser", "UpdateAccessKey",
-		"UpdateAssumeRolePolicy", "UpdateRole",
+		"UpdateAssumeRolePolicy", "UpdateRole", "UpdateRoleDescription",
 	} {
 		uncased[action] = byName
 	}

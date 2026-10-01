@@ -267,6 +267,34 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 	return &iam.UpdateRoleOutput{}, nil
 }
 
+// UpdateRoleDescription is the older single-field form of UpdateRole; unlike
+// UpdateRole it returns the updated role.
+func (s *IAMServiceImpl) UpdateRoleDescription(accountID string, input *iam.UpdateRoleDescriptionInput) (*iam.UpdateRoleDescriptionOutput, error) {
+	ctx := context.Background()
+	roleName := *input.RoleName
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+
+	role, err := s.getRole(ctx, accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	role.Description = *input.Description
+
+	data, err := json.Marshal(role)
+	if err != nil {
+		return nil, fmt.Errorf("marshal role: %w", err)
+	}
+	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
+		return nil, fmt.Errorf("update role description: %w", err)
+	}
+
+	slog.Info("IAM role description updated", "accountID", accountID, "roleName", roleName)
+	return &iam.UpdateRoleDescriptionOutput{Role: gotRoleToSDK(role)}, nil
+}
+
 func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
 	ctx := context.Background()
 	roleName := *input.RoleName

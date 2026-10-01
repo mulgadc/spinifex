@@ -169,9 +169,10 @@ services:
       - "vpc.dhcp.acquire"
       - "vpc.dhcp.release"
       # → viperblockd
-      # Legacy configuration-update payloads and routes are owned by
-      # contracts/viperblockd/legacy/v1; they are transitional and distinct
-      # from the generic providers/ebs protocol.
+      # The migrated legacy ebs.config and ebs.sync payloads and routes are
+      # owned by contracts/viperblockd/legacy/v1. They are transitional and
+      # distinct from the generic providers/ebs protocol; other legacy ebs.*
+      # routes remain to be migrated separately.
       - "ebs.mount"
       - "ebs.unmount"
       - "ebs.delete"
@@ -227,8 +228,9 @@ services:
     # mulga/viperblock submodule. Submodule pointer bump → selector forces
     # "run all" (contract changes can be invisible at the spinifex source
     # level).
-    # The legacy ebs.config routes are versioned by
-    # contracts/viperblockd/legacy/v1, not by providers/ebs.
+    # The migrated legacy ebs.config and ebs.sync routes are versioned by
+    # contracts/viperblockd/legacy/v1, not by providers/ebs. Other legacy
+    # ebs.* routes remain to be migrated separately.
     subscribes:
       - "ebs.mount"
       - "ebs.unmount"

@@ -324,11 +324,11 @@ func TestIntegration_EBSSyncVolumeNotMounted(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSSyncRequest{Volume: "vol-not-here"})
-	msg, err := nc.Request("ebs.sync", reqData, 3*time.Second)
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSSyncRequest{Volume: "vol-not-here"})
+	msg, err := nc.Request(viperblocklegacyv1.SyncSubject, reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSSyncResponse
+	var resp viperblocklegacyv1.EBSSyncResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.False(t, resp.Synced)
 	assert.Contains(t, resp.Error, "not mounted")
@@ -354,11 +354,11 @@ func TestIntegration_EBSSyncVolumeNoVBInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSSyncRequest{Volume: "vol-no-vb"})
-	msg, err := nc.Request("ebs.sync", reqData, 3*time.Second)
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSSyncRequest{Volume: "vol-no-vb"})
+	msg, err := nc.Request(viperblocklegacyv1.SyncSubject, reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSSyncResponse
+	var resp viperblocklegacyv1.EBSSyncResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.False(t, resp.Synced)
 	assert.Contains(t, resp.Error, "not mounted")
@@ -381,10 +381,10 @@ func TestIntegration_EBSSyncInvalidJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	msg, err := nc.Request("ebs.sync", []byte("garbage"), 3*time.Second)
+	msg, err := nc.Request(viperblocklegacyv1.SyncSubject, []byte("garbage"), 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSSyncResponse
+	var resp viperblocklegacyv1.EBSSyncResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.Contains(t, resp.Error, "bad request:")
 }
@@ -491,11 +491,11 @@ func TestIntegration_EBSSyncWithVBInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	reqData, _ := json.Marshal(types.EBSSyncRequest{Volume: "vol-sync-vb"})
-	msg, err := nc.Request("ebs.sync", reqData, 3*time.Second)
+	reqData, _ := json.Marshal(viperblocklegacyv1.EBSSyncRequest{Volume: "vol-sync-vb"})
+	msg, err := nc.Request(viperblocklegacyv1.SyncSubject, reqData, 3*time.Second)
 	require.NoError(t, err)
 
-	var resp types.EBSSyncResponse
+	var resp viperblocklegacyv1.EBSSyncResponse
 	require.NoError(t, json.Unmarshal(msg.Data, &resp))
 	assert.True(t, resp.Synced)
 	assert.Empty(t, resp.Error)

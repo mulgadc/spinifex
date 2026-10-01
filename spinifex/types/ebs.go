@@ -44,16 +44,6 @@ type EBSUnMountResponse struct {
 	Reaped bool `json:"Reaped,omitempty"`
 }
 
-type EBSSyncRequest struct {
-	Volume string `json:"Volume"`
-}
-
-type EBSSyncResponse struct {
-	Volume string `json:"Volume"`
-	Synced bool   `json:"Synced"`
-	Error  string `json:"Error"`
-}
-
 type EBSDeleteRequest struct {
 	Volume string `json:"Volume"`
 }

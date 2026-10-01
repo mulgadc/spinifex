@@ -895,20 +895,20 @@ func launchService(cfg *Config) (err error) {
 		return fmt.Errorf("failed to subscribe to %s: %w", abandonTopic, err)
 	}
 
-	if _, err := nc.QueueSubscribe("ebs.sync", "spinifex-workers", func(msg *nats.Msg) {
+	if _, err := nc.QueueSubscribe(viperblocklegacyv1.SyncSubject, "spinifex-workers", func(msg *nats.Msg) {
 		ctx, span := utils.StartConsumerSpan(msg)
 		defer span.End()
 		slog.InfoContext(ctx, "Received ebs.sync message")
 
-		var syncRequest types.EBSSyncRequest
+		var syncRequest viperblocklegacyv1.EBSSyncRequest
 		if err := json.Unmarshal(msg.Data, &syncRequest); err != nil {
 			slog.ErrorContext(ctx, "Failed to unmarshal ebs.sync message", "err", err)
 			utils.MarkSpanError(span, err)
-			respondJSON(msg, types.EBSSyncResponse{Error: fmt.Sprintf("bad request: %v", err)})
+			respondJSON(msg, viperblocklegacyv1.EBSSyncResponse{Error: fmt.Sprintf("bad request: %v", err)})
 			return
 		}
 
-		syncResponse := types.EBSSyncResponse{Volume: syncRequest.Volume}
+		syncResponse := viperblocklegacyv1.EBSSyncResponse{Volume: syncRequest.Volume}
 		defer func() {
 			if syncResponse.Error != "" {
 				utils.MarkSpanError(span, errors.New(syncResponse.Error))

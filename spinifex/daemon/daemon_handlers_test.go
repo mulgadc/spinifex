@@ -19,6 +19,7 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -2675,7 +2676,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 	})
 
 	// Subscribe a dummy ebs.sync handler so the NATS Request doesn't time out
-	syncSub, err := daemon.natsConn.Subscribe("ebs.sync", func(msg *nats.Msg) {
+	syncSub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.SyncSubject, func(msg *nats.Msg) {
 		_ = msg.Respond([]byte(`{}`))
 	})
 	require.NoError(t, err)

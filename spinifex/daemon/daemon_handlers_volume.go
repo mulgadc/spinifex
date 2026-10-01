@@ -9,10 +9,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -241,11 +241,11 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 
 	// Notify viperblockd to reload state after volume modification (e.g. resize)
 	if modifyVolumeInput.VolumeId != nil {
-		syncData, err := json.Marshal(types.EBSSyncRequest{Volume: *modifyVolumeInput.VolumeId})
+		syncData, err := json.Marshal(viperblocklegacyv1.EBSSyncRequest{Volume: *modifyVolumeInput.VolumeId})
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to marshal ebs.sync request", "volumeId", *modifyVolumeInput.VolumeId, "err", err)
 		} else {
-			_, syncErr := d.natsConn.Request("ebs.sync", syncData, 5*time.Second)
+			_, syncErr := d.natsConn.Request(viperblocklegacyv1.SyncSubject, syncData, 5*time.Second)
 			if syncErr != nil {
 				slog.WarnContext(ctx, "ebs.sync notification failed (volume may not be mounted)",
 					"volumeId", *modifyVolumeInput.VolumeId, "err", syncErr)

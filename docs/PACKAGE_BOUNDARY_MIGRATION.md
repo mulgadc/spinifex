@@ -191,6 +191,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `08bd335f0` | `spinifex/types/node.go` (`NodeStatusResponse`, capacity and GPU inventory) | `contracts/cluster/v1/status.go` | Node status is a versioned fan-out observation contract for operator inspection and EC2/EKS scheduling consumers; `status_test.go` pins its subject and JSON shape. |
 | `f4cb550c9` | `spinifex/types/ebs.go` (GP3 policy constants) | `spinifex/domains/ec2/ebs/policy/gp3.go` | The supported GP3 product envelope is EC2 EBS domain policy, not generic runtime or Viperblockd wire state; `gp3_test.go` pins the deployed values. |
 | `adb55de33` | `spinifex/types/ebs.go` (`NBDTransport`) | `spinifex/services/viperblockd/nbd_transport.go` | NBD endpoint transport selection is Viperblockd-local delivery configuration, not generic EBS state or a provider contract; `nbd_transport_test.go` pins the socket and TCP forms. |
+| `94a6e7af2` | `spinifex/types/ebs.go` (`EBSConfigUpdateRequest`, `EBSConfigUpdateResponse`) | `contracts/viperblockd/legacy/v1/config_update.go` | Legacy configuration updates have deployed queue and volume-addressed NATS routes; the versioned compatibility contract is expressly transitional and separate from `providers/ebs`. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

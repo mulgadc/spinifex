@@ -380,7 +380,8 @@ func eksCallerPrincipalARN(r *http.Request) string {
 	identity, _ := ctx.Value(ctxIdentity).(string)
 	principalType, _ := ctx.Value(ctxPrincipalType).(string)
 	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
+	userARN, _ := ctx.Value(ctxUserARN).(string)
+	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
 	if err != nil {
 		slog.DebugContext(r.Context(), "EKS_Request: could not resolve caller principal ARN", "err", err)
 		return ""

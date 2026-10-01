@@ -31,12 +31,13 @@ func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *h
 	identity, _ := ctx.Value(ctxIdentity).(string)
 	principalType, _ := ctx.Value(ctxPrincipalType).(string)
 	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
+	userARN, _ := ctx.Value(ctxUserARN).(string)
 
 	// The minted token names the exact IAM/STS record every /v2/* request will
 	// later rehydrate against, so its subject must be the same canonical ARN
 	// buildCallerARN produces everywhere else in the gateway (STS included) —
 	// not a best-effort approximation that could omit an IAM path.
-	callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
+	callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
 	if err != nil {
 		slog.Error("GetAuthorizationToken: cannot build canonical caller ARN", "err", err)
 		return errors.New(awserrors.ErrorServerInternal)

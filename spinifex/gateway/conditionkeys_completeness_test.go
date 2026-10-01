@@ -126,7 +126,7 @@ func emittedKeys(t *testing.T) map[string]string {
 		r.RemoteAddr = "10.4.1.9:52344"
 		// Resolved the way the middleware resolves it, so the gate cannot pass on
 		// a value only the test supplies.
-		userID, err := gw.principalUserID(principal)
+		userID, _, err := gw.principalUser(principal)
 		require.NoError(t, err)
 		principal.userID = userID
 		for key := range requestConditionKeys(r, principal) {

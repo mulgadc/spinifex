@@ -28,6 +28,9 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPINIFEX_ROOT="$(cd "$HERE/../../.." && pwd)"
+# On a workstation spinifex is a submodule of mulga; in CI the two are siblings
+# under the workspace. Deriving one from the other is only right in the first case.
+MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 
 TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm}"
 SOURCE="${OCI_SOURCE:-tree}"
@@ -117,11 +120,22 @@ DISTRO_TARBALL=""
 if [ "$SOURCE" = tree ]; then
     log "building $REF"
     DISTRO_TARBALL="$ARTIFACT_DIR/spinifex-distro.tar.gz"
+    BUILDER="$MULGA_ROOT/scripts/tofu-cluster/build-install-artifacts.sh"
+    [ -x "$BUILDER" ] || die "no artifact builder at $BUILDER (set MULGA_ROOT)"
+    # It clones each repo from GitHub rather than using the checkout beside it, so a
+    # ref that exists only on this workstation silently falls back to dev and the
+    # run would report a verdict about the wrong code. Fail on that instead.
+    if ! git -C "$SPINIFEX_ROOT" rev-parse --verify --quiet "refs/remotes/origin/$REF" >/dev/null \
+        && ! git -C "$SPINIFEX_ROOT" ls-remote --exit-code --tags origin "$REF" >/dev/null 2>&1; then
+        die "$REF is not on origin: the builder clones from GitHub, so an unpushed ref would fall back to dev"
+    fi
     if [ "$DRY_RUN" = 1 ]; then
         log "dry run: would build $REF into $DISTRO_TARBALL"
     else
-        "$SPINIFEX_ROOT/../scripts/tofu-cluster/build-install-artifacts.sh" "$REF" \
-            "$DISTRO_TARBALL" "$ARTIFACT_DIR/setup.sh" "$ARTIFACT_DIR/spinifex-tests.tar" \
+        # --skip-e2e-build: the Go suites are not run here. The workbook driver is a
+        # shell script, so building their binaries would add minutes and prove nothing.
+        "$BUILDER" "$REF" "$DISTRO_TARBALL" "$ARTIFACT_DIR/setup.sh" \
+            "$ARTIFACT_DIR/spinifex-tests.tar" --skip-e2e-build \
             > "$ARTIFACT_DIR/build.log" 2>&1 \
             || die "building $REF failed; see $ARTIFACT_DIR/build.log"
         log "built $(du -h "$DISTRO_TARBALL" | cut -f1) from $REF"

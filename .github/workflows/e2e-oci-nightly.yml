@@ -85,6 +85,7 @@ jobs:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
           OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
           TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          MULGA_ROOT: ${{ github.workspace }}/mulga
           SPX_REF: ${{ github.ref_name }}
           OCI_TOPOLOGIES: ${{ inputs.topologies }}
           OCI_SOURCE: ${{ inputs.source }}

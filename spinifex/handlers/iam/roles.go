@@ -216,6 +216,18 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 	}
 
 	slog.Info("IAM role deleted", "accountID", accountID, "roleName", roleName)
+
+	// Same ordering and failure handling as DeleteUser.
+	if s.sessionRevoker != nil {
+		revoked, err := s.sessionRevoker.RevokeRoleSessions(ctx, accountID, role.ARN, role.RoleID)
+		if err != nil {
+			slog.Error("Revoking deleted role's sessions failed; janitor will reap them",
+				"accountID", accountID, "roleName", roleName, "revoked", revoked, "err", err)
+		} else if revoked > 0 {
+			slog.Info("Deleted role's sessions revoked",
+				"accountID", accountID, "roleName", roleName, "revoked", revoked)
+		}
+	}
 	return &iam.DeleteRoleOutput{}, nil
 }
 

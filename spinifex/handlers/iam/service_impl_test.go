@@ -1,7 +1,9 @@
 package handlers_iam
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -3015,4 +3017,79 @@ func TestAttachUserPolicy_CustomerManagedMustExist(t *testing.T) {
 		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/DoesNotExist"),
 	})
 	require.Error(t, err)
+}
+
+// recordingRevoker records each revocation and whether the principal record was
+// already gone when it ran, which is the ordering a racing mint relies on.
+type recordingRevoker struct {
+	svc *IAMServiceImpl
+	err error
+
+	calls []revocation
+}
+
+type revocation struct {
+	accountID, name, id string
+	recordGone          bool
+}
+
+var _ SessionRevoker = (*recordingRevoker)(nil)
+
+func (r *recordingRevoker) RevokeUserSessions(_ context.Context, accountID, userName, userID string) (int, error) {
+	_, err := r.svc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(userName)})
+	r.calls = append(r.calls, revocation{accountID, userName, userID, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity)})
+	return 0, r.err
+}
+
+func (r *recordingRevoker) RevokeRoleSessions(_ context.Context, accountID, roleARN, roleID string) (int, error) {
+	name := roleARN[strings.LastIndex(roleARN, "/")+1:]
+	_, err := r.svc.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(name)})
+	r.calls = append(r.calls, revocation{accountID, roleARN, roleID, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity)})
+	return 0, r.err
+}
+
+func TestDeleteUser_RevokesSessionsOnceRecordIsGone(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	user := createTestUser(t, svc, "leaver")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("leaver")})
+	require.NoError(t, err)
+
+	require.Len(t, revoker.calls, 1)
+	assert.Equal(t, revocation{testAccountID, "leaver", aws.StringValue(user.UserId), true}, revoker.calls[0])
+}
+
+func TestDeleteUser_ConflictDoesNotRevoke(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	createTestUser(t, svc, "keyholder")
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{UserName: aws.String("keyholder")})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("keyholder")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+	assert.Empty(t, revoker.calls, "a user that survives the delete keeps its sessions")
+}
+
+// The user is already gone when revocation fails, so failing the call would
+// report a delete that happened as one that did not; the janitor retries.
+func TestDeleteUser_RevocationFailureKeepsDelete(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc, err: errors.New("jetstream unavailable")}
+	svc.SetSessionRevoker(revoker)
+	createTestUser(t, svc, "leaver")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("leaver")})
+	require.NoError(t, err)
+	require.Len(t, revoker.calls, 1)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("leaver")})
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
 }

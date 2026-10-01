@@ -199,6 +199,9 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}
 
+	// DeleteUser and DeleteRole revoke the deleted principal's sessions through STS.
+	iamService.SetSessionRevoker(stsService)
+
 	// Janitor sweeps expired session credentials.
 	go stsService.RunJanitor(janitorCtx)
 

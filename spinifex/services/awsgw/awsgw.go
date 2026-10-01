@@ -23,13 +23,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
@@ -270,14 +270,14 @@ func launchService(config *config.ClusterConfig) error {
 		nodeConfig.Predastore.AccessKey,
 		nodeConfig.Predastore.SecretKey,
 	)
-	ecrRegistry := gateway_ecr.NewRegistry(objStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
+	ecrRegistry := ecrregistry.NewRegistry(objStore, ecr.NewNATSMetaStore(natsConn), config.Bootstrap.AccountID)
 
 	// Lifecycle expiry sweep applies each repo's stored lifecycle policy and
 	// deletes the expired set via the registry GC path. It runs here (not the
 	// daemon) because only the gateway holds the object store. Bound to the same
 	// lifetime context as the STS janitor.
-	lifecycleSweeper := gateway_ecr.NewLifecycleSweeper(
-		ecrRegistry, activeAccountIDs(iamService), gateway_ecr.DefaultLifecycleSweepInterval)
+	lifecycleSweeper := ecrregistry.NewLifecycleSweeper(
+		ecrRegistry, activeAccountIDs(iamService), ecrregistry.DefaultLifecycleSweepInterval)
 	go lifecycleSweeper.Run(janitorCtx)
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the

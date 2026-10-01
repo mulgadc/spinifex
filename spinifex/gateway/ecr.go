@@ -3,7 +3,7 @@ package gateway
 import (
 	"github.com/go-chi/chi/v5"
 
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 )
 
 // mountOCIRegistry registers the OCI Distribution Spec v2 surface (/v2/*) on r.
@@ -34,11 +34,11 @@ func (gw *GatewayConfig) mountOCIRegistry(r chi.Router) {
 		v2.Group(func(reg chi.Router) {
 			reg.Use(gw.ecrAuthBridge)
 			reg.Use(gw.ecrOperationAuthorization)
-			reg.Get("/", gateway_ecr.APIVersion)
+			reg.Get("/", ecrregistry.APIVersion)
 			if gw.ECRRegistry != nil {
 				reg.HandleFunc("/*", gw.ECRRegistry.ServeHTTP)
 			} else {
-				reg.HandleFunc("/*", gateway_ecr.NotImplemented)
+				reg.HandleFunc("/*", ecrregistry.NotImplemented)
 			}
 		})
 	})

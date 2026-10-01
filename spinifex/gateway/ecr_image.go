@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 )
 
 // maxImageBatch is the per-call cap on imageIds for the batch image actions.
@@ -172,7 +172,7 @@ func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Req
 		return err
 	}
 
-	wanted := func(rec gateway_ecr.ImageRecord) bool {
+	wanted := func(rec ecrregistry.ImageRecord) bool {
 		if len(req.ImageIds) == 0 {
 			return true
 		}
@@ -249,7 +249,7 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 		}
 
 		body, mediaType, digest, gErr := gw.ECRRegistry.GetManifest(ctx, accountID, req.RepositoryName, ref, req.AcceptedMediaTypes)
-		if errors.Is(gErr, gateway_ecr.ErrImageNotFound) {
+		if errors.Is(gErr, ecrregistry.ErrImageNotFound) {
 			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeImageNotFound, "image not found"))
 			continue
 		}
@@ -348,7 +348,7 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 		}
 
 		digest, dErr := gw.ECRRegistry.DeleteImage(ctx, accountID, req.RepositoryName, id.ImageTag, id.ImageDigest)
-		if errors.Is(dErr, gateway_ecr.ErrImageNotFound) {
+		if errors.Is(dErr, ecrregistry.ErrImageNotFound) {
 			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeImageNotFound, "image not found"))
 			continue
 		}
@@ -370,7 +370,7 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 
 // ecrListImages resolves the repo's image records, mapping a missing repo to
 // RepositoryNotFound and any other backend fault to ServerInternal.
-func (gw *GatewayConfig) ecrListImages(ctx context.Context, accountID, repo string) ([]gateway_ecr.ImageRecord, error) {
+func (gw *GatewayConfig) ecrListImages(ctx context.Context, accountID, repo string) ([]ecrregistry.ImageRecord, error) {
 	records, err := gw.ECRRegistry.ListImages(ctx, accountID, repo)
 	if errors.Is(err, handlers_ecr.ErrNotFound) {
 		return nil, errors.New(awserrors.ErrorRepositoryNotFound)
@@ -385,7 +385,7 @@ func (gw *GatewayConfig) ecrListImages(ctx context.Context, accountID, repo stri
 // mapStoreManifestError translates the OCI manifest-store error codes into AWS
 // PutImage error codes.
 func mapStoreManifestError(ctx context.Context, err error, repo string) error {
-	if mErr, ok := errors.AsType[*gateway_ecr.ManifestStoreError](err); ok {
+	if mErr, ok := errors.AsType[*ecrregistry.ManifestStoreError](err); ok {
 		switch mErr.Code {
 		case "DIGEST_INVALID":
 			return errors.New(awserrors.ErrorImageDigestDoesNotMatch)

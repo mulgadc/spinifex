@@ -34,9 +34,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -173,7 +173,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		// repositories must additionally call StartECRDaemonLite to subscribe a
 		// real MetaServiceImpl or every ECR request will time out with no
 		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
+		ECRRegistry:      ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
 		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, testECRAudience),
 		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, testECRAudience),
 		// Ochre model access is deny-by-default, so without a grant store every

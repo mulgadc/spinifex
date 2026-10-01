@@ -1,4 +1,4 @@
-package gateway_ecr
+package ecrregistry
 
 import (
 	"encoding/json"

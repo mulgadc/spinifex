@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,7 +23,7 @@ import (
 // Registry helpers without NATS.
 func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
-	reg := gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewMemoryMetaStore(), ecrTestAccount)
+	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewMemoryMetaStore(), ecrTestAccount)
 	return &GatewayConfig{ECRRegistry: reg, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true, IAMService: allowAllIAMService()}
 }
 

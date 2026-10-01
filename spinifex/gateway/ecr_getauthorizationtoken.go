@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // handleGetAuthorizationToken mints a self-contained ES256 ECR token for the

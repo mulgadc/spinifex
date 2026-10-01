@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 )
 
@@ -34,16 +34,16 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 			// the request (this handler is never reached) or is disabled in a way
 			// that skipped rehydration. Fail closed rather than dispatch with no
 			// principal to evaluate.
-			gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+			ecrregistry.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 			return
 		}
 
-		op, ok := gateway_ecr.ClassifyOperation(r.Method, r.URL.Path, r.URL.Query())
+		op, ok := ecrregistry.ClassifyOperation(r.Method, r.URL.Path, r.URL.Query())
 		if !ok {
 			// Registry itself would 404 this path/method combination; refusing it
 			// here too means an operation added to Registry without a matching
 			// classifier case can never dispatch unauthorized.
-			gateway_ecr.WriteError(w, http.StatusNotFound, "NAME_UNKNOWN", "unrecognized registry operation")
+			ecrregistry.WriteError(w, http.StatusNotFound, "NAME_UNKNOWN", "unrecognized registry operation")
 			return
 		}
 
@@ -53,7 +53,7 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 		for _, req := range op.Requirements {
 			resource, err := ecrResourceARN(gw.Region, principal.accountID, req.Scope, op)
 			if err != nil {
-				gateway_ecr.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
+				ecrregistry.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
 				return
 			}
 			if err := gw.evaluatePrincipalPolicyResources(
@@ -61,10 +61,10 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 			); err != nil {
 				if err.Error() == awserrors.ErrorInternalError {
 					// IAM/STS/NATS dependency failure: fail closed, never dispatch.
-					gateway_ecr.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
+					ecrregistry.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
 					return
 				}
-				gateway_ecr.WriteError(w, http.StatusForbidden, "DENIED", "insufficient permissions")
+				ecrregistry.WriteError(w, http.StatusForbidden, "DENIED", "insufficient permissions")
 				return
 			}
 		}
@@ -75,13 +75,13 @@ func (gw *GatewayConfig) ecrOperationAuthorization(next http.Handler) http.Handl
 
 // ecrResourceARN builds the repository ARN an ActionRequirement's scope
 // resolves to, from the gateway's configured region and the token's account.
-func ecrResourceARN(region, accountID string, scope gateway_ecr.ResourceScope, op gateway_ecr.ClassifiedOperation) (string, error) {
+func ecrResourceARN(region, accountID string, scope ecrregistry.ResourceScope, op ecrregistry.ClassifiedOperation) (string, error) {
 	switch scope {
-	case gateway_ecr.ScopeAccountWildcard:
+	case ecrregistry.ScopeAccountWildcard:
 		return fmt.Sprintf("arn:aws:ecr:%s:%s:repository/*", region, accountID), nil
-	case gateway_ecr.ScopeDestination:
+	case ecrregistry.ScopeDestination:
 		return fmt.Sprintf("arn:aws:ecr:%s:%s:repository/%s", region, accountID, op.Repo), nil
-	case gateway_ecr.ScopeSource:
+	case ecrregistry.ScopeSource:
 		return fmt.Sprintf("arn:aws:ecr:%s:%s:repository/%s", region, accountID, op.Source), nil
 	default:
 		return "", fmt.Errorf("unhandled ECR resource scope %d", scope)

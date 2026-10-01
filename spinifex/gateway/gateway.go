@@ -27,11 +27,11 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
 	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
@@ -76,7 +76,7 @@ const (
 	ctxTargetRegion contextKey = "host.targetRegion"
 
 	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
-	// The resolved account is stashed via gateway_ecr.WithAuthAccount so the
+	// The resolved account is stashed via ecrregistry.WithAuthAccount so the
 	// registry package can read it without sharing this package's key type.
 	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
 	// ctxECRPrincipal carries the principalContext resolveECRPrincipal rebuilt
@@ -158,7 +158,7 @@ type GatewayConfig struct {
 	Commit  string // Build-time commit hash (set from cmd.Commit)
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
-	ECRRegistry *gateway_ecr.Registry
+	ECRRegistry *ecrregistry.Registry
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).

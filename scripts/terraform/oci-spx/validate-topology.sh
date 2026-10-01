@@ -16,6 +16,7 @@ SSH_PUBLIC_KEY="$HOME/.ssh/oci-spx.pub"
 SSH_PRIVATE_KEY="$HOME/.ssh/oci-spx"
 KEEP=0
 SKIP_WORKLOAD=0
+SKIP_POOL=0
 DRY_RUN=0
 INSTANCE_PRINCIPAL=0
 WORKBOOK="nginx-alb"
@@ -54,6 +55,9 @@ workbook against it, then destroys everything.
                           instead of a key file. Needs the dynamic group and
                           policy to exist already; see instance-principal.tf.
   --workbook NAME         Workbook under docs/terraform-workbooks. Default $WORKBOOK
+  --no-external-pool      Form without an OCI credential: no external pool and no
+                          allocator gate. Implies --skip-workload, because a guest
+                          with no public address proves nothing a customer wants.
   --skip-workload         Form and verify only; launch no guests.
   --keep                  Leave the infrastructure up. Implies no verdict.
   --dry-run               Print the plan and the per-node steps, change nothing.
@@ -68,6 +72,7 @@ while [ $# -gt 0 ]; do
         --ssh-private-key) SSH_PRIVATE_KEY="${2:?}"; shift 2 ;;
         --workbook) WORKBOOK="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
+        --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
         --keep) KEEP=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -150,7 +155,7 @@ log "$SHAPE, $NODES node(s), state in $STATE_DIR"
 
 if [ "$DRY_RUN" = 1 ]; then
     tf plan -no-color "${tf_vars[@]}" | tail -30
-    log "dry run: would install Spinifex on $NODES node(s), form the cluster, run the $WORKBOOK workbook, then destroy"
+    log "dry run: would install Spinifex on $NODES node(s), form the cluster,$([ "$SKIP_POOL" = 1 ] && echo " configure no external pool,") $([ "$SKIP_WORKLOAD" = 1 ] && echo "launch no guests" || echo "run the $WORKBOOK workbook"), then destroy"
     exit 0
 fi
 
@@ -224,12 +229,13 @@ record "formation: PASS"
 # The IMDS remap and the pool are both set-before-first-start, and the remap is the
 # half that is invisible when missing: without it the cloud's metadata service is
 # shadowed by Spinifex's own endpoints and the allocator cannot resolve its VNIC.
-log "configuring the external pool and the IMDS remap"
+log "configuring the IMDS remap$([ "$SKIP_POOL" = 1 ] && echo " (no external pool)" || echo " and the external pool")"
 for host in "${HOSTS[@]}"; do
-    ssh_node "$host" '
-        set -e
-        sudo cp /etc/spinifex/spinifex.toml /etc/spinifex/spinifex.toml.bak-prepool
-        grep -q imds_host_meta_ip /etc/spinifex/spinifex.toml || sudo python3 - <<"PY"
+    ssh_node "$host" "SKIP_POOL=$SKIP_POOL bash -s" > "$STATE_DIR/pool-$host.log" 2>&1 <<'REMOTE' \
+        || die "pool configuration failed on $host; see $STATE_DIR/pool-$host.log"
+set -e
+sudo cp /etc/spinifex/spinifex.toml /etc/spinifex/spinifex.toml.bak-prepool
+grep -q imds_host_meta_ip /etc/spinifex/spinifex.toml || sudo python3 - <<"PY"
 import re
 path = "/etc/spinifex/spinifex.toml"
 text = open(path).read()
@@ -238,31 +244,37 @@ text = re.sub(r"(?m)^\[network\]$",
               text, count=1)
 open(path, "w").write(text)
 PY
-        grep -q "name               = \"oci-public\"" /etc/spinifex/spinifex.toml \
-            || sudo tee -a /etc/spinifex/spinifex.toml < /etc/spinifex/oci/external-pool.toml >/dev/null
-        sudo spx config validate --config /etc/spinifex/spinifex.toml 2>/dev/null || true
-        sudo systemctl restart spinifex.target
-    ' > "$STATE_DIR/pool-$host.log" 2>&1 \
-        || die "pool configuration failed on $host; see $STATE_DIR/pool-$host.log"
+if [ "${SKIP_POOL:-0}" != 1 ]; then
+    grep -q 'name               = "oci-public"' /etc/spinifex/spinifex.toml \
+        || sudo tee -a /etc/spinifex/spinifex.toml < /etc/spinifex/oci/external-pool.toml >/dev/null
+fi
+sudo spx config validate --config /etc/spinifex/spinifex.toml 2>/dev/null || true
+sudo systemctl restart spinifex.target
+REMOTE
 done
 
 # resolved the external VNIC is the line that proves the credential works, the
 # compartment is right and br-wan's MAC matched a real VNIC. A node missing it
 # accepts allocate-address and then fails it.
-log "checking the allocator came up"
-for host in "${HOSTS[@]}"; do
-    found=0
-    for _ in $(seq 1 30); do
-        if ssh_node "$host" "sudo journalctl -u spinifex-vpcd --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
-            found=1
-            break
-        fi
-        sleep 10
+if [ "$SKIP_POOL" = 1 ]; then
+    log "--no-external-pool: no allocator to check"
+    record "oci allocator: SKIPPED"
+else
+    log "checking the allocator came up"
+    for host in "${HOSTS[@]}"; do
+        found=0
+        for _ in $(seq 1 30); do
+            if ssh_node "$host" "sudo journalctl -u spinifex-vpcd --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
+                found=1
+                break
+            fi
+            sleep 10
+        done
+        [ "$found" = 1 ] || die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address"
+        log "$host allocator ready"
     done
-    [ "$found" = 1 ] || die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address"
-    log "$host allocator ready"
-done
-record "oci allocator: PASS"
+    record "oci allocator: PASS"
+fi
 
 log "cluster membership"
 ssh_node "${HOSTS[0]}" 'sudo spx get nodes' | tee "$STATE_DIR/nodes.txt"

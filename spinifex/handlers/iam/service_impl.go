@@ -2307,11 +2307,14 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 		if stmt.Effect != PolicyEffectAllow && stmt.Effect != PolicyEffectDeny {
 			return nil, fmt.Errorf("statement %d: Effect must be Allow or Deny, got %q", i, stmt.Effect)
 		}
-		if len(stmt.Action) == 0 {
-			return nil, fmt.Errorf("statement %d: Action is required", i)
+		if err := validateSelectorPair(i, "Action", stmt.Action, stmt.NotAction); err != nil {
+			return nil, err
 		}
-		if len(stmt.Resource) == 0 {
-			return nil, fmt.Errorf("statement %d: Resource is required", i)
+		if err := validateSelectorPair(i, "Resource", stmt.Resource, stmt.NotResource); err != nil {
+			return nil, err
+		}
+		if err := validateSelectorEntries(i, stmt); err != nil {
+			return nil, err
 		}
 		if err := validateStatementRestrictions(i, stmt); err != nil {
 			return nil, err
@@ -2321,6 +2324,40 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 	return &doc, nil
 }
 
+// validateSelectorPair requires exactly one of a selector and its Not form, as
+// AWS does: a statement naming both, or neither, is malformed.
+func validateSelectorPair(i int, name string, positive, negative StringOrArr) error {
+	switch {
+	case len(positive) > 0 && len(negative) > 0:
+		return fmt.Errorf("statement %d: %s and Not%s cannot both be specified", i, name, name)
+	case len(positive) == 0 && len(negative) == 0:
+		return fmt.Errorf("statement %d: %s is required (or Not%s)", i, name, name)
+	}
+	return nil
+}
+
+// validateSelectorEntries rejects entries AWS rejects as malformed. A bad entry
+// in Action only grants less, but the same entry in NotAction excludes nothing
+// and so grants everything.
+func validateSelectorEntries(i int, stmt Statement) error {
+	for field, actions := range map[string]StringOrArr{"Action": stmt.Action, "NotAction": stmt.NotAction} {
+		for _, action := range actions {
+			vendor, name, found := strings.Cut(action, ":")
+			if action != "*" && (!found || vendor == "" || name == "") {
+				return fmt.Errorf("statement %d: %s %q: Actions/Conditions must be prefaced by a vendor, e.g., iam, sdb, ec2, etc.", i, field, action)
+			}
+		}
+	}
+	for field, resources := range map[string]StringOrArr{"Resource": stmt.Resource, "NotResource": stmt.NotResource} {
+		for _, resource := range resources {
+			if resource != "*" && !strings.HasPrefix(resource, "arn:") {
+				return fmt.Errorf("statement %d: %s %q must be in ARN format or \"*\"", i, field, resource)
+			}
+		}
+	}
+	return nil
+}
+
 // validateStatementRestrictions rejects the clauses the evaluator cannot enforce,
 // so an identity policy is never accepted with an inert restriction on it.
 // Conditions inside the supported allowlist are accepted and enforced.
@@ -2328,14 +2365,13 @@ func validateStatementRestrictions(i int, stmt Statement) error {
 	if isRawJSONNonEmpty(stmt.Principal) {
 		return fmt.Errorf("statement %d: Principal is not valid on an identity policy; use a resource or trust policy instead", i)
 	}
-	if len(stmt.NotAction) > 0 {
-		return fmt.Errorf("statement %d: NotAction blocks are not supported in this release; use Action with an explicit list instead", i)
-	}
-	if len(stmt.NotResource) > 0 {
-		return fmt.Errorf("statement %d: NotResource blocks are not supported in this release; use Resource with an explicit list instead", i)
-	}
 	for _, resource := range stmt.Resource {
 		if err := validatePolicyVariables(i, "Resource", resource); err != nil {
+			return err
+		}
+	}
+	for _, resource := range stmt.NotResource {
+		if err := validatePolicyVariables(i, "NotResource", resource); err != nil {
 			return err
 		}
 	}

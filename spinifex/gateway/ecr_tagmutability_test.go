@@ -13,7 +13,11 @@ import (
 )
 
 func putTagMutability(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
-	return ecrLifecycleRequest(t, gw, (*GatewayConfig).handlePutImageTagMutability, body)
+	t.Helper()
+	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.PutImageTagMutability", body)
+	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
+	w := httptest.NewRecorder()
+	return w, gw.ECR_Request(w, req.WithContext(ctx))
 }
 
 type tagMutabilityOut struct {
@@ -95,18 +99,6 @@ func TestPutImageTagMutability_Errors(t *testing.T) {
 			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
-}
-
-func TestPutImageTagMutability_NoAccountAndMalformed(t *testing.T) {
-	gw, _ := newRepoLifecycleGateway(t)
-
-	err := gw.handlePutImageTagMutability(httptest.NewRecorder(), noAccountRequest(`{"repositoryName":"team/app","imageTagMutability":"IMMUTABLE"}`))
-	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
-
-	_, err = putTagMutability(t, gw, `{`)
-	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestECRRequest_PutImageTagMutabilityDispatched(t *testing.T) {

@@ -23,7 +23,6 @@ var ecrInlineActions = map[string]ecrInlineHandler{
 	"DescribeRepositories":        (*GatewayConfig).handleDescribeRepositories,
 	"CreateRepository":            (*GatewayConfig).handleCreateRepository,
 	"DeleteRepository":            (*GatewayConfig).handleDeleteRepository,
-	"PutImageTagMutability":       (*GatewayConfig).handlePutImageTagMutability,
 	"ListImages":                  (*GatewayConfig).handleListImages,
 	"DescribeImages":              (*GatewayConfig).handleDescribeImages,
 	"BatchGetImage":               (*GatewayConfig).handleBatchGetImage,

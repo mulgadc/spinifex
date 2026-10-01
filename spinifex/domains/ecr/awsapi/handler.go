@@ -59,7 +59,7 @@ var Actions = map[string]Handler{
 	"DeleteRepository":      NotImplemented,
 	"DescribeRepositories":  NotImplemented,
 	"ListRepositories":      NotImplemented,
-	"PutImageTagMutability": NotImplemented,
+	"PutImageTagMutability": PutImageTagMutability,
 
 	// Images / layers.
 	"BatchGetImage":               NotImplemented,

@@ -24,6 +24,13 @@ type ManifestReader interface {
 	GetManifest(ctx context.Context, account, repository, reference string, acceptedTypes []string) (body []byte, mediaType, digest string, err error)
 }
 
+// ManifestWriter is the registry capability used by PutImage. It is shared
+// with the OCI Distribution manifest PUT implementation, while this package
+// translates its result into the AWS JSON response/error vocabulary.
+type ManifestWriter interface {
+	StoreManifest(ctx context.Context, account, repository, reference, contentType string, body []byte) (digest string, err error)
+}
+
 func validateRepositoryScope(repositoryName, registryID, accountID string) error {
 	if err := ValidateRepositoryName(repositoryName); err != nil {
 		return err

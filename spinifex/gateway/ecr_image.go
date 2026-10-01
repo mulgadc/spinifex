@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,15 +23,6 @@ const maxImageBatch = 100
 type imageIdentifier struct {
 	ImageDigest string `json:"imageDigest"`
 	ImageTag    string `json:"imageTag"`
-}
-
-type putImageRequest struct {
-	RepositoryName         string `json:"repositoryName"`
-	RegistryID             string `json:"registryId"`
-	ImageManifest          string `json:"imageManifest"`
-	ImageManifestMediaType string `json:"imageManifestMediaType"`
-	ImageTag               string `json:"imageTag"`
-	ImageDigest            string `json:"imageDigest"`
 }
 
 type batchDeleteImageRequest struct {
@@ -143,47 +133,24 @@ func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Requ
 	return nil
 }
 
-// handlePutImage stores a manifest (and tag) supplied as JSON, the control-plane
-// twin of an OCI manifest PUT. Used by `aws ecr put-image` to re-tag or copy an
-// existing manifest.
+// handlePutImage adapts the authenticated HTTP request to the ECR PutImage
+// action. The ECR adapter owns request semantics and OCI-to-AWS result mapping;
+// gateway supplies the configured OCI registry capability.
 func (gw *GatewayConfig) handlePutImage(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
 	}
-	var req putImageRequest
-	if err := decodeJSONBody(r, &req); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return awsapi.MalformedBodyError()
+	}
+	output, err := awsapi.PutImage(ctx, gw.ECRRegistry, accountID, body)
+	if err != nil {
 		return err
 	}
-	if err := validateRepoAndRegistry(req.RepositoryName, req.RegistryID, accountID); err != nil {
-		return err
-	}
-	if req.ImageManifest == "" {
-		return awsapi.RequiredParameterError("imageManifest")
-	}
-
-	ref := req.ImageTag
-	if ref == "" {
-		ref = req.ImageDigest
-	}
-
-	digest, sErr := gw.ECRRegistry.StoreManifest(ctx, accountID, req.RepositoryName, ref, req.ImageManifestMediaType, []byte(req.ImageManifest))
-	if sErr != nil {
-		return mapStoreManifestError(ctx, sErr, req.RepositoryName)
-	}
-
-	image := &ecr.Image{
-		RegistryId:             aws.String(accountID),
-		RepositoryName:         aws.String(req.RepositoryName),
-		ImageId:                &ecr.ImageIdentifier{ImageDigest: aws.String(digest)},
-		ImageManifest:          aws.String(req.ImageManifest),
-		ImageManifestMediaType: aws.String(req.ImageManifestMediaType),
-	}
-	if req.ImageTag != "" {
-		image.ImageId.ImageTag = aws.String(req.ImageTag)
-	}
-	awsapi.WriteJSONResponse(w, &ecr.PutImageOutput{Image: image})
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }
 
@@ -234,27 +201,6 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 
 	awsapi.WriteJSONResponse(w, &ecr.BatchDeleteImageOutput{ImageIds: deleted, Failures: failures})
 	return nil
-}
-
-// mapStoreManifestError translates the OCI manifest-store error codes into AWS
-// PutImage error codes.
-func mapStoreManifestError(ctx context.Context, err error, repo string) error {
-	if mErr, ok := errors.AsType[*ecrregistry.ManifestStoreError](err); ok {
-		switch mErr.Code {
-		case "DIGEST_INVALID":
-			return errors.New(awserrors.ErrorImageDigestDoesNotMatch)
-		case "MANIFEST_BLOB_UNKNOWN":
-			return errors.New(awserrors.ErrorLayersNotFound)
-		case "TAG_IMMUTABLE":
-			return errors.New(awserrors.ErrorImageTagAlreadyExists)
-		case "NAME_UNKNOWN":
-			return errors.New(awserrors.ErrorRepositoryNotFound)
-		default:
-			return awsapi.ConstraintError("imageManifest", mErr.Msg)
-		}
-	}
-	slog.ErrorContext(ctx, "PutImage: store manifest failed", "repo", repo, "err", err)
-	return errors.New(awserrors.ErrorServerInternal)
 }
 
 func imageFailure(id imageIdentifier, code, reason string) *ecr.ImageFailure {

@@ -212,6 +212,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `7666ed208` | Gateway `BatchDeleteImage` action semantics and residual ECR helpers | `spinifex/domains/ecr/awsapi.BatchDeleteImage`, `awsapi.ValidateRepositoryScope`, gateway `ecr_request.go` | The ECR adapter consumes a narrow image-deleter capability and owns batch deletion/partial-failure projection. Completion exposed scope validation still needed by lifecycle-preview adapters, which now calls the exported ECR adapter utility; generic HTTP JSON decoding moved to a gateway ECR adapter helper. Focused domain, image/lifecycle gateway and tagged integration validation passed. |
 | `72c20bf78` | Gateway lifecycle-preview evaluation and `StartLifecyclePolicyPreview` | `spinifex/domains/ecr/awsapi.EvaluateLifecyclePreview`, `StartLifecyclePolicyPreview` | Shared preview evaluation now consumes explicit policy-store and image-catalog capabilities, owns request/stored-policy resolution and lifecycle evaluation, and returns a reusable expiry set. Start preview is fully domain-owned; Get preview consumes the evaluator and retains only its response projection pending the next slice. Focused domain, lifecycle gateway and tagged integration validation passed. |
 | `68945bbb1` | Gateway `GetLifecyclePolicyPreview` response projection | `spinifex/domains/ecr/awsapi.GetLifecyclePolicyPreview` | Get preview now joins Start preview in the ECR adapter, sharing the synchronous evaluator and explicit policy-store/image-catalog capabilities. Gateway retains only authenticated HTTP/body adaptation and capability supply. Focused domain, lifecycle gateway and tagged integration validation passed. |
+| `4c9f3d681` | Gateway ECR image-action wrappers and residual JSON adapter | `spinifex/domains/ecr/awsapi.RegistryActionService` | ListImages, DescribeImages, BatchGetImage, PutImage and BatchDeleteImage now dispatch through one composed registry-action capability after the generic gateway's authentication and policy gate. The composition root supplies narrow OCI capabilities; the operation inventory derives their implemented status from that capability. The obsolete gateway wrappers and JSON helper are removed. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
@@ -228,11 +229,16 @@ packages above. They are not moved merely to remove the last ECR-named files
 from `gateway`: doing so first would make the ECR domain own generic gateway
 state and policy mechanics.
 
-A later ECR slice must instead define the consuming action capability and make
-the composition root supply it. Only then may the action wrappers leave
-`gateway` without either a forwarding package or an inverted dependency. This
-is a recorded sequencing boundary, not a declaration that the current wrapper
-is the permanent target.
+Registry-backed image actions have now crossed this boundary through
+`awsapi.RegistryActionService`: the composition root supplies the OCI
+capabilities, and the generic gateway dispatches through it after authorization.
+
+The remaining gateway adapters must follow the same rule one capability group
+at a time. For example, lifecycle-preview actions require both an ECR policy
+store and image catalog; their eventual composition must express those
+capabilities directly rather than make the ECR domain own `GatewayConfig` or
+generic policy mechanics. This is a recorded sequencing boundary, not a
+declaration that the current wrappers are the permanent target.
 
 ## Recording rule
 

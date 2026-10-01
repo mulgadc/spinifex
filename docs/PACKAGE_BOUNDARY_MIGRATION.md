@@ -214,6 +214,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `68945bbb1` | Gateway `GetLifecyclePolicyPreview` response projection | `spinifex/domains/ecr/awsapi.GetLifecyclePolicyPreview` | Get preview now joins Start preview in the ECR adapter, sharing the synchronous evaluator and explicit policy-store/image-catalog capabilities. Gateway retains only authenticated HTTP/body adaptation and capability supply. Focused domain, lifecycle gateway and tagged integration validation passed. |
 | `4c9f3d681` | Gateway ECR image-action wrappers and residual JSON adapter | `spinifex/domains/ecr/awsapi.RegistryActionService` | ListImages, DescribeImages, BatchGetImage, PutImage and BatchDeleteImage now dispatch through one composed registry-action capability after the generic gateway's authentication and policy gate. The composition root supplies narrow OCI capabilities; the operation inventory derives their implemented status from that capability. The obsolete gateway wrappers and JSON helper are removed. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
 | `40e7b14ad` | Gateway lifecycle-preview wrappers | `spinifex/domains/ecr/awsapi.LifecyclePreviewActionService` | StartLifecyclePolicyPreview and GetLifecyclePolicyPreview now dispatch through one composed policy-store-plus-image-catalog capability after generic authorization. Production reuses the registry's NATS metadata client; focused tests compose an in-memory metadata store. The obsolete wrappers are removed, and a missing composition fails closed rather than falling through to the raw action table. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
+| `54f96ad78` | Gateway CreateRepository, DescribeRepositories and DeleteRepository wrappers | `spinifex/domains/ecr/awsapi.RepositoryActionService` | Repository actions now dispatch through one composed metadata-store-plus-endpoint-profile capability after generic authorization. The individual action adapters depend on a narrow repository metadata contract rather than constructing NATS clients themselves. The three obsolete wrappers are removed, and a missing composition fails closed. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
@@ -238,6 +239,10 @@ Lifecycle-preview actions have likewise crossed it through
 `awsapi.LifecyclePreviewActionService`, whose policy-store-plus-image-catalog
 dependencies remain explicit and separate from the registry image-action
 service.
+
+Repository metadata actions have crossed it through
+`awsapi.RepositoryActionService`, which makes both their narrow metadata-store
+dependency and advertised endpoint profile composition explicit.
 
 The remaining gateway adapters must follow the same rule one capability group
 at a time rather than make the ECR domain own `GatewayConfig` or generic policy

@@ -208,9 +208,44 @@ The private subnet is **unused today** and kept only so it exists: Spinifex gues
 node_client_cidr_allow_list = ["203.0.113.10/32"]
 ```
 
-## The API user this seeds
+## How each node authenticates to OCI
 
-The OCI provider integration needs credentials on each node so Spinifex can allocate addresses at runtime. **Grant that user only the operations Spinifex performs on addresses** — create/get/list/delete private IPs, create/get/update/delete public IPs — and nothing else. It is not a tenancy admin. Broader rights widen the blast radius of a node compromise for no benefit.
+The allocator needs OCI credentials at runtime, and there are two ways to give it them. A node with neither forms, passes every health check, and then refuses every launch that wants a public address with `InsufficientAddressCapacity` — the cause appears only in the node's journal, so this is worth getting right before first start.
+
+**Instance principal is the better one, and it is what `enable_instance_principal = true` sets up.** Each node authenticates with the certificate its own metadata service serves, so no key material exists on any node, there is nothing to rotate, and nothing sensitive reaches Terraform state. The cost is a dynamic group and a policy, which are tenancy-root resources — so the apply needs a tenancy-admin principal, which is why it is off by default and why the rest of this configuration deliberately creates nothing at tenancy root. Create them once, by hand or with a privileged principal, and every later node and rebuild inherits them:
+
+```bash
+python3 scripts/oci_env.py --ssh-public-key-path <pub> -- \
+    terraform apply -var enable_instance_principal=true \
+    -target oci_identity_dynamic_group.nodes -target oci_identity_policy.nodes
+```
+
+The policy grants three verbs in one compartment — `use vnics`, `manage private-ips`, `manage public-ips` — which is exactly what allocating an external address does and nothing more.
+
+**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit. The key then has to be installed on **every** node, by hand, under `/etc/spinifex/oci/` — not a home directory, because the daemon's unit sets `ProtectHome=yes`:
+
+```bash
+sudo install -d -o root -g spinifex -m 0750 /etc/spinifex/oci
+sudo install -o root -g spinifex -m 0640 ~/.oci/oci_api_key.pem /etc/spinifex/oci/oci_api_key.pem
+```
+
+Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/external-pool.toml` on each node, with `oci_auth` set to match. Append it to `/etc/spinifex/spinifex.toml` after `spx admin init` and restart `spinifex.target`. Under instance principal that file holds no secret at all, which is the point of it.
+
+## Validating a topology end to end
+
+`validate-topology.sh` builds one topology from nothing, installs the published Spinifex release, forms the cluster, runs a Terraform workbook against it, proves the workbook serves traffic, and destroys everything. Three topologies, because each breaks differently — bare metal presents VNICs unlike a VM, a single node has no Geneve underlay to get wrong, and only a cluster exercises RAFT, the gateway chassis and cross-node allocation.
+
+```bash
+./validate-topology.sh --topology bm        --dry-run
+./validate-topology.sh --topology vm-single --instance-principal
+./validate-topology.sh --topology vm-multi  --instance-principal
+```
+
+`--topology` has no default on purpose: a command aimed at the wrong one is the easiest expensive mistake here. Each topology keeps its own state under `.validate-<topology>/`, so two can be built from one checkout without either destroying the other's instances, and every log from the run lands there.
+
+**The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
+
+The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 
 ## Common Commands
 

@@ -213,6 +213,8 @@ Choose one method and apply it to **every** server in the cluster.
 curl -fsSL https://install.mulgadc.com | bash
 ```
 
+This installs the latest release. To try the newest development build instead, add `--channel dev` to the command on **every** node — a cluster must not mix versions. It carries unreleased work and has not been through release testing.
+
 **Option B — bare metal, from the ISO.** Boot each server from the Spinifex ISO and follow [Bootable USB Install](/docs/install-usb). This installs the operating system, partitions the disks, and configures the hostname and network interfaces alongside Spinifex. The ISO installer does not form a cluster — that is what the remaining steps do.
 
 Complete this step on all three servers before continuing. Step 4 requires every node to be installed, reachable, and available at the same time.

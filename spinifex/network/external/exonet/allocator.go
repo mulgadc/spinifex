@@ -20,10 +20,10 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/cloud/exoscale"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/exoscale"
 )
 
 // MarkerPrefix starts the description of every EIP this package creates.

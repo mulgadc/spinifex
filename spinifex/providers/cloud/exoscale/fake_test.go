@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/cloud/exoscale"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/exoscale"
 )
 
 // The Fake is what every exonet test is measured against, so these pin the

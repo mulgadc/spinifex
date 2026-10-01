@@ -7,8 +7,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/spinifex/spinifex/cloud/exoscale"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/exoscale"
 )
 
 // FromPoolConfig builds a live allocator for one source="exoscale" pool and

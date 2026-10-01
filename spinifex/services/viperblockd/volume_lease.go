@@ -76,10 +76,19 @@ const volumeLeaseValidity = 40 * time.Second
 // still has to age out before a peer can claim it.
 const volumeLeaseAcquireMargin = 5 * time.Second
 
-// deviceStallBound is the longest single stall the storage under JetStream is
-// expected to produce, from nvme_core.io_timeout on the hosts we run. A
-// property of the host rather than a setting of ours, so it is only asserted.
+// deviceStallBound is the longest one stalled I/O lasts under JetStream, from
+// nvme_core.io_timeout on the hosts we run. Measured as a late completion and
+// never a controller reset, so a renewal that waits one out is answered.
 const deviceStallBound = 10 * time.Second
+
+// jetstreamOutageBound is the longest window of unwritable JetStream observed
+// on those hosts, and the quantity the lease actually has to survive: several
+// sequential writes each waiting out deviceStallBound, not one stall.
+//
+// Both are properties of the hosts rather than settings of ours, so neither is
+// applied anywhere — they are asserted against, which is what fails the build
+// when the sizing above stops covering what the storage does.
+const jetstreamOutageBound = 30 * time.Second
 
 // volumeLeaseCheckInterval is how often validity is tested. Shorter than the
 // renewal interval so a lapsed holder is fenced on its own schedule rather than
@@ -192,6 +201,11 @@ type volumeLease struct {
 	// refs counts opens on this node sharing the lease. The lease is released
 	// when the last one lets go.
 	refs int
+	// failures counts renewals that have failed in a row, and failingSince is
+	// when the run started. They exist to measure the outage: a surrender
+	// always reports validity, so only a recovery can report a real length.
+	failures     int
+	failingSince time.Time
 }
 
 // acquire claims volumeName for this node, or reports who has it. Repeat
@@ -417,11 +431,20 @@ func (lease *volumeLease) surrender(ctx context.Context) {
 	lease.mu.Lock()
 	lease.lost = true
 	since := time.Since(lease.confirmed)
+	attempts := lease.failures
+	failingFor := time.Duration(0)
+	if attempts > 0 {
+		failingFor = time.Since(lease.failingSince)
+	}
 	lease.mu.Unlock()
 
+	// unconfirmed_for_ms is pinned at validity by construction, so it cannot
+	// report how long the store was unwritable. failing_for_ms is the part that
+	// was observed, and it is a lower bound: the outage outlived the lease.
 	slog.Error("volume lease could not be confirmed before its TTL, surrendering the volume",
 		"volume", lease.volume, "generation", lease.generation,
-		"unconfirmed_for_ms", otelsetup.Millis(since), "ttl_ms", otelsetup.Millis(volumeLeaseTTL))
+		"unconfirmed_for_ms", otelsetup.Millis(since), "ttl_ms", otelsetup.Millis(volumeLeaseTTL),
+		"attempts", attempts, "failing_for_ms", otelsetup.Millis(failingFor))
 
 	if onLost := lease.leases.onLost; onLost != nil {
 		go onLost(context.WithoutCancel(ctx), lease.volume, leaseLostStalled)
@@ -457,7 +480,13 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 		lease.mu.Lock()
 		lease.revision = renewed
 		lease.confirmed = time.Now()
+		attempts, outage := lease.failures, time.Since(lease.failingSince)
+		lease.failures, lease.failingSince = 0, time.Time{}
 		lease.mu.Unlock()
+		if attempts > 0 {
+			slog.Warn("volume lease: renewals recovered, so the store was unwritable for this long",
+				"volume", lease.volume, "attempts", attempts, "outage_ms", otelsetup.Millis(outage))
+		}
 		return true
 	case errors.Is(err, context.Canceled):
 		return false
@@ -471,7 +500,15 @@ func (lease *volumeLease) renew(ctx context.Context) bool {
 	default:
 		// A transient JetStream error is not a lost lease. Keep renewing; the
 		// TTL is several intervals wide, so there is room to recover.
-		slog.Warn("volume lease: renewal failed", "volume", lease.volume, "err", err)
+		lease.mu.Lock()
+		if lease.failures == 0 {
+			lease.failingSince = time.Now()
+		}
+		lease.failures++
+		attempts, failingFor := lease.failures, time.Since(lease.failingSince)
+		lease.mu.Unlock()
+		slog.Warn("volume lease: renewal failed", "volume", lease.volume,
+			"consecutive", attempts, "failing_for_ms", otelsetup.Millis(failingFor), "err", err)
 		return true
 	}
 }

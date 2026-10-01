@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
@@ -147,6 +149,33 @@ func TestAnInstancePausedOnItsStorageIsNotMoved(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "i-healthy", got[0].record.Metadata.Name,
 		"only the guest whose storage was answering is worth moving")
+}
+
+// A fenced guest is the case the storage-fault guard does not catch: the fence
+// kills the export rather than pausing the guest, so it publishes no I/O error
+// and reads as an ordinary desired-running instance on a node that has died.
+func TestAFencedInstanceIsNotMoved(t *testing.T) {
+	fenced := runningOn("i-fenced", "node-1")
+	fenced.Status.Status = vm.StateError
+	fenced.Status.Instance = &ec2.Instance{StateReason: &ec2.StateReason{
+		Code:    aws.String("Server.VolumeFenced"),
+		Message: aws.String("the lease moved while this node had it open"),
+	}}
+
+	// Errored for a reason that is not a fence, which is what the exclusion has
+	// to be narrower than: a launch that failed is still worth another node.
+	failed := runningOn("i-failed", "node-1")
+	failed.Status.Status = vm.StateError
+	failed.Status.Instance = &ec2.Instance{StateReason: &ec2.StateReason{
+		Code: aws.String("Server.RecoveryFailed"),
+	}}
+
+	r := recoveryFixture("node-2")
+	got := twice(r, []*vm.InstanceRecord{fenced, failed}, stale)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "i-failed", got[0].record.Metadata.Name,
+		"a fenced guest's volumes were never sealed, so moving it is how an unproven state becomes a destroyed one")
 }
 
 // A guest that had recovered from an earlier pause is an ordinary candidate.

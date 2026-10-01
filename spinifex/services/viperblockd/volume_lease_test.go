@@ -451,18 +451,20 @@ func TestVolumeLease_ValidityIsBoundedBelowTheServerTTL(t *testing.T) {
 		"the margin between validity and the server TTL is the whole reason a holder stops before its successor starts")
 }
 
-// TestVolumeLease_SurvivesTheStallTheHostProduces is the sizing this lease is
+// TestVolumeLease_SurvivesTheOutageTheHostProduces is the sizing this lease is
 // for. A confirmation can already be volumeLeaseRenewInterval old when an
-// outage begins, so what it survives is validity minus that interval — and the
-// outage it has to survive is a device stall, twice over.
-func TestVolumeLease_SurvivesTheStallTheHostProduces(t *testing.T) {
+// outage begins, so what it survives is validity minus that interval, and that
+// has to cover the whole unwritable window rather than one stalled write.
+func TestVolumeLease_SurvivesTheOutageTheHostProduces(t *testing.T) {
 	tolerated := volumeLeaseValidity - volumeLeaseRenewInterval
-	require.GreaterOrEqual(t, tolerated, 2*deviceStallBound,
-		"a lease that cannot outlast two device stalls surrenders volumes no peer has taken")
+	require.GreaterOrEqual(t, tolerated, jetstreamOutageBound,
+		"a lease that cannot outlast the outages these hosts produce surrenders volumes no peer has taken")
 	require.Greater(t, volumeLeaseRenewTimeout, deviceStallBound,
 		"a renewal budget inside the stall bound is certain to fail whenever it begins during a stall")
 	require.Less(t, 2*volumeLeaseRenewTimeout, tolerated,
 		"a renewal and the re-read behind it share this budget, and together they must still fit inside what the lease tolerates")
+	require.Greater(t, jetstreamOutageBound, deviceStallBound,
+		"the outage is a run of stalled writes, so sizing against one stall is sizing against the wrong quantity")
 }
 
 // TestVolumeLease_UnconfirmedRenewalSurrendersTheVolume is the partition case

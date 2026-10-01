@@ -2313,6 +2313,9 @@ func ValidatePolicyDocument(docJSON string) (*PolicyDocument, error) {
 		if err := validateSelectorPair(i, "Resource", stmt.Resource, stmt.NotResource); err != nil {
 			return nil, err
 		}
+		if err := validateSelectorEntries(i, stmt); err != nil {
+			return nil, err
+		}
 		if err := validateStatementRestrictions(i, stmt); err != nil {
 			return nil, err
 		}
@@ -2329,6 +2332,28 @@ func validateSelectorPair(i int, name string, positive, negative StringOrArr) er
 		return fmt.Errorf("statement %d: %s and Not%s cannot both be specified", i, name, name)
 	case len(positive) == 0 && len(negative) == 0:
 		return fmt.Errorf("statement %d: %s is required (or Not%s)", i, name, name)
+	}
+	return nil
+}
+
+// validateSelectorEntries rejects entries AWS rejects as malformed. A bad entry
+// in Action only grants less, but the same entry in NotAction excludes nothing
+// and so grants everything.
+func validateSelectorEntries(i int, stmt Statement) error {
+	for field, actions := range map[string]StringOrArr{"Action": stmt.Action, "NotAction": stmt.NotAction} {
+		for _, action := range actions {
+			vendor, name, found := strings.Cut(action, ":")
+			if action != "*" && (!found || vendor == "" || name == "") {
+				return fmt.Errorf("statement %d: %s %q: Actions/Conditions must be prefaced by a vendor, e.g., iam, sdb, ec2, etc.", i, field, action)
+			}
+		}
+	}
+	for field, resources := range map[string]StringOrArr{"Resource": stmt.Resource, "NotResource": stmt.NotResource} {
+		for _, resource := range resources {
+			if resource != "*" && !strings.HasPrefix(resource, "arn:") {
+				return fmt.Errorf("statement %d: %s %q must be in ARN format or \"*\"", i, field, resource)
+			}
+		}
 	}
 	return nil
 }

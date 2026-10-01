@@ -2318,7 +2318,7 @@ func TestValidatePolicyDocument_RejectsPrincipal(t *testing.T) {
 	assert.Contains(t, err.Error(), "Principal is not valid on an identity policy")
 }
 
-func TestValidatePolicyDocument_NotSelectorPairs(t *testing.T) {
+func TestValidatePolicyDocument_Selectors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -2332,6 +2332,13 @@ func TestValidatePolicyDocument_NotSelectorPairs(t *testing.T) {
 		{"Action and NotAction", `"Action":"*","NotAction":"sts:AssumeRole","Resource":"*"`, "Action and NotAction cannot both be specified"},
 		{"Resource and NotResource", `"Action":"*","Resource":"*","NotResource":"arn:aws:s3:::public/*"`, "Resource and NotResource cannot both be specified"},
 		{"NotResource with an unknown variable", `"Action":"s3:*","NotResource":"arn:aws:s3:::${aws:PrincipalOrgID}/*"`, "NotResource"},
+		{"empty NotAction entry", `"NotAction":"","Resource":"*"`, "must be prefaced by a vendor"},
+		{"NotAction without a vendor", `"NotAction":["iam"],"Resource":"*"`, "must be prefaced by a vendor"},
+		{"NotAction with an empty name", `"NotAction":"iam:","Resource":"*"`, "must be prefaced by a vendor"},
+		{"Action without a vendor", `"Action":"RunInstances","Resource":"*"`, "must be prefaced by a vendor"},
+		{"empty NotResource entry", `"Action":"s3:*","NotResource":[""]`, "must be in ARN format"},
+		{"NotResource not an ARN", `"Action":"s3:*","NotResource":"secret-bucket"`, "must be in ARN format"},
+		{"Resource not an ARN", `"Action":"s3:*","Resource":"secret-bucket"`, "must be in ARN format"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2617,8 +2624,8 @@ func TestInputValidation_PathLength(t *testing.T) {
 func TestInputValidation_PolicyDocumentSize(t *testing.T) {
 	t.Parallel()
 	// 6144 bytes — should pass
-	filler6144 := strings.Repeat("a", 6144-len(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"`)-len(`"}]}`))
-	doc6144 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + filler6144 + `"}]}`
+	filler6144 := strings.Repeat("a", 6144-len(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::`)-len(`"}]}`))
+	doc6144 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::` + filler6144 + `"}]}`
 	assert.Len(t, doc6144, 6144)
 	_, err := ValidatePolicyDocument(doc6144)
 	assert.NoError(t, err, "6144-byte policy document should be valid")

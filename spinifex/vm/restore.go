@@ -248,7 +248,16 @@ func (m *Manager) classifyRestoredInstances() []*VM {
 // restore relaunches it, spending one restart from the same window a crash
 // restart spends. Returns false when the window has run out, which is what
 // keeps a genuinely broken instance from relaunching on every daemon start.
+//
+// A fenced instance is refused outright rather than budgeted. The window
+// forgives on a clock, so days after a fence it reports a full budget and would
+// relaunch a guest against volumes nothing has shown are mountable.
 func (m *Manager) resumeRecoveryFailed(instance *VM) bool {
+	if VolumeFenced(instance.Instance) {
+		slog.Warn("Instance was fenced, so this restore leaves it alone (operator must retry or terminate)",
+			"instance", instance.ID, "lastNode", instance.LastNode)
+		return false
+	}
 	if !rollRestartWindow(instance, time.Now()) {
 		return false
 	}

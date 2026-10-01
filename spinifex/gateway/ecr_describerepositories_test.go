@@ -128,8 +128,9 @@ func TestECRRegistryHost_AppendsAdvertisedPort(t *testing.T) {
 				Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 				RegistryHost: tc.registryHost, RegistryPort: tc.port,
 			}
-			assert.Equal(t, tc.want, gw.ecrRegistryHost(ecrTestAccount))
-			assert.Equal(t, tc.want+"/team/app", gw.ecrRepositoryUri(ecrTestAccount, "team/app"))
+			endpoint := gw.ecrRepositoryEndpoint()
+			assert.Equal(t, tc.want, endpoint.RegistryURIHost(ecrTestAccount))
+			assert.Equal(t, tc.want+"/team/app", endpoint.RepositoryURI(ecrTestAccount, "team/app"))
 		})
 	}
 }

@@ -54,7 +54,7 @@ func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *h
 	}
 
 	authToken := base64.StdEncoding.EncodeToString([]byte("AWS:" + token))
-	proxyEndpoint := "https://" + gw.ecrRegistryHost(accountID)
+	proxyEndpoint := "https://" + gw.ecrRepositoryEndpoint().RegistryURIHost(accountID)
 
 	awsapi.WriteJSONResponse(w, &ecr.GetAuthorizationTokenOutput{
 		AuthorizationData: []*ecr.AuthorizationData{{

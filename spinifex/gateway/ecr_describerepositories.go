@@ -68,35 +68,9 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 			slog.ErrorContext(ctx, "DescribeRepositories: get repo failed", "repo", name, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		repos = append(repos, gw.buildRepository(accountID, name, meta))
+		repos = append(repos, gw.ecrRepositoryEndpoint().RepositoryFromMeta(accountID, name, meta))
 	}
 
 	awsapi.WriteJSONResponse(w, &ecr.DescribeRepositoriesOutput{Repositories: repos})
 	return nil
-}
-
-// ecrRepositoryArn builds the ECR repository ARN for an account-scoped repo.
-func (gw *GatewayConfig) ecrRepositoryArn(accountID, name string) string {
-	return "arn:aws:ecr:" + gw.Region + ":" + accountID + ":repository/" + name
-}
-
-// ecrRegistryHost builds the registry host, appending the gateway's advertised
-// port so docker dials the right port (omitted for 443). When the gateway
-// advertises a reachable host it is used directly — the account comes from the
-// auth token, so docker needs no DNS; otherwise the per-account
-// <acct>.dkr.ecr.<region>.<suffix> parity name is used.
-func (gw *GatewayConfig) ecrRegistryHost(accountID string) string {
-	host := gw.RegistryHost
-	if host == "" {
-		host = accountID + ".dkr.ecr." + gw.Region + "." + gw.InternalSuffix
-	}
-	if gw.RegistryPort != "" && gw.RegistryPort != "443" {
-		return host + ":" + gw.RegistryPort
-	}
-	return host
-}
-
-// ecrRepositoryUri builds the registry pull/push URI for an account-scoped repo.
-func (gw *GatewayConfig) ecrRepositoryUri(accountID, name string) string {
-	return gw.ecrRegistryHost(accountID) + "/" + name
 }

@@ -79,7 +79,7 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 	}
 
 	awsapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{
-		Repository: gw.buildRepository(accountID, req.RepositoryName, meta),
+		Repository: gw.ecrRepositoryEndpoint().RepositoryFromMeta(accountID, req.RepositoryName, meta),
 	})
 	return nil
 }

@@ -1,22 +1,19 @@
 package gateway
 
 import (
-	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// handleGetAuthorizationToken mints a self-contained ES256 ECR token for the
-// SigV4-authenticated caller and returns it in the AWS GetAuthorizationToken
-// shape. The token is base64("AWS:<jwt>"); docker stores it and replays it as
-// Basic auth against the /v2 registry, where the auth bridge verifies it.
+// handleGetAuthorizationToken adapts an authenticated gateway identity into
+// the canonical ECR credential principal. The AWS token response is owned by
+// the ECR action adapter, while canonical IAM/STS ARN construction remains a
+// generic gateway identity concern.
 func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *http.Request) error {
 	if gw.ECRTokenIssuer == nil {
 		return errors.New(awserrors.ErrorNotImplemented)
@@ -42,26 +39,17 @@ func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *h
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	token, expiresAt, err := gw.ECRTokenIssuer.Mint(ecrauth.Principal{
+	output, err := awsapi.GetAuthorizationToken(gw.ECRTokenIssuer, gw.ecrRepositoryEndpoint(), ecrauth.Principal{
 		AccountID:   accountID,
 		ARN:         callerARN,
 		Type:        principalType,
 		AccessKeyID: accessKey,
 	})
 	if err != nil {
-		slog.Error("GetAuthorizationToken: mint failed", "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
+		slog.Error("GetAuthorizationToken: action failed", "err", err)
+		return err
 	}
 
-	authToken := base64.StdEncoding.EncodeToString([]byte("AWS:" + token))
-	proxyEndpoint := "https://" + gw.ecrRepositoryEndpoint().RegistryURIHost(accountID)
-
-	awsapi.WriteJSONResponse(w, &ecr.GetAuthorizationTokenOutput{
-		AuthorizationData: []*ecr.AuthorizationData{{
-			AuthorizationToken: aws.String(authToken),
-			ProxyEndpoint:      aws.String(proxyEndpoint),
-			ExpiresAt:          aws.Time(expiresAt),
-		}},
-	})
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }

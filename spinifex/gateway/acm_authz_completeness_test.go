@@ -6,7 +6,7 @@ package gateway
 import (
 	"testing"
 
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,13 +15,13 @@ import (
 // behind by a deleted or renamed action fails too.
 func TestACMScopeTableIsExhaustive(t *testing.T) {
 	for action := range acmActions {
-		assert.True(t, gateway_acm.HasScope(action),
-			"acm action %q has no resource scope entry: add one to acmScopes in gateway/acm/authz.go", action)
+		assert.True(t, acmawsapi.HasScope(action),
+			"acm action %q has no resource scope entry: add one to domains/acm/awsapi/authz.go", action)
 	}
 
-	for _, action := range gateway_acm.ScopedActions() {
+	for _, action := range acmawsapi.ScopedActions() {
 		_, ok := acmActions[action]
 		assert.True(t, ok,
-			"acmScopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/acm/authz.go", action)
+			"acmScopes has an entry for %q, which the dispatch table does not serve: remove it from domains/acm/awsapi/authz.go", action)
 	}
 }

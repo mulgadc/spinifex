@@ -1,4 +1,4 @@
-package handlers_acm
+package acm
 
 // renewal.go implements the PRIVATE_CA renewal worker described in the ACM
 // design doc's "Renewal" section: a scan-and-lease worker, sharing the

@@ -18,9 +18,9 @@ import (
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/aws/aws-sdk-go/service/iam"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
@@ -329,7 +329,7 @@ func sameHelper(casedAction string) string {
 
 func scopedServices() []scopedService {
 	return []scopedService{
-		{name: "acm", actions: gateway_acm.ScopedActions(), uncased: map[string]string{
+		{name: "acm", actions: acmawsapi.ScopedActions(), uncased: map[string]string{
 			"GetCertificate":            sameHelper("DescribeCertificate"),
 			"ListTagsForCertificate":    sameHelper("DescribeCertificate"),
 			"AddTagsToCertificate":      sameHelper("DescribeCertificate"),

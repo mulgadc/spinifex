@@ -1,4 +1,4 @@
-package handlers_acm
+package acm
 
 import (
 	"context"
@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )

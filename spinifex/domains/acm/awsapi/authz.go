@@ -1,4 +1,4 @@
-package gateway_acm
+package awsapi
 
 import (
 	"errors"

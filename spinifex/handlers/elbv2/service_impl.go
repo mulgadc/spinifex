@@ -20,11 +20,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -103,7 +103,7 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 type ELBv2ServiceImpl struct {
 	config           *config.Config
 	store            *Store
-	acmStore         *handlers_acm.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
+	acmStore         *acmdomain.Store                       // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
 	nc               *nats.Conn                             // NATS connection for JetStream KV store
 	VPCService       *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
 	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
@@ -173,7 +173,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 	// found" everywhere it is consulted (resolveCertPEM, validateListenerCerts),
 	// so a construction failure here must fail the whole service rather than
 	// silently degrade every HTTPS listener.
-	acmStore, acmErr := handlers_acm.NewStore(ctx, nc, masterKey)
+	acmStore, acmErr := acmdomain.NewStore(ctx, nc, masterKey)
 	if acmErr != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create ELBv2 ACM store: %w", acmErr)

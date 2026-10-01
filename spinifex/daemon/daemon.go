@@ -38,13 +38,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
@@ -168,8 +168,8 @@ type Daemon struct {
 	rdsReconciler         *handlers_rds.Reconciler
 	bedrockService        *handlers_bedrock.Service
 	bedrockReaper         *handlers_bedrock.Reaper
-	acmService            *handlers_acm.ACMServiceImpl
-	acmRenewalWorker      *handlers_acm.Worker
+	acmService            *acmdomain.ACMServiceImpl
+	acmRenewalWorker      *acmdomain.Worker
 	ochreVectorService    handlers_ochrevector.VectorService
 	ochreAppliance        *handlers_ochrevector.Appliance
 	ochreBackupService    *handlers_ochrevector.BackupService
@@ -2099,12 +2099,12 @@ func (d *Daemon) startCluster() error {
 	// backoff — the key file can legitimately not be written yet during a
 	// concurrent boot — but a master key that never arrives fails startCluster
 	// after the retry window instead of leaving acmService permanently nil.
-	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
+	d.acmService, err = initServiceWithRetry("ACM service", func() (*acmdomain.ACMServiceImpl, error) {
 		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 		if mkErr != nil {
 			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
 		}
-		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
+		return acmdomain.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
@@ -2134,7 +2134,7 @@ func (d *Daemon) startCluster() error {
 	// operator can tell at a glance, from daemon startup logs alone, which one
 	// they are in.
 	configDir := filepath.Dir(d.configPath)
-	tenantCA, tenantCAErr := handlers_acm.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
+	tenantCA, tenantCAErr := acmdomain.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
 	if tenantCAErr != nil {
 		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
 			"err", tenantCAErr)
@@ -2150,7 +2150,7 @@ func (d *Daemon) startCluster() error {
 	// tenant CA loaded later (or never, on a public-certificates-only
 	// deployment) is not a startup dependency — the worker just finds
 	// nothing to renew until one is wired.
-	d.acmRenewalWorker = handlers_acm.NewWorker(d.acmService, d.node)
+	d.acmRenewalWorker = acmdomain.NewWorker(d.acmService, d.node)
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {

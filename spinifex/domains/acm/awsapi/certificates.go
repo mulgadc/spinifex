@@ -1,4 +1,4 @@
-package gateway_acm
+package awsapi
 
 import (
 	"context"
@@ -13,6 +13,15 @@ import (
 
 // natsTimeout bounds the gateway's wait for a daemon-side ACM response.
 const natsTimeout = 30 * time.Second
+
+// RequestCertificate — CertificateManager.RequestCertificate.
+func RequestCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.RequestCertificateOutput, error) {
+	input := new(acm.RequestCertificateInput)
+	if err := unmarshalIfBody(body, input); err != nil {
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	return utils.NATSRequest[acm.RequestCertificateOutput](ctx, natsConn, "acm.RequestCertificate", input, natsTimeout, accountID)
+}
 
 // ImportCertificate — CertificateManager.ImportCertificate.
 func ImportCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.ImportCertificateOutput, error) {

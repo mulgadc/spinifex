@@ -2,65 +2,47 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
-	"github.com/aws/aws-sdk-go/service/acm"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// acmNATSTimeout bounds the gateway's wait for a daemon-side ACM response.
-// RequestCertificate itself returns immediately (issuance is asynchronous),
-// so this is a network/queueing budget, not an issuance one.
-const acmNATSTimeout = 30 * time.Second
-
-// acmHandler invokes a per-action ACM gateway function.
+// acmHandler invokes a per-action ACM domain adapter after generic gateway
+// authentication and authorization have completed.
 type acmHandler func(ctx context.Context, gw *GatewayConfig, accountID string, body []byte) (any, error)
 
 // acmActions maps the action suffix of X-Amz-Target (CertificateManager.<Action>) to its handler.
 var acmActions = map[string]acmHandler{
 	"ImportCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.ImportCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.ImportCertificate(ctx, gw.NATSConn, acct, b)
 	},
-	// RequestCertificate calls the daemon over NATS directly (rather than
-	// through package gateway_acm, which does not yet have a helper for it) —
-	// the same "acm.RequestCertificate" subject and request/response shape
-	// utils.NATSRequest uses everywhere else in this table.
 	"RequestCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		input := new(acm.RequestCertificateInput)
-		if len(b) > 0 {
-			if err := json.Unmarshal(b, input); err != nil {
-				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-			}
-		}
-		return utils.NATSRequest[acm.RequestCertificateOutput](ctx, gw.NATSConn, "acm.RequestCertificate", input, acmNATSTimeout, acct)
+		return acmawsapi.RequestCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"DescribeCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.DescribeCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.DescribeCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"GetCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.GetCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.GetCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"ListCertificates": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.ListCertificates(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.ListCertificates(ctx, gw.NATSConn, acct, b)
 	},
 	"DeleteCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.DeleteCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.DeleteCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"ListTagsForCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.ListTagsForCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.ListTagsForCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"AddTagsToCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.AddTagsToCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.AddTagsToCertificate(ctx, gw.NATSConn, acct, b)
 	},
 	"RemoveTagsFromCertificate": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_acm.RemoveTagsFromCertificate(ctx, gw.NATSConn, acct, b)
+		return acmawsapi.RemoveTagsFromCertificate(ctx, gw.NATSConn, acct, b)
 	},
 }
 
@@ -103,7 +85,7 @@ func (gw *GatewayConfig) ACM_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	resources, err := gateway_acm.ResourceARNs(action, gw.Region, accountID, body)
+	resources, err := acmawsapi.ResourceARNs(action, gw.Region, accountID, body)
 	if err != nil {
 		return err
 	}
@@ -120,6 +102,6 @@ func (gw *GatewayConfig) ACM_Request(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	gateway_acm.WriteJSONResponse(w, output)
+	acmawsapi.WriteJSONResponse(w, output)
 	return nil
 }

@@ -1,10 +1,10 @@
-package gateway_acm_test
+package awsapi_test
 
 import (
 	"testing"
 
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ func certARN(id string) string {
 
 func resolve(t *testing.T, action, body string) []string {
 	t.Helper()
-	resources, err := gateway_acm.ResourceARNs(action, testRegion, testAccountID, []byte(body))
+	resources, err := awsapi.ResourceARNs(action, testRegion, testAccountID, []byte(body))
 	require.NoError(t, err)
 	return resources
 }
@@ -92,7 +92,7 @@ func TestResourceARNsUnparseableBody(t *testing.T) {
 // A body carrying two spellings of one field is rejected: the gate and the
 // handler would otherwise name different certificates.
 func TestResourceARNsAmbiguousBody(t *testing.T) {
-	_, err := gateway_acm.ResourceARNs("DeleteCertificate", testRegion, testAccountID,
+	_, err := awsapi.ResourceARNs("DeleteCertificate", testRegion, testAccountID,
 		[]byte(`{"CertificateArn":"`+certARN("aaaa-1111")+`","certificateArn":"`+certARN("bbbb-2222")+`"}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
@@ -111,7 +111,7 @@ func TestResourceARNsIdentifierIsAValue(t *testing.T) {
 // An action absent from the dispatch table cannot reach the resolver, but if one
 // ever did it fails closed rather than authorizing account-wide.
 func TestResourceARNsUnknownAction(t *testing.T) {
-	_, err := gateway_acm.ResourceARNs("BogusAction", testRegion, testAccountID, []byte(`{}`))
+	_, err := awsapi.ResourceARNs("BogusAction", testRegion, testAccountID, []byte(`{}`))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -119,15 +119,15 @@ func TestResourceARNsUnknownAction(t *testing.T) {
 // Without a region or an account there is no ARN to build, and every action
 // falls back to the account-wide resource.
 func TestResourceARNsWithoutAnAnchor(t *testing.T) {
-	for _, action := range gateway_acm.ScopedActions() {
-		resources, err := gateway_acm.ResourceARNs(action, "", "", []byte(`{"CertificateArn":"`+certARN("aaaa-1111")+`"}`))
+	for _, action := range awsapi.ScopedActions() {
+		resources, err := awsapi.ResourceARNs(action, "", "", []byte(`{"CertificateArn":"`+certARN("aaaa-1111")+`"}`))
 		require.NoError(t, err)
 		assert.Equal(t, []string{"*"}, resources, "action %q", action)
 	}
 }
 
 func TestHasScope(t *testing.T) {
-	assert.True(t, gateway_acm.HasScope("DeleteCertificate"))
-	assert.False(t, gateway_acm.HasScope("BogusAction"))
-	assert.Len(t, gateway_acm.ScopedActions(), 9)
+	assert.True(t, awsapi.HasScope("DeleteCertificate"))
+	assert.False(t, awsapi.HasScope("BogusAction"))
+	assert.Len(t, awsapi.ScopedActions(), 9)
 }

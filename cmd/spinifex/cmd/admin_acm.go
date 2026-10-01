@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/spf13/cobra"
 )
@@ -86,9 +86,9 @@ func runCertForceRenew(cmd *cobra.Command, _ []string) {
 	defer cancel()
 
 	fmt.Printf("Force-renewing %s (account %s)...\n", certArn, accountID)
-	out, err := utils.NATSRequest[handlers_acm.ForceRenewCertificateOutput](
+	out, err := utils.NATSRequest[acmdomain.ForceRenewCertificateOutput](
 		ctx, nc, "acm.ForceRenewCertificate",
-		&handlers_acm.ForceRenewCertificateInput{CertificateArn: certArn},
+		&acmdomain.ForceRenewCertificateInput{CertificateArn: certArn},
 		30*time.Second, accountID,
 	)
 	if err != nil {
@@ -144,7 +144,7 @@ func runCertCreateTenantCA(cmd *cobra.Command, _ []string) {
 		fmt.Println("Tenant CA already exists — reporting current state (use --regenerate to replace it):")
 	}
 
-	ca, err := handlers_acm.LoadOrCreateTenantCA(certPath, keyPath, domains)
+	ca, err := acmdomain.LoadOrCreateTenantCA(certPath, keyPath, domains)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

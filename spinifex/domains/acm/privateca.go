@@ -1,4 +1,5 @@
-package handlers_acm
+// Package acm owns ACM certificate state, issuance, renewal and AWS action adapters.
+package acm
 
 import (
 	"crypto/rand"

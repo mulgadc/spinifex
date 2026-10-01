@@ -1,7 +1,7 @@
-// Package gateway_acm is the HTTP-side glue between awsgw and the ACM handlers.
-// ACM speaks AWS JSON 1.1 (X-Amz-Target dispatch); errors are handled centrally
-// by the shared gateway ErrorHandler.
-package gateway_acm
+// Package awsapi adapts ACM's AWS JSON 1.1 actions to the ACM domain's
+// NATS-backed service contract. Generic gateway routing and authorization stay
+// at the ingress boundary.
+package awsapi
 
 import (
 	"encoding/json"

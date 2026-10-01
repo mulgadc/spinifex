@@ -1,4 +1,4 @@
-package handlers_acm
+package acm
 
 import (
 	"context"
@@ -32,7 +32,7 @@ const (
 
 // CertAuthority issues leaf certificates from the tenant private CA and
 // authorizes domains against the CA's own x509 name constraints. Satisfied by
-// *TenantCA (handlers/acm/privateca.go), which is implemented separately;
+// *TenantCA (privateca.go), which is implemented separately;
 // defined here as a narrow interface so this package builds and is testable
 // with a fake independently of that file.
 type CertAuthority interface {

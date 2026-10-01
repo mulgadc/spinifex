@@ -13,11 +13,11 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,7 +105,7 @@ func TestConfigCertHash_ChangesOnRotation(t *testing.T) {
 
 func putTestCert(t *testing.T, svc *ELBv2ServiceImpl, arn, account, leaf, chain, key string) {
 	t.Helper()
-	require.NoError(t, svc.acmStore.PutCert(t.Context(), &handlers_acm.CertRecord{
+	require.NoError(t, svc.acmStore.PutCert(t.Context(), &acmdomain.CertRecord{
 		CertificateArn:   arn,
 		AccountID:        account,
 		Certificate:      leaf,
@@ -155,7 +155,7 @@ func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
 
 	// ACM-service-style writer: its own Store over the same bucket, wired with
 	// the same deployment key rather than svc's own acmStore.
-	acmStore, err := handlers_acm.NewStore(t.Context(), nc, masterKey)
+	acmStore, err := acmdomain.NewStore(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	// A realistic EC private key PEM, not a placeholder — a non-PEM value
@@ -168,7 +168,7 @@ func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
 	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
 
 	arn := "arn:aws:acm:ap-southeast-2:123456789012:certificate/cross-boundary"
-	require.NoError(t, acmStore.PutCert(t.Context(), &handlers_acm.CertRecord{
+	require.NoError(t, acmStore.PutCert(t.Context(), &acmdomain.CertRecord{
 		CertificateArn: arn,
 		AccountID:      testAccountID,
 		Certificate:    "LEAF",

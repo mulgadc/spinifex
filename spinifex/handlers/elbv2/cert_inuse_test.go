@@ -15,9 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -343,7 +343,7 @@ func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
-	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
+	acmSvc, err := acmdomain.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
 	require.NoError(t, err)
 	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
 
@@ -443,7 +443,7 @@ func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
-	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
+	acmSvc, err := acmdomain.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
 	require.NoError(t, err)
 	// Mirrors the daemon.go wiring between the two services.
 	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert

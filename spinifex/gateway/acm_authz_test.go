@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -125,7 +125,7 @@ func TestACMRequest_ListIsAccountLevel(t *testing.T) {
 func TestACMRequest_WildcardPolicyStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "acm:*", "*"))
 
-	for _, action := range gateway_acm.ScopedActions() {
+	for _, action := range acmawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
 			assertPermitted(t, dispatchACM(t, gw, action, `{"CertificateArn":"`+acmCertARN("aaaa-1111")+`"}`))
 		})

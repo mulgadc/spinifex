@@ -1,4 +1,4 @@
-package handlers_acm
+package acm
 
 import (
 	"testing"

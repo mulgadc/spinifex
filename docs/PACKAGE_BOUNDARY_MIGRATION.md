@@ -193,20 +193,14 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `adb55de33` | `spinifex/types/ebs.go` (`NBDTransport`) | `spinifex/services/viperblockd/nbd_transport.go` | NBD endpoint transport selection is Viperblockd-local delivery configuration, not generic EBS state or a provider contract; `nbd_transport_test.go` pins the socket and TCP forms. |
 | `94a6e7af2` | `spinifex/types/ebs.go` (`EBSConfigUpdateRequest`, `EBSConfigUpdateResponse`) | `contracts/viperblockd/legacy/v1/config_update.go` | Legacy configuration updates have deployed queue and volume-addressed NATS routes; the versioned compatibility contract is expressly transitional and separate from `providers/ebs`. |
 | `b975f1ba9` | Remaining `spinifex/types/ebs.go` payloads | `runtime/compute/vm/ebs_requests.go` and `contracts/viperblockd/legacy/v1/volume.go` | The mutex-bearing attachment collection is VM-owned; deployed mount, unmount and delete routes plus their JSON payloads are versioned Viperblockd legacy compatibility. Contract tests pin every route and JSON shape. |
+| `61cf833aa` | `spinifex/cloud/exoscale` | `spinifex/providers/cloud/exoscale` | Exoscale CLI access is a replaceable external-cloud adapter. The source move rewrites its four Exonet callers and preserves its adapter tests and CLI boundary. |
+| `dbc62562c` | `spinifex/objectstore` | `spinifex/providers/objectstore` | The generic S3-compatible client is a replaceable object-storage adapter, not S3 resource authority. The mechanical move rewrites all direct callers; its focused suite and caller compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
 subscription and permission shape, while callers use
 `InstanceCommandSubject` rather than reconstructing the subject. The
 contract's README states the route, scope and change rule.
-
-## Pending paths discovered after the baseline
-
-`spinifex/cloud/exoscale` was introduced after the initial inventory. It is an
-external-cloud adapter and has the same target classification as OCI:
-`spinifex/providers/cloud/exoscale`. It remains at its current path until a
-dedicated structural move inventories and rewrites its callers; it is not
-folded into the OCI relocation retrospectively.
 
 ## Recording rule
 

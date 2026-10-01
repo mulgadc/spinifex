@@ -495,7 +495,7 @@ func iamUncased() map[string]string {
 	}
 	for _, action := range []string{
 		"ListUsers", "ListPolicies", "ListRoles", "ListInstanceProfiles",
-		"ListOpenIDConnectProviders", "ListGroups", "GetAccountSummary",
+		"ListOpenIDConnectProviders", "ListGroups", "GetAccountSummary", "ListAccountAliases",
 	} {
 		uncased[action] = accountLevel
 	}

@@ -30,6 +30,10 @@ locals {
   # one, so it is emitted only when the shape name says Flex.
   shape_is_flex = strcontains(var.compute_shape, "Flex")
 
+  # Bare metal presents VNICs differently from a VM, which decides where the
+  # external VNIC is attached. See the nic_index comment below.
+  shape_is_bare_metal = startswith(var.compute_shape, "BM.")
+
   # Round-robin, so three nodes land on three fault domains rather than wherever
   # OCI's placement happens to put them. Left to itself OCI spreads on a
   # best-effort basis and says nothing about the result, which is not something
@@ -46,7 +50,7 @@ locals {
     data_device          = local.data_device
     data_mountpoint      = var.data_mountpoint
     peer_cidr            = var.vcn_cidr
-    service_ports        = join(", ", [for p in var.node_service_ports : "\"${p}\""])
+    service_ports        = join(" ", var.node_service_ports)
     wan_bridge_name      = var.wan_bridge_name
     wan_bridge_mtu       = var.wan_bridge_mtu
     mount_script         = file("${path.module}/cloud-init/mount-data-volume.sh")
@@ -104,6 +108,11 @@ resource "oci_core_instance" "mulgadc" {
 resource "oci_core_vnic_attachment" "mulgadc_external" {
   count       = var.node_count
   instance_id = oci_core_instance.mulgadc[count.index].id
+
+  # On bare metal only the first VNIC on a physical port becomes a Linux device;
+  # a second one is a tagged overlay with no device. The second port keeps this
+  # VNIC first, so it is untagged and present at boot exactly as it is on a VM.
+  nic_index = local.shape_is_bare_metal ? 1 : 0
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.public.id

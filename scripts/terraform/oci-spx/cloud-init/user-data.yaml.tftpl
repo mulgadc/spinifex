@@ -21,15 +21,59 @@ write_files:
     content: |
       ${indent(6, service_ports_script)}
 
-  # The secondary VNIC is attached after the instance reaches RUNNING, so it can
+  # A unit rather than a runcmd so a boot that raced the iSCSI login retries on the
+  # next one, and so the ports below can declare a dependency on it. The script
+  # polls for the device itself and is safe to re-run.
+  - path: /etc/systemd/system/spinifex-data-volume.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Spinifex data volume on the OCI block volume
+      Wants=network-online.target
+      After=network-online.target remote-fs.target
+      ConditionPathIsMountPoint=!${data_mountpoint}
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/spinifex-mount-data-volume ${data_device} ${data_mountpoint}
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Requires= is the point: a node with no data volume has nothing behind these
+  # ports, so it must not publish them. systemd enforces that ordering, which a
+  # list of runcmd entries cannot -- runcmd continues past a failed step.
+  - path: /etc/systemd/system/spinifex-service-ports.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Spinifex node service ports
+      Requires=spinifex-data-volume.service
+      After=spinifex-data-volume.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/spinifex-open-service-ports ${peer_cidr} ${service_ports}
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # The external VNIC is attached after the instance reaches RUNNING, so it can
   # arrive late. This unit retries on the next boot if the first attempt missed it,
   # and stops running once the netplan file it writes exists.
+  #
+  # Deliberately independent of the data volume: losing the external datapath
+  # because a disk is late would make the node more broken, not safer.
   - path: /etc/systemd/system/spinifex-wan-bridge.service
     owner: root:root
     permissions: "0644"
     content: |
       [Unit]
-      Description=Spinifex WAN bridge over the secondary OCI VNIC
+      Description=Spinifex WAN bridge over the external OCI VNIC
       Wants=network-online.target
       After=network-online.target
       ConditionPathExists=!/etc/netplan/60-spinifex-wan.yaml
@@ -45,6 +89,6 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
-  - [/usr/local/sbin/spinifex-mount-data-volume, "${data_device}", "${data_mountpoint}"]
-  - [/usr/local/sbin/spinifex-open-service-ports, "${peer_cidr}", ${service_ports}]
+  - [systemctl, enable, --now, spinifex-data-volume.service]
+  - [systemctl, enable, --now, spinifex-service-ports.service]
   - [systemctl, enable, --now, spinifex-wan-bridge.service]

@@ -28,41 +28,56 @@ primary_mac() {
     cat "/sys/class/net/$dev/address"
 }
 
-# Prints shell assignments for the first VNIC that is not the primary, or exits 1.
-imds_secondary() {
+# One tab-separated record per VNIC that is not the primary.
+imds_secondaries() {
     curl -sf --max-time 10 -H 'Authorization: Bearer Oracle' "$IMDS/vnics/" |
         python3 -c '
 import ipaddress, json, sys
 
 primary = sys.argv[1].lower()
 for vnic in json.load(sys.stdin):
-    if vnic["macAddr"].lower() == primary:
+    mac = vnic["macAddr"].lower()
+    if mac == primary:
         continue
     net = ipaddress.ip_network(vnic["subnetCidrBlock"])
-    print("WAN_MAC=%s" % vnic["macAddr"].lower())
-    print("WAN_IP=%s" % vnic["privateIp"])
-    print("WAN_PREFIX=%d" % net.prefixlen)
-    print("WAN_CIDR=%s" % vnic["subnetCidrBlock"])
-    print("WAN_ROUTER=%s" % vnic["virtualRouterIp"])
-    sys.exit(0)
-sys.exit(1)
+    print("\t".join([mac, vnic["privateIp"], str(net.prefixlen),
+                     vnic["subnetCidrBlock"], vnic["virtualRouterIp"]]))
 ' "$1"
 }
 
+# Picks the secondary VNIC the kernel actually has an interface for, and sets the
+# WAN_* variables from it. Deliberately not "the first non-primary": IMDS order is
+# not documented, and on bare metal a VNIC sharing a port has no interface at all.
+select_secondary() {
+    local primary="$1" mac ip prefix cidr router iface
+    while IFS=$'\t' read -r mac ip prefix cidr router; do
+        [ -n "$mac" ] || continue
+        if iface="$(iface_for_mac "$mac")"; then
+            WAN_MAC="$mac"
+            WAN_IP="$ip"
+            WAN_PREFIX="$prefix"
+            WAN_CIDR="$cidr"
+            WAN_ROUTER="$router"
+            WAN_IFACE="$iface"
+            return 0
+        fi
+    done < <(imds_secondaries "$primary")
+    return 1
+}
+
 wait_for_secondary() {
-    local primary i out
+    local primary i
     primary="$(primary_mac)"
     log "primary VNIC MAC is $primary"
 
     for i in $(seq 1 60); do
-        if out="$(imds_secondary "$primary")" && [ -n "$out" ]; then
-            eval "$out"
-            log "secondary VNIC after $((i * 5))s: $WAN_MAC $WAN_IP/$WAN_PREFIX via $WAN_ROUTER"
+        if select_secondary "$primary"; then
+            log "secondary VNIC after $((i * 5))s: $WAN_MAC on $WAN_IFACE, $WAN_IP/$WAN_PREFIX via $WAN_ROUTER"
             return 0
         fi
         sleep 5
     done
-    die "no secondary VNIC appeared within 300s; check the VNIC attachment in OCI"
+    die "no secondary VNIC with an interface appeared within 300s; on bare metal check it is attached at nic_index 1, because a VNIC sharing the primary's port never becomes an interface"
 }
 
 # The physical interface for a MAC. Matching on the address rather than trusting a
@@ -184,16 +199,13 @@ PY
 
 main() {
     wait_for_secondary
-
-    local iface
-    iface="$(iface_for_mac "$WAN_MAC")" || die "no interface carries $WAN_MAC"
-    log "bridging $iface into $BRIDGE"
+    log "bridging $WAN_IFACE into $BRIDGE"
 
     strip_cloud_init_secondary
 
     local previous=""
     [ -f "$NETPLAN_FILE" ] && previous="$(cat "$NETPLAN_FILE")"
-    write_netplan "$iface"
+    write_netplan "$WAN_IFACE"
 
     if [ "$STRIPPED" = 0 ] && [ "$previous" = "$(cat "$NETPLAN_FILE")" ] && ip link show "$BRIDGE" >/dev/null 2>&1; then
         log "$BRIDGE is already configured and unchanged"

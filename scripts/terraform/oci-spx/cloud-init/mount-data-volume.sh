@@ -18,18 +18,39 @@ die() {
     exit 1
 }
 
+MULTIPATHD_UNIT=/usr/lib/systemd/system/multipathd.service
+MULTIPATH_ALIAS=/etc/systemd/system/multipath-tools.service
+
+# OCI makes a bare-metal attachment multipath, and the agent refuses to log one in
+# unless multipathd runs. It probes "multipath-tools", the name Debian retired, so
+# on Ubuntu 26.04 it gets exit 5 forever while multipathd is active all along. A
+# symlink in /etc/systemd/system is a systemd alias, which is all the agent needs.
+#
+# Asserted on every poll rather than written once: on the first bare-metal run the
+# symlink was created and then vanished, cause unknown, and the volume only logged
+# in once it was back. Converging on each pass beats trusting a single write.
+assert_multipath_alias() {
+    [ -e "$MULTIPATHD_UNIT" ] || return 0
+    [ "$(readlink -f "$MULTIPATH_ALIAS" 2>/dev/null)" = "$MULTIPATHD_UNIT" ] && return 0
+
+    ln -sfn "$MULTIPATHD_UNIT" "$MULTIPATH_ALIAS"
+    systemctl daemon-reload
+    log "aliased multipath-tools.service to multipathd.service for the Oracle agent"
+}
+
 # The Oracle Cloud Agent logs the iSCSI session in asynchronously, so the device
 # is not present when cloud-init first runs. Wait for it instead of racing it.
 wait_for_device() {
     local i
     for i in $(seq 1 120); do
+        assert_multipath_alias
         if [ -b "$DEVICE" ]; then
             log "$DEVICE appeared after $((i * 5))s"
             return 0
         fi
         sleep 5
     done
-    die "$DEVICE did not appear within 600s; check the iSCSI session with 'iscsiadm -m session'"
+    die "$DEVICE did not appear within 600s; check 'iscsiadm -m session' and the agent log at /var/log/oracle-cloud-agent/plugins/oci-blockautoconfig/"
 }
 
 # blkid reporting a TYPE is the only thing standing between a re-run and an erased

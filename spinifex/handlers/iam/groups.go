@@ -413,6 +413,9 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 	if err != nil {
 		return nil, err
 	}
+	if err := checkInlinePolicySize("group", groupName, groupPolicySizeQuota, group.InlinePolicies, policyName, policyDoc); err != nil {
+		return nil, err
+	}
 
 	if group.InlinePolicies == nil {
 		group.InlinePolicies = map[string]string{}

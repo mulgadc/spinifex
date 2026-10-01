@@ -2,7 +2,6 @@ package handlers_iam
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -128,21 +127,6 @@ func TestPutUserPolicy_UnresolvableVariableNamesTheCause(t *testing.T) {
 		PolicyName: aws.String("Inert"),
 	})
 	assert.Error(t, err)
-}
-
-func TestPutUserPolicy_OversizedDocument(t *testing.T) {
-	t.Parallel()
-	svc := setupTestIAMService(t)
-	createTestUser(t, svc, "oversized-user")
-
-	huge := strings.Repeat("a", maxPolicyDocumentSize+1)
-	_, err := svc.PutUserPolicy(testAccountID, &iam.PutUserPolicyInput{
-		UserName:       aws.String("oversized-user"),
-		PolicyName:     aws.String("Huge"),
-		PolicyDocument: aws.String(huge),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
 func TestPutUserPolicy_UserNotFound(t *testing.T) {

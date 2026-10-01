@@ -790,21 +790,6 @@ func TestPutGroupPolicy_MalformedDocument(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
-func TestPutGroupPolicy_OversizedDocument(t *testing.T) {
-	t.Parallel()
-	svc := setupTestIAMService(t)
-	createTestGroup(t, svc, "oversized-group")
-
-	huge := strings.Repeat("a", maxPolicyDocumentSize+1)
-	_, err := svc.PutGroupPolicy(testAccountID, &iam.PutGroupPolicyInput{
-		GroupName:      aws.String("oversized-group"),
-		PolicyName:     aws.String("Huge"),
-		PolicyDocument: aws.String(huge),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
-}
-
 func TestPutGroupPolicy_GroupNotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

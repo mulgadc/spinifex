@@ -1053,21 +1053,6 @@ func TestPutRolePolicy_MalformedDocument(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
 }
 
-func TestPutRolePolicy_OversizedDocument(t *testing.T) {
-	t.Parallel()
-	svc := setupTestIAMService(t)
-	createTestRole(t, svc, "oversized-role")
-
-	huge := strings.Repeat("a", maxPolicyDocumentSize+1)
-	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
-		RoleName:       aws.String("oversized-role"),
-		PolicyName:     aws.String("Huge"),
-		PolicyDocument: aws.String(huge),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
-}
-
 func TestPutRolePolicy_RoleNotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

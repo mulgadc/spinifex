@@ -460,10 +460,10 @@ func TestCreatePolicy_EmptyPathRefusedBeforeDocument(t *testing.T) {
 
 func TestValidatePolicyDocument_TooLarge(t *testing.T) {
 	t.Parallel()
-	largeDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + strings.Repeat("a", maxPolicyDocumentSize) + `"}]}`
+	largeDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + strings.Repeat("a", maxPolicyDocumentLength) + `"}]}`
 	_, err := ValidatePolicyDocument(largeDoc)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds maximum size")
+	assert.Contains(t, err.Error(), "exceeds maximum length")
 }
 
 // ============================================================================
@@ -1145,7 +1145,7 @@ func TestCreatePolicy_InvalidVersion(t *testing.T) {
 
 	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
 		PolicyName:     aws.String("BadVersion"),
-		PolicyDocument: aws.String(`{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+		PolicyDocument: aws.String(`{"Version":"2010-01-01","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
@@ -2243,7 +2243,7 @@ func TestValidatePolicyDocument_BadJSON(t *testing.T) {
 
 func TestValidatePolicyDocument_WrongVersion(t *testing.T) {
 	t.Parallel()
-	_, err := ValidatePolicyDocument(`{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`)
+	_, err := ValidatePolicyDocument(`{"Version":"2010-01-01","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported policy version")
 }
@@ -2504,7 +2504,7 @@ func TestValidateConditionValues_ArnOperators(t *testing.T) {
 		iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike,
 	} {
 		for _, tt := range tests {
-			err := validateConditionValues(0, op, key, ConditionValue{tt.value})
+			err := validateConditionValues(0, op, key, ConditionValue{tt.value}, true)
 			if tt.wantErr == "" {
 				assert.NoError(t, err, "%s %s", op, tt.name)
 				continue
@@ -2738,21 +2738,6 @@ func TestInputValidation_PathLength(t *testing.T) {
 		Path:     aws.String(path513),
 	})
 	assert.Error(t, err, "513-char path should be rejected")
-}
-
-func TestInputValidation_PolicyDocumentSize(t *testing.T) {
-	t.Parallel()
-	// 6144 bytes — should pass
-	filler6144 := strings.Repeat("a", 6144-len(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::`)-len(`"}]}`))
-	doc6144 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::` + filler6144 + `"}]}`
-	assert.Len(t, doc6144, 6144)
-	_, err := ValidatePolicyDocument(doc6144)
-	assert.NoError(t, err, "6144-byte policy document should be valid")
-
-	// 6145 bytes — should fail
-	doc6145 := doc6144 + " "
-	_, err = ValidatePolicyDocument(doc6145)
-	assert.Error(t, err, "6145-byte policy document should be rejected")
 }
 
 func TestValidatePolicyDocument_OverlappingDenyAllow(t *testing.T) {

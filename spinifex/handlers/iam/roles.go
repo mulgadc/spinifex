@@ -389,6 +389,9 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		if !changed {
 			return false, nil
 		}
+		if err := checkInlinePolicySize("role", roleName, rolePolicySizeQuota, role.InlinePolicies, policyName, policyDoc); err != nil {
+			return false, err
+		}
 		role.InlinePolicies[policyName] = policyDoc
 		return true, nil
 	})

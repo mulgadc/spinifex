@@ -192,12 +192,21 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `f4cb550c9` | `spinifex/types/ebs.go` (GP3 policy constants) | `spinifex/domains/ec2/ebs/policy/gp3.go` | The supported GP3 product envelope is EC2 EBS domain policy, not generic runtime or Viperblockd wire state; `gp3_test.go` pins the deployed values. |
 | `adb55de33` | `spinifex/types/ebs.go` (`NBDTransport`) | `spinifex/services/viperblockd/nbd_transport.go` | NBD endpoint transport selection is Viperblockd-local delivery configuration, not generic EBS state or a provider contract; `nbd_transport_test.go` pins the socket and TCP forms. |
 | `94a6e7af2` | `spinifex/types/ebs.go` (`EBSConfigUpdateRequest`, `EBSConfigUpdateResponse`) | `contracts/viperblockd/legacy/v1/config_update.go` | Legacy configuration updates have deployed queue and volume-addressed NATS routes; the versioned compatibility contract is expressly transitional and separate from `providers/ebs`. |
+| `b975f1ba9` | Remaining `spinifex/types/ebs.go` payloads | `runtime/compute/vm/ebs_requests.go` and `contracts/viperblockd/legacy/v1/volume.go` | The mutex-bearing attachment collection is VM-owned; deployed mount, unmount and delete routes plus their JSON payloads are versioned Viperblockd legacy compatibility. Contract tests pin every route and JSON shape. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
 subscription and permission shape, while callers use
 `InstanceCommandSubject` rather than reconstructing the subject. The
 contract's README states the route, scope and change rule.
+
+## Pending paths discovered after the baseline
+
+`spinifex/cloud/exoscale` was introduced after the initial inventory. It is an
+external-cloud adapter and has the same target classification as OCI:
+`spinifex/providers/cloud/exoscale`. It remains at its current path until a
+dedicated structural move inventories and rewrites its callers; it is not
+folded into the OCI relocation retrospectively.
 
 ## Recording rule
 

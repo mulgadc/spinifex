@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -29,14 +28,14 @@ func newTestBridge() *bridge {
 func handleOne(t *testing.T, labels map[string]string) attribute.Set {
 	t.Helper()
 	b := newTestBridge()
-	batch := types.TelemetryBatch{
+	batch := TelemetryBatch{
 		PeriodSeconds: 60,
 		Node:          "node-1",
-		Series:        []types.TelemetrySeries{{Name: "goanna_ec2_cpu_utilization", Labels: labels, Value: 12}},
+		Series:        []TelemetrySeries{{Name: "goanna_ec2_cpu_utilization", Labels: labels, Value: 12}},
 	}
 	data, err := json.Marshal(batch)
 	require.NoError(t, err)
-	b.handle(&nats.Msg{Subject: types.MetricsEC2SubjectPrefix + "i-test", Data: data})
+	b.handle(&nats.Msg{Subject: MetricsEC2SubjectPrefix + "i-test", Data: data})
 
 	entries := b.series["goanna_ec2_cpu_utilization"]
 	require.Len(t, entries, 1, "one series in, one series stored")

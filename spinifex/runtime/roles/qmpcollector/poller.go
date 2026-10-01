@@ -14,7 +14,6 @@ import (
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -187,7 +186,7 @@ func (p *poller) tick(ctx context.Context) {
 		utils.MarkSpanError(span, err)
 		return
 	}
-	if err := p.nc.Publish(types.MetricsEC2SubjectPrefix+meta.InstanceID, data); err != nil {
+	if err := p.nc.Publish(MetricsEC2SubjectPrefix+meta.InstanceID, data); err != nil {
 		slog.WarnContext(ctx, "qmp-collector: publish failed", "instanceId", meta.InstanceID, "err", err)
 		utils.MarkSpanError(span, err)
 		return
@@ -299,16 +298,16 @@ func readSysfsCounter(sysRoot, iface, counter string) (uint64, error) {
 // buildBatch converts two snapshots into the locked goanna_ec2_* series set.
 // ok is false when a counter regressed (QEMU restart between ticks) — the
 // fresh snapshot then serves as the new baseline and nothing is published.
-func buildBatch(meta telemetryv1.GuestTelemetryMeta, node string, prev, cur *sample) (types.TelemetryBatch, bool) {
+func buildBatch(meta telemetryv1.GuestTelemetryMeta, node string, prev, cur *sample) (TelemetryBatch, bool) {
 	elapsed := cur.at.Sub(prev.at).Seconds()
 	if elapsed <= 0 {
-		return types.TelemetryBatch{}, false
+		return TelemetryBatch{}, false
 	}
 	if cur.cpuJiffies < prev.cpuJiffies ||
 		cur.rdBytes < prev.rdBytes || cur.wrBytes < prev.wrBytes ||
 		cur.rdOps < prev.rdOps || cur.wrOps < prev.wrOps ||
 		cur.rxBytes < prev.rxBytes || cur.txBytes < prev.txBytes {
-		return types.TelemetryBatch{}, false
+		return TelemetryBatch{}, false
 	}
 
 	labels := map[string]string{
@@ -325,7 +324,7 @@ func buildBatch(meta telemetryv1.GuestTelemetryMeta, node string, prev, cur *sam
 		cpuPct = 100
 	}
 
-	series := []types.TelemetrySeries{
+	series := []TelemetrySeries{
 		{Name: "goanna_ec2_cpu_utilization", Labels: labels, Value: cpuPct, Unit: "Percent"},
 		{Name: "goanna_ec2_network_in_bytes", Labels: labels, Value: float64(cur.txBytes - prev.txBytes), Unit: "Bytes"},
 		{Name: "goanna_ec2_network_out_bytes", Labels: labels, Value: float64(cur.rxBytes - prev.rxBytes), Unit: "Bytes"},
@@ -335,13 +334,13 @@ func buildBatch(meta telemetryv1.GuestTelemetryMeta, node string, prev, cur *sam
 		{Name: "goanna_ec2_disk_write_ops", Labels: labels, Value: float64(cur.wrOps - prev.wrOps), Unit: "Count"},
 	}
 	if cur.balloonOK {
-		series = append(series, types.TelemetrySeries{
+		series = append(series, TelemetrySeries{
 			Name: "goanna_ec2_memory_actual_bytes", Labels: labels,
 			Value: float64(cur.balloon), Unit: "Bytes",
 		})
 	}
 
-	return types.TelemetryBatch{
+	return TelemetryBatch{
 		TS:            cur.at.Unix(),
 		PeriodSeconds: int(elapsed + 0.5),
 		Node:          node,

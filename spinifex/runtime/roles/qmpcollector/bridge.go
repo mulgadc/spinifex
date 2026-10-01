@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -62,7 +61,7 @@ func startBridge(nc *nats.Conn) (func(), error) {
 }
 
 func (b *bridge) handle(msg *nats.Msg) {
-	var batch types.TelemetryBatch
+	var batch TelemetryBatch
 	if err := json.Unmarshal(msg.Data, &batch); err != nil {
 		slog.Warn("qmp-collector bridge: bad batch", "subject", msg.Subject, "err", err)
 		return

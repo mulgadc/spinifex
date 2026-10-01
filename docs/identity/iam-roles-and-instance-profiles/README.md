@@ -139,12 +139,6 @@ aws iam update-role --role-name app-server \
   --description "Updated" --max-session-duration 7200
 ```
 
-`update-role-description` is the older single-field form, still served for SDKs and tooling that call it, and returns the updated role:
-
-```bash
-aws iam update-role-description --role-name app-server --description "Updated"
-```
-
 Replace the trust policy on an existing role:
 
 ```bash

@@ -2344,7 +2344,7 @@ func validateSelectorEntries(i int, stmt Statement) error {
 		for _, action := range actions {
 			vendor, name, found := strings.Cut(action, ":")
 			if action != "*" && (!found || vendor == "" || name == "") {
-				return fmt.Errorf("statement %d: %s %q: Actions/Conditions must be prefaced by a vendor, e.g., iam, sdb, ec2, etc.", i, field, action)
+				return fmt.Errorf("statement %d: %s %q: Actions/Conditions must be prefaced by a vendor, e.g. iam, sdb, ec2", i, field, action)
 			}
 		}
 	}

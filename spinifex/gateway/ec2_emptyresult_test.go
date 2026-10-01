@@ -134,7 +134,8 @@ func TestEC2_ListsAWSOmitsWhenEmpty(t *testing.T) {
 	tagged := render[ec2.DescribeImagesInput](t, "DescribeImages", ec2.DescribeImagesOutput{
 		Images: []*ec2.Image{{ImageId: aws.String("ami-1"), Tags: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}}}},
 	})
-	assert.Contains(t, tagged, "<tagSet><item><key>k</key><value>v</value></item></tagSet>")
+	// BuildXML emits sibling elements in map order, so key/value may swap.
+	assert.Regexp(t, `<tagSet><item>(<key>k</key><value>v</value>|<value>v</value><key>k</key>)</item></tagSet>`, tagged)
 }
 
 // The network lists AWS omits when empty: an untagged security group's and

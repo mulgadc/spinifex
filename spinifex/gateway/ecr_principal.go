@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -72,13 +72,13 @@ func classifyIAMLookupErr(err error, what string) error {
 }
 
 // resolveECRPrincipal rehydrates claims (already ES256/expiry/issuer/audience
-// verified by gateway_ecrauth.Verifier) against current IAM/STS state and
+// verified by ecrauth.Verifier) against current IAM/STS state and
 // returns the equivalent of a fresh SigV4 authentication for the same
 // identity. It never trusts claims.PrincipalType or claims.Subject on their
 // own — both are cross-checked against the freshly resolved record before
 // being accepted, so a forged or stale claim cannot widen access beyond what
 // the current IAM/STS state actually grants.
-func (gw *GatewayConfig) resolveECRPrincipal(claims *gateway_ecrauth.Claims) (principalContext, error) {
+func (gw *GatewayConfig) resolveECRPrincipal(claims *ecrauth.Claims) (principalContext, error) {
 	switch {
 	case strings.HasPrefix(claims.AccessKeyID, longLivedAKIDPrefix):
 		return gw.resolveECRLongLivedPrincipal(claims)
@@ -94,7 +94,7 @@ func (gw *GatewayConfig) resolveECRPrincipal(claims *gateway_ecrauth.Claims) (pr
 // user it names must still exist, the account must still be active, and the
 // canonical ARN/principalType computed from that current state must match
 // what was signed into the token.
-func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *gateway_ecrauth.Claims) (principalContext, error) {
+func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *ecrauth.Claims) (principalContext, error) {
 	if gw.IAMService == nil {
 		return principalContext{}, ecrDependencyFailure("IAM service not available")
 	}
@@ -143,7 +143,7 @@ func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *gateway_ecrauth.Cl
 // GetSessionToken user session and an assumed-role session are re-resolved
 // against their principal's live IAM record and rejected if it was deleted, or
 // recreated under the same name with a different immutable ID.
-func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Claims) (principalContext, error) {
+func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *ecrauth.Claims) (principalContext, error) {
 	if gw.STSService == nil {
 		return principalContext{}, ecrDependencyFailure("STS service not available")
 	}

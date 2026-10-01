@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 )
 
 // ociTokenResponse is the Docker Registry v2 token-endpoint body. token and
@@ -89,7 +89,7 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	fresh, expiresAt, err := gw.ECRTokenIssuer.Mint(gateway_ecrauth.Principal{
+	fresh, expiresAt, err := gw.ECRTokenIssuer.Mint(ecrauth.Principal{
 		AccountID:   principal.accountID,
 		ARN:         callerARN,
 		Type:        principal.principalType,

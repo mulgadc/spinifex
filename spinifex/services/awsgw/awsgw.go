@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -30,7 +31,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -288,7 +288,7 @@ func launchService(config *config.ClusterConfig) error {
 	if err != nil {
 		return fmt.Errorf("jetstream client: %w", err)
 	}
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(janitorCtx, js, masterKey)
+	signingKey, verifyKeys, err := ecrauth.LoadOrCreateSigningKey(janitorCtx, js, masterKey)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: load signing key: %w", err)
 	}
@@ -452,8 +452,8 @@ func launchService(config *config.ClusterConfig) error {
 		Version:                 version,
 		Commit:                  commit,
 		ECRRegistry:             ecrRegistry,
-		ECRTokenIssuer:          gateway_ecrauth.NewIssuer(signingKey, ecrAudience),
-		ECRTokenVerifier:        gateway_ecrauth.NewVerifier(verifyKeys, ecrAudience),
+		ECRTokenIssuer:          ecrauth.NewIssuer(signingKey, ecrAudience),
+		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
 		BedrockCredentials:      bedrockCredentials,
 		BedrockEndpoints:        bedrockEndpoints,
 		BedrockEndpointResolver: bedrockEndpointResolver,
@@ -473,7 +473,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := gateway_ecrauth.NewRotator(janitorCtx, js, masterKey, gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, gw.ECRTokenIssuer, gw.ECRTokenVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}

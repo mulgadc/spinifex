@@ -27,12 +27,12 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
@@ -162,8 +162,8 @@ type GatewayConfig struct {
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).
-	ECRTokenIssuer   *gateway_ecrauth.Issuer
-	ECRTokenVerifier *gateway_ecrauth.Verifier
+	ECRTokenIssuer   *ecrauth.Issuer
+	ECRTokenVerifier *ecrauth.Verifier
 	// BedrockCredentials resolves per-account provider API keys for bedrock
 	// routes. Nil falls back to no external providers (self-host models only).
 	BedrockCredentials *gateway_bedrock.CredentialStore

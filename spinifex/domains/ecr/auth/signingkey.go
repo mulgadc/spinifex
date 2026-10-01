@@ -1,9 +1,9 @@
-// Package gateway_ecrauth implements the ECR auth bridge: it mints and verifies
+// Package ecrauth implements the ECR auth bridge: it mints and verifies
 // the self-contained ES256 JWT that GetAuthorizationToken issues and the
 // /v2/* registry surface accepts (Authorization: Bearer | Basic AWS:<jwt>).
 // Signing keys live in the cluster-replicated JetStream KV bucket awsgw-keys
 // under jwt-signing/{kid}, encrypted at rest with the IAM master key.
-package gateway_ecrauth
+package ecrauth
 
 import (
 	"context"

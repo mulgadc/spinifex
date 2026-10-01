@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -162,7 +162,7 @@ func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
 	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
 	gw := &GatewayConfig{IAMService: iamSvc}
 
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeUser,
 		AccessKeyID:   ecrPrincipalTestAKID,
@@ -180,7 +180,7 @@ func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
 	seedECRTestUser(iamSvc, utils.GlobalAccountID, "root", ecrPrincipalTestAKID)
 	gw := &GatewayConfig{IAMService: iamSvc}
 
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     utils.GlobalAccountID,
 		PrincipalType: principalTypeUser,
 		AccessKeyID:   ecrPrincipalTestAKID,
@@ -194,8 +194,8 @@ func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
 }
 
 func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
-	validClaims := func() *gateway_ecrauth.Claims {
-		c := &gateway_ecrauth.Claims{
+	validClaims := func() *ecrauth.Claims {
+		c := &ecrauth.Claims{
 			AccountID:     ecrPrincipalTestAccount,
 			PrincipalType: principalTypeUser,
 			AccessKeyID:   ecrPrincipalTestAKID,
@@ -311,7 +311,7 @@ func TestResolveECRPrincipal_SessionToken_User(t *testing.T) {
 	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
 	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeUser,
 		AccessKeyID:   ecrPrincipalTestASID,
@@ -343,7 +343,7 @@ func TestResolveECRPrincipal_SessionToken_User_StalePrincipalRejected(t *testing
 			stsSvc.principalErr = tc.err
 			gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
-			claims := &gateway_ecrauth.Claims{
+			claims := &ecrauth.Claims{
 				AccountID:     ecrPrincipalTestAccount,
 				PrincipalType: principalTypeUser,
 				AccessKeyID:   ecrPrincipalTestASID,
@@ -363,7 +363,7 @@ func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {
 	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(-time.Hour))
 	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeUser,
 		AccessKeyID:   ecrPrincipalTestASID,
@@ -377,7 +377,7 @@ func TestResolveECRPrincipal_SessionToken_Expired(t *testing.T) {
 
 func TestResolveECRPrincipal_SessionToken_UnknownSession(t *testing.T) {
 	gw := &GatewayConfig{IAMService: newECRMockIAMService(), STSService: newECRMockSTSService()}
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeAssumedRole,
 		AccessKeyID:   ecrPrincipalTestASID,
@@ -419,7 +419,7 @@ func TestResolveECRPrincipal_AssumedRole(t *testing.T) {
 	assumedARN := seedECRAssumedRole(iamSvc, stsSvc, ecrPrincipalTestAccount, "deploy", "AROATESTROLE0001", ecrPrincipalTestASID, "session-1", time.Now().Add(time.Hour))
 	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeAssumedRole,
 		AccessKeyID:   ecrPrincipalTestASID,
@@ -441,7 +441,7 @@ func TestResolveECRPrincipal_AssumedRole_LegacyEmptyPrincipalType(t *testing.T) 
 	stsSvc.sessions[ecrPrincipalTestASID].PrincipalType = "" // pre-PrincipalType legacy record
 	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
 
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeAssumedRole,
 		AccessKeyID:   ecrPrincipalTestASID,
@@ -454,8 +454,8 @@ func TestResolveECRPrincipal_AssumedRole_LegacyEmptyPrincipalType(t *testing.T) 
 }
 
 func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
-	baseClaims := func(assumedARN string) *gateway_ecrauth.Claims {
-		c := &gateway_ecrauth.Claims{
+	baseClaims := func(assumedARN string) *ecrauth.Claims {
+		c := &ecrauth.Claims{
 			AccountID:     ecrPrincipalTestAccount,
 			PrincipalType: principalTypeAssumedRole,
 			AccessKeyID:   ecrPrincipalTestASID,
@@ -534,7 +534,7 @@ func TestResolveECRPrincipal_AssumedRole_Rejections(t *testing.T) {
 
 func TestResolveECRPrincipal_UnrecognizedAccessKeyPrefix(t *testing.T) {
 	gw := &GatewayConfig{IAMService: newECRMockIAMService()}
-	claims := &gateway_ecrauth.Claims{
+	claims := &ecrauth.Claims{
 		AccountID:     ecrPrincipalTestAccount,
 		PrincipalType: principalTypeUser,
 		AccessKeyID:   "NOTAVALIDPREFIX",

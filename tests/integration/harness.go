@@ -34,10 +34,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -155,7 +155,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// ECR auth bridge signing key: reuses the IAM master key to encrypt the
 	// signing key at rest in the same embedded JetStream KV, matching
 	// production's awsgw-keys wiring (services/awsgw/awsgw.go).
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
+	signingKey, verifyKeys, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
 	require.NoError(t, err)
 
 	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
@@ -174,8 +174,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		// real MetaServiceImpl or every ECR request will time out with no
 		// responder. Blob/manifest bytes are memory-backed: no predastore.
 		ECRRegistry:      ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
-		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, testECRAudience),
-		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, testECRAudience),
+		ECRTokenIssuer:   ecrauth.NewIssuer(signingKey, testECRAudience),
+		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
 		// Ochre model access is deny-by-default, so without a grant store every
 		// bedrock route refuses. Tests sign as the system account, which the
 		// store exempts from grants exactly as it does in production, so the

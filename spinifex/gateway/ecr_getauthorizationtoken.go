@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -42,7 +42,7 @@ func (gw *GatewayConfig) handleGetAuthorizationToken(w http.ResponseWriter, r *h
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	token, expiresAt, err := gw.ECRTokenIssuer.Mint(gateway_ecrauth.Principal{
+	token, expiresAt, err := gw.ECRTokenIssuer.Mint(ecrauth.Principal{
 		AccountID:   accountID,
 		ARN:         callerARN,
 		Type:        principalType,

@@ -1,4 +1,4 @@
-package gateway_ecrauth
+package ecrauth
 
 import (
 	"crypto/ecdsa"

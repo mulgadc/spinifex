@@ -64,6 +64,8 @@ const (
 	// ctxUserID carries aws:userid, resolved once by the SigV4 middleware so
 	// every policy check in a request evaluates the same value.
 	ctxUserID contextKey = "sigv4.userID"
+	// ctxUserARN carries an IAM user's stored ARN, path included, from the same read.
+	ctxUserARN contextKey = "sigv4.userARN"
 	// ctxUnderlyingRoleARN carries the IAM role ARN backing an assumed-role session.
 	// Policy enforcement resolves the role name from this, never from ctxIdentity
 	// (attacker-influenced RoleSessionName).
@@ -637,6 +639,7 @@ func (gw *GatewayConfig) checkPolicyResourcesWithKeys(r *http.Request, service, 
 		assumedRoleID:     mustCtxString(r, ctxAssumedRoleID),
 		underlyingRoleARN: mustCtxString(r, ctxUnderlyingRoleARN),
 		userID:            mustCtxString(r, ctxUserID),
+		userARN:           mustCtxString(r, ctxUserARN),
 	}
 	keys := requestConditionKeys(r, principal)
 	maps.Copy(keys, actionKeys)
@@ -702,19 +705,19 @@ func principalTypeCondition(principalType string) (string, bool) {
 	}
 }
 
-// principalUserID resolves aws:userid: an IAM user's unique ID, the role ID and
+// principalUser resolves aws:userid: an IAM user's unique ID, the role ID and
 // session name STS minted for a role session, or the account ID for root. Both
 // halves of a session's ID come from the resolved role, so unlike aws:username
-// it is not caller-chosen.
+// it is not caller-chosen. An IAM user's stored ARN comes from the same read.
 //
 // A principal with no ID on record returns empty and the door omits the key. A
 // dependency fault returns InternalError instead: authorizing against a context
 // missing the key silently narrows an Allow and widens a Deny.
-func (gw *GatewayConfig) principalUserID(principal principalContext) (string, error) {
+func (gw *GatewayConfig) principalUser(principal principalContext) (userID, userARN string, err error) {
 	if principal.identity == "" || principal.accountID == "" {
-		return "", nil
+		return "", "", nil
 	}
-	userID, err := gateway_sts.ResolveCallerUserID(principal.accountID, principal.principalType,
+	userID, userARN, err = gateway_sts.ResolveCallerUser(principal.accountID, principal.principalType,
 		principal.identity, principal.assumedRoleID, gw.IAMService)
 	switch {
 	case err == nil:
@@ -723,15 +726,15 @@ func (gw *GatewayConfig) principalUserID(principal principalContext) (string, er
 				"accountID", principal.accountID, "identity", principal.identity,
 				"principalType", principal.principalType)
 		}
-		return userID, nil
+		return userID, userARN, nil
 	case strings.Contains(err.Error(), awserrors.ErrorIAMNoSuchEntity):
 		slog.Warn("aws:userid unavailable: no such IAM user",
 			"accountID", principal.accountID, "user", principal.identity)
-		return "", nil
+		return "", "", nil
 	default:
 		slog.Error("aws:userid: IAM dependency fault, refusing to authorize on a degraded context",
 			"accountID", principal.accountID, "identity", principal.identity, "err", err)
-		return "", errors.New(awserrors.ErrorInternalError)
+		return "", "", errors.New(awserrors.ErrorInternalError)
 	}
 }
 
@@ -837,7 +840,7 @@ func (d *identityPolicyDenialError) Error() string {
 
 func (d *identityPolicyDenialError) detailedError() error {
 	callerARN, err := buildCallerARN(d.principal.accountID, d.principal.identity,
-		d.principal.principalType, d.principal.assumedRoleARN)
+		d.principal.principalType, d.principal.assumedRoleARN, d.principal.userARN)
 	if err != nil {
 		callerARN = d.logIdentity
 	}

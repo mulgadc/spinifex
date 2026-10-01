@@ -195,8 +195,9 @@ func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
 	assumedRoleID, _ := ctx.Value(ctxAssumedRoleID).(string)
 	accessKey, _ := ctx.Value(ctxAccessKey).(string)
+	userARN, _ := ctx.Value(ctxUserARN).(string)
 
-	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
+	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
 	if err != nil {
 		return stsCaller{}, err
 	}
@@ -212,8 +213,9 @@ func (gw *GatewayConfig) resolveSTSCaller(r *http.Request) (stsCaller, error) {
 }
 
 // buildCallerARN composes the caller ARN: assumed-role uses ctxAssumedRoleARN,
-// root uses arn:aws:iam::{aid}:root, user uses arn:aws:iam::{aid}:user/{identity}.
-func buildCallerARN(accountID, identity, principalType, assumedRoleARN string) (string, error) {
+// root uses arn:aws:iam::{aid}:root, user uses its stored userARN, path included,
+// or arn:aws:iam::{aid}:user/{identity} when there is no record to read it from.
+func buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN string) (string, error) {
 	switch principalType {
 	case principalTypeAssumedRole:
 		if assumedRoleARN == "" {
@@ -230,6 +232,9 @@ func buildCallerARN(accountID, identity, principalType, assumedRoleARN string) (
 		if identity == "" {
 			slog.Error("STS_Request: user principal without identity")
 			return "", errors.New(awserrors.ErrorInternalError)
+		}
+		if userARN != "" {
+			return userARN, nil
 		}
 		return spxarn.FormatIAMPath(spxarn.IAMUser, accountID, "/", identity), nil
 	default:

@@ -184,12 +184,13 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 
 			// Resolved here, once, rather than per policy check: a fault must fail
 			// the request rather than authorize it against a context missing the key.
-			userID, err := gw.principalUserID(principal)
+			userID, userARN, err := gw.principalUser(principal)
 			if err != nil {
 				gw.writeSigV4Error(w, r, err.Error(), "")
 				return
 			}
 			principal.userID = userID
+			principal.userARN = userARN
 
 			// Parse rewound the body; re-read it for query-arg parsing, then rewind
 			// again for the downstream handler.
@@ -221,6 +222,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 			if principal.userID != "" {
 				ctx = context.WithValue(ctx, ctxUserID, principal.userID)
+			}
+			if principal.userARN != "" {
+				ctx = context.WithValue(ctx, ctxUserARN, principal.userARN)
 			}
 
 			// Parse once; dispatchers reuse via ctxQueryArgs. On error the
@@ -348,6 +352,9 @@ type principalContext struct {
 	// userID is aws:userid, resolved where the principal is so the value cannot
 	// differ between two policy checks in the same request.
 	userID string
+	// userARN is an IAM user's stored ARN, path included, from the same read as
+	// userID. Empty for every other principal type.
+	userARN string
 	// sessionCred is the rehydrated STS record on the ASIA path, nil on the
 	// long-lived one. It carries the continuity check past sig.Verify.
 	sessionCred *handlers_sts.SessionCredential

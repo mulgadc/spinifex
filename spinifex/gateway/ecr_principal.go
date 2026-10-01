@@ -119,11 +119,12 @@ func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *gateway_ecrauth.Cl
 		return principalContext{}, classifyIAMLookupErr(err, "user")
 	}
 	identity := aws.StringValue(userOut.User.UserName)
+	userARN := aws.StringValue(userOut.User.Arn)
 
 	if claims.PrincipalType != principalTypeUser {
 		return principalContext{}, ecrInvalidPrincipal("principalType claim %q does not match resolved user", claims.PrincipalType)
 	}
-	canonicalARN, err := buildCallerARN(ak.AccountID, identity, principalTypeUser, "")
+	canonicalARN, err := buildCallerARN(ak.AccountID, identity, principalTypeUser, "", userARN)
 	if err != nil {
 		return principalContext{}, ecrInvalidPrincipal("cannot build canonical ARN: %w", err)
 	}
@@ -136,6 +137,7 @@ func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *gateway_ecrauth.Cl
 		accountID:     ak.AccountID,
 		principalType: principalTypeUser,
 		userID:        aws.StringValue(userOut.User.UserId),
+		userARN:       userARN,
 	}, nil
 }
 
@@ -186,7 +188,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 		if claims.PrincipalType != principalTypeUser {
 			return principalContext{}, ecrInvalidPrincipal("principalType claim %q does not match resolved session", claims.PrincipalType)
 		}
-		canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeUser, "")
+		canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeUser, "", live.UserARN)
 		if err != nil {
 			return principalContext{}, ecrInvalidPrincipal("cannot build canonical ARN: %w", err)
 		}
@@ -199,6 +201,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 			accountID:     cred.AccountID,
 			principalType: principalTypeUser,
 			userID:        live.UserID,
+			userARN:       live.UserARN,
 		}, nil
 	}
 
@@ -208,7 +211,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *gateway_ecrauth.Clai
 		return principalContext{}, ecrInvalidPrincipal("principalType claim %q does not match resolved session", claims.PrincipalType)
 	}
 
-	canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeAssumedRole, cred.AssumedRoleARN)
+	canonicalARN, err := buildCallerARN(cred.AccountID, cred.SessionName, principalTypeAssumedRole, cred.AssumedRoleARN, "")
 	if err != nil {
 		return principalContext{}, ecrInvalidPrincipal("cannot build canonical ARN: %w", err)
 	}

@@ -218,6 +218,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `40e7b14ad` | Gateway lifecycle-preview wrappers | `spinifex/domains/ecr/awsapi.LifecyclePreviewActionService` | StartLifecyclePolicyPreview and GetLifecyclePolicyPreview now dispatch through one composed policy-store-plus-image-catalog capability after generic authorization. Production reuses the registry's NATS metadata client; focused tests compose an in-memory metadata store. The obsolete wrappers are removed, and a missing composition fails closed rather than falling through to the raw action table. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
 | `54f96ad78` | Gateway CreateRepository, DescribeRepositories and DeleteRepository wrappers | `spinifex/domains/ecr/awsapi.RepositoryActionService` | Repository actions now dispatch through one composed metadata-store-plus-endpoint-profile capability after generic authorization. The individual action adapters depend on a narrow repository metadata contract rather than constructing NATS clients themselves. The three obsolete wrappers are removed, and a missing composition fails closed. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
 | `5ebbdcb53` | Gateway GetAuthorizationToken wrapper and endpoint adapter | `spinifex/domains/ecr/awsapi.AuthorizationTokenActionService` | GetAuthorizationToken now dispatches through a composed issuer-plus-endpoint capability after gateway constructs the canonical IAM/STS principal. The token subject remains gateway identity work; ECR retains credential response projection. The obsolete wrapper and endpoint adapter are removed, a missing action service fails closed, and an unavailable issuer retains the declared NotImplemented response. Focused domain, gateway, AWS-gateway and tagged integration validation passed. |
+| `2b945ad88` | `spinifex/handlers/acm`, `spinifex/gateway/acm` | `spinifex/domains/acm`, `spinifex/domains/acm/awsapi` | ACM certificate state, issuance and renewal are ACM-domain ownership; its AWS JSON/NATS request adapters live beside them. All nine adapters, including the previously inlined RequestCertificate path, now use `domains/acm/awsapi`; generic gateway retains only routing, request context, policy gating and response writing. Focused domain, adapter and gateway request tests plus direct-caller and tagged integration compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
@@ -256,6 +257,21 @@ All implemented ECR control-plane actions now dispatch through explicit ECR
 capabilities. The remaining ECR-named gateway code is generic `/v2/*` route
 assembly, SigV4/registry authentication and policy enforcement; it remains in
 gateway rather than inverting those dependencies into the ECR domain.
+
+### ACM relocation residuals
+
+The ACM move leaves two pre-existing dependency seams visible rather than
+changing their behaviour in a structural slice:
+
+- `domains/acm.Store` still imports IAM's AES-GCM helper functions. It does
+  not read IAM records, but the crypto mechanism must move behind a shared
+  crypto boundary before the final domain-dependency lint can prohibit that
+  implementation import.
+- `GatewayConfig` still owns the ACM action-name dispatch map. ACM owns the
+  action adapters and resource-scope derivation, while generic gateway owns
+  route handling, request context, policy gating and response writing. Moving
+  service registration itself needs the later ingress registration contract;
+  it is not hidden by a compatibility shim in this move.
 
 ## Recording rule
 

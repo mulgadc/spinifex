@@ -19,6 +19,10 @@ on:
         description: "tree (build this ref) or release (the published installer)"
         required: false
         default: tree
+      channel:
+        description: "With source=release: latest, or dev for the newest prerelease"
+        required: false
+        default: latest
       keep_on_fail:
         description: "Leave a failed topology up to inspect. It keeps billing."
         required: false
@@ -116,6 +120,7 @@ jobs:
           SPX_REF: ${{ github.ref_name }}
           OCI_TOPOLOGIES: ${{ inputs.topologies }}
           OCI_SOURCE: ${{ inputs.source }}
+          OCI_CHANNEL: ${{ inputs.channel }}
           # 1 unless the dispatch asked to form without the allocator, which is the
           # only way to run before the tenancy's dynamic group exists. The run then
           # records the allocator and the workbooks as SKIPPED rather than passing

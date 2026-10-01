@@ -9,6 +9,9 @@
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
 #   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm".
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
+#   OCI_CHANNEL       With OCI_SOURCE=release, which published channel to install:
+#                     latest (default) or dev, the newest prerelease. dev is the
+#                     path our cloud contacts are given, so it is worth testing.
 #                     Default tree: a nightly exists to judge a ref, and the
 #                     published installer says nothing about one.
 #   WORKBOOKS         Workbooks to run on each topology. Default: the driver's own
@@ -38,6 +41,7 @@ MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 
 TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm}"
 SOURCE="${OCI_SOURCE:-tree}"
+CHANNEL="${OCI_CHANNEL:-latest}"
 REF="${SPX_REF:-$(git -C "$SPINIFEX_ROOT" rev-parse --abbrev-ref HEAD)}"
 SSH_PUBLIC_KEY="${OCI_SSH_PUBLIC_KEY:-$HOME/.ssh/oci-spx.pub}"
 SSH_PRIVATE_KEY="${OCI_SSH_PRIVATE_KEY:-$HOME/.ssh/oci-spx}"
@@ -81,6 +85,14 @@ case "$SOURCE" in
     tree | release) ;;
     *) die "OCI_SOURCE must be tree or release, got '$SOURCE'" ;;
 esac
+
+case "$CHANNEL" in
+    latest | dev) ;;
+    *) die "OCI_CHANNEL must be latest or dev, got '$CHANNEL'" ;;
+esac
+# Saying release+dev and tree at once is two different artifacts in one verdict.
+[ "$SOURCE" = tree ] && [ "$CHANNEL" != latest ] \
+    && die "OCI_CHANNEL=$CHANNEL needs OCI_SOURCE=release: a tree build installs the ref, not a channel"
 
 mkdir -p "$ARTIFACT_DIR"
 VERDICT="$ARTIFACT_DIR/verdict.txt"
@@ -166,6 +178,7 @@ for topology in $TOPOLOGIES; do
         args+=(--instance-principal)
     fi
     [ -n "$DISTRO_TARBALL" ] && args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
+    [ "$SOURCE" = release ] && args+=(--channel "$CHANNEL")
     [ "${OCI_KEEP_ON_FAIL:-0}" = 1 ] && args+=(--keep-on-fail)
     [ -n "${WORKBOOKS+x}" ] && args+=(--workbooks "$WORKBOOKS")
 
@@ -189,7 +202,7 @@ done
 sweep
 
 echo
-log "=== $REF on OCI ($SOURCE build) ==="
+log "=== $REF on OCI ($SOURCE build$([ "$SOURCE" = release ] && echo ", $CHANNEL channel")) ==="
 cat "$VERDICT"
 if [ "$RUN_RC" = 0 ] && ! grep -q FAIL "$VERDICT"; then
     log "PASS"

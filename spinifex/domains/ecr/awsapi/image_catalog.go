@@ -17,6 +17,23 @@ type ImageCatalog interface {
 	ListImages(ctx context.Context, account, repository string) ([]ecrregistry.ImageRecord, error)
 }
 
+// ManifestReader is the registry capability used by BatchGetImage. A media
+// type refused by the reader is treated as an unavailable image, matching the
+// ECR accepted-media-types contract.
+type ManifestReader interface {
+	GetManifest(ctx context.Context, account, repository, reference string, acceptedTypes []string) (body []byte, mediaType, digest string, err error)
+}
+
+func validateRepositoryScope(repositoryName, registryID, accountID string) error {
+	if err := ValidateRepositoryName(repositoryName); err != nil {
+		return err
+	}
+	if registryID != "" && registryID != accountID {
+		return errors.New(awserrors.ErrorAccessDenied)
+	}
+	return nil
+}
+
 func listImageRecords(ctx context.Context, catalog ImageCatalog, accountID, repository string) ([]ecrregistry.ImageRecord, error) {
 	if catalog == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)

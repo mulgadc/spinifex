@@ -26,13 +26,6 @@ type imageIdentifier struct {
 	ImageTag    string `json:"imageTag"`
 }
 
-type batchGetImageRequest struct {
-	RepositoryName     string            `json:"repositoryName"`
-	RegistryID         string            `json:"registryId"`
-	ImageIds           []imageIdentifier `json:"imageIds"`
-	AcceptedMediaTypes []string          `json:"acceptedMediaTypes"`
-}
-
 type putImageRequest struct {
 	RepositoryName         string `json:"repositoryName"`
 	RegistryID             string `json:"registryId"`
@@ -129,62 +122,24 @@ func (gw *GatewayConfig) handleDescribeImages(w http.ResponseWriter, r *http.Req
 	return nil
 }
 
-// handleBatchGetImage returns verbatim manifest bytes for up to 100 imageIds.
-// Per Q14 it answers HTTP 200 with a structured failures array on partial
-// misses; the digest wins over the tag when both are supplied.
+// handleBatchGetImage adapts the authenticated HTTP request to the ECR AWS
+// action. The ECR adapter owns request semantics and partial-failure response
+// construction; gateway supplies the configured OCI registry capability.
 func (gw *GatewayConfig) handleBatchGetImage(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	accountID, err := gw.ecrImageAccount(r)
 	if err != nil {
 		return err
 	}
-	var req batchGetImageRequest
-	if err := decodeJSONBody(r, &req); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return awsapi.MalformedBodyError()
+	}
+	output, err := awsapi.BatchGetImage(ctx, gw.ECRRegistry, accountID, body)
+	if err != nil {
 		return err
 	}
-	if err := validateRepoAndRegistry(req.RepositoryName, req.RegistryID, accountID); err != nil {
-		return err
-	}
-	if len(req.ImageIds) > maxImageBatch {
-		return awsapi.MaxItemsError("imageIds", maxImageBatch)
-	}
-
-	var images []*ecr.Image
-	var failures []*ecr.ImageFailure
-	for _, id := range req.ImageIds {
-		ref := id.ImageDigest
-		if ref == "" {
-			ref = id.ImageTag
-		}
-		if ref == "" {
-			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeMissingDigestAndTag, "no digest or tag specified"))
-			continue
-		}
-
-		body, mediaType, digest, gErr := gw.ECRRegistry.GetManifest(ctx, accountID, req.RepositoryName, ref, req.AcceptedMediaTypes)
-		if errors.Is(gErr, ecrregistry.ErrImageNotFound) {
-			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeImageNotFound, "image not found"))
-			continue
-		}
-		if gErr != nil {
-			slog.ErrorContext(ctx, "BatchGetImage: get manifest failed", "repo", req.RepositoryName, "err", gErr)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-
-		out := &ecr.Image{
-			RegistryId:             aws.String(accountID),
-			RepositoryName:         aws.String(req.RepositoryName),
-			ImageId:                &ecr.ImageIdentifier{ImageDigest: aws.String(digest)},
-			ImageManifest:          aws.String(string(body)),
-			ImageManifestMediaType: aws.String(mediaType),
-		}
-		if id.ImageTag != "" {
-			out.ImageId.ImageTag = aws.String(id.ImageTag)
-		}
-		images = append(images, out)
-	}
-
-	awsapi.WriteJSONResponse(w, &ecr.BatchGetImageOutput{Images: images, Failures: failures})
+	awsapi.WriteJSONResponse(w, output)
 	return nil
 }
 

@@ -3,11 +3,9 @@ package awsapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 type listImagesRequest struct {
@@ -28,11 +26,8 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
 	}
-	if err := ValidateRepositoryName(req.RepositoryName); err != nil {
+	if err := validateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
-	}
-	if req.RegistryID != "" && req.RegistryID != accountID {
-		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
 	records, err := listImageRecords(ctx, catalog, accountID, req.RepositoryName)

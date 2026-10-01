@@ -36,11 +36,8 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, MalformedBodyError()
 	}
-	if err := ValidateRepositoryName(req.RepositoryName); err != nil {
+	if err := validateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
-	}
-	if req.RegistryID != "" && req.RegistryID != accountID {
-		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
 	records, err := listImageRecords(ctx, catalog, accountID, req.RepositoryName)

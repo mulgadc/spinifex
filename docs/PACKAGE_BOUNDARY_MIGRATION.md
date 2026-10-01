@@ -195,6 +195,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `b975f1ba9` | Remaining `spinifex/types/ebs.go` payloads | `runtime/compute/vm/ebs_requests.go` and `contracts/viperblockd/legacy/v1/volume.go` | The mutex-bearing attachment collection is VM-owned; deployed mount, unmount and delete routes plus their JSON payloads are versioned Viperblockd legacy compatibility. Contract tests pin every route and JSON shape. |
 | `61cf833aa` | `spinifex/cloud/exoscale` | `spinifex/providers/cloud/exoscale` | Exoscale CLI access is a replaceable external-cloud adapter. The source move rewrites its four Exonet callers and preserves its adapter tests and CLI boundary. |
 | `dbc62562c` | `spinifex/objectstore` | `spinifex/providers/objectstore` | The generic S3-compatible client is a replaceable object-storage adapter, not S3 resource authority. The mechanical move rewrites all direct callers; its focused suite and caller compilation passed. |
+| `f11922986` | `spinifex/config` | `spinifex/bootstrap/config` | Root configuration parsing belongs to bootstrap. Its package API is unchanged; package tests and regular, integration, E2E and benchmark caller compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

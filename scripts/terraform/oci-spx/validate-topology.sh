@@ -21,6 +21,7 @@ SKIP_POOL=0
 DRY_RUN=0
 DESTROY_ONLY=0
 INSTANCE_PRINCIPAL=0
+CREDENTIAL_HOOK="${OCI_CREDENTIAL_HOOK:-}"
 DISTRO=""
 SETUP_SH=""
 # Empty means the driver's own default list. Unset is distinguishable from empty,
@@ -62,6 +63,9 @@ workbook against it, then destroys everything.
   --instance-principal    Configure the pool with oci_auth="instance_principal"
                           instead of a key file. Needs the dynamic group and
                           policy to exist already; see instance-principal.tf.
+  --credential-hook PATH  Executable run after formation, before the pool, as
+                          "hook <ssh-key> <host>...". Where an API-key deployment
+                          installs its credential. Default \$OCI_CREDENTIAL_HOOK.
   --workbooks LIST        Space-separated workbooks for the published driver to
                           run on the cluster. Empty means run none; omitted means
                           the driver's own default list.
@@ -90,6 +94,7 @@ while [ $# -gt 0 ]; do
         --distro) DISTRO="${2:?}"; shift 2 ;;
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
+        --credential-hook) CREDENTIAL_HOOK="${2:?}"; shift 2 ;;
         --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
         --keep) KEEP=1; shift ;;
@@ -356,6 +361,21 @@ else
         || die "formation failed; see $STATE_DIR/form.log"
 fi
 record "formation: PASS"
+
+# Runs after formation and before the pool is configured, which is the only window
+# where a node has /etc/spinifex but has not yet started the allocator. Nothing in
+# this repository knows what it does: an API-key deployment needs a credential on
+# each node, and a credential belongs to the operator, not to a checked-in script.
+# Skipped under instance principal, which needs no handoff at all.
+if [ -n "$CREDENTIAL_HOOK" ] && [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
+    log "running the credential hook"
+    # Arguments, not a file: the hook is told where the nodes are and how to reach
+    # them, and decides for itself what to put there.
+    "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
+        || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
+    log "credential hook ok"
+fi
 
 # The IMDS remap and the pool are both set-before-first-start, and the remap is the
 # half that is invisible when missing: without it the cloud's metadata service is

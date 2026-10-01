@@ -1,4 +1,4 @@
-name: E2E OCI Nightly
+name: E2E Cloud Vendor Nightly
 
 # Dispatched by the same Cloudflare Worker that drives e2e-nightly.yml, once per
 # ref, rather than by a `schedule:` here. GitHub registers a schedule only from

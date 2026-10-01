@@ -24,6 +24,10 @@
 #                     workbook are then recorded SKIPPED, never PASS, so a green
 #                     run with this set is not a claim about guest networking.
 #   OCI_SSH_PUBLIC_KEY / OCI_SSH_PRIVATE_KEY   Paths. Default ~/.ssh/oci-spx[.pub].
+#   OCI_CREDENTIAL_HOOK     Executable run on each topology after formation and
+#                     before the pool, as "hook <ssh-key> <host>...". An API-key
+#                     deployment installs its credential here; instance principal
+#                     needs none, so it is skipped unless the pool is key-based.
 #   OCI_ARTIFACT_DIR  Where logs and the verdict land. Default ./.e2e-oci-<stamp>.
 #   OCI_KEEP_ON_FAIL  1 to leave a failed topology up for inspection. Off by
 #                     default: an OCI bare-metal host left overnight is expensive.
@@ -179,6 +183,7 @@ for topology in $TOPOLOGIES; do
     fi
     [ -n "$DISTRO_TARBALL" ] && args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
     [ "$SOURCE" = release ] && args+=(--channel "$CHANNEL")
+    [ -n "${OCI_CREDENTIAL_HOOK:-}" ] && args+=(--credential-hook "$OCI_CREDENTIAL_HOOK")
     [ "${OCI_KEEP_ON_FAIL:-0}" = 1 ] && args+=(--keep-on-fail)
     [ -n "${WORKBOOKS+x}" ] && args+=(--workbooks "$WORKBOOKS")
 

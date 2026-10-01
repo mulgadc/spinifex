@@ -10,3 +10,6 @@ terraform.tfvars
 *.pem
 *.log
 .validate-*/
+# Per-run artifacts and the identity state, which is not a topology's to destroy.
+.e2e-oci-*/
+.identity/

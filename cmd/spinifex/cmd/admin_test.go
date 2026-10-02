@@ -20,9 +20,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -34,13 +34,13 @@ import (
 // mismatch, so a 404/non-HTTPS/size-cap failure still tells the operator
 // which URL to investigate.
 func TestPrintChecksumError(t *testing.T) {
-	image := utils.Images{Checksum: "https://example.com/SUMS", ChecksumType: "sha512"}
+	image := imagecatalog.Images{Checksum: "https://example.com/SUMS", ChecksumType: "sha512"}
 	const imageFile = "/var/lib/img.tar.xz"
 	const imageName = "debian-13-x86_64"
 
 	errs := []error{
-		fmt.Errorf("%w: expected abc got def", utils.ErrChecksumMismatch),
-		fmt.Errorf("%w: 404", utils.ErrChecksumFetchFailed),
+		fmt.Errorf("%w: expected abc got def", imagecatalog.ErrChecksumMismatch),
+		fmt.Errorf("%w: 404", imagecatalog.ErrChecksumFetchFailed),
 		errors.New("open /x: no such file"),
 	}
 	for _, e := range errs {
@@ -1398,7 +1398,7 @@ func TestImportSourceResolveDigest(t *testing.T) {
 			imageFile: img, localFile: img,
 			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: strings.Repeat("0", 64),
 		}.resolveDigest(&out, &errOut)
-		require.ErrorIs(t, err, utils.ErrChecksumMismatch)
+		require.ErrorIs(t, err, imagecatalog.ErrChecksumMismatch)
 		assert.Contains(t, errOut.String(), "file:     "+img)
 		assert.Contains(t, errOut.String(), "checksum: "+sums)
 		assert.Contains(t, errOut.String(), imgHex)
@@ -1438,7 +1438,7 @@ func TestImportSourceResolveDigest(t *testing.T) {
 		var out, errOut bytes.Buffer
 		got, err := importSource{
 			imageFile: img, imageName: "oracle-10.1-x86_64",
-			image: utils.Images{ChecksumType: "sha256", ChecksumDigest: imgHex},
+			image: imagecatalog.Images{ChecksumType: "sha256", ChecksumDigest: imgHex},
 		}.resolveDigest(&out, &errOut)
 		require.NoError(t, err)
 		assert.Equal(t, ebsmetadata.ImageDigest{
@@ -1453,9 +1453,9 @@ func TestImportSourceResolveDigest(t *testing.T) {
 		wrong := strings.Repeat("a", 64)
 		_, err := importSource{
 			imageFile: img, imageName: "oracle-10.1-x86_64",
-			image: utils.Images{ChecksumType: "sha256", ChecksumDigest: wrong, URL: "https://example.invalid/ol.qcow2"},
+			image: imagecatalog.Images{ChecksumType: "sha256", ChecksumDigest: wrong, URL: "https://example.invalid/ol.qcow2"},
 		}.resolveDigest(&out, &errOut)
-		require.ErrorIs(t, err, utils.ErrChecksumMismatch)
+		require.ErrorIs(t, err, imagecatalog.ErrChecksumMismatch)
 		assert.Contains(t, errOut.String(), catalogPinnedDigestSource)
 		assert.Contains(t, errOut.String(), "https://example.invalid/ol.qcow2")
 		assert.FileExists(t, img, "the downloaded file must be left in place")

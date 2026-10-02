@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 )
@@ -35,7 +35,7 @@ const catalogHeadTimeout = 30 * time.Second
 // and the sooner it is seen the smaller the window in which a released binary
 // points at a dead URL.
 //
-// utils.WithheldImages is deliberately not walked: those are the entries whose
+// imagecatalog.WithheldImages is deliberately not walked: those are the entries whose
 // artifact is known to be unpublished, so HEADing them would assert a failure
 // we already know about and hide the ones we do not.
 func runImageCatalogReachable(t *testing.T, _ *Fixture) {
@@ -57,8 +57,8 @@ func runImageCatalogReachable(t *testing.T, _ *Fixture) {
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
 	}
 
-	for _, name := range slices.Sorted(maps.Keys(utils.AvailableImages)) {
-		img := utils.AvailableImages[name]
+	for _, name := range slices.Sorted(maps.Keys(imagecatalog.AvailableImages)) {
+		img := imagecatalog.AvailableImages[name]
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 

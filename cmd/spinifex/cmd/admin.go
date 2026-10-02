@@ -36,6 +36,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -506,7 +507,7 @@ const catalogPinnedDigestSource = "catalog:pinned"
 // importSource is the file an import is about to extract, and what it is to be verified against.
 type importSource struct {
 	imageFile, imageName, localFile            string
-	image                                      utils.Images
+	image                                      imagecatalog.Images
 	checksumPath, checksumAlgo, expectedDigest string
 	skipVerify                                 bool
 }
@@ -525,7 +526,7 @@ func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageD
 		// A pinned digest is checked against this file rather than a sums file
 		// fetched from the same host that served the image.
 		if src.image.ChecksumDigest != "" {
-			actual, err := utils.VerifyImageDigest(src.imageFile, src.image.ChecksumType, src.image.ChecksumDigest)
+			actual, err := imagecatalog.VerifyImageDigest(src.imageFile, src.image.ChecksumType, src.image.ChecksumDigest)
 			if err != nil {
 				printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
 				return digest, err
@@ -535,7 +536,7 @@ func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageD
 			digest.Verification = ebsmetadata.DigestCatalog
 			return digest, nil
 		}
-		actual, err := utils.VerifyImageChecksum(src.imageFile, src.image.Checksum, src.image.ChecksumType)
+		actual, err := imagecatalog.VerifyImageChecksum(src.imageFile, src.image.Checksum, src.image.ChecksumType)
 		if err != nil {
 			printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
 			return digest, err
@@ -544,7 +545,7 @@ func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageD
 		digest.Algorithm, digest.Value, digest.Source = src.image.ChecksumType, actual, src.image.Checksum
 		digest.Verification = ebsmetadata.DigestCatalog
 	case ebsmetadata.DigestOperator:
-		actual, err := utils.VerifyImageDigest(src.localFile, src.checksumAlgo, src.expectedDigest)
+		actual, err := imagecatalog.VerifyImageDigest(src.localFile, src.checksumAlgo, src.expectedDigest)
 		if err != nil {
 			fmt.Fprintf(errOut, "Image integrity verification failed: %v\n", err)
 			fmt.Fprintf(errOut, "  file:     %s\n", src.localFile)
@@ -560,7 +561,7 @@ func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageD
 		} else {
 			fmt.Fprintf(errOut, "⚠️  --skip-verify set: checksum verification skipped for %s\n", src.imageName)
 		}
-		actual, err := utils.HashImageFile(src.imageFile, "sha256")
+		actual, err := imagecatalog.HashImageFile(src.imageFile, "sha256")
 		if err != nil {
 			fmt.Fprintf(errOut, "Could not hash image: %v\n", err)
 			return digest, err
@@ -584,7 +585,7 @@ func sourceDigestMode(localFile, checksumPath string, skipVerify bool) string {
 }
 
 func runimagesImportCmd(cmd *cobra.Command, args []string) {
-	var image utils.Images
+	var image imagecatalog.Images
 
 	var imageFile string
 	var imageStat os.FileInfo
@@ -629,7 +630,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	}
 	var checksumAlgo, expectedDigest string
 	if checksumPath != "" {
-		checksumAlgo, expectedDigest, err = utils.ReadExpectedDigest(checksumPath, filepath.Base(localFile))
+		checksumAlgo, expectedDigest, err = imagecatalog.ReadExpectedDigest(checksumPath, filepath.Base(localFile))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Could not read checksum from %s: %v\n", checksumPath, err)
 			os.Exit(1)
@@ -638,7 +639,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 
 	if imageName != "" {
 		var exists bool
-		image, exists = utils.AvailableImages[imageName]
+		image, exists = imagecatalog.AvailableImages[imageName]
 		if !exists {
 			fmt.Fprintf(os.Stderr, "Image name not found in available images")
 			os.Exit(1)
@@ -763,7 +764,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	extractedImagePath, err := utils.ExtractDiskImageFromFile(imageFile, imagePath)
+	extractedImagePath, err := imagecatalog.ExtractDiskImageFromFile(imageFile, imagePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Could not extract image: %v\n", err)
 		os.Exit(1)
@@ -797,7 +798,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		SnapshotID:      admin.SnapPrefix(volumeId),
 		BootMode:        image.BootMode,
 		Distro:          image.Distro,
-		DistroFamily:    utils.DistroFamily(image.Distro),
+		DistroFamily:    imagecatalog.DistroFamily(image.Distro),
 		SourceDigest:    &sourceDigest,
 	}
 
@@ -1197,11 +1198,11 @@ func runimagesListCmd(cmd *cobra.Command, args []string) {
 	}
 
 	// Sort A→Z then iterate.
-	keys := slices.Sorted(maps.Keys(utils.AvailableImages))
+	keys := slices.Sorted(maps.Keys(imagecatalog.AvailableImages))
 	for _, k := range keys {
-		img := utils.AvailableImages[k]
+		img := imagecatalog.AvailableImages[k]
 
-		//for _, img := range utils.AvailableImages {
+		//for _, img := range imagecatalog.AvailableImages {
 		tableData = append(tableData, []string{img.Name, img.Distro, img.Version, img.Arch, img.BootMode})
 	}
 
@@ -3948,7 +3949,7 @@ func resolveIfaceIP(iface string) string {
 // to investigate), and the exact --force recovery command. The cached file
 // is left in place: an implicit auto-delete would mutate state inside
 // "verify", and a tampered artifact is forensically useful intact.
-func printChecksumError(w io.Writer, imageFile, imageName string, image utils.Images, err error) {
+func printChecksumError(w io.Writer, imageFile, imageName string, image imagecatalog.Images, err error) {
 	fmt.Fprintf(w, "Image integrity verification failed: %v\n", err)
 	fmt.Fprintf(w, "  file:     %s\n", imageFile)
 	if image.ChecksumDigest != "" {

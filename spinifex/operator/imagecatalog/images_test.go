@@ -1,4 +1,4 @@
-package utils
+package imagecatalog
 
 import (
 	"bytes"
@@ -63,7 +63,7 @@ func TestWithheldImages_VLLMServingCarriesBedrockTags(t *testing.T) {
 // it decodes to something validateDiskImagePath's file(1) sniff already accepts elsewhere.
 func rawFixture(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "tests", "unit-test-disk-image.raw"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "tests", "unit-test-disk-image.raw"))
 	if err != nil {
 		t.Fatalf("read raw fixture: %v", err)
 	}

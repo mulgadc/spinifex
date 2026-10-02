@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
@@ -44,7 +45,7 @@ func resolveServingAMI(ctx context.Context, imgSvc amiResolver) (string, error) 
 	}
 
 	// Serving images are GPU-tagged by design, so nothing is excluded here.
-	newestID, _, matches := utils.SelectNewestImage(out.Images, "")
+	newestID, _, matches := awsami.SelectNewestImage(out.Images, "")
 	if newestID == "" {
 		return "", ErrServingAMINotFound
 	}

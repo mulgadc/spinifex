@@ -13,10 +13,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 )
 
 // ErrEKSServerAMINotFound is returned when no AMI with the EKS managed-by tag
@@ -393,7 +393,7 @@ func resolveNewestAMI(ctx context.Context, amiSvc k3sAMIResolver, accountID stri
 	if excludeGPUTagged {
 		excludeKey = tags.GPUVendorKey
 	}
-	newestID, newestCreated, matches := utils.SelectNewestImage(out.Images, excludeKey)
+	newestID, newestCreated, matches := awsami.SelectNewestImage(out.Images, excludeKey)
 	if newestID == "" {
 		return "", fmt.Errorf("%w (%s, account %s)", notFound, notFoundDesc, accountID)
 	}

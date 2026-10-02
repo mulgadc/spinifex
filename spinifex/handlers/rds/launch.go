@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
@@ -542,7 +543,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 	// Several builds of one engine version can be registered; select the most
 	// recently imported usable image. A GPU engine build carries the same engine
 	// tags, so it is excluded or a newer GPU image would hijack an ordinary instance.
-	newestID, _, matches := utils.SelectNewestImage(out.Images, tags.GPUVendorKey)
+	newestID, _, matches := awsami.SelectNewestImage(out.Images, tags.GPUVendorKey)
 	if newestID == "" {
 		return "", engineAMINotFound(engine, version)
 	}

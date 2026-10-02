@@ -6,24 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestIdempotencyKeyFromContext(t *testing.T) {
-	assert.Empty(t, IdempotencyKeyFromContext(context.Background()))
-	assert.Equal(t, "abc", IdempotencyKeyFromContext(WithIdempotencyKey(context.Background(), "abc")))
-}
-
-func TestIdempotencyKeyFromMsg(t *testing.T) {
-	assert.Empty(t, IdempotencyKeyFromMsg(nil))
-	assert.Empty(t, IdempotencyKeyFromMsg(&nats.Msg{}))
-
-	msg := &nats.Msg{Header: nats.Header{}}
-	msg.Header.Set(IdempotencyKeyHeader, "abc")
-	assert.Equal(t, "abc", IdempotencyKeyFromMsg(msg))
-}
 
 // The token is set on the HTTP request and consumed by the service behind NATS,
 // so it has to survive the hop or the dedupe never sees it.
@@ -38,12 +25,12 @@ func TestNATSRequest_ForwardsIdempotencyKey(t *testing.T) {
 		Key string `json:"key"`
 	}
 	_, err = nc.Subscribe("test.idem", func(msg *nats.Msg) {
-		data, _ := json.Marshal(resp{Key: IdempotencyKeyFromMsg(msg)})
+		data, _ := json.Marshal(resp{Key: idempotency.KeyFromMsg(msg)})
 		_ = msg.Respond(data)
 	})
 	require.NoError(t, err)
 
-	ctx := WithIdempotencyKey(context.Background(), "invocation-1")
+	ctx := idempotency.WithKey(context.Background(), "invocation-1")
 	got, err := NATSRequest[resp](ctx, nc, "test.idem", struct{}{}, 2*time.Second, "111122223333")
 	require.NoError(t, err)
 	assert.Equal(t, "invocation-1", got.Key)

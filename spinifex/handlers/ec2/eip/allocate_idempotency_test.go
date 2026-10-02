@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 // must return the first allocation instead of drawing another address.
 func TestAllocateAddress_RetryReturnsFirstAllocation(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
-	ctx := utils.WithIdempotencyKey(t.Context(), "invocation-1")
+	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
 	first, err := svc.AllocateAddress(ctx, &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -37,9 +37,9 @@ func TestAllocateAddress_RetryReturnsFirstAllocation(t *testing.T) {
 func TestAllocateAddress_DifferentKeysAllocateSeparately(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
-	first, err := svc.AllocateAddress(utils.WithIdempotencyKey(t.Context(), "invocation-1"), &ec2.AllocateAddressInput{}, testAccountID)
+	first, err := svc.AllocateAddress(idempotency.WithKey(t.Context(), "invocation-1"), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
-	second, err := svc.AllocateAddress(utils.WithIdempotencyKey(t.Context(), "invocation-2"), &ec2.AllocateAddressInput{}, testAccountID)
+	second, err := svc.AllocateAddress(idempotency.WithKey(t.Context(), "invocation-2"), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, *first.PublicIp, *second.PublicIp)
@@ -61,7 +61,7 @@ func TestAllocateAddress_WithoutKeyAllocatesEachTime(t *testing.T) {
 // One account's token must not answer another's call.
 func TestAllocateAddress_KeyIsScopedPerAccount(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
-	ctx := utils.WithIdempotencyKey(t.Context(), "invocation-1")
+	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
 	first, err := svc.AllocateAddress(ctx, &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestAllocateAddress_KeyIsScopedPerAccount(t *testing.T) {
 // record cannot cover — singleflight has to join it to the call in flight.
 func TestAllocateOnce_ConcurrentRetriesCollapse(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
-	ctx := utils.WithIdempotencyKey(t.Context(), "invocation-1")
+	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
 	var calls atomic.Int32
 	release := make(chan struct{})
@@ -114,7 +114,7 @@ func TestAllocateOnce_ConcurrentRetriesCollapse(t *testing.T) {
 // get a real address once the fault clears.
 func TestAllocateOnce_FailureIsNotCached(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
-	ctx := utils.WithIdempotencyKey(t.Context(), "invocation-1")
+	ctx := idempotency.WithKey(t.Context(), "invocation-1")
 
 	_, err := svc.allocateOnce(ctx, testAccountID, func() (*ec2.AllocateAddressOutput, error) {
 		return nil, errors.New("pool unreachable")
@@ -137,7 +137,7 @@ func TestAllocateOnce_WithoutBucketStillAllocates(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 	svc.idemKV = nil
 
-	out, err := svc.allocateOnce(utils.WithIdempotencyKey(t.Context(), "invocation-1"), testAccountID,
+	out, err := svc.allocateOnce(idempotency.WithKey(t.Context(), "invocation-1"), testAccountID,
 		func() (*ec2.AllocateAddressOutput, error) {
 			return &ec2.AllocateAddressOutput{AllocationId: aws.String("eipalloc-abc")}, nil
 		})

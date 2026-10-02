@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -31,7 +32,7 @@ const (
 // and took another upstream DHCP lease — returning one EIP to the caller and
 // stranding the rest with nothing to release them.
 func (s *EIPServiceImpl) allocateOnce(ctx context.Context, accountID string, alloc func() (*ec2.AllocateAddressOutput, error)) (*ec2.AllocateAddressOutput, error) {
-	key := utils.IdempotencyKeyFromContext(ctx)
+	key := idempotency.KeyFromContext(ctx)
 	if key == "" || s.idemKV == nil {
 		return alloc()
 	}

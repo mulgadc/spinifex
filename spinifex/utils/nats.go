@@ -14,6 +14,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
 )
@@ -289,8 +290,8 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 	reqMsg.Header.Set(AccountIDHeader, accountID)
 	// Forwarded here so every NATS-backed service inherits the caller's retry
 	// token without widening its signature.
-	if key := IdempotencyKeyFromContext(ctx); key != "" {
-		reqMsg.Header.Set(IdempotencyKeyHeader, key)
+	if key := idempotency.KeyFromContext(ctx); key != "" {
+		reqMsg.Header.Set(idempotency.KeyHeader, key)
 	}
 	InjectTraceContext(ctx, reqMsg.Header)
 	for _, h := range headers {

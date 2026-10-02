@@ -13,8 +13,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
 	gateway_ec2_capacityreservation "github.com/mulgadc/spinifex/spinifex/gateway/ec2/capacityreservation"
@@ -35,6 +35,7 @@ import (
 	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -70,7 +71,7 @@ func requestContext(r *http.Request) context.Context {
 	if r == nil {
 		return context.Background()
 	}
-	return utils.WithIdempotencyKey(r.Context(), r.Header.Get(utils.SDKInvocationIDHeader))
+	return idempotency.WithKey(r.Context(), r.Header.Get(idempotency.SDKInvocationIDHeader))
 }
 
 // parseEC2Input parses query args into an action's input type. Shared by every

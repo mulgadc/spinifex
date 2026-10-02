@@ -11,6 +11,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
@@ -254,7 +255,7 @@ func daemonHandlerShape(fn reflect.Type) (withPrincipal, ok bool) {
 func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool) {
 	ctx, span := utils.StartConsumerSpan(msg)
 	defer span.End()
-	ctx = utils.WithIdempotencyKey(ctx, utils.IdempotencyKeyFromMsg(msg))
+	ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 
 	input := reflect.New(handler.Type().In(1).Elem())
 	if errResp := utils.UnmarshalJsonPayload(input.Interface(), msg.Data); errResp != nil {

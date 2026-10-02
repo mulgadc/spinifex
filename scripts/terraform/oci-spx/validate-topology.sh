@@ -248,6 +248,15 @@ fi
 
 log "$SHAPE, $NODES node(s), state in $STATE_DIR"
 
+# Checked here, not where the hook is run: nothing about it depends on the apply, and
+# the run is otherwise forty minutes and a bare-metal bill from discovering that the
+# path in a CI variable does not exist on this runner.
+if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    [ -n "$CREDENTIAL_HOOK" ] \
+        || die "this deployment authenticates with an API key and no credential hook is set, so no node could reach the OCI API; set --credential-hook or OCI_CREDENTIAL_HOOK, or use an instance principal"
+    [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
+fi
+
 # The directory's own terraform.tfstate belongs to hand-driven runs, not to a
 # topology, and an instance left in it is both a bill and a name that collides
 # with ours in the console. Say so rather than letting it be a surprise.
@@ -408,12 +417,6 @@ record formation PASS
 # each node, and a credential belongs to the operator, not to a checked-in script.
 # Skipped under instance principal, which needs no handoff at all.
 if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
-    # Named here rather than left to the allocator gate. Without a credential that
-    # gate still fails, but it fails thirty retries later reporting a missing log
-    # line, which reads as a datapath fault rather than the obvious cause.
-    [ -n "$CREDENTIAL_HOOK" ] \
-        || die "this deployment authenticates with an API key and no credential hook is set, so no node can reach the OCI API; set --credential-hook or OCI_CREDENTIAL_HOOK, or use an instance principal"
-    [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
     log "running the credential hook"
     # Arguments, not a file: the hook is told where the nodes are and how to reach
     # them, and decides for itself what to put there.

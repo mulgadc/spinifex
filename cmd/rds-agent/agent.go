@@ -14,8 +14,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/rdsgw"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // Overridable via -ldflags "-X main.version=...".

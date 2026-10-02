@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // The engine-neutral half of the parameter catalog: the spec type, its parsing

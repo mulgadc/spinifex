@@ -32,9 +32,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 )
 
 // DisplayNamePrefix marks every OCI object this package creates. Reconcile only

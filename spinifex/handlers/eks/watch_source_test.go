@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

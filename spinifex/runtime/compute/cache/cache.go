@@ -129,9 +129,11 @@ type Cache struct {
 // until the first sync completes, List reports the cache not ready.
 func New(js jetstream.JetStream, cfg Config) *Cache {
 	if cfg.VisibleToCaller == nil {
+		//nolint:forbidigo // A missing policy field is a composition-root wiring error, not a runtime fault.
 		panic("instancecache: Config.VisibleToCaller is required")
 	}
 	if cfg.FallbackAccountID == "" {
+		//nolint:forbidigo // A missing policy field is a composition-root wiring error, not a runtime fault.
 		panic("instancecache: Config.FallbackAccountID is required")
 	}
 

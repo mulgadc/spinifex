@@ -5,8 +5,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // db.* is a naming facade, not a second sizing table: every entry resolves

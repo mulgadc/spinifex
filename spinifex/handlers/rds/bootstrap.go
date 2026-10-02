@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 

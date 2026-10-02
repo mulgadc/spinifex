@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"slices"
 
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -51,12 +52,7 @@ func RepositoryActionNames() []string {
 // IsRepositoryAction reports whether action is handled by the composed
 // repository-metadata capability.
 func IsRepositoryAction(action string) bool {
-	for _, name := range repositoryActionNames {
-		if action == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(repositoryActionNames, action)
 }
 
 // Execute handles a repository ECR JSON action using the caller account

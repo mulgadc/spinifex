@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
@@ -54,12 +55,7 @@ func RegistryActionNames() []string {
 // registry capability rather than the NATS action table or a transitional
 // HTTP adapter.
 func IsRegistryAction(action string) bool {
-	for _, name := range registryActionNames {
-		if action == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(registryActionNames, action)
 }
 
 // Execute handles a registry-backed ECR JSON action using the caller account

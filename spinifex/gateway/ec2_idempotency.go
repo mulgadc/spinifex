@@ -8,8 +8,8 @@ import (
 	"net/http"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

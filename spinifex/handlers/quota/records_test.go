@@ -6,12 +6,12 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/require"
 )
 

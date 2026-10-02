@@ -7,10 +7,10 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 )
 
 // FromPoolConfig builds a live allocator for one source="oci" pool: API-key

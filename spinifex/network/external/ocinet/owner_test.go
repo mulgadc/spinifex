@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 )
 
 // allocateBare is an EIP as AWS makes one: an address with no interface behind

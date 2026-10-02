@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

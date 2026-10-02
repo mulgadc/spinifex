@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

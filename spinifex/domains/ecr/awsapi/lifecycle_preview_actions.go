@@ -3,6 +3,7 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
@@ -38,12 +39,7 @@ func LifecyclePreviewActionNames() []string {
 // IsLifecyclePreviewAction reports whether action is handled by the composed
 // lifecycle-preview capability.
 func IsLifecyclePreviewAction(action string) bool {
-	for _, name := range lifecyclePreviewActionNames {
-		if action == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(lifecyclePreviewActionNames, action)
 }
 
 // Execute handles a lifecycle-preview ECR JSON action using the caller account

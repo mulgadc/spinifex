@@ -6,8 +6,8 @@ package dns
 import (
 	"testing"
 
-	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

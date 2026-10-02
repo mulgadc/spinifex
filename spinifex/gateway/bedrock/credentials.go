@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

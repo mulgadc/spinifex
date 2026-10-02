@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )

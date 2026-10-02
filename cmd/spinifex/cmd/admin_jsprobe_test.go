@@ -12,8 +12,8 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/daemon"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/daemon"
 )
 
 func newCanaryBucket(t *testing.T) (jetstream.KeyValue, jetstream.JetStream) {

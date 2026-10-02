@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

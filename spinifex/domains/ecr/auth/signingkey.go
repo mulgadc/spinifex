@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

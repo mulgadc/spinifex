@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 )
 
 const (

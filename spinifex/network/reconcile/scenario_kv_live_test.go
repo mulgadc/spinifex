@@ -10,8 +10,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 
 	"github.com/nats-io/nats.go/jetstream"
 )

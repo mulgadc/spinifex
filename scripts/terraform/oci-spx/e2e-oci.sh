@@ -128,8 +128,26 @@ mark() {
 
 summary() {
     printf '## Spinifex on OCI — %s\n\n' "$REF"
-    printf 'Published release `%s`, region `%s`.\n\n' \
-        "${INSTALL_VERSION:-$CHANNEL channel}" "${OCI_REGION:-ap-sydney-1}"
+    # Said, not implied. A tree build and a published release answer different
+    # questions, and a table headed "published release" over a build of somebody's
+    # branch is the one error here that would mislead a reader who trusted it.
+    if [ "$SOURCE" = tree ]; then
+        printf 'Built from this ref, region `%s`.\n\n' "${OCI_REGION:-ap-sydney-1}"
+    else
+        printf 'Published release `%s`, region `%s`.\n\n' \
+            "${INSTALL_VERSION:-$CHANNEL channel}" "${OCI_REGION:-ap-sydney-1}"
+    fi
+
+    # In the header, not left to a SKIPPED row further down. A run with no allocator
+    # is not evidence about public addressing, and that is precisely the claim a
+    # reader of a green table would otherwise take from it.
+    if [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
+        printf '> **No external address pool.** Public-address allocation and every workbook needing a public address were skipped, so nothing here speaks to guest ingress.\n\n'
+    elif [ "${OCI_INSTANCE_PRINCIPAL:-1}" = 1 ]; then
+        printf 'Allocator authenticated as the instance principal.\n\n'
+    else
+        printf 'Allocator authenticated with an API key.\n\n'
+    fi
 
     local topology results workbooks gate status detail name secs
     for topology in $TOPOLOGIES; do

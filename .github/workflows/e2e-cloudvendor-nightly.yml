@@ -177,6 +177,10 @@ jobs:
           OCI_SOURCE: ${{ inputs.source }}
           OCI_CHANNEL: ${{ inputs.channel }}
           SPX_REF: ${{ github.ref_name }}
+          # The same two the run step passes. The header states what was and was not
+          # tested, so a summary rendered without them would claim more than the run.
+          OCI_INSTANCE_PRINCIPAL: ${{ inputs.auth == 'api_key' && '0' || '1' }}
+          OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
         run: ./e2e-oci.sh --summary-only
 
       # always(), and before the artifact upload: an OCI bare-metal host left

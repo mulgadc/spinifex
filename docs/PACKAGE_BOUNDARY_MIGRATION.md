@@ -222,6 +222,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `47c6b2fcf` | `spinifex/gateway/bodyscope` | `spinifex/ingress/aws/bodyscope` | Case-aware, ambiguity-safe extraction of AWS JSON request identifiers is ingress policy machinery, not generic gateway ownership. Focused parser tests and compilation of all six direct service-policy consumers passed. |
 | `d3cd6d520` | `spinifex/gateway/policy` | `spinifex/foundation/aws/policy` | AWS wire-service to IAM action-name mapping is protocol-neutral AWS vocabulary. Its focused suite and direct gateway/RDS/integration caller compilation passed. |
 | `be7f0b1d0` | `spinifex/utils/platform` | `spinifex/domains/ec2/platform` | EC2 `Platform` and `UsageOperation` derivation is EC2 compatibility vocabulary, not a generic helper. Focused package and metadata-default tests, plus direct daemon/image/instance caller compilation, passed. |
+| `e2ac3dbed` | `spinifex/utils/command` | `spinifex/runtime/host/command` | Bounded host-command execution is node-local runtime machinery. Focused command and host-DNS tests plus the direct SPX CLI caller compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 //go:generate ../../../scripts/gen-asset-manifest.sh
@@ -59,7 +59,7 @@ type Result struct {
 // keyed by installed path. An explicit list, not a directory scan, so adding
 // an asset here is a reviewed change and never accidental.
 var managedHelpers = []string{
-	utils.EndpointSysctlHelper,
+	hostcommand.EndpointSysctlHelper,
 	"/usr/local/lib/spinifex/ovs-socket-perms.sh",
 }
 
@@ -128,7 +128,7 @@ func checkSudoersGrant(root string) Result {
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.Contains(trimmed, "NOPASSWD") && strings.Contains(trimmed, utils.EndpointSysctlHelper) {
+		if strings.Contains(trimmed, "NOPASSWD") && strings.Contains(trimmed, hostcommand.EndpointSysctlHelper) {
 			return Result{Path: sudoersGrantFile, Kind: "sudoers-grant", Status: OK}
 		}
 	}
@@ -136,7 +136,7 @@ func checkSudoersGrant(root string) Result {
 		Path:   sudoersGrantFile,
 		Kind:   "sudoers-grant",
 		Status: Ungranted,
-		Detail: "no NOPASSWD grant line for " + utils.EndpointSysctlHelper,
+		Detail: "no NOPASSWD grant line for " + hostcommand.EndpointSysctlHelper,
 	}
 }
 

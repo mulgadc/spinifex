@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 func TestOVSPlumber_SetupTap_AddPortArgs(t *testing.T) {
@@ -46,7 +46,7 @@ func TestOVSPlumber_SetupTap_AddPortArgs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls [][]string
-			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+			t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 				call := append([]string{name}, args...)
 				calls = append(calls, call)
 				return exec.Command("/bin/true")
@@ -91,7 +91,7 @@ func TestOVSPlumber_SetupTap_MultiQueue(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var addArgs []string
-			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+			t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 				if name == "ip" && len(args) >= 2 && args[0] == "tuntap" && args[1] == "add" {
 					addArgs = args
 				}
@@ -130,7 +130,7 @@ func TestOVSPlumber_SetupTap_MTU(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var upArgs []string
-			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+			t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 				if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "set" && slices.Contains(args, "up") {
 					upArgs = args
 				}
@@ -161,7 +161,7 @@ func TestOVSPlumber_SetupTap_MTU(t *testing.T) {
 // "lo" is always present so os.Stat hits the pre-create cleanup branch.
 func TestOVSPlumber_SetupTap_PreExistingKernelTap(t *testing.T) {
 	failLinkDel := true
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" && failLinkDel {
 			failLinkDel = false
 			return exec.Command("/bin/false")
@@ -213,7 +213,7 @@ func TestOVSPlumber_SetupTap_ErrorBranches(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+			t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 				if tc.failMatch(name, args) {
 					return exec.Command("/bin/false")
 				}
@@ -237,7 +237,7 @@ func TestOVSPlumber_SetupTap_ErrorBranches(t *testing.T) {
 
 func TestOVSPlumber_CleanupTap_PresentKernelTap(t *testing.T) {
 	var sawLinkDel bool
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" {
 			sawLinkDel = true
 		}
@@ -258,7 +258,7 @@ func TestOVSPlumber_CleanupTap_PresentKernelTap(t *testing.T) {
 // does not care how the tap was created.
 func TestOVSPlumber_TapDeletionNeverUsesTuntapDel(t *testing.T) {
 	var calls [][]string
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, append([]string{name}, args...))
 		return exec.Command("/bin/true")
 	}))
@@ -279,7 +279,7 @@ func TestOVSPlumber_TapDeletionNeverUsesTuntapDel(t *testing.T) {
 }
 
 func TestOVSPlumber_CleanupTap_DelPortLoggedWarn(t *testing.T) {
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 		if name == "ovs-vsctl" {
 			return exec.Command("/bin/false")
 		}
@@ -293,7 +293,7 @@ func TestOVSPlumber_CleanupTap_DelPortLoggedWarn(t *testing.T) {
 }
 
 func TestOVSPlumber_CleanupTap_LinkDelFailure(t *testing.T) {
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 		if name == "ip" && len(args) >= 2 && args[0] == "link" && args[1] == "del" {
 			return exec.Command("/bin/false")
 		}

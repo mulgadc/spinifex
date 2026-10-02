@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
-// execRunner escalates only the commands that need it — see utils.NeedsPrivilege.
+// execRunner escalates only the commands that need it — see hostcommand.NeedsPrivilege.
 // The OVS/OVN socket clients reach their daemons over the group-owned control
 // sockets, and ip/iptables/arping run under the unit's ambient capabilities.
 type execRunner struct{}
@@ -26,7 +26,7 @@ func NewExecRunner() Runner { return execRunner{} }
 
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	var cmd *exec.Cmd
-	if utils.NeedsPrivilege(name, args...) {
+	if hostcommand.NeedsPrivilege(name, args...) {
 		cmd = exec.CommandContext(ctx, "sudo", append([]string{name}, args...)...)
 	} else {
 		cmd = exec.CommandContext(ctx, name, args...)

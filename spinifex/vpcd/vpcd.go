@@ -30,6 +30,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -78,11 +79,11 @@ var waitForFlowsHV = func(nbAddr string) error {
 	return nil
 }
 
-// sudoCommand is utils.SudoCommand, which escalates only what genuinely needs
+// sudoCommand is hostcommand.SudoCommand, which escalates only what genuinely needs
 // it. Every caller here is an OVS/OVN socket client, so none of them escalate;
 // a local copy that always sudoed silently bypassed that policy and broke the
 // flows-ready barrier once the grants were removed.
-var sudoCommand = utils.SudoCommand
+var sudoCommand = hostcommand.SudoCommand
 
 var serviceName = "vpcd"
 

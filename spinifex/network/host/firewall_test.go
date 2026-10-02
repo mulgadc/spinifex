@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,7 +71,7 @@ func newFirewallTestEnv(t *testing.T, encap string) *firewallTestEnv {
 		firewallModePath, firewallTableCheck = origMode, origTable
 	})
 
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
 		env.record(name, args...)
 		if len(args) > 0 && args[0] == "set-peers" {
 			return exec.Command("sh", "-c", env.setPeersScript())

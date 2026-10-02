@@ -7,14 +7,14 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // SetIPSecCertPaths writes the local IPsec peer cert pointers into the OVS
 // Open_vSwitch table. ovs-monitor-ipsec reads these to materialise strongSwan
 // configs for every Geneve tunnel ovn-controller programs.
 func SetIPSecCertPaths(certPath, keyPath, caCertPath string) error {
-	out, err := utils.SudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
+	out, err := hostcommand.SudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
 		fmt.Sprintf("other_config:certificate=%s", certPath),
 		fmt.Sprintf("other_config:private_key=%s", keyPath),
 		fmt.Sprintf("other_config:ca_cert=%s", caCertPath),
@@ -29,7 +29,7 @@ func SetIPSecCertPaths(certPath, keyPath, caCertPath string) error {
 // Open_vSwitch row. Caller must first verify ovs-monitor-ipsec is active —
 // flipping without a live daemon creates a silent-drop trap.
 func EnableIPSecEncapsulation() error {
-	out, err := utils.SudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
+	out, err := hostcommand.SudoCommand("ovs-vsctl", "set", "Open_vSwitch", ".",
 		"other_config:ipsec_encapsulation=true",
 	).CombinedOutput()
 	if err != nil {
@@ -72,7 +72,7 @@ func nbctlArgs(nbAddr string, leaderOnly bool, cmd ...string) []string {
 // Reads stdout alone. ovn-nbctl writes vlog lines to stderr on a successful run,
 // and folding those into the value parses a live "true" as false.
 func GetNBGlobalIPSec(nbAddr string) (bool, error) {
-	cmd := utils.SudoCommand("ovn-nbctl", nbctlArgs(nbAddr, false, "get", "NB_Global", ".", "ipsec")...)
+	cmd := hostcommand.SudoCommand("ovn-nbctl", nbctlArgs(nbAddr, false, "get", "NB_Global", ".", "ipsec")...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -102,7 +102,7 @@ func SetNBGlobalIPSec(nbAddr string, enable bool) error {
 	if enable {
 		val = "true"
 	}
-	out, err := utils.SudoCommand("ovn-nbctl", nbctlArgs(nbAddr, true, "set", "NB_Global", ".", "ipsec="+val)...).CombinedOutput()
+	out, err := hostcommand.SudoCommand("ovn-nbctl", nbctlArgs(nbAddr, true, "set", "NB_Global", ".", "ipsec="+val)...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("set NB_Global ipsec=%s: %s: %w", val, strings.TrimSpace(string(out)), err)
 	}

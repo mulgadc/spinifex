@@ -1,4 +1,4 @@
-// Package command runs bounded host commands for node-local runtime work.
+// Package command runs host commands and applies node-local privilege policy.
 package command
 
 import (

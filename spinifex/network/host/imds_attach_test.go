@@ -9,7 +9,7 @@ import (
 
 	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 func TestIMDSDatapathSpec(t *testing.T) {
@@ -60,7 +60,7 @@ func TestInstallIMDSDatapath(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
 	s.expect("ip", nil, nil)
-	s.expect(utils.EndpointSysctlHelper, nil, nil)
+	s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
 	s.expect("ovs-ofctl", nil, nil)
 
 	d := imdsDatapathSpec("eni-0abc1234", "02:00:00:00:01:05", "subnet-0fedcba9")
@@ -147,7 +147,7 @@ func TestInstallIMDSDatapath_ServingFailureWrapped(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
 	s.expect("ip", nil, nil)
-	s.expect(utils.EndpointSysctlHelper, nil, nil)
+	s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
 	s.expect("ovs-ofctl del-flows", nil, nil)
 	// Forward flows (priority=100) are connectivity and must succeed; the demux/egress
 	// flows (priority=200) are serving — fail those to land in the serving stage.

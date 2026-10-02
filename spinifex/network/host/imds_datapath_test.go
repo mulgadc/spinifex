@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 func testDatapath() IMDSTapDatapath {
@@ -116,7 +116,7 @@ func TestInstallTapDatapath(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
 	s.expect("ip", nil, nil)
-	s.expect(utils.EndpointSysctlHelper, nil, nil)
+	s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
 	s.expect("ovs-ofctl", nil, nil)
 
 	d := testDatapath()
@@ -132,8 +132,8 @@ func TestInstallTapDatapath(t *testing.T) {
 		"ip link set " + d.Endpoint + " up",
 		"ip addr replace " + imdsMetaAddr + "/32 dev " + d.Endpoint,
 		"ip addr replace " + imdsDNSAddr + "/32 dev " + d.Endpoint,
-		utils.EndpointSysctlHelper + " " + d.Endpoint + " rp_filter 0",
-		utils.EndpointSysctlHelper + " " + d.Endpoint + " accept_local 1",
+		hostcommand.EndpointSysctlHelper + " " + d.Endpoint + " rp_filter 0",
+		hostcommand.EndpointSysctlHelper + " " + d.Endpoint + " accept_local 1",
 		// Flows are not cleared here: installIMDSDatapath clears the shared cookie
 		// once up front so this install does not wipe the patch's forward flows.
 		// ARP responder, one per captured addr, for guests that resolve the
@@ -167,7 +167,7 @@ func TestInstallTapDatapathReattachIsIdempotent(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-vsctl", nil, nil)
 	s.expect("ip", nil, nil)
-	s.expect(utils.EndpointSysctlHelper, nil, nil)
+	s.expect(hostcommand.EndpointSysctlHelper, nil, nil)
 	s.expect("ovs-ofctl", nil, nil)
 
 	d := testDatapath()

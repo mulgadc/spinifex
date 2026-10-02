@@ -15,7 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // systemctlActiveTimeout bounds the wait for openvswitch-ipsec.service to become active.
@@ -199,7 +199,7 @@ func ensureIPSecServices(want bool) error {
 	if want {
 		state = "on"
 	}
-	out, err := utils.SudoCommand(ipsecStateHelper, state).CombinedOutput()
+	out, err := hostcommand.SudoCommand(ipsecStateHelper, state).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("set ipsec state %s: %w: %s", state, err, strings.TrimSpace(string(out)))
 	}
@@ -218,13 +218,13 @@ func ipsecServicesMatch(want bool) bool {
 // covers masked, static and a unit the distro does not ship at all. The helper
 // masks rather than disables, so the off state reads back as "masked".
 func unitIsEnabled(unit string) bool {
-	out, _ := utils.SudoCommand("systemctl", "is-enabled", unit).CombinedOutput()
+	out, _ := hostcommand.SudoCommand("systemctl", "is-enabled", unit).CombinedOutput()
 	state := strings.TrimSpace(string(out))
 	return state == "enabled" || state == "enabled-runtime" || state == "alias"
 }
 
 func unitIsActive(unit string) bool {
-	out, _ := utils.SudoCommand("systemctl", "is-active", unit).CombinedOutput()
+	out, _ := hostcommand.SudoCommand("systemctl", "is-active", unit).CombinedOutput()
 	return strings.TrimSpace(string(out)) == "active"
 }
 
@@ -394,7 +394,7 @@ func ensureOVSMonitorIPSecActive() error {
 	deadline := time.Now().Add(systemctlActiveTimeout)
 	var lastOut string
 	for time.Now().Before(deadline) {
-		out, _ := utils.SudoCommand("systemctl", "is-active", ovsIPSecUnit).CombinedOutput()
+		out, _ := hostcommand.SudoCommand("systemctl", "is-active", ovsIPSecUnit).CombinedOutput()
 		lastOut = strings.TrimSpace(string(out))
 		if lastOut == "active" {
 			return nil

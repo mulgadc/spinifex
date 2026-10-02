@@ -10,7 +10,7 @@ import (
 	"net"
 
 	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // IMDS / VPC-DNS service addresses captured at every tap. .254 is IMDS, served
@@ -254,7 +254,7 @@ func ensureIMDSEndpoint(ctx context.Context, r Runner, d IMDSTapDatapath) error 
 // wildcard the old `sysctl -qw net.ipv4.conf.*` rule relied on.
 func setEndpointSysctl(ctx context.Context, r Runner, endpoint, suffix, val string) error {
 	key := "net.ipv4.conf." + endpoint + "." + suffix
-	if _, err := r.Run(ctx, utils.EndpointSysctlHelper, endpoint, suffix, val); err != nil {
+	if _, err := r.Run(ctx, hostcommand.EndpointSysctlHelper, endpoint, suffix, val); err != nil {
 		return fmt.Errorf("set %s=%s: %w", key, val, err)
 	}
 	return nil

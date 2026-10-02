@@ -17,7 +17,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // firewallApplyHelper is the fixed-verb root helper installed by setup.sh. The
@@ -168,7 +168,7 @@ func ReconcileFirewall(configPath string, clusterConfig *config.ClusterConfig) e
 		return nil
 	}
 
-	cmd := utils.SudoCommand(firewallApplyHelper, "set-peers")
+	cmd := hostcommand.SudoCommand(firewallApplyHelper, "set-peers")
 	cmd.Stdin = strings.NewReader(strings.Join(peers, ",") + "\n" + strings.Join(encap, ",") + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("set firewall peers: %w: %s", err, strings.TrimSpace(string(out)))
@@ -232,7 +232,7 @@ func disableFirewall() error {
 	if _, statErr := os.Stat(firewallPeersPath); errors.Is(statErr, os.ErrNotExist) {
 		return nil
 	}
-	out, err := utils.SudoCommand(firewallApplyHelper, "disable").CombinedOutput()
+	out, err := hostcommand.SudoCommand(firewallApplyHelper, "disable").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("disable firewall: %w: %s", err, strings.TrimSpace(string(out)))
 	}

@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // GatewayClaimProber checks the SB chassis claim for OVN gateway router ports.
@@ -82,7 +82,7 @@ func (p *GatewayClaimProber) GatewayPortElsewhere(_ context.Context, crPortName 
 // unbound. Output() not CombinedOutput(): sudo PAM noise on stderr would be
 // misread as a non-empty chassis value.
 func (p *GatewayClaimProber) boundChassis(crPortName string) (string, error) {
-	out, err := utils.SudoCommand("ovn-sbctl", p.sbArgs("--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+crPortName)...).Output()
+	out, err := hostcommand.SudoCommand("ovn-sbctl", p.sbArgs("--bare", "--columns=chassis", "find", "Port_Binding", "logical_port="+crPortName)...).Output()
 	if err != nil {
 		return "", fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", crPortName, err)
 	}
@@ -92,7 +92,7 @@ func (p *GatewayClaimProber) boundChassis(crPortName string) (string, error) {
 // localChassis returns this host's OVN chassis name, which ovn-controller takes
 // from the OVSDB external_ids:system-id it registered with.
 func (p *GatewayClaimProber) localChassis() (string, error) {
-	out, err := utils.SudoCommand("ovs-vsctl", "--if-exists", "get", "Open_vSwitch", ".", "external_ids:system-id").Output()
+	out, err := hostcommand.SudoCommand("ovs-vsctl", "--if-exists", "get", "Open_vSwitch", ".", "external_ids:system-id").Output()
 	if err != nil {
 		return "", fmt.Errorf("ovs-vsctl get system-id: %w", err)
 	}
@@ -101,7 +101,7 @@ func (p *GatewayClaimProber) localChassis() (string, error) {
 
 // chassisName resolves an SB Chassis row UUID to its name.
 func (p *GatewayClaimProber) chassisName(uuid string) (string, error) {
-	out, err := utils.SudoCommand("ovn-sbctl", p.sbArgs("--bare", "--columns=name", "list", "Chassis", uuid)...).Output()
+	out, err := hostcommand.SudoCommand("ovn-sbctl", p.sbArgs("--bare", "--columns=name", "list", "Chassis", uuid)...).Output()
 	if err != nil {
 		return "", fmt.Errorf("ovn-sbctl list Chassis %s: %w", uuid, err)
 	}
@@ -129,7 +129,7 @@ func (p *GatewayClaimProber) GuestPortUp(_ context.Context, lspName string) (boo
 		args = append(args, "--db="+p.sbAddr)
 	}
 	args = append(args, "--bare", "--columns=up", "find", "Port_Binding", "logical_port="+lspName)
-	out, err := utils.SudoCommand("ovn-sbctl", args...).Output()
+	out, err := hostcommand.SudoCommand("ovn-sbctl", args...).Output()
 	if err != nil {
 		return false, fmt.Errorf("ovn-sbctl find Port_Binding %s: %w", lspName, err)
 	}
@@ -139,7 +139,7 @@ func (p *GatewayClaimProber) GuestPortUp(_ context.Context, lspName string) (boo
 // NudgeRecompute asks the local ovn-controller to re-evaluate logical flows via
 // the incremental engine, forcing a re-claim of unbound Port_Bindings.
 func (p *GatewayClaimProber) NudgeRecompute(_ context.Context) error {
-	out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "inc-engine/recompute").CombinedOutput()
+	out, err := hostcommand.SudoCommand("ovn-appctl", "-t", "ovn-controller", "inc-engine/recompute").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ovn-appctl recompute: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -153,7 +153,7 @@ func (p *GatewayClaimProber) NudgeRecompute(_ context.Context) error {
 // realising new Port_Bindings. Output() not CombinedOutput(): sudo PAM noise on
 // stderr must not be misread as the status token.
 func (p *GatewayClaimProber) SBConnectionState(_ context.Context) (string, error) {
-	out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "connection-status").Output()
+	out, err := hostcommand.SudoCommand("ovn-appctl", "-t", "ovn-controller", "connection-status").Output()
 	if err != nil {
 		return "", fmt.Errorf("ovn-appctl connection-status: %w", err)
 	}
@@ -165,7 +165,7 @@ func (p *GatewayClaimProber) SBConnectionState(_ context.Context) (string, error
 // process restart or a flow wipe. Targeted equivalent of the manual
 // `systemctl restart ovn-controller` recovery.
 func (p *GatewayClaimProber) ResetSBClusterState(_ context.Context) error {
-	out, err := utils.SudoCommand("ovn-appctl", "-t", "ovn-controller", "sb-cluster-state-reset").CombinedOutput()
+	out, err := hostcommand.SudoCommand("ovn-appctl", "-t", "ovn-controller", "sb-cluster-state-reset").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ovn-appctl sb-cluster-state-reset: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -186,7 +186,7 @@ func (p *GatewayClaimProber) FlushMACBinding(_ context.Context, ip string) error
 		findArgs = append(findArgs, "--db="+p.sbAddr)
 	}
 	findArgs = append(findArgs, "--bare", "--columns=_uuid", "find", "MAC_Binding", "ip="+ip)
-	out, err := utils.SudoCommand("ovn-sbctl", findArgs...).Output()
+	out, err := hostcommand.SudoCommand("ovn-sbctl", findArgs...).Output()
 	if err != nil {
 		return fmt.Errorf("ovn-sbctl find MAC_Binding ip=%s: %w", ip, err)
 	}
@@ -196,7 +196,7 @@ func (p *GatewayClaimProber) FlushMACBinding(_ context.Context, ip string) error
 			delArgs = append(delArgs, "--db="+p.sbAddr)
 		}
 		delArgs = append(delArgs, "--if-exists", "destroy", "MAC_Binding", uuid)
-		if dout, derr := utils.SudoCommand("ovn-sbctl", delArgs...).CombinedOutput(); derr != nil {
+		if dout, derr := hostcommand.SudoCommand("ovn-sbctl", delArgs...).CombinedOutput(); derr != nil {
 			return fmt.Errorf("ovn-sbctl destroy MAC_Binding %s: %s: %w", uuid, strings.TrimSpace(string(dout)), derr)
 		}
 	}
@@ -215,7 +215,7 @@ func (p *GatewayClaimProber) RepairDatapath(ctx context.Context) error {
 		if !linkExists(dev) {
 			continue
 		}
-		if out, err := utils.SudoCommand("ip", "link", "set", dev, "up").CombinedOutput(); err != nil {
+		if out, err := hostcommand.SudoCommand("ip", "link", "set", dev, "up").CombinedOutput(); err != nil {
 			slog.Warn("gateway claim: veth uplink admin-up failed", "dev", dev, "out", strings.TrimSpace(string(out)), "err", err)
 		}
 	}
@@ -268,7 +268,7 @@ func (p *GatewayClaimProber) EIPReachable(ctx context.Context, eip string) (bool
 	if err != nil {
 		return false, err
 	}
-	_ = utils.SudoCommand("ip", "neigh", "del", eip, "dev", dev).Run()
+	_ = hostcommand.SudoCommand("ip", "neigh", "del", eip, "dev", dev).Run()
 	_ = exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", eip).Run()
 	out, err := exec.CommandContext(ctx, "ip", "neigh", "show", eip, "dev", dev).Output()
 	if err != nil {

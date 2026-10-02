@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 const (
@@ -111,7 +111,7 @@ func TestHealthStatus_ProbesAreSocketClients(t *testing.T) {
 
 	for _, c := range s.calls {
 		tool := strings.Fields(c)[0]
-		if utils.NeedsPrivilege(tool) {
+		if hostcommand.NeedsPrivilege(tool) {
 			t.Errorf("probe tool %q is classified as needing privilege; health must only use socket clients", tool)
 		}
 	}

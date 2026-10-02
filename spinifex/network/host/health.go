@@ -21,7 +21,7 @@ func HealthStatus() OVNHealth {
 
 // healthStatus is HealthStatus over an injected Runner. Every probe here is
 // read-only and runs unprivileged: ovs-vsctl and ovn-appctl are socket clients
-// (utils.NeedsPrivilege), and db.sock plus the ovn-controller ctl socket are
+// (hostcommand.NeedsPrivilege), and db.sock plus the ovn-controller ctl socket are
 // group-owned by `spinifex`. Escalating instead would mean granting the daemon a
 // root-equivalent ovn-appctl rule to read a status.
 func healthStatus(ctx context.Context, r Runner) OVNHealth {

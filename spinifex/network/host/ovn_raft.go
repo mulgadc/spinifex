@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // OVN DB ctl targets and schemas for cluster/status probes. The short "-t"
@@ -31,7 +31,7 @@ const ovnAppctlTimeout = 500 * time.Millisecond
 func OVNDBRole(target, schema string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), ovnAppctlTimeout)
 	defer cancel()
-	out, err := utils.SudoCommandContext(ctx, "ovn-appctl", "-t", target, "cluster/status", schema).Output()
+	out, err := hostcommand.SudoCommandContext(ctx, "ovn-appctl", "-t", target, "cluster/status", schema).Output()
 	if err != nil {
 		slog.Debug("Failed to query OVN cluster/status", "schema", schema, "err", err)
 		return ""

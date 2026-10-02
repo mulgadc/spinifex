@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // OVSPlumber implements vm.NetworkPlumber using system commands
@@ -20,7 +20,7 @@ type OVSPlumber struct{}
 
 var _ vm.NetworkPlumber = (*OVSPlumber)(nil)
 
-// NewOVSPlumber returns the default plumber wired to utils.SudoCommand.
+// NewOVSPlumber returns the default plumber wired to hostcommand.SudoCommand.
 func NewOVSPlumber() *OVSPlumber { return &OVSPlumber{} }
 
 // deleteTapLink removes a tap by name. `ip link del` rather than `ip tuntap
@@ -28,14 +28,14 @@ func NewOVSPlumber() *OVSPlumber { return &OVSPlumber{} }
 // a multi_queue tap unless the caller repeats the exact creation flags, which
 // a delete-by-name path does not know. RTM_DELLINK is flag-agnostic.
 func deleteTapLink(name string) *exec.Cmd {
-	return utils.SudoCommand("ip", "link", "del", "dev", name)
+	return hostcommand.SudoCommand("ip", "link", "del", "dev", name)
 }
 
 // SetupTap creates the kernel tap, brings it up, and attaches it to spec.Bridge.
 // Pre-create del-port is unconditional: OVS conf.db survives reboot but kernel
 // taps don't, and --may-exist would silently keep stale external_ids.
 func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
-	if err := utils.SudoCommand("ovs-vsctl", "--if-exists", "del-port", spec.Bridge, spec.Name).Run(); err != nil {
+	if err := hostcommand.SudoCommand("ovs-vsctl", "--if-exists", "del-port", spec.Bridge, spec.Name).Run(); err != nil {
 		slog.Warn("Pre-create del-port failed (continuing)", "tap", spec.Name, "bridge", spec.Bridge, "err", err)
 	}
 	if _, err := os.Stat("/sys/class/net/" + spec.Name); err == nil {
@@ -57,7 +57,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 	if uid := os.Geteuid(); uid != 0 {
 		addArgs = append(addArgs, "user", strconv.Itoa(uid), "group", strconv.Itoa(os.Getegid()))
 	}
-	if out, err := utils.SudoCommand("ip", addArgs...).CombinedOutput(); err != nil {
+	if out, err := hostcommand.SudoCommand("ip", addArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("create tap %s: %s: %w", spec.Name, strings.TrimSpace(string(out)), err)
 	}
 
@@ -68,7 +68,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 	if spec.MTU > 0 {
 		upArgs = append(upArgs, "mtu", strconv.Itoa(spec.MTU))
 	}
-	if out, err := utils.SudoCommand("ip", upArgs...).CombinedOutput(); err != nil {
+	if out, err := hostcommand.SudoCommand("ip", upArgs...).CombinedOutput(); err != nil {
 		if cleanErr := deleteTapLink(spec.Name).Run(); cleanErr != nil {
 			slog.Warn("Failed to clean up tap after bring-up failure", "tap", spec.Name, "err", cleanErr)
 		}
@@ -84,7 +84,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 			addPortArgs = append(addPortArgs, fmt.Sprintf("external_ids:%s=%s", k, spec.ExternalIDs[k]))
 		}
 	}
-	if out, err := utils.SudoCommand("ovs-vsctl", addPortArgs...).CombinedOutput(); err != nil {
+	if out, err := hostcommand.SudoCommand("ovs-vsctl", addPortArgs...).CombinedOutput(); err != nil {
 		if cleanErr := deleteTapLink(spec.Name).Run(); cleanErr != nil {
 			slog.Warn("Failed to clean up tap after OVS failure", "tap", spec.Name, "err", cleanErr)
 		}
@@ -99,7 +99,7 @@ func (p *OVSPlumber) SetupTap(spec vm.TapSpec) error {
 // Idempotent: callers may invoke for an instance that never reached SetupTap
 // (e.g. terminate that races mid-launch).
 func (p *OVSPlumber) CleanupTap(name string) error {
-	if out, err := utils.SudoCommand("ovs-vsctl", "--if-exists", "del-port", name).CombinedOutput(); err != nil {
+	if out, err := hostcommand.SudoCommand("ovs-vsctl", "--if-exists", "del-port", name).CombinedOutput(); err != nil {
 		slog.Warn("Failed to remove tap from OVS", "tap", name, "err", err, "out", strings.TrimSpace(string(out)))
 	}
 

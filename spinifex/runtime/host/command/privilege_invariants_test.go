@@ -1,4 +1,4 @@
-package utils_test
+package command_test
 
 import (
 	"os"
@@ -10,11 +10,11 @@ import (
 )
 
 // policyOwners are the only files allowed to build a sudo invocation. Everything
-// else must route through utils.SudoCommand / host.NewExecRunner so the
+// else must route through hostcommand.SudoCommand / host.NewExecRunner so the
 // escalation policy in NeedsPrivilege applies.
 var policyOwners = map[string]bool{
-	filepath.Join("spinifex", "utils", "sudo.go"):          true,
-	filepath.Join("spinifex", "network", "host", "run.go"): true,
+	filepath.Join("spinifex", "runtime", "host", "command", "privilege.go"): true,
+	filepath.Join("spinifex", "network", "host", "run.go"):                  true,
 }
 
 // repoRoot walks up from this test file to the directory holding go.mod.
@@ -86,8 +86,8 @@ func TestRG10_SudoOnlyThroughThePolicy(t *testing.T) {
 	}
 
 	if len(offenders) > 0 {
-		t.Fatalf("RG-10: these build sudo invocations directly, bypassing utils.NeedsPrivilege:\n  %s\n"+
-			"Use utils.SudoCommand or host.NewExecRunner so the OVS/OVN socket clients stay unescalated.",
+		t.Fatalf("RG-10: these build sudo invocations directly, bypassing hostcommand.NeedsPrivilege:\n  %s\n"+
+			"Use hostcommand.SudoCommand or host.NewExecRunner so the OVS/OVN socket clients stay unescalated.",
 			strings.Join(offenders, "\n  "))
 	}
 }

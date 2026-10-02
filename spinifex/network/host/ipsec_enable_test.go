@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -179,7 +179,7 @@ func (r *recordingSudo) ovsSets() []string {
 
 func TestEnableOVNIPSec(t *testing.T) {
 	recorder := &recordingSudo{nbUnreachable: true}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configDir := ipsecTestConfigDir(t)
 	configPath := filepath.Join(configDir, "spinifex.toml")
@@ -199,7 +199,7 @@ func TestEnableOVNIPSec(t *testing.T) {
 
 func TestEnableOVNIPSec_Management(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -213,7 +213,7 @@ func TestEnableOVNIPSec_Management(t *testing.T) {
 // others have not finished, and every guest crossing chassis black-holes.
 func TestEnableOVNIPSec_HoldsFlagUntilEveryChassisIsReady(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 	barrier := node2Pending()
@@ -231,7 +231,7 @@ func TestEnableOVNIPSec_HoldsFlagUntilEveryChassisIsReady(t *testing.T) {
 // floor; plaintext is the state the cluster had before IPsec was asked for.
 func TestEnableOVNIPSec_RetractsFlagWhenAChassisRegresses(t *testing.T) {
 	recorder := &recordingSudo{nbIPSec: "true"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -246,7 +246,7 @@ func TestEnableOVNIPSec_RetractsFlagWhenAChassisRegresses(t *testing.T) {
 // must never downgrade a working encrypted mesh to plaintext.
 func TestEnableOVNIPSec_BarrierErrorLeavesTheFlagAlone(t *testing.T) {
 	recorder := &recordingSudo{nbIPSec: "true"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -260,7 +260,7 @@ func TestEnableOVNIPSec_BarrierErrorLeavesTheFlagAlone(t *testing.T) {
 // Already true and everyone ready: no write, so a steady-state pass is free.
 func TestEnableOVNIPSec_AlreadyAssertedIsANoOp(t *testing.T) {
 	recorder := &recordingSudo{nbIPSec: "true"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -272,7 +272,7 @@ func TestEnableOVNIPSec_AlreadyAssertedIsANoOp(t *testing.T) {
 // dropping the record would make it pending forever to everyone else.
 func TestEnableOVNIPSec_PublishFailureFailsThePass(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -284,8 +284,8 @@ func TestEnableOVNIPSec_PublishFailureFailsThePass(t *testing.T) {
 }
 
 func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
-		t.Fatalf("utils.SudoCommand must not run on single-node short-circuit; got %s %v", name, args)
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+		t.Fatalf("hostcommand.SudoCommand must not run on single-node short-circuit; got %s %v", name, args)
 		return exec.Command("true")
 	}))
 
@@ -302,7 +302,7 @@ func TestEnableOVNIPSec_SingleNodeSkip(t *testing.T) {
 
 func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 	recorder := &recordingSudo{activeOutput: "inactive\n"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	origTimeout := systemctlActiveTimeout
 	systemctlActiveTimeout = 100 * time.Millisecond
@@ -330,7 +330,7 @@ func TestEnableOVNIPSec_MonitorIPSecInactive(t *testing.T) {
 
 func TestEnableOVNIPSec_MissingCert(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "spinifex.toml")
@@ -353,7 +353,7 @@ func TestEnableOVNIPSec_NoConfigPath(t *testing.T) {
 
 func TestReconcileOVNIPSec_DisabledStopsCharon(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 
@@ -368,7 +368,7 @@ func TestReconcileOVNIPSec_DisabledStopsCharon(t *testing.T) {
 // directly: it would fail at the polkit prompt and leave charon listening.
 func TestReconcileOVNIPSec_NeverCallsSystemctlDirectly(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 
@@ -385,7 +385,7 @@ func TestReconcileOVNIPSec_NeverCallsSystemctlDirectly(t *testing.T) {
 // listening even though ipsec_enabled defaults to true.
 func TestReconcileOVNIPSec_SingleNodeStopsCharon(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	cfg := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {}}}
 	cfg.Network.IPSecEnabled = true
@@ -406,7 +406,7 @@ func TestReconcileOVNIPSec_EnabledTurnsTheServicesOn(t *testing.T) {
 			strongswanStarterUnit: "inactive\n",
 		},
 	}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	recorder.nbUnreachable = true
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
@@ -430,7 +430,7 @@ func TestReconcileOVNIPSec_AlreadyInStateIsNoOp(t *testing.T) {
 		enabledOutput: map[string]string{strongswanStarterUnit: "disabled\n", ovsIPSecUnit: "disabled\n"},
 		activePerUnit: map[string]string{strongswanStarterUnit: "inactive\n", ovsIPSecUnit: "inactive\n"},
 	}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 	assert.Empty(t, recorder.helperRuns())
@@ -447,7 +447,7 @@ func TestReconcileOVNIPSec_UnknownUnitIsNotAnError(t *testing.T) {
 			ovsIPSecUnit:          "inactive\n",
 		},
 	}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml", multiNodeIPSecConfig(false), allReady()))
 	assert.Empty(t, recorder.helperRuns())
@@ -456,8 +456,8 @@ func TestReconcileOVNIPSec_UnknownUnitIsNotAnError(t *testing.T) {
 // A nil cluster config means the intent is unknown; tearing down working
 // tunnels on a guess would be worse than leaving them.
 func TestReconcileOVNIPSec_NilConfigLeavesUnitsAlone(t *testing.T) {
-	t.Cleanup(utils.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
-		t.Fatalf("utils.SudoCommand must not run with a nil cluster config; got %s %v", name, args)
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(name string, args ...string) *exec.Cmd {
+		t.Fatalf("hostcommand.SudoCommand must not run with a nil cluster config; got %s %v", name, args)
 		return exec.Command("true")
 	}))
 
@@ -468,7 +468,7 @@ func TestReconcileOVNIPSec_NilConfigLeavesUnitsAlone(t *testing.T) {
 // while a peer already required encryption; the pass has to be retried.
 func TestMaintainIPSec_RetriesAFailedPass(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	origRetry, origInterval := ipsecRetryDelay, ipsecReconcileInterval
 	ipsecRetryDelay, ipsecReconcileInterval = time.Millisecond, time.Millisecond
@@ -526,7 +526,7 @@ func (f *flakyBarrier) succeeded() bool {
 // strongSwan connection in the cluster.
 func TestEnableOVNIPSec_OnlyTheElectedWriterTouchesNBGlobal(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -558,7 +558,7 @@ func TestNBGlobalWriter_SkipsNodesWithoutANBDB(t *testing.T) {
 // freshness window, which is the black hole again with a slower fuse.
 func TestEnableOVNIPSec_PublishesUnreadyWhenTheLocalHalfFails(t *testing.T) {
 	recorder := &recordingSudo{activeOutput: "inactive\n"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	origTimeout := systemctlActiveTimeout
 	systemctlActiveTimeout = 100 * time.Millisecond
@@ -583,7 +583,7 @@ func TestEnableOVNIPSec_PublishesUnreadyWhenTheLocalHalfFails(t *testing.T) {
 // the other direction.
 func TestReconcileOVNIPSec_DisabledRetractsNBGlobal(t *testing.T) {
 	recorder := &recordingSudo{nbIPSec: "true"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	barrier := allReady()
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml",
@@ -598,7 +598,7 @@ func TestReconcileOVNIPSec_DisabledRetractsNBGlobal(t *testing.T) {
 // Already released: the off path must not rewrite a flag that is already false.
 func TestReconcileOVNIPSec_DisabledIsANoOpWhenAlreadyReleased(t *testing.T) {
 	recorder := &recordingSudo{}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	require.NoError(t, ReconcileOVNIPSec(t.Context(), "/etc/spinifex/spinifex.toml",
 		multiNodeIPSecConfig(false), allReady()))
@@ -611,7 +611,7 @@ func TestReconcileOVNIPSec_DisabledIsANoOpWhenAlreadyReleased(t *testing.T) {
 // the flag could go blind and never retract.
 func TestEnableOVNIPSec_NBReadFailureFailsThePass(t *testing.T) {
 	recorder := &recordingSudo{nbError: "ovn-nbctl: unix:/var/run/ovn/ovnnb_db.sock: permission denied"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 
@@ -624,7 +624,7 @@ func TestEnableOVNIPSec_NBReadFailureFailsThePass(t *testing.T) {
 // No NB DB answering is skipped quietly, not a fault, and the node stands down.
 func TestEnableOVNIPSec_NoLocalNBDBIsNotAnError(t *testing.T) {
 	recorder := &recordingSudo{nbUnreachable: true}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	configPath := filepath.Join(ipsecTestConfigDir(t), "spinifex.toml")
 	barrier := allReady()
@@ -641,7 +641,7 @@ func TestEnableOVNIPSec_NoLocalNBDBIsNotAnError(t *testing.T) {
 // the value parses a live "true" as false, which sends the reconcile into the
 // "holding encryption off" branch while the flag is in fact still asserted.
 func TestGetNBGlobalIPSec_IgnoresStderrChatter(t *testing.T) {
-	t.Cleanup(utils.SetSudoCommandForTest(func(string, ...string) *exec.Cmd {
+	t.Cleanup(hostcommand.SetSudoCommandForTest(func(string, ...string) *exec.Cmd {
 		return exec.Command("sh", "-c", `echo "ovsdb-idl|WARN|reconnecting" >&2; echo true`)
 	}))
 
@@ -680,7 +680,7 @@ func TestNBctlArgs_ReadsAcceptFollowersWritesStayLeaderOnly(t *testing.T) {
 func TestReconcileOVNIPSec_UsesTheConfiguredNBRemotes(t *testing.T) {
 	const nb = "tcp:10.0.0.1:6641,tcp:10.0.0.2:6641"
 	recorder := &recordingSudo{nbIPSec: "true"}
-	t.Cleanup(utils.SetSudoCommandForTest(recorder.stub))
+	t.Cleanup(hostcommand.SetSudoCommandForTest(recorder.stub))
 
 	cfg := multiNodeIPSecConfig(false)
 	cfg.Nodes["node1"] = config.Config{VPCD: config.VPCDConfig{OVNNBAddr: nb}}

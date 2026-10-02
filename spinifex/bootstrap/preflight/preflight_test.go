@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // writeHelper writes the given content at the managed path under root,
@@ -23,7 +23,7 @@ func writeHelper(t *testing.T, root, path string, content []byte) {
 }
 
 func TestCheckHostAt_Helper(t *testing.T) {
-	path := utils.EndpointSysctlHelper
+	path := hostcommand.EndpointSysctlHelper
 	want, ok := canonicalHashes[path]
 	if !ok {
 		t.Fatalf("no canonical hash for %s — is manifest_gen.go generated?", path)
@@ -87,7 +87,7 @@ func TestCheckHostAt_SudoersGrant(t *testing.T) {
 		root := t.TempDir()
 		writeHelper(t, root, sudoersGrantFile, []byte(
 			"spinifex-daemon ALL=(root) NOPASSWD: /sbin/ip, /usr/sbin/ip\n"+
-				"spinifex-daemon ALL=(root) NOPASSWD: "+utils.EndpointSysctlHelper+"\n"))
+				"spinifex-daemon ALL=(root) NOPASSWD: "+hostcommand.EndpointSysctlHelper+"\n"))
 		r := findResult(t, CheckHostAt(root), sudoersGrantFile)
 		if r.Status != OK {
 			t.Errorf("status = %v, want OK (detail: %s)", r.Status, r.Detail)
@@ -134,7 +134,7 @@ func canonicalHelperBody(t *testing.T, path string) []byte {
 
 	var file, anchor string
 	switch path {
-	case utils.EndpointSysctlHelper:
+	case hostcommand.EndpointSysctlHelper:
 		file = filepath.Join(root, "scripts", "setup.sh")
 		anchor = "install_endpoint_sysctl_helper()"
 	case "/usr/local/lib/spinifex/ovs-socket-perms.sh":

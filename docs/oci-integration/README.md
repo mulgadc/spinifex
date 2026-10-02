@@ -425,6 +425,8 @@ Credentials come from the `[spinifex]` profile that `spx admin init` writes into
 
 Measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` instances in `ap-sydney-1`, running `spinifex v1.20.0-113`. Each workbook is a full `apply`, a functional assertion against the thing it built, and a `destroy`.
 
+**This is a snapshot, and the current answer is the nightly.** `e2e-cloudvendor-nightly` runs the same workbooks on a single VM, on three VMs and on bare metal, and publishes a table per topology on its own run page. Read that for the build you are installing rather than taking this table as current.
+
 | Workbook                 | What it exercises                                                                               | Result            |
 | ------------------------ | ----------------------------------------------------------------------------------------------- | ----------------- |
 | `nginx-webserver`        | VPC, subnet, IGW, security group, key pair, EC2 instance, public IP; HTTP 200 from the internet | **Passed** (86s)  |

@@ -225,4 +225,9 @@ jobs:
             ${{ runner.workspace }}/oci-state/.validate-*/*.log
             ${{ runner.workspace }}/oci-state/.validate-*/*.txt
             ${{ runner.workspace }}/oci-state/.validate-*/*.tsv
+            # The hook is the operator's own executable and the one thing known
+            # about it is that it handles a private key. Whatever it printed is not
+            # ours to publish in a downloadable artifact, so it is excluded rather
+            # than trusted to have been quiet.
+            !${{ runner.workspace }}/oci-state/.validate-*/credential-hook.log
           retention-days: 14

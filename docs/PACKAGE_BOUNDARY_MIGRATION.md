@@ -223,6 +223,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `d3cd6d520` | `spinifex/gateway/policy` | `spinifex/foundation/aws/policy` | AWS wire-service to IAM action-name mapping is protocol-neutral AWS vocabulary. Its focused suite and direct gateway/RDS/integration caller compilation passed. |
 | `be7f0b1d0` | `spinifex/utils/platform` | `spinifex/domains/ec2/platform` | EC2 `Platform` and `UsageOperation` derivation is EC2 compatibility vocabulary, not a generic helper. Focused package and metadata-default tests, plus direct daemon/image/instance caller compilation, passed. |
 | `e2ac3dbed` | `spinifex/utils/command` | `spinifex/runtime/host/command` | Bounded host-command execution is node-local runtime machinery. Focused command and host-DNS tests plus the direct SPX CLI caller compilation passed. |
+| `3360382f5` | `spinifex/utils/idempotency` | `spinifex/foundation/lifecycle/idempotency` | Retry-token HTTP/NATS vocabulary now lives beside the idempotency store. Focused propagation and EIP retry behavior tests, affected package compilation and tagged integration compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
@@ -314,7 +315,7 @@ func TestDefaultHTTPTokensForPlatform(t *testing.T) {
 		in   *string
 		want string
 	}{
-		"windows":     {aws.String(utils.PlatformWindows), ec2.HttpTokensStateOptional},
+		"windows":     {aws.String(ec2platform.PlatformWindows), ec2.HttpTokensStateOptional},
 		"nil (linux)": {nil, ec2.HttpTokensStateRequired},
 		"empty":       {aws.String(""), ec2.HttpTokensStateRequired},
 		"unexpected":  {aws.String("Windows"), ec2.HttpTokensStateRequired},
@@ -330,7 +331,7 @@ func TestDefaultHTTPTokensForPlatform(t *testing.T) {
 // said nothing about, and never overrides a value the caller named — not even
 // a Windows launch that deliberately asks for the strict posture.
 func TestApplyPlatformTokenDefault(t *testing.T) {
-	windows := aws.String(utils.PlatformWindows)
+	windows := aws.String(ec2platform.PlatformWindows)
 
 	cases := map[string]struct {
 		platform  *string
@@ -355,7 +356,7 @@ func TestApplyPlatformTokenDefault(t *testing.T) {
 // than panicking; stamping one is applyMetadataOptions' job.
 func TestApplyPlatformTokenDefaultNilBlock(t *testing.T) {
 	instance := &ec2.Instance{}
-	applyPlatformTokenDefault(instance, "", aws.String(utils.PlatformWindows))
+	applyPlatformTokenDefault(instance, "", aws.String(ec2platform.PlatformWindows))
 	assert.Nil(t, instance.MetadataOptions)
 }
 

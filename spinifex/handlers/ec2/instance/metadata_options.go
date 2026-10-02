@@ -5,8 +5,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // defaultMetadataHopLimit matches the AWS default applied when none is requested.
@@ -41,7 +41,7 @@ func buildMetadataOptions(hopLimit *int64, httpTokens string) *ec2.InstanceMetad
 // token support in any release, so a Windows image has to permit IMDSv1 or its
 // agent never reads metadata at all. Every other platform keeps "required".
 func defaultHTTPTokensForPlatform(platform *string) string {
-	if aws.StringValue(platform) == utils.PlatformWindows {
+	if aws.StringValue(platform) == ec2platform.PlatformWindows {
 		return ec2.HttpTokensStateOptional
 	}
 	return ec2.HttpTokensStateRequired

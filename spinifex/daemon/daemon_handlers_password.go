@@ -9,9 +9,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/crypto/ssh"
 )
@@ -44,7 +45,7 @@ func extractLastPasswordData(data []byte) string {
 // that was never stamped, is not evidence of the wrong key type, and turning a
 // lookup blip into a terminal error would be worse than the empty string.
 func (d *Daemon) launchKeyCannotEncrypt(instance *vm.VM) bool {
-	if instance.Instance == nil || aws.StringValue(instance.Instance.Platform) != utils.PlatformWindows {
+	if instance.Instance == nil || aws.StringValue(instance.Instance.Platform) != ec2platform.PlatformWindows {
 		return false
 	}
 	keyName := aws.StringValue(instance.Instance.KeyName)

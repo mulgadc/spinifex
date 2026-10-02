@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -761,7 +762,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 
 		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
 		// even if the image is later deregistered.
-		ec2Instance.Platform = utils.PlatformFromDetails(amiMeta.PlatformDetails)
+		ec2Instance.Platform = ec2platform.PlatformFromDetails(amiMeta.PlatformDetails)
 
 		// RunInstance has no image in hand, so the platform-derived IMDS default
 		// lands here, where the AMI is resolved.

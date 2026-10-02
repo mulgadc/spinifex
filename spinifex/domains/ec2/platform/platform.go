@@ -1,4 +1,5 @@
-package utils
+// Package platform defines EC2-compatible platform and billing metadata.
+package platform
 
 import "strings"
 

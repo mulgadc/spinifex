@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
@@ -294,8 +295,8 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		Description:        aws.String(amiMeta.Description),
 		Architecture:       aws.String(amiMeta.Architecture),
 		PlatformDetails:    aws.String(amiMeta.PlatformDetails),
-		Platform:           utils.PlatformFromDetails(amiMeta.PlatformDetails),
-		UsageOperation:     utils.UsageOperationFromDetails(amiMeta.PlatformDetails),
+		Platform:           ec2platform.PlatformFromDetails(amiMeta.PlatformDetails),
+		UsageOperation:     ec2platform.UsageOperationFromDetails(amiMeta.PlatformDetails),
 		CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
 		RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 		VirtualizationType: aws.String(amiMeta.Virtualization),

@@ -1,3 +1,4 @@
+// Package policy tests the shared AWS IAM action vocabulary.
 package policy
 
 import "testing"

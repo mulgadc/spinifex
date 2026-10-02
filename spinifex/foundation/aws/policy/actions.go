@@ -1,3 +1,4 @@
+// Package policy defines shared AWS IAM action vocabulary.
 package policy
 
 // bedrockIAMFamily lists the Bedrock wire/signing service names that all

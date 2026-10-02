@@ -6,7 +6,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"

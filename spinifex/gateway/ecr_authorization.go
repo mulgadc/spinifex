@@ -6,7 +6,7 @@ import (
 
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 )
 
 // ecrOperationAuthorization runs after ecrAuthBridge has rehydrated and

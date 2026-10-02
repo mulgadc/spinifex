@@ -21,11 +21,11 @@ import (
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

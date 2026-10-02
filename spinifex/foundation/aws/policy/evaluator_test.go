@@ -1,3 +1,4 @@
+// Package policy tests IAM evaluation against the shared AWS action vocabulary.
 package policy
 
 import (

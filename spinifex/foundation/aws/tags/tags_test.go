@@ -3,6 +3,8 @@ package tags
 import (
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -29,4 +31,35 @@ func TestIsSystemManaged(t *testing.T) {
 			assert.Equal(t, tc.want, IsSystemManaged(tc.managedBy), tc.why)
 		})
 	}
+}
+
+func TestExtract(t *testing.T) {
+	specs := []*ec2.TagSpecification{
+		{
+			ResourceType: aws.String("instance"),
+			Tags: []*ec2.Tag{
+				{Key: aws.String("Name"), Value: aws.String("web-1")},
+				{Key: nil, Value: aws.String("skipped-nil-key")},
+				{Key: aws.String("skipped-nil-value"), Value: nil},
+			},
+		},
+		{ResourceType: aws.String("volume"), Tags: []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}}},
+	}
+
+	assert.Equal(t, map[string]string{"Name": "web-1"}, Extract(specs, "instance"))
+	empty := Extract(specs, "snapshot")
+	assert.NotNil(t, empty)
+	assert.Empty(t, empty)
+}
+
+func TestMapToEC2(t *testing.T) {
+	got := MapToEC2(map[string]string{"Name": "web-1", "Env": "prod"})
+	assert.Len(t, got, 2)
+	asMap := make(map[string]string, len(got))
+	for _, tag := range got {
+		asMap[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+	assert.Equal(t, map[string]string{"Name": "web-1", "Env": "prod"}, asMap)
+	assert.Nil(t, MapToEC2(nil))
+	assert.Nil(t, MapToEC2(map[string]string{}))
 }

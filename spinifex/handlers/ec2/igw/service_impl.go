@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -122,7 +123,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	record := IGWRecord{
 		InternetGatewayId: igwID,
 		State:             "available",
-		Tags:              utils.ExtractTags(input.TagSpecifications, "internet-gateway"),
+		Tags:              awstags.Extract(input.TagSpecifications, "internet-gateway"),
 		CreatedAt:         time.Now(),
 	}
 
@@ -549,7 +550,7 @@ func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID 
 			Attachments: []*ec2.InternetGatewayAttachment{
 				{VpcId: aws.String(record.VpcId), State: aws.String(record.State)},
 			},
-			Tags: utils.MapToEC2Tags(record.Tags),
+			Tags: awstags.MapToEC2(record.Tags),
 		}, nil
 	}
 
@@ -600,7 +601,7 @@ func (s *IGWServiceImpl) recordToEC2(record *IGWRecord, accountID string) *ec2.I
 		}
 	}
 
-	igw.Tags = utils.MapToEC2Tags(record.Tags)
+	igw.Tags = awstags.MapToEC2(record.Tags)
 
 	return igw
 }

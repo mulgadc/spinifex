@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -148,7 +149,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 		PublicIp:     eipRecord.PublicIp,
 		State:        "available",
 		AccountID:    accountID,
-		Tags:         utils.ExtractTags(input.TagSpecifications, ec2.ResourceTypeNatgateway),
+		Tags:         awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
 		CreatedAt:    time.Now(),
 	}
 
@@ -531,7 +532,7 @@ func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {
 		}
 	}
 
-	ngw.Tags = utils.MapToEC2Tags(record.Tags)
+	ngw.Tags = awstags.MapToEC2(record.Tags)
 
 	return ngw
 }

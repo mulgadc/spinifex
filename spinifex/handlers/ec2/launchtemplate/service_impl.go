@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -300,7 +301,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 		CreatedBy:            accountID,
 		CreateTime:           now,
 		DefaultVersionNumber: 1,
-		Tags:                 utils.ExtractTags(input.TagSpecifications, launchTemplateTagResourceType),
+		Tags:                 awstags.Extract(input.TagSpecifications, launchTemplateTagResourceType),
 	}
 	if err := s.putHeader(ctx, accountID, &header); err != nil {
 		return nil, err
@@ -849,7 +850,7 @@ func headerToEC2(h *LaunchTemplateHeader, latest int64) *ec2.LaunchTemplate {
 		CreatedBy:            aws.String(h.CreatedBy),
 		CreateTime:           aws.Time(h.CreateTime),
 		DefaultVersionNumber: aws.Int64(h.DefaultVersionNumber),
-		Tags:                 utils.MapToEC2Tags(h.Tags),
+		Tags:                 awstags.MapToEC2(h.Tags),
 	}
 	if latest > 0 {
 		lt.LatestVersionNumber = aws.Int64(latest)

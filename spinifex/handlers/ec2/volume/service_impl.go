@@ -21,6 +21,7 @@ import (
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -203,7 +204,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	slog.InfoContext(ctx, "CreateVolume", "volumeId", volumeID, "size", size, "type", volumeType,
 		"az", *input.AvailabilityZone, "snapshotId", snapshotID)
 
-	tags := utils.ExtractTags(input.TagSpecifications, "volume")
+	tags := awstags.Extract(input.TagSpecifications, "volume")
 
 	if err := s.requireProvider(ctx, "CreateVolume"); err != nil {
 		return nil, err
@@ -252,7 +253,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
 		State: aws.String("available"), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
 		Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(mkey != nil),
-		SnapshotId: snapshotIDOrNil(snapshotID), Tags: utils.MapToEC2Tags(tags)}, nil
+		SnapshotId: snapshotIDOrNil(snapshotID), Tags: awstags.MapToEC2(tags)}, nil
 }
 
 // snapshotIDOrNil keeps SnapshotId absent for a volume that was not cloned,
@@ -842,7 +843,7 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 	volume := &ec2.Volume{
 		VolumeId: aws.String(meta.VolumeID), Size: aws.Int64(safecast.Uint64ToInt64(meta.CapacityGiB)),
 		State: aws.String(state), AvailabilityZone: aws.String(meta.AvailabilityZone), CreateTime: aws.Time(meta.CreatedAt),
-		VolumeType: aws.String(volumeType), Encrypted: aws.Bool(meta.Encrypted), Tags: utils.MapToEC2Tags(meta.Tags),
+		VolumeType: aws.String(volumeType), Encrypted: aws.Bool(meta.Encrypted), Tags: awstags.MapToEC2(meta.Tags),
 	}
 	if meta.IOPS > 0 {
 		volume.Iops = aws.Int64(int64(meta.IOPS))

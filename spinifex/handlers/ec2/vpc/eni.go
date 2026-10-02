@@ -179,7 +179,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	// The dhcp-disabled tag is an internal signal from the launch path (a
 	// statically-addressed customer ENI), not a customer-visible tag: strip it
 	// from the persisted tag set once consumed.
-	eniTags := utils.ExtractTags(input.TagSpecifications, "network-interface")
+	eniTags := tags.Extract(input.TagSpecifications, "network-interface")
 	suppressDHCP := eniTags[tags.DHCPDisabledKey] == tags.DHCPDisabledValue
 	delete(eniTags, tags.DHCPDisabledKey)
 
@@ -1096,7 +1096,7 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 		}
 	}
 
-	eni.TagSet = utils.MapToEC2Tags(record.Tags)
+	eni.TagSet = tags.MapToEC2(record.Tags)
 
 	return eni
 }

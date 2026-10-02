@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -306,7 +307,7 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 		AZ:                 s.localAZ(),
 		EnableDnsSupport:   true,  // AWS default
 		EnableDnsHostnames: false, // AWS default
-		Tags:               utils.ExtractTags(input.TagSpecifications, "vpc"),
+		Tags:               awstags.Extract(input.TagSpecifications, "vpc"),
 		CreatedAt:          time.Now(),
 	}
 
@@ -790,7 +791,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 		AvailabilityZone: az,
 		State:            "available",
 		IsDefault:        false,
-		Tags:             utils.ExtractTags(input.TagSpecifications, "subnet"),
+		Tags:             awstags.Extract(input.TagSpecifications, "subnet"),
 		CreatedAt:        time.Now(),
 	}
 
@@ -1305,7 +1306,7 @@ func (s *VPCServiceImpl) vpcRecordToEC2(record *VPCRecord, accountID string) *ec
 		InstanceTenancy: aws.String("default"),
 	}
 
-	vpc.Tags = utils.MapToEC2Tags(record.Tags)
+	vpc.Tags = awstags.MapToEC2(record.Tags)
 
 	return vpc
 }
@@ -1336,7 +1337,7 @@ func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs in
 		},
 	}
 
-	subnet.Tags = utils.MapToEC2Tags(record.Tags)
+	subnet.Tags = awstags.MapToEC2(record.Tags)
 
 	return subnet
 }

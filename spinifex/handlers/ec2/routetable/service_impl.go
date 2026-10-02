@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
@@ -545,7 +546,7 @@ func (s *RouteTableServiceImpl) CreateRouteTable(ctx context.Context, input *ec2
 	// Persist tags from the create spec so tag-filtered describes (and the
 	// tag-driven CP-VPC teardown that reclaims the NAT-GW EIP) can find this
 	// route table.
-	if tags := utils.ExtractTags(input.TagSpecifications, ec2.ResourceTypeRouteTable); len(tags) > 0 {
+	if tags := awstags.Extract(input.TagSpecifications, ec2.ResourceTypeRouteTable); len(tags) > 0 {
 		record.Tags = tags
 		if err := s.putRouteTable(ctx, accountID, record); err != nil {
 			return nil, err
@@ -1601,7 +1602,7 @@ func recordToEC2(record *RouteTableRecord) *ec2.RouteTable {
 		rtb.Associations = append(rtb.Associations, assoc)
 	}
 
-	rtb.Tags = utils.MapToEC2Tags(record.Tags)
+	rtb.Tags = awstags.MapToEC2(record.Tags)
 
 	return rtb
 }

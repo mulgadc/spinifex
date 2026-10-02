@@ -1,6 +1,12 @@
-// Package tags defines tag keys for Spinifex system-owned resources.
-// The UI filters these out of customer-facing listings; operators append ?system=1 to surface them.
+// Package tags defines Spinifex system-tag vocabulary and generic AWS EC2 tag
+// transformations. The UI filters system-managed resources out of
+// customer-facing listings; operators append ?system=1 to surface them.
 package tags
+
+import (
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+)
 
 const (
 	// ManagedByKey marks a resource as managed by a Spinifex
@@ -59,4 +65,33 @@ const (
 // invoked on any node can route a terminate to the owning node.
 func IsSystemManaged(managedBy string) bool {
 	return managedBy == ManagedByELBv2 || managedBy == ManagedByEKS || managedBy == ManagedByRDS || managedBy == ManagedByBedrock
+}
+
+// MapToEC2 converts a tag map to a slice of EC2 Tag pointers. It returns nil
+// when the input map is empty.
+func MapToEC2(m map[string]string) []*ec2.Tag {
+	if len(m) == 0 {
+		return nil
+	}
+	tags := make([]*ec2.Tag, 0, len(m))
+	for k, v := range m {
+		tags = append(tags, &ec2.Tag{Key: aws.String(k), Value: aws.String(v)})
+	}
+	return tags
+}
+
+// Extract returns tags from the TagSpecification matching resourceType. If no
+// specification matches, the returned map is empty rather than nil.
+func Extract(tagSpecs []*ec2.TagSpecification, resourceType string) map[string]string {
+	tags := make(map[string]string)
+	for _, tagSpec := range tagSpecs {
+		if tagSpec.ResourceType != nil && *tagSpec.ResourceType == resourceType {
+			for _, tag := range tagSpec.Tags {
+				if tag.Key != nil && tag.Value != nil {
+					tags[*tag.Key] = *tag.Value
+				}
+			}
+		}
+	}
+	return tags
 }

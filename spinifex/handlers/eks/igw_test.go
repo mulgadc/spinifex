@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +39,7 @@ func (f *fakeIGWProvisioner) CreateInternetGateway(_ context.Context, input *ec2
 	}
 	igw := &ec2.InternetGateway{
 		InternetGatewayId: aws.String(f.nextID),
-		Tags:              utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, "internet-gateway")),
+		Tags:              tags.MapToEC2(tags.Extract(input.TagSpecifications, "internet-gateway")),
 	}
 	f.gateways[f.nextID] = igw
 	return &ec2.CreateInternetGatewayOutput{InternetGateway: igw}, nil

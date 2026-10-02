@@ -28,6 +28,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"golang.org/x/crypto/ssh"
@@ -210,8 +211,8 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 
 	// Build response (similar to AWS EC2)
 	keyPairID := utils.GenerateResourceID("key")
-	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
-	tags := utils.MapToEC2Tags(tagMap)
+	tagMap := awstags.Extract(input.TagSpecifications, "key-pair")
+	tags := awstags.MapToEC2(tagMap)
 	// AWS ends RSA material at its END line, while OpenSSH-format Ed25519
 	// material keeps the trailing newline.
 	keyMaterial := string(privateKeyData)
@@ -988,8 +989,8 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	keyPairID := utils.GenerateResourceID("key")
 
 	// Build response output
-	tagMap := utils.ExtractTags(input.TagSpecifications, "key-pair")
-	tags := utils.MapToEC2Tags(tagMap)
+	tagMap := awstags.Extract(input.TagSpecifications, "key-pair")
+	tags := awstags.MapToEC2(tagMap)
 	output := &ec2.ImportKeyPairOutput{
 		KeyFingerprint: aws.String(fingerprint),
 		KeyName:        aws.String(keyName),
@@ -1079,7 +1080,7 @@ func (s *KeyServiceImpl) mirrorKeyPairTags(ctx context.Context, resources []*str
 			tags = map[string]string{}
 		}
 		mut(tags)
-		metadata.Tags = utils.MapToEC2Tags(tags)
+		metadata.Tags = awstags.MapToEC2(tags)
 		if err := s.storeKeyPairMetadata(ctx, accountID, *res, metadata); err != nil {
 			return err
 		}

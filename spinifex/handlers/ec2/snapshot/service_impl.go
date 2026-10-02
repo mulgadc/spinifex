@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
@@ -165,7 +166,7 @@ func snapshotConfigToEC2(cfg ebsmetadata.Snapshot) *ec2.Snapshot {
 		OwnerId:     aws.String(cfg.OwnerID),
 	}
 
-	snapshot.Tags = utils.MapToEC2Tags(cfg.Tags)
+	snapshot.Tags = awstags.MapToEC2(cfg.Tags)
 
 	return snapshot
 }
@@ -224,7 +225,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		State:      string(created.State), Progress: "100%", StartTime: now,
 		Encrypted: volume.Encrypted,
 		OwnerID:   accountID, AvailabilityZone: volume.AvailabilityZone,
-		Tags:           utils.ExtractTags(input.TagSpecifications, "snapshot"),
+		Tags:           awstags.Extract(input.TagSpecifications, "snapshot"),
 		ProviderHandle: created.Handle,
 	}
 	if snapshotCfg.State == "" {
@@ -840,7 +841,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		State:      string(copied.State), Progress: "100%", StartTime: now,
 		Encrypted: sourceCfg.Encrypted,
 		OwnerID:   accountID, AvailabilityZone: sourceCfg.AvailabilityZone,
-		Tags:           utils.ExtractTags(input.TagSpecifications, "snapshot"),
+		Tags:           awstags.Extract(input.TagSpecifications, "snapshot"),
 		ProviderHandle: copied.Handle,
 	}
 	if snapshotCfg.State == "" {
@@ -868,7 +869,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 
 	return &ec2.CopySnapshotOutput{
 		SnapshotId: aws.String(newSnapshotID),
-		Tags:       utils.MapToEC2Tags(snapshotCfg.Tags),
+		Tags:       awstags.MapToEC2(snapshotCfg.Tags),
 	}, nil
 }
 

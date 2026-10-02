@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -184,7 +185,7 @@ func buildSpotRequests(input *ec2.RequestSpotInstancesInput, runInput *ec2.RunIn
 		spotType = ec2.SpotInstanceTypeOneTime
 	}
 
-	tags := utils.MapToEC2Tags(utils.ExtractTags(input.TagSpecifications, ec2.ResourceTypeSpotInstancesRequest))
+	tags := awstags.MapToEC2(awstags.Extract(input.TagSpecifications, ec2.ResourceTypeSpotInstancesRequest))
 	launchSpec := launchSpecFromRunInput(runInput)
 	now := time.Now().UTC()
 

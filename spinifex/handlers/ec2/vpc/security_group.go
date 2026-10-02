@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -259,7 +260,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 		VpcId:        vpcId,
 		IngressRules: []SGRule{},
 		EgressRules:  defaultEgress,
-		Tags:         utils.ExtractTags(input.TagSpecifications, "security-group"),
+		Tags:         awstags.Extract(input.TagSpecifications, "security-group"),
 		CreatedAt:    time.Now(),
 	}
 
@@ -287,7 +288,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 
 	return &ec2.CreateSecurityGroupOutput{
 		GroupId: aws.String(groupId),
-		Tags:    utils.MapToEC2Tags(record.Tags),
+		Tags:    awstags.MapToEC2(record.Tags),
 	}, nil
 }
 
@@ -708,7 +709,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 			Description:  aws.String(record.Description),
 			OwnerId:      aws.String(accountID),
 			PrimaryVpcId: aws.String(record.VpcId),
-			Tags:         utils.MapToEC2Tags(record.Tags),
+			Tags:         awstags.MapToEC2(record.Tags),
 		})
 	}
 
@@ -1006,7 +1007,7 @@ func findSGRuleByID(rules []SGRule, ruleID string) *SGRule {
 // rule an authorize call creates. AWS tags the rules the call creates and no
 // others, so this runs on the new rules alone.
 func applySGRuleTags(rules []SGRule, specs []*ec2.TagSpecification) []SGRule {
-	tags := utils.ExtractTags(specs, ec2.ResourceTypeSecurityGroupRule)
+	tags := awstags.Extract(specs, ec2.ResourceTypeSecurityGroupRule)
 	if len(tags) == 0 {
 		return rules
 	}
@@ -1034,7 +1035,7 @@ func sgRuleToSecurityGroupRule(record *SecurityGroupRecord, rule SGRule, isEgres
 		IpProtocol:          aws.String(rule.IpProtocol),
 		FromPort:            aws.Int64(fromPort),
 		ToPort:              aws.Int64(toPort),
-		Tags:                utils.MapToEC2Tags(rule.Tags),
+		Tags:                awstags.MapToEC2(rule.Tags),
 	}
 	if rule.Description != "" {
 		out.Description = aws.String(rule.Description)
@@ -1882,7 +1883,7 @@ func (s *VPCServiceImpl) sgRecordToEC2(record *SecurityGroupRecord, accountID st
 		IpPermissionsEgress: sgRulesToIpPermissions(record.EgressRules, accountID),
 	}
 
-	sg.Tags = utils.MapToEC2Tags(record.Tags)
+	sg.Tags = awstags.MapToEC2(record.Tags)
 
 	return sg
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -121,7 +122,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 		SpreadLevel:   ec2.SpreadLevelHost,
 		AccountID:     accountID,
 		NodeInstances: make(map[string][]string),
-		Tags:          utils.ExtractTags(input.TagSpecifications, "placement-group"),
+		Tags:          awstags.Extract(input.TagSpecifications, "placement-group"),
 	}
 
 	data, err := json.Marshal(record)
@@ -574,7 +575,7 @@ func (s *PlacementGroupServiceImpl) recordToEC2(record *PlacementGroupRecord) *e
 		GroupName: aws.String(record.GroupName),
 		Strategy:  aws.String(record.Strategy),
 		State:     aws.String(record.State),
-		Tags:      utils.MapToEC2Tags(record.Tags),
+		Tags:      awstags.MapToEC2(record.Tags),
 	}
 	if record.Strategy == ec2.PlacementStrategySpread {
 		pg.SpreadLevel = aws.String(record.SpreadLevel)

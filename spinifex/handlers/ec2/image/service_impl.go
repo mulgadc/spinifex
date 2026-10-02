@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -327,7 +328,7 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		image.BlockDeviceMappings = bdms
 	}
 
-	image.Tags = utils.MapToEC2Tags(amiMeta.Tags)
+	image.Tags = awstags.MapToEC2(amiMeta.Tags)
 
 	if len(parsedFilters) > 0 && !imageMatchesFilters(image, parsedFilters, amiMeta.Tags) {
 		return nil
@@ -933,7 +934,7 @@ func mergeCopyImageTags(srcTags map[string]string, specs []*ec2.TagSpecification
 	if copyImageTags {
 		maps.Copy(merged, srcTags)
 	}
-	maps.Copy(merged, utils.ExtractTags(specs, "image"))
+	maps.Copy(merged, awstags.Extract(specs, "image"))
 	if len(merged) == 0 {
 		return nil
 	}
@@ -1089,7 +1090,7 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		description = *input.Description
 	}
 
-	tags := utils.ExtractTags(input.TagSpecifications, "image")
+	tags := awstags.Extract(input.TagSpecifications, "image")
 
 	amiID := utils.GenerateResourceID("ami")
 	meta := ebsmetadata.AMI{

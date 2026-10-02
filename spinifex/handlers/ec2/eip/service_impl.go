@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -143,7 +144,7 @@ func (s *EIPServiceImpl) allocateAddress(ctx context.Context, input *ec2.Allocat
 		PublicIp:     publicIP,
 		PoolName:     poolName,
 		State:        "allocated",
-		Tags:         utils.ExtractTags(input.TagSpecifications, "elastic-ip"),
+		Tags:         awstags.Extract(input.TagSpecifications, "elastic-ip"),
 		CreatedAt:    time.Now(),
 	}
 
@@ -938,7 +939,7 @@ func (s *EIPServiceImpl) eipRecordToEC2(record *EIPRecord) *ec2.Address {
 		addr.PrivateIpAddress = aws.String(record.PrivateIp)
 	}
 
-	addr.Tags = utils.MapToEC2Tags(record.Tags)
+	addr.Tags = awstags.MapToEC2(record.Tags)
 
 	return addr
 }

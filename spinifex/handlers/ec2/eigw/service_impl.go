@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -99,7 +100,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 		EgressOnlyInternetGatewayId: eigwID,
 		VpcId:                       *input.VpcId,
 		State:                       "attached",
-		Tags:                        utils.ExtractTags(input.TagSpecifications, "egress-only-internet-gateway"),
+		Tags:                        awstags.Extract(input.TagSpecifications, "egress-only-internet-gateway"),
 		CreatedAt:                   time.Now(),
 	}
 
@@ -264,7 +265,7 @@ func (s *EgressOnlyIGWServiceImpl) recordToEC2(record *EgressOnlyIGWRecord) *ec2
 		},
 	}
 
-	eigw.Tags = utils.MapToEC2Tags(record.Tags)
+	eigw.Tags = awstags.MapToEC2(record.Tags)
 
 	return eigw
 }

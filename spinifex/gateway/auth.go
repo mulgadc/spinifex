@@ -18,7 +18,7 @@ import (
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
 // AKID prefixes. Prefix-first dispatch prevents a misfiled record from being
@@ -38,7 +38,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			clientIP := utils.ClientIP(r.RemoteAddr)
+			clientIP := ingresshttp.ClientIP(r.RemoteAddr)
 			if errCode := gw.RateLimiter.CheckIP(clientIP); errCode != "" {
 				gw.writeSigV4Error(w, r, errCode, "")
 				return

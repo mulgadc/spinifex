@@ -41,6 +41,7 @@ import (
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -686,7 +687,7 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	// Derived from the request rather than read from the context: the OCI
 	// registry chain never runs SigV4AuthMiddleware, so a context-carried
 	// address would be absent there and every aws:SourceIp condition inert.
-	if ip := utils.ClientIP(r.RemoteAddr); ip != "" {
+	if ip := ingresshttp.ClientIP(r.RemoteAddr); ip != "" {
 		keys[iampolicy.KeySourceIP] = ip
 	}
 	// Resolved from the credential record, never from anything the caller

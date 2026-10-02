@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
 // ctxAudit carries the per-request audit record. It is a pointer, unlike every
@@ -43,7 +43,7 @@ type requestAudit struct {
 // logging happens to be enabled.
 func requestAuditMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		audit := &requestAudit{clientIP: utils.RequestClientIP(r), requestID: requestIDFrom(r)}
+		audit := &requestAudit{clientIP: ingresshttp.RequestClientIP(r), requestID: requestIDFrom(r)}
 		ctx := context.WithValue(r.Context(), ctxAudit, audit)
 		next.ServeHTTP(w, r.WithContext(ctx))
 		audit.annotate(ctx)

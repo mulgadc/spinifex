@@ -14,7 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
 // adminMethods lists the callable /admin/<Method> names. A method absent here
@@ -168,7 +168,7 @@ func (gw *GatewayConfig) authorizeAdmin(r *http.Request, method string) error {
 	deny := func(reason string) error {
 		slog.Warn("Admin: access denied", "method", method, "reason", reason,
 			"service", service, "accountID", accountID, "identity", identity,
-			"principalType", principalType, "sourceIP", utils.ClientIP(r.RemoteAddr))
+			"principalType", principalType, "sourceIP", ingresshttp.ClientIP(r.RemoteAddr))
 		return errors.New(awserrors.ErrorAccessDenied)
 	}
 

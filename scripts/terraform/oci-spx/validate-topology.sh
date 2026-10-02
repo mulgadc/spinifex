@@ -431,20 +431,30 @@ for host in "${HOSTS[@]}"; do
         || die "pool configuration failed on $host; see $STATE_DIR/pool-$host.log"
 set -e
 sudo cp /etc/spinifex/spinifex.toml /etc/spinifex/spinifex.toml.bak-prepool
+# subn, not sub: with no [network] section to match, sub rewrites the file unchanged
+# and exits 0, leaving the remap silently unapplied. That is the half of this that is
+# invisible when missing, so the substitution count is checked rather than assumed.
 grep -q imds_host_meta_ip /etc/spinifex/spinifex.toml || sudo python3 - <<"PY"
-import re
+import re, sys
 path = "/etc/spinifex/spinifex.toml"
-text = open(path).read()
-text = re.sub(r"(?m)^\[network\]$",
-              "[network]\nimds_host_meta_ip = \"169.254.42.254\"\nimds_host_dns_ip  = \"169.254.42.253\"",
-              text, count=1)
+text, n = re.subn(r"(?m)^\[network\]$",
+                  "[network]\nimds_host_meta_ip = \"169.254.42.254\"\nimds_host_dns_ip  = \"169.254.42.253\"",
+                  open(path).read(), count=1)
+if n != 1:
+    sys.exit("no [network] section in %s, so the IMDS remap was not applied" % path)
 open(path, "w").write(text)
 PY
 if [ "${SKIP_POOL:-0}" != 1 ]; then
     grep -q 'name               = "oci-public"' /etc/spinifex/spinifex.toml \
         || sudo tee -a /etc/spinifex/spinifex.toml < /etc/spinifex/oci/external-pool.toml >/dev/null
 fi
-sudo spx config validate --config /etc/spinifex/spinifex.toml 2>/dev/null || true
+# spx has no config subcommand, so the `spx config validate` that used to be here
+# could only ever fail, and was swallowed. Parsing the file is the check that was
+# wanted: both edits above are textual, and a broken result would otherwise surface
+# as every service failing to start with nothing saying why.
+sudo python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' \
+    /etc/spinifex/spinifex.toml \
+    || { echo "spinifex.toml is not valid TOML after the IMDS remap and the pool append"; exit 1; }
 sudo systemctl restart spinifex.target
 REMOTE
 done

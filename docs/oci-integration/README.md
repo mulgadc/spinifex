@@ -38,7 +38,7 @@ resources:
   - [Step 5. Oracle Linux as a guest image](#step-5-oracle-linux-as-a-guest-image)
 - [Verify end to end](#verify-end-to-end)
 - [Troubleshooting](#troubleshooting)
-- [Appendix. Deploying by hand](#appendix-deploying-by-hand)
+- [Deploying without Terraform](#deploying-without-terraform)
 
 ---
 
@@ -144,7 +144,16 @@ Each node then needs **two** files, and a node with only the first is the failur
 | `/etc/spinifex/oci/oci_api_key.pem` | `0640 root:spinifex` | The private key                                                          |
 | `/etc/spinifex/oci/config`          | `0640 root:spinifex` | An ordinary OCI SDK config, profile `[spinifex]`, naming the key by path |
 
-Nothing creates the second one for you, and its profile name must be `spinifex` to match `oci_config_profile` in the pool. [A4 in the appendix](#a4-configure-spinifex-for-oci-start-and-verify) has both in full.
+Nothing creates the second one for you, and its profile name must be `spinifex` to match `oci_config_profile` in the pool:
+
+```ini
+[spinifex]
+user=ocid1.user.oc1..aaaa...
+fingerprint=12:34:56:78:90:ab:cd:ef:12:34:56:78:90:ab:cd:ef
+tenancy=ocid1.tenancy.oc1..aaaa...
+region=ap-sydney-1
+key_file=/etc/spinifex/oci/oci_api_key.pem
+```
 
 **Put that in a credential hook and the one-command path installs it on every node.** The hook is an executable of yours, run as `hook <ssh-key> <host>...` after formation and before the pool is configured, which is the only window where a node has `/etc/spinifex` but has not started the allocator. It is yours rather than ours deliberately: a credential belongs to whoever owns it, and one rendered into user-data or Terraform state is readable from instance metadata for the life of the instance — on a host that runs other people's guests.
 
@@ -230,7 +239,7 @@ Two steps: fill in one file, run one command. Everything else on this page is re
 | **[Step 1](#step-1-set-your-terraform-inputs)** | Write `terraform.auto.tfvars` — your compartment, your shape, how many nodes                                                          |
 | **[Step 2](#step-2-deploy)**                    | Run one command. It builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies it |
 
-Steps 3 to 5 then cover using the cluster you just built. The [appendix](#appendix-deploying-by-hand) does Step 2 by hand, stage by stage, for debugging.
+Steps 3 to 5 then cover using the cluster you just built. [Deploying without Terraform](#deploying-without-terraform) is for a tenancy you cannot run Terraform against.
 
 **The only decision to make first is how many nodes.** It is a single line in Step 1:
 
@@ -474,12 +483,32 @@ aws ec2 describe-instances --query \
     --output text
 ```
 
-Then, from the host:
+Then reach the guest on its public address — **from your workstation, not from the node**:
 
 ```bash
 ping -c 3 <public-ip>
 ssh -i <key> ubuntu@<public-ip> hostname
 ```
+
+> [!IMPORTANT]
+> **A VCN does not route its own public addresses back into itself.** AWS reflects them through the internet gateway; OCI answers nothing, so a node asking for a guest's public address gets a timeout however well the datapath works. Probe from outside the VCN or the result says nothing. A node's own private-address reachability (`ssh <private-ip>`) is the separate question, and that one does work from inside.
+
+**Confirm the OCI allocator came up**, which `spx get nodes` cannot tell you. Run this on the node:
+
+```bash
+sudo journalctl -u spinifex-vpcd --since -5m | grep -i ocinet
+```
+
+```text
+"msg":"ocinet resolved the external VNIC from its interface","pool":"oci-public","iface":"br-wan",
+  "vnic_id":"ocid1.vnic.oc1.ap-sydney-1.abzxsljrjwlf...kimuq","private_ip":"10.200.1.31","subnet":"10.200.0.0/23"
+"msg":"OCI allocator ready","pool":"oci-public","collected":0,"stale_bindings":0,"skipped":1
+```
+
+**`resolved the external VNIC` is the line that matters** — it proves the credentials work, the compartment is right, and `br-wan`'s MAC matched a real VNIC. A node missing it will accept `allocate-address` and fail it.
+
+> [!NOTE]
+> On a cold cluster start you may instead see `OCI allocator reconcile failed … nats: no responders available for request` on some nodes. That is vpcd racing JetStream's KV at boot; the startup reconcile is skipped and not retried. It is harmless on a new cluster where nothing has been allocated, and it is tracked — restart `spinifex-vpcd` on that node to run it. The `resolved the external VNIC` line above is still the one that decides whether allocation works.
 
 And from inside the guest — note that IMDS is **IMDSv2, so it needs a token**; an untokened request correctly returns 401:
 
@@ -563,452 +592,18 @@ ip -br addr show | grep ime-                 # holds 169.254.42.x, not .169.x
 
 `ip route get 169.254.169.254` returning `dev lo` is the signature of a missing remap. The same signature can appear after a guest terminates, from a leftover `ime-` endpoint still holding the address; with the remap configured it is harmless, and removing the stale OVS port clears it.
 
-## Appendix. Deploying by hand
+## Deploying without Terraform
 
-Step 2 does all of this for you, and this appendix exists for two readers: anyone debugging a stage that failed, and anyone who needs to deploy without the driver script. **If Step 2 worked, you do not need anything here.**
+**Terraform automates every step of a normal install, and that is the point of it.** The `oci-spx` configuration builds the VCN, the subnets, the gateways, the block volumes and both VNICs per node, then renders the cloud-init that installs Spinifex and sets up OVN — so the sequence below happens without anyone typing it, in the same order every time, on one node or three.
 
-### A1. Build the infrastructure
+If you need to install by hand — an existing OCI tenancy you cannot run Terraform against, an unsupported shape, or a stage you are debugging — the install itself is not OCI-specific. Follow the standard guides:
 
-```bash
-KEY=~/.ssh/oci-spx.pub
-python3 scripts/oci_env.py --ssh-public-key-path "$KEY" -- terraform init
-python3 scripts/oci_env.py --ssh-public-key-path "$KEY" -- terraform plan -out=oci-spx.tfplan
-```
+- [Installing Spinifex](../install/install/README.md) for a single node.
+- [Multi-Node Installation](../install/install-multi-node/README.md) for a cluster, which covers `spx admin init` on the leader and `spx admin join` on the rest.
 
-Read the saved plan, then apply **that exact plan** rather than re-planning:
+Four things about OCI are not in those guides, and each has its own section above:
 
-```bash
-python3 scripts/oci_env.py --ssh-public-key-path "$KEY" -- terraform apply oci-spx.tfplan
-```
-
-**The apply ends with the addresses you need for every remaining step.** With `node_count = 3` it prints twenty-two resources and this:
-
-```text
-Apply complete! Resources: 22 added, 0 changed, 0 destroyed.
-
-Outputs:
-
-compartment_name = "mulgadc"
-compartment_ocid = "ocid1.compartment.oc1..aaaaaaaa6nkk...ztta"
-hosts_file = <<EOT
-192.9.186.97
-137.23.20.12
-192.9.162.14
-EOT
-nodes = [
-  {
-    "fault_domain" = "FAULT-DOMAIN-1"
-    "name" = "spinifex-node-01"
-    "private_ip" = "10.200.1.249"
-    "public_ip" = "192.9.186.97"
-  },
-  {
-    "fault_domain" = "FAULT-DOMAIN-2"
-    "name" = "spinifex-node-02"
-    "private_ip" = "10.200.0.201"
-    "public_ip" = "137.23.20.12"
-  },
-  {
-    "fault_domain" = "FAULT-DOMAIN-3"
-    "name" = "spinifex-node-03"
-    "private_ip" = "10.200.1.79"
-    "public_ip" = "192.9.162.14"
-  },
-]
-subnet_ocids = {
-  "private" = "ocid1.subnet.oc1.ap-sydney-1.aaaaaaaayqu4...ssgq"
-  "public"  = "ocid1.subnet.oc1.ap-sydney-1.aaaaaaaagptz...tefq"
-}
-vcn_ocid = "ocid1.vcn.oc1.ap-sydney-1.amaaaaaa6eq5...4mcq"
-```
-
-With `node_count = 1` it is fourteen resources and one entry:
-
-```text
-Apply complete! Resources: 14 added, 0 changed, 0 destroyed.
-
-nodes = [
-  {
-    "fault_domain" = "FAULT-DOMAIN-1"
-    "name" = "spinifex-node-01"
-    "private_ip" = "10.200.0.252"
-    "public_ip" = "161.33.226.245"
-  },
-]
-hosts_file = "161.33.226.245"
-```
-
-Read `nodes` twice, because the two addresses in each entry are used for different things and confusing them wastes an afternoon:
-
-- **`public_ip`** is how _you_ reach the node — SSH, the console on `:3000`, the AWS gateway on `:9999`. It is on the primary VNIC and Terraform assigned it.
-- **`private_ip`** is what goes in `--bind`, `--cluster-bind`, `--encap-ip` and `--db-cluster-*-addr` in Steps 4 and 5. **Every cluster flag takes the private address**, because the mesh runs inside the VCN and never over the public one.
-- **`fault_domain`** is not cosmetic. Three nodes in three fault domains is what makes a three-node cluster survive a rack, and it is chosen here, not later.
-
-`terraform output` reprints all of this at any time, and `terraform output -json nodes` is the machine-readable form.
-
-> [!WARNING]
-> Never commit the state file, a plan file, or key material. `.gitignore` covers `terraform.tfstate*`, `*.tfplan`, `*.auto.tfvars`, `terraform.tfvars` and `*.pem`.
-
-### A2. Install Spinifex and set up OVN
-
-Spinifex installs the same way here as anywhere else. Run this **on every node**:
-
-```bash
-curl -fsSL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL=dev bash
-```
-
-**`INSTALL_SPINIFEX_CHANNEL=dev` is required for now**, and installs the newest `dev` prerelease. Everything on this page — the OCI allocator, `source = "oci"`, the `--nat-uplink` path and `install-node.sh` shipping with the release — is on `dev` and not yet in the latest stable release. The next release is expected within the week; after it, drop the variable and take the default. Without it the install succeeds, the cluster forms, and the first launch wanting a public address fails.
-
-The environment variable rather than a `--channel` flag: the installer served by `install.mulgadc.com` is the latest _stable_ release's copy, so it predates the flag.
-
-That puts the binary, the systemd units and the helper scripts in place and starts nothing. Then wire OVN, which is where the single-node and multi-node paths differ.
-
-Two flags are the same on every node and on both paths, and both are decisions you cannot change afterwards without re-doing this step:
-
-- **`--management` is load bearing.** Omitting it takes the compute-node branch, which stops _and disables_ `ovn-central` — silently, leaving a node with no record of what it was meant to be.
-- **`--nat-uplink`, not `--wan-bridge=br-wan`.** The two are mutually exclusive, and only `--nat-uplink` creates the `spx-nat` transit veth that routed mode runs on. `--wan-bridge` takes the veth-to-`br-ext` branch and deletes `spx-nat` on the way, after which `host.Routed.EnsureUplinkPort` refuses with _"not on OVS — run setup-ovn.sh --nat-uplink"_.
-
-**That does not make `br-wan` redundant.** It is still doing two jobs, neither of which involves OVS:
-
-1. It **names the VNIC** for the OCI allocator. `oci_vnic_iface = "br-wan"` in Step 6's pool config is resolved to a VNIC OCID **by MAC**, on the node it runs on — which is what lets one identical config file be correct on all three nodes.
-2. It **holds the addresses.** Every external address Spinifex registers becomes a secondary private IP on that VNIC, appears on `br-wan`, and gets its own source-routing rule into table 200. The guests' own traffic reaches it through `spx-nat` and the host's `spinifex-nat-egress` masquerade.
-
-So a correct OCI node has `br-wan` as a **Linux** bridge with no OVS port at all, and `br-ext` as an OVS bridge whose ports are `spx-nat-ovs` and the patch to `br-int`. That asymmetry is the design, not a half-finished install.
-
-> If you suspect an OVS problem on this host, read `ovs-vsctl --columns=name,error list Interface` and the vswitchd log. **Never trust `ovs-vsctl`'s exit status** — it exits 0 even when the datapath rejected the device.
-
-#### Single node
-
-```bash
-sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
-```
-
-#### Three nodes
-
-Servers 1 to 3 run a clustered **OVN database**, so VPC networking survives losing any one of them. **Node 1 creates the cluster and must finish first**; nodes 2 and 3 then join it. `--recreate-db` appears in all three because `ovn-central` starts a standalone database when the package installs, and a clustered one can only be created from scratch.
-
-Every address below is a **private** IP from the Terraform `nodes` output.
-
-```bash
-# Run on every node, with the values from your own apply.
-export SPINIFEX_NODE1=10.200.1.249
-export SPINIFEX_NODE2=10.200.0.201
-export SPINIFEX_NODE3=10.200.1.79
-export SPINIFEX_OVN_REMOTE=tcp:$SPINIFEX_NODE1:6642,tcp:$SPINIFEX_NODE2:6642,tcp:$SPINIFEX_NODE3:6642
-```
-
-`--ovn-remote` is the whole member list, and **it is the same on all three nodes** — do not trim it to the peers. It is what `ovn-northd` dials, and an OVSDB RAFT follower does not forward writes: it answers _not cluster leader, trying another server_. A northd pointed at one member therefore works only while it happens to share a node with the database leader, and stops translating Northbound intent into Southbound flows the moment leadership moves. Nothing about that is visible from `systemctl` — every service stays `active` — and the symptom appears much later as a `terraform apply` hung on `aws_internet_gateway.igw: Still creating...` forever.
-
-**Node 1 — create the cluster:**
-
-```bash
-sudo /usr/local/share/spinifex/setup-ovn.sh \
-  --management --nat-uplink \
-  --db-cluster-local-addr=$SPINIFEX_NODE1 \
-  --ovn-remote=$SPINIFEX_OVN_REMOTE \
-  --recreate-db \
-  --encap-ip=$SPINIFEX_NODE1
-```
-
-**Nodes 2 and 3 — join it,** after node 1 reports `=== OVN compute node setup complete ===`:
-
-```bash
-# on node 2
-sudo /usr/local/share/spinifex/setup-ovn.sh \
-  --management --nat-uplink \
-  --db-cluster-local-addr=$SPINIFEX_NODE2 \
-  --db-cluster-remote-addr=$SPINIFEX_NODE1 \
-  --ovn-remote=$SPINIFEX_OVN_REMOTE \
-  --recreate-db \
-  --encap-ip=$SPINIFEX_NODE2
-
-# on node 3
-sudo /usr/local/share/spinifex/setup-ovn.sh \
-  --management --nat-uplink \
-  --db-cluster-local-addr=$SPINIFEX_NODE3 \
-  --db-cluster-remote-addr=$SPINIFEX_NODE1 \
-  --ovn-remote=$SPINIFEX_OVN_REMOTE \
-  --recreate-db \
-  --encap-ip=$SPINIFEX_NODE3
-```
-
-Each run ends with its own verification block. Node 1 reports `chassis count: 1`; nodes 2 and 3 report `0`, because a chassis is registered by `ovn-controller` a moment later and the script checks immediately. That is not a failure — confirm the real answer from node 1 once all three are done:
-
-```bash
-sudo ovn-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound
-sudo ovn-sbctl show
-```
-
-```text
-Name: OVN_Northbound
-Cluster ID: 7c7d (7c7d6d29-8243-4f82-8b4e-2848dbd5942e)
-Server ID: 5d95 (5d952726-6ab5-4188-8eb9-b70acf37c374)
-Address: tcp:10.200.1.249:6643
-Status: cluster member
-Role: leader
-Term: 1
-```
-
-`Status: cluster member` with one leader, and a `Chassis` entry in `ovn-sbctl show` for each of the three. If `cluster/status` says the database is standalone, `--db-cluster-local-addr` did not reach it — re-run that node.
-
-Then confirm northd is actually translating, which `cluster/status` cannot tell you. Run this on any node:
-
-```bash
-echo "NB $(sudo ovn-nbctl --no-leader-only get NB_Global . nb_cfg) / SB $(sudo ovn-sbctl --no-leader-only get SB_Global . nb_cfg)"
-```
-
-The two numbers must be equal, or within one of each other on a busy cluster. A gap that does not close within a few seconds means the active `ovn-northd` cannot write to the Northbound leader, and `/var/log/ovn/ovn-northd.log` will be looping on `clustered database server is not cluster leader; trying another server`. The fix is the `--ovn-remote` list above.
-
-### A3. Form the cluster
-
-Everything here is Spinifex's own formation, unchanged from bare metal except for two flags that OCI requires:
-
-- **`--external-mode=nat` is mandatory.** OCI drops any frame whose source address is not registered on the VNIC, so `pool` mode produces a cluster that passes every health check and drops every guest packet.
-- **`--ipsec=false`:** `openvswitch-ipsec` is masked on the OCI Ubuntu image while `spx admin init` defaults the flag to true. A cluster formed with it on will not bring its overlay up.
-
-Both are read from node 1 only. Joining nodes inherit the external mode, the transit pool and the IPsec posture, so they are chosen once.
-
-#### Single node
-
-```bash
-sudo spx admin init --node node1 --nodes 1 \
-  --region ap-southeast-2 --az ap-southeast-2a \
-  --external-mode=nat --ipsec=false
-```
-
-It finishes in a few seconds:
-
-```text
-📡 External networking: nat (routed; no public pool configured yet)
-  Transit:       100.127.0.0/24 via spx-nat-host (host masquerades out any uplink)
-✅ Created: spinifex.toml
-🔧 Configuring AWS credentials... Profile: spinifex
-✅ Host DNS: spx3.net + compute.internal -> 10.200.0.252:53 (northstar)
-🎉 Spinifex initialization complete!
-   Advertise IP: 10.200.0.252
-```
-
-"no public pool configured yet" is expected — the OCI pool is Step 6.
-
-#### Three nodes
-
-Init and join run **concurrently**: init blocks until every node has joined. Start node 1, take the token from its output, then run both joins while it is still waiting.
-
-`--force` is in every command so the sequence is identical whichever way you installed. On a node Terraform just built there is nothing to lose either way; on a node that has been in service, joining discards its master key and orphans every volume sealed under it, and `--force` is the confirmation for that.
-
-**Node 1 — initialize:**
-
-```bash
-sudo spx admin init --force \
-  --node node1 --nodes 3 \
-  --bind $SPINIFEX_NODE1 --cluster-bind $SPINIFEX_NODE1 \
-  --port 4432 --region ap-southeast-2 --az ap-southeast-2a \
-  --external-mode=nat --ipsec=false
-```
-
-It generates the keys and the CA, then stops and waits, printing the token:
-
-```text
-📡 Formation server started on 10.200.1.249:4432
-   Waiting for 2 more node(s) to join...
-   Token expires in 30m0s
-
-   Other nodes should run:
-   sudo spx admin join --host 10.200.1.249:4432 --token spx_join_YHRL6y_yVP0E8Tc1 --node <name> --bind <ip>
-```
-
-Take the **token** from that output, but run the commands below rather than the line it prints — they add `--force` and `--cluster-bind`.
-
-**Nodes 2 and 3 — join,** while init is still waiting:
-
-```bash
-# on node 2
-sudo spx admin join --force \
-  --node node2 --bind $SPINIFEX_NODE2 --cluster-bind $SPINIFEX_NODE2 \
-  --host $SPINIFEX_NODE1:4432 --token <token-from-init> \
-  --region ap-southeast-2 --az ap-southeast-2a
-
-# on node 3
-sudo spx admin join --force \
-  --node node3 --bind $SPINIFEX_NODE3 --cluster-bind $SPINIFEX_NODE3 \
-  --host $SPINIFEX_NODE1:4432 --token <token-from-init> \
-  --region ap-southeast-2 --az ap-southeast-2a
-```
-
-Each join answers with the membership it now sees:
-
-```text
-🎉 Node successfully joined cluster!
-   Cluster: spinifex (3 nodes)
-   Bind: 10.200.0.201  Advertise: 10.200.0.201  Loopback: 127.0.0.1
-   Nodes:
-     - node2 (bind=10.200.0.201 advertise=10.200.0.201)
-     - node3 (bind=10.200.1.79 advertise=10.200.1.79)
-     - node1 (bind=10.200.1.249 advertise=10.200.1.249)
-```
-
-and node 1 unblocks:
-
-```text
-🎉 Cluster formation complete!
-   Cluster: spinifex (3 nodes)
-   Region: ap-southeast-2
-```
-
-Confirm the joiners inherited the OCI-critical settings before going on — this is cheap and catches a node that formed against the wrong leader:
-
-```bash
-sudo grep -E 'external_mode|ipsec_enabled' /etc/spinifex/spinifex.toml
-```
-
-```text
-ipsec_enabled = false
-external_mode = "nat"
-```
-
-The join token expires 30 minutes after init; `--token-ttl 2h` if provisioning is slower than that.
-
-### A4. Configure Spinifex for OCI, start and verify
-
-**This is the step that is genuinely OCI-specific**, and it is identical on one node or three. Do all of it on **every** node before starting anything.
-
-#### Discover the OCIDs
-
-```bash
-# Instance, compartment and both VNICs, straight from the instance metadata.
-curl -sH 'Authorization: Bearer Oracle' http://169.254.169.254/opc/v2/instance/ \
-  | python3 -c 'import json,sys; d=json.load(sys.stdin); print("compartment:", d["compartmentId"]); print("instance:", d["id"])'
-
-curl -sH 'Authorization: Bearer Oracle' http://169.254.169.254/opc/v2/vnics/ \
-  | python3 -c 'import json,sys
-for v in json.load(sys.stdin):
-    print(v["macAddr"], v["vnicId"], v["subnetCidrBlock"], v.get("privateIp"))'
-```
-
-```text
-compartment: ocid1.compartment.oc1..aaaaaaaa6nkk...ztta
-instance: ocid1.instance.oc1.ap-sydney-1.anzxsljr6eq5...tkxdq
-
-02:00:17:01:9C:22 ocid1.vnic.oc1.ap-sydney-1.abzxsljrnat7...y6vw5q 10.200.0.0/23 10.200.0.252
-02:00:17:04:1A:57 ocid1.vnic.oc1.ap-sydney-1.abzxsljrjd7z...czgvua 10.200.0.0/23 10.200.1.233
-```
-
-**You only need the compartment OCID for the config below** — the VNIC is resolved at runtime. Match a VNIC by MAC against `ip -br link show br-wan` if you want to confirm which is which; Oracle's VNIC ordering is not a documented contract, so "the second one" is not a selector.
-
-#### Choose how the node authenticates
-
-Two routes. **Instance principal is the better one**: each node authenticates with the certificate its own metadata service serves, so there is no key material on any node, nothing to rotate, and nothing to copy as you add nodes. It needs a dynamic group and an IAM policy, which only a tenancy admin can create — once, after which every node and every rebuild inherits them. The `oci-spx` Terraform creates both behind `enable_instance_principal = true`; its README has the command and what the policy grants.
-
-With that done, the whole of the next section is skipped and the pool below carries `oci_auth = "instance_principal"` instead of the two `oci_config_*` keys. Setting both is refused at config load, because the certificate is already the credential and a key file beside it would be the half silently ignored.
-
-**An API key is the fallback**, and the default, because it needs nothing from a tenancy admin. The cost is that the key goes on every node by hand, and a node you forget fails only when a guest asks for an address.
-
-#### Install the credentials on the node
-
-Skip this entirely under instance principal.
-
-**The daemon cannot read `~/.oci/`.** Its systemd unit sets `ProtectHome=yes`, so a config under any home directory is invisible to it however the permissions read. Credentials go under `/etc/spinifex/`, on every node:
-
-```bash
-sudo install -d -o root -g spinifex -m 0750 /etc/spinifex/oci
-sudo install -o root -g spinifex -m 0640 ~/.oci/oci_api_key.pem /etc/spinifex/oci/oci_api_key.pem
-sudo tee /etc/spinifex/oci/config >/dev/null <<'EOF'
-[spinifex]
-user=ocid1.user.oc1..aaaa...
-fingerprint=aa:bb:cc:...
-key_file=/etc/spinifex/oci/oci_api_key.pem
-tenancy=ocid1.tenancy.oc1..aaaa...
-region=ap-sydney-1
-EOF
-sudo chown root:spinifex /etc/spinifex/oci/config
-sudo chmod 0640 /etc/spinifex/oci/config
-```
-
-```text
-drwxr-x--- 2 root spinifex 4096 Sep 26 03:48 .
--rw-r----- 1 root spinifex  303 Sep 26 03:48 config
--rw-r----- 1 root spinifex 1715 Sep 26 03:48 oci_api_key.pem
-```
-
-The profile name — `spinifex` here — is what `oci_config_profile` names below. Keep a copy at `~/.oci/config` too if you want the `oci` CLI on the node; that is a different consumer and it is not on any Spinifex code path.
-
-#### Configure the OCI pool and the IMDS remap
-
-Both go in `/etc/spinifex/spinifex.toml`, on every node, with the **same text on each** — nothing here is per-node:
-
-```toml
-[network]
-external_mode     = "nat"
-imds_host_meta_ip = "169.254.42.254"
-imds_host_dns_ip  = "169.254.42.253"
-
-# Leave the nat-transit pool init wrote exactly as it is, and add this one.
-[[network.external_pools]]
-name               = "oci-public"
-source             = "oci"
-oci_compartment_id = "ocid1.compartment.oc1..aaaa..."
-oci_vnic_iface     = "br-wan"
-oci_config_file    = "/etc/spinifex/oci/config"
-oci_config_profile = "spinifex"
-dns_servers        = ["169.254.169.253"]
-```
-
-Under instance principal the last three lines of that block become one:
-
-```toml
-oci_auth           = "instance_principal"
-dns_servers        = ["169.254.169.253"]
-```
-
-The Terraform stages whichever of the two is correct at `/etc/spinifex/oci/external-pool.toml` on each node, so this is an append rather than something to type.
-
-Notes on the keys:
-
-- **Exactly one of `oci_vnic_id` and `oci_vnic_iface`**, never both — the config is rejected if you set both or neither. Two that disagreed would send allocations to a VNIC the datapath is not on, and OCI would drop the traffic without a word.
-- **`oci_vnic_iface` is the right choice on a cluster**, because it resolves through instance metadata **by MAC** on the node it runs on. Naming either `br-wan` or the physical interface resolves to the same VNIC. Use `oci_vnic_id` only when you want to pin a specific VNIC on a single node.
-- `oci_compartment_id` is the only other required key. `oci_subnet_id` is optional and defaults to the VNIC's own subnet; set it only when you want private IPs from a different subnet. `oci_config_file` defaults to `~/.oci/config` and `oci_config_profile` to `DEFAULT` — **on a node both need setting**, because the daemon cannot read a home directory. Neither is valid under `oci_auth = "instance_principal"`.
-- **`oci_auth` is `config_file` by default** and takes `instance_principal` for the keyless route. Name it explicitly rather than relying on a default you have forgotten: a typo is rejected at config load, which is better than a node quietly falling back to a key file nobody installed.
-- `oci_public_ip_pool` takes a BYOIP pool OCID. Accepted today so BYOIP is a config change later rather than a code change, but it is not implemented yet.
-- `range_start`, `range_end`, `gw_lrp_range_*`, `bind_bridge` and `dhcp_mac` are **rejected** on an OCI pool. OCI owns the addresses; a range you wrote would be fiction.
-- Leave the `nat-transit` pool alone. In routed mode the per-VPC gateway router addresses come from the RFC 6598 transit range, not from OCI — **only public addresses handed to guests consume an OCI address.** Fifty VPCs and three Elastic IPs cost three reserved public IPs, not fifty-three.
-- **The IMDS pair is required on OCI**, and it is set both keys or neither — a half-configured pair is ignored and the node behaves as if the remap were off. [Guests cannot reach instance metadata](#guests-cannot-reach-instance-metadata) is why it exists; `169.254.42.254` / `169.254.42.253` is the tested choice.
-
-#### Start and verify
-
-On **every** node:
-
-```bash
-sudo systemctl start spinifex.target
-```
-
-Then, from any one of them:
-
-```bash
-sudo spx get nodes
-```
-
-```text
-NAME  | STATUS | ROLES         | IP           | REGION         | AZ              | UPTIME | VMs | SERVICES
-node1 | Ready  | nats:follower | 10.200.1.249 | ap-southeast-2 | ap-southeast-2a | 0m     | 0   | nats,predastore,viperblock,daemon,awsgw,vpcd,ui
-node2 | Ready  | nats:follower | 10.200.0.201 | ap-southeast-2 | ap-southeast-2a | 0m     | 0   | nats,predastore,viperblock,daemon,awsgw,vpcd,ui
-node3 | Ready  | nats:leader   | 10.200.1.79  | ap-southeast-2 | ap-southeast-2a | 0m     | 0   | nats,predastore,viperblock,daemon,awsgw,vpcd,ui
-```
-
-Every node listed, all `Ready`, exactly one `nats:leader`, and the same `SERVICES` on each. `spx top nodes` shows pooled capacity and what the cluster can launch right now; if it looks like one server rather than three, the others never joined.
-
-**Confirm the OCI allocator came up**, which `spx get nodes` cannot tell you:
-
-```bash
-sudo journalctl -u spinifex-vpcd --since -5m | grep -i ocinet
-```
-
-```text
-"msg":"ocinet resolved the external VNIC from its interface","pool":"oci-public","iface":"br-wan",
-  "vnic_id":"ocid1.vnic.oc1.ap-sydney-1.abzxsljrjwlf...kimuq","private_ip":"10.200.1.31","subnet":"10.200.0.0/23"
-"msg":"OCI allocator ready","pool":"oci-public","collected":0,"stale_bindings":0,"skipped":1
-```
-
-**`resolved the external VNIC` is the line that matters** — it proves the credentials work, the compartment is right, and `br-wan`'s MAC matched a real VNIC. A node missing it will accept `allocate-address` and fail it.
-
-> [!NOTE]
-> On a cold cluster start you may instead see `OCI allocator reconcile failed … nats: no responders available for request` on some nodes. That is vpcd racing JetStream's KV at boot; the startup reconcile is skipped and not retried. It is harmless on a new cluster where nothing has been allocated, and it is tracked — restart `spinifex-vpcd` on that node to run it. The `resolved the external VNIC` line above is still the one that decides whether allocation works.
+- **The external pool** is `source = "oci"`, which needs the instance principal or API key from [Prerequisites](#credentials--an-instance-principal-or-an-api-key) and the [IAM policy](#the-iam-policy). Without it a node forms, passes every health check, and then refuses every launch that wants a public address.
+- **`br-wan` stays a Linux bridge** owned by netplan, linked to OVS `br-ext` by a veth pair. Pass `setup-ovn.sh --wan-bridge=br-wan` and it detects this itself; the NIC never becomes an OVS port, so the VNIC keeps its MAC identity. See [How it fits together](#how-it-fits-together).
+- **The block volume must be mounted with `_netdev`**, because it arrives over iSCSI and the mount is otherwise attempted before a session exists.
+- **IMDS needs the 169.254 remap** described under [Guests cannot reach instance metadata](#guests-cannot-reach-instance-metadata), since the guest's metadata address collides with OCI's own.

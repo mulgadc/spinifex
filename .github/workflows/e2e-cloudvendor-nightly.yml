@@ -216,7 +216,9 @@ jobs:
             ${{ runner.temp }}/e2e-oci.log
             ${{ runner.temp }}/e2e-oci/*.log
             ${{ runner.temp }}/e2e-oci/verdict.txt
+            ${{ runner.temp }}/e2e-oci/summary.md
             ${{ runner.temp }}/e2e-oci-sweep/*.log
             ${{ runner.workspace }}/oci-state/.validate-*/*.log
             ${{ runner.workspace }}/oci-state/.validate-*/*.txt
+            ${{ runner.workspace }}/oci-state/.validate-*/*.tsv
           retention-days: 14

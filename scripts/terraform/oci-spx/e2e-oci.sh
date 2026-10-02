@@ -161,10 +161,15 @@ summary() {
     done
 }
 
-# Written to stdout as well as the step summary, so a workstation run shows the
-# same thing CI publishes.
+# GITHUB_STEP_SUMMARY is per step, so appending from both the run and the dedicated
+# publish step would put two copies of the tables on the run page. One owner: the run
+# writes the file and prints it, and only --summary-only publishes it.
 emit_summary() {
     summary | tee "$ARTIFACT_DIR/summary.md"
+}
+
+publish_summary() {
+    emit_summary
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         cat "$ARTIFACT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
     fi
@@ -203,7 +208,7 @@ sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
 # read from. This is the path a cancelled job takes, so it has to work on whatever
 # the run got through rather than assuming a complete set.
 if [ "$SUMMARY_ONLY" = 1 ]; then
-    emit_summary
+    publish_summary
     exit 0
 fi
 

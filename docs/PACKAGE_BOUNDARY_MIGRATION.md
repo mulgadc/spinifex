@@ -226,6 +226,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `3360382f5` | `spinifex/utils/idempotency` | `spinifex/foundation/lifecycle/idempotency` | Retry-token HTTP/NATS vocabulary now lives beside the idempotency store. Focused propagation and EIP retry behavior tests, affected package compilation and tagged integration compilation passed. |
 | `b5bc8cd7d` | `spinifex/utils/images` (`SelectNewestImage`) | `spinifex/foundation/aws/ami` | Selecting the newest EC2 image from AWS SDK models is shared AWS-model logic used by EKS, ECS, RDS and Bedrock, not operator catalogue ownership. Focused selector and remaining catalogue tests plus all four direct caller compilations passed. |
 | `9f83f899a` | `spinifex/utils` (`ClientIP`, `RequestClientIP`) | `spinifex/ingress/http` | HTTP remote-address parsing and loopback-trusted `X-Real-IP` handling are generic ingress policy shared by the AWS gateway and UI proxy. The moved test suite and all direct caller compilations passed. |
+| `693109950` | `spinifex/utils` (`HashMAC`) | `spinifex/network/identifiers` | Deterministic locally-administered MAC derivation is network infrastructure shared by ENIs, DHCP, OVN topology, IMDS and VM tap setup. Focused MAC tests and every direct caller compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

@@ -1,4 +1,5 @@
-package utils
+// Package command runs bounded host commands for node-local runtime work.
+package command
 
 import (
 	"bytes"

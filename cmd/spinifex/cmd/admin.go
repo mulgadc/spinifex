@@ -31,8 +31,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
@@ -40,6 +40,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -3533,7 +3534,7 @@ type dnsDetectionSources struct {
 func detectDNSServers(iface string, excludedIPs ...string) []string {
 	return detectDNSServersWithSources(iface, excludedIPs, dnsDetectionSources{
 		queryResolvectl: func(args ...string) (string, error) {
-			return utils.RunCommandWithTimeout(dnsDetectionCommandTimeout, "resolvectl", args...)
+			return hostcommand.RunCommandWithTimeout(dnsDetectionCommandTimeout, "resolvectl", args...)
 		},
 		readResolvConf: func() (string, error) {
 			data, err := os.ReadFile("/etc/resolv.conf")

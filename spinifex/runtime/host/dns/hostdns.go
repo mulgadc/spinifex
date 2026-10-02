@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 )
 
 // Host paths the resolver managers read. Joined onto configurator.root, which is
@@ -97,7 +97,7 @@ type configurator struct {
 func newConfigurator() *configurator {
 	return &configurator{
 		resolvedActive: func() bool {
-			_, err := utils.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "is-active", "--quiet", "systemd-resolved")
+			_, err := hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "is-active", "--quiet", "systemd-resolved")
 			return err == nil
 		},
 		hasResolvconf: func() bool {
@@ -105,15 +105,15 @@ func newConfigurator() *configurator {
 			return err == nil
 		},
 		restartResolved: func() error {
-			_, err := utils.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "restart", "systemd-resolved")
+			_, err := hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "systemctl", "restart", "systemd-resolved")
 			return err
 		},
 		updateResolvconf: func() error {
-			_, err := utils.RunCommandWithTimeout(resolverCommandTimeout, "resolvconf", "-u")
+			_, err := hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "resolvconf", "-u")
 			return err
 		},
 		resolvedStatus: func() (string, error) {
-			return utils.RunCommandWithTimeout(resolverCommandTimeout, "resolvectl", "status")
+			return hostcommand.RunCommandWithTimeout(resolverCommandTimeout, "resolvectl", "status")
 		},
 	}
 }

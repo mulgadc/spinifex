@@ -1,4 +1,4 @@
-package utils
+package command
 
 import (
 	"context"
@@ -77,8 +77,6 @@ func childPIDFromOutput(t *testing.T, output string) int {
 	return 0
 }
 
-// processExitsWithin polls until pid is gone. One not-running observation is
-// final: a re-check can catch a reaped task's brief "X" state and misreport it.
 func processExitsWithin(pid int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for processRunning(pid) {

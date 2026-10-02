@@ -131,7 +131,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal IGW record: %w", err)
 	}
-	if _, err := s.igwKV.Put(ctx, utils.AccountKey(accountID, igwID), data); err != nil {
+	if _, err := s.igwKV.Put(ctx, kvutil.AccountKey(accountID, igwID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -149,7 +149,7 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 	}
 
 	igwID := *input.InternetGatewayId
-	key := utils.AccountKey(accountID, igwID)
+	key := kvutil.AccountKey(accountID, igwID)
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
@@ -320,7 +320,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 
 	igwID := *input.InternetGatewayId
 	vpcID := *input.VpcId
-	key := utils.AccountKey(accountID, igwID)
+	key := kvutil.AccountKey(accountID, igwID)
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
@@ -341,7 +341,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 		slog.ErrorContext(ctx, "VPC KV unavailable, cannot verify VPC ownership")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, vpcID)); err != nil {
 		slog.WarnContext(ctx, "AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
 		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
@@ -382,7 +382,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	igwID := *input.InternetGatewayId
 	vpcID := *input.VpcId
-	key := utils.AccountKey(accountID, igwID)
+	key := kvutil.AccountKey(accountID, igwID)
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
@@ -457,11 +457,11 @@ func (s *IGWServiceImpl) CreateAttachedInternetGateway(ctx context.Context, acco
 	if s.vpcKV == nil {
 		return false, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, vpcID)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, vpcID)); err != nil {
 		return false, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 
-	key := utils.AccountKey(accountID, igwID)
+	key := kvutil.AccountKey(accountID, igwID)
 	data, err := json.Marshal(IGWRecord{
 		InternetGatewayId: igwID,
 		VpcId:             vpcID,

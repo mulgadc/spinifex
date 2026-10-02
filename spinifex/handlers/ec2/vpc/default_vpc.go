@@ -104,7 +104,7 @@ func (s *VPCServiceImpl) ensureDefaultVPC(ctx context.Context, accountID string,
 			return claim.info(), nil
 		}
 
-		if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, claim.VpcId)); err == nil {
+		if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, claim.VpcId)); err == nil {
 			return claim.info(), nil
 		} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, fmt.Errorf("read default VPC %s: %w", claim.VpcId, err)
@@ -261,7 +261,7 @@ func oldestAccountRecord[T any](ctx context.Context, kv jetstream.KeyValue, acco
 // marks the claim complete. Records are written with Create, so only the caller
 // that actually wrote one announces it to vpcd.
 func (s *VPCServiceImpl) buildDefaultVPC(ctx context.Context, accountID string, claim *defaultVPCClaim) error {
-	created, err := createRecord(ctx, s.vpcKV, utils.AccountKey(accountID, claim.VpcId), VPCRecord{
+	created, err := createRecord(ctx, s.vpcKV, kvutil.AccountKey(accountID, claim.VpcId), VPCRecord{
 		VpcId:              claim.VpcId,
 		CidrBlock:          claim.Cidr,
 		State:              "available",
@@ -283,7 +283,7 @@ func (s *VPCServiceImpl) buildDefaultVPC(ctx context.Context, accountID string, 
 	if s.config != nil && s.config.AZ != "" {
 		az = s.config.AZ
 	}
-	created, err = createRecord(ctx, s.subnetKV, utils.AccountKey(accountID, claim.SubnetId), SubnetRecord{
+	created, err = createRecord(ctx, s.subnetKV, kvutil.AccountKey(accountID, claim.SubnetId), SubnetRecord{
 		SubnetId:            claim.SubnetId,
 		VpcId:               claim.VpcId,
 		CidrBlock:           claim.SubnetCidr,

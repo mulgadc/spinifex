@@ -89,7 +89,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 		slog.ErrorContext(ctx, "VPC KV unavailable, cannot verify VPC ownership")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(ctx, utils.AccountKey(accountID, *input.VpcId)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, *input.VpcId)); err != nil {
 		slog.WarnContext(ctx, "CreateEgressOnlyInternetGateway: VPC not found for account", "vpcId", *input.VpcId, "accountID", accountID)
 		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", *input.VpcId)
 	}
@@ -108,7 +108,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Egress-only IGW record: %w", err)
 	}
-	if _, err := s.eigwKV.Put(ctx, utils.AccountKey(accountID, eigwID), data); err != nil {
+	if _, err := s.eigwKV.Put(ctx, kvutil.AccountKey(accountID, eigwID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -126,7 +126,7 @@ func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.C
 	}
 
 	eigwID := *input.EgressOnlyInternetGatewayId
-	key := utils.AccountKey(accountID, eigwID)
+	key := kvutil.AccountKey(accountID, eigwID)
 
 	// Verify the EIGW exists before deleting
 	if _, err := s.eigwKV.Get(ctx, key); err != nil {

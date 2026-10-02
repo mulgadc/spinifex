@@ -84,24 +84,24 @@ func NewLaunchTemplateServiceImplWithNATS(ctx context.Context, cfg *config.Confi
 // Launch template names allow characters such as parentheses that are not valid
 // in NATS KV keys, so the name must not be used in its raw form here.
 func nameKey(accountID, name string) string {
-	return utils.AccountKey(accountID, "name."+hex.EncodeToString([]byte(name)))
+	return kvutil.AccountKey(accountID, "name."+hex.EncodeToString([]byte(name)))
 }
 
 // versionKey returns a version-body key: account.lt-<id>.v<n>.
 func versionKey(accountID, ltID string, n int64) string {
-	return utils.AccountKey(accountID, ltID+".v"+strconv.FormatInt(n, 10))
+	return kvutil.AccountKey(accountID, ltID+".v"+strconv.FormatInt(n, 10))
 }
 
 // versionPrefix returns the scan prefix for a template's version bodies.
 func versionPrefix(accountID, ltID string) string {
-	return utils.AccountKey(accountID, ltID+".v")
+	return kvutil.AccountKey(accountID, ltID+".v")
 }
 
 // --- record load helpers ---
 
 // getHeaderByID reads a header and its KV entry (for CAS) by launch template id.
 func (s *LaunchTemplateServiceImpl) getHeaderByID(ctx context.Context, accountID, ltID string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
-	entry, err := s.kv.Get(ctx, utils.AccountKey(accountID, ltID))
+	entry, err := s.kv.Get(ctx, kvutil.AccountKey(accountID, ltID))
 	if err != nil {
 		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdNotFound)
 	}
@@ -336,7 +336,7 @@ func (s *LaunchTemplateServiceImpl) claimName(ctx context.Context, accountID, na
 	// header means the name is taken; any other read error (transient fault, or a
 	// concurrent in-flight create whose header is not yet written) fails closed so
 	// the name is never stolen from a possibly-live template.
-	_, herr := s.kv.Get(ctx, utils.AccountKey(accountID, string(entry.Value())))
+	_, herr := s.kv.Get(ctx, kvutil.AccountKey(accountID, string(entry.Value())))
 	switch {
 	case herr == nil:
 		return errNameInUse()
@@ -354,7 +354,7 @@ func (s *LaunchTemplateServiceImpl) putHeader(ctx context.Context, accountID str
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Put(ctx, utils.AccountKey(accountID, h.LaunchTemplateId), data); err != nil {
+	if _, err := s.kv.Put(ctx, kvutil.AccountKey(accountID, h.LaunchTemplateId), data); err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
@@ -466,7 +466,7 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.kv.Update(ctx, utils.AccountKey(accountID, header.LaunchTemplateId), data, entry.Revision()); err != nil {
+		if _, err := s.kv.Update(ctx, kvutil.AccountKey(accountID, header.LaunchTemplateId), data, entry.Revision()); err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -495,7 +495,7 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, in
 
 	// Delete the header first: the template immediately vanishes from every
 	// describe. Version bodies and the name index are best-effort cleanup.
-	if err := s.kv.Delete(ctx, utils.AccountKey(accountID, header.LaunchTemplateId)); err != nil {
+	if err := s.kv.Delete(ctx, kvutil.AccountKey(accountID, header.LaunchTemplateId)); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if err := s.kv.Delete(ctx, nameKey(accountID, header.LaunchTemplateName)); err != nil {

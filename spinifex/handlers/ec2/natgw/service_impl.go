@@ -118,7 +118,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	allocID := *input.AllocationId
 
 	// Validate subnet exists and get its VPC
-	subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, subnetID))
+	subnetEntry, err := s.subnetKV.Get(ctx, kvutil.AccountKey(accountID, subnetID))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
 	}
@@ -128,7 +128,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	}
 
 	// Validate EIP exists and is not already associated
-	eipEntry, err := s.eipKV.Get(ctx, utils.AccountKey(accountID, allocID))
+	eipEntry, err := s.eipKV.Get(ctx, kvutil.AccountKey(accountID, allocID))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
 	}
@@ -157,7 +157,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.natgwKV.Put(ctx, utils.AccountKey(accountID, natgwID), data); err != nil {
+	if _, err := s.natgwKV.Put(ctx, kvutil.AccountKey(accountID, natgwID), data); err != nil {
 		slog.ErrorContext(ctx, "Failed to store NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -170,7 +170,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
-		if _, err := s.eipKV.Update(ctx, utils.AccountKey(accountID, allocID), eipData, eipEntry.Revision()); err != nil {
+		if _, err := s.eipKV.Update(ctx, kvutil.AccountKey(accountID, allocID), eipData, eipEntry.Revision()); err != nil {
 			slog.WarnContext(ctx, "CreateNatGateway: failed to mark EIP associated", "natGatewayId", natgwID, "allocationId", allocID, "err", err)
 		}
 	}
@@ -190,7 +190,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	}
 
 	natgwID := *input.NatGatewayId
-	key := utils.AccountKey(accountID, natgwID)
+	key := kvutil.AccountKey(accountID, natgwID)
 
 	entry, err := s.natgwKV.Get(ctx, key)
 	if err != nil {
@@ -307,7 +307,7 @@ func (s *NatGatewayServiceImpl) publishDeleteEventsForNatGateway(ctx context.Con
 			if assoc.SubnetId == "" {
 				continue
 			}
-			subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, assoc.SubnetId))
+			subnetEntry, err := s.subnetKV.Get(ctx, kvutil.AccountKey(accountID, assoc.SubnetId))
 			if err != nil {
 				continue
 			}
@@ -327,7 +327,7 @@ func (s *NatGatewayServiceImpl) disassociateEIP(ctx context.Context, record *Nat
 	if record.AllocationId == "" {
 		return
 	}
-	key := utils.AccountKey(accountID, record.AllocationId)
+	key := kvutil.AccountKey(accountID, record.AllocationId)
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
 		if !errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -425,7 +425,7 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 		if foundIDs[id] {
 			continue
 		}
-		key := utils.AccountKey(accountID, id)
+		key := kvutil.AccountKey(accountID, id)
 		entry, err := s.deletedNatgwKV.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -499,7 +499,7 @@ func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp
 // GetNatGateway retrieves a NAT Gateway record by ID.
 func (s *NatGatewayServiceImpl) GetNatGateway(accountID, natgwID string) (*NatGatewayRecord, error) {
 	ctx := context.Background()
-	entry, err := s.natgwKV.Get(ctx, utils.AccountKey(accountID, natgwID))
+	entry, err := s.natgwKV.Get(ctx, kvutil.AccountKey(accountID, natgwID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)

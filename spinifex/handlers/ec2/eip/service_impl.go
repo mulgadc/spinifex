@@ -152,7 +152,7 @@ func (s *EIPServiceImpl) allocateAddress(ctx context.Context, input *ec2.Allocat
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal EIP record: %w", err)
 	}
-	if _, err := s.eipKV.Put(ctx, utils.AccountKey(accountID, allocID), data); err != nil {
+	if _, err := s.eipKV.Put(ctx, kvutil.AccountKey(accountID, allocID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -173,7 +173,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 	}
 
 	allocID := *input.AllocationId
-	key := utils.AccountKey(accountID, allocID)
+	key := kvutil.AccountKey(accountID, allocID)
 
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
@@ -212,7 +212,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	}
 
 	allocID := *input.AllocationId
-	key := utils.AccountKey(accountID, allocID)
+	key := kvutil.AccountKey(accountID, allocID)
 
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
@@ -665,7 +665,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 			if id == nil {
 				continue
 			}
-			key := utils.AccountKey(accountID, *id)
+			key := kvutil.AccountKey(accountID, *id)
 			entry, err := s.eipKV.Get(ctx, key)
 			if err != nil {
 				continue // not found, skip

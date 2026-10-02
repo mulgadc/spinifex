@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -78,7 +79,7 @@ func RemoveTagsMut(input *ec2.DeleteTagsInput) func(map[string]string) {
 // applying mut. A resource absent from this store is skipped (its tags live
 // elsewhere).
 func UpdateKVRecordTags[R any](ctx context.Context, kv jetstream.KeyValue, accountID, resourceID string, mut func(*R)) error {
-	key := AccountKey(accountID, resourceID)
+	key := kvutil.AccountKey(accountID, resourceID)
 	entry, err := kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {

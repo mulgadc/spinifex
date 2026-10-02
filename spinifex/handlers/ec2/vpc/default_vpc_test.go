@@ -11,9 +11,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -149,12 +149,12 @@ func TestEnsureDefaultVPC_AdoptsOldestExistingDefault(t *testing.T) {
 	const accountID = "000000000051"
 	created := time.Date(2026, 9, 11, 14, 13, 40, 0, time.UTC)
 	for i, id := range []string{"vpc-0000000000000newer", "vpc-0000000000000older"} {
-		putRecord(t, js, handlers_ec2_vpc.KVBucketVPCs, utils.AccountKey(accountID, id), handlers_ec2_vpc.VPCRecord{
+		putRecord(t, js, handlers_ec2_vpc.KVBucketVPCs, kvutil.AccountKey(accountID, id), handlers_ec2_vpc.VPCRecord{
 			VpcId: id, CidrBlock: handlers_ec2_vpc.DefaultVPCCidr, IsDefault: true, VNI: int64(200 + i),
 			CreatedAt: created.Add(time.Duration(1-i) * time.Minute),
 		})
 	}
-	putRecord(t, js, handlers_ec2_vpc.KVBucketSubnets, utils.AccountKey(accountID, "subnet-00000000000older"), handlers_ec2_vpc.SubnetRecord{
+	putRecord(t, js, handlers_ec2_vpc.KVBucketSubnets, kvutil.AccountKey(accountID, "subnet-00000000000older"), handlers_ec2_vpc.SubnetRecord{
 		SubnetId: "subnet-00000000000older", VpcId: "vpc-0000000000000older", CidrBlock: handlers_ec2_vpc.DefaultSubnetCidr,
 		IsDefault: true, CreatedAt: created,
 	})
@@ -183,7 +183,7 @@ func TestEnsureDefaultVPC_FinishesHalfBuiltClaim(t *testing.T) {
 		"route_table_id": "rtb-00000000000half", "internet_gateway_id": "igw-00000000000half",
 		"cidr": handlers_ec2_vpc.DefaultVPCCidr, "subnet_cidr": handlers_ec2_vpc.DefaultSubnetCidr, "vni": 4242,
 	})
-	putRecord(t, js, handlers_ec2_vpc.KVBucketVPCs, utils.AccountKey(accountID, "vpc-00000000000000half"), handlers_ec2_vpc.VPCRecord{
+	putRecord(t, js, handlers_ec2_vpc.KVBucketVPCs, kvutil.AccountKey(accountID, "vpc-00000000000000half"), handlers_ec2_vpc.VPCRecord{
 		VpcId: "vpc-00000000000000half", CidrBlock: handlers_ec2_vpc.DefaultVPCCidr, IsDefault: true, VNI: 4242,
 	})
 

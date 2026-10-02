@@ -8,12 +8,12 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -29,23 +29,23 @@ func setupTestService(t *testing.T) *RouteTableServiceImpl {
 
 	// Seed VPC KV
 	seedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		utils.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
+		kvutil.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
 	})
 
 	// Seed IGW KV (attached to vpc-test1)
 	seedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
-		utils.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`),
+		kvutil.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`),
 	})
 
 	// Seed subnet KV
 	seedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		utils.AccountKey(testAccountID, "subnet-test1"): []byte(`{"subnet_id":"subnet-test1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available"}`),
-		utils.AccountKey(testAccountID, "subnet-priv1"): []byte(`{"subnet_id":"subnet-priv1","vpc_id":"vpc-test1","cidr_block":"10.0.11.0/24","state":"available"}`),
+		kvutil.AccountKey(testAccountID, "subnet-test1"): []byte(`{"subnet_id":"subnet-test1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available"}`),
+		kvutil.AccountKey(testAccountID, "subnet-priv1"): []byte(`{"subnet_id":"subnet-priv1","vpc_id":"vpc-test1","cidr_block":"10.0.11.0/24","state":"available"}`),
 	})
 
 	// Seed NAT Gateway KV
 	seedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
-		utils.AccountKey(testAccountID, "nat-test1"): []byte(`{"nat_gateway_id":"nat-test1","vpc_id":"vpc-test1","subnet_id":"subnet-test1","public_ip":"192.168.1.100","state":"available"}`),
+		kvutil.AccountKey(testAccountID, "nat-test1"): []byte(`{"nat_gateway_id":"nat-test1","vpc_id":"vpc-test1","subnet_id":"subnet-test1","public_ip":"192.168.1.100","state":"available"}`),
 	})
 
 	svc, err := NewRouteTableServiceImplWithNATS(t.Context(), nil, nc)

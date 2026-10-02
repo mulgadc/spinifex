@@ -17,7 +17,6 @@ import (
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -92,7 +91,7 @@ func (s *SpotInstanceServiceImpl) PutSpotInstanceRequests(ctx context.Context, i
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.activeKV.Put(ctx, utils.AccountKey(accountID, sirID), data); err != nil {
+		if _, err := s.activeKV.Put(ctx, kvutil.AccountKey(accountID, sirID), data); err != nil {
 			slog.ErrorContext(ctx, "PutSpotInstanceRequests: KV put failed", "sirId", sirID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -177,7 +176,7 @@ func (s *SpotInstanceServiceImpl) CancelSpotInstanceRequests(ctx context.Context
 	cancelled := make([]*ec2.CancelledSpotInstanceRequest, 0, len(input.SpotInstanceRequestIds))
 	for _, idPtr := range input.SpotInstanceRequestIds {
 		sirID := aws.StringValue(idPtr)
-		key := utils.AccountKey(accountID, sirID)
+		key := kvutil.AccountKey(accountID, sirID)
 
 		record, err := s.readRecord(ctx, s.activeKV, key)
 		if err == nil {

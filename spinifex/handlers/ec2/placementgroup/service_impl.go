@@ -111,7 +111,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 	}
 
 	groupName := *input.GroupName
-	key := utils.AccountKey(accountID, groupName)
+	key := kvutil.AccountKey(accountID, groupName)
 	groupID := utils.GenerateResourceID("pg")
 
 	record := PlacementGroupRecord{
@@ -149,7 +149,7 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 	}
 
 	groupName := *input.GroupName
-	key := utils.AccountKey(accountID, groupName)
+	key := kvutil.AccountKey(accountID, groupName)
 
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
@@ -375,7 +375,7 @@ func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(ctx context.Context, inpu
 	}
 
 	var selected []string
-	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			if record.State != ec2.PlacementGroupStateAvailable {
 				return false, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
@@ -418,7 +418,7 @@ func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(ctx context.Context,
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			maps.Copy(record.NodeInstances, input.NodeInstances)
 			return true, nil
@@ -443,7 +443,7 @@ func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(ctx context.Context, inpu
 		releaseSet[n] = true
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			changed := false
 			for node := range releaseSet {
@@ -471,7 +471,7 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *R
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			instances, exists := record.NodeInstances[input.NodeName]
 			if !exists {
@@ -514,7 +514,7 @@ func (s *PlacementGroupServiceImpl) ReserveClusterNode(ctx context.Context, inpu
 	}
 
 	var targetNode string
-	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			if record.State != ec2.PlacementGroupStateAvailable {
 				return false, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
@@ -551,7 +551,7 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, utils.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			// Append rather than replace: a cluster group can have several launches in flight at once.
 			for node, ids := range input.NodeInstances {

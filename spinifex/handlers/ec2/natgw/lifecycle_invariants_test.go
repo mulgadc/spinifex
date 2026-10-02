@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +41,7 @@ func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 		natgwID := createTestNatGateway(t, svc)
 
 		seedKV(t, js, kvBucketRouteTables, map[string][]byte{
-			utils.AccountKey(testAccountID, "rtb-routed"): fmt.Appendf(nil,
+			kvutil.AccountKey(testAccountID, "rtb-routed"): fmt.Appendf(nil,
 				`{"route_table_id":"rtb-routed","vpc_id":"vpc-test1","routes":[{"destination_cidr_block":"0.0.0.0/0","nat_gateway_id":%q}]}`, natgwID),
 		})
 
@@ -92,7 +92,7 @@ func createTestNatGateway(t *testing.T, svc *NatGatewayServiceImpl) string {
 
 func readEIP(t *testing.T, svc *NatGatewayServiceImpl, allocID string) handlers_ec2_eip.EIPRecord {
 	t.Helper()
-	entry, err := svc.eipKV.Get(t.Context(), utils.AccountKey(testAccountID, allocID))
+	entry, err := svc.eipKV.Get(t.Context(), kvutil.AccountKey(testAccountID, allocID))
 	require.NoError(t, err)
 	var eip handlers_ec2_eip.EIPRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &eip))

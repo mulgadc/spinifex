@@ -12,7 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -36,7 +36,7 @@ func (s *EIPServiceImpl) allocateOnce(ctx context.Context, accountID string, all
 	if key == "" || s.idemKV == nil {
 		return alloc()
 	}
-	kvKey := utils.AccountKey(accountID, idempotencyKeyHash(key))
+	kvKey := kvutil.AccountKey(accountID, idempotencyKeyHash(key))
 
 	if out := s.cachedAllocation(ctx, kvKey); out != nil {
 		slog.WarnContext(ctx, "AllocateAddress: returning first result for a retried request",

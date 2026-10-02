@@ -115,7 +115,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	subnetId := *input.SubnetId
 
 	// Verify subnet exists and belongs to this account
-	subnetEntry, err := s.subnetKV.Get(ctx, utils.AccountKey(accountID, subnetId))
+	subnetEntry, err := s.subnetKV.Get(ctx, kvutil.AccountKey(accountID, subnetId))
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
 	}
@@ -202,7 +202,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal ENI record: %w", err)
 	}
-	if _, err := s.eniKV.Put(ctx, utils.AccountKey(accountID, eniId), data); err != nil {
+	if _, err := s.eniKV.Put(ctx, kvutil.AccountKey(accountID, eniId), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -248,7 +248,7 @@ func (s *VPCServiceImpl) ForceDeleteInstanceENI(ctx context.Context, accountID, 
 }
 
 func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, accountID string, force bool) (*ec2.DeleteNetworkInterfaceOutput, error) {
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 
 	// Get the ENI record
 	entry, err := s.eniKV.Get(ctx, key)
@@ -343,7 +343,7 @@ func (s *VPCServiceImpl) releaseENISideEffects(ctx context.Context, eniId, accou
 // deletion that did not happen.
 func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniID string, force bool) (deleted bool, err error) {
 	const maxAttempts = 3
-	key := utils.AccountKey(accountID, eniID)
+	key := kvutil.AccountKey(accountID, eniID)
 	var lastErr error
 
 	for range maxAttempts {
@@ -455,7 +455,7 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 	}
 
 	eniId := *input.NetworkInterfaceId
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
@@ -696,7 +696,7 @@ func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIn
 }
 
 func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return "", eniNotFoundError(eniId)
@@ -738,7 +738,7 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 // DetachENI marks an ENI as detached from an instance (internal use by TerminateInstances).
 // accountID scopes the lookup to the correct KV key.
 func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string) error {
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return eniNotFoundError(eniId)
@@ -774,7 +774,7 @@ func (s *VPCServiceImpl) GetENIRecord(accountID, eniId string) (ENIRecord, error
 }
 
 func (s *VPCServiceImpl) getENIRecord(ctx context.Context, accountID, eniId string) (ENIRecord, error) {
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return ENIRecord{}, eniNotFoundError(eniId)
@@ -794,7 +794,7 @@ func (s *VPCServiceImpl) UpdateENI(accountID, eniId string, fn func(*ENIRecord))
 }
 
 func (s *VPCServiceImpl) updateENI(ctx context.Context, accountID, eniId string, fn func(*ENIRecord)) error {
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return eniNotFoundError(eniId)
@@ -984,7 +984,7 @@ func (s *VPCServiceImpl) UpdateENIPublicIP(accountID, eniId, publicIP, poolName 
 }
 
 func (s *VPCServiceImpl) updateENIPublicIP(ctx context.Context, accountID, eniId, publicIP, poolName string) error {
-	key := utils.AccountKey(accountID, eniId)
+	key := kvutil.AccountKey(accountID, eniId)
 	entry, err := s.eniKV.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("ENI %s not found: %w", eniId, err)
@@ -1019,7 +1019,7 @@ func (s *VPCServiceImpl) fillSGNames(ctx context.Context, accountID string, ids 
 			continue
 		}
 		names[id] = ""
-		entry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, id))
+		entry, err := s.sgKV.Get(ctx, kvutil.AccountKey(accountID, id))
 		if err != nil {
 			slog.WarnContext(ctx, "fillSGNames: SG read failed", "groupId", id, "err", err)
 			continue
@@ -1189,7 +1189,7 @@ func (s *VPCServiceImpl) validateSGAttachment(ctx context.Context, accountID str
 
 	// Each SG must exist in the caller's account and belong to the same VPC.
 	for _, sgId := range sgIds {
-		sgEntry, err := s.sgKV.Get(ctx, utils.AccountKey(accountID, sgId))
+		sgEntry, err := s.sgKV.Get(ctx, kvutil.AccountKey(accountID, sgId))
 		if err != nil {
 			return sgNotFoundError(sgId)
 		}

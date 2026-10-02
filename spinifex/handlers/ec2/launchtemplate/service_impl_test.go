@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -116,7 +116,7 @@ func TestCreateLaunchTemplate_OrphanNameReclaim(t *testing.T) {
 	lt := createTemplate(t, svc, "orphan", "t3.micro")
 
 	// Simulate a crash after the name claim but with the header lost.
-	require.NoError(t, svc.kv.Delete(t.Context(), utils.AccountKey(testAccountID, aws.StringValue(lt.LaunchTemplateId))))
+	require.NoError(t, svc.kv.Delete(t.Context(), kvutil.AccountKey(testAccountID, aws.StringValue(lt.LaunchTemplateId))))
 
 	// The name index still points at the now-orphaned id; create must reclaim it.
 	out, err := svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{

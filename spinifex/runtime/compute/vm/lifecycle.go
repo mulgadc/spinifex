@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
@@ -596,7 +597,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	// Second QMP monitor for the metrics collector; a stale socket from a
 	// SIGKILLed QEMU is unlinked so the fresh process can bind. Telemetry
 	// never blocks a launch — failures degrade to no metrics for this VM.
-	if telemetrySocket, terr := utils.GenerateSocketFile(utils.QMPTelemetryPrefix + instance.ID); terr != nil {
+	if telemetrySocket, terr := utils.GenerateSocketFile(telemetryv1.QMPTelemetryPrefix + instance.ID); terr != nil {
 		slog.Warn("Failed to generate telemetry QMP socket", "instanceId", instance.ID, "err", terr)
 	} else {
 		_ = os.Remove(telemetrySocket)

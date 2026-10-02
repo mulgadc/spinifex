@@ -8,7 +8,6 @@ import (
 	"time"
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 func writeMeta(t *testing.T, dir string, meta telemetryv1.GuestTelemetryMeta) string {
@@ -17,7 +16,7 @@ func writeMeta(t *testing.T, dir string, meta telemetryv1.GuestTelemetryMeta) st
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, utils.QMPTelemetryPrefix+meta.InstanceID+".json")
+	path := telemetryv1.GuestTelemetryMetaPath(dir, meta.InstanceID)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +38,7 @@ func TestReconcile(t *testing.T) {
 	ctx := t.Context()
 
 	// Live VM: metadata + socket present.
-	liveSock := filepath.Join(dir, utils.QMPTelemetryPrefix+"i-live.sock")
+	liveSock := filepath.Join(dir, telemetryv1.QMPTelemetryPrefix+"i-live.sock")
 	touch(t, liveSock)
 	writeMeta(t, dir, telemetryv1.GuestTelemetryMeta{
 		InstanceID: "i-live", Socket: liveSock, PeriodSeconds: 300})
@@ -49,7 +48,7 @@ func TestReconcile(t *testing.T) {
 		InstanceID: "i-stale", Socket: filepath.Join(dir, "gone.sock"), PeriodSeconds: 300})
 
 	// Garbage file matching the glob — skipped, not fatal.
-	garbage := filepath.Join(dir, utils.QMPTelemetryPrefix+"i-bad.json")
+	garbage := telemetryv1.GuestTelemetryMetaPath(dir, "i-bad")
 	if err := os.WriteFile(garbage, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +78,7 @@ func TestReconcile(t *testing.T) {
 	}
 
 	// VM gone: metadata removed — poller must stop and be dropped.
-	if err := os.Remove(filepath.Join(dir, utils.QMPTelemetryPrefix+"i-live.json")); err != nil {
+	if err := os.Remove(telemetryv1.GuestTelemetryMetaPath(dir, "i-live")); err != nil {
 		t.Fatal(err)
 	}
 	c.reconcile(ctx)

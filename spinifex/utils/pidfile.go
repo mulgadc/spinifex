@@ -136,15 +136,6 @@ func RemovePidFile(serviceName string) error {
 	return nil
 }
 
-// QMPTelemetryPrefix names the per-VM telemetry QMP socket and its sidecar
-// metadata file in the runtime dir: <prefix><instance-id>.sock / .json.
-const QMPTelemetryPrefix = "qmp-telemetry-"
-
-// TelemetryMetaPath returns the qmp-collector discovery file for an instance.
-func TelemetryMetaPath(instanceID string) string {
-	return filepath.Join(RuntimeDir(), QMPTelemetryPrefix+instanceID+".json")
-}
-
 // RuntimeDir returns the runtime directory used for PID files, sockets, and logs.
 func RuntimeDir() string {
 	if os.Getenv("XDG_RUNTIME_DIR") != "" {

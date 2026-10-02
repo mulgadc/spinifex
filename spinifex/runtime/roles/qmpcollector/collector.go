@@ -15,7 +15,6 @@ import (
 	"time"
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -52,7 +51,7 @@ func (c *collector) run(ctx context.Context) {
 // whose socket vanished is a leftover from an unclean QEMU exit: it is GC'd
 // so terminated instances stop being polled.
 func (c *collector) reconcile(ctx context.Context) {
-	pattern := filepath.Join(c.cfg.RuntimeDir, utils.QMPTelemetryPrefix+"*.json")
+	pattern := filepath.Join(c.cfg.RuntimeDir, telemetryv1.QMPTelemetryPrefix+"*.json")
 	files, err := filepath.Glob(pattern)
 	if err != nil {
 		slog.Error("qmp-collector: metadata glob failed", "pattern", pattern, "err", err)

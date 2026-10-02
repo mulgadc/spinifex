@@ -69,7 +69,7 @@ func writeTelemetryMeta(v *VM) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(utils.TelemetryMetaPath(v.ID), data, 0o600)
+	return os.WriteFile(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID), data, 0o600)
 }
 
 // refreshTelemetryMeta rewrites the discovery file after an ENI change; safe
@@ -93,5 +93,5 @@ func removeTelemetryArtifacts(v *VM) {
 	if v.Config.TelemetryQMPSocket != "" {
 		_ = os.Remove(v.Config.TelemetryQMPSocket)
 	}
-	_ = os.Remove(utils.TelemetryMetaPath(v.ID))
+	_ = os.Remove(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID))
 }

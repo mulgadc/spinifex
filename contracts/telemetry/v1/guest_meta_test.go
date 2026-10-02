@@ -26,3 +26,10 @@ func TestGuestTelemetryMetaJSONContract(t *testing.T) {
 		"socket":"/run/spinifex/qmp-telemetry-i-0123456789abcdef0.sock"
 	}`, string(data))
 }
+
+func TestGuestTelemetryMetaPath(t *testing.T) {
+	require.Equal(t,
+		"/run/spinifex/qmp-telemetry-i-0123456789abcdef0.json",
+		GuestTelemetryMetaPath("/run/spinifex", "i-0123456789abcdef0"),
+	)
+}

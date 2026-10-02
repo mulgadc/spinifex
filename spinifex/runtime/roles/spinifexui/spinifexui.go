@@ -21,7 +21,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 var serviceName = "spinifex-ui"
@@ -126,7 +126,7 @@ func New(config any) (*Service, error) {
 
 // Start starts the spinifex-ui service.
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		slog.Error("Failed to write pid file", "err", err)
 	}
 

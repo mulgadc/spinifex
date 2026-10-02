@@ -14,6 +14,7 @@ import (
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	nsserver "github.com/mulgadc/northstar/pkg/server"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -65,7 +66,7 @@ func (svc *Service) Start() (int, error) {
 	}
 	svc.server = server
 
-	if err := utils.WritePidFileTo(svc.Config.BasePath, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BasePath, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 

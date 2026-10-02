@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -668,7 +669,7 @@ func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
 }
 
 // refreshSystemInstanceState regenerates the tmpfs-backed fw_cfg blobs that
-// QEMU loads at boot. The blobs live under utils.RuntimeDir() (tmpfs on
+// QEMU loads at boot. The blobs live under hostprocess.RuntimeDir() (tmpfs on
 // production hosts) and are wiped on host reboot while the persisted
 // vm.Config still references the same paths. Customer VMs use only paths
 // under /var/lib/spinifex/ and are a no-op.
@@ -778,7 +779,7 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 // (PID file, console log, serial socket) are filled in later by startQEMU.
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
-// (netcfg, lb-agent-env, ca-cert) under utils.RuntimeDir().
+// (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
 func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.SystemInstanceInput) (vm.Config, error) {
 	it := d.resourceMgr.instanceTypes[input.InstanceType]
 	architecture := "x86_64"
@@ -923,11 +924,11 @@ func tapNameForNIC(idx int, _ handlers_elbv2.NICConfig, instanceID string, input
 }
 
 // writeFwCfgBlobs serialises NIC configuration, lb-agent env, and CA cert to
-// per-VM tmpfiles under utils.RuntimeDir(). Returns the fw_cfg entries for the
+// per-VM tmpfiles under hostprocess.RuntimeDir(). Returns the fw_cfg entries for the
 // three blobs and an error if any write fails or the NIC default invariant is
 // violated.
 func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
-	runtimeDir := utils.RuntimeDir()
+	runtimeDir := hostprocess.RuntimeDir()
 
 	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))

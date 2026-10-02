@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -36,7 +37,7 @@ type Config struct {
 	NodeName string
 
 	// RuntimeDir overrides where qmp-telemetry-* sockets and metadata live
-	// (default utils.RuntimeDir()); ProcRoot / SysRoot override /proc and
+	// (default hostprocess.RuntimeDir()); ProcRoot / SysRoot override /proc and
 	// /sys. Test injection points.
 	RuntimeDir string
 	ProcRoot   string
@@ -61,7 +62,7 @@ func New(config any) (*Service, error) {
 
 // Start runs the collector until SIGINT/SIGTERM.
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 
@@ -74,7 +75,7 @@ func (svc *Service) Start() (int, error) {
 
 func launchService(cfg *Config) error {
 	if cfg.RuntimeDir == "" {
-		cfg.RuntimeDir = utils.RuntimeDir()
+		cfg.RuntimeDir = hostprocess.RuntimeDir()
 	}
 	if cfg.ProcRoot == "" {
 		cfg.ProcRoot = "/proc"

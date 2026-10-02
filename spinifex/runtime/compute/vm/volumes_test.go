@@ -18,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -863,8 +863,8 @@ func TestQMPHeartbeatPoll_UsesRunstate(t *testing.T) {
 	m := NewManager()
 	instance := &VM{ID: "i-heartbeat-runstate", Status: StateRunning, QMPClient: qmpClient}
 	m.Insert(instance)
-	require.NoError(t, utils.WritePidFile(instance.ID, os.Getpid()))
-	t.Cleanup(func() { _ = utils.RemovePidFile(instance.ID) })
+	require.NoError(t, hostprocess.WritePidFile(instance.ID, os.Getpid()))
+	t.Cleanup(func() { _ = hostprocess.RemovePidFile(instance.ID) })
 
 	for range QMPMaxConsecutiveFailures {
 		assert.True(t, m.qmpHeartbeatPoll(instance))
@@ -1570,7 +1570,7 @@ func TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals(t *testing.T) {
 	defer cancel()
 
 	const id = "i-1"
-	require.NoError(t, utils.WritePidFile(id, 999999)) // PID file present but process dead
+	require.NoError(t, hostprocess.WritePidFile(id, 999999)) // PID file present but process dead
 
 	mounter := &fakeVolumeMounter{}
 	updater := &fakeVolumeStateUpdater{}
@@ -1634,8 +1634,8 @@ func TestDetachVolume_BlockdevDelAlreadyRemoved_IdempotentSuccess(t *testing.T) 
 func TestReboot_WedgedGuestFallsBackToHardReset(t *testing.T) {
 	pausingGuest(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	require.NoError(t, utils.WritePidFile("i-1", os.Getpid()))
-	t.Cleanup(func() { _ = utils.RemovePidFile("i-1") })
+	require.NoError(t, hostprocess.WritePidFile("i-1", os.Getpid()))
+	t.Cleanup(func() { _ = hostprocess.RemovePidFile("i-1") })
 
 	previous := rebootPowerdownTimeout
 	rebootPowerdownTimeout = 30 * time.Millisecond

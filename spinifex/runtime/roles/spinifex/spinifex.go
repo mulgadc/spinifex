@@ -7,7 +7,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 var serviceName = "spinifex"
@@ -33,7 +33,7 @@ func (svc *Service) SetConfigPath(path string) {
 }
 
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.NodeBaseDir(), serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.NodeBaseDir(), serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 	err := launchService(svc.Config, svc.ConfigPath)

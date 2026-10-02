@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -278,7 +279,7 @@ func markUnschedulable(instance *VM, reason string) {
 // Returns true when the process is gone and classification can proceed.
 // SIGKILL is used directly to avoid the 120s SIGTERM timeout blocking startup.
 func killOrphanedQEMU(instance *VM) bool {
-	pid, pidErr := utils.ReadPidFile(instance.ID)
+	pid, pidErr := hostprocess.ReadPidFile(instance.ID)
 	if pidErr != nil || pid <= 0 {
 		slog.Error("Cannot read PID for orphaned QEMU, skipping relaunch",
 			"instanceId", instance.ID, "err", pidErr)
@@ -289,12 +290,12 @@ func killOrphanedQEMU(instance *VM) bool {
 	}
 	// SIGKILL cannot be caught; QEMU never runs its cleanup so the PID
 	// file stays on disk. Wait for the process to die, then remove it.
-	if err := utils.WaitForProcessExit(pid, 10*time.Second); err != nil {
+	if err := hostprocess.WaitForProcessExit(pid, 10*time.Second); err != nil {
 		slog.Error("Orphaned QEMU did not exit after SIGKILL, skipping relaunch",
 			"instanceId", instance.ID, "pid", pid, "err", err)
 		return false
 	}
-	_ = utils.RemovePidFile(instance.ID)
+	_ = hostprocess.RemovePidFile(instance.ID)
 	return true
 }
 
@@ -501,7 +502,7 @@ func (m *Manager) reconnectInstance(instance *VM) error {
 // isInstanceProcessRunning reports whether the QEMU process in the PID file
 // is still alive. Returns false on any failure (missing file, dead PID).
 func isInstanceProcessRunning(instance *VM) bool {
-	pid, err := utils.ReadPidFile(instance.ID)
+	pid, err := hostprocess.ReadPidFile(instance.ID)
 	if err != nil || pid <= 0 {
 		return false
 	}

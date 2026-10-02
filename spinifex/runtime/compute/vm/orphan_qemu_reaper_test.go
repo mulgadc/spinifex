@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func TestOrphanQEMUReaper(t *testing.T) {
 		wg.Go(func() { _ = cmd.Wait() })
 
 		const id = "i-orphan-term"
-		require.NoError(t, utils.WritePidFile(id, pid))
+		require.NoError(t, hostprocess.WritePidFile(id, pid))
 		store.terminated[id] = &VM{ID: id, Status: StateTerminated}
 
 		reaped, err := reaper.Sweep(context.Background())
@@ -39,9 +39,9 @@ func TestOrphanQEMUReaper(t *testing.T) {
 		wg.Wait()
 
 		assert.Equal(t, 1, reaped, "the orphan QEMU for a terminated instance must be reaped")
-		assert.False(t, utils.ProcessAlive(pid),
+		assert.False(t, hostprocess.ProcessAlive(pid),
 			"a terminated instance must have no surviving process — otherwise it holds OVN ports ")
-		_, perr := utils.ReadPidFile(id)
+		_, perr := hostprocess.ReadPidFile(id)
 		assert.Error(t, perr, "the PID file must be removed after reaping")
 	})
 
@@ -57,13 +57,13 @@ func TestOrphanQEMUReaper(t *testing.T) {
 	t.Run("stale PID file (dead process) is cleaned without counting as a reap", func(t *testing.T) {
 		reaper, store := newOrphanReaperManager(t)
 		const id = "i-term-stale"
-		require.NoError(t, utils.WritePidFile(id, 999999)) // dead pid
+		require.NoError(t, hostprocess.WritePidFile(id, 999999)) // dead pid
 		store.terminated[id] = &VM{ID: id, Status: StateTerminated}
 
 		reaped, err := reaper.Sweep(context.Background())
 		require.NoError(t, err)
 		assert.Zero(t, reaped, "a dead process is not a reap")
-		_, perr := utils.ReadPidFile(id)
+		_, perr := hostprocess.ReadPidFile(id)
 		assert.Error(t, perr, "the stale PID file must be cleaned up")
 	})
 
@@ -76,12 +76,12 @@ func TestOrphanQEMUReaper(t *testing.T) {
 		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 
 		// PID file exists but the instance is NOT in the terminated bucket.
-		require.NoError(t, utils.WritePidFile("i-running", pid))
+		require.NoError(t, hostprocess.WritePidFile("i-running", pid))
 
 		reaped, err := reaper.Sweep(context.Background())
 		require.NoError(t, err)
 		assert.Zero(t, reaped, "only terminated instances are candidates")
-		assert.True(t, utils.ProcessAlive(pid), "a non-terminated instance's process must survive")
+		assert.True(t, hostprocess.ProcessAlive(pid), "a non-terminated instance's process must survive")
 	})
 
 	t.Run("reconciles a wedged shutting-down instance whose QEMU vanished", func(t *testing.T) {
@@ -122,7 +122,7 @@ func TestOrphanQEMUReaper(t *testing.T) {
 
 		const id = "i-terminating"
 		m.InsertIfAbsent(&VM{ID: id, Status: StateShuttingDown})
-		require.NoError(t, utils.WritePidFile(id, pid))
+		require.NoError(t, hostprocess.WritePidFile(id, pid))
 
 		reaped, err := reaper.Sweep(context.Background())
 		require.NoError(t, err)

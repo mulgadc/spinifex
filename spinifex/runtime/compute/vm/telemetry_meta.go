@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // telemetryPeriodSeconds maps the instance's EC2 monitoring tier to the
@@ -69,7 +69,7 @@ func writeTelemetryMeta(v *VM) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID), data, 0o600)
+	return os.WriteFile(telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID), data, 0o600)
 }
 
 // refreshTelemetryMeta rewrites the discovery file after an ENI change; safe
@@ -93,5 +93,5 @@ func removeTelemetryArtifacts(v *VM) {
 	if v.Config.TelemetryQMPSocket != "" {
 		_ = os.Remove(v.Config.TelemetryQMPSocket)
 	}
-	_ = os.Remove(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID))
+	_ = os.Remove(telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID))
 }

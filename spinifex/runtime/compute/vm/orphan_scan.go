@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // qemuProcessPrefix matches both qemu-system-x86_64 and qemu-system-aarch64;
@@ -60,7 +60,7 @@ func pidFileOwners(runtimeDir string) map[int]string {
 		if !ok {
 			continue
 		}
-		if pid, err := utils.ReadPidFileFrom(runtimeDir, id); err == nil {
+		if pid, err := hostprocess.ReadPidFileFrom(runtimeDir, id); err == nil {
 			owners[pid] = id
 		}
 	}
@@ -116,7 +116,7 @@ func (m *Manager) reportRecordlessQEMUOrphans() {
 		known[instance.ID] = true
 	}
 
-	orphans, err := classifyQEMUOrphans(qemuProcRoot, utils.RuntimeDir(), known)
+	orphans, err := classifyQEMUOrphans(qemuProcRoot, hostprocess.RuntimeDir(), known)
 	if err != nil {
 		slog.Warn("recordless QEMU orphan scan failed", "error", err)
 		return

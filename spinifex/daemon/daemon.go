@@ -78,6 +78,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -1383,7 +1384,7 @@ func (d *Daemon) startLocal() error {
 	}
 
 	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
-	if err := utils.SetOOMScore(os.Getpid(), -500); err != nil {
+	if err := hostprocess.SetOOMScore(os.Getpid(), -500); err != nil {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
 	}
 

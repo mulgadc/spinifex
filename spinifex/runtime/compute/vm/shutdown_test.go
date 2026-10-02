@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -31,7 +31,7 @@ const markFailedDeadline = 10 * time.Second
 // what cleanup ran (and what didn't).
 //
 // Sets XDG_RUNTIME_DIR to a per-test tempdir so PID-file paths
-// (utils.WaitForPidFileRemoval, ReadPidFile) cannot collide between
+// (hostprocess.WaitForPidFileRemoval, ReadPidFile) cannot collide between
 // concurrent or sequential tests sharing the host's real runtime dir.
 func shutdownTestManager(t *testing.T) (m *Manager, store *fakeStateStore, mounter *fakeVolumeMounter, cleaner *recordingInstanceCleaner, rt *recordedTransitions) {
 	t.Helper()
@@ -889,7 +889,7 @@ func (f *failingSaveRunningStore) SaveRunningState(string, map[string]*VM) error
 // recording cleaner. Returns everything callers may need to assert on.
 //
 // Sets XDG_RUNTIME_DIR to a per-test tempdir so PID-file paths
-// (utils.WaitForPidFileRemoval, ReadPidFile invoked from
+// (hostprocess.WaitForPidFileRemoval, ReadPidFile invoked from
 // shutdownAndUnmount) cannot collide between tests.
 func terminateTestManager(t *testing.T, store StateStore) (m *Manager, cleaner *recordingInstanceCleaner, rt *recordedTransitions, downCount *atomic.Int64, downIDs *[]string) {
 	t.Helper()
@@ -1467,14 +1467,14 @@ func TestShutdownAndUnmount_PowerdownSent_NoForceKill(t *testing.T) {
 // runs and the unmount step still fires.
 func TestShutdownAndUnmount_PIDFileRemovedBeforeTimeout_NoForceKill(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	require.NoError(t, utils.WritePidFile("i-pid-removed", os.Getpid()))
+	require.NoError(t, hostprocess.WritePidFile("i-pid-removed", os.Getpid()))
 
 	mounter := &fakeVolumeMounter{}
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		_ = utils.RemovePidFile("i-pid-removed")
+		_ = hostprocess.RemovePidFile("i-pid-removed")
 	}()
 
 	instance := &VM{ID: "i-pid-removed", QMPClient: nil}
@@ -1651,8 +1651,8 @@ func TestTerminate_SealFailure_Tolerated(t *testing.T) {
 // guest that was only busy booting, so the button is pressed again.
 func TestGracefulPowerdown_ResendReachesALateGuest(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	require.NoError(t, utils.WritePidFile("i-late", os.Getpid()))
-	t.Cleanup(func() { _ = utils.RemovePidFile("i-late") })
+	require.NoError(t, hostprocess.WritePidFile("i-late", os.Getpid()))
+	t.Cleanup(func() { _ = hostprocess.RemovePidFile("i-late") })
 
 	var presses int
 	recorder := &qmpRecorder{}
@@ -1686,8 +1686,8 @@ func TestGracefulPowerdown_ResendReachesALateGuest(t *testing.T) {
 // to SIGKILL on and Reboot escalates to a hard reset on.
 func TestGracefulPowerdown_WedgedGuestTimesOut(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	require.NoError(t, utils.WritePidFile("i-wedged", os.Getpid()))
-	t.Cleanup(func() { _ = utils.RemovePidFile("i-wedged") })
+	require.NoError(t, hostprocess.WritePidFile("i-wedged", os.Getpid()))
+	t.Cleanup(func() { _ = hostprocess.RemovePidFile("i-wedged") })
 
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
 		if cmd.Execute == "query-status" {

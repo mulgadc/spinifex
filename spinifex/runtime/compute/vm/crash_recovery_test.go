@@ -113,7 +113,7 @@ func TestRestartBackoff_Exponential(t *testing.T) {
 // shutdown signal.
 //
 // Sets XDG_RUNTIME_DIR to a per-test tempdir so PID-file paths
-// (utils.WaitForPidFileRemoval, ReadPidFile) cannot collide between
+// (hostprocess.WaitForPidFileRemoval, ReadPidFile) cannot collide between
 // tests sharing the host's real runtime dir.
 func crashTestManager(t *testing.T) (m *Manager, rc *fakeResourceController, rt *recordedTransitions, shuttingDown *atomic.Bool) {
 	t.Helper()

@@ -11,7 +11,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 var serviceName = "predastore"
@@ -67,7 +67,7 @@ func (svc *Service) Start() (int, error) {
 		return 0, fmt.Errorf("predastore encryption key file is required (set EncryptionKeyFile)")
 	}
 
-	if err := utils.WritePidFileTo(svc.Config.BasePath, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BasePath, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 

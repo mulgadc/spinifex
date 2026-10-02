@@ -11,7 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 )
 
@@ -79,7 +79,7 @@ func (d *Daemon) handleShutdownGate(msg *nats.Msg) string {
 
 	// Stop AWSGW
 	if d.config.HasService("awsgw") {
-		if err := utils.StopProcessAt(d.pidDir(), "awsgw"); err != nil {
+		if err := hostprocess.StopProcessAt(d.pidDir(), "awsgw"); err != nil {
 			slog.Warn("Failed to stop awsgw", "error", err)
 		} else {
 			stopped = append(stopped, "awsgw")
@@ -88,7 +88,7 @@ func (d *Daemon) handleShutdownGate(msg *nats.Msg) string {
 
 	// Stop UI
 	if d.config.HasService("ui") {
-		if err := utils.StopProcessAt(d.pidDir(), "spinifex-ui"); err != nil {
+		if err := hostprocess.StopProcessAt(d.pidDir(), "spinifex-ui"); err != nil {
 			slog.Warn("Failed to stop spinifex-ui", "error", err)
 		} else {
 			stopped = append(stopped, "spinifex-ui")
@@ -97,7 +97,7 @@ func (d *Daemon) handleShutdownGate(msg *nats.Msg) string {
 
 	// Stop vpcd (VPC daemon)
 	if d.config.HasService("vpcd") {
-		if err := utils.StopProcessAt(d.pidDir(), "vpcd"); err != nil {
+		if err := hostprocess.StopProcessAt(d.pidDir(), "vpcd"); err != nil {
 			slog.Warn("Failed to stop vpcd", "error", err)
 		} else {
 			stopped = append(stopped, "vpcd")
@@ -196,14 +196,14 @@ func (d *Daemon) handleShutdownStorage(msg *nats.Msg) string {
 	var stopped []string
 
 	if d.config.HasService("viperblock") {
-		if err := utils.StopProcessAt(d.pidDir(), "viperblock"); err != nil {
+		if err := hostprocess.StopProcessAt(d.pidDir(), "viperblock"); err != nil {
 			slog.Warn("Failed to stop viperblock", "error", err)
 		} else {
 			stopped = append(stopped, "viperblock")
 		}
 	}
 
-	cleanupOrphanNBDKit(utils.RuntimeDir())
+	cleanupOrphanNBDKit(hostprocess.RuntimeDir())
 
 	ack := ShutdownACK{
 		Node:    d.node,
@@ -232,7 +232,7 @@ func (d *Daemon) handleShutdownPersist(msg *nats.Msg) string {
 	var stopped []string
 
 	if d.config.HasService("predastore") {
-		if err := utils.StopProcessAt(d.pidDir(), "predastore"); err != nil {
+		if err := hostprocess.StopProcessAt(d.pidDir(), "predastore"); err != nil {
 			slog.Warn("Failed to stop predastore", "error", err)
 		} else {
 			stopped = append(stopped, "predastore")
@@ -287,7 +287,7 @@ func (d *Daemon) handleShutdownInfra(msg *nats.Msg) string {
 
 	// Stop NATS server if this node runs it
 	if d.config.HasService("nats") {
-		if err := utils.StopProcessAt(d.pidDir(), "nats"); err != nil {
+		if err := hostprocess.StopProcessAt(d.pidDir(), "nats"); err != nil {
 			slog.Warn("Failed to stop nats", "error", err)
 		} else {
 			slog.Info("NATS server stopped", "node", d.node)

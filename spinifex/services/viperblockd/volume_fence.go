@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -119,7 +119,7 @@ func (cfg *Config) writerAlive(pid int) bool {
 	if cfg.processAlive != nil {
 		return cfg.processAlive(pid)
 	}
-	return utils.ProcessAlive(pid)
+	return hostprocess.ProcessAlive(pid)
 }
 
 // fenceWatchInterval is how often a failed fence re-checks its writer.
@@ -252,7 +252,7 @@ func (cfg *Config) tearDownExport(ctx context.Context, matched MountedVolume, wh
 		matched.VB.Detach()
 	}
 
-	if err := utils.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
+	if err := hostprocess.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
 		return err
 	}
 

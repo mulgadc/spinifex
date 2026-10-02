@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	vbtypes "github.com/mulgadc/viperblock/types"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -1440,7 +1441,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	}
 
 	// Generate PID file for nbdkit process
-	nbdPidFile, err := utils.GeneratePidFile(fmt.Sprintf("nbdkit-vol-%s", volumeName))
+	nbdPidFile, err := hostprocess.GeneratePidFile(fmt.Sprintf("nbdkit-vol-%s", volumeName))
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to generate nbdkit pid file", "err", err)
 		ebsResponse.Error = fmt.Sprintf("failed to generate pid file: %v", err)
@@ -1631,13 +1632,13 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 		// drains to the backend and leaves a receipt. SIGKILLing into that
 		// discards the drain and leaves the WAL for the fallback seal below to
 		// replay, which costs far more than the caller's deadline allows.
-		utils.TerminateProcess(matched.PID, pluginSealGrace)
+		hostprocess.TerminateProcess(matched.PID, pluginSealGrace)
 
 		// The seal below rewrites the directory nbdkit writes, so a kill that
 		// did not take makes it a concurrent write to that directory. Fail the
 		// unmount instead: the entry stays mounted and a retry re-attempts
 		// both, which is what a failed seal already does.
-		if err := utils.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
+		if err := hostprocess.ForceKillProcess(matched.PID, fenceKillTimeout); err != nil {
 			slog.ErrorContext(ctx, "ebs.unmount: nbdkit did not exit, refusing to seal underneath a live writer",
 				"volume", matched.Name, "pid", matched.PID, "err", err)
 			ebsResponse.Error = fmt.Sprintf("kill nbdkit for %s: %v", matched.Name, err)
@@ -1851,7 +1852,7 @@ func mountEntryIsStale(mv MountedVolume) (bool, string) {
 			return true, "socket is gone"
 		}
 	}
-	if mv.PID > 0 && !utils.ProcessAlive(mv.PID) {
+	if mv.PID > 0 && !hostprocess.ProcessAlive(mv.PID) {
 		return true, "nbdkit process is gone"
 	}
 	return false, ""

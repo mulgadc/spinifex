@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -377,7 +377,7 @@ func TestReapOrphanedNbdkit_NoReferencer_SignalsAndRemovesSocket(t *testing.T) {
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-unreferenced1", Socket: socket}
 	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
 
-	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"an unreferenced orphan must be signalled and exit")
 	_, err := os.Stat(socket)
 	assert.True(t, os.IsNotExist(err), "the reaped orphan's socket file must be removed")
@@ -406,7 +406,7 @@ func TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged(t *testing.T) {
 
 	// Give a real signal every chance to have landed before asserting it did not.
 	time.Sleep(100 * time.Millisecond)
-	assert.True(t, utils.ProcessAlive(pid), "a referenced orphan must never be signalled")
+	assert.True(t, hostprocess.ProcessAlive(pid), "a referenced orphan must never be signalled")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "a live orphan's socket must not be removed")
 	assert.Contains(t, logs.String(), "left running deliberately")
@@ -430,7 +430,7 @@ func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *test
 	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
 
 	time.Sleep(100 * time.Millisecond)
-	assert.True(t, utils.ProcessAlive(pid), "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
+	assert.True(t, hostprocess.ProcessAlive(pid), "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
 }
 
 // unreadableProcDir creates procRoot/<pid> with a cmdline file inside, then
@@ -503,7 +503,7 @@ func TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged(t *testing.
 	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
 
 	time.Sleep(100 * time.Millisecond)
-	assert.True(t, utils.ProcessAlive(pid), "an inconclusive scan must never result in a signal")
+	assert.True(t, hostprocess.ProcessAlive(pid), "an inconclusive scan must never result in a signal")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because the scan was inconclusive must keep its socket")
 	assert.Contains(t, logs.String(), "could not scan for processes")
@@ -577,7 +577,7 @@ func TestReapOrphanedNbdkit_HidepidInvisible_DeclinesEvenOnACleanScan(t *testing
 	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
 
 	time.Sleep(100 * time.Millisecond)
-	assert.True(t, utils.ProcessAlive(pid), "hidepid=invisible must never be read as a clean 'no referencer' scan")
+	assert.True(t, hostprocess.ProcessAlive(pid), "hidepid=invisible must never be read as a clean 'no referencer' scan")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because entries could be hidden must keep its socket")
 	assert.Contains(t, logs.String(), "hides other users' process entries")
@@ -629,9 +629,9 @@ func TestRecoverMountedVolumes_DuplicateVolume_UnusedDuplicateReaped(t *testing.
 		}
 	}
 
-	require.Eventually(t, func() bool { return !utils.ProcessAlive(duplicatePID) }, 2*time.Second, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(duplicatePID) }, 2*time.Second, 20*time.Millisecond,
 		"the unused duplicate must be reaped")
-	assert.True(t, utils.ProcessAlive(mv.PID), "the adopted process must never be signalled")
+	assert.True(t, hostprocess.ProcessAlive(mv.PID), "the adopted process must never be signalled")
 	_, err := os.Stat(duplicateSocket)
 	assert.True(t, os.IsNotExist(err), "the reaped duplicate's socket file must be removed")
 }
@@ -661,7 +661,7 @@ func TestRecoverMountedVolumes_UnadoptableReapedAcrossRestarts(t *testing.T) {
 	logs := captureLogs(t)
 	recoverMountedVolumes(context.Background(), cfg, nc, procRoot)
 
-	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"an unadoptable backend with no referencer must be reaped on its first recovery pass")
 	assert.Contains(t, logs.String(), "reaped unclaimed nbdkit process")
 	_, ok := findMountedVolume(cfg, volumeName)
@@ -779,7 +779,7 @@ func TestReapUnregisteredNbdkit_ReapsAnExportTheRegistryNeverClaimed(t *testing.
 	assert.True(t, reapUnregisteredNbdkit(context.Background(), cfg, volumeName),
 		"an export serving a volume with no registry entry must be reported as reaped")
 
-	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"the unregistered export must be signalled and exit")
 	_, err := os.Stat(socket)
 	assert.True(t, os.IsNotExist(err), "the reaped export's socket file must be removed")
@@ -796,7 +796,7 @@ func TestReapUnregisteredNbdkit_LeavesAnotherVolumeAlone(t *testing.T) {
 
 	assert.False(t, reapUnregisteredNbdkit(context.Background(), cfg, "vol-unreg0002"),
 		"the boot volume's unmount must not claim to have reaped the EFI volume's export")
-	assert.True(t, utils.ProcessAlive(pid), "an export for a different volume must be left running")
+	assert.True(t, hostprocess.ProcessAlive(pid), "an export for a different volume must be left running")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an export for a different volume must keep its socket")
 }
@@ -811,7 +811,7 @@ func TestReapUnregisteredNbdkit_LeavesAForeignExportAlone(t *testing.T) {
 
 	assert.False(t, reapUnregisteredNbdkit(context.Background(), cfg, volumeName),
 		"an export for a different data dir belongs to a different daemon")
-	assert.True(t, utils.ProcessAlive(pid), "a foreign export must be left running")
+	assert.True(t, hostprocess.ProcessAlive(pid), "a foreign export must be left running")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "a foreign export must keep its socket")
 }
@@ -827,7 +827,7 @@ func TestReapUnregisteredNbdkit_LeavesAReferencedExportAlone(t *testing.T) {
 	logs := captureLogs(t)
 	assert.False(t, reapUnregisteredNbdkit(context.Background(), cfg, volumeName),
 		"an export something still references must not be reported as reaped")
-	assert.True(t, utils.ProcessAlive(pid), "an export a live process references must be left running")
+	assert.True(t, hostprocess.ProcessAlive(pid), "an export a live process references must be left running")
 	assert.Contains(t, logs.String(), "still referenced by a live process")
 }
 
@@ -844,6 +844,6 @@ func TestUnmountVolume_ReapsAnUnregisteredExport(t *testing.T) {
 	require.Error(t, err, "the volume is genuinely not mounted here, reaped or not")
 	assert.True(t, resp.NotFound, "an unregistered volume has no entry to seal")
 	assert.True(t, resp.Reaped, "the export the unmount reaped must be reported")
-	require.Eventually(t, func() bool { return !utils.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"unmount must leave no nbdkit serving the volume it just removed")
 }

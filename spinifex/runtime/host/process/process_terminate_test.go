@@ -1,4 +1,4 @@
-package utils_test
+package process_test
 
 import (
 	"bufio"
@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // The unmount path calls this on an nbdkit that is already sealing, so the
@@ -23,7 +23,7 @@ func TestTerminateProcessReturnsAsSoonAsTheProcessExits(t *testing.T) {
 	go func() { _ = cmd.Wait(); close(done) }()
 
 	start := time.Now()
-	exited := utils.TerminateProcess(pid, 10*time.Second)
+	exited := hostprocess.TerminateProcess(pid, 10*time.Second)
 	elapsed := time.Since(start)
 
 	assert.True(t, exited, "a process that dies on SIGTERM must be reported as exited")
@@ -56,13 +56,13 @@ func TestTerminateProcessGivesUpAtTheGraceAndDoesNotKill(t *testing.T) {
 
 	const grace = 200 * time.Millisecond
 	start := time.Now()
-	exited := utils.TerminateProcess(pid, grace)
+	exited := hostprocess.TerminateProcess(pid, grace)
 	elapsed := time.Since(start)
 
 	assert.False(t, exited)
 	assert.GreaterOrEqual(t, elapsed, grace, "must wait out the grace before giving up")
 	assert.Less(t, elapsed, grace+2*time.Second, "must be bounded by the grace, not hang")
-	assert.True(t, utils.ProcessAlive(pid), "escalation belongs to the caller, not here")
+	assert.True(t, hostprocess.ProcessAlive(pid), "escalation belongs to the caller, not here")
 }
 
 func TestTerminateProcessAlreadyExitedIsSuccess(t *testing.T) {
@@ -71,6 +71,6 @@ func TestTerminateProcessAlreadyExitedIsSuccess(t *testing.T) {
 	pid := cmd.Process.Pid
 	require.NoError(t, cmd.Wait())
 
-	assert.True(t, utils.TerminateProcess(pid, time.Second))
-	assert.False(t, utils.TerminateProcess(0, time.Second), "an invalid pid is not an exit")
+	assert.True(t, hostprocess.TerminateProcess(pid, time.Second))
+	assert.False(t, hostprocess.TerminateProcess(0, time.Second), "an invalid pid is not an exit")
 }

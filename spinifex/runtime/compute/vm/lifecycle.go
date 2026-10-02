@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -271,7 +272,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		}
 	})
 
-	pid, _ := utils.ReadPidFile(instance.ID)
+	pid, _ := hostprocess.ReadPidFile(instance.ID)
 	if pid > 0 {
 		process, err := os.FindProcess(pid)
 		if err != nil {
@@ -327,11 +328,11 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		// VFIO device is released before the caller frees the GPU pool entry;
 		// otherwise the next Claim gets the same PCI address while QEMU still
 		// holds /dev/vfio/<group>, causing "device or resource busy".
-		if pid, pidErr := utils.ReadPidFile(instance.ID); pidErr == nil && pid > 0 {
+		if pid, pidErr := hostprocess.ReadPidFile(instance.ID); pidErr == nil && pid > 0 {
 			if proc, procErr := os.FindProcess(pid); procErr == nil {
 				_ = proc.Signal(syscall.SIGKILL)
 			}
-			_ = utils.WaitForProcessExit(pid, 10*time.Second)
+			_ = hostprocess.WaitForProcessExit(pid, 10*time.Second)
 		}
 		return err
 	}
@@ -402,7 +403,7 @@ const (
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm.
 func (m *Manager) startQEMU(instance *VM) error {
-	pidFile, err := utils.GeneratePidFile(instance.ID)
+	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
 		slog.Error("Failed to generate PID file", "err", err)
 		return err
@@ -416,7 +417,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		return fmt.Errorf("instance type %s not found", instance.InstanceType)
 	}
 
-	runtimeDir := utils.RuntimeDir()
+	runtimeDir := hostprocess.RuntimeDir()
 	consoleLogPath := filepath.Join(runtimeDir, fmt.Sprintf("console-%s.log", instance.ID))
 	serialSocket := filepath.Join(runtimeDir, fmt.Sprintf("serial-%s.sock", instance.ID))
 
@@ -653,7 +654,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		slog.Info("VM started successfully", "pid", cmd.Process.Pid)
 
 		oomScore := guestOOMScore(instance.ManagedBy)
-		if err := utils.SetOOMScore(cmd.Process.Pid, oomScore); err != nil {
+		if err := hostprocess.SetOOMScore(cmd.Process.Pid, oomScore); err != nil {
 			slog.Warn("Failed to set QEMU OOM score", "pid", cmd.Process.Pid, "score", oomScore, "err", err)
 		}
 
@@ -734,7 +735,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 
 	// Wait for the pidfile so we don't tear down the tap before QEMU finishes
 	// attaching to it (can lag under post-reboot recovery load).
-	if _, err := utils.WaitForPidFile(instance.ID, 3*time.Second); err != nil {
+	if _, err := hostprocess.WaitForPidFile(instance.ID, 3*time.Second); err != nil {
 		slog.Error("Failed to read PID file", "err", err)
 		return err
 	}
@@ -953,7 +954,7 @@ func isTransientDialError(err error) bool {
 func newQMPClientWithHandshake(ctx context.Context, v *VM) (*qmp.QMPClient, error) {
 	// QMP socket bind lags the pidfile under recovery load; wait for the
 	// socket inode to exist before dialling to avoid an ENOENT race.
-	if err := utils.WaitForUnixSocket(v.Config.QMPSocket, qmpSocketWaitTimeout); err != nil {
+	if err := hostprocess.WaitForUnixSocket(v.Config.QMPSocket, qmpSocketWaitTimeout); err != nil {
 		return nil, fmt.Errorf("connect QMP socket %s: %w", v.Config.QMPSocket, err)
 	}
 	client, err := dialQMPWithRetry(v.Config.QMPSocket, qmpGreetingTimeout(v))
@@ -1355,7 +1356,7 @@ func (m *Manager) appendSystemNetcfgFwCfg(instance *VM) error {
 	// Management NIC: static, off br-mgmt, never the default route.
 	fmt.Fprintf(&b, "NIC%d_MAC=%s\nNIC%d_CIDR=%s/24\nNIC%d_DEFAULT=0\n", n, instance.MgmtMAC, n, instance.MgmtIP, n)
 
-	path := filepath.Join(utils.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instance.ID))
+	path := filepath.Join(hostprocess.RuntimeDir(), fmt.Sprintf("fwcfg-%s-netcfg.tmp", instance.ID))
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("write system netcfg blob: %w", err)
 	}

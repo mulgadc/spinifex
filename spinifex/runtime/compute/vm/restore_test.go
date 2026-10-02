@@ -18,7 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -277,7 +277,7 @@ func TestClassifyRestoredInstances_ShuttingDownWithLiveQEMUTerminates(t *testing
 	m, store, _ := classifyTestManager(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	v := &VM{ID: "i-shutdown-live", Status: StateShuttingDown, InstanceType: "t3.micro"}
-	require.NoError(t, utils.WritePidFile(v.ID, spawnLiveChild(t)))
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
 	m.Replace(map[string]*VM{v.ID: v})
 
 	toLaunch := m.classifyRestoredInstances()
@@ -295,7 +295,7 @@ func TestClassifyRestoredInstances_StoppingWithLiveQEMUStops(t *testing.T) {
 	m, store, _ := classifyTestManager(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	v := &VM{ID: "i-stopping-live", Status: StateStopping, InstanceType: "t3.micro"}
-	require.NoError(t, utils.WritePidFile(v.ID, spawnLiveChild(t)))
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
 	m.Replace(map[string]*VM{v.ID: v})
 
 	toLaunch := m.classifyRestoredInstances()
@@ -530,7 +530,7 @@ func TestIsInstanceProcessRunning(t *testing.T) {
 
 	t.Run("signal nil returns true", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-		require.NoError(t, utils.WritePidFile("i-alive", os.Getpid()))
+		require.NoError(t, hostprocess.WritePidFile("i-alive", os.Getpid()))
 
 		instance := &VM{ID: "i-alive"}
 		assert.True(t, isInstanceProcessRunning(instance),
@@ -540,7 +540,7 @@ func TestIsInstanceProcessRunning(t *testing.T) {
 	t.Run("signal ESRCH returns false", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 		dead := findDeadPID(t)
-		require.NoError(t, utils.WritePidFile("i-esrch", dead))
+		require.NoError(t, hostprocess.WritePidFile("i-esrch", dead))
 
 		instance := &VM{ID: "i-esrch"}
 		assert.False(t, isInstanceProcessRunning(instance),
@@ -552,7 +552,7 @@ func TestIsInstanceProcessRunning(t *testing.T) {
 			t.Skip("running as root: cannot trigger EPERM by signalling PID 1")
 		}
 		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-		require.NoError(t, utils.WritePidFile("i-eperm", 1))
+		require.NoError(t, hostprocess.WritePidFile("i-eperm", 1))
 
 		instance := &VM{ID: "i-eperm"}
 		assert.False(t, isInstanceProcessRunning(instance),
@@ -590,12 +590,12 @@ func TestKillOrphanedQEMU(t *testing.T) {
 	t.Run("dead pid: signal error swallowed, wait succeeds, pid file removed", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 		dead := findDeadPID(t)
-		require.NoError(t, utils.WritePidFile("i-dead", dead))
+		require.NoError(t, hostprocess.WritePidFile("i-dead", dead))
 
 		ok := killOrphanedQEMU(&VM{ID: "i-dead"})
 
 		assert.True(t, ok, "WaitForProcessExit returns nil for an already-dead pid; caller proceeds with relaunch")
-		_, readErr := utils.ReadPidFile("i-dead")
+		_, readErr := hostprocess.ReadPidFile("i-dead")
 		assert.Error(t, readErr, "PID file must be removed after a successful wait")
 	})
 
@@ -616,12 +616,12 @@ func TestKillOrphanedQEMU(t *testing.T) {
 			_ = cmd.Process.Kill()
 			<-reaped
 		})
-		require.NoError(t, utils.WritePidFile("i-real", cmd.Process.Pid))
+		require.NoError(t, hostprocess.WritePidFile("i-real", cmd.Process.Pid))
 
 		ok := killOrphanedQEMU(&VM{ID: "i-real"})
 
 		assert.True(t, ok, "SIGKILLing the live subprocess must report success")
-		_, readErr := utils.ReadPidFile("i-real")
+		_, readErr := hostprocess.ReadPidFile("i-real")
 		assert.Error(t, readErr, "PID file must be removed on the success path")
 	})
 }

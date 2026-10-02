@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -44,7 +45,7 @@ func New(config any) (svc *Service, err error) {
 }
 
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 	if err := launchService(svc.Config); err != nil {

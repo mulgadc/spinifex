@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // GenerateSocketFile generates a socket file path for the given name.
@@ -18,7 +20,7 @@ func GenerateSocketFile(name string) (string, error) {
 		return "", errors.New("name is required")
 	}
 
-	pidPath := RuntimeDir()
+	pidPath := hostprocess.RuntimeDir()
 
 	if pidPath == "" {
 		return "", errors.New("pid path is empty")
@@ -49,7 +51,7 @@ func NBDSocketDir() string {
 	if dirExists(systemdNBDDir) {
 		return systemdNBDDir
 	}
-	return RuntimeDir()
+	return hostprocess.RuntimeDir()
 }
 
 // IsSocketURI reports whether the NBD URI refers to a Unix socket (ends with ".sock" or contains "unix:").
@@ -78,7 +80,7 @@ func WaitForNBDReady(uri string, timeout time.Duration) error {
 	}
 	switch serverType {
 	case "unix":
-		return WaitForUnixSocket(path, timeout)
+		return hostprocess.WaitForUnixSocket(path, timeout)
 	case "inet":
 		return waitForTCPListener(net.JoinHostPort(host, strconv.Itoa(port)), timeout)
 	default:

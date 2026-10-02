@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +38,7 @@ func TestStuckTerminateReaper(t *testing.T) {
 		wg.Go(func() { _ = cmd.Wait() })
 
 		const id = "i-wedged-live"
-		require.NoError(t, utils.WritePidFile(id, pid))
+		require.NoError(t, hostprocess.WritePidFile(id, pid))
 		m.InsertIfAbsent(&VM{
 			ID:             id,
 			Status:         StateShuttingDown,
@@ -51,7 +51,7 @@ func TestStuckTerminateReaper(t *testing.T) {
 		wg.Wait()
 		assert.Equal(t, 1, reaped, "a terminate wedged past the timeout must be force-completed")
 
-		assert.False(t, utils.ProcessAlive(pid), "the wedged QEMU must be force-killed")
+		assert.False(t, hostprocess.ProcessAlive(pid), "the wedged QEMU must be force-killed")
 		_, ok := m.Get(id)
 		assert.False(t, ok, "the finalized instance must leave the local running map")
 

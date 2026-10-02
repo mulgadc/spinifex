@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/viperblock/viperblock"
@@ -205,7 +206,7 @@ type Config struct {
 	constructVB func(ctx context.Context, volumeName string) (*viperblock.VB, int, error)
 
 	// fenceWatchEvery and processAlive drive the watch a failed fence keeps on
-	// its writer. Zero means the production interval and utils.ProcessAlive: a
+	// its writer. Zero means the production interval and hostprocess.ProcessAlive: a
 	// SIGKILL that does not take effect cannot be staged with a real process.
 	fenceWatchEvery time.Duration
 	processAlive    func(pid int) bool
@@ -662,7 +663,7 @@ func respondAndPublish(msg *nats.Msg, nc *nats.Conn, topic string, data any) {
 }
 
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 	err := launchService(svc.Config)
@@ -768,7 +769,7 @@ func launchService(cfg *Config) (err error) {
 			if matched.VB != nil {
 				matched.VB.Detach()
 			}
-			if err := utils.KillProcess(matched.PID); err != nil {
+			if err := hostprocess.KillProcess(matched.PID); err != nil {
 				slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
 			}
 
@@ -1083,7 +1084,7 @@ func launchService(cfg *Config) (err error) {
 // drain (or unmount) path owns reaping in-use nbdkit after the guest is gone.
 //
 // The reap itself fans out one goroutine per idle volume so the wall-clock
-// cost is bounded by the slowest single nbdkit's utils.KillProcess grace, not
+// cost is bounded by the slowest single nbdkit's hostprocess.KillProcess grace, not
 // the sum across every mounted volume — the caller returns (and the process
 // exits) only once every goroutine below has finished.
 func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
@@ -1101,7 +1102,7 @@ func shutdownVolumes(volumes []MountedVolume, inUse func(MountedVolume) bool) {
 		go func(volume MountedVolume) {
 			defer wg.Done()
 			slog.Info("Killing idle nbdkit process", "pid", volume.PID, "name", volume.Name)
-			if err := utils.KillProcess(volume.PID); err != nil {
+			if err := hostprocess.KillProcess(volume.PID); err != nil {
 				slog.Error("Failed to kill nbdkit process", "pid", volume.PID, "err", err)
 			}
 		}(volume)

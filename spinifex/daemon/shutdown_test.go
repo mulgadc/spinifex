@@ -14,7 +14,7 @@ import (
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -231,7 +231,7 @@ func TestHandleShutdownGate(t *testing.T) {
 		pidDir := configurePidDir(t, daemon)
 
 		pid := startSleepProcess(t)
-		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "awsgw", pid))
 
 		subject := "spinifex.cluster.shutdown.gate"
 		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
@@ -287,7 +287,7 @@ func TestHandleShutdownGate(t *testing.T) {
 		pidDir := configurePidDir(t, daemon)
 
 		pid := startSleepProcess(t)
-		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "awsgw", pid))
 
 		subject := "spinifex.cluster.shutdown.gate.partial"
 		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))
@@ -321,7 +321,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 		pidDir := configurePidDir(t, daemon)
 
 		pid := startSleepProcess(t)
-		require.NoError(t, utils.WritePidFileTo(pidDir, "awsgw", pid))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "awsgw", pid))
 
 		subject := "spinifex.cluster.shutdown.gate.targeted-elsewhere"
 		sub, err := daemon.natsConn.Subscribe(subject, asMsgHandler(daemon.handleShutdownGate))

@@ -7,7 +7,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func TestVolumeAbandon_GivesUpTheExportAndTheLease(t *testing.T) {
 	mounted := len(cfg.MountedVolumes)
 	cfg.mu.Unlock()
 	assert.Zero(t, mounted, "an export left up is a second writer, whoever decided to stop")
-	assert.False(t, utils.ProcessAlive(pid), "the export process has to be gone, not merely forgotten")
+	assert.False(t, hostprocess.ProcessAlive(pid), "the export process has to be gone, not merely forgotten")
 }
 
 // The difference from a fence, and the reason this path is worth having. A

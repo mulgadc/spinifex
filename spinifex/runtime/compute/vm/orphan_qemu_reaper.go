@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // orphanQEMUKillTimeout bounds how long the reaper waits for a SIGKILL'd
@@ -63,23 +63,23 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 
 	reaped := 0
 	for _, v := range terminated {
-		pid, err := utils.ReadPidFile(v.ID)
+		pid, err := hostprocess.ReadPidFile(v.ID)
 		if err != nil {
 			continue // no PID file on this node: process is not here
 		}
-		if !utils.ProcessAlive(pid) {
-			_ = utils.RemovePidFile(v.ID) // stale PID file for a dead, terminated instance
+		if !hostprocess.ProcessAlive(pid) {
+			_ = hostprocess.RemovePidFile(v.ID) // stale PID file for a dead, terminated instance
 			continue
 		}
 
 		slog.Warn("vm/gc: reaping orphan QEMU for terminated instance (held OVN ports)",
 			"instanceId", v.ID, "pid", pid)
-		if err := utils.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
+		if err := hostprocess.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
 			slog.Error("vm/gc: failed to reap orphan QEMU, will retry next sweep",
 				"instanceId", v.ID, "pid", pid, "err", err)
 			continue
 		}
-		_ = utils.RemovePidFile(v.ID)
+		_ = hostprocess.RemovePidFile(v.ID)
 		reaped++
 	}
 
@@ -94,7 +94,7 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 		if qemuProcessAlive(v.ID) {
 			continue
 		}
-		_ = utils.RemovePidFile(v.ID) // clear any stale file for the dead process
+		_ = hostprocess.RemovePidFile(v.ID) // clear any stale file for the dead process
 
 		slog.Warn("vm/gc: reconciling wedged shutting-down instance, QEMU vanished",
 			"instanceId", v.ID)
@@ -114,11 +114,11 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 // the reaper, where a terminated/shutting-down instance's absent PID file
 // legitimately means the process is gone.
 func qemuProcessAlive(instanceID string) bool {
-	pid, err := utils.ReadPidFile(instanceID)
+	pid, err := hostprocess.ReadPidFile(instanceID)
 	if err != nil {
 		return false
 	}
-	return utils.ProcessAlive(pid)
+	return hostprocess.ProcessAlive(pid)
 }
 
 // qemuConfirmedDead reports whether the instance's QEMU is provably gone: its
@@ -127,9 +127,9 @@ func qemuProcessAlive(instanceID string) bool {
 // still-running instance (DetachVolume) falls through to its normal QMP path
 // rather than short-circuiting on an absent file.
 func qemuConfirmedDead(instanceID string) bool {
-	pid, err := utils.ReadPidFile(instanceID)
+	pid, err := hostprocess.ReadPidFile(instanceID)
 	if err != nil {
 		return false
 	}
-	return !utils.ProcessAlive(pid)
+	return !hostprocess.ProcessAlive(pid)
 }

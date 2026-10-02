@@ -283,7 +283,7 @@ func TestGracefulDrainOrdering(t *testing.T) {
 	}
 
 	// shutdownVolumes reaps idle nbdkit concurrently, so the unit only has to
-	// outlive the single slowest utils.KillProcess grace (120s), not that
+	// outlive the single slowest hostprocess.KillProcess grace (120s), not that
 	// grace summed across every mounted volume.
 	const killProcessGracePeriod = 120 * time.Second
 	if got := timeoutStopSec(t, viperblock); got <= killProcessGracePeriod {

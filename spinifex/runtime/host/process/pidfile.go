@@ -1,4 +1,4 @@
-package utils
+package process
 
 import (
 	"bytes"
@@ -220,4 +220,15 @@ func WaitForPidFileRemoval(instanceID string, timeout time.Duration) error {
 			}
 		}
 	}
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }

@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 func TestTelemetryPeriodSeconds(t *testing.T) {
@@ -63,15 +63,15 @@ func TestTelemetryMetaRoundtrip(t *testing.T) {
 	if err := writeTelemetryMeta(v); err != nil {
 		t.Fatalf("no-op write: %v", err)
 	}
-	if _, err := os.Stat(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID)); !os.IsNotExist(err) {
 		t.Fatal("no file expected without a telemetry socket")
 	}
 
-	v.Config.TelemetryQMPSocket = telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID) + ".sock"
+	v.Config.TelemetryQMPSocket = telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID) + ".sock"
 	if err := writeTelemetryMeta(v); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	data, err := os.ReadFile(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID))
+	data, err := os.ReadFile(telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID))
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestTelemetryMetaRoundtrip(t *testing.T) {
 	}
 
 	removeTelemetryArtifacts(v)
-	if _, err := os.Stat(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID)); !os.IsNotExist(err) {
 		t.Error("metadata must be removed")
 	}
 }
@@ -97,11 +97,11 @@ func TestRefreshTelemetryMetaCarriesTierChange(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
 	v := &VM{ID: "i-0abc", AccountID: "123456789012", RunInstancesInput: &ec2.RunInstancesInput{}}
-	v.Config.TelemetryQMPSocket = telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID) + ".sock"
+	v.Config.TelemetryQMPSocket = telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID) + ".sock"
 
 	readPeriod := func() int {
 		t.Helper()
-		data, err := os.ReadFile(telemetryv1.GuestTelemetryMetaPath(utils.RuntimeDir(), v.ID))
+		data, err := os.ReadFile(telemetryv1.GuestTelemetryMetaPath(hostprocess.RuntimeDir(), v.ID))
 		if err != nil {
 			t.Fatalf("read back: %v", err)
 		}

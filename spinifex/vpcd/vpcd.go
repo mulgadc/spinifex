@@ -31,6 +31,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -201,7 +202,7 @@ func New(config any) (*Service, error) {
 
 // Start starts the vpcd service.
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,7 +81,7 @@ func TestVolumeFence_TearsDownWhenAnotherNodeHoldsTheLease(t *testing.T) {
 	mounted := len(cfg.MountedVolumes)
 	cfg.mu.Unlock()
 	assert.Zero(t, mounted, "a fenced volume must not be left exported: the export is the second writer")
-	assert.False(t, utils.ProcessAlive(pid), "the export process has to be gone, not merely forgotten")
+	assert.False(t, hostprocess.ProcessAlive(pid), "the export process has to be gone, not merely forgotten")
 }
 
 // TestVolumeFence_FencesAnEntryNobodyHolds covers the lapsed case. An entry that

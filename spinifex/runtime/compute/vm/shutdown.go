@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // pidFileRemovalTimeout is how long Stop/Terminate wait for the PID file to
@@ -43,7 +43,7 @@ var errPowerdownTimedOut = errors.New("guest did not power down within its budge
 // exits on powerdown instead, and a reboot would have nothing left to reset.
 // Indirected so a test can describe a guest without one running behind it.
 var qemuPausesOnShutdown = func(instance *VM) bool {
-	pid, err := utils.ReadPidFile(instance.ID)
+	pid, err := hostprocess.ReadPidFile(instance.ID)
 	if err != nil || pid <= 0 {
 		return false
 	}
@@ -453,14 +453,14 @@ func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
 // teardown failed for TerminatedTeardownReaper, and drives the record to
 // terminated. The cleaner is idempotent, so racing the wedged goroutine is safe.
 func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
-	if pid, err := utils.ReadPidFile(instance.ID); err == nil && utils.ProcessAlive(pid) {
+	if pid, err := hostprocess.ReadPidFile(instance.ID); err == nil && hostprocess.ProcessAlive(pid) {
 		slog.Warn("Force-killing wedged QEMU for stuck terminate",
 			"instanceId", instance.ID, "pid", pid)
-		if err := utils.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
+		if err := hostprocess.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
 			slog.Error("Failed to kill wedged QEMU, continuing finalize",
 				"instanceId", instance.ID, "pid", pid, "err", err)
 		}
-		_ = utils.RemovePidFile(instance.ID)
+		_ = hostprocess.RemovePidFile(instance.ID)
 	}
 	m.markTeardown(instance, TeardownQEMU, TeardownDone)
 
@@ -710,14 +710,14 @@ func (m *Manager) shutdownQEMU(instance *VM) {
 	// signal — do not kill on that path (the PID may be stale or reused). The
 	// wrong-node terminate case, where this never runs on the hosting node, is
 	// the OrphanQEMUReaper's job.
-	if err := utils.WaitForPidFileRemoval(instance.ID, pidFileRemovalTimeout); err != nil {
+	if err := hostprocess.WaitForPidFileRemoval(instance.ID, pidFileRemovalTimeout); err != nil {
 		slog.Warn("Timeout waiting for PID file removal", "id", instance.ID, "err", err)
-		pid, readErr := utils.ReadPidFile(instance.ID)
+		pid, readErr := hostprocess.ReadPidFile(instance.ID)
 		if readErr != nil {
 			slog.Debug("No PID file found (VM likely already stopped)", "id", instance.ID)
-		} else if utils.ProcessAlive(pid) {
+		} else if hostprocess.ProcessAlive(pid) {
 			slog.Info("Force killing process", "pid", pid, "id", instance.ID)
-			if err := utils.KillProcess(pid); err != nil {
+			if err := hostprocess.KillProcess(pid); err != nil {
 				slog.Error("Failed to kill process", "pid", pid, "id", instance.ID, "err", err)
 			}
 		}

@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -200,7 +200,7 @@ func TestDescribeDBSubnetGroups_ReportsNetworkTypesAndAnEmptyOutpost(t *testing.
 	require.NoError(t, err)
 	var relayed rds.DescribeDBSubnetGroupsOutput
 	require.NoError(t, json.Unmarshal(wire, &relayed))
-	body, err := utils.MarshalToXML(utils.GenerateIAMXMLPayload("DescribeDBSubnetGroups", &relayed))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload("DescribeDBSubnetGroups", &relayed))
 	require.NoError(t, err)
 	var parsed rds.DescribeDBSubnetGroupsOutput
 	require.NoError(t, xmlutil.UnmarshalXML(&parsed, xml.NewDecoder(bytes.NewReader(body)), "DescribeDBSubnetGroupsResult"))

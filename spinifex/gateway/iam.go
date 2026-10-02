@@ -7,11 +7,11 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // iamAction parses once so authorization and dispatch share one typed input.
@@ -43,8 +43,8 @@ func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) 
 			if err != nil {
 				return nil, err
 			}
-			payload := utils.GenerateIAMXMLPayload(action, output)
-			xmlOutput, err := utils.MarshalToXML(payload)
+			payload := awsxml.QueryResponsePayload(action, output)
+			xmlOutput, err := awsxml.Marshal(payload)
 			if err != nil {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}

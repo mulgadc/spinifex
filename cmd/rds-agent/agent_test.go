@@ -17,9 +17,9 @@ import (
 	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/mulgadc/spinifex/internal/rdsgw"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -754,7 +754,7 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 	issued := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
 	// Rendered exactly as the gateway's typed adapter renders it, so a change to
 	// either side's tags fails here.
-	payload := utils.GenerateIAMXMLPayload("PollDBCommands", &gateway_rds.PollDBCommandsOutput{
+	payload := awsxml.QueryResponsePayload("PollDBCommands", &gateway_rds.PollDBCommandsOutput{
 		Commands: []handlers_rds.Command{{
 			CommandID:  "cmd-1",
 			Type:       "reload-parameters",
@@ -762,7 +762,7 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 			IssuedAt:   &issued,
 		}},
 	})
-	body, err := utils.MarshalToXML(payload)
+	body, err := awsxml.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal poll result: %v", err)
 	}

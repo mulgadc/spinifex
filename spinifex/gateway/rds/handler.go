@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
 )
 
@@ -62,8 +62,8 @@ func typedEnv[In any](handler func(context.Context, *In, *nats.Conn, Caller, Env
 		if err != nil {
 			return nil, err
 		}
-		payload := utils.GenerateIAMXMLPayload(action, output)
-		xmlOutput, err := utils.MarshalToXML(payload)
+		payload := awsxml.QueryResponsePayload(action, output)
+		xmlOutput, err := awsxml.Marshal(payload)
 		if err != nil {
 			return nil, errors.New("failed to marshal response to XML")
 		}

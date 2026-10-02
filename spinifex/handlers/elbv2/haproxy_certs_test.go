@@ -16,9 +16,9 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -252,8 +252,8 @@ func TestGetLBConfig_DeliversCertFiles(t *testing.T) {
 
 	// The gateway marshals this output to XML; confirm the member shape the
 	// lb-agent parses (GetLBConfigResult>CertFiles>member>{Path,PEM}).
-	payload := utils.GenerateIAMXMLPayload("GetLBConfig", *out)
-	xmlBytes, err := utils.MarshalToXML(payload)
+	payload := awsxml.QueryResponsePayload("GetLBConfig", *out)
+	xmlBytes, err := awsxml.Marshal(payload)
 	require.NoError(t, err)
 	var parsed struct {
 		Members []struct {

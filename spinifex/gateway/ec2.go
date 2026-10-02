@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
@@ -36,7 +37,6 @@ import (
 	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -128,11 +128,11 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 func marshalEC2Response(action string, output any) ([]byte, error) {
 	// BuildXML omits a nil slice's container element entirely but renders an
 	// empty one for a non-nil empty slice; AWS mostly renders the latter.
-	normalized := utils.NormalizeXMLOutput(output, ec2ListsAsSet)
+	normalized := awsxml.NormalizeOutput(output, ec2ListsAsSet)
 	// The SDK's generated output structs never carry a RequestId field.
-	withRequestID := utils.WithRequestID(normalized, uuid.NewV4().String())
-	payload := utils.GenerateXMLPayload(action+"Response", withRequestID)
-	xmlOutput, err := utils.MarshalToXML(payload)
+	withRequestID := awsxml.WithRequestID(normalized, uuid.NewV4().String())
+	payload := awsxml.ResponsePayload(action+"Response", withRequestID)
+	xmlOutput, err := awsxml.Marshal(payload)
 	if err != nil {
 		return nil, errors.New("failed to marshal response to XML")
 	}

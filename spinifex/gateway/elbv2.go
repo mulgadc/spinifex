@@ -7,11 +7,11 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // elbv2Action parses once so authorization and dispatch share one typed input.
@@ -41,8 +41,8 @@ func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, str
 			if err != nil {
 				return nil, err
 			}
-			payload := utils.GenerateIAMXMLPayload(action, output)
-			xmlOutput, err := utils.MarshalToXML(payload)
+			payload := awsxml.QueryResponsePayload(action, output)
+			xmlOutput, err := awsxml.Marshal(payload)
 			if err != nil {
 				return nil, errors.New("failed to marshal response to XML")
 			}

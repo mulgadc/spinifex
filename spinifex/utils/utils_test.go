@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -510,124 +509,6 @@ func TestParseNBDURI(t *testing.T) {
 	}
 }
 
-func TestMarshalToXML(t *testing.T) {
-	type TestStruct struct {
-		Name  string `xml:"Name"`
-		Value int    `xml:"Value"`
-	}
-
-	tests := []struct {
-		name        string
-		input       any
-		expectError bool
-		validate    func(t *testing.T, xmlData []byte)
-	}{
-		{
-			name: "Valid struct",
-			input: TestStruct{
-				Name:  "test",
-				Value: 123,
-			},
-			expectError: false,
-			validate: func(t *testing.T, xmlData []byte) {
-				assert.Contains(t, string(xmlData), "<Name>test</Name>")
-				assert.Contains(t, string(xmlData), "<Value>123</Value>")
-			},
-		},
-		{
-			name: "Pointer to struct",
-			input: &TestStruct{
-				Name:  "pointer",
-				Value: 456,
-			},
-			expectError: false,
-			validate: func(t *testing.T, xmlData []byte) {
-				assert.Contains(t, string(xmlData), "<Name>pointer</Name>")
-				assert.Contains(t, string(xmlData), "<Value>456</Value>")
-			},
-		},
-		{
-			name:        "Invalid type (channel)",
-			input:       make(chan int),
-			expectError: true,
-			validate:    nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			xmlData, err := MarshalToXML(tt.input)
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, xmlData)
-				if tt.validate != nil {
-					tt.validate(t, xmlData)
-				}
-			}
-		})
-	}
-}
-
-func TestGenerateIAMXMLPayload(t *testing.T) {
-	type User struct {
-		UserName string `locationName:"UserName" type:"string"`
-		UserId   string `locationName:"UserId" type:"string"`
-	}
-
-	tests := []struct {
-		name     string
-		action   string
-		payload  any
-		validate func(t *testing.T, result any)
-	}{
-		{
-			name:   "CreateUser wrapping",
-			action: "CreateUser",
-			payload: User{
-				UserName: "testuser",
-				UserId:   "AIDA12345",
-			},
-			validate: func(t *testing.T, result any) {
-				xmlBytes, err := MarshalToXML(result)
-				assert.NoError(t, err)
-				xmlStr := string(xmlBytes)
-				assert.Contains(t, xmlStr, "CreateUserResponse")
-				assert.Contains(t, xmlStr, "CreateUserResult")
-				assert.Contains(t, xmlStr, "testuser")
-				assert.Contains(t, xmlStr, "AIDA12345")
-			},
-		},
-		{
-			name:   "ListUsers wrapping",
-			action: "ListUsers",
-			payload: User{
-				UserName: "admin",
-				UserId:   "AIDA99999",
-			},
-			validate: func(t *testing.T, result any) {
-				xmlBytes, err := MarshalToXML(result)
-				assert.NoError(t, err)
-				xmlStr := string(xmlBytes)
-				assert.Contains(t, xmlStr, "ListUsersResponse")
-				assert.Contains(t, xmlStr, "ListUsersResult")
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GenerateIAMXMLPayload(tt.action, tt.payload)
-			assert.NotNil(t, result)
-			if tt.validate != nil {
-				tt.validate(t, result)
-			}
-		})
-	}
-}
-
 func TestKillProcess(t *testing.T) {
 	// Create a test process
 	cmd := exec.Command("sleep", "60")
@@ -839,21 +720,6 @@ func TestGenerateUniqueSocketFile(t *testing.T) {
 	// Empty volume name
 	_, err = GenerateUniqueSocketFile("")
 	assert.Error(t, err)
-}
-
-func TestGenerateXMLPayload(t *testing.T) {
-	type Inner struct {
-		Name string `locationName:"Name" type:"string"`
-	}
-
-	result := GenerateXMLPayload("DescribeInstancesResponse", Inner{Name: "test"})
-	assert.NotNil(t, result)
-
-	xmlBytes, err := MarshalToXML(result)
-	require.NoError(t, err)
-	xmlStr := string(xmlBytes)
-	assert.Contains(t, xmlStr, "DescribeInstancesResponse")
-	assert.Contains(t, xmlStr, "test")
 }
 
 func TestDirExists(t *testing.T) {
@@ -1691,91 +1557,4 @@ func TestAvailableImages_RDSPostgresEntry(t *testing.T) {
 		"the pinned PostgreSQL major version is what EngineVersion resolves against")
 	assert.Equal(t, "format-auth-v1", img.Tags["rds-data-volume-contract"],
 		"RDS launches must exclude images that still discover generic data disks")
-}
-
-// --- NormalizeXMLOutput / normalizeNilSlices ---
-
-type normalizeInner struct {
-	Tags []string
-}
-
-type normalizeOuter struct {
-	Names    []string
-	Nested   *normalizeInner
-	Children []*normalizeInner
-	Value    normalizeInner
-}
-
-func TestNormalizeXMLOutput_InvalidValue(t *testing.T) {
-	var output any
-	assert.Nil(t, NormalizeXMLOutput(output, nil))
-}
-
-func TestNormalizeXMLOutput_TopLevelNilSlice(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
-	require.NotNil(t, out.Names)
-	assert.Empty(t, out.Names)
-}
-
-func TestNormalizeXMLOutput_NestedPointerStruct(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{
-		Nested: &normalizeInner{},
-	}, nil).(normalizeOuter)
-	require.NotNil(t, out.Nested)
-	require.NotNil(t, out.Nested.Tags, "nil slice inside a pointer field must be normalized")
-	assert.Empty(t, out.Nested.Tags)
-}
-
-func TestNormalizeXMLOutput_NestedValueStruct(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
-	require.NotNil(t, out.Value.Tags, "nil slice inside a nested struct field must be normalized")
-}
-
-func TestNormalizeXMLOutput_RecursesIntoSliceElements(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{
-		Children: []*normalizeInner{{}, {Tags: []string{"a"}}},
-	}, nil).(normalizeOuter)
-	require.Len(t, out.Children, 2)
-	require.NotNil(t, out.Children[0].Tags, "nil slice inside a slice element must be normalized")
-	assert.Equal(t, []string{"a"}, out.Children[1].Tags, "an already-populated slice element must be left untouched")
-}
-
-func TestNormalizeXMLOutput_AsSetFieldsKeepNil(t *testing.T) {
-	asSet := map[reflect.Type][]string{reflect.TypeFor[normalizeInner](): {"Tags"}}
-	out := NormalizeXMLOutput(normalizeOuter{
-		Nested:   &normalizeInner{},
-		Children: []*normalizeInner{{Tags: []string{}}},
-	}, asSet).(normalizeOuter)
-	assert.Nil(t, out.Nested.Tags, "a nil as-set field must stay nil so BuildXML omits it")
-	require.NotNil(t, out.Children[0].Tags, "an empty as-set field must stay empty so BuildXML renders it")
-	require.NotNil(t, out.Names, "fields outside asSet are still normalized")
-}
-
-func TestNormalizeXMLOutput_NilPointerFieldUntouched(t *testing.T) {
-	out := NormalizeXMLOutput(normalizeOuter{}, nil).(normalizeOuter)
-	assert.Nil(t, out.Nested, "a nil pointer field must not be allocated")
-}
-
-// --- WithRequestID ---
-
-type requestIDPayload struct {
-	Names []string
-}
-
-func TestWithRequestID_NonStruct(t *testing.T) {
-	assert.Equal(t, "not-a-struct", WithRequestID("not-a-struct", "req-1"))
-}
-
-func TestWithRequestID_StructValue(t *testing.T) {
-	composite := WithRequestID(requestIDPayload{Names: []string{"a"}}, "req-123")
-	v := reflect.ValueOf(composite)
-	require.Equal(t, "req-123", v.FieldByName("RequestId").String())
-	require.Equal(t, []string{"a"}, v.FieldByName("Names").Interface())
-}
-
-func TestWithRequestID_PointerToStruct(t *testing.T) {
-	composite := WithRequestID(&requestIDPayload{Names: []string{"b"}}, "req-456")
-	v := reflect.ValueOf(composite)
-	require.Equal(t, "req-456", v.FieldByName("RequestId").String())
-	require.Equal(t, []string{"b"}, v.FieldByName("Names").Interface())
 }

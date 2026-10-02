@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
+	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -304,7 +305,7 @@ func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 
 func marshalResult(t *testing.T, action string, out any) string {
 	t.Helper()
-	body, err := utils.MarshalToXML(utils.GenerateIAMXMLPayload(action, out))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload(action, out))
 	require.NoError(t, err)
 	return string(body)
 }

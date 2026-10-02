@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,13 +94,13 @@ func assertNBDURI(t *testing.T, nbdURI string) {
 // tested rather than every subtest failing on the same string.
 func dialURI(t *testing.T, nbdURI string) string {
 	t.Helper()
-	serverType, socketPath, host, port, err := utils.ParseNBDURI(nbdURI)
+	serverType, socketPath, host, port, err := nbd.ParseNBDURI(nbdURI)
 	require.NoErrorf(t, err, "parse published NBD URI %q", nbdURI)
 
 	if serverType == "unix" {
-		return utils.FormatNBDSocketURI(socketPath)
+		return nbd.FormatNBDSocketURI(socketPath)
 	}
-	return utils.FormatNBDTCPURI(host, port)
+	return nbd.FormatNBDTCPURI(host, port)
 }
 
 // RequireNBDTools skips when libnbd's client tools are absent, so a host

@@ -1426,17 +1426,17 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 			return ebsResponse, err
 		}
 
-		nbdURI = utils.FormatNBDTCPURI("127.0.0.1", nbdPort)
+		nbdURI = nbd.FormatNBDTCPURI("127.0.0.1", nbdPort)
 		slog.InfoContext(ctx, "Mounting volume (TCP)", "name", volumeName, "port", nbdPort, "uri", nbdURI)
 	} else {
 		// Unix socket transport (default) - generate unique socket path
-		nbdSocket, err = utils.GenerateUniqueSocketFile(volumeName)
+		nbdSocket, err = nbd.GenerateUniqueSocketFile(volumeName)
 		if err != nil {
 			ebsResponse.Error = err.Error()
 			return ebsResponse, err
 		}
 
-		nbdURI = utils.FormatNBDSocketURI(nbdSocket)
+		nbdURI = nbd.FormatNBDSocketURI(nbdSocket)
 		slog.InfoContext(ctx, "Mounting volume (socket)", "name", volumeName, "socket", nbdSocket, "uri", nbdURI)
 	}
 

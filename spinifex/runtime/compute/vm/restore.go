@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // maxConcurrentRecovery bounds the recovery fan-out; cold-AMI clones are I/O-heavy.
@@ -524,7 +524,7 @@ func AreVolumeSocketsValid(instance *VM) bool {
 		if req.NBDURI == "" {
 			continue
 		}
-		serverType, sockPath, _, _, err := utils.ParseNBDURI(req.NBDURI)
+		serverType, sockPath, _, _, err := nbd.ParseNBDURI(req.NBDURI)
 		if err != nil || serverType != "unix" {
 			continue
 		}

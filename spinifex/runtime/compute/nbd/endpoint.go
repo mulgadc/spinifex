@@ -1,10 +1,11 @@
-package utils
+package nbd
 
 import (
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -146,4 +147,15 @@ func ParseNBDURI(nbdURI string) (serverType, path, host string, port int, err er
 	}
 
 	return "", "", "", 0, fmt.Errorf("unsupported NBD URI format: %s", nbdURI)
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }

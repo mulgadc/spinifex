@@ -16,6 +16,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -155,7 +156,7 @@ func cleanupBestEffort(t *testing.T, step string, fn func() error) {
 // rather than by slicing the string.
 func requireUnixSocketPath(t *testing.T, nbdURI string) string {
 	t.Helper()
-	serverType, path, _, _, err := utils.ParseNBDURI(nbdURI)
+	serverType, path, _, _, err := nbd.ParseNBDURI(nbdURI)
 	require.NoError(t, err, "parse NBD URI %q", nbdURI)
 	require.Equal(t, "unix", serverType, "published volume must be a nbd:unix: URI, got %q", nbdURI)
 	require.NotEmpty(t, path, "NBD URI %q has an empty socket path", nbdURI)

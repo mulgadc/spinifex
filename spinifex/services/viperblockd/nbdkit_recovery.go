@@ -19,7 +19,7 @@ import (
 	"time"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
 )
@@ -170,9 +170,9 @@ func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc 
 
 	var nbdURI string
 	if disc.Socket != "" {
-		nbdURI = utils.FormatNBDSocketURI(disc.Socket)
+		nbdURI = nbd.FormatNBDSocketURI(disc.Socket)
 	} else {
-		nbdURI = utils.FormatNBDTCPURI("127.0.0.1", disc.Port)
+		nbdURI = nbd.FormatNBDTCPURI("127.0.0.1", disc.Port)
 	}
 
 	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject(disc.Volume), makeConfigUpdateHandler(vb, disc.Volume))

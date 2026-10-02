@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 )
 
 // ImportOpts describes one raw disk image to import into a new volume.
@@ -143,7 +143,7 @@ func writeImageToNBD(ctx context.Context, sourcePath, nbdURI string, progress io
 // qemuNBDTarget renders a provider NBD URI in the form qemu-img accepts. The
 // contract's unix form is not qemu's, so it is rebuilt rather than passed on.
 func qemuNBDTarget(nbdURI string) (string, error) {
-	serverType, socketPath, host, port, err := utils.ParseNBDURI(nbdURI)
+	serverType, socketPath, host, port, err := nbd.ParseNBDURI(nbdURI)
 	if err != nil {
 		return "", fmt.Errorf("parse NBD URI %q: %w", nbdURI, err)
 	}

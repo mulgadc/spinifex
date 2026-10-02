@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // blockdevDelMaxAttempts caps the bounded retry on "node is in use" as a
@@ -119,7 +119,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		return "", fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
 
-	serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(ebsRequest.NBDURI)
+	serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(ebsRequest.NBDURI)
 	if err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
 		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)

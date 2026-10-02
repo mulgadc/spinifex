@@ -21,9 +21,9 @@ import (
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -579,7 +579,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 		instance.Config.Devices = append(instance.Config.Devices, Device{Value: devSpec})
 	}
 
-	qmpSocket, err := utils.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))
+	qmpSocket, err := nbd.GenerateSocketFile(fmt.Sprintf("qmp-%s", instance.ID))
 	if err != nil {
 		slog.Error("Failed to generate QMP socket", "err", err)
 		return err
@@ -598,7 +598,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	// Second QMP monitor for the metrics collector; a stale socket from a
 	// SIGKILLed QEMU is unlinked so the fresh process can bind. Telemetry
 	// never blocks a launch — failures degrade to no metrics for this VM.
-	if telemetrySocket, terr := utils.GenerateSocketFile(telemetryv1.QMPTelemetryPrefix + instance.ID); terr != nil {
+	if telemetrySocket, terr := nbd.GenerateSocketFile(telemetryv1.QMPTelemetryPrefix + instance.ID); terr != nil {
 		slog.Warn("Failed to generate telemetry QMP socket", "instanceId", instance.ID, "err", terr)
 	} else {
 		_ = os.Remove(telemetrySocket)
@@ -615,7 +615,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	}
 	instance.EBSRequests.Mu.Unlock()
 	for _, ep := range nbdEndpoints {
-		if err := utils.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
+		if err := nbd.WaitForNBDReady(ep.uri, nbdReadyTimeout); err != nil {
 			return fmt.Errorf("nbd endpoint not ready for %s: %w", ep.name, err)
 		}
 	}
@@ -1524,7 +1524,7 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 				v.HotplugPort = port
 			}
 
-			serverType, socketPath, nbdHost, nbdPort, err := utils.ParseNBDURI(v.NBDURI)
+			serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(v.NBDURI)
 			if err != nil {
 				return driveConfig{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
 			}

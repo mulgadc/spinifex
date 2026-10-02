@@ -10,7 +10,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 

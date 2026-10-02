@@ -1,6 +1,6 @@
-// Package bodyscope reads the handful of identifier fields a policy scope
+// Package bodyscope reads the identifier fields an AWS ingress policy-scope
 // resolver needs out of a JSON request body, without deserialising the typed
-// input the handler will build from the same bytes.
+// input an action adapter will build from the same bytes.
 //
 // Two properties matter here. A type mismatch on an unrelated field cannot
 // poison the parse and silently widen the request to "*", because every field

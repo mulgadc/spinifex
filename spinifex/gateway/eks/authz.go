@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 )
 
 // The resource a policy check evaluates against when the request names nothing

@@ -3,7 +3,7 @@ package bodyscope_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

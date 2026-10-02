@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 )
 
 // A lookup is one identifier an authz resolver reads through bodyscope, paired

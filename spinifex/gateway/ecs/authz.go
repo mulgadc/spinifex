@@ -6,10 +6,10 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // The resource a policy check evaluates against when the request names nothing

@@ -2,28 +2,20 @@ package utils
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
-	"os/signal"
 	"reflect"
 	"slices"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/pterm/pterm"
 )
 
 // GenerateResourceID generates a unique resource ID with the given prefix.
@@ -252,137 +244,6 @@ func ValidateKeyPairName(name string) error {
 	}
 
 	return nil
-}
-
-func DownloadFileWithProgress(url string, name string, filename string, timeout time.Duration) (err error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	if timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-	}
-	defer cancel()
-	intCh := make(chan os.Signal, 1)
-	signal.Notify(intCh, os.Interrupt)
-	go func() {
-		<-intCh
-		cancel()
-	}()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("request error: %w", err)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http error: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("unexpected status: %s", resp.Status)
-	}
-
-	f, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("file create error: %w", err)
-	}
-	defer f.Close()
-
-	cl := resp.ContentLength
-
-	if cl > 0 {
-		total := safecast.Int64ToUint64(cl)
-		bar, update := NewByteProgressBar(fmt.Sprintf("Downloading %s", name), total)
-
-		// io.Copy writes ~32 KiB per TeeReader call, so gate rendering on
-		// integer-percentage change to cap the bar at ≤101 renders instead of
-		// re-rendering tens of thousands of times.
-		var current uint64
-		lastPct := -1
-		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
-			current += safecast.IntToUint64(n)
-			pct := safecast.Uint64ToInt(current * 100 / total)
-			if pct > lastPct {
-				lastPct = pct
-				update(current)
-			}
-		}))
-
-		_, err = io.Copy(f, reader)
-		_, _ = bar.Stop()
-		if err != nil {
-			return fmt.Errorf("copy error: %w", err)
-		}
-		return err
-	} else {
-		spin, _ := pterm.DefaultSpinner.
-			WithText("Downloading (size unknown)...").
-			Start()
-		var written int64
-		reader := io.TeeReader(resp.Body, progressWriter(func(n int) {
-			written += int64(n)
-			spin.UpdateText(fmt.Sprintf("Downloading %s (%s) ...", name, HumanBytes(safecast.Int64ToUint64(written))))
-		}))
-		_, err = io.Copy(f, reader)
-		_ = spin.Stop()
-
-		if err != nil {
-			return fmt.Errorf("copy error: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// progressWriter turns byte counts into a callback for UI updates.
-type progressWriter func(n int)
-
-func (pw progressWriter) Write(p []byte) (int, error) {
-	pw(len(p))
-	return len(p), nil
-}
-
-// NewByteProgressBar starts a pterm progress bar that renders human-readable
-// sizes in its title instead of raw byte counts, and returns an update func
-// that performs one render per call. Callers must invoke update at a throttled
-// cadence (integer-percentage change) — the render itself is expensive, so an
-// unthrottled per-write call regresses throughput.
-//
-// pterm's elapsed-time display normally spawns a background goroutine that
-// re-renders every second with no lock, tearing the line against our own
-// low-frequency renders. Starting with it off means no timer is spawned; the
-// flag is then set on the returned bar so pterm still appends its "| 9s"
-// suffix, now emitted only on our (single) renders.
-func NewByteProgressBar(title string, total uint64) (*pterm.ProgressbarPrinter, func(current uint64)) {
-	totalHuman := HumanBytes(total)
-	bar, _ := pterm.DefaultProgressbar.
-		WithTitle(title).
-		WithTotal(safecast.Uint64ToInt(total)).
-		WithShowCount(false).       // hide raw ints; the size goes in the title
-		WithShowElapsedTime(false). // suppress the async re-render (see above)
-		Start()
-	bar.ShowElapsedTime = true // keep pterm's elapsed, rendered only by us
-
-	update := func(current uint64) {
-		bar.Current = safecast.Uint64ToInt(current) // drives fill + percentage
-		// UpdateTitle performs the single render for this step.
-		bar.UpdateTitle(fmt.Sprintf("%s — %s / %s", title, HumanBytes(current), totalHuman))
-	}
-	return bar, update
-}
-
-// HumanBytes formats a byte count using IEC binary suffixes (KiB, MiB, ...).
-// Values below 1024 render as exact bytes.
-func HumanBytes(b uint64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPEZY"[exp])
 }
 
 func dirExists(path string) bool {

@@ -36,6 +36,7 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
+	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
@@ -731,7 +732,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		if admin.FileExists(imageFile) && !forceCmd {
 			fmt.Printf("Image file already exists, skipping download, use --force to overwrite: %s\n", imageFile)
 		} else {
-			err := utils.DownloadFileWithProgress(image.URL, image.Name, imageFile, 0)
+			err := operatorprogress.DownloadFileWithProgress(image.URL, image.Name, imageFile, 0)
 
 			if err != nil {
 				fmt.Printf("Download failed: %v\n", err)
@@ -988,9 +989,9 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 		}
 	}
 	fmt.Printf("  Backing storage: %s/      (%d objects, %s)\n",
-		preview.ImageID, preview.AMIObjectCount, utils.HumanBytes(safecast.Int64ToUint64(preview.AMIBytesTotal)))
+		preview.ImageID, preview.AMIObjectCount, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.AMIBytesTotal)))
 	fmt.Printf("                   %s/ (%d objects, %s)\n",
-		admin.SnapPrefix(preview.ImageID), preview.SnapObjectCount, utils.HumanBytes(safecast.Int64ToUint64(preview.SnapBytesTotal)))
+		admin.SnapPrefix(preview.ImageID), preview.SnapObjectCount, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.SnapBytesTotal)))
 	fmt.Println()
 
 	// Account-owned guard before salvage / dependents — the AWS-flow hint is
@@ -1046,7 +1047,7 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 	// BytesDeleted is logical: predastore reclaims the underlying disk space
 	// asynchronously via background compaction, not at delete time.
 	fmt.Printf("✅ Removed AMI %s (%d objects, %s marked for deletion; disk space is reclaimed by background compaction).\n",
-		imageID, res.ObjectsDeleted, utils.HumanBytes(safecast.Int64ToUint64(res.BytesDeleted)))
+		imageID, res.ObjectsDeleted, operatorprogress.HumanBytes(safecast.Int64ToUint64(res.BytesDeleted)))
 }
 
 func printDependents(w io.Writer, d admin.Dependents) {

@@ -223,29 +223,6 @@ func UnmarshalJsonPayload(input any, jsonData []byte) []byte {
 	return nil
 }
 
-// ValidateKeyPairName validates that a key pair name contains only [A-Za-z0-9._-].
-// Rejects empty names and returns ErrorInvalidKeyPairFormat on any invalid character.
-func ValidateKeyPairName(name string) error {
-	if name == "" {
-		return errors.New("key name cannot be empty")
-	}
-
-	for _, char := range name {
-		valid := (char >= 'A' && char <= 'Z') ||
-			(char >= 'a' && char <= 'z') ||
-			(char >= '0' && char <= '9') ||
-			char == '-' ||
-			char == '_' ||
-			char == '.'
-
-		if !valid {
-			return errors.New(awserrors.ErrorInvalidKeyPairFormat)
-		}
-	}
-
-	return nil
-}
-
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {

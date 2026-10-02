@@ -118,7 +118,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	slog.InfoContext(ctx, "Creating key pair", "keyName", keyName)
 
 	// Validate key name contains only allowed characters
-	if err := utils.ValidateKeyPairName(keyName); err != nil {
+	if err := validateKeyPairName(keyName); err != nil {
 		slog.ErrorContext(ctx, "Invalid key pair name", "keyName", keyName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 	}
@@ -616,7 +616,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 
 		// Validate keyPairId format (strip "key-" prefix before validation)
 		keyPairIDStripped := strings.TrimPrefix(keyPairID, "key-")
-		if err := utils.ValidateKeyPairName(keyPairIDStripped); err != nil {
+		if err := validateKeyPairName(keyPairIDStripped); err != nil {
 			slog.ErrorContext(ctx, "Invalid key pair ID format", "keyPairId", keyPairID, "err", err)
 			return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 		}
@@ -636,7 +636,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 		keyName = *input.KeyName
 
 		// Validate keyName format
-		if err := utils.ValidateKeyPairName(keyName); err != nil {
+		if err := validateKeyPairName(keyName); err != nil {
 			slog.ErrorContext(ctx, "Invalid key pair name format", "keyName", keyName, "err", err)
 			return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 		}
@@ -909,7 +909,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	slog.InfoContext(ctx, "Importing key pair", "keyName", keyName)
 
 	// Validate key name contains only allowed characters
-	if err := utils.ValidateKeyPairName(keyName); err != nil {
+	if err := validateKeyPairName(keyName); err != nil {
 		slog.ErrorContext(ctx, "Invalid key pair name", "keyName", keyName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 	}

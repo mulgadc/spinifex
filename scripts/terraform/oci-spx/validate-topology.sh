@@ -137,6 +137,12 @@ mkdir -p "$STATE_ROOT"
 STATE_DIR="$STATE_ROOT/.validate-$TOPOLOGY"
 RESULTS="$STATE_DIR/results.txt"
 
+# Tab-separated siblings of the human block, for the run-page tables. Written here
+# rather than parsed out of the log later: the status of a gate is then a field
+# this script sets, not a regex over prose that reads fine and matches wrong.
+RESULTS_TSV="$STATE_DIR/results.tsv"
+WORKBOOKS_TSV="$STATE_DIR/workbooks.tsv"
+
 # A separate state directory per topology, so two topologies can be built from one
 # checkout without one destroying the other's instances.
 tf() {
@@ -163,7 +169,23 @@ ssh_node() {
         -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 "ubuntu@$host" "$@"
 }
 
-record() { printf '%s\n' "$*" >> "$RESULTS"; }
+# record <gate> <PASS|FAIL|SKIPPED|INFO> [detail]
+record() {
+    local gate="$1" status="$2" detail="${3-}"
+    printf '%s: %s%s\n' "$gate" "$status" "${detail:+ $detail}" >> "$RESULTS"
+    printf '%s\t%s\t%s\n' "$gate" "$status" "$detail" >> "$RESULTS_TSV"
+}
+
+# The driver's per-workbook lines, which are go test's own shape because
+# go-junit-report consumes them downstream. A workbook the driver never reached
+# is absent from its log and so absent here, which the summary renders as a row
+# rather than dropping — a missing row reads as a pass.
+record_workbooks() {
+    local log="$1"
+    [ -r "$log" ] || return 0
+    sed -n 's/^--- \(PASS\|FAIL\): TestTofuWorkbook_\([A-Za-z0-9_]*\) (\([0-9]*\)\.[0-9]*s)$/\2\t\1\t\3/p' \
+        "$log" | tr '_' '-' > "$WORKBOOKS_TSV"
+}
 
 # Teardown is the last assertion, not cleanup: a workbook or a topology that
 # cannot be destroyed is a defect, and it has been one before.
@@ -172,10 +194,10 @@ destroy_topology() {
     log "destroying"
     if tf destroy -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/destroy.log" 2>&1; then
         DESTROY_RC=0
-        record "destroy: PASS"
+        record destroy PASS
     else
         DESTROY_RC=1
-        record "destroy: FAIL (see $STATE_DIR/destroy.log)"
+        record destroy FAIL "see $STATE_DIR/destroy.log"
         log "TEARDOWN FAILED — resources may still be billing. $STATE_DIR/destroy.log"
     fi
 }
@@ -221,6 +243,8 @@ if [ "$DESTROY_ONLY" = 1 ]; then
 fi
 
 : > "$RESULTS"
+: > "$RESULTS_TSV"
+: > "$WORKBOOKS_TSV"
 
 log "$SHAPE, $NODES node(s), state in $STATE_DIR"
 
@@ -264,7 +288,7 @@ tf init -input=false > "$STATE_DIR/init.log" 2>&1 || die "terraform init failed;
 log "building"
 tf apply -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/apply.log" 2>&1 \
     || die "terraform apply failed; see $STATE_DIR/apply.log"
-record "build: PASS"
+record build PASS
 
 mapfile -t HOSTS < <(tf output -raw "${tf_state[@]}" hosts_file) \
     || die "could not read the hosts_file output from $STATE_DIR/terraform.tfstate"
@@ -298,7 +322,7 @@ for host in "${HOSTS[@]}"; do
         || die "cloud-init did not converge on $host; see $STATE_DIR/cloudinit-$host.txt"
     log "$host cloud-init: $(head -1 "$STATE_DIR/cloudinit-$host.txt")"
 done
-record "cloud-init units: PASS"
+record "cloud-init units" PASS
 
 # With --distro the bytes are the ref under test; without it they are the published
 # release, which answers a different question -- what a customer following the
@@ -346,9 +370,10 @@ else
 fi
 sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 REMOTE
-    log "$host installed: $(ssh_node "$host" 'spx version' 2>&1 | head -1)"
+    INSTALLED_VERSION="$(ssh_node "$host" 'spx version' 2>&1 | head -1)"
+    log "$host installed: $INSTALLED_VERSION"
 done
-record "install: PASS"
+record install PASS "$INSTALLED_VERSION"
 
 # A single node is its own documented path: install-node.sh refuses fewer than two
 # hosts, because there is nothing to join. Both branches use the flags the guide
@@ -375,7 +400,7 @@ else
         --yes > "$STATE_DIR/form.log" 2>&1 \
         || die "formation failed; see $STATE_DIR/form.log"
 fi
-record "formation: PASS"
+record formation PASS
 
 # Runs after formation and before the pool is configured, which is the only window
 # where a node has /etc/spinifex but has not yet started the allocator. Nothing in
@@ -454,7 +479,7 @@ allocator_diagnostics() {
 # accepts allocate-address and then fails it.
 if [ "$SKIP_POOL" = 1 ]; then
     log "--no-external-pool: no allocator to check"
-    record "oci allocator: SKIPPED"
+    record "oci allocator" SKIPPED "no external pool configured"
 else
     log "checking the allocator came up"
     for host in "${HOSTS[@]}"; do
@@ -479,7 +504,7 @@ else
         fi
         log "$host allocator ready"
     done
-    record "oci allocator: PASS"
+    record "oci allocator" PASS
 fi
 
 # Parse the STATUS column, never grep for Ready: NotReady contains it, and that
@@ -500,11 +525,11 @@ for _ in $(seq 1 30); do
 done
 cat "$STATE_DIR/nodes.txt"
 [ "$ready" = "$NODES" ] || die "expected $NODES Ready node(s), got $ready; see $STATE_DIR/nodes.txt"
-record "membership: PASS ($ready Ready)"
+record membership PASS "$ready Ready"
 
 if [ "$SKIP_WORKLOAD" = 1 ]; then
     log "--skip-workload: stopping before the workbook"
-    record "workbook: SKIPPED"
+    record workbooks SKIPPED "--skip-workload"
     exit 0
 fi
 
@@ -543,9 +568,9 @@ workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
 # outside, which is where this script already runs.
 if ssh_node "${HOSTS[0]}" \
     "bash -c 'exec 3<>/dev/tcp/${HOSTS[${#HOSTS[@]}-1]}/22' 2>/dev/null"; then
-    record "vcn hairpin: present (a node can reach a public address in its own VCN)"
+    record "vcn hairpin" INFO "present, so a node can reach a public address in its own VCN"
 else
-    record "vcn hairpin: absent, so public addresses are probed from this host"
+    record "vcn hairpin" INFO "absent, so public addresses are probed from outside the VCN"
 fi
 
 # Remote dynamic forward: the node gets a SOCKS5 proxy on this port whose egress
@@ -570,10 +595,16 @@ if ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
     -o ExitOnForwardFailure=yes -R "$PUBLIC_PROXY_PORT" "ubuntu@${HOSTS[0]}" \
     "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
     > "$STATE_DIR/workbooks.log" 2>&1; then
+    record_workbooks "$STATE_DIR/workbooks.log"
     passed="$(grep -c '^--- PASS' "$STATE_DIR/workbooks.log" || true)"
     ran="$(grep -c '^=== RUN' "$STATE_DIR/workbooks.log" || true)"
-    record "workbooks: PASS ($passed of $ran)"
+    record workbooks PASS "$passed of $ran"
 else
+    # Before die, so a failed suite still gets its per-workbook table: which four
+    # passed is most of what the fifth failing means.
+    record_workbooks "$STATE_DIR/workbooks.log"
+    failed="$(grep -c '^--- FAIL' "$STATE_DIR/workbooks.log" || true)"
+    record workbooks FAIL "$failed failed, see $STATE_DIR/workbooks.log"
     tail -60 "$STATE_DIR/workbooks.log"
     grep -E '^--- (PASS|FAIL)' "$STATE_DIR/workbooks.log" | sed 's/^/  /' || true
     die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"

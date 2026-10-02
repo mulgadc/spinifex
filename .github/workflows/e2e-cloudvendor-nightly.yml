@@ -160,6 +160,25 @@ jobs:
           ./e2e-oci.sh 2>&1 | tee "$RUNNER_TEMP/e2e-oci.log"
           exit "${PIPESTATUS[0]}"
 
+      # Before the sweep, which destroys the state the tables are read from, and
+      # always(): a run whose verdict is a failure is exactly the one somebody
+      # wants a table for. The successful path writes the same tables itself, so
+      # this step is for the run that did not get there.
+      #
+      # The markdown lives in the script rather than here. A heredoc in a YAML
+      # string is the one place in this repository nothing can lint or run.
+      - name: Publish the result tables
+        if: always()
+        working-directory: spinifex/scripts/terraform/oci-spx
+        env:
+          OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
+          OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
+          OCI_TOPOLOGIES: ${{ inputs.topologies }}
+          OCI_SOURCE: ${{ inputs.source }}
+          OCI_CHANNEL: ${{ inputs.channel }}
+          SPX_REF: ${{ github.ref_name }}
+        run: ./e2e-oci.sh --summary-only
+
       # always(), and before the artifact upload: an OCI bare-metal host left
       # running by a cancelled or timed-out job is the most expensive way this
       # workflow can fail. The sweep works from the Terraform state files, so it

@@ -61,6 +61,7 @@ ARTIFACT_DIR="${OCI_ARTIFACT_DIR:-$HERE/.e2e-oci-$(date -u +%Y%m%dT%H%M%SZ)}"
 export OCI_STATE_ROOT="${OCI_STATE_ROOT:-$HERE}"
 STATE_ROOT="$OCI_STATE_ROOT"
 SWEEP_ONLY=0
+SUMMARY_ONLY=0
 DRY_RUN=0
 
 log() { printf '[e2e-oci] %s\n' "$*"; }
@@ -71,11 +72,13 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} [--sweep-only] [--dry-run]
+usage: ${0##*/} [--sweep-only] [--summary-only] [--dry-run]
 
 Everything else is an environment variable; see the header of this script.
 
   --sweep-only   Destroy anything an earlier run left behind, then stop.
+  --summary-only Write the result tables from the state files, then stop. For
+                 a job that was cancelled or killed before it got there.
   --dry-run      Print what each topology would do, build nothing.
 EOF
     exit 2
@@ -84,6 +87,7 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --sweep-only) SWEEP_ONLY=1; shift ;;
+        --summary-only) SUMMARY_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help) usage ;;
         *) die "unknown option $1" ;;
@@ -108,6 +112,63 @@ esac
 mkdir -p "$ARTIFACT_DIR"
 VERDICT="$ARTIFACT_DIR/verdict.txt"
 : > "$VERDICT"
+
+# The run page is the evidence, and its readers are not us: someone assessing
+# whether Spinifex works on their cloud should get the answer without opening a
+# log or knowing what this harness is. Markdown on stdout as well as to the step
+# summary, so a workstation run shows the same thing CI publishes.
+mark() {
+    case "$1" in
+        PASS) printf '✅ PASS' ;;
+        FAIL) printf '❌ FAIL' ;;
+        SKIPPED) printf '⏭️ SKIPPED' ;;
+        *) printf 'ℹ️ %s' "$1" ;;
+    esac
+}
+
+summary() {
+    printf '## Spinifex on OCI — %s\n\n' "$REF"
+    printf 'Published release `%s`, region `%s`.\n\n' \
+        "${INSTALL_VERSION:-$CHANNEL channel}" "${OCI_REGION:-ap-sydney-1}"
+
+    local topology results workbooks gate status detail name secs
+    for topology in $TOPOLOGIES; do
+        results="$STATE_ROOT/.validate-$topology/results.tsv"
+        workbooks="$STATE_ROOT/.validate-$topology/workbooks.tsv"
+        printf '### `%s`\n\n' "$topology"
+        # A topology the loop never reached is said so rather than omitted: a
+        # reader takes an absent row for a passing one.
+        if [ ! -s "$results" ]; then
+            printf 'Did not run.\n\n'
+            continue
+        fi
+        printf '| Gate | Result | Detail |\n| --- | --- | --- |\n'
+        while IFS=$'\t' read -r gate status detail; do
+            [ -n "$gate" ] || continue
+            printf '| %s | %s | %s |\n' "$gate" "$(mark "$status")" "$detail"
+        done < "$results"
+        printf '\n'
+        if [ ! -s "$workbooks" ]; then
+            printf 'No published workbooks ran.\n\n'
+            continue
+        fi
+        printf '| Terraform workbook | Result | Duration |\n| --- | --- | --- |\n'
+        while IFS=$'\t' read -r name status secs; do
+            [ -n "$name" ] || continue
+            printf '| `%s` | %s | %ss |\n' "$name" "$(mark "$status")" "$secs"
+        done < "$workbooks"
+        printf '\n'
+    done
+}
+
+# Written to stdout as well as the step summary, so a workstation run shows the
+# same thing CI publishes.
+emit_summary() {
+    summary | tee "$ARTIFACT_DIR/summary.md"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        cat "$ARTIFACT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+    fi
+}
 
 # A topology destroys itself from its own EXIT trap, so this only catches a run
 # the trap never reached: a killed process, a runner reclaimed mid-job, a reboot.
@@ -137,6 +198,14 @@ sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
     done
     [ "$found" = 0 ] && log "sweep: nothing left behind"
 }
+
+# Before the sweep, because the sweep is what destroys the state the tables are
+# read from. This is the path a cancelled job takes, so it has to work on whatever
+# the run got through rather than assuming a complete set.
+if [ "$SUMMARY_ONLY" = 1 ]; then
+    emit_summary
+    exit 0
+fi
 
 # Run the sweep before the topologies as well as after: a leftover cluster from a
 # killed run is both a bill and a second set of resources with our names on it.
@@ -218,6 +287,9 @@ done
 # Again at the end, because a topology that failed its own teardown is exactly the
 # case that costs money, and the verdict should say so rather than the log.
 sweep
+
+emit_summary
+
 
 echo
 log "=== $REF on OCI ($SOURCE build$([ "$SOURCE" = release ] && { [ -n "$INSTALL_VERSION" ] && echo ", $INSTALL_VERSION" || echo ", $CHANNEL channel"; })) ==="

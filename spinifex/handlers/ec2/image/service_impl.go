@@ -19,6 +19,7 @@ import (
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -179,7 +180,7 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 	parsedFilters map[string][]string, encryptedAtRest bool) (*ec2.DescribeImagesOutput, error) {
 	// Only nil entries names nothing, which the enumerating path answers with an
 	// empty result rather than a missing ID.
-	imageIDs := utils.DistinctIDs(input.ImageIds)
+	imageIDs := awsidentifiers.Distinct(input.ImageIds)
 	if len(imageIDs) == 0 {
 		return &ec2.DescribeImagesOutput{}, nil
 	}

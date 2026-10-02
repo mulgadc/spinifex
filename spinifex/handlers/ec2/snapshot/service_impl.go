@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
@@ -518,7 +519,7 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 	accountID string, parsedFilters map[string][]string, strict bool) (*ec2.DescribeSnapshotsOutput, error) {
 	// Only nil entries names nothing, which the listing path answers with an
 	// empty result rather than a missing ID.
-	snapshotIDs := utils.DistinctIDs(input.SnapshotIds)
+	snapshotIDs := awsidentifiers.Distinct(input.SnapshotIds)
 	if len(snapshotIDs) == 0 {
 		return &ec2.DescribeSnapshotsOutput{}, nil
 	}

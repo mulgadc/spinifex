@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net/netip"
 
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // FlowsBarrier blocks until ovn-northd compiles NB→SB and chassis install flows.
@@ -195,7 +195,7 @@ func (m *igwManager) AttachIGW(ctx context.Context, spec IGWSpec) error {
 		}
 		if err := m.ovn.CreateLogicalRouterPort(ctx, routerName, &nbdb.LogicalRouterPort{
 			Name:        gwPortName,
-			MAC:         utils.HashMAC(gwPortName),
+			MAC:         networkids.HashMAC(gwPortName),
 			Networks:    []string{gwNetwork},
 			ExternalIDs: lrpExtIDs,
 		}); err != nil {

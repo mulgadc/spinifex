@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Bounds for the post-rebind SB chassis-claim wait. Package vars so tests can shorten.
@@ -177,7 +177,7 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 			continue
 		}
 		gwCIDRString := fmt.Sprintf("%s/%d", gwIP, prefixBits)
-		routerMAC := utils.HashMAC(subnetID)
+		routerMAC := networkids.HashMAC(subnetID)
 
 		if _, ok := actual.Switches[switchName]; !ok {
 			ls := &nbdb.LogicalSwitch{

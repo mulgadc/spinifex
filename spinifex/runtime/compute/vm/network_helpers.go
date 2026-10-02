@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // TapSpec parameterises a single tap-on-OVS-bridge plumbing operation.
@@ -95,14 +95,14 @@ func IMDSPrimaryTapSpec(eniID string, queues, mtu int) TapSpec {
 // dev/hostfwd NIC. The "dev:" tag disambiguates from the mgmt NIC of the
 // same instance (which shares instanceID).
 func GenerateDevMAC(instanceID string) string {
-	return utils.HashMAC("dev:" + instanceID)
+	return networkids.HashMAC("dev:" + instanceID)
 }
 
 // GenerateMgmtMAC returns the locally-administered unicast MAC for the
 // management NIC. The "mgmt:" tag disambiguates from the dev NIC of the
 // same instance (which shares instanceID).
 func GenerateMgmtMAC(instanceID string) string {
-	return utils.HashMAC("mgmt:" + instanceID)
+	return networkids.HashMAC("mgmt:" + instanceID)
 }
 
 // attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's

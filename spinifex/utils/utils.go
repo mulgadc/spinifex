@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -12,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -401,16 +399,6 @@ func HumanBytes(b uint64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPEZY"[exp])
-}
-
-// HashMAC returns a deterministic locally-administered unicast MAC for id (SHA-256; first octet 0x02).
-// id must be globally unique; callers sharing a base id across resource classes must compose a class tag (e.g. "dev:"+id).
-func HashMAC(id string) string {
-	sum := sha256.Sum256([]byte(id))
-	b := make([]byte, 6)
-	b[0] = 0x02
-	copy(b[1:], sum[:5])
-	return net.HardwareAddr(b).String()
 }
 
 func dirExists(path string) bool {

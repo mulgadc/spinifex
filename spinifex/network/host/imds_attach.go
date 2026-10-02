@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
@@ -39,7 +39,7 @@ func imdsDatapathSpec(eniID, mac, subnetID string) IMDSTapDatapath {
 		Endpoint:    IMDSEndpointName(eniID),
 		EndpointMAC: IMDSEndpointMAC(eniID),
 		GuestMAC:    mac,
-		GatewayMAC:  utils.HashMAC(subnetID),
+		GatewayMAC:  networkids.HashMAC(subnetID),
 		PatchIMDS:   IMDSPatchPort(eniID),
 		PatchInt:    IMDSIntPatchPort(eniID),
 		IfaceID:     vm.OVSIfaceID(eniID),

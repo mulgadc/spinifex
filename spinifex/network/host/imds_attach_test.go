@@ -7,8 +7,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 func TestIMDSDatapathSpec(t *testing.T) {
@@ -33,8 +34,8 @@ func TestIMDSDatapathSpec(t *testing.T) {
 	}
 	// GatewayMAC must match the subnet's OVN router-port MAC so the egress flow
 	// restores the reply source to the gateway the guest expects.
-	if want := utils.HashMAC(subnetID); d.GatewayMAC != want {
-		t.Errorf("GatewayMAC = %q, want %q (utils.HashMAC(subnetID))", d.GatewayMAC, want)
+	if want := networkids.HashMAC(subnetID); d.GatewayMAC != want {
+		t.Errorf("GatewayMAC = %q, want %q (networkids.HashMAC(subnetID))", d.GatewayMAC, want)
 	}
 	if d.PatchIMDS != IMDSPatchPort(eniID) {
 		t.Errorf("PatchIMDS = %q, want %q", d.PatchIMDS, IMDSPatchPort(eniID))

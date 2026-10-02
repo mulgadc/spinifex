@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Option configures a liveManager at construction.
@@ -187,7 +187,7 @@ func (m *liveManager) EnsureSubnet(ctx context.Context, spec SubnetSpec) error {
 	}
 	cidr := spec.CIDR.String()
 	gwCIDR := fmt.Sprintf("%s/%d", gwIP, prefixBits)
-	routerMAC := utils.HashMAC(spec.SubnetID)
+	routerMAC := networkids.HashMAC(spec.SubnetID)
 	switchName := SubnetSwitch(spec.SubnetID)
 	routerName := VPCRouter(spec.VPCID)
 	routerPortName := SubnetRouterPort(spec.SubnetID)

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
@@ -105,7 +106,7 @@ func IMDSIntPatchPort(eniID string) string { return imdsIntPatchPrefix + shortEN
 // endpoint owns this MAC so the ingress demux can rewrite the guest's gateway
 // dst MAC to it (the kernel drops the frame as OTHERHOST otherwise).
 func IMDSEndpointMAC(eniID string) string {
-	return utils.HashMAC("imds-ep:" + eniID)
+	return networkids.HashMAC("imds-ep:" + eniID)
 }
 
 // imdsFlowCookie returns the per-tap OpenFlow cookie tagging endpoint's flows.

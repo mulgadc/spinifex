@@ -9,7 +9,7 @@ import (
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/nclient4"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 )
 
 // NClient4Client is the production DHCP client (AF_PACKET per call, no
@@ -282,7 +282,7 @@ func (c *NClient4Client) Release(_ context.Context, lease *Lease) error {
 // using the same HashMAC scheme as OVN router/port MACs so leases are legible
 // in upstream dnsmasq logs.
 func DeriveMAC(clientID string) (net.HardwareAddr, error) {
-	hw, err := net.ParseMAC(utils.HashMAC(clientID))
+	hw, err := net.ParseMAC(networkids.HashMAC(clientID))
 	if err != nil {
 		return nil, fmt.Errorf("derive mac for client-id %q: %w", clientID, err)
 	}

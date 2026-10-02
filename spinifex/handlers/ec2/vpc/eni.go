@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
@@ -168,7 +169,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	}
 
 	// Generate a deterministic MAC address
-	macAddr := utils.HashMAC(eniId)
+	macAddr := networkids.HashMAC(eniId)
 
 	description := ""
 	if input.Description != nil {

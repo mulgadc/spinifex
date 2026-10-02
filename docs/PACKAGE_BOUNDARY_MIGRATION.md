@@ -228,6 +228,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `9f83f899a` | `spinifex/utils` (`ClientIP`, `RequestClientIP`) | `spinifex/ingress/http` | HTTP remote-address parsing and loopback-trusted `X-Real-IP` handling are generic ingress policy shared by the AWS gateway and UI proxy. The moved test suite and all direct caller compilations passed. |
 | `693109950` | `spinifex/utils` (`HashMAC`) | `spinifex/network/identifiers` | Deterministic locally-administered MAC derivation is network infrastructure shared by ENIs, DHCP, OVN topology, IMDS and VM tap setup. Focused MAC tests and every direct caller compilation passed. |
 | `79cf93996` | `spinifex/utils` (`DistinctIDs`) | `spinifex/foundation/aws/identifiers` | Request-order-preserving normalization of AWS resource-ID lists is shared API-model handling used by image and snapshot enumeration. Focused tests and both direct caller compilations passed. |
+| `7e29f2640` | `spinifex/utils` (download and terminal-progress helpers) | `spinifex/operator/progress` | Operator-facing downloads, terminal progress rendering and byte display are CLI presentation concerns. Focused tests and the `spx admin` compilation passed. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

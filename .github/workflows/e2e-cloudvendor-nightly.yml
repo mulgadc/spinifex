@@ -1,4 +1,4 @@
-name: E2E OCI Nightly
+name: E2E Cloud Vendor Nightly
 
 # Dispatched by the same Cloudflare Worker that drives e2e-nightly.yml, once per
 # ref, rather than by a `schedule:` here. GitHub registers a schedule only from
@@ -28,6 +28,12 @@ on:
         required: false
         type: boolean
         default: false
+      auth:
+        description: "How nodes reach the OCI API: instance_principal (needs the tenancy dynamic group) or api_key (needs the credential hook)"
+        required: false
+        default: instance_principal
+        type: choice
+        options: [instance_principal, api_key]
       no_external_pool:
         description: "Form without the OCI allocator. Skips every workbook needing a public address."
         required: false
@@ -59,12 +65,17 @@ jobs:
     # Three topologies including a bare-metal build, each with its own install,
     # formation and workbook pass. The sweep still runs if this fires.
     timeout-minutes: 300
-    env:
-      # Outside github.workspace on purpose. actions/checkout runs git clean -ffdx,
-      # which on a persistent runner would delete the Terraform state of a killed
-      # run before the next sweep could read it, leaving instances nothing can find.
-      OCI_STATE_ROOT: ${{ runner.workspace }}/oci-state
     steps:
+      # Set here rather than in a job-level env block: the runner context is not
+      # available at job level, only from a step onwards, and a workflow that
+      # references it there is rejected as invalid before any job starts.
+      #
+      # Outside github.workspace on purpose. The checkout wipes untracked files, so
+      # on a persistent runner it would delete the Terraform state of a killed run
+      # before the next sweep could read it, leaving instances nothing can find.
+      - name: Put the Terraform state outside the checkout
+        run: echo "OCI_STATE_ROOT=$RUNNER_WORKSPACE/oci-state" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           path: spinifex
@@ -121,12 +132,20 @@ jobs:
           OCI_TOPOLOGIES: ${{ inputs.topologies }}
           OCI_SOURCE: ${{ inputs.source }}
           OCI_CHANNEL: ${{ inputs.channel }}
-          # 1 unless the dispatch asked to form without the allocator, which is the
-          # only way to run before the tenancy's dynamic group exists. The run then
-          # records the allocator and the workbooks as SKIPPED rather than passing
-          # them, so a green run with this set is not a claim about guest networking.
-          OCI_INSTANCE_PRINCIPAL: ${{ inputs.no_external_pool && '0' || '1' }}
+          # Independent of the pool, deliberately. These were one switch, which made
+          # the combination we actually need -- an API key with the allocator running
+          # -- impossible to ask for, so public-IP allocation went untested.
+          OCI_INSTANCE_PRINCIPAL: ${{ inputs.auth == 'api_key' && '0' || '1' }}
+          # Skipping the pool records the allocator and every public-address workbook
+          # as SKIPPED, so a green run with this set is not a claim about guest
+          # networking. It exists for a formation-only check, not as a way past a
+          # missing credential.
           OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
+          # Only an API-key run needs one: an instance principal is the node's own
+          # certificate, so there is nothing to hand over. Unset is not an error, and
+          # the allocator gate then fails rather than passing a node that cannot
+          # authenticate.
+          OCI_CREDENTIAL_HOOK: ${{ inputs.auth == 'api_key' && vars.OCI_CREDENTIAL_HOOK || '' }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
           OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
           # Through the environment, never interpolated into the script below: a
@@ -140,6 +159,29 @@ jobs:
           if [ -n "$WORKBOOKS_INPUT" ]; then export WORKBOOKS="$WORKBOOKS_INPUT"; fi
           ./e2e-oci.sh 2>&1 | tee "$RUNNER_TEMP/e2e-oci.log"
           exit "${PIPESTATUS[0]}"
+
+      # Before the sweep, which destroys the state the tables are read from, and
+      # always(): a run whose verdict is a failure is exactly the one somebody
+      # wants a table for. The successful path writes the same tables itself, so
+      # this step is for the run that did not get there.
+      #
+      # The markdown lives in the script rather than here. A heredoc in a YAML
+      # string is the one place in this repository nothing can lint or run.
+      - name: Publish the result tables
+        if: always()
+        working-directory: spinifex/scripts/terraform/oci-spx
+        env:
+          OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
+          OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
+          OCI_TOPOLOGIES: ${{ inputs.topologies }}
+          OCI_SOURCE: ${{ inputs.source }}
+          OCI_CHANNEL: ${{ inputs.channel }}
+          SPX_REF: ${{ github.ref_name }}
+          # The same two the run step passes. The header states what was and was not
+          # tested, so a summary rendered without them would claim more than the run.
+          OCI_INSTANCE_PRINCIPAL: ${{ inputs.auth == 'api_key' && '0' || '1' }}
+          OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
+        run: ./e2e-oci.sh --summary-only
 
       # always(), and before the artifact upload: an OCI bare-metal host left
       # running by a cancelled or timed-out job is the most expensive way this
@@ -178,7 +220,14 @@ jobs:
             ${{ runner.temp }}/e2e-oci.log
             ${{ runner.temp }}/e2e-oci/*.log
             ${{ runner.temp }}/e2e-oci/verdict.txt
+            ${{ runner.temp }}/e2e-oci/summary.md
             ${{ runner.temp }}/e2e-oci-sweep/*.log
             ${{ runner.workspace }}/oci-state/.validate-*/*.log
             ${{ runner.workspace }}/oci-state/.validate-*/*.txt
+            ${{ runner.workspace }}/oci-state/.validate-*/*.tsv
+            # The hook is the operator's own executable and the one thing known
+            # about it is that it handles a private key. Whatever it printed is not
+            # ours to publish in a downloadable artifact, so it is excluded rather
+            # than trusted to have been quiet.
+            !${{ runner.workspace }}/oci-state/.validate-*/credential-hook.log
           retention-days: 14

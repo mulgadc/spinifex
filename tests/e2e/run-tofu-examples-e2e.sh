@@ -25,9 +25,59 @@ OPENTOFU_VERSION="${OPENTOFU_VERSION:-1.11.5}"
 WAN_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR)
 
+# A guest's public address, reached from where a customer would reach it. Empty
+# means this host is already outside the cluster's own network, which is true of
+# every hypervisor runner. Set it to host:port for a SOCKS5 proxy whose egress is
+# off-network when the host is not: a cloud may refuse a public address from inside
+# its own network, or admit only listed sources, and either fails a healthy cluster
+# from here however well the datapath works.
+PUBLIC_PROXY="${E2E_PUBLIC_PROXY:-}"
+
 CURRENT_WORKBOOK=""
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+# curl, from outside the cluster's network when PUBLIC_PROXY says it has to be.
+# socks5h, not socks5: the proxy resolves, so a name only the far side knows
+# still works.
+curl_public() {
+    if [ -n "$PUBLIC_PROXY" ]; then
+        curl --proxy "socks5h://${PUBLIC_PROXY}" "$@"
+        return
+    fi
+    curl "$@"
+}
+
+# PUBLIC_PROXY is for public addresses only, so this is deliberately not in
+# SSH_OPTS itself: a hop added to every ssh would also divert the bastion's
+# inner ssh to a private address, which no proxy can reach.
+ssh_public() {
+    if [ -n "$PUBLIC_PROXY" ]; then
+        ssh -o "ProxyCommand=nc -X 5 -x ${PUBLIC_PROXY} %h %p" "$@"
+        return
+    fi
+    ssh "$@"
+}
+
+# Fail here rather than letting every assertion time out in turn: a proxy that
+# is named and does not work is indistinguishable, from the far end, from a
+# cluster that is not serving.
+check_public_proxy() {
+    [ -n "$PUBLIC_PROXY" ] || return 0
+    command -v nc >/dev/null 2>&1 || {
+        sudo apt-get install -y -qq netcat-openbsd >/dev/null 2>&1 || {
+            log "public-address probes need nc (netcat-openbsd) for ssh over SOCKS"
+            return 1
+        }
+    }
+    # Something off-network that is not ours, so the answer is about the proxy
+    # and not about the cluster.
+    if ! curl_public -sf -o /dev/null --max-time 20 https://api.github.com/; then
+        log "public-address probes go through SOCKS ${PUBLIC_PROXY}, which cannot reach the internet"
+        return 1
+    fi
+    log "public-address probes go through SOCKS ${PUBLIC_PROXY} (outside this host's network)"
+}
 
 install_tofu() {
     command -v tofu >/dev/null 2>&1 && return 0
@@ -110,7 +160,7 @@ trap cleanup EXIT
 wait_for_ssh() {
     local key="$1" host="$2"
     for _ in $(seq 1 30); do
-        if ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" true 2>/dev/null; then
+        if ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" true 2>/dev/null; then
             return 0
         fi
         sleep 5
@@ -124,7 +174,7 @@ wait_for_http_200() {
     local attempts=$((budget / 5))
     for _ in $(seq 1 "$attempts"); do
         local status
-        status=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || echo "000")
+        status=$(curl_public -sk -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || echo "000")
         if [ "$status" = "200" ]; then
             return 0
         fi
@@ -163,7 +213,7 @@ assert_bastion_private_subnet() {
     }
     # sshd accepts before cloud-init finishes writing ~/.ssh/bastion-demo.pem.
     # Wait up to 180s for user_data to drop the key before hopping.
-    if ! ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
+    if ! ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" \
         'for _ in $(seq 1 36); do [ -s ~/.ssh/bastion-demo.pem ] && exit 0; sleep 5; done; exit 1'; then
         log "  bastion: ~/.ssh/bastion-demo.pem never appeared (cloud-init stalled?)"
         return 1
@@ -172,8 +222,8 @@ assert_bastion_private_subnet() {
 
     local attempt
     for attempt in $(seq 1 30); do
-        if ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} true" 2>/dev/null; then
-            ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid='
+        if ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} true" 2>/dev/null; then
+            ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${bastion}" "${inner_ssh} id" | grep -q '^uid='
             return $?
         fi
         sleep 5
@@ -251,10 +301,10 @@ assert_rds_quickstart() {
 
     # cloud-init installs psql and writes .pgpass after sshd starts. Bound the
     # wait so a stalled guest still produces diagnostics within the cell budget.
-    if ! ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
+    if ! ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
         'timeout 300 cloud-init status --wait >/dev/null && command -v psql >/dev/null && test -s "$HOME/.pgpass"'; then
         log "  rds-quickstart: client bootstrap incomplete after 300s"
-        ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
+        ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
             'cloud-init status --long; sudo tail -n 40 /var/log/cloud-init-output.log' 2>&1 | \
             sed "s|^|    |" || true
         return 1
@@ -266,7 +316,7 @@ assert_rds_quickstart() {
         "CREATE TABLE IF NOT EXISTS smoke (id int primary key, note text);" \
         "INSERT INTO smoke VALUES (1, 'nightly') ON CONFLICT (id) DO UPDATE SET note = 'nightly';" \
         "SELECT note FROM smoke WHERE id = 1;" |
-        ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
+        ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${ip}" \
             'bash -lc "psql -v ON_ERROR_STOP=1 -tA"' 2>&1); then
         log "  rds-quickstart: SQL round-trip failed"
         printf '%s\n' "$query_output" | sed 's|^|    |'
@@ -292,7 +342,7 @@ dump_s3_webapp_guest() {
     fi
     chmod 600 "$key" 2>/dev/null || true
     log "--- s3-webapp guest: cloud-init status + output log + unit status ---"
-    ssh "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" '
+    ssh_public "${SSH_OPTS[@]}" -i "$key" "ubuntu@${host}" '
         echo "== cloud-init status =="; cloud-init status --long 2>/dev/null || true
         echo "== /var/log/cloud-init-output.log (tail 80) =="
         sudo tail -n 80 /var/log/cloud-init-output.log 2>/dev/null || true
@@ -322,14 +372,14 @@ assert_s3_webapp() {
 
     tmp=$(mktemp)
     echo "nightly-smoke" > "$tmp"
-    if ! curl -sf -F "file=@${tmp};filename=${sentinel}" "http://${ip}/upload" >/dev/null; then
+    if ! curl_public -sf -F "file=@${tmp};filename=${sentinel}" "http://${ip}/upload" >/dev/null; then
         rm -f "$tmp"
         log "  s3-webapp: upload via app failed (IMDS -> STS -> S3 PutObject?)"
         return 1
     fi
     rm -f "$tmp"
 
-    curl -sf "http://${ip}/" | grep -q "$sentinel" || return 1
+    curl_public -sf "http://${ip}/" | grep -q "$sentinel" || return 1
 
     # The bucket carries tags, and a clean plan over them is the gate: the AWS
     # provider reads them through S3 Control at https://{account}.{endpoint},
@@ -659,6 +709,7 @@ run_workbook() {
 # --- Main ---
 
 install_tofu || { log "tofu install failed"; exit 1; }
+check_public_proxy || { log "the public-address vantage point is unusable" ; exit 1; }
 require_rds_image || { log "required RDS AMI is unavailable"; exit 1; }
 
 INSTANCE_TYPE=$(detect_instance_type)

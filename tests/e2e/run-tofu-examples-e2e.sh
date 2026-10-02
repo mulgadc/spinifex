@@ -28,9 +28,9 @@ SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Connect
 # A guest's public address, reached from where a customer would reach it. Empty
 # means this host is already outside the cluster's own network, which is true of
 # every hypervisor runner. Set it to host:port for a SOCKS5 proxy whose egress is
-# off-network when the host is not: a cloud that does not reflect its own public
-# addresses back into its network answers nothing on them from inside, however
-# well the datapath works, so a probe from here would fail a healthy cluster.
+# off-network when the host is not: a cloud may refuse a public address from inside
+# its own network, or admit only listed sources, and either fails a healthy cluster
+# from here however well the datapath works.
 PUBLIC_PROXY="${E2E_PUBLIC_PROXY:-}"
 
 CURRENT_WORKBOOK=""

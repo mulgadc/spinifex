@@ -575,15 +575,24 @@ ssh_node "${HOSTS[0]}" '
 workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
 [ "$WORKBOOKS_SET" = 1 ] && workbook_env="$workbook_env $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
 
-# A VCN does not reflect its own public addresses back into itself: a node asking
-# for one gets nothing, whatever the guest is serving. Recorded rather than gated,
-# because the remedy below is right either way — a customer reaches a guest from
-# outside, which is where this script already runs.
-if ssh_node "${HOSTS[0]}" \
+# Whether a node can reach a public address inside its own VCN. Informational: the
+# remedy below is right either way, because a customer reaches a guest from outside.
+#
+# Needs two hosts. With one, HOSTS[0] and HOSTS[-1] are the same address and the node
+# connects to itself, which always succeeds and measures nothing — it reported
+# "present" on vm-single and bm for exactly that reason before this guard.
+#
+# A negative result is only interpretable when the security list admits the source,
+# so the record says which it was: narrowing node_client_cidr_allow_list makes a
+# node's own public address a non-permitted source, and the refusal that follows
+# looks identical to a VCN that does not hairpin.
+if [ "${#HOSTS[@]}" -lt 2 ]; then
+    record "vcn hairpin" SKIPPED "needs two nodes; one node can only probe itself"
+elif ssh_node "${HOSTS[0]}" \
     "bash -c 'exec 3<>/dev/tcp/${HOSTS[${#HOSTS[@]}-1]}/22' 2>/dev/null"; then
-    record "vcn hairpin" INFO "present, so a node can reach a public address in its own VCN"
+    record "vcn hairpin" INFO "present: a node reached another node's public address"
 else
-    record "vcn hairpin" INFO "absent, so public addresses are probed from outside the VCN"
+    record "vcn hairpin" INFO "not reached, which is a VCN without hairpin or a security list that excludes the source"
 fi
 
 # Remote dynamic forward: the node gets a SOCKS5 proxy on this port whose egress

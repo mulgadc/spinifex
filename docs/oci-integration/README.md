@@ -493,7 +493,7 @@ ssh -i <key> ubuntu@<public-ip> hostname
 ```
 
 > [!IMPORTANT]
-> **A VCN does not route its own public addresses back into itself.** AWS reflects them through the internet gateway; OCI answers nothing, so a node asking for a guest's public address gets a timeout however well the datapath works. Probe from outside the VCN or the result says nothing. A node's own private-address reachability (`ssh <private-ip>`) is the separate question, and that one does work from inside.
+> **Probe a public address from outside the VCN, not from a node.** Two things make a node a bad vantage point, and they are indistinguishable from each other and from a broken datapath: `node_client_cidr_allow_list` may not admit the node's own public address, and a VCN may not reflect its public addresses back into itself at all. Either way a healthy cluster fails the probe, so a timeout from a node is not evidence about the guest. Private addresses are the separate question and do work from inside.
 
 **Confirm the OCI allocator came up**, which `spx get nodes` cannot tell you. Run this on the node:
 

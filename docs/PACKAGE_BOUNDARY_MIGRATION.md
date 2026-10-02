@@ -231,6 +231,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `7e29f2640` | `spinifex/utils` (download and terminal-progress helpers) | `spinifex/operator/progress` | Operator-facing downloads, terminal progress rendering and byte display are CLI presentation concerns. Focused tests and the `spx admin` compilation passed. |
 | `56471479f` | `spinifex/utils` (`ValidateKeyPairName`) | `spinifex/handlers/ec2/key` | EC2 key-pair-name validation has one production owner and is now private to it. Its moved unit matrix and full key-handler suite passed. |
 | `cf531cd73` | `spinifex/utils` (QMP telemetry filename convention) | `contracts/telemetry/v1` | The telemetry QMP prefix and metadata path are part of the existing VM-runtime-to-collector file contract. The contract test, focused VM telemetry tests, collector suite and caller compilations passed; the broader VM suite is sandbox-blocked by unrelated socket setup. |
+| `83615f1f4` | `spinifex/utils` (AWS XML response helpers) | `spinifex/foundation/aws/xml` | EC2 XML response normalization/enveloping and IAM-style Query envelopes are shared AWS protocol mechanics. Focused XML tests and all direct caller compilations passed; the RDS-agent package was compile-checked without execution because its FIPS bootstrap requires a FIPS-enabled runtime. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS

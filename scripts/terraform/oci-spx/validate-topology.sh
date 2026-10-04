@@ -22,6 +22,9 @@ DRY_RUN=0
 DESTROY_ONLY=0
 INSTANCE_PRINCIPAL=0
 CREDENTIAL_HOOK="${OCI_CREDENTIAL_HOOK:-}"
+# Empty means oci_env.py chooses, which is $OCI_CLI_PROFILE, then the reference
+# tenancy, then DEFAULT. Named here so a deployment can say which tenancy it is in.
+OCI_PROFILE="${OCI_PROFILE:-}"
 DISTRO=""
 SETUP_SH=""
 # Empty means the driver's own default list. Unset is distinguishable from empty,
@@ -67,6 +70,10 @@ workbook against it, then destroys everything.
   --credential-hook PATH  Executable run after formation, before the pool, as
                           "hook <ssh-key> <host>...". Where an API-key deployment
                           installs its credential. Default \$OCI_CREDENTIAL_HOOK.
+  --oci-profile NAME      Profile in ~/.oci/config that Terraform builds with.
+                          Default \$OCI_PROFILE, else \$OCI_CLI_PROFILE, else the
+                          reference tenancy, else DEFAULT. A name that is passed
+                          and absent is an error, never a fallback.
   --workbooks LIST        Space-separated workbooks for the published driver to
                           run on the cluster. Empty means run none; omitted means
                           the driver's own default list.
@@ -101,6 +108,7 @@ while [ $# -gt 0 ]; do
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
         --credential-hook) CREDENTIAL_HOOK="${2:?}"; shift 2 ;;
+        --oci-profile) OCI_PROFILE="${2:?}"; shift 2 ;;
         --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
         --keep) KEEP=1; shift ;;
@@ -146,7 +154,8 @@ WORKBOOKS_TSV="$STATE_DIR/workbooks.tsv"
 # A separate state directory per topology, so two topologies can be built from one
 # checkout without one destroying the other's instances.
 tf() {
-    python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" -- \
+    python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" \
+        ${OCI_PROFILE:+--profile "$OCI_PROFILE"} -- \
         terraform -chdir="$HERE" "$@"
 }
 

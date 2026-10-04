@@ -51,7 +51,7 @@ Everything underneath — the architecture, the IAM policy, the quotas, every va
 | | |
 | --- | --- |
 | **An OCI compartment OCID** | This deploys into a compartment that already exists. Creating one needs tenancy-root rights the API user must not have |
-| **OCI credentials in `~/.oci/config`** | For Terraform, to build the infrastructure |
+| **OCI credentials in `~/.oci/config`** | For Terraform, to build the infrastructure. `oci setup config` writes one, or write it by hand |
 | **An OCI API key for the nodes** | Separate from the above, and step 2. Without it a node forms, looks healthy, and cannot give any guest a public address |
 | **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install` |
 
@@ -75,6 +75,14 @@ Then make the keypair the deploy installs on every node and logs in with. It ref
 ssh-keygen -t ed25519 -f ~/.ssh/oci-spx -N '' -C spinifex-oci
 ```
 
+Terraform reads your OCI credential from `~/.oci/config`, taking the tenancy, the user, the fingerprint, the key and **the region** from the profile — so the region you deploy into is the profile's, not something you set in step 4. A config holding a single `[DEFAULT]` profile, which is what `oci setup config` writes, needs nothing further. With more than one profile, name the one you mean:
+
+```bash
+./validate-topology.sh --oci-profile mycorp ...      # or export OCI_CLI_PROFILE=mycorp
+```
+
+A name you pass that the config does not hold is an error listing the profiles it does hold. It never falls back, because the failure mode worth preventing is building a cluster in whichever tenancy happened to be first.
+
 ## 2. Give the nodes an OCI credential
 
 Spinifex calls the OCI API at runtime to register each guest's public address. Create an API key for that, if you do not already have one:
@@ -86,7 +94,7 @@ openssl rsa -pubout -in ~/.oci/oci_api_key.pem -out ~/.oci/oci_api_key_public.pe
 openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem | openssl md5 -c   # the fingerprint
 ```
 
-Upload the public key under **Identity → Users → API Keys**, and grant it the [nine operations Spinifex uses](./architecture.md#the-iam-policy) in your compartment — no more.
+Upload the public key under **Identity → Users → API Keys**, and grant it the [ten operations Spinifex uses](./architecture.md#the-iam-policy) in your compartment — no more.
 
 **The deploy installs the credential on each node by calling a small script of yours**, so no key material ever goes into user-data or Terraform state, where it would be readable from instance metadata for the life of the instance. Write one that puts these two files on each host it is given:
 
@@ -95,7 +103,11 @@ Upload the public key under **Identity → Users → API Keys**, and grant it th
 | `/etc/spinifex/oci/oci_api_key.pem` | `0640 root:spinifex` | The private key |
 | `/etc/spinifex/oci/config` | `0640 root:spinifex` | An OCI SDK config, profile **`[spinifex]`**, naming the key by path |
 
-The profile name must be `spinifex`. It is called as `your-hook <ssh-key> <host>...`, and [Credentials](./architecture.md#credentials--an-api-key-or-an-instance-principal) has the config file's contents and a worked example.
+The profile name must be `spinifex`. It is called as `your-hook <ssh-key> <host>...` — the first argument is the private key to reach the nodes with, the rest are the hosts — and it must exit non-zero if any host failed, so a missing credential stops the deploy rather than surfacing later as a launch that cannot get an address. [Credentials](./architecture.md#credentials--an-api-key-or-an-instance-principal) has the config file's exact contents.
+
+`chmod +x` it. The deploy checks that before it builds anything, so a hook that is missing or not executable costs you a few seconds rather than forty minutes and a bare-metal bill.
+
+**Nothing in this repository ships that script, deliberately.** A credential belongs to whoever owns it, so the hook is yours to write and yours to keep.
 
 > [!TIP]
 > If you are a tenancy admin you can skip key files entirely and authenticate the nodes as the instance itself. It needs a dynamic group and a policy created once at the tenancy root — see [instance principal](./architecture.md#an-instance-principal--no-key-material-but-it-needs-a-tenancy-admin). The API key path above is the one that works in any tenancy, including a compartment someone allocated to you.
@@ -113,6 +125,8 @@ The profile name must be `spinifex`. It is called as `your-hook <ssh-key> <host>
 | **Use it for** | Evaluation, a lab, an edge site with one box | Anything you would be unhappy to lose |
 
 Two is not worth taking: it doubles the cost of a single node and gives you a cluster that cannot form a quorum. [Sizing](./architecture.md#sizing) covers shapes; bare metal is the recommendation, and `VM.Standard.E6.Flex` is the minimum.
+
+The pool has no configured size — Spinifex asks OCI for an address when a guest needs one. **Two ceilings bind it and neither is ours**: 64 secondary private IPs per VNIC, which is the 64 above and is not raisable, and the regional reserved-public-IP quota, which is tenancy-wide and shared with everything else you run on OCI. The second is the one you will hit first.
 
 ## 4. Write your Terraform inputs
 
@@ -157,11 +171,14 @@ One command builds the infrastructure, installs Spinifex, forms the cluster, con
 | Argument | What to pass |
 | --- | --- |
 | `--topology` | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission |
-| `--channel` | **`dev` until the next release ships**, because OCI support is not in the current stable release yet. It resolves to the newest pre-release at the moment you run it. `latest` is the default and is the right answer once a release carries OCI support. To pin an exact build instead, drop this and pass `--version <tag>` |
+| `--channel` | **`dev` until the next release ships**, because OCI support is not in the current stable release yet. It resolves to the newest pre-release at the moment you run it. `latest` is the default and becomes the right answer once a release carries OCI support |
 | `--credential-hook` | Your script from step 2. With an instance principal, replace it with `--instance-principal` |
 | `--keep` | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and not what you want here |
 
 Add `--skip-workload` to stop once the cluster is verified, without launching the validation guests. Add `--dry-run` to print the plan and change nothing.
+
+> [!NOTE]
+> **If the install step fails to download, pass a tag instead of the channel.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited and then 404s. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. That is also what to use for a repeatable deployment, where you want the build pinned rather than current.
 
 ## 6. Check it worked
 

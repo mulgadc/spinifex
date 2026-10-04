@@ -149,7 +149,7 @@ Then set `instance_principal = "adopt"` in your tfvars and pass `--instance-prin
 
 ## The IAM policy
 
-Spinifex calls exactly nine operations. Grant no more than these:
+Spinifex calls exactly ten operations, all of them in `spinifex/cloud/oci/client.go`. Grant no more than these:
 
 | Operation                                  | Why                                                                              |
 | ------------------------------------------ | -------------------------------------------------------------------------------- |
@@ -166,16 +166,19 @@ Spinifex calls exactly nine operations. Grant no more than these:
 The matching policy, scoped to the one compartment Spinifex allocates in:
 
 ```text
+Allow group SpinifexOperators to use    vnics       in compartment <compartment-name>
 Allow group SpinifexOperators to manage private-ips in compartment <compartment-name>
 Allow group SpinifexOperators to manage public-ips  in compartment <compartment-name>
-Allow group SpinifexOperators to read   vnics       in compartment <compartment-name>
-Allow group SpinifexOperators to read   subnets     in compartment <compartment-name>
-Allow group SpinifexOperators to read   vcns        in compartment <compartment-name>
 ```
+
+These are the same three statements `instance-principal.tf` grants the dynamic group, which is the only version of this policy that has been exercised. Keep them identical: the two credential paths differ in who is authorised, never in what.
+
+> [!IMPORTANT]
+> **`use vnics` is required, and `read vnics` is not enough.** Registering a secondary private IP is an operation *on a VNIC*, so OCI checks `VNIC_ASSIGN` as well as `PRIVATE_IP_CREATE`, and `VNIC_ASSIGN` lives in the `use` verb. With only `read`, the node forms and looks healthy and every allocation fails `NotAuthorizedOrNotFound` — which reads as a wrong compartment OCID rather than a missing verb.
 
 **Scope it to a compartment, not the tenancy.** `manage public-ips` at tenancy level lets a compromised node consume the whole regional reserved-public-IP quota.
 
-**Do not grant `manage instances` or `manage vnics`.** Spinifex never creates, attaches or deletes a VNIC — it only adds addresses to a VNIC that already exists. A grant that allows VNIC lifecycle is strictly more than the integration can use.
+**Do not grant `manage vnics` or `manage instances`.** Spinifex never creates, attaches or deletes a VNIC, and never touches an instance — it only adds addresses to a VNIC that already exists. `use` permits that; `manage` permits VNIC lifecycle, which is strictly more than the integration can use.
 
 ## Quotas
 
@@ -306,6 +309,10 @@ All of these have defaults that build a working single node, except the first:
 | `ubuntu_version`              | `26.04`               | Canonical platform image version. The newest image for the shape and region is resolved at plan time rather than pinned to a regional OCID                                                                                                           |
 | `wan_bridge_name`             | `br-wan`              | The Linux bridge built over the second VNIC                                                                                                                                                                                                          |
 | `wan_bridge_mtu`              | `9000`                | The OCI VCN carries 9000                                                                                                                                                                                                                             |
+
+**Six more exist and are not yours to set**: `tenancy_ocid`, `user_ocid`, `fingerprint`, `private_key`, `private_key_path` and `region`. `scripts/oci_env.py` fills them as `TF_VAR_*` from the profile in `~/.oci/config` on every `terraform` call the driver makes, so **the region you deploy into is the profile's region** and the credential never reaches a `.tfvars` file. Setting them by hand works and is how a run with no config file at all would have to work, but then two sources disagree about which tenancy this is.
+
+The profile is resolved as `--oci-profile`, then `$OCI_CLI_PROFILE`, then the reference tenancy, then `DEFAULT`. A name passed explicitly and absent from the config is an error that lists the profiles present; only an unasked-for name falls through. CI takes a different route entirely — `OCI_TENANCY_OCID`, `OCI_USER_OCID`, `OCI_FINGERPRINT`, `OCI_PRIVATE_KEY` and `OCI_REGION` in the environment, so a runner writes no key to disk — and a partial set there is an error rather than a fallback, because half a credential means a secret failed to reach the job.
 
 ## The `oci` CLI
 

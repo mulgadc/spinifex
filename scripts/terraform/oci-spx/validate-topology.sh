@@ -22,6 +22,9 @@ DRY_RUN=0
 DESTROY_ONLY=0
 INSTANCE_PRINCIPAL=0
 CREDENTIAL_HOOK="${OCI_CREDENTIAL_HOOK:-}"
+# Empty means oci_env.py chooses, which is $OCI_CLI_PROFILE, then the reference
+# tenancy, then DEFAULT. Named here so a deployment can say which tenancy it is in.
+OCI_PROFILE="${OCI_PROFILE:-}"
 DISTRO=""
 SETUP_SH=""
 # Empty means the driver's own default list. Unset is distinguishable from empty,
@@ -67,6 +70,10 @@ workbook against it, then destroys everything.
   --credential-hook PATH  Executable run after formation, before the pool, as
                           "hook <ssh-key> <host>...". Where an API-key deployment
                           installs its credential. Default \$OCI_CREDENTIAL_HOOK.
+  --oci-profile NAME      Profile in ~/.oci/config that Terraform builds with.
+                          Default \$OCI_PROFILE, else \$OCI_CLI_PROFILE, else the
+                          reference tenancy, else DEFAULT. A name that is passed
+                          and absent is an error, never a fallback.
   --workbooks LIST        Space-separated workbooks for the published driver to
                           run on the cluster. Empty means run none; omitted means
                           the driver's own default list.
@@ -101,6 +108,7 @@ while [ $# -gt 0 ]; do
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
         --credential-hook) CREDENTIAL_HOOK="${2:?}"; shift 2 ;;
+        --oci-profile) OCI_PROFILE="${2:?}"; shift 2 ;;
         --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
         --keep) KEEP=1; shift ;;
@@ -146,7 +154,8 @@ WORKBOOKS_TSV="$STATE_DIR/workbooks.tsv"
 # A separate state directory per topology, so two topologies can be built from one
 # checkout without one destroying the other's instances.
 tf() {
-    python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" -- \
+    python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" \
+        ${OCI_PROFILE:+--profile "$OCI_PROFILE"} -- \
         terraform -chdir="$HERE" "$@"
 }
 
@@ -170,6 +179,22 @@ ssh_node() {
 }
 
 # record <gate> <PASS|FAIL|SKIPPED|INFO> [detail]
+# The node's own account of a failed run. A workbook's log says which API call
+# failed; only the journal says why, and the nodes are destroyed minutes later.
+# Warnings first because that is where a swallowed error surfaces, then a bounded
+# tail for context -- unbounded, a multi-hour suite's journal dwarfs the artifact.
+capture_journals() {
+    local host
+    for host in "${HOSTS[@]}"; do
+        ssh_node "$host" '
+            echo "=== spinifex, warning and above ==="
+            sudo journalctl -u "spinifex-*" --since -4h --priority=warning --no-pager | tail -2000
+            echo "=== spinifex, all priorities, last 2000 lines ==="
+            sudo journalctl -u "spinifex-*" --since -4h --no-pager | tail -2000
+        ' > "$STATE_DIR/journal-$host.log" 2>&1 || log "could not collect the journal from $host"
+    done
+}
+
 record() {
     local gate="$1" status="$2" detail="${3-}"
     printf '%s: %s%s\n' "$gate" "$status" "${detail:+ $detail}" >> "$RESULTS"
@@ -245,6 +270,14 @@ fi
 : > "$RESULTS"
 : > "$RESULTS_TSV"
 : > "$WORKBOOKS_TSV"
+
+# Last run's logs go before this one's first line, so what is left in here always
+# describes the run that is starting. Without this a topology keeps logs that read
+# as current, and anything collecting the directory publishes them as this run's.
+# Named globs rather than a find: the tfstate is how the sweep finds hosts to
+# destroy, so what is removed here has to be readable at a glance.
+# :? so an unset STATE_DIR stops the shell rather than expanding to /*.log.
+rm -f "${STATE_DIR:?}"/*.log "${STATE_DIR:?}"/nodes.txt "${STATE_DIR:?}"/cloudinit-*.txt
 
 log "$SHAPE, $NODES node(s), state in $STATE_DIR"
 
@@ -561,19 +594,27 @@ scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev
     || die "could not copy the workbooks"
 
 # Every AMI the workbooks need, imported one at a time so predastore is not asked
-# to absorb parallel uploads. rds-quickstart is the one that needs an appliance.
+# to absorb parallel uploads. Three are appliances rather than distros: RDS, ECS
+# and EKS each boot their own, found by a spinifex:managed-by tag and never by name.
 log "importing the images the workbooks need"
 ssh_node "${HOSTS[0]}" '
     set -e
-    for img in ubuntu-26.04-x86_64 spinifex-rds-postgres; do
+    for img in ubuntu-26.04-x86_64 spinifex-rds-postgres spinifex-ecs-node spinifex-eks-node; do
         sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml >/dev/null
     done
 ' > "$STATE_DIR/images.log" 2>&1 || die "image import failed; see $STATE_DIR/images.log"
 
-# WORKBOOKS unset leaves the driver on its own default list, which is the list the
-# nightly judges every other platform by.
-workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
-[ "$WORKBOOKS_SET" = 1 ] && workbook_env="$workbook_env $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
+# Every workbook that is a workbook. The shared driver's own default is five, which
+# leaves ECS and all three EKS variants untested on every platform -- their
+# assertions exist and nothing was running them.
+#
+# demo-app is absent because it is not a workbook: it has no .tf at all, being the
+# container image the EKS workbooks' nested workloads/ modules deploy. Listing it
+# here would fail on a missing root module rather than test anything.
+OCI_WORKBOOKS="nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart"
+OCI_WORKBOOKS="$OCI_WORKBOOKS ecs-quickstart eks-quickstart eks-https-ingress eks-gitops-argocd"
+[ "$WORKBOOKS_SET" = 1 ] || WORKBOOKS="$OCI_WORKBOOKS"
+workbook_env="WORKBOOK_DIR=\$HOME/workbooks $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
 
 # Whether a node can reach a public address inside its own VCN. Informational: the
 # remedy below is right either way, because a customer reaches a guest from outside.
@@ -627,6 +668,7 @@ else
     record_workbooks "$STATE_DIR/workbooks.log"
     failed="$(grep -c '^--- FAIL' "$STATE_DIR/workbooks.log" || true)"
     record workbooks FAIL "$failed failed, see $STATE_DIR/workbooks.log"
+    capture_journals
     tail -60 "$STATE_DIR/workbooks.log"
     grep -E '^--- (PASS|FAIL)' "$STATE_DIR/workbooks.log" | sed 's/^/  /' || true
     die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"

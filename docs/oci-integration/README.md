@@ -1,8 +1,8 @@
 ---
-title: "Spinifex on Oracle Cloud"
+title: "Oracle Cloud Infrastructure (OCI)"
 seoTitle: "Run Spinifex on Oracle Cloud Infrastructure — Spinifex Docs"
-description: "Deploy Spinifex on OCI end to end with Terraform, single node or three, and give guests real public addresses through OCI's own API."
-category: "Install"
+description: "Deploy Spinifex on Oracle Cloud Infrastructure end to end with Terraform, on one node or three, and give guests real public addresses through OCI's own API."
+category: "Cloud Install"
 tags:
   - install
   - oci
@@ -11,7 +11,7 @@ tags:
   - cluster
 resources:
   - title: "OCI Architecture and Operations"
-    url: "/docs/oci-integration/architecture"
+    url: "/docs/oci-architecture"
   - title: "Multi-Node Install"
     url: "/docs/install-multi-node"
   - title: "Host Firewall"
@@ -24,15 +24,10 @@ resources:
 
 > Run the AWS surface — EC2, EBS, S3, VPC — inside your own OCI tenancy, with guests that get real, publicly reachable addresses through OCI's API.
 
-Spinifex brings core AWS services to hardware you control: a node runs the Spinifex daemon, QEMU/KVM for guests, OVN for VPC networking, [Predastore](https://github.com/mulgadc/predastore) for S3 and [Viperblock](https://github.com/mulgadc/viperblock) for EBS, all behind a SigV4 endpoint the ordinary AWS SDKs and CLI talk to unmodified.
-
-**Terraform does the whole deployment** — the VCN, the block volumes, both VNICs per node, the install, the cluster formation and the OCI public-address allocator. Six steps below, one command, about ten minutes for a single node.
-
-Everything underneath — the architecture, the IAM policy, the quotas, every variable, the troubleshooting — is in [Architecture and Operations](./architecture.md).
-
 ## Table of Contents
 
-- [What you need](#what-you-need)
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
 - [1. Get the configuration](#1-get-the-configuration)
 - [2. Give the nodes an OCI credential](#2-give-the-nodes-an-oci-credential)
 - [3. Choose one node or three](#3-choose-one-node-or-three)
@@ -42,11 +37,19 @@ Everything underneath — the architecture, the IAM policy, the quotas, every va
 - [Harden it before production](#harden-it-before-production)
 - [Next steps](#next-steps)
 - [Removing the deployment](#removing-the-deployment)
-- [If something goes wrong](#if-something-goes-wrong)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## What you need
+## Overview
+
+Spinifex brings core AWS services to hardware you control: a node runs the Spinifex daemon, QEMU/KVM for guests, OVN for VPC networking, [Predastore](https://github.com/mulgadc/predastore) for S3 and [Viperblock](https://github.com/mulgadc/viperblock) for EBS, all behind a SigV4 endpoint the ordinary AWS SDKs and CLI talk to unmodified.
+
+**Terraform does the whole deployment** — the VCN, the block volumes, both VNICs per node, the install, the cluster formation and the OCI public-address allocator. Six steps below, one command, about ten minutes for a single node.
+
+Everything underneath — the architecture, the IAM policy, the quotas, every variable, the troubleshooting — is in [Architecture and Operations](../oci-architecture/README.md).
+
+## Prerequisites
 
 | | |
 | --- | --- |
@@ -55,7 +58,9 @@ Everything underneath — the architecture, the IAM policy, the quotas, every va
 | **An OCI API key for the nodes** | Separate from the above, and step 2. Without it a node forms, looks healthy, and cannot give any guest a public address |
 | **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install` |
 
-Check two quotas before you start, because both refuse at apply time rather than at plan time: **reserved public IPs** (50 per region, tenancy-wide) and the **compute limit for your shape**, which on a new tenancy is often zero for bare metal. [Quotas](./architecture.md#quotas) has the commands.
+Check two quotas before you start, because both refuse at apply time rather than at plan time: **reserved public IPs** (50 per region, tenancy-wide) and the **compute limit for your shape**, which on a new tenancy is often zero for bare metal. [Quotas](../oci-architecture/README.md#quotas) has the commands.
+
+## Instructions
 
 ## 1. Get the configuration
 
@@ -94,7 +99,7 @@ openssl rsa -pubout -in ~/.oci/oci_api_key.pem -out ~/.oci/oci_api_key_public.pe
 openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem | openssl md5 -c   # the fingerprint
 ```
 
-Upload the public key under **Identity → Users → API Keys**, and grant it the [ten operations Spinifex uses](./architecture.md#the-iam-policy) in your compartment — no more.
+Upload the public key under **Identity → Users → API Keys**, and grant it the [ten operations Spinifex uses](../oci-architecture/README.md#the-iam-policy) in your compartment — no more.
 
 **The deploy installs the credential on each node by calling a small script of yours**, so no key material ever goes into user-data or Terraform state, where it would be readable from instance metadata for the life of the instance. Write one that puts these two files on each host it is given:
 
@@ -103,14 +108,14 @@ Upload the public key under **Identity → Users → API Keys**, and grant it th
 | `/etc/spinifex/oci/oci_api_key.pem` | `0640 root:spinifex` | The private key |
 | `/etc/spinifex/oci/config` | `0640 root:spinifex` | An OCI SDK config, profile **`[spinifex]`**, naming the key by path |
 
-The profile name must be `spinifex`. It is called as `your-hook <ssh-key> <host>...` — the first argument is the private key to reach the nodes with, the rest are the hosts — and it must exit non-zero if any host failed, so a missing credential stops the deploy rather than surfacing later as a launch that cannot get an address. [Credentials](./architecture.md#credentials--an-api-key-or-an-instance-principal) has the config file's exact contents.
+The profile name must be `spinifex`. It is called as `your-hook <ssh-key> <host>...` — the first argument is the private key to reach the nodes with, the rest are the hosts — and it must exit non-zero if any host failed, so a missing credential stops the deploy rather than surfacing later as a launch that cannot get an address. [Credentials](../oci-architecture/README.md#credentials-an-api-key-or-an-instance-principal) has the config file's exact contents.
 
 `chmod +x` it. The deploy checks that before it builds anything, so a hook that is missing or not executable costs you a few seconds rather than forty minutes and a bare-metal bill.
 
 **Nothing in this repository ships that script, deliberately.** A credential belongs to whoever owns it, so the hook is yours to write and yours to keep.
 
 > [!TIP]
-> If you are a tenancy admin you can skip key files entirely and authenticate the nodes as the instance itself. It needs a dynamic group and a policy created once at the tenancy root — see [instance principal](./architecture.md#an-instance-principal--no-key-material-but-it-needs-a-tenancy-admin). The API key path above is the one that works in any tenancy, including a compartment someone allocated to you.
+> If you are a tenancy admin you can skip key files entirely and authenticate the nodes as the instance itself. It needs a dynamic group and a policy created once at the tenancy root — see [instance principal](../oci-architecture/README.md#an-instance-principal-no-key-material-but-it-needs-a-tenancy-admin). The API key path above is the one that works in any tenancy, including a compartment someone allocated to you.
 
 ## 3. Choose one node or three
 
@@ -124,7 +129,7 @@ The profile name must be `spinifex`. It is called as `your-hook <ssh-key> <host>
 | **Fault domains** | One | Three, one per node, chosen by Terraform |
 | **Use it for** | Evaluation, a lab, an edge site with one box | Anything you would be unhappy to lose |
 
-Two is not worth taking: it doubles the cost of a single node and gives you a cluster that cannot form a quorum. [Sizing](./architecture.md#sizing) covers shapes; bare metal is the recommendation, and `VM.Standard.E6.Flex` is the minimum.
+Two is not worth taking: it doubles the cost of a single node and gives you a cluster that cannot form a quorum. [Sizing](../oci-architecture/README.md#sizing) covers shapes; bare metal is the recommendation, and `VM.Standard.E6.Flex` is the minimum.
 
 The pool has no configured size — Spinifex asks OCI for an address when a guest needs one. **Two ceilings bind it and neither is ours**: 64 secondary private IPs per VNIC, which is the 64 above and is not raisable, and the regional reserved-public-IP quota, which is tenancy-wide and shared with everything else you run on OCI. The second is the one you will hit first.
 
@@ -151,7 +156,7 @@ data_volume_vpus_per_gb = 120        # 120 = Ultra High Performance
 EOF
 ```
 
-[Every Terraform variable](./architecture.md#every-terraform-variable) has the full list.
+[Every Terraform variable](../oci-architecture/README.md#every-terraform-variable) has the full list.
 
 > [!NOTE]
 > **Leave `node_client_cidr_allow_list` at its `0.0.0.0/0` default for now.** It is an OCI security-list rule covering the whole public subnet, and your guests' public addresses cross it too — narrowing it to your own address cuts internet access to every guest, not just to the node. [Harden it before production](#harden-it-before-production) is where you lock the node down, in the layer that can tell the two apart.
@@ -223,7 +228,7 @@ ssh -i <key> ubuntu@<public-ip> hostname
 
 ## Harden it before production
 
-The deployment comes up usable, not locked down. Three layers filter traffic and they are easy to confuse — [Firewalls, in all three layers](./architecture.md#firewalls-in-all-three-layers) explains which is which. The short version:
+The deployment comes up usable, not locked down. Three layers filter traffic and they are easy to confuse — [Firewalls, in all three layers](../oci-architecture/README.md#firewalls-in-all-three-layers) explains which is which. The short version:
 
 **1. Arm the Spinifex host firewall.** It is installed but not armed on this path. Arming it gives you the proper policy: the public plane open, the cluster plane scoped to peers only, and SSH scoped to a list you own.
 
@@ -277,7 +282,7 @@ provider "aws" {
 
 > **Use the node's private address, not its public one.** The node certificate carries no SAN for the public address, because that address is never on the wire — OCI NATs it to a private one. A call to `https://<public IP>:9999` fails TLS verification with _hostname doesn't match_. Run Terraform from a node, or from anything else inside the VCN.
 
-The [Terraform workbooks](../terraform-workbooks/) we ship are the worked examples, and `e2e-cloudvendor-nightly` runs them on a single VM, on three VMs and on bare metal, publishing a table per topology on its own run page. Read that for the build you are installing.
+The [Terraform workbooks](../terraform-workbooks/nginx-alb/README.md) we ship are the worked examples, and `e2e-cloudvendor-nightly` runs them on a single VM, on three VMs and on bare metal, publishing a table per topology on its own run page. Read that for the build you are installing.
 
 **Oracle Linux guests.** Four Oracle Linux images are in the catalog, so you can run the distro your Oracle support contract covers:
 
@@ -295,16 +300,16 @@ sudo spx admin images import --name oracle-10.1-x86_64 --config /etc/spinifex/sp
 
 It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
 
-## If something goes wrong
+## Troubleshooting
 
 The deploy stops at the first failure and names the log it wrote, all under `.validate-<topology>/`. Add `--keep-on-fail` to leave a failed deployment up so you can log in and look — **it keeps billing** until you run `--destroy-only`.
 
-[Troubleshooting](./architecture.md#troubleshooting) covers the symptoms worth knowing in advance, and several of them look like a different fault than they are:
+[Troubleshooting](../oci-architecture/README.md#troubleshooting) covers the symptoms worth knowing in advance, and several of them look like a different fault than they are:
 
-- [If a deploy stage fails](./architecture.md#if-a-deploy-stage-fails) — which log holds the answer
-- [A guest's public address is unreachable](./architecture.md#a-guests-public-address-is-unreachable)
-- [A node that was fine and then was not](./architecture.md#a-node-that-was-fine-and-then-was-not) — one command answers all of it
-- [Guests cannot reach instance metadata](./architecture.md#guests-cannot-reach-instance-metadata) — OCI and AWS guests want the same address
-- [Addresses and quotas](./architecture.md#addresses-and-quotas) — including why a detached address still bills
+- [If a deploy stage fails](../oci-architecture/README.md#if-a-deploy-stage-fails) — which log holds the answer
+- [A guest's public address is unreachable](../oci-architecture/README.md#a-guests-public-address-is-unreachable)
+- [A node that was fine and then was not](../oci-architecture/README.md#a-node-that-was-fine-and-then-was-not) — one command answers all of it
+- [Guests cannot reach instance metadata](../oci-architecture/README.md#guests-cannot-reach-instance-metadata) — OCI and AWS guests want the same address
+- [Addresses and quotas](../oci-architecture/README.md#addresses-and-quotas) — including why a detached address still bills
 
-Installing by hand instead of with Terraform is [Deploying without Terraform](./architecture.md#deploying-without-terraform).
+Installing by hand instead of with Terraform is [Deploying without Terraform](../oci-architecture/README.md#deploying-without-terraform).

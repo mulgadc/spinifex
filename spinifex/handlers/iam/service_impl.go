@@ -1670,7 +1670,12 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 
 // attachedPolicies resolves an identity's attached policy ARNs for the
 // ListAttached*Policies calls, keeping those whose path starts with pathPrefix.
-func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string, arns []string, pathPrefix string) []*iam.AttachedPolicy {
+//
+// Fails closed on an unresolvable ARN. Dropping one reports the policy as not
+// attached, which no AWS response can say while the attachment is recorded, and
+// leaves Delete{Role,User,Group} refusing on a field the caller has been told
+// is empty.
+func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string, arns []string, pathPrefix string) ([]*iam.AttachedPolicy, error) {
 	var attached []*iam.AttachedPolicy
 	for _, arn := range arns {
 		// AWS-managed ARNs have no KV entry; report them from the ARN itself so
@@ -1686,8 +1691,12 @@ func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string,
 		}
 		policy, err := s.getPolicyByARN(ctx, accountID, arn)
 		if err != nil {
-			slog.Warn("attached policy not found for ARN", "arn", arn, "err", err)
-			continue
+			// DeletePolicy refuses while the policy is attached, so a recorded ARN
+			// with no readable policy is a failed read or a broken invariant, never
+			// a state the API can reach.
+			slog.Error("attached policy could not be read",
+				"accountID", accountID, "policyArn", arn, "err", err)
+			return nil, fmt.Errorf("resolve attached policy %q: %w", arn, err)
 		}
 		if !strings.HasPrefix(policy.Path, pathPrefix) {
 			continue
@@ -1697,7 +1706,7 @@ func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string,
 			PolicyName: aws.String(policy.PolicyName),
 		})
 	}
-	return attached
+	return attached, nil
 }
 
 // policyPathFromARN returns the path of a policy ARN, e.g.
@@ -1714,7 +1723,10 @@ func (s *IAMServiceImpl) ListAttachedUserPolicies(accountID string, input *iam.L
 		return nil, err
 	}
 
-	attached := s.attachedPolicies(ctx, accountID, user.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	attached, err := s.attachedPolicies(ctx, accountID, user.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	if err != nil {
+		return nil, err
+	}
 
 	return &iam.ListAttachedUserPoliciesOutput{
 		AttachedPolicies: attached,

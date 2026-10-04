@@ -9,6 +9,10 @@
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
 #   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm".
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
+#   OCI_VERSION       With OCI_SOURCE=release, install this exact release tag and
+#                     ignore OCI_CHANNEL. Preferred for anything repeatable: a tag
+#                     resolves by redirect, while the dev channel resolves through a
+#                     rate-limited GitHub API call that 404s when it trips.
 #   OCI_CHANNEL       With OCI_SOURCE=release, which published channel to install:
 #                     latest (default) or dev, the newest prerelease. dev is the
 #                     path our cloud contacts are given, so it is worth testing.
@@ -24,6 +28,10 @@
 #                     workbook are then recorded SKIPPED, never PASS, so a green
 #                     run with this set is not a claim about guest networking.
 #   OCI_SSH_PUBLIC_KEY / OCI_SSH_PRIVATE_KEY   Paths. Default ~/.ssh/oci-spx[.pub].
+#   OCI_CREDENTIAL_HOOK     Executable run on each topology after formation and
+#                     before the pool, as "hook <ssh-key> <host>...". An API-key
+#                     deployment installs its credential here; instance principal
+#                     needs none, so it is skipped unless the pool is key-based.
 #   OCI_ARTIFACT_DIR  Where logs and the verdict land. Default ./.e2e-oci-<stamp>.
 #   OCI_KEEP_ON_FAIL  1 to leave a failed topology up for inspection. Off by
 #                     default: an OCI bare-metal host left overnight is expensive.
@@ -42,6 +50,7 @@ MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm}"
 SOURCE="${OCI_SOURCE:-tree}"
 CHANNEL="${OCI_CHANNEL:-latest}"
+INSTALL_VERSION="${OCI_VERSION:-}"
 REF="${SPX_REF:-$(git -C "$SPINIFEX_ROOT" rev-parse --abbrev-ref HEAD)}"
 SSH_PUBLIC_KEY="${OCI_SSH_PUBLIC_KEY:-$HOME/.ssh/oci-spx.pub}"
 SSH_PRIVATE_KEY="${OCI_SSH_PRIVATE_KEY:-$HOME/.ssh/oci-spx}"
@@ -52,6 +61,7 @@ ARTIFACT_DIR="${OCI_ARTIFACT_DIR:-$HERE/.e2e-oci-$(date -u +%Y%m%dT%H%M%SZ)}"
 export OCI_STATE_ROOT="${OCI_STATE_ROOT:-$HERE}"
 STATE_ROOT="$OCI_STATE_ROOT"
 SWEEP_ONLY=0
+SUMMARY_ONLY=0
 DRY_RUN=0
 
 log() { printf '[e2e-oci] %s\n' "$*"; }
@@ -62,11 +72,13 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} [--sweep-only] [--dry-run]
+usage: ${0##*/} [--sweep-only] [--summary-only] [--dry-run]
 
 Everything else is an environment variable; see the header of this script.
 
   --sweep-only   Destroy anything an earlier run left behind, then stop.
+  --summary-only Write the result tables from the state files, then stop. For
+                 a job that was cancelled or killed before it got there.
   --dry-run      Print what each topology would do, build nothing.
 EOF
     exit 2
@@ -75,6 +87,7 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --sweep-only) SWEEP_ONLY=1; shift ;;
+        --summary-only) SUMMARY_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h | --help) usage ;;
         *) die "unknown option $1" ;;
@@ -91,12 +104,94 @@ case "$CHANNEL" in
     *) die "OCI_CHANNEL must be latest or dev, got '$CHANNEL'" ;;
 esac
 # Saying release+dev and tree at once is two different artifacts in one verdict.
+[ "$SOURCE" = tree ] && [ -n "$INSTALL_VERSION" ] \
+    && die "OCI_VERSION needs OCI_SOURCE=release: a tree build installs the ref, not a published tag"
 [ "$SOURCE" = tree ] && [ "$CHANNEL" != latest ] \
     && die "OCI_CHANNEL=$CHANNEL needs OCI_SOURCE=release: a tree build installs the ref, not a channel"
 
 mkdir -p "$ARTIFACT_DIR"
 VERDICT="$ARTIFACT_DIR/verdict.txt"
 : > "$VERDICT"
+
+# The run page is the evidence, and its readers are not us: someone assessing
+# whether Spinifex works on their cloud should get the answer without opening a
+# log or knowing what this harness is. Markdown on stdout as well as to the step
+# summary, so a workstation run shows the same thing CI publishes.
+mark() {
+    case "$1" in
+        PASS) printf '✅ PASS' ;;
+        FAIL) printf '❌ FAIL' ;;
+        SKIPPED) printf '⏭️ SKIPPED' ;;
+        *) printf 'ℹ️ %s' "$1" ;;
+    esac
+}
+
+summary() {
+    printf '## Spinifex on OCI — %s\n\n' "$REF"
+    # Said, not implied. A tree build and a published release answer different
+    # questions, and a table headed "published release" over a build of somebody's
+    # branch is the one error here that would mislead a reader who trusted it.
+    if [ "$SOURCE" = tree ]; then
+        printf 'Built from this ref, region `%s`.\n\n' "${OCI_REGION:-ap-sydney-1}"
+    else
+        printf 'Published release `%s`, region `%s`.\n\n' \
+            "${INSTALL_VERSION:-$CHANNEL channel}" "${OCI_REGION:-ap-sydney-1}"
+    fi
+
+    # In the header, not left to a SKIPPED row further down. A run with no allocator
+    # is not evidence about public addressing, and that is precisely the claim a
+    # reader of a green table would otherwise take from it.
+    if [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
+        printf '> **No external address pool.** Public-address allocation and every workbook needing a public address were skipped, so nothing here speaks to guest ingress.\n\n'
+    elif [ "${OCI_INSTANCE_PRINCIPAL:-1}" = 1 ]; then
+        printf 'Allocator authenticated as the instance principal.\n\n'
+    else
+        printf 'Allocator authenticated with an API key.\n\n'
+    fi
+
+    local topology results workbooks gate status detail name secs
+    for topology in $TOPOLOGIES; do
+        results="$STATE_ROOT/.validate-$topology/results.tsv"
+        workbooks="$STATE_ROOT/.validate-$topology/workbooks.tsv"
+        printf '### `%s`\n\n' "$topology"
+        # A topology the loop never reached is said so rather than omitted: a
+        # reader takes an absent row for a passing one.
+        if [ ! -s "$results" ]; then
+            printf 'Did not run.\n\n'
+            continue
+        fi
+        printf '| Gate | Result | Detail |\n| --- | --- | --- |\n'
+        while IFS=$'\t' read -r gate status detail; do
+            [ -n "$gate" ] || continue
+            printf '| %s | %s | %s |\n' "$gate" "$(mark "$status")" "$detail"
+        done < "$results"
+        printf '\n'
+        if [ ! -s "$workbooks" ]; then
+            printf 'No published workbooks ran.\n\n'
+            continue
+        fi
+        printf '| Terraform workbook | Result | Duration |\n| --- | --- | --- |\n'
+        while IFS=$'\t' read -r name status secs; do
+            [ -n "$name" ] || continue
+            printf '| `%s` | %s | %ss |\n' "$name" "$(mark "$status")" "$secs"
+        done < "$workbooks"
+        printf '\n'
+    done
+}
+
+# GITHUB_STEP_SUMMARY is per step, so appending from both the run and the dedicated
+# publish step would put two copies of the tables on the run page. One owner: the run
+# writes the file and prints it, and only --summary-only publishes it.
+emit_summary() {
+    summary | tee "$ARTIFACT_DIR/summary.md"
+}
+
+publish_summary() {
+    emit_summary
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        cat "$ARTIFACT_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+    fi
+}
 
 # A topology destroys itself from its own EXIT trap, so this only catches a run
 # the trap never reached: a killed process, a runner reclaimed mid-job, a reboot.
@@ -126,6 +221,14 @@ sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
     done
     [ "$found" = 0 ] && log "sweep: nothing left behind"
 }
+
+# Before the sweep, because the sweep is what destroys the state the tables are
+# read from. This is the path a cancelled job takes, so it has to work on whatever
+# the run got through rather than assuming a complete set.
+if [ "$SUMMARY_ONLY" = 1 ]; then
+    publish_summary
+    exit 0
+fi
 
 # Run the sweep before the topologies as well as after: a leftover cluster from a
 # killed run is both a bill and a second set of resources with our names on it.
@@ -178,7 +281,14 @@ for topology in $TOPOLOGIES; do
         args+=(--instance-principal)
     fi
     [ -n "$DISTRO_TARBALL" ] && args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
-    [ "$SOURCE" = release ] && args+=(--channel "$CHANNEL")
+    if [ "$SOURCE" = release ]; then
+        if [ -n "$INSTALL_VERSION" ]; then
+            args+=(--version "$INSTALL_VERSION")
+        else
+            args+=(--channel "$CHANNEL")
+        fi
+    fi
+    [ -n "${OCI_CREDENTIAL_HOOK:-}" ] && args+=(--credential-hook "$OCI_CREDENTIAL_HOOK")
     [ "${OCI_KEEP_ON_FAIL:-0}" = 1 ] && args+=(--keep-on-fail)
     [ -n "${WORKBOOKS+x}" ] && args+=(--workbooks "$WORKBOOKS")
 
@@ -201,8 +311,11 @@ done
 # case that costs money, and the verdict should say so rather than the log.
 sweep
 
+emit_summary
+
+
 echo
-log "=== $REF on OCI ($SOURCE build$([ "$SOURCE" = release ] && echo ", $CHANNEL channel")) ==="
+log "=== $REF on OCI ($SOURCE build$([ "$SOURCE" = release ] && { [ -n "$INSTALL_VERSION" ] && echo ", $INSTALL_VERSION" || echo ", $CHANNEL channel"; })) ==="
 cat "$VERDICT"
 if [ "$RUN_RC" = 0 ] && ! grep -q FAIL "$VERDICT"; then
     log "PASS"

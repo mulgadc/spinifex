@@ -209,13 +209,26 @@ node_client_cidr_allow_list = ["203.0.113.10/32"]
 
 The allocator needs OCI credentials at runtime, and there are two ways to give it them. A node with neither forms, passes every health check, and then refuses every launch that wants a public address with `InsufficientAddressCapacity` — the cause appears only in the node's journal, so this is worth getting right before first start.
 
-**Instance principal is the better one, and it is what `enable_instance_principal = true` sets up.** Each node authenticates with the certificate its own metadata service serves, so no key material exists on any node, there is nothing to rotate, and nothing sensitive reaches Terraform state. The cost is a dynamic group and a policy, which are tenancy-root resources — so the apply needs a tenancy-admin principal, which is why it is off by default and why the rest of this configuration deliberately creates nothing at tenancy root. Create them once, by hand or with a privileged principal, and every later node and rebuild inherits them:
+**Instance principal is the better one.** Each node authenticates with the certificate its own metadata service serves, so no key material exists on any node, there is nothing to rotate, and nothing sensitive reaches Terraform state. The cost is a dynamic group and a policy, which are tenancy-root resources — so creating them needs a tenancy-admin principal, which is why the rest of this configuration deliberately creates nothing at tenancy root.
+
+`instance_principal` has three values, because using an instance principal and being allowed to create one are different rights:
+
+| Value | Pool auth | Creates the dynamic group and policy | Credential needed |
+| --- | --- | --- | --- |
+| `off` (default) | API key file | No | Compartment-scoped |
+| `adopt` | `instance_principal` | No — assumes they exist | Compartment-scoped |
+| `create` | `instance_principal` | Yes | **Tenancy admin** |
+
+Create them once per tenancy, then every deployment and rebuild afterwards uses `adopt`:
 
 ```bash
-python3 scripts/oci_env.py --ssh-public-key-path <pub> -- \
-    terraform apply -var enable_instance_principal=true \
-    -target oci_identity_dynamic_group.nodes -target oci_identity_policy.nodes
+./setup-identity.sh --dry-run    # always first
+./setup-identity.sh
 ```
+
+`setup-identity.sh` targets only those two resources and keeps them in `.identity/terraform.tfstate`, separate from every topology's state. That separation is load-bearing: `validate-topology.sh` destroys its own state at the end of each run, so holding tenancy resources there would let a nightly teardown delete the tenancy's policy.
+
+**`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `resolved the external VNIC` in each node's `spinifex-vpcd` journal.
 
 The policy grants three verbs in one compartment — `use vnics`, `manage private-ips`, `manage public-ips` — which is exactly what allocating an external address does and nothing more.
 
@@ -225,6 +238,22 @@ The policy grants three verbs in one compartment — `use vnics`, `manage privat
 sudo install -d -o root -g spinifex -m 0750 /etc/spinifex/oci
 sudo install -o root -g spinifex -m 0640 ~/.oci/oci_api_key.pem /etc/spinifex/oci/oci_api_key.pem
 ```
+
+**The key is half of it.** `oci_config_file` names an ordinary OCI SDK config, and nothing creates that file, so a node with only the PEM forms and then fails every allocation. The profile must be `spinifex`, to match `oci_config_profile`, and the four identifiers are the ones already in the tfvars:
+
+```bash
+sudo tee /etc/spinifex/oci/config >/dev/null <<'CONF'
+[spinifex]
+user=ocid1.user.oc1..<yours>
+fingerprint=<yours>
+tenancy=ocid1.tenancy.oc1..<yours>
+region=ap-sydney-1
+key_file=/etc/spinifex/oci/oci_api_key.pem
+CONF
+sudo chown root:spinifex /etc/spinifex/oci/config && sudo chmod 0640 /etc/spinifex/oci/config
+```
+
+For repeated runs, `validate-topology.sh --credential-hook` does both steps on every node. The hook is an operator-owned executable rather than anything in this repository, because a credential rendered into user-data or Terraform state is readable from instance metadata for the life of the instance, and these hosts run other people's guests. Instance principal needs no hook at all, which is the reason to prefer it wherever a dynamic group can be created.
 
 Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/external-pool.toml` on each node, with `oci_auth` set to match. Append it to `/etc/spinifex/spinifex.toml` after `spx admin init` and restart `spinifex.target`. Under instance principal that file holds no secret at all, which is the point of it.
 

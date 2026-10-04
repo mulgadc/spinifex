@@ -898,6 +898,17 @@ install_files() {
         info "  /usr/local/share/spinifex/setup.sh"
     fi
 
+    # Formation. Shipping these means a multi-node cluster can be formed from a
+    # `curl | bash` install with no checkout, which is what a cloud operator has.
+    # smoke-test.sh comes too: install-node.sh scp's it from its own directory for
+    # the post-formation verification, so without it formation fails at the last step.
+    for formation in install-node.sh smoke-test.sh; do
+        if [ -f "$EXTRACT_DIR/$formation" ]; then
+            $SUDO install -m 0755 "$EXTRACT_DIR/$formation" "/usr/local/share/spinifex/$formation"
+            info "  /usr/local/share/spinifex/$formation"
+        fi
+    done
+
     # Teardown scripts. An install delivered by `curl | bash` with no way to
     # undo it is a gap in the product, not just in our tooling, and node-reset.sh
     # ships alongside because uninstall-spx.sh delegates its state teardown to it

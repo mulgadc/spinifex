@@ -21,12 +21,14 @@ SKIP_POOL=0
 DRY_RUN=0
 DESTROY_ONLY=0
 INSTANCE_PRINCIPAL=0
+CREDENTIAL_HOOK="${OCI_CREDENTIAL_HOOK:-}"
 DISTRO=""
 SETUP_SH=""
 # Empty means the driver's own default list. Unset is distinguishable from empty,
 # so --workbooks "" can deliberately mean "run none".
 WORKBOOKS_SET=0
 CHANNEL=latest
+INSTALL_VERSION=""
 WORKBOOKS=""
 
 # Shapes and counts per topology. Named here rather than passed in, because the
@@ -62,9 +64,16 @@ workbook against it, then destroys everything.
   --instance-principal    Configure the pool with oci_auth="instance_principal"
                           instead of a key file. Needs the dynamic group and
                           policy to exist already; see instance-principal.tf.
+  --credential-hook PATH  Executable run after formation, before the pool, as
+                          "hook <ssh-key> <host>...". Where an API-key deployment
+                          installs its credential. Default \$OCI_CREDENTIAL_HOOK.
   --workbooks LIST        Space-separated workbooks for the published driver to
                           run on the cluster. Empty means run none; omitted means
                           the driver's own default list.
+  --version TAG           Install this exact release tag. Preferred over
+                          --channel dev for anything repeatable: a tag resolves
+                          by redirect, while the dev channel resolves through a
+                          rate-limited GitHub API call that 404s when it trips.
   --distro PATH           Install this distro tarball instead of the published
                           release, so what is proved is the ref it was built from.
   --setup-sh PATH         setup.sh to pair with --distro. Both or neither.
@@ -87,9 +96,11 @@ while [ $# -gt 0 ]; do
         --ssh-private-key) SSH_PRIVATE_KEY="${2:?}"; shift 2 ;;
         --workbooks) WORKBOOKS_SET=1; WORKBOOKS="${2-}"; shift 2 ;;
         --channel) CHANNEL="${2-}"; shift 2 ;;
+        --version) INSTALL_VERSION="${2:?}"; shift 2 ;;
         --distro) DISTRO="${2:?}"; shift 2 ;;
         --setup-sh) SETUP_SH="${2:?}"; shift 2 ;;
         --instance-principal) INSTANCE_PRINCIPAL=1; shift ;;
+        --credential-hook) CREDENTIAL_HOOK="${2:?}"; shift 2 ;;
         --no-external-pool) SKIP_POOL=1; SKIP_WORKLOAD=1; shift ;;
         --skip-workload) SKIP_WORKLOAD=1; shift ;;
         --keep) KEEP=1; shift ;;
@@ -112,6 +123,10 @@ if [ -n "$DISTRO" ] || [ -n "$SETUP_SH" ]; then
     [ -r "$SETUP_SH" ] || die "--setup-sh is not readable: '$SETUP_SH'"
 fi
 
+# adopt, never create: this script's state is destroyed at the end of every run, and
+# the dynamic group and policy outlive every topology. setup-identity.sh owns them.
+PRINCIPAL_MODE=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo adopt || echo off)
+
 SHAPE="${TOPO_SHAPE[$TOPOLOGY]}"
 NODES="${TOPO_NODES[$TOPOLOGY]}"
 # Outside the checkout on a persistent runner, because actions/checkout runs
@@ -121,6 +136,12 @@ STATE_ROOT="${OCI_STATE_ROOT:-$HERE}"
 mkdir -p "$STATE_ROOT"
 STATE_DIR="$STATE_ROOT/.validate-$TOPOLOGY"
 RESULTS="$STATE_DIR/results.txt"
+
+# Tab-separated siblings of the human block, for the run-page tables. Written here
+# rather than parsed out of the log later: the status of a gate is then a field
+# this script sets, not a regex over prose that reads fine and matches wrong.
+RESULTS_TSV="$STATE_DIR/results.tsv"
+WORKBOOKS_TSV="$STATE_DIR/workbooks.tsv"
 
 # A separate state directory per topology, so two topologies can be built from one
 # checkout without one destroying the other's instances.
@@ -135,7 +156,7 @@ tf_state=(-state "$STATE_DIR/terraform.tfstate")
 tf_vars=(
     -var "compute_shape=$SHAPE"
     -var "node_count=$NODES"
-    -var "enable_instance_principal=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo true || echo false)"
+    -var "instance_principal=$PRINCIPAL_MODE"
     "${tf_state[@]}"
 )
 
@@ -148,7 +169,23 @@ ssh_node() {
         -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 "ubuntu@$host" "$@"
 }
 
-record() { printf '%s\n' "$*" >> "$RESULTS"; }
+# record <gate> <PASS|FAIL|SKIPPED|INFO> [detail]
+record() {
+    local gate="$1" status="$2" detail="${3-}"
+    printf '%s: %s%s\n' "$gate" "$status" "${detail:+ $detail}" >> "$RESULTS"
+    printf '%s\t%s\t%s\n' "$gate" "$status" "$detail" >> "$RESULTS_TSV"
+}
+
+# The driver's per-workbook lines, which are go test's own shape because
+# go-junit-report consumes them downstream. A workbook the driver never reached
+# is absent from its log and so absent here, which the summary renders as a row
+# rather than dropping — a missing row reads as a pass.
+record_workbooks() {
+    local log="$1"
+    [ -r "$log" ] || return 0
+    sed -n 's/^--- \(PASS\|FAIL\): TestTofuWorkbook_\([A-Za-z0-9_]*\) (\([0-9]*\)\.[0-9]*s)$/\2\t\1\t\3/p' \
+        "$log" | tr '_' '-' > "$WORKBOOKS_TSV"
+}
 
 # Teardown is the last assertion, not cleanup: a workbook or a topology that
 # cannot be destroyed is a defect, and it has been one before.
@@ -157,10 +194,10 @@ destroy_topology() {
     log "destroying"
     if tf destroy -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/destroy.log" 2>&1; then
         DESTROY_RC=0
-        record "destroy: PASS"
+        record destroy PASS
     else
         DESTROY_RC=1
-        record "destroy: FAIL (see $STATE_DIR/destroy.log)"
+        record destroy FAIL "see $STATE_DIR/destroy.log"
         log "TEARDOWN FAILED — resources may still be billing. $STATE_DIR/destroy.log"
     fi
 }
@@ -206,8 +243,19 @@ if [ "$DESTROY_ONLY" = 1 ]; then
 fi
 
 : > "$RESULTS"
+: > "$RESULTS_TSV"
+: > "$WORKBOOKS_TSV"
 
 log "$SHAPE, $NODES node(s), state in $STATE_DIR"
+
+# Checked here, not where the hook is run: nothing about it depends on the apply, and
+# the run is otherwise forty minutes and a bare-metal bill from discovering that the
+# path in a CI variable does not exist on this runner.
+if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    [ -n "$CREDENTIAL_HOOK" ] \
+        || die "this deployment authenticates with an API key and no credential hook is set, so no node could reach the OCI API; set --credential-hook or OCI_CREDENTIAL_HOOK, or use an instance principal"
+    [ -x "$CREDENTIAL_HOOK" ] || die "credential hook is not executable: $CREDENTIAL_HOOK"
+fi
 
 # The directory's own terraform.tfstate belongs to hand-driven runs, not to a
 # topology, and an instance left in it is both a bill and a name that collides
@@ -249,7 +297,7 @@ tf init -input=false > "$STATE_DIR/init.log" 2>&1 || die "terraform init failed;
 log "building"
 tf apply -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/apply.log" 2>&1 \
     || die "terraform apply failed; see $STATE_DIR/apply.log"
-record "build: PASS"
+record build PASS
 
 mapfile -t HOSTS < <(tf output -raw "${tf_state[@]}" hosts_file) \
     || die "could not read the hosts_file output from $STATE_DIR/terraform.tfstate"
@@ -283,7 +331,7 @@ for host in "${HOSTS[@]}"; do
         || die "cloud-init did not converge on $host; see $STATE_DIR/cloudinit-$host.txt"
     log "$host cloud-init: $(head -1 "$STATE_DIR/cloudinit-$host.txt")"
 done
-record "cloud-init units: PASS"
+record "cloud-init units" PASS
 
 # With --distro the bytes are the ref under test; without it they are the published
 # release, which answers a different question -- what a customer following the
@@ -298,7 +346,7 @@ for host in "${HOSTS[@]}"; do
     # cloud-init being finished does not mean apt is: the apt-daily timers and
     # unattended-upgrades run on their own schedule and hold the dpkg lock, which
     # the installer then fails on. Wait for the lock rather than fight it.
-    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' bash -s" \
+    ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' INSTALL_VERSION='$INSTALL_VERSION' bash -s" \
         > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
 set -e
@@ -318,13 +366,23 @@ else
     # The real customer path, including the checksum step a local tarball skips.
     # The environment variable rather than --channel: the installer served by
     # install.mulgadc.com is the latest release's, so it predates the flag.
-    curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL="$CHANNEL" bash
+    #
+    # A tag goes in as VERSION, not CHANNEL. Only the dev channel resolves through
+    # an unauthenticated GitHub API call, which is rate limited per source address
+    # and returns 404 once it trips -- indistinguishable from a missing asset. A
+    # tagged path is a plain redirect, so it does not have that failure mode.
+    if [ -n "$INSTALL_VERSION" ]; then
+        curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_VERSION="$INSTALL_VERSION" bash
+    else
+        curl -sfL https://install.mulgadc.com | sudo env INSTALL_SPINIFEX_CHANNEL="$CHANNEL" bash
+    fi
 fi
 sudo /usr/local/share/spinifex/setup-ovn.sh --management --nat-uplink
 REMOTE
-    log "$host installed: $(ssh_node "$host" 'spx version' 2>&1 | head -1)"
+    INSTALLED_VERSION="$(ssh_node "$host" 'spx version' 2>&1 | head -1)"
+    log "$host installed: $INSTALLED_VERSION"
 done
-record "install: PASS"
+record install PASS "$INSTALLED_VERSION"
 
 # A single node is its own documented path: install-node.sh refuses fewer than two
 # hosts, because there is nothing to join. Both branches use the flags the guide
@@ -351,7 +409,21 @@ else
         --yes > "$STATE_DIR/form.log" 2>&1 \
         || die "formation failed; see $STATE_DIR/form.log"
 fi
-record "formation: PASS"
+record formation PASS
+
+# Runs after formation and before the pool is configured, which is the only window
+# where a node has /etc/spinifex but has not yet started the allocator. Nothing in
+# this repository knows what it does: an API-key deployment needs a credential on
+# each node, and a credential belongs to the operator, not to a checked-in script.
+# Skipped under instance principal, which needs no handoff at all.
+if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    log "running the credential hook"
+    # Arguments, not a file: the hook is told where the nodes are and how to reach
+    # them, and decides for itself what to put there.
+    "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
+        || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
+    log "credential hook ok"
+fi
 
 # The IMDS remap and the pool are both set-before-first-start, and the remap is the
 # half that is invisible when missing: without it the cloud's metadata service is
@@ -362,45 +434,90 @@ for host in "${HOSTS[@]}"; do
         || die "pool configuration failed on $host; see $STATE_DIR/pool-$host.log"
 set -e
 sudo cp /etc/spinifex/spinifex.toml /etc/spinifex/spinifex.toml.bak-prepool
+# subn, not sub: with no [network] section to match, sub rewrites the file unchanged
+# and exits 0, leaving the remap silently unapplied. That is the half of this that is
+# invisible when missing, so the substitution count is checked rather than assumed.
 grep -q imds_host_meta_ip /etc/spinifex/spinifex.toml || sudo python3 - <<"PY"
-import re
+import re, sys
 path = "/etc/spinifex/spinifex.toml"
-text = open(path).read()
-text = re.sub(r"(?m)^\[network\]$",
-              "[network]\nimds_host_meta_ip = \"169.254.42.254\"\nimds_host_dns_ip  = \"169.254.42.253\"",
-              text, count=1)
+text, n = re.subn(r"(?m)^\[network\]$",
+                  "[network]\nimds_host_meta_ip = \"169.254.42.254\"\nimds_host_dns_ip  = \"169.254.42.253\"",
+                  open(path).read(), count=1)
+if n != 1:
+    sys.exit("no [network] section in %s, so the IMDS remap was not applied" % path)
 open(path, "w").write(text)
 PY
 if [ "${SKIP_POOL:-0}" != 1 ]; then
     grep -q 'name               = "oci-public"' /etc/spinifex/spinifex.toml \
         || sudo tee -a /etc/spinifex/spinifex.toml < /etc/spinifex/oci/external-pool.toml >/dev/null
 fi
-sudo spx config validate --config /etc/spinifex/spinifex.toml 2>/dev/null || true
+# spx has no config subcommand, so the `spx config validate` that used to be here
+# could only ever fail, and was swallowed. Parsing the file is the check that was
+# wanted: both edits above are textual, and a broken result would otherwise surface
+# as every service failing to start with nothing saying why.
+sudo python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' \
+    /etc/spinifex/spinifex.toml \
+    || { echo "spinifex.toml is not valid TOML after the IMDS remap and the pool append"; exit 1; }
 sudo systemctl restart spinifex.target
 REMOTE
 done
+
+# Everything needed to tell the three allocator faults apart, and deliberately no
+# credential: the config file and the PEM are reported as mode and size only, which
+# distinguishes absent from unreadable without copying either into a log that is
+# attached to a CI run.
+allocator_diagnostics() {
+    local host="$1"
+    ssh_node "$host" '
+        echo "=== spinifex-daemon: the allocator (ocinet) lives here ==="
+        sudo journalctl -u spinifex-daemon --since -20min --no-pager | grep -i "ocinet\|external VNIC\|allocator\|oci" | tail -40
+        echo "=== spinifex-vpcd: consumes the addresses, does not allocate them ==="
+        sudo journalctl -u spinifex-vpcd --since -20min --no-pager | tail -40
+        echo "=== external_pools as configured ==="
+        sudo sed -n "/\[\[network.external_pools\]\]/,\$p" /etc/spinifex/spinifex.toml
+        echo "=== credential files (mode and size, never content) ==="
+        sudo stat -c "%n %A %s bytes owner=%U:%G" \
+            /etc/spinifex/oci/config /etc/spinifex/oci/oci_api_key.pem 2>&1
+        echo "=== the bridge MAC the allocator matches on ==="
+        ip -br link show
+        echo "=== MACs IMDS reports for this instance VNICs ==="
+        curl -sf -H "Authorization: Bearer Oracle" \
+            http://169.254.169.254/opc/v2/vnics/ | tr "," "\n" | grep -i "macAddr\|privateIp" || \
+            echo "IMDS unreachable -- check the remap, Spinifex claims 169.254.169.254 itself"
+    ' 2>&1
+}
 
 # resolved the external VNIC is the line that proves the credential works, the
 # compartment is right and br-wan's MAC matched a real VNIC. A node missing it
 # accepts allocate-address and then fails it.
 if [ "$SKIP_POOL" = 1 ]; then
     log "--no-external-pool: no allocator to check"
-    record "oci allocator: SKIPPED"
+    record "oci allocator" SKIPPED "no external pool configured"
 else
     log "checking the allocator came up"
     for host in "${HOSTS[@]}"; do
         found=0
         for _ in $(seq 1 30); do
-            if ssh_node "$host" "sudo journalctl -u spinifex-vpcd --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
+            # spinifex-daemon, not spinifex-vpcd: the allocator is built in the
+            # daemon, and vpcd only consumes the addresses it hands out. Gating on
+            # vpcd's journal failed a node whose allocator was working.
+            if ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
                 found=1
                 break
             fi
             sleep 10
         done
-        [ "$found" = 1 ] || die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address"
+        if [ "$found" != 1 ]; then
+            # Before the teardown, because the teardown is what destroys the only
+            # copy. Three unrelated faults land here -- a credential the SDK would
+            # not load, a bridge MAC matching no VNIC, and a pool vpcd never read --
+            # and they are indistinguishable from the missing log line alone.
+            allocator_diagnostics "$host" > "$STATE_DIR/allocator-$host.log" 2>&1 || true
+            die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address. Diagnostics: $STATE_DIR/allocator-$host.log"
+        fi
         log "$host allocator ready"
     done
-    record "oci allocator: PASS"
+    record "oci allocator" PASS
 fi
 
 # Parse the STATUS column, never grep for Ready: NotReady contains it, and that
@@ -421,11 +538,11 @@ for _ in $(seq 1 30); do
 done
 cat "$STATE_DIR/nodes.txt"
 [ "$ready" = "$NODES" ] || die "expected $NODES Ready node(s), got $ready; see $STATE_DIR/nodes.txt"
-record "membership: PASS ($ready Ready)"
+record membership PASS "$ready Ready"
 
 if [ "$SKIP_WORKLOAD" = 1 ]; then
     log "--skip-workload: stopping before the workbook"
-    record "workbook: SKIPPED"
+    record workbooks SKIPPED "--skip-workload"
     exit 0
 fi
 
@@ -458,14 +575,58 @@ ssh_node "${HOSTS[0]}" '
 workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
 [ "$WORKBOOKS_SET" = 1 ] && workbook_env="$workbook_env $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
 
+# Whether a node can reach a public address inside its own VCN. Informational: the
+# remedy below is right either way, because a customer reaches a guest from outside.
+#
+# Needs two hosts. With one, HOSTS[0] and HOSTS[-1] are the same address and the node
+# connects to itself, which always succeeds and measures nothing — it reported
+# "present" on vm-single and bm for exactly that reason before this guard.
+#
+# A negative result is only interpretable when the security list admits the source,
+# so the record says which it was: narrowing node_client_cidr_allow_list makes a
+# node's own public address a non-permitted source, and the refusal that follows
+# looks identical to a VCN that does not hairpin.
+if [ "${#HOSTS[@]}" -lt 2 ]; then
+    record "vcn hairpin" SKIPPED "needs two nodes; one node can only probe itself"
+elif ssh_node "${HOSTS[0]}" \
+    "bash -c 'exec 3<>/dev/tcp/${HOSTS[${#HOSTS[@]}-1]}/22' 2>/dev/null"; then
+    record "vcn hairpin" INFO "present: a node reached another node's public address"
+else
+    record "vcn hairpin" INFO "not reached, which is a VCN without hairpin or a security list that excludes the source"
+fi
+
+# Remote dynamic forward: the node gets a SOCKS5 proxy on this port whose egress
+# is this host, outside the VCN. It gives the driver the customer's vantage point
+# for public addresses without moving the driver off the node, where its ovn-nbctl,
+# journalctl and spx diagnostics have to run. The subnet's own allow list does not
+# need a new entry: ssh from here already works, and its rules are per-CIDR for
+# every protocol.
+PUBLIC_PROXY_PORT="${PUBLIC_PROXY_PORT:-1080}"
+workbook_env="$workbook_env E2E_PUBLIC_PROXY=127.0.0.1:$PUBLIC_PROXY_PORT"
+
+# ExitOnForwardFailure, so a port already in use stops the run here instead of
+# handing the driver a proxy that is not there. Keepalives because this one
+# connection carries the proxy for the whole suite, and a dropped forward would
+# read as every remaining public address going dark at once.
+#
 # if !, not a $? read after the fact: under set -e a failing ssh never reaches the
 # next line, which is the one that prints the driver's own diagnostics.
-if ssh_node "${HOSTS[0]}" "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
+if ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=15 \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+    -o ExitOnForwardFailure=yes -R "$PUBLIC_PROXY_PORT" "ubuntu@${HOSTS[0]}" \
+    "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
     > "$STATE_DIR/workbooks.log" 2>&1; then
+    record_workbooks "$STATE_DIR/workbooks.log"
     passed="$(grep -c '^--- PASS' "$STATE_DIR/workbooks.log" || true)"
     ran="$(grep -c '^=== RUN' "$STATE_DIR/workbooks.log" || true)"
-    record "workbooks: PASS ($passed of $ran)"
+    record workbooks PASS "$passed of $ran"
 else
+    # Before die, so a failed suite still gets its per-workbook table: which four
+    # passed is most of what the fifth failing means.
+    record_workbooks "$STATE_DIR/workbooks.log"
+    failed="$(grep -c '^--- FAIL' "$STATE_DIR/workbooks.log" || true)"
+    record workbooks FAIL "$failed failed, see $STATE_DIR/workbooks.log"
     tail -60 "$STATE_DIR/workbooks.log"
     grep -E '^--- (PASS|FAIL)' "$STATE_DIR/workbooks.log" | sed 's/^/  /' || true
     die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"

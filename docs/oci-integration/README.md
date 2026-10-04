@@ -2,7 +2,7 @@
 title: "Oracle Cloud Infrastructure (OCI)"
 seoTitle: "Run Spinifex on Oracle Cloud Infrastructure — Spinifex Docs"
 description: "Deploy Spinifex on Oracle Cloud Infrastructure end to end with Terraform, on one node or three, and give guests real public addresses through OCI's own API."
-category: "Install"
+category: "Cloud Install"
 tags:
   - install
   - oci

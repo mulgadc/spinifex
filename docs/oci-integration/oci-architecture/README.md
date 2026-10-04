@@ -2,7 +2,7 @@
 title: "OCI Architecture"
 seoTitle: "Spinifex on OCI: Architecture and Operations — Spinifex Docs"
 description: "How Spinifex is wired on OCI: both VNICs, the iSCSI data volume and the public-address allocator, with the IAM policy, the quotas and the troubleshooting."
-category: "Install"
+category: "Cloud Install"
 sections:
   - overview
   - troubleshooting

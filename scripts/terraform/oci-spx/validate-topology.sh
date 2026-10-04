@@ -561,19 +561,27 @@ scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev
     || die "could not copy the workbooks"
 
 # Every AMI the workbooks need, imported one at a time so predastore is not asked
-# to absorb parallel uploads. rds-quickstart is the one that needs an appliance.
+# to absorb parallel uploads. Three are appliances rather than distros: RDS, ECS
+# and EKS each boot their own, found by a spinifex:managed-by tag and never by name.
 log "importing the images the workbooks need"
 ssh_node "${HOSTS[0]}" '
     set -e
-    for img in ubuntu-26.04-x86_64 spinifex-rds-postgres; do
+    for img in ubuntu-26.04-x86_64 spinifex-rds-postgres spinifex-ecs-node spinifex-eks-node; do
         sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml >/dev/null
     done
 ' > "$STATE_DIR/images.log" 2>&1 || die "image import failed; see $STATE_DIR/images.log"
 
-# WORKBOOKS unset leaves the driver on its own default list, which is the list the
-# nightly judges every other platform by.
-workbook_env="WORKBOOK_DIR=\$HOME/workbooks"
-[ "$WORKBOOKS_SET" = 1 ] && workbook_env="$workbook_env $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
+# Every workbook that is a workbook. The shared driver's own default is five, which
+# leaves ECS and all three EKS variants untested on every platform -- their
+# assertions exist and nothing was running them.
+#
+# demo-app is absent because it is not a workbook: it has no .tf at all, being the
+# container image the EKS workbooks' nested workloads/ modules deploy. Listing it
+# here would fail on a missing root module rather than test anything.
+OCI_WORKBOOKS="nginx-alb bastion-private-subnet nginx-webserver s3-webapp rds-quickstart"
+OCI_WORKBOOKS="$OCI_WORKBOOKS ecs-quickstart eks-quickstart eks-https-ingress eks-gitops-argocd"
+[ "$WORKBOOKS_SET" = 1 ] || WORKBOOKS="$OCI_WORKBOOKS"
+workbook_env="WORKBOOK_DIR=\$HOME/workbooks $(printf 'WORKBOOKS=%q' "$WORKBOOKS")"
 
 # Whether a node can reach a public address inside its own VCN. Informational: the
 # remedy below is right either way, because a customer reaches a guest from outside.

@@ -255,6 +255,14 @@ fi
 : > "$RESULTS_TSV"
 : > "$WORKBOOKS_TSV"
 
+# Last run's logs go before this one's first line, so what is left in here always
+# describes the run that is starting. Without this a topology keeps logs that read
+# as current, and anything collecting the directory publishes them as this run's.
+# Named globs rather than a find: the tfstate is how the sweep finds hosts to
+# destroy, so what is removed here has to be readable at a glance.
+# :? so an unset STATE_DIR stops the shell rather than expanding to /*.log.
+rm -f "${STATE_DIR:?}"/*.log "${STATE_DIR:?}"/nodes.txt "${STATE_DIR:?}"/cloudinit-*.txt
+
 log "$SHAPE, $NODES node(s), state in $STATE_DIR"
 
 # Checked here, not where the hook is run: nothing about it depends on the apply, and

@@ -179,6 +179,22 @@ ssh_node() {
 }
 
 # record <gate> <PASS|FAIL|SKIPPED|INFO> [detail]
+# The node's own account of a failed run. A workbook's log says which API call
+# failed; only the journal says why, and the nodes are destroyed minutes later.
+# Warnings first because that is where a swallowed error surfaces, then a bounded
+# tail for context -- unbounded, a multi-hour suite's journal dwarfs the artifact.
+capture_journals() {
+    local host
+    for host in "${HOSTS[@]}"; do
+        ssh_node "$host" '
+            echo "=== spinifex, warning and above ==="
+            sudo journalctl -u "spinifex-*" --since -4h --priority=warning --no-pager | tail -2000
+            echo "=== spinifex, all priorities, last 2000 lines ==="
+            sudo journalctl -u "spinifex-*" --since -4h --no-pager | tail -2000
+        ' > "$STATE_DIR/journal-$host.log" 2>&1 || log "could not collect the journal from $host"
+    done
+}
+
 record() {
     local gate="$1" status="$2" detail="${3-}"
     printf '%s: %s%s\n' "$gate" "$status" "${detail:+ $detail}" >> "$RESULTS"
@@ -652,6 +668,7 @@ else
     record_workbooks "$STATE_DIR/workbooks.log"
     failed="$(grep -c '^--- FAIL' "$STATE_DIR/workbooks.log" || true)"
     record workbooks FAIL "$failed failed, see $STATE_DIR/workbooks.log"
+    capture_journals
     tail -60 "$STATE_DIR/workbooks.log"
     grep -E '^--- (PASS|FAIL)' "$STATE_DIR/workbooks.log" | sed 's/^/  /' || true
     die "the published workbooks failed on $TOPOLOGY; see $STATE_DIR/workbooks.log"

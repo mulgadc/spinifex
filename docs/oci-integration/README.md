@@ -43,9 +43,31 @@ resources:
 
 ## Overview
 
-Spinifex brings core AWS services to hardware you control. A node runs the Spinifex daemon, QEMU/KVM for guests and OVN for VPC networking, with [Predastore](https://github.com/mulgadc/predastore) serving S3 and [Viperblock](https://github.com/mulgadc/viperblock) serving EBS. All of it sits behind a SigV4 endpoint that the ordinary AWS SDKs and CLI talk to unmodified.
+Spinifex is an open-source infrastructure platform that brings core AWS services to bare-metal, edge, and on-prem environments. It serves the EC2, EBS, S3, VPC, IAM and STS APIs over a SigV4 endpoint of your own, so the AWS CLI, the AWS SDKs and the AWS Terraform provider all work against it unmodified. Nothing a tenant has written has to be rewritten to run on it.
 
-**Terraform does the whole deployment:** the VCN, the block volumes, both VNICs per node, the install, the cluster formation and the OCI public-address allocator. Six steps below, one command, about ten minutes for a single node.
+This guide installs Spinifex on Oracle Cloud Infrastructure, on one instance or three, with guests that get real public addresses from OCI's own pool. The install is the same product you would put on your own servers, so [Single-Node Install](/docs/install) and [Multi-Node Install](/docs/install-multi-node) describe the same formation, storage and networking. What differs here is the layer underneath, because a VCN is not an Ethernet segment and public addresses come from an API rather than a range you choose.
+
+**Why run it on OCI:**
+
+- **Cost.** OCI prices compute and block storage below the large US clouds, and one Spinifex node serves a tenant's whole fleet as QEMU guests on hardware you are billed for once.
+- **Egress.** Oracle's outbound-transfer allowance and per-GB rate are far cheaper than the majors, and guest-to-guest traffic rides the private plane, where it is not billed as internet egress at all.
+- **Portability.** Your tenants code against Spinifex, not against OCI, so the same workloads move to your own rack or an edge site later as a deployment decision rather than a rewrite.
+- **Real public addresses.** Spinifex registers each guest's address with OCI, so a guest is reachable on the internet rather than hidden behind a shared NAT.
+
+[Why run Spinifex on OCI](../oci-architecture/README.md#why-run-spinifex-on-oci) makes the case in full.
+
+**What gets installed**, on every node:
+
+- Spinifex daemon and CLI
+- QEMU/KVM for guests
+- OVN and Open vSwitch for VPC networking
+- [Predastore](https://github.com/mulgadc/predastore), S3-compatible object storage
+- [Viperblock](https://github.com/mulgadc/viperblock), EBS-compatible block storage
+- The OCI public-address allocator, which is the one component specific to this platform
+
+Nodes run **Ubuntu 26.04**, resolved at plan time as the newest Canonical platform image for your shape and region. Spinifex also supports Debian 13, but OCI publishes no Debian platform image, so this path is Ubuntu only.
+
+**Terraform does the whole deployment:** the VCN, the block volumes, both VNICs per node, the install, the cluster formation and the allocator. Six steps below, one command, about ten minutes for a single node.
 
 What sits underneath is in [Architecture and Operations](../oci-architecture/README.md), which also carries the IAM policy, the quotas, every variable and the troubleshooting.
 

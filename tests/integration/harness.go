@@ -154,7 +154,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 
 	// ECR auth bridge signing key: reuses the IAM master key to encrypt the
 	// signing key at rest in the same embedded JetStream KV, matching
-	// production's awsgw-keys wiring (services/awsgw/awsgw.go).
+	// production's awsgw-keys wiring (runtime/roles/awsgw/awsgw.go).
 	signingKey, verifyKeys, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
 	require.NoError(t, err)
 

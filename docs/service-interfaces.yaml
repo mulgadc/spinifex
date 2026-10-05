@@ -23,7 +23,7 @@ version: 1
 services:
 
   awsgw:
-    path: spinifex/services/awsgw
+    path: spinifex/runtime/roles/awsgw
     # TLS frontend, SigV4 auth. Pure router: HTTP → NATS request/response.
     # No subscribes; only publishes (via NATSRequest).
     subscribes: []

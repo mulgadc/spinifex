@@ -27,7 +27,7 @@ The AWS SDK formats this as an HTTPS POST with:
 
 ### 2. AWS Gateway
 
-The gateway (`spinifex/services/awsgw/awsgw.go`) is the entry point:
+The gateway (`spinifex/runtime/roles/awsgw/awsgw.go`) is the entry point:
 
 ```go
 // Connect to NATS (retries while the local broker comes up)

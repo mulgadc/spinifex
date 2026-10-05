@@ -265,6 +265,10 @@ Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/exter
 
 `--topology` has no default on purpose: a command aimed at the wrong one is the easiest expensive mistake here. Each topology keeps its own state under `.validate-<topology>/`, so two can be built from one checkout without either destroying the other's instances, and every log from the run lands there.
 
+**A topology's shape and node count are defaults, not settings.** They go to Terraform as `TF_VAR_compute_shape` and `TF_VAR_node_count`, which is the weakest source Terraform reads, so a `terraform.auto.tfvars` in the checkout outranks them and a deployment sizes itself in that file with no flag to pass. CI has no such file — `*.auto.tfvars` is gitignored — so a named topology stays the same every run. `instance_principal` is the exception and remains a `-var`, because `--instance-principal` is a choice about the run rather than about the infrastructure's size, and a stale tfvars must not quietly contradict it.
+
+The count that later gates read is the number of addresses the `hosts_file` output names, not the number asked for, and the run logs the shape and count it built. A tfvars that changes either is reported rather than silently diverging from the topology's name.
+
 **The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
 
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.

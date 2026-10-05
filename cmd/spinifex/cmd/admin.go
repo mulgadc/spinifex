@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -778,7 +779,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	}
 
 	// Describe the image/AMI as the control-plane document it will become.
-	volumeId := utils.GenerateResourceID("ami")
+	volumeId := awsidentifiers.GenerateResourceID("ami")
 	amiName := fmt.Sprintf("ami-%s-%s-%s", image.Distro, image.Version, image.Arch)
 	if amiNameOverride != "" {
 		amiName = amiNameOverride
@@ -1726,9 +1727,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			IPSecEnabled: ipsecEnabled,
 		}
 		if externalMode != "" {
-			bootstrapVpcId := utils.GenerateResourceID("vpc")
-			bootstrapSubnetId := utils.GenerateResourceID("subnet")
-			bootstrapIgwId := utils.GenerateResourceID("igw")
+			bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
+			bootstrapSubnetId := awsidentifiers.GenerateResourceID("subnet")
+			bootstrapIgwId := awsidentifiers.GenerateResourceID("igw")
 			networkConfig.ExternalMode = externalMode
 			networkConfig.Pools = externalPools
 			networkConfig.PoolDNSServers = dnsServers
@@ -1815,9 +1816,9 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// These are written to [bootstrap] in spinifex.toml so vpcd can
 	// create OVN topology on first boot. The daemon uses the same IDs
 	// when it creates the records in NATS KV via EnsureDefaultVPC.
-	bootstrapVpcId := utils.GenerateResourceID("vpc")
-	bootstrapSubnetId := utils.GenerateResourceID("subnet")
-	bootstrapIgwId := utils.GenerateResourceID("igw")
+	bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
+	bootstrapSubnetId := awsidentifiers.GenerateResourceID("subnet")
+	bootstrapIgwId := awsidentifiers.GenerateResourceID("igw")
 
 	configSettings := admin.ConfigSettings{
 		AccessKey: accessKey,

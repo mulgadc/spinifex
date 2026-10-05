@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -109,7 +110,7 @@ func (s *EIPServiceImpl) AllocateAddress(ctx context.Context, input *ec2.Allocat
 }
 
 func (s *EIPServiceImpl) allocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, accountID string) (*ec2.AllocateAddressOutput, error) {
-	allocID := utils.GenerateResourceID("eipalloc")
+	allocID := awsidentifiers.GenerateResourceID("eipalloc")
 
 	var publicIP, poolName string
 	var err error
@@ -256,7 +257,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 		privateIP = *input.PrivateIpAddress
 	}
 
-	associationID := utils.GenerateResourceID("eipassoc")
+	associationID := awsidentifiers.GenerateResourceID("eipassoc")
 
 	record.AssociationId = associationID
 	record.ENIId = eniID

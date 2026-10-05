@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 )
 
 // Regex guards for rule condition values — rejected at write time so the renderer
@@ -78,7 +78,7 @@ func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRu
 		}
 	}
 
-	ruleID := utils.GenerateResourceID("rule")
+	ruleID := awsidentifiers.GenerateResourceID("rule")
 	ruleArn, err := buildRuleArn(listener.ListenerArn, ruleID)
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateRule: failed to build ARN", "listenerArn", listener.ListenerArn, "err", err)

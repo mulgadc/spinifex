@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Embedder is the local seam for batch text embedding: the same method set
@@ -127,7 +127,7 @@ func (s *IngestService) StartIngest(ctx context.Context, accountID, indexID stri
 
 	now := time.Now().UTC()
 	rec := JobRecord{
-		ID:           utils.GenerateResourceID("job"),
+		ID:           awsidentifiers.GenerateResourceID("job"),
 		IndexID:      indexID,
 		DataSourceID: dataSourceID,
 		Source:       source,

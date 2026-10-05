@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 
@@ -57,7 +58,7 @@ func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, nats
 	allocations := spreadAllocate(nodes, launchCount)
 	// Minted once here and handed to every node, so a launch that spreads
 	// across nodes comes back as one reservation instead of one per node.
-	reservationID := utils.GenerateResourceID("r")
+	reservationID := awsidentifiers.GenerateResourceID("r")
 	results := launchOnNodes(ctx, allocations, input, natsConn, accountID, reservationID)
 	return aggregateResults(ctx, results, minCount, natsConn, accountID)
 }
@@ -281,7 +282,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 	// A spread group puts one instance on each node, so without a shared ID
 	// every node mints its own and one launch comes back as several
 	// reservations.
-	spreadReservationID := utils.GenerateResourceID("r")
+	spreadReservationID := awsidentifiers.GenerateResourceID("r")
 	results := launchOnNodes(ctx, allocations, input, natsConn, accountID, spreadReservationID)
 
 	var allInstances []*ec2.Instance

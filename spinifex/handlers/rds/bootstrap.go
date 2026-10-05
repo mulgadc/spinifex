@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // The staged master password is encrypted at rest under bootstrap-payloads/{id}
@@ -86,7 +86,7 @@ func (s *Service) writeBootstrapPayload(ctx context.Context, kv *kvstore.Bucket,
 		return "", err
 	}
 	keyID := bootstrapKeyID(key)
-	payloadID := utils.GenerateResourceID(bootstrapPayloadIDPrefix)
+	payloadID := awsidentifiers.GenerateResourceID(bootstrapPayloadIDPrefix)
 
 	plaintext, err := json.Marshal(bootstrapPayloadClaims{
 		EnvelopeVersion:      bootstrapEnvelopeVersion,

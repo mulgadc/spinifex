@@ -27,6 +27,7 @@ import (
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -206,7 +207,7 @@ func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
 	}
 
 	if strings.HasPrefix(*input.ImageId, "ami-") {
-		p.imageId = utils.GenerateResourceID("vol")
+		p.imageId = awsidentifiers.GenerateResourceID("vol")
 		p.snapshotId = *input.ImageId
 	} else {
 		p.imageId = *input.ImageId
@@ -326,7 +327,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		return nil, nil, errors.New(awserrors.ErrorInvalidInstanceType)
 	}
 
-	instanceId := utils.GenerateResourceID("i")
+	instanceId := awsidentifiers.GenerateResourceID("i")
 
 	// Create new instance structure
 	instance := &vm.VM{
@@ -382,7 +383,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 		arn := aws.StringValue(input.IamInstanceProfile.Arn)
 		if arn != "" {
 			instance.IamInstanceProfileArn = arn
-			instance.IamInstanceProfileAssociationId = utils.GenerateResourceID("iip-assoc")
+			instance.IamInstanceProfileAssociationId = awsidentifiers.GenerateResourceID("iip-assoc")
 			ec2Instance.IamInstanceProfile = &ec2.IamInstanceProfile{
 				Arn: aws.String(arn),
 			}
@@ -987,7 +988,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	}
 
 	reservation := &ec2.Reservation{}
-	reservation.SetReservationId(utils.GenerateResourceID("r"))
+	reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
 	reservation.SetOwnerId(accountID)
 	reservation.Instances = allEC2Instances
 
@@ -1346,7 +1347,7 @@ func (s *InstanceServiceImpl) AssociateIamInstanceProfile(ctx context.Context, i
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	profileArn := command.IamProfileAssociationData.InstanceProfileArn
-	newID := utils.GenerateResourceID("iip-assoc")
+	newID := awsidentifiers.GenerateResourceID("iip-assoc")
 	timestamp := time.Now().UTC()
 
 	var alreadyAssociated bool
@@ -1441,7 +1442,7 @@ func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(ctx context.Context, 
 		return nil, nil
 	}
 
-	newID := utils.GenerateResourceID("iip-assoc")
+	newID := awsidentifiers.GenerateResourceID("iip-assoc")
 	timestamp := time.Now().UTC()
 	var swapped bool
 	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {

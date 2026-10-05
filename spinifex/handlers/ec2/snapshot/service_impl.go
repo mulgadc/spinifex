@@ -188,7 +188,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 
 	slog.InfoContext(ctx, "CreateSnapshot request", "volumeId", volumeID)
 
-	snapshotID := utils.GenerateResourceID("snap")
+	snapshotID := awsidentifiers.GenerateResourceID("snap")
 	if s.provider == nil {
 		slog.ErrorContext(ctx, "no EBS provider configured", "op", "CreateSnapshot")
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -822,7 +822,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		return nil, errors.New(awserrors.ErrorUnsupportedOperation)
 	}
 
-	newSnapshotID := utils.GenerateResourceID("snap")
+	newSnapshotID := awsidentifiers.GenerateResourceID("snap")
 	copied, err := s.provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
 		Versioned:             ebsprovider.NewVersioned(),
 		SourceSnapshotID:      sourceSnapshotID,

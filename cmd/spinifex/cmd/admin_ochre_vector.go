@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/pterm/pterm"
@@ -326,7 +327,7 @@ func parseFilterFlag(raw string) (*handlers_ochrevector.Filter, error) {
 // creates it. Returns the message to print.
 func runIndexCreate(ctx context.Context, svc handlers_ochrevector.VectorService, name string, dimension int, model string) (string, error) {
 	out, err := svc.CreateIndex(ctx, &handlers_ochrevector.CreateIndexRequest{
-		IndexID:        utils.GenerateResourceID("idx"),
+		IndexID:        awsidentifiers.GenerateResourceID("idx"),
 		Name:           name,
 		Dimension:      dimension,
 		EmbeddingModel: model,

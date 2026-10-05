@@ -21,6 +21,7 @@ import (
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -177,7 +178,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 	}
 
 	now := time.Now()
-	volumeID := utils.GenerateResourceID("vol")
+	volumeID := awsidentifiers.GenerateResourceID("vol")
 
 	// Honor caller-supplied Iops for gp3, else the 3000 baseline. The ceiling is
 	// min(16000, 500*size) but never below the free baseline, so small volumes

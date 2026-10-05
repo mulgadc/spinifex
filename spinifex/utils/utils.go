@@ -2,8 +2,6 @@ package utils
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -12,17 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
-
-// GenerateResourceID generates a unique resource ID with the given prefix.
-// Format: {prefix}-{17 hex chars} using crypto/rand.
-func GenerateResourceID(prefix string) string {
-	b := make([]byte, 9)
-	if _, err := rand.Read(b); err != nil {
-		//nolint:forbidigo // Continuing after the CSPRNG fails could create predictable resource IDs.
-		panic("crypto/rand failed: " + err.Error())
-	}
-	return prefix + "-" + hex.EncodeToString(b)[:17]
-}
 
 // GenerateErrorPayload serializes an ec2.ResponseError with the given code as JSON.
 func GenerateErrorPayload(code string) (jsonResponse []byte) {

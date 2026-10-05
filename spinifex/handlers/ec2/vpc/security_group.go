@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -25,10 +26,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// sgIDRegex must stay in lockstep with utils.GenerateResourceID("sg").
+// sgIDRegex must stay in lockstep with awsidentifiers.GenerateResourceID("sg").
 var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
 
-// SGRuleIDRegex must stay in lockstep with utils.GenerateResourceID("sgr").
+// SGRuleIDRegex must stay in lockstep with awsidentifiers.GenerateResourceID("sgr").
 // Exported so the EC2 gateway can validate SecurityGroupRuleIds without
 // re-implementing the format check.
 var SGRuleIDRegex = regexp.MustCompile(`^sgr-[0-9a-f]{17}$`)
@@ -241,7 +242,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 		return nil, errors.New(awserrors.ErrorResourceLimitExceeded)
 	}
 
-	groupId := utils.GenerateResourceID("sg")
+	groupId := awsidentifiers.GenerateResourceID("sg")
 
 	description := ""
 	if input.Description != nil {
@@ -250,7 +251,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 
 	// Default egress rule: allow all outbound traffic
 	defaultEgress := []SGRule{
-		{RuleId: utils.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
+		{RuleId: awsidentifiers.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
 	}
 
 	record := SecurityGroupRecord{
@@ -1942,7 +1943,7 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 				return nil, err
 			}
 			if mode == sgParseAuthorize {
-				r.RuleId = utils.GenerateResourceID("sgr")
+				r.RuleId = awsidentifiers.GenerateResourceID("sgr")
 			}
 			rules = append(rules, r)
 			appended = true
@@ -1960,7 +1961,7 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 				return nil, err
 			}
 			if mode == sgParseAuthorize {
-				r.RuleId = utils.GenerateResourceID("sgr")
+				r.RuleId = awsidentifiers.GenerateResourceID("sgr")
 			}
 			rules = append(rules, r)
 			appended = true
@@ -1978,7 +1979,7 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 				return nil, err
 			}
 			if mode == sgParseAuthorize {
-				r.RuleId = utils.GenerateResourceID("sgr")
+				r.RuleId = awsidentifiers.GenerateResourceID("sgr")
 			}
 			rules = append(rules, r)
 			appended = true
@@ -2153,7 +2154,7 @@ func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
 // AWS-equivalent rules, bypassing the public-API reserved-name guard. Used by
 // CreateVpc.
 func (s *VPCServiceImpl) createDefaultSecurityGroupInternal(ctx context.Context, accountID, vpcId string) (string, error) {
-	record, _, err := s.storeDefaultSecurityGroup(ctx, accountID, vpcId, utils.GenerateResourceID("sg"))
+	record, _, err := s.storeDefaultSecurityGroup(ctx, accountID, vpcId, awsidentifiers.GenerateResourceID("sg"))
 	if err != nil {
 		return "", err
 	}
@@ -2172,10 +2173,10 @@ func (s *VPCServiceImpl) storeDefaultSecurityGroup(ctx context.Context, accountI
 		Description: defaultSecurityGroupDescription,
 		VpcId:       vpcId,
 		IngressRules: []SGRule{
-			{RuleId: utils.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, SourceSG: groupId},
+			{RuleId: awsidentifiers.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, SourceSG: groupId},
 		},
 		EgressRules: []SGRule{
-			{RuleId: utils.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
+			{RuleId: awsidentifiers.GenerateResourceID("sgr"), IpProtocol: "-1", FromPort: 0, ToPort: 0, CidrIp: "0.0.0.0/0"},
 		},
 		Tags:      map[string]string{},
 		IsDefault: true,

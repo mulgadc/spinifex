@@ -9,7 +9,7 @@ import (
 )
 
 // indexIDPattern is a conservative allowlist for anything that reaches a SQL
-// identifier: utils.GenerateResourceID's own alphabet ("idx-<17 hex>") plus
+// identifier: awsidentifiers.GenerateResourceID's own alphabet ("idx-<17 hex>") plus
 // enough headroom that a caller-supplied id still round-trips safely rather
 // than being silently rejected.
 var indexIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -150,7 +151,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 	now := time.Now().UTC()
 	return DBInstanceRecord{
 		DBInstanceIdentifier: req.Identifier,
-		DbiResourceID:        utils.GenerateResourceID(dbiResourceIDPrefix),
+		DbiResourceID:        awsidentifiers.GenerateResourceID(dbiResourceIDPrefix),
 		AccountID:            accountID,
 		Status:               StatusCreating,
 		VMGeneration:         firstVMGeneration,

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -161,11 +161,11 @@ func (s *VPCServiceImpl) proposeDefaultVPC(ctx context.Context, accountID string
 			return fmt.Errorf("allocate VNI for default VPC: %w", err)
 		}
 		claim = &defaultVPCClaim{
-			VpcId:             cmp.Or(ids.VpcId, utils.GenerateResourceID("vpc")),
-			SubnetId:          cmp.Or(ids.SubnetId, utils.GenerateResourceID("subnet")),
-			GroupId:           utils.GenerateResourceID("sg"),
-			RouteTableId:      utils.GenerateResourceID("rtb"),
-			InternetGatewayId: cmp.Or(ids.IgwId, utils.GenerateResourceID("igw")),
+			VpcId:             cmp.Or(ids.VpcId, awsidentifiers.GenerateResourceID("vpc")),
+			SubnetId:          cmp.Or(ids.SubnetId, awsidentifiers.GenerateResourceID("subnet")),
+			GroupId:           awsidentifiers.GenerateResourceID("sg"),
+			RouteTableId:      awsidentifiers.GenerateResourceID("rtb"),
+			InternetGatewayId: cmp.Or(ids.IgwId, awsidentifiers.GenerateResourceID("igw")),
 			Cidr:              DefaultVPCCidr,
 			SubnetCidr:        DefaultSubnetCidr,
 			VNI:               vni,
@@ -202,7 +202,7 @@ func (s *VPCServiceImpl) adoptExistingDefaultVPC(ctx context.Context, accountID 
 
 	claim := &defaultVPCClaim{
 		VpcId:             vpc.VpcId,
-		InternetGatewayId: cmp.Or(ids.IgwId, utils.GenerateResourceID("igw")),
+		InternetGatewayId: cmp.Or(ids.IgwId, awsidentifiers.GenerateResourceID("igw")),
 		Cidr:              vpc.CidrBlock,
 		VNI:               vpc.VNI,
 		Complete:          true,

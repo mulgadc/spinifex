@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/gateway/bedrock/hfhub"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -757,7 +758,7 @@ func runStageWeights(ctx context.Context, store objectstore.ObjectStore, weights
 // a live provider -- so it is exercised live rather than in unit tests.
 func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvider, nodeID string, node config.Config, downloadDir string, contentBytes int64) (string, error) {
 	tmpDir := filepath.Dir(downloadDir)
-	volumeId := utils.GenerateResourceID("vol")
+	volumeId := awsidentifiers.GenerateResourceID("vol")
 	imagePath := filepath.Join(tmpDir, volumeId+".img")
 
 	fmt.Println("Building filesystem image ...")

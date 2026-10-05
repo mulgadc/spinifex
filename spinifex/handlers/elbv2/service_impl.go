@@ -23,6 +23,7 @@ import (
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
@@ -1296,7 +1297,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		}
 	}
 
-	lbID := utils.GenerateResourceID("lb")
+	lbID := awsidentifiers.GenerateResourceID("lb")
 	lbArn := resourcearn.FormatELBv2LoadBalancer(s.region, accountID, name, lbID, lbType)
 	arnPathSegment := resourcearn.ELBv2LBPathSegment(lbType)
 	dnsPrefix := ""
@@ -1982,7 +1983,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		hc.Matcher = *input.Matcher.HttpCode
 	}
 
-	tgID := utils.GenerateResourceID("tg")
+	tgID := awsidentifiers.GenerateResourceID("tg")
 	tgArn := resourcearn.FormatELBv2TargetGroup(s.region, accountID, name, tgID)
 
 	tags := tagsFromSDK(input.Tags)
@@ -2669,7 +2670,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		return nil, err
 	}
 
-	listenerID := utils.GenerateResourceID("lst")
+	listenerID := awsidentifiers.GenerateResourceID("lst")
 	listenerArn := resourcearn.FormatELBv2Listener(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
 
 	var actions []ListenerAction

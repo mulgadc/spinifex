@@ -15,12 +15,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -192,7 +192,7 @@ func buildSpotRequests(input *ec2.RequestSpotInstancesInput, runInput *ec2.RunIn
 	requests := make([]*ec2.SpotInstanceRequest, 0, count)
 	for range count {
 		req := &ec2.SpotInstanceRequest{
-			SpotInstanceRequestId:    aws.String(utils.GenerateResourceID("sir")),
+			SpotInstanceRequestId:    aws.String(awsidentifiers.GenerateResourceID("sir")),
 			State:                    aws.String(ec2.SpotInstanceStateActive),
 			Type:                     aws.String(spotType),
 			ProductDescription:       aws.String(ec2.RIProductDescriptionLinuxUnix),

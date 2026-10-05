@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
@@ -44,7 +45,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 	}
 
 	rec := &capacityReservation{
-		ID:                    utils.GenerateResourceID("cr"),
+		ID:                    awsidentifiers.GenerateResourceID("cr"),
 		AccountID:             accountID,
 		InstanceType:          instanceType,
 		AvailabilityZone:      aws.StringValue(input.AvailabilityZone),

@@ -28,6 +28,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/utils"
@@ -210,7 +211,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	}
 
 	// Build response (similar to AWS EC2)
-	keyPairID := utils.GenerateResourceID("key")
+	keyPairID := awsidentifiers.GenerateResourceID("key")
 	tagMap := awstags.Extract(input.TagSpecifications, "key-pair")
 	tags := awstags.MapToEC2(tagMap)
 	// AWS ends RSA material at its END line, while OpenSSH-format Ed25519
@@ -986,7 +987,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	}
 
 	// Generate key pair ID
-	keyPairID := utils.GenerateResourceID("key")
+	keyPairID := awsidentifiers.GenerateResourceID("key")
 
 	// Build response output
 	tagMap := awstags.Extract(input.TagSpecifications, "key-pair")

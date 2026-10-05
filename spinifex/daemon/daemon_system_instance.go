@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -135,7 +136,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
 	}
 	instance.Reservation = &ec2.Reservation{}
-	instance.Reservation.SetReservationId(utils.GenerateResourceID("r"))
+	instance.Reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
 	instance.Reservation.SetOwnerId(accountID)
 	instance.Reservation.Instances = []*ec2.Instance{ec2Instance}
 	// Mirror the customer-instance path (handlers/ec2/instance/service_impl.go:334)

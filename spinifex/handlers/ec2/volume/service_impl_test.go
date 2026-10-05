@@ -603,7 +603,7 @@ func TestApplyRecordTags_Provider_VisibleViaDescribeVolumes(t *testing.T) {
 // prefixFailingObjectStore fails PutObject for any key under failPrefix and
 // records the last such key, so a test can recover a randomly generated
 // resource ID from the write CreateVolume/CreateSnapshot attempted, without
-// needing to predict utils.GenerateResourceID's output up front.
+// needing to predict awsidentifiers.GenerateResourceID's output up front.
 type prefixFailingObjectStore struct {
 	objectstore.ObjectStore
 

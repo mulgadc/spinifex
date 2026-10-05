@@ -8,9 +8,9 @@ import (
 	"slices"
 	"sync"
 
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/network/ovn/nbdb"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Client implements ovn.Client with in-memory storage for testing.
@@ -95,7 +95,7 @@ func (m *Client) CreateLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 		return fmt.Errorf("logical switch %q already exists", ls.Name)
 	}
 	if ls.UUID == "" {
-		ls.UUID = utils.GenerateResourceID("ovn")
+		ls.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *ls
 	m.Switches[ls.Name] = &stored
@@ -112,7 +112,7 @@ func (m *Client) EnsureLogicalSwitch(_ context.Context, ls *nbdb.LogicalSwitch) 
 		return &result, false, nil
 	}
 	if ls.UUID == "" {
-		ls.UUID = utils.GenerateResourceID("ovn")
+		ls.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *ls
 	m.Switches[ls.Name] = &stored
@@ -164,7 +164,7 @@ func (m *Client) CreateLogicalSwitchPort(_ context.Context, switchName string, l
 		return fmt.Errorf("logical switch port %q already exists", lsp.Name)
 	}
 	if lsp.UUID == "" {
-		lsp.UUID = utils.GenerateResourceID("ovn")
+		lsp.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *lsp
 	m.Ports[lsp.Name] = &stored
@@ -192,7 +192,7 @@ func (m *Client) CreateLogicalSwitchPortInGroups(_ context.Context, switchName s
 		}
 	}
 	if lsp.UUID == "" {
-		lsp.UUID = utils.GenerateResourceID("ovn")
+		lsp.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *lsp
 	m.Ports[lsp.Name] = &stored
@@ -276,7 +276,7 @@ func (m *Client) CreateLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 		return fmt.Errorf("logical router %q already exists", lr.Name)
 	}
 	if lr.UUID == "" {
-		lr.UUID = utils.GenerateResourceID("ovn")
+		lr.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *lr
 	m.Routers[lr.Name] = &stored
@@ -293,7 +293,7 @@ func (m *Client) EnsureLogicalRouter(_ context.Context, lr *nbdb.LogicalRouter) 
 		return &result, false, nil
 	}
 	if lr.UUID == "" {
-		lr.UUID = utils.GenerateResourceID("ovn")
+		lr.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *lr
 	m.Routers[lr.Name] = &stored
@@ -357,7 +357,7 @@ func (m *Client) CreateLogicalRouterPort(_ context.Context, routerName string, l
 		return fmt.Errorf("logical router port %q already exists", lrp.Name)
 	}
 	if lrp.UUID == "" {
-		lrp.UUID = utils.GenerateResourceID("ovn")
+		lrp.UUID = awsidentifiers.GenerateResourceID("ovn")
 	}
 	stored := *lrp
 	m.RouterPorts[lrp.Name] = &stored
@@ -415,7 +415,7 @@ func (m *Client) CreateDHCPOptions(_ context.Context, opts *nbdb.DHCPOptions) (s
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if opts.UUID == "" {
-		opts.UUID = utils.GenerateResourceID("dhcp")
+		opts.UUID = awsidentifiers.GenerateResourceID("dhcp")
 	}
 	stored := *opts
 	m.DHCPOpts[opts.UUID] = &stored
@@ -487,7 +487,7 @@ func (m *Client) AddNAT(_ context.Context, routerName string, nat *nbdb.NAT) err
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
 	if nat.UUID == "" {
-		nat.UUID = utils.GenerateResourceID("nat")
+		nat.UUID = awsidentifiers.GenerateResourceID("nat")
 	}
 	stored := *nat
 	m.NATs[nat.UUID] = &stored
@@ -676,7 +676,7 @@ func (m *Client) AddStaticRoute(_ context.Context, routerName string, route *nbd
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
 	if route.UUID == "" {
-		route.UUID = utils.GenerateResourceID("route")
+		route.UUID = awsidentifiers.GenerateResourceID("route")
 	}
 	stored := *route
 	m.StaticRoutes[route.UUID] = &stored
@@ -743,7 +743,7 @@ func (m *Client) AddLogicalRouterPolicy(_ context.Context, routerName string, po
 		return fmt.Errorf("logical router %q not found", routerName)
 	}
 	if policy.UUID == "" {
-		policy.UUID = utils.GenerateResourceID("lrp")
+		policy.UUID = awsidentifiers.GenerateResourceID("lrp")
 	}
 	stored := *policy
 	m.LRPolicies[policy.UUID] = &stored
@@ -827,7 +827,7 @@ func (m *Client) CreatePortGroup(_ context.Context, name string, ports []string)
 		return fmt.Errorf("port group %q already exists", name)
 	}
 	pg := &nbdb.PortGroup{
-		UUID:  utils.GenerateResourceID("pg"),
+		UUID:  awsidentifiers.GenerateResourceID("pg"),
 		Name:  name,
 		Ports: ports,
 	}
@@ -844,7 +844,7 @@ func (m *Client) EnsurePortGroup(_ context.Context, name string, ports []string)
 		return &result, false, nil
 	}
 	pg := &nbdb.PortGroup{
-		UUID:  utils.GenerateResourceID("pg"),
+		UUID:  awsidentifiers.GenerateResourceID("pg"),
 		Name:  name,
 		Ports: ports,
 	}
@@ -951,7 +951,7 @@ func (m *Client) EnsureAddressSet(_ context.Context, name string, addresses []st
 		return existing.UUID, nil
 	}
 	as := &nbdb.AddressSet{
-		UUID:      utils.GenerateResourceID("as"),
+		UUID:      awsidentifiers.GenerateResourceID("as"),
 		Name:      name,
 		Addresses: slices.Clone(addresses),
 	}
@@ -986,7 +986,7 @@ func (m *Client) AddACLs(_ context.Context, portGroupName string, specs []ovn.AC
 	}
 	for _, spec := range specs {
 		acl := &nbdb.ACL{
-			UUID:      utils.GenerateResourceID("acl"),
+			UUID:      awsidentifiers.GenerateResourceID("acl"),
 			Direction: spec.Direction,
 			Priority:  spec.Priority,
 			Match:     spec.Match,
@@ -1065,7 +1065,7 @@ func (m *Client) ReplaceACLs(_ context.Context, portGroupName string, specs []ov
 	pg.ACLs = pg.ACLs[:0]
 	for _, spec := range specs {
 		acl := &nbdb.ACL{
-			UUID:      utils.GenerateResourceID("acl"),
+			UUID:      awsidentifiers.GenerateResourceID("acl"),
 			Direction: spec.Direction,
 			Priority:  spec.Priority,
 			Match:     spec.Match,
@@ -1119,7 +1119,7 @@ func (m *Client) SetGatewayChassis(_ context.Context, lrpName string, chassisNam
 		return nil
 	}
 	gc := &nbdb.GatewayChassis{
-		UUID:        utils.GenerateResourceID("gc"),
+		UUID:        awsidentifiers.GenerateResourceID("gc"),
 		Name:        gcName,
 		ChassisName: chassisName,
 		Priority:    priority,
@@ -1181,7 +1181,7 @@ func (m *Client) SeedGatewayChassis(lrpName string, gc *nbdb.GatewayChassis) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	if gc.UUID == "" {
-		gc.UUID = utils.GenerateResourceID("gc")
+		gc.UUID = awsidentifiers.GenerateResourceID("gc")
 	}
 	m.GatewayChassis[gc.UUID] = gc
 	if lrp, ok := m.RouterPorts[lrpName]; ok {

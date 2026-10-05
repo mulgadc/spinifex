@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -686,7 +687,7 @@ func TestCountInstanceProfileAssociations_NoMatches(t *testing.T) {
 // utils generator would break replay parsing of Disassociate/Replace.
 func TestAssociationIDFormat(t *testing.T) {
 	t.Parallel()
-	id := utils.GenerateResourceID("iip-assoc")
+	id := awsidentifiers.GenerateResourceID("iip-assoc")
 	assert.True(t, strings.HasPrefix(id, "iip-assoc-"),
 		"GenerateResourceID must preserve the AWS-style hyphen between prefix and suffix")
 	suffix := strings.TrimPrefix(id, "iip-assoc-")

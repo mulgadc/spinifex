@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -140,7 +141,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 		return nil, errors.New(awserrors.ErrorResourceAlreadyAssociated)
 	}
 
-	natgwID := utils.GenerateResourceID("nat")
+	natgwID := awsidentifiers.GenerateResourceID("nat")
 	record := NatGatewayRecord{
 		NatGatewayId: natgwID,
 		VpcId:        subnetRecord.VpcId,
@@ -166,7 +167,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// NAT GW reusing the same allocation). Linkage is the shared AllocationId;
 	// DeleteNatGateway clears it back to allocated. Non-fatal: the NAT GW is
 	// already stored, so a failed mark only weakens the reuse guard until then.
-	eipRecord.AssociationId = utils.GenerateResourceID("eipassoc")
+	eipRecord.AssociationId = awsidentifiers.GenerateResourceID("eipassoc")
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {

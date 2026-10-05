@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -115,7 +116,7 @@ func NewIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 
 // CreateInternetGateway creates a new Internet Gateway (initially detached).
 func (s *IGWServiceImpl) CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, accountID string) (*ec2.CreateInternetGatewayOutput, error) {
-	igwID := utils.GenerateResourceID("igw")
+	igwID := awsidentifiers.GenerateResourceID("igw")
 	return s.createIGW(ctx, input, accountID, igwID)
 }
 

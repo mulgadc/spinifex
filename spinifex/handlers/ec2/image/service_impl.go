@@ -434,8 +434,8 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		}
 	}
 
-	amiID := utils.GenerateResourceID("ami")
-	snapshotID := utils.GenerateResourceID("snap")
+	amiID := awsidentifiers.GenerateResourceID("ami")
+	snapshotID := awsidentifiers.GenerateResourceID("snap")
 
 	slog.Info("CreateImageFromInstance", "instanceId", *input.InstanceId,
 		"rootVolumeId", params.RootVolumeID, "amiId", amiID, "snapshotId", snapshotID,
@@ -862,8 +862,8 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
 	}
 
-	newSnapshotID := utils.GenerateResourceID("snap")
-	newImageID := utils.GenerateResourceID("ami")
+	newSnapshotID := awsidentifiers.GenerateResourceID("snap")
+	newImageID := awsidentifiers.GenerateResourceID("ami")
 
 	// New snap shares source VolumeID — no block copy.
 	snapSizeGiB := uint64(0)
@@ -1092,7 +1092,7 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 
 	tags := awstags.Extract(input.TagSpecifications, "image")
 
-	amiID := utils.GenerateResourceID("ami")
+	amiID := awsidentifiers.GenerateResourceID("ami")
 	meta := ebsmetadata.AMI{
 		ImageID:         amiID,
 		Name:            name,

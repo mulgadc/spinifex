@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -296,7 +297,7 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	vpcID := utils.GenerateResourceID("vpc")
+	vpcID := awsidentifiers.GenerateResourceID("vpc")
 
 	record := VPCRecord{
 		VpcId:              vpcID,
@@ -778,7 +779,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 		az = s.config.AZ
 	}
 
-	subnetID := utils.GenerateResourceID("subnet")
+	subnetID := awsidentifiers.GenerateResourceID("subnet")
 
 	// Calculate available IPs (total hosts minus AWS reserved: network, router, DNS, future, broadcast)
 	// ones is validated to be 16-28 above, so (32-ones) is always 4-16 and safe for uint conversion
@@ -1497,7 +1498,7 @@ func (s *VPCServiceImpl) createMainRouteTable(ctx context.Context, accountID, vp
 			"routeTableId", existing, "vpcId", vpcID, "accountID", accountID)
 		return nil
 	}
-	_, err := s.writeMainRouteTable(ctx, accountID, vpcID, vpcCidr, utils.GenerateResourceID("rtb"))
+	_, err := s.writeMainRouteTable(ctx, accountID, vpcID, vpcCidr, awsidentifiers.GenerateResourceID("rtb"))
 	return err
 }
 
@@ -1540,7 +1541,7 @@ func (s *VPCServiceImpl) writeMainRouteTable(ctx context.Context, accountID, vpc
 			AssociationId string `json:"association_id"`
 			Main          bool   `json:"main"`
 		}{
-			{AssociationId: utils.GenerateResourceID("rtbassoc"), Main: true},
+			{AssociationId: awsidentifiers.GenerateResourceID("rtbassoc"), Main: true},
 		},
 		Tags:      make(map[string]string),
 		CreatedAt: time.Now(),

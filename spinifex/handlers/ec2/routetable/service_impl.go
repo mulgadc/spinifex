@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -489,7 +490,7 @@ func (s *RouteTableServiceImpl) allRouteTablesForVPC(ctx context.Context, accoun
 // Exported for use by VPC service when creating default VPCs.
 func (s *RouteTableServiceImpl) CreateRouteTableForVPC(vpcID, vpcCidr, accountID string, isMain bool, rtbID string) (*RouteTableRecord, error) {
 	if rtbID == "" {
-		rtbID = utils.GenerateResourceID("rtb")
+		rtbID = awsidentifiers.GenerateResourceID("rtb")
 	}
 
 	record := RouteTableRecord{
@@ -512,7 +513,7 @@ func (s *RouteTableServiceImpl) CreateRouteTableForVPC(vpcID, vpcCidr, accountID
 	if isMain {
 		record.Associations = []AssociationRecord{
 			{
-				AssociationId: utils.GenerateResourceID("rtbassoc"),
+				AssociationId: awsidentifiers.GenerateResourceID("rtbassoc"),
 				Main:          true,
 			},
 		}
@@ -1020,7 +1021,7 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(ctx context.Context, input *
 		}
 	}
 
-	assocID := utils.GenerateResourceID("rtbassoc")
+	assocID := awsidentifiers.GenerateResourceID("rtbassoc")
 	if err := s.mutateRouteTableCAS(ctx, accountID, rtbID, func(rec *RouteTableRecord) (bool, error) {
 		// Re-check same-table association under the fresh read: a concurrent
 		// associate for this subnet may have landed since the precheck.
@@ -1224,7 +1225,7 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 			s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.delete-igw-route", &oldRecord, assoc.SubnetId)
 
 			// Add to new table with new ID
-			newAssocID := utils.GenerateResourceID("rtbassoc")
+			newAssocID := awsidentifiers.GenerateResourceID("rtbassoc")
 			newRecord.Associations = append(newRecord.Associations, AssociationRecord{
 				AssociationId: newAssocID,
 				SubnetId:      assoc.SubnetId,

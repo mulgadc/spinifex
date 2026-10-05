@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -143,7 +144,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
-	eniId := utils.GenerateResourceID("eni")
+	eniId := awsidentifiers.GenerateResourceID("eni")
 
 	// Allocate IP from subnet, or claim the caller's requested address.
 	var privateIP string
@@ -711,7 +712,7 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 		return "", errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 
-	attachmentId := utils.GenerateResourceID("eni-attach")
+	attachmentId := awsidentifiers.GenerateResourceID("eni-attach")
 	record.Status = "in-use"
 	record.AttachmentId = attachmentId
 	record.InstanceId = instanceId

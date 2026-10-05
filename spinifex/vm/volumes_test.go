@@ -1644,6 +1644,9 @@ func TestReboot_WedgedGuestFallsBackToHardReset(t *testing.T) {
 	previous := rebootPowerdownTimeout
 	rebootPowerdownTimeout = 30 * time.Millisecond
 	t.Cleanup(func() { rebootPowerdownTimeout = previous })
+	previousPoll := powerdownPollInterval
+	powerdownPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { powerdownPollInterval = previousPoll })
 
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {

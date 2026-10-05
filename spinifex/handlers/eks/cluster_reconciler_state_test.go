@@ -147,7 +147,6 @@ func TestClusterReconciler_StateReportSubscriptionDrivesActive(t *testing.T) {
 	r, nc, acctKV := newStateReconcilerHarness(t,
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),
-		withDebounce(10*time.Millisecond),
 	)
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)

@@ -232,28 +232,24 @@ Create them once per tenancy, then every deployment and rebuild afterwards uses 
 
 The policy grants three verbs in one compartment — `use vnics`, `manage private-ips`, `manage public-ips` — which is exactly what allocating an external address does and nothing more.
 
-**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit. The key then has to be installed on **every** node, by hand, under `/etc/spinifex/oci/` — not a home directory, because the daemon's unit sets `ProtectHome=yes`:
+**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit.
 
-```bash
-sudo install -d -o root -g spinifex -m 0750 /etc/spinifex/oci
-sudo install -o root -g spinifex -m 0640 ~/.oci/oci_api_key.pem /etc/spinifex/oci/oci_api_key.pem
-```
+`spx-oci-config.sh` installs it on **every** node, as `/etc/spinifex/oci/{oci_api_key.pem,config}` — not a home directory, because the daemon's unit sets `ProtectHome=yes`. Both files are needed: `oci_config_file` names an ordinary OCI SDK config, so a node holding only the PEM forms and then fails every allocation. The profile it writes is `spinifex`, matching `oci_config_profile`:
 
-**The key is half of it.** `oci_config_file` names an ordinary OCI SDK config, and nothing creates that file, so a node with only the PEM forms and then fails every allocation. The profile must be `spinifex`, to match `oci_config_profile`, and the four identifiers are the ones already in the tfvars:
-
-```bash
-sudo tee /etc/spinifex/oci/config >/dev/null <<'CONF'
+```ini
 [spinifex]
 user=ocid1.user.oc1..<yours>
 fingerprint=<yours>
 tenancy=ocid1.tenancy.oc1..<yours>
 region=ap-sydney-1
 key_file=/etc/spinifex/oci/oci_api_key.pem
-CONF
-sudo chown root:spinifex /etc/spinifex/oci/config && sudo chmod 0640 /etc/spinifex/oci/config
 ```
 
-For repeated runs, `validate-topology.sh --credential-hook` does both steps on every node. The hook is an operator-owned executable rather than anything in this repository, because a credential rendered into user-data or Terraform state is readable from instance metadata for the life of the instance, and these hosts run other people's guests. Instance principal needs no hook at all, which is the reason to prefer it wherever a dynamic group can be created.
+The script takes `validate-topology.sh`'s hook contract, `hook <ssh-key> <host>...`, so it is both the default thing to pass to `--credential-hook` and runnable on its own against an existing cluster. `--dry-run` resolves and validates the credential without touching a host.
+
+It resolves the credential in four steps and takes the first complete one: the `OCI_SPX_*` environment variables, the `[spinifex]` profile in `~/.oci/config`, `~/.oci/oci_api_key_spx.pem` with the Terraform profile's identifiers, then the Terraform credential itself with a warning that it is wider than needed. Steps 2 to 4 go through `scripts/oci_env.py`, the same resolver the apply uses, so the node credential and the one that built the infrastructure cannot come from different profiles. The fingerprint is checked against the key before anything is written, because a mismatched pair is otherwise an OCI 401 at the first allocation.
+
+Credential material reaches the nodes over SSH, in the remote shell's stdin rather than its arguments, and goes into neither user-data nor Terraform state. `--credential-hook` still accepts any executable with that argument shape, so a tenancy holding credentials in a vault can substitute its own. Instance principal needs no hook at all, which is the reason to prefer it wherever a dynamic group can be created.
 
 Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/external-pool.toml` on each node, with `oci_auth` set to match. Append it to `/etc/spinifex/spinifex.toml` after `spx admin init` and restart `spinifex.target`. Under instance principal that file holds no secret at all, which is the point of it.
 

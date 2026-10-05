@@ -125,7 +125,7 @@ Each node then needs **two** files, and a node holding only the key is the silen
 | `/etc/spinifex/oci/oci_api_key.pem` | `0640 root:spinifex` | The private key                                                          |
 | `/etc/spinifex/oci/config`          | `0640 root:spinifex` | An ordinary OCI SDK config, profile `[spinifex]`, naming the key by path |
 
-Nothing creates the second one for you, and its profile name must be `spinifex` to match `oci_config_profile` in the pool:
+The profile name must be `spinifex` to match `oci_config_profile` in the pool:
 
 ```ini
 [spinifex]
@@ -136,7 +136,9 @@ region=ap-sydney-1
 key_file=/etc/spinifex/oci/oci_api_key.pem
 ```
 
-**Put that in a credential hook and the deploy installs it on every node.** The hook is an executable of yours, run as `hook <ssh-key> <host>...` after formation and before the pool is configured, which is the only window where a node has `/etc/spinifex` but has not started the allocator. It is yours rather than ours deliberately. A credential belongs to whoever owns it, and one rendered into user-data or Terraform state is readable from instance metadata for the life of the instance, on a host that runs other people's guests.
+**`spx-oci-config.sh` writes both files on every node, and the deploy calls it for you.** It runs after formation and before the pool is configured, which is the only window where a node has `/etc/spinifex` but has not started the allocator, and it reads the credential from your `[spinifex]` profile, a dedicated key, a set of `OCI_SPX_*` environment variables, or failing all three the credential Terraform itself used — resolved through the same `scripts/oci_env.py` as the apply, so the two cannot disagree.
+
+**The key reaches the nodes over SSH and goes nowhere else.** It is never rendered into user-data or Terraform state, where it would be readable from instance metadata for the life of the instance, and it is carried in the remote shell's stdin rather than its arguments, where `ps` would expose it to every other tenant on the host. `--credential-hook PATH` still takes any executable called as `hook <ssh-key> <host>...`, so a tenancy that keeps credentials in a vault can substitute its own.
 
 ### An instance principal: no key material, but it needs a tenancy admin
 

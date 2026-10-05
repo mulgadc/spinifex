@@ -56,7 +56,7 @@ services:
       - spinifex/daemon
       - spinifex/handlers/ec2
       - spinifex/handlers/elbv2
-      - spinifex/handlers/acm
+      - spinifex/domains/acm
       - spinifex/handlers/iam
       - spinifex/handlers/rds
       - spinifex/handlers/ochrevector

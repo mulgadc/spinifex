@@ -3,15 +3,15 @@
 # node forms and passes every health check, then refuses every launch that wants a
 # public address with InsufficientAddressCapacity and no stated cause.
 #
-# Off by default, and deliberately: a dynamic group and a policy are tenancy-root
-# resources, so this needs rights the compartment-scoped user the rest of this
-# configuration runs as does not have and should not be given. Turn it on with a
-# principal that holds them, or create both by hand once -- the OCIDs are stable
-# and nothing here is per-node.
+# Only instance_principal = "create" builds these, and deliberately: a dynamic
+# group and a policy are tenancy-root resources, so creating them needs rights the
+# compartment-scoped user the rest of this configuration runs as does not have and
+# should not be given. Create them once with a tenancy admin, then every later
+# deployment uses "adopt", which references nothing and so needs no such rights.
 
 resource "oci_identity_dynamic_group" "nodes" {
   provider       = oci.home
-  count          = var.enable_instance_principal ? 1 : 0
+  count          = var.instance_principal == "create" ? 1 : 0
   compartment_id = var.tenancy_ocid
   name           = "${var.deployment_name}-nodes"
   description    = "Spinifex nodes in the ${var.deployment_name} deployment, authenticating as instance principals."
@@ -26,7 +26,7 @@ resource "oci_identity_dynamic_group" "nodes" {
 # these three verbs cover; nothing here grants compute, storage or identity.
 resource "oci_identity_policy" "nodes" {
   provider       = oci.home
-  count          = var.enable_instance_principal ? 1 : 0
+  count          = var.instance_principal == "create" ? 1 : 0
   compartment_id = var.compartment_ocid
   name           = "${var.deployment_name}-nodes-network"
   description    = "Allows Spinifex nodes to manage the private and public IPs backing external addresses."

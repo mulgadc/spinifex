@@ -209,22 +209,47 @@ node_client_cidr_allow_list = ["203.0.113.10/32"]
 
 The allocator needs OCI credentials at runtime, and there are two ways to give it them. A node with neither forms, passes every health check, and then refuses every launch that wants a public address with `InsufficientAddressCapacity` — the cause appears only in the node's journal, so this is worth getting right before first start.
 
-**Instance principal is the better one, and it is what `enable_instance_principal = true` sets up.** Each node authenticates with the certificate its own metadata service serves, so no key material exists on any node, there is nothing to rotate, and nothing sensitive reaches Terraform state. The cost is a dynamic group and a policy, which are tenancy-root resources — so the apply needs a tenancy-admin principal, which is why it is off by default and why the rest of this configuration deliberately creates nothing at tenancy root. Create them once, by hand or with a privileged principal, and every later node and rebuild inherits them:
+**Instance principal is the better one.** Each node authenticates with the certificate its own metadata service serves, so no key material exists on any node, there is nothing to rotate, and nothing sensitive reaches Terraform state. The cost is a dynamic group and a policy, which are tenancy-root resources — so creating them needs a tenancy-admin principal, which is why the rest of this configuration deliberately creates nothing at tenancy root.
+
+`instance_principal` has three values, because using an instance principal and being allowed to create one are different rights:
+
+| Value | Pool auth | Creates the dynamic group and policy | Credential needed |
+| --- | --- | --- | --- |
+| `off` (default) | API key file | No | Compartment-scoped |
+| `adopt` | `instance_principal` | No — assumes they exist | Compartment-scoped |
+| `create` | `instance_principal` | Yes | **Tenancy admin** |
+
+Create them once per tenancy, then every deployment and rebuild afterwards uses `adopt`:
 
 ```bash
-python3 scripts/oci_env.py --ssh-public-key-path <pub> -- \
-    terraform apply -var enable_instance_principal=true \
-    -target oci_identity_dynamic_group.nodes -target oci_identity_policy.nodes
+./setup-identity.sh --dry-run    # always first
+./setup-identity.sh
 ```
+
+`setup-identity.sh` targets only those two resources and keeps them in `.identity/terraform.tfstate`, separate from every topology's state. That separation is load-bearing: `validate-topology.sh` destroys its own state at the end of each run, so holding tenancy resources there would let a nightly teardown delete the tenancy's policy.
+
+**`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `resolved the external VNIC` in each node's `spinifex-vpcd` journal.
 
 The policy grants three verbs in one compartment — `use vnics`, `manage private-ips`, `manage public-ips` — which is exactly what allocating an external address does and nothing more.
 
-**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit. The key then has to be installed on **every** node, by hand, under `/etc/spinifex/oci/` — not a home directory, because the daemon's unit sets `ProtectHome=yes`:
+**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit.
 
-```bash
-sudo install -d -o root -g spinifex -m 0750 /etc/spinifex/oci
-sudo install -o root -g spinifex -m 0640 ~/.oci/oci_api_key.pem /etc/spinifex/oci/oci_api_key.pem
+`spx-oci-config.sh` installs it on **every** node, as `/etc/spinifex/oci/{oci_api_key.pem,config}` — not a home directory, because the daemon's unit sets `ProtectHome=yes`. Both files are needed: `oci_config_file` names an ordinary OCI SDK config, so a node holding only the PEM forms and then fails every allocation. The profile it writes is `spinifex`, matching `oci_config_profile`:
+
+```ini
+[spinifex]
+user=ocid1.user.oc1..<yours>
+fingerprint=<yours>
+tenancy=ocid1.tenancy.oc1..<yours>
+region=ap-sydney-1
+key_file=/etc/spinifex/oci/oci_api_key.pem
 ```
+
+The script takes `validate-topology.sh`'s hook contract, `hook <ssh-key> <host>...`, so it is both the default thing to pass to `--credential-hook` and runnable on its own against an existing cluster. `--dry-run` resolves and validates the credential without touching a host.
+
+It resolves the credential in four steps and takes the first complete one: the `OCI_SPX_*` environment variables, the `[spinifex]` profile in `~/.oci/config`, `~/.oci/oci_api_key_spx.pem` with the Terraform profile's identifiers, then the Terraform credential itself with a warning that it is wider than needed. Steps 2 to 4 go through `scripts/oci_env.py`, the same resolver the apply uses, so the node credential and the one that built the infrastructure cannot come from different profiles. The fingerprint is checked against the key before anything is written, because a mismatched pair is otherwise an OCI 401 at the first allocation.
+
+Credential material reaches the nodes over SSH, in the remote shell's stdin rather than its arguments, and goes into neither user-data nor Terraform state. `--credential-hook` still accepts any executable with that argument shape, so a tenancy holding credentials in a vault can substitute its own. Instance principal needs no hook at all, which is the reason to prefer it wherever a dynamic group can be created.
 
 Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/external-pool.toml` on each node, with `oci_auth` set to match. Append it to `/etc/spinifex/spinifex.toml` after `spx admin init` and restart `spinifex.target`. Under instance principal that file holds no secret at all, which is the point of it.
 
@@ -239,6 +264,10 @@ Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/exter
 ```
 
 `--topology` has no default on purpose: a command aimed at the wrong one is the easiest expensive mistake here. Each topology keeps its own state under `.validate-<topology>/`, so two can be built from one checkout without either destroying the other's instances, and every log from the run lands there.
+
+**A topology's shape and node count are defaults, not settings.** They go to Terraform as `TF_VAR_compute_shape` and `TF_VAR_node_count`, which is the weakest source Terraform reads, so a `terraform.auto.tfvars` in the checkout outranks them and a deployment sizes itself in that file with no flag to pass. CI has no such file — `*.auto.tfvars` is gitignored — so a named topology stays the same every run. `instance_principal` is the exception and remains a `-var`, because `--instance-principal` is a choice about the run rather than about the infrastructure's size, and a stale tfvars must not quietly contradict it.
+
+The count that later gates read is the number of addresses the `hosts_file` output names, not the number asked for, and the run logs the shape and count it built. A tfvars that changes either is reported rather than silently diverging from the topology's name.
 
 **The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
 

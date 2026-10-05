@@ -379,7 +379,10 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 		return nil, err
 	}
 
-	attached := s.attachedPolicies(ctx, accountID, group.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	attached, err := s.attachedPolicies(ctx, accountID, group.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	if err != nil {
+		return nil, err
+	}
 
 	return &iam.ListAttachedGroupPoliciesOutput{
 		AttachedPolicies: attached,

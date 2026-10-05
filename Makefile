@@ -167,7 +167,7 @@ preflight:
 # reason: between them they install the software, wire OVN, erase the state and
 # remove the install, so a shellcheck warning in one is an outage or a wrong
 # deletion, not a style note.
-NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/node-reset.sh scripts/uninstall-spx.sh
+NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh
 
 test-build-scripts:
 	@echo -e "\n....Running build/scripts/**/*_test.sh...."

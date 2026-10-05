@@ -394,7 +394,10 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 		return nil, err
 	}
 
-	attached := s.attachedPolicies(ctx, accountID, role.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	attached, err := s.attachedPolicies(ctx, accountID, role.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	if err != nil {
+		return nil, err
+	}
 
 	return &iam.ListAttachedRolePoliciesOutput{
 		AttachedPolicies: attached,

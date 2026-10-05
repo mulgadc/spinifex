@@ -54,12 +54,18 @@ variable "deployment_name" {
     error_message = "deployment_name must be 1-15 lowercase alphanumeric characters starting with a letter, because it is used as the VCN dns_label."
   }
 }
-# Needs a tenancy-admin principal, which is why it is opt-in. See
-# instance-principal.tf for what the policy grants and why it is narrow.
-variable "enable_instance_principal" {
-  description = "Create the dynamic group and policy that let nodes authenticate as themselves, so no OCI API key is installed on any node."
-  type        = bool
-  default     = false
+# Three values rather than a bool, because using an instance principal and being
+# allowed to create one are different rights. See instance-principal.tf for what
+# the policy grants and why it is narrow.
+variable "instance_principal" {
+  description = "off: nodes use an API key. adopt: nodes authenticate as themselves against a dynamic group and policy that already exist. create: also create those two, which needs a tenancy-admin principal."
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "adopt", "create"], var.instance_principal)
+    error_message = "instance_principal must be off, adopt or create."
+  }
 }
 
 variable "vcn_cidr" {

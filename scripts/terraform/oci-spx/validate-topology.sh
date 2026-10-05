@@ -34,20 +34,23 @@ CHANNEL=latest
 INSTALL_VERSION=""
 WORKBOOKS=""
 
+TOPOLOGIES="bm vm-single vm-multi"
+
 # What a topology is worth when nothing says otherwise, so a CI run of a named
 # topology is the same every time. Supplied as TF_VAR_, which terraform.auto.tfvars
 # outranks, so a deployment sets its shape and node count in that file and no
 # flag has to carry them.
-declare -A TOPO_SHAPE=(
-    [bm]="BM.Standard.E2.64"
-    [vm-single]="VM.Standard.E6.Flex"
-    [vm-multi]="VM.Standard.E6.Flex"
-)
-declare -A TOPO_NODES=(
-    [bm]=1
-    [vm-single]=1
-    [vm-multi]=3
-)
+#
+# A case rather than an associative array: macOS ships bash 3.2, where declare -A
+# is an indexed assignment and the key is read as an arithmetic variable.
+topo_defaults() {
+    case "$1" in
+        bm)        TOPO_DEFAULT_SHAPE="BM.Standard.E2.64";  TOPO_DEFAULT_NODES=1 ;;
+        vm-single) TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1 ;;
+        vm-multi)  TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=3 ;;
+        *) return 1 ;;
+    esac
+}
 
 log() { printf '[validate-%s] %s\n' "${TOPOLOGY:-?}" "$*"; }
 die() {
@@ -123,7 +126,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$TOPOLOGY" ] || usage
-[ -n "${TOPO_SHAPE[$TOPOLOGY]:-}" ] || die "unknown topology $TOPOLOGY; one of: ${!TOPO_SHAPE[*]}"
+topo_defaults "$TOPOLOGY" || die "unknown topology $TOPOLOGY; one of: $TOPOLOGIES"
 [ -r "$SSH_PUBLIC_KEY" ] || die "no readable SSH public key at $SSH_PUBLIC_KEY"
 [ -r "$SSH_PRIVATE_KEY" ] || die "no readable SSH private key at $SSH_PRIVATE_KEY"
 # Both or neither: a distro with the published setup.sh installs one ref's bytes
@@ -137,8 +140,6 @@ fi
 # the dynamic group and policy outlive every topology. setup-identity.sh owns them.
 PRINCIPAL_MODE=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo adopt || echo off)
 
-TOPO_DEFAULT_SHAPE="${TOPO_SHAPE[$TOPOLOGY]}"
-TOPO_DEFAULT_NODES="${TOPO_NODES[$TOPOLOGY]}"
 # What the apply actually built, filled in from the hosts_file output once it has.
 # Until then these are what the topology asked for, which is all there is to say.
 SHAPE="$TOPO_DEFAULT_SHAPE"
@@ -343,8 +344,17 @@ tf apply -auto-approve -no-color "${tf_vars[@]}" > "$STATE_DIR/apply.log" 2>&1 \
     || die "terraform apply failed; see $STATE_DIR/apply.log"
 record build PASS
 
-mapfile -t HOSTS < <(tf output -raw "${tf_state[@]}" hosts_file) \
+# A read loop rather than mapfile, which bash 3.2 on macOS does not have. The
+# output is captured first so a failed terraform fails here, not silently as an
+# empty host list.
+hosts_raw=$(tf output -raw "${tf_state[@]}" hosts_file) \
     || die "could not read the hosts_file output from $STATE_DIR/terraform.tfstate"
+HOSTS=()
+while IFS= read -r line; do
+    if [ -n "$line" ]; then HOSTS+=("$line"); fi
+done <<EOF
+$hosts_raw
+EOF
 [ "${#HOSTS[@]}" -ge 1 ] || die "the hosts_file output named no hosts, so the apply built nothing to install on"
 for host in "${HOSTS[@]}"; do
     [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \

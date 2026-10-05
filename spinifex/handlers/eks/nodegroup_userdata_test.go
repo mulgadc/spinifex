@@ -6,6 +6,7 @@ import (
 )
 
 func TestBuildAgentUserData_ECRWiring(t *testing.T) {
+	t.Parallel()
 	in := agentUserDataInput{
 		ClusterName:   "alpha",
 		NodegroupName: "ng-1",
@@ -61,6 +62,7 @@ func TestBuildAgentUserData_ECRWiring(t *testing.T) {
 }
 
 func TestBuildAgentUserData_NoGatewayIPUsesHostnameEndpoint(t *testing.T) {
+	t.Parallel()
 	in := agentUserDataInput{
 		ClusterName:   "alpha",
 		NodegroupName: "ng-1",
@@ -97,6 +99,7 @@ func baseTestInput() agentUserDataInput {
 }
 
 func TestBuildAgentUserData_GPUEnabledSignalsNodegroupAndGPU(t *testing.T) {
+	t.Parallel()
 	in := baseTestInput()
 	in.GPUEnabled = true
 	in.GPUVendor = "nvidia"
@@ -126,6 +129,7 @@ func TestBuildAgentUserData_GPUEnabledSignalsNodegroupAndGPU(t *testing.T) {
 }
 
 func TestBuildAgentUserData_NonGPUSignalsNodegroupOnly(t *testing.T) {
+	t.Parallel()
 	in := baseTestInput()
 
 	got := buildAgentUserData(in)

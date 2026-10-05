@@ -11,6 +11,7 @@ import (
 )
 
 func TestLoadRecoveryDirective_AbsentIsZeroNone(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -23,6 +24,7 @@ func TestLoadRecoveryDirective_AbsentIsZeroNone(t *testing.T) {
 }
 
 func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -44,6 +46,7 @@ func TestStoreRecoveryDirective_EpochIncrements(t *testing.T) {
 }
 
 func TestStoreRecoveryDirective_SnapshotRequiredRoundTrips(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -60,6 +63,7 @@ func TestStoreRecoveryDirective_SnapshotRequiredRoundTrips(t *testing.T) {
 }
 
 func TestSetRecoveryDirective_RejectsBadInput(t *testing.T) {
+	t.Parallel()
 	s := &EKSServiceImpl{}
 
 	_, err := s.SetRecoveryDirective(context.Background(), &SetRecoveryDirectiveInput{ClusterName: "", InstanceID: "i-0", Action: RecoveryActionNone}, testAccountID)
@@ -73,6 +77,7 @@ func TestSetRecoveryDirective_RejectsBadInput(t *testing.T) {
 }
 
 func TestGetRecoveryDirective_RejectsBadInput(t *testing.T) {
+	t.Parallel()
 	s := &EKSServiceImpl{}
 
 	_, err := s.GetRecoveryDirective(context.Background(), &GetRecoveryDirectiveInput{ClusterName: "", InstanceID: "i-0"}, testAccountID)

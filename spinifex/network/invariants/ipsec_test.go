@@ -1,8 +1,6 @@
 package invariants
 
 import (
-	"encoding/json"
-	"os/exec"
 	"sort"
 	"strings"
 	"testing"
@@ -14,6 +12,7 @@ import (
 //	 rules, or direct strongSwan management. IPSec SA lifecycle is
 //	 delegated entirely to OVN native IPSec and is invisible above L0."
 func TestS8_IPSecOVNNativeOnly(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S8: "IPSec is OVN-native only. No layer ` +
 		`implements custom IKEv2, XFRM rules, or direct strongSwan ` +
 		`management. IPSec SA lifecycle is delegated entirely to OVN ` +
@@ -30,27 +29,12 @@ func TestS8_IPSecOVNNativeOnly(t *testing.T) {
 		"openswan",
 	}
 
-	cmd := exec.Command("go", "list", "-json", "./...")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
-
 	type hit struct {
 		pkg string
 		imp string
 	}
 	var hits []hit
-	dec := json.NewDecoder(strings.NewReader(string(out)))
-	for dec.More() {
-		var p goListPackage
-		if err := dec.Decode(&p); err != nil {
-			t.Fatalf("decode go list: %v", err)
-		}
-		if !strings.HasPrefix(p.ImportPath, networkRoot) {
-			continue
-		}
+	for _, p := range goListNetwork(t) {
 		for _, imp := range p.Imports {
 			for _, sub := range deniedSubstrings {
 				if strings.Contains(imp, sub) {

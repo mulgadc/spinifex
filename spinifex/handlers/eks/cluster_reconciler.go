@@ -149,6 +149,9 @@ type ClusterReconciler struct {
 	healthTimeout time.Duration
 	createTimeout time.Duration
 	httpClient    HTTPDoer
+	// debounce is how long Run lets a burst of wakes settle; zero keeps the
+	// reconciler package default.
+	debounce time.Duration
 
 	// When stateSub is non-nil, health is gated on the CP's NATS self-report
 	// rather than the HTTP /healthz probe (apiserver is VPC-only, host-unreachable).
@@ -238,6 +241,11 @@ func WithHealthzTimeout(d time.Duration) ReconcilerOption {
 // WithCreateTimeout overrides the CREATING→FAILED timeout.
 func WithCreateTimeout(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.createTimeout = d }
+}
+
+// withDebounce overrides how long Run lets a burst of wakes settle (tests).
+func withDebounce(d time.Duration) ReconcilerOption {
+	return func(r *ClusterReconciler) { r.debounce = d }
 }
 
 // WithHTTPClient injects a stub HTTPDoer (tests).
@@ -481,6 +489,7 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		Reconcile: r.reconcilePass,
 		Trigger:   r.wake,
 		Resync:    reconcileResync,
+		Debounce:  r.debounce,
 	})
 
 	if err := r.terminalErr(); err != nil {

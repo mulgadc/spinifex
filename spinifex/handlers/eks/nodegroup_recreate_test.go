@@ -20,6 +20,7 @@ import (
 // failed with "reports 3 Ready nodes, want >= 5 (baseline 2 + 3 workers)", and
 // each retry raising the bar again.
 func TestCreateNodegroup_RecreateDoesNotBaselineOnPriorWorkers(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 

@@ -33,6 +33,10 @@ func TestRunCommandWithTimeoutKillsProcessGroup(t *testing.T) {
 }
 
 func TestRunCommandWithTimeoutKillsDetachedOutputHolder(t *testing.T) {
+	prev := commandWaitDelay
+	commandWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { commandWaitDelay = prev })
+
 	started := time.Now()
 	output, err := RunCommandWithTimeout(5*time.Second, "sh", "-c", "sleep 10 & echo child=$!")
 	if !errors.Is(err, exec.ErrWaitDelay) {

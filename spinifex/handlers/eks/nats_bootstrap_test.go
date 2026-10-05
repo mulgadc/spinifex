@@ -83,6 +83,7 @@ func (h *natsBootstrapHarness) waitSubsBound(base, want int) {
 }
 
 func TestNewNATSBootstrap_RejectsBadInputs(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -101,6 +102,7 @@ func TestNewNATSBootstrap_RejectsBadInputs(t *testing.T) {
 }
 
 func TestNATSBootstrap_HappyPath(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -152,6 +154,7 @@ func TestNATSBootstrap_HappyPath(t *testing.T) {
 }
 
 func TestNATSBootstrap_ContextCancelReturnsErr(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -171,6 +174,7 @@ func TestNATSBootstrap_ContextCancelReturnsErr(t *testing.T) {
 }
 
 func TestNATSBootstrap_JWKSMismatchReturnsErr(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -194,6 +198,7 @@ func TestNATSBootstrap_JWKSMismatchReturnsErr(t *testing.T) {
 }
 
 func TestAssertJWKSMatch_RejectsKtyMismatch(t *testing.T) {
+	t.Parallel()
 	// Same kid as the controller key, but RSA instead of EC — a published key
 	// that cannot be the one the controller distributed despite the kid
 	// collision. Must be rejected.
@@ -207,11 +212,13 @@ func TestAssertJWKSMatch_RejectsKtyMismatch(t *testing.T) {
 }
 
 func TestAssertJWKSMatch_AcceptsMatchingKidAndKty(t *testing.T) {
+	t.Parallel()
 	jwks := []byte(`{"keys":[{"kty":"EC","kid":"abc","crv":"P-256","x":"AAA","y":"BBB"}]}`)
 	require.NoError(t, assertJWKSMatch(jwks, jwks))
 }
 
 func TestNATSBootstrap_EmptyEnvelopeFieldsRejected(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -233,6 +240,7 @@ func TestNATSBootstrap_EmptyEnvelopeFieldsRejected(t *testing.T) {
 }
 
 func TestNATSBootstrap_OneShotIgnoresSubsequentMessages(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -276,6 +284,7 @@ func TestNATSBootstrap_OneShotIgnoresSubsequentMessages(t *testing.T) {
 }
 
 func TestNATSBootstrap_CANotBase64Rejected(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -336,6 +345,7 @@ func TestPersistWithRetry(t *testing.T) {
 }
 
 func TestBootstrapPendingKinds(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 
 	meta, err := GetClusterMeta(t.Context(), h.kv, bootstrapTestCluster)
@@ -372,6 +382,7 @@ func TestBootstrapPendingKinds(t *testing.T) {
 }
 
 func TestNATSBootstrap_RunForKindsWaitsOnlyForSubset(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -400,6 +411,7 @@ func TestNATSBootstrap_RunForKindsWaitsOnlyForSubset(t *testing.T) {
 }
 
 func TestNATSBootstrap_RunForKindsRejectsUnknownKind(t *testing.T) {
+	t.Parallel()
 	h := newBootstrapHarness(t)
 	err := h.subscriber.RunForKinds(context.Background(), []string{"bogus-kind"})
 	require.Error(t, err)
@@ -407,6 +419,7 @@ func TestNATSBootstrap_RunForKindsRejectsUnknownKind(t *testing.T) {
 }
 
 func TestBootstrapSubject_Shape(t *testing.T) {
+	t.Parallel()
 	got := BootstrapSubject("111122223333", "alpha", BootstrapSubjectToken)
 	assert.Equal(t, "eks.bus.111122223333.alpha.k3s-bootstrap-token", got)
 	assert.True(t, strings.HasPrefix(got, "eks.bus."))

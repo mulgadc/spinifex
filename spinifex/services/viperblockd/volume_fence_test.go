@@ -24,6 +24,10 @@ import (
 func stubExport(t *testing.T) int {
 	t.Helper()
 
+	// The kill waits for this process to exit, and the default poll would make
+	// that wait most of the test's runtime.
+	utils.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+
 	cmd := exec.Command("sleep", "300")
 	require.NoError(t, cmd.Start())
 	reaped := make(chan struct{})

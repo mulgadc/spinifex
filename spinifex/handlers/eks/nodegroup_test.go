@@ -195,6 +195,7 @@ func createNGInput(cluster, ng string, desired int64) *eks.CreateNodegroupInput 
 }
 
 func TestReclaimOrphanedNodegroups_TerminatesStrandedWorkers(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	const cluster = "toc"
 	seedActiveClusterWithToken(t, f, cluster)
@@ -240,6 +241,7 @@ func TestReclaimOrphanedNodegroups_TerminatesStrandedWorkers(t *testing.T) {
 }
 
 func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -278,6 +280,7 @@ func TestNodegroupRecord_CRUDRoundTrip(t *testing.T) {
 }
 
 func TestBuildAgentUserData_Shape(t *testing.T) {
+	t.Parallel()
 	ud := buildAgentUserData(agentUserDataInput{
 		ClusterName:   "c1",
 		NodegroupName: "ng1",
@@ -301,6 +304,7 @@ func TestBuildAgentUserData_Shape(t *testing.T) {
 }
 
 func TestEnsureNodegroupSGRules_AuthorizesExpectedRules(t *testing.T) {
+	t.Parallel()
 	sg := newFakeSGProvisioner()
 
 	require.NoError(t, EnsureNodegroupSGRules(context.Background(), sg, testAccountID, "c1", "sg-cp", "sg-ng"))
@@ -325,6 +329,7 @@ func TestEnsureNodegroupSGRules_AuthorizesExpectedRules(t *testing.T) {
 }
 
 func TestEnsureNodegroupSGRules_DuplicateRuleTolerated(t *testing.T) {
+	t.Parallel()
 	sg := newFakeSGProvisioner()
 	sg.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
@@ -333,6 +338,7 @@ func TestEnsureNodegroupSGRules_DuplicateRuleTolerated(t *testing.T) {
 }
 
 func TestCreateNodegroup_HappyPath(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -387,6 +393,7 @@ func TestCreateNodegroup_HappyPath(t *testing.T) {
 // the block device mapping entirely, which drops the worker onto the AMI's own
 // volume — sized to hold the image and nothing else.
 func TestCreateNodegroup_OmittedDiskSizeUsesAWSDefault(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -412,6 +419,7 @@ func TestCreateNodegroup_OmittedDiskSizeUsesAWSDefault(t *testing.T) {
 // vendor, so the worker-launch path resolves the GPU node AMI instead of the
 // default eks-node AMI.
 func TestCreateNodegroup_GPUInstanceTypeSetsGPUFields(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -433,6 +441,7 @@ func TestCreateNodegroup_GPUInstanceTypeSetsGPUFields(t *testing.T) {
 // A GPU nodegroup create must auto-stage the nvidia-device-plugin addon so
 // GPU-tainted nodes get nvidia.com/gpu allocatable without a manual CreateAddon.
 func TestCreateNodegroup_GPUNodegroupStagesDevicePluginAddon(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -453,6 +462,7 @@ func TestCreateNodegroup_GPUNodegroupStagesDevicePluginAddon(t *testing.T) {
 // A non-GPU nodegroup create must not stage nvidia-device-plugin — it stays
 // dormant on non-GPU clusters, and it isn't user-visible in the catalog.
 func TestCreateNodegroup_NonGPUNodegroupDoesNotStageDevicePluginAddon(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -469,6 +479,7 @@ func TestCreateNodegroup_NonGPUNodegroupDoesNotStageDevicePluginAddon(t *testing
 // A non-GPU instance type must leave the record's GPU fields unset, so the
 // worker-launch path keeps resolving the default eks-node AMI.
 func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -488,6 +499,7 @@ func TestCreateNodegroup_NonGPUInstanceTypeClearsGPUFields(t *testing.T) {
 // real AWS field EKS uses to signal a GPU-flavored node AMI — even though the
 // caller requested the plain AL2_x86_64 default.
 func TestCreateNodegroup_GPUInstanceTypeExposesGPUAmiTypeInDescribe(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -511,6 +523,7 @@ func TestCreateNodegroup_GPUInstanceTypeExposesGPUAmiTypeInDescribe(t *testing.T
 // A non-GPU nodegroup's DescribeNodegroup response must keep the plain amiType
 // so the UI does not mistake it for a GPU nodegroup.
 func TestCreateNodegroup_NonGPUInstanceTypeKeepsPlainAmiTypeInDescribe(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -531,6 +544,7 @@ func TestCreateNodegroup_NonGPUInstanceTypeKeepsPlainAmiTypeInDescribe(t *testin
 // End-to-end: a GPU nodegroup's worker launch must resolve the GPU-tagged AMI
 // over a coexisting plain eks-node AMI, not merely set the record's GPU fields.
 func TestCreateNodegroup_GPUWorkerLaunchUsesGPUAMI(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -564,6 +578,7 @@ func TestCreateNodegroup_GPUWorkerLaunchUsesGPUAMI(t *testing.T) {
 // plain eks-node AMI (running a GPU workload on a driverless image is worse
 // than a clear failure).
 func TestCreateNodegroup_GPUWorkerLaunchNoGPUAMINoFallback(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -590,6 +605,7 @@ func TestCreateNodegroup_GPUWorkerLaunchNoGPUAMINoFallback(t *testing.T) {
 // node count) must drive the nodegroup to CREATE_FAILED, not a falsely-ACTIVE
 // record. Instance IDs are retained so the reclaim path tears the workers down.
 func TestCreateNodegroup_WorkersNeverReady_CreateFailed(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -613,6 +629,7 @@ func TestCreateNodegroup_WorkersNeverReady_CreateFailed(t *testing.T) {
 // global cluster Ready-node count, so ng-a's Ready worker could have falsely
 // satisfied ng-b's gate too.
 func TestCreateNodegroup_ReadyGateScopedPerNodegroupNotGlobal(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -642,6 +659,7 @@ func TestCreateNodegroup_ReadyGateScopedPerNodegroupNotGlobal(t *testing.T) {
 // retried, not abandon the nodegroup at its first failed RunInstances call —
 // the relaunch converges to desired capacity within the retry budget.
 func TestCreateNodegroup_RelaunchesOnWorkerLaunchFailure(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -668,6 +686,7 @@ func TestCreateNodegroup_RelaunchesOnWorkerLaunchFailure(t *testing.T) {
 // the retry budget is exhausted — retrying must never hang the nodegroup
 // forever — while having genuinely retried at least once before giving up.
 func TestCreateNodegroup_WorkerLaunchFailureExhaustsRetryBudget(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -685,6 +704,7 @@ func TestCreateNodegroup_WorkerLaunchFailureExhaustsRetryBudget(t *testing.T) {
 }
 
 func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -704,6 +724,7 @@ func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {
 }
 
 func TestCreateNodegroup_ClusterNotActive(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, &ClusterMeta{
 		Name:               "c1",
@@ -717,12 +738,14 @@ func TestCreateNodegroup_ClusterNotActive(t *testing.T) {
 }
 
 func TestCreateNodegroup_UnknownCluster(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("ghost", "ng1", 1), testAccountID)
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 }
 
 func TestDescribeAndListNodegroups(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
@@ -748,6 +771,7 @@ func TestDescribeAndListNodegroups(t *testing.T) {
 }
 
 func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
@@ -788,6 +812,7 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 // terraform retry) must converge to exactly desired, not double-launch. Pre-fix
 // each read current=1 and launched desired-current=2, yielding 5 live workers.
 func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
@@ -874,6 +899,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 }
 
 func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 2), testAccountID)
@@ -899,6 +925,7 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 }
 
 func TestUpdateNodegroupVersion_NotImplemented(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	_, err := f.svc.UpdateNodegroupVersion(context.Background(), &eks.UpdateNodegroupVersionInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
@@ -909,6 +936,7 @@ func TestUpdateNodegroupVersion_NotImplemented(t *testing.T) {
 // TestSelectWorkerHost_NoSchedulerOrCapacity returns "" so the caller falls back
 // to a local launch when no scheduler is wired or no host has free capacity.
 func TestSelectWorkerHost_NoSchedulerOrCapacity(t *testing.T) {
+	t.Parallel()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{}}
 	require.Empty(t, s.selectWorkerHost(context.Background(), "t3.medium", nil))
 
@@ -942,6 +970,7 @@ func (m *mapHostScheduler) InstanceHosts(_ context.Context, ids []string) map[st
 // launches fan out one-per-host before doubling up, the fix for all workers
 // landing on a single node.
 func TestSelectWorkerHost_SpreadsThenPacks(t *testing.T) {
+	t.Parallel()
 	hosts := []string{"nodeA", "nodeB", "nodeC"}
 	sched := &mapHostScheduler{hosts: hosts, placement: map[string]string{}}
 	s := &EKSServiceImpl{deps: EKSServiceDeps{Scheduler: sched}}
@@ -1090,6 +1119,7 @@ func TestNodegroupRecordToAWS_TaintsAndUpdateConfig(t *testing.T) {
 // the node group has none. AWS always returns the field, and the provider reads
 // it as Optional+Computed, so a nil reads as a contradicted computed value.
 func TestNodegroupRecordToAWS_LabelsAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	out := nodegroupRecordToAWS(&NodegroupRecord{
 		ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive,
 	})
@@ -1109,6 +1139,7 @@ func TestNodegroupRecordToAWS_LabelsAlwaysPresent(t *testing.T) {
 // with a zero-length issues list when healthy, and the NodeCreationFailure
 // issue when set, via jsonutil.BuildJSON so a dropped nil-slice key is caught.
 func TestNodegroupRecordToAWS_HealthAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	healthy := nodegroupRecordToAWS(&NodegroupRecord{
 		ClusterName: "c1", Name: "ng1", Status: eks.NodegroupStatusActive,
 	})
@@ -1154,6 +1185,7 @@ func TestNodegroupRecordToAWS_HealthAlwaysPresent(t *testing.T) {
 // resolved at describe time — launchTemplate is force-new, so a mismatch here
 // would replace the node group on the very next plan.
 func TestCreateNodegroup_CapturesLaunchTemplateCapacityTypeReleaseVersion(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -1182,6 +1214,7 @@ func TestCreateNodegroup_CapturesLaunchTemplateCapacityTypeReleaseVersion(t *tes
 // ON_DEMAND default, and a named placeholder) rather than staying empty, which
 // would omit the field from every future DescribeNodegroup.
 func TestCreateNodegroup_OmittedCapacityTypeAndReleaseVersionUseDefaults(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -1201,6 +1234,7 @@ func TestCreateNodegroup_OmittedCapacityTypeAndReleaseVersionUseDefaults(t *test
 // TestCreateNodegroup_CapturesTaints proves taints supplied to CreateNodegroup
 // land on the record, the other missing half of bead G alongside updateConfig.
 func TestCreateNodegroup_CapturesTaints(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
@@ -1226,6 +1260,7 @@ func TestCreateNodegroup_CapturesTaints(t *testing.T) {
 // (key, effect) so a same-key different-effect taint is never clobbered, and
 // remove deletes only the matching pair.
 func TestApplyTaintUpdate(t *testing.T) {
+	t.Parallel()
 	existing := []NodegroupTaint{
 		{Key: "a", Value: "1", Effect: eks.TaintEffectNoSchedule},
 		{Key: "b", Value: "1", Effect: eks.TaintEffectPreferNoSchedule},
@@ -1256,6 +1291,7 @@ func TestApplyTaintUpdate(t *testing.T) {
 // converged and never errored either. It must now record what was asked for
 // and hand it back on the next Describe.
 func TestUpdateNodegroupConfig_HonoursTaintsAndUpdateConfig(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)

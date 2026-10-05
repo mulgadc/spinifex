@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats-server/v2/server"
-	natstest "github.com/nats-io/nats-server/v2/test"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,14 +26,9 @@ const jetStreamArrivesAfter = 250 * time.Millisecond
 func TestVolumeBucketsWaitForJetStream(t *testing.T) {
 	// Deliberately no JetStream: the server answers, it just has nowhere to put
 	// a bucket, which is what a node whose cluster has not formed looks like.
-	ns := natstest.RunServer(&server.Options{Host: "127.0.0.1", Port: -1})
-	require.NotNil(t, ns)
-	t.Cleanup(ns.Shutdown)
+	ns, nc := testutil.StartTestNATS(t)
 	clustersize.DeclareForTest(t, 1)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(nc.Close)
+	kvstore.ShortenOpenRetryForTest(t, 20*time.Millisecond)
 
 	leaseErr := make(chan error, 1)
 	dirtyErr := make(chan error, 1)
@@ -59,14 +54,8 @@ func TestVolumeBucketsWaitForJetStream(t *testing.T) {
 // tests assert fail closed, and a refusal they have to wait out is one an
 // operator tool and those tests would both read as a hang.
 func TestVolumeBucketsUnwaitingOpenStillRefusesAtOnce(t *testing.T) {
-	ns := natstest.RunServer(&server.Options{Host: "127.0.0.1", Port: -1})
-	require.NotNil(t, ns)
-	t.Cleanup(ns.Shutdown)
+	_, nc := testutil.StartTestNATS(t)
 	clustersize.DeclareForTest(t, 1)
-
-	nc, err := nats.Connect(ns.ClientURL())
-	require.NoError(t, err)
-	t.Cleanup(nc.Close)
 
 	started := time.Now()
 	_, leaseOpenErr := newVolumeLeases(t.Context(), nc, "node-a")

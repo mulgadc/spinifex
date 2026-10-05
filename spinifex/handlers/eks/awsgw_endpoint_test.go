@@ -8,12 +8,14 @@ import (
 )
 
 func TestClusterOIDCIssuer_HappyPath(t *testing.T) {
+	t.Parallel()
 	got, err := ClusterOIDCIssuer("https://gw.example:9999", "us-east-1", "111122223333", "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, "https://gw.example:9999/oidc/eks/us-east-1/111122223333/alpha", got)
 }
 
 func TestClusterOIDCIssuer_TrimsTrailingSlash(t *testing.T) {
+	t.Parallel()
 	got, err := ClusterOIDCIssuer("https://gw.example:9999/", "us-east-1", "111122223333", "alpha")
 	require.NoError(t, err)
 	assert.Equal(t, "https://gw.example:9999/oidc/eks/us-east-1/111122223333/alpha", got)
@@ -39,6 +41,7 @@ func TestClusterOIDCIssuer_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestClusterOIDCIssuer_MalformedBaseRejected(t *testing.T) {
+	t.Parallel()
 	_, err := ClusterOIDCIssuer("not-a-url", "us-east-1", "111122223333", "alpha")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing scheme or host")

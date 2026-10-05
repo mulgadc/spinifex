@@ -209,6 +209,7 @@ func TestClusterMetaToAWS_SecurityGroupIdsEchoesCallerOnly(t *testing.T) {
 // --- H: platformVersion, upgradePolicy, logging (mulga-z2knb) ---
 
 func TestClusterMetaToAWS_PlatformVersionAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	// platformVersion is a stable constant, not derived from any stored field,
 	// so an old zero-value-ish record projects it identically to a new one.
 	meta := baseClusterMetaForProjection()

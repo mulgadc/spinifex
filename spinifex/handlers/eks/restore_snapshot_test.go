@@ -53,6 +53,7 @@ func seedSnapshot(t *testing.T, store objectstore.ObjectStore, accountID, cluste
 }
 
 func TestResolveLatestSnapshot_PrefersFrequentTier(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-daily-20260709T230000Z.snap")
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-frequent-20260709T010000Z.snap")
@@ -66,6 +67,7 @@ func TestResolveLatestSnapshot_PrefersFrequentTier(t *testing.T) {
 }
 
 func TestResolveLatestSnapshot_FallsBackToAnyTierWhenNoFrequent(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-daily-20260601T000000Z.snap")
 	seedSnapshot(t, store, testAccountID, "alpha", "etcd-daily-20260602T000000Z.snap")
@@ -76,11 +78,13 @@ func TestResolveLatestSnapshot_FallsBackToAnyTierWhenNoFrequent(t *testing.T) {
 }
 
 func TestResolveLatestSnapshot_NoStoreConfigured(t *testing.T) {
+	t.Parallel()
 	_, err := resolveLatestSnapshot(context.Background(), nil, testAccountID, "alpha")
 	require.Error(t, err)
 }
 
 func TestResolveLatestSnapshot_NoSnapshotsFound(t *testing.T) {
+	t.Parallel()
 	store := objectstore.NewMemoryObjectStore()
 	_, err := resolveLatestSnapshot(context.Background(), store, testAccountID, "alpha")
 	require.Error(t, err)
@@ -92,6 +96,7 @@ func TestResolveLatestSnapshot_NoSnapshotsFound(t *testing.T) {
 // last and lands on the final page — before this fix, a listing that never
 // followed the continuation token would silently pick an older "newest".
 func TestResolveLatestSnapshot_MultiPageListingFindsNewest(t *testing.T) {
+	t.Parallel()
 	store := pagedstore.New(2)
 	const count = 5
 	for i := 1; i <= count; i++ {
@@ -132,6 +137,7 @@ func restoreSnapshotFixtureMeta(name string) *ClusterMeta {
 }
 
 func TestRestoreSnapshot_HappyPathLaunchesDirectsAndRepoints(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
 	store := objectstore.NewMemoryObjectStore()
@@ -179,6 +185,7 @@ func TestRestoreSnapshot_HappyPathLaunchesDirectsAndRepoints(t *testing.T) {
 }
 
 func TestRestoreSnapshot_ExplicitSnapshotUsedVerbatim(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
 	store := objectstore.NewMemoryObjectStore()
@@ -204,6 +211,7 @@ func TestRestoreSnapshot_ExplicitSnapshotUsedVerbatim(t *testing.T) {
 }
 
 func TestRestoreSnapshot_ExplicitSnapshotMissingHardFailsBeforeLaunch(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
 	store := objectstore.NewMemoryObjectStore()
@@ -221,6 +229,7 @@ func TestRestoreSnapshot_ExplicitSnapshotMissingHardFailsBeforeLaunch(t *testing
 }
 
 func TestRestoreSnapshot_ExplicitSnapshotWithNoStoreHardFails(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
 	f.svc.deps.SnapshotStore = nil
@@ -234,6 +243,7 @@ func TestRestoreSnapshot_ExplicitSnapshotWithNoStoreHardFails(t *testing.T) {
 }
 
 func TestRestoreSnapshot_HARejected(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	meta := restoreSnapshotFixtureMeta("alpha")
 	meta.ControlPlaneSpreadGroup = "eks-cp-111122223333-alpha"
@@ -248,6 +258,7 @@ func TestRestoreSnapshot_HARejected(t *testing.T) {
 }
 
 func TestRestoreSnapshot_NoTemplateRejected(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	meta := restoreSnapshotFixtureMeta("alpha")
 	meta.ControlPlaneTemplate = nil
@@ -260,6 +271,7 @@ func TestRestoreSnapshot_NoTemplateRejected(t *testing.T) {
 }
 
 func TestRestoreSnapshot_ClusterNotFound(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	_, err := f.svc.RestoreSnapshot(context.Background(),
 		&RestoreSnapshotInput{ClusterName: "ghost", Snapshot: "etcd-daily-20260601T000000Z.snap"}, testAccountID)
@@ -267,6 +279,7 @@ func TestRestoreSnapshot_ClusterNotFound(t *testing.T) {
 }
 
 func TestRestoreSnapshot_NLBFailureIsProvisionalNotError(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.Scheduler = &fakeHostScheduler{hosts: []string{"node-new"}}
 	store := objectstore.NewMemoryObjectStore()
@@ -293,6 +306,7 @@ func TestRestoreSnapshot_NLBFailureIsProvisionalNotError(t *testing.T) {
 }
 
 func TestRestoreSnapshot_FenceFailureIsLoudError(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	// The old CP cannot be terminated (still alive) — split-brain risk.
 	f.inst.terminateErr = errors.New("InstanceStillRunning")
@@ -305,6 +319,7 @@ func TestRestoreSnapshot_FenceFailureIsLoudError(t *testing.T) {
 }
 
 func TestConfirmOldCPTerminated_NoOldNodeSucceeds(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	err := f.svc.confirmOldCPTerminated(context.Background(), testAccountID, ControlPlaneNode{}, 3, 0)
 	require.NoError(t, err, "no old CP to fence is trivially confirmed")
@@ -312,6 +327,7 @@ func TestConfirmOldCPTerminated_NoOldNodeSucceeds(t *testing.T) {
 }
 
 func TestUnwindFreshCP_TerminatesAndClearsDirective(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	meta := restoreSnapshotFixtureMeta("alpha")
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))

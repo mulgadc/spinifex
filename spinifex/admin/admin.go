@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"testing"
 	"text/template"
 	"time"
 
@@ -646,6 +647,16 @@ func GenerateNATSToken() (string, error) {
 // It is a seam so tests can lower it for faster key generation; production
 // keeps the 4096-bit default.
 var certKeyBits = 4096
+
+// ShortenCertKeyBitsForTest generates certificate keys at bits for the rest of
+// one test and restores the previous size afterwards. There is one size per
+// process, so the test must not run in parallel with anything generating keys.
+func ShortenCertKeyBitsForTest(tb testing.TB, bits int) {
+	tb.Helper()
+	prev := certKeyBits
+	certKeyBits = bits
+	tb.Cleanup(func() { certKeyBits = prev })
+}
 
 // GenerateCACert generates a Certificate Authority certificate and key.
 func GenerateCACert(caCertPath, caKeyPath string) error {

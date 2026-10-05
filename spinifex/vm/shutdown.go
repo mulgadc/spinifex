@@ -103,7 +103,9 @@ func (m *Manager) powerdownWithTuning(ctx context.Context, instance *VM,
 				errPowerdownTimedOut, budget, status.Status)
 		}
 
-		timer := time.NewTimer(pollInterval)
+		// Never sleep past the deadline: a short budget would otherwise wait out
+		// a whole poll interval before its final check.
+		timer := time.NewTimer(min(pollInterval, time.Until(deadline)))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

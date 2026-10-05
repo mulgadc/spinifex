@@ -160,7 +160,8 @@ func TestCommander_BacksOffAfterAFailedPoll(t *testing.T) {
 	cp.pollErr = errors.New("gateway unreachable")
 
 	c := newCommander(cp, newCommandRegistry(&fakeEngine{}, &fakeStorage{}), 10*time.Millisecond)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// Five poll intervals: a loop without the backoff would poll several times.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	done := make(chan struct{})
 	go func() { c.Run(ctx); close(done) }()
@@ -168,6 +169,6 @@ func TestCommander_BacksOffAfterAFailedPoll(t *testing.T) {
 
 	// pollErrorBackoff is 5s, so the window admits the first poll and no more.
 	if polls := len(cp.snapshotReplies()); polls > 1 {
-		t.Errorf("polled %d times in 200ms against a broken channel, want 1", polls)
+		t.Errorf("polled %d times in 50ms against a broken channel, want 1", polls)
 	}
 }

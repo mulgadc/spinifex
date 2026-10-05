@@ -1,6 +1,10 @@
 package gateway
 
-import "fmt"
+import (
+	"fmt"
+	"testing"
+	"time"
+)
 
 // AdvertisedEndpoint exposes the gateway's own dialable base URL to the
 // external test package.
@@ -18,4 +22,13 @@ func DispatchEC2Action(gw *GatewayConfig, action string, query map[string]string
 		return nil, err
 	}
 	return h.dispatch(action, input, gw, accountID, nil)
+}
+
+// SetDiscoverActiveNodesTimeoutForTest shortens the discovery fan-out for one
+// test. Tests that call it must not run in parallel.
+func SetDiscoverActiveNodesTimeoutForTest(tb testing.TB, d time.Duration) {
+	tb.Helper()
+	prev := discoverActiveNodesTimeout
+	discoverActiveNodesTimeout = d
+	tb.Cleanup(func() { discoverActiveNodesTimeout = prev })
 }

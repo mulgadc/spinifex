@@ -722,20 +722,27 @@ func TestConnectNATSWithRetry_LogEscalatesPastThreshold(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
+	// Stop a fixed number of attempts past the threshold rather than after a wall-clock budget.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	_, err := ConnectNATSWithRetry("nats://127.0.0.1:1", "", "",
 		WithRetryDelay(1*time.Millisecond),
 		WithMaxRetryDelay(1*time.Millisecond),
-		WithMaxWait(300*time.Millisecond),
+		WithContext(ctx),
+		WithAttemptErrHandler(func(_ error, attempt int) {
+			if attempt >= natsRetryEscalateAttempt+10 {
+				cancel()
+			}
+		}),
 	)
-	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
 
 	logs := buf.String()
 	warnCount := strings.Count(logs, "level=WARN msg=\"NATS not ready, retrying...\"")
 	errCount := strings.Count(logs, "level=ERROR msg=\"NATS still disconnected\"")
 
-	assert.GreaterOrEqual(t, warnCount, 1, "expect warn logs for first 30 attempts")
-	assert.GreaterOrEqual(t, errCount, 1, "expect at least one escalated error log past the threshold")
-	assert.LessOrEqual(t, errCount, 2, "rate-limited to once per minute, so a sub-second test should see at most one or two")
+	assert.Equal(t, natsRetryEscalateAttempt, warnCount, "expect a warn log for each of the first 30 attempts")
+	assert.Equal(t, 1, errCount, "ten attempts past the threshold must escalate once, then rate-limit to once per minute")
 	assert.Contains(t, logs, "disconnected_for_ms=", "escalated error should include disconnected_for_ms")
 }
 
@@ -819,6 +826,7 @@ func TestAddNAT_NoResponders(t *testing.T) {
 // --- Gather tests ---
 
 func TestGather_EarlyExitBeforeTimeout(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	for range 3 {
@@ -842,6 +850,7 @@ func TestGather_EarlyExitBeforeTimeout(t *testing.T) {
 }
 
 func TestGather_TimesOutBelowExpected(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	for range 2 {
@@ -861,6 +870,7 @@ func TestGather_TimesOutBelowExpected(t *testing.T) {
 }
 
 func TestGather_MixedSuccessAndErrors(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("test.gather.mixed", func(msg *nats.Msg) {
@@ -892,6 +902,7 @@ func TestGather_MixedSuccessAndErrors(t *testing.T) {
 }
 
 func TestGather_Client4xxErrorKeepsNodeMessage(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("test.gather.msg", func(msg *nats.Msg) {
@@ -919,6 +930,7 @@ func TestSummary_Client4xxError(t *testing.T) {
 }
 
 func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	for range 2 {
@@ -950,6 +962,7 @@ func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
 }
 
 func TestGather_OversizedFrameDropped(t *testing.T) {
+	t.Parallel()
 	opts := &server.Options{
 		Host:       "127.0.0.1",
 		Port:       -1,
@@ -989,6 +1002,7 @@ type gatherAcctEcho struct {
 }
 
 func TestGather_AccountIDHeaderSet(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("test.gather.acct.set", func(msg *nats.Msg) {
@@ -1013,6 +1027,7 @@ func TestGather_AccountIDHeaderSet(t *testing.T) {
 }
 
 func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("test.gather.acct.empty", func(msg *nats.Msg) {
@@ -1037,6 +1052,7 @@ func TestGather_AccountIDHeaderAbsentWhenEmpty(t *testing.T) {
 }
 
 func TestGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {
+	t.Parallel()
 	frames, sum, err := Gather(context.Background(), nil, "test.never", []byte("{}"),
 		GatherOpts{Timeout: 50 * time.Millisecond, ExpectedNodes: 1})
 	require.ErrorIs(t, err, ErrClusterUnavailable)
@@ -1045,6 +1061,7 @@ func TestGather_NilConn_ReturnsClusterUnavailable(t *testing.T) {
 }
 
 func TestGather_ClosedConn_ReturnsClusterUnavailable(t *testing.T) {
+	t.Parallel()
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
@@ -1082,6 +1099,7 @@ func subscribeAsNode(t *testing.T, nc *nats.Conn, subject, nodeID string, data [
 // accidentally read "identity mode ran and saw nobody" from "identity mode
 // never ran".
 func TestGather_LegacyMode_IdentityFieldsStayNil(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.legacy", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1101,6 +1119,7 @@ func TestGather_LegacyMode_IdentityFieldsStayNil(t *testing.T) {
 // the distinct-node count is met, same early-exit shape as ExpectedNodes, and
 // tags each frame with the node that sent it.
 func TestGather_IdentityMode_NodeIDCarriedOnFramesAndEarlyExit(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.early", "node-a", []byte(`{"ok":true}`), 0)
 	subscribeAsNode(t, nc, "test.gather.identity.early", "node-b", []byte(`{"ok":true}`), 0)
@@ -1123,6 +1142,7 @@ func TestGather_IdentityMode_NodeIDCarriedOnFramesAndEarlyExit(t *testing.T) {
 // ErrorResponders partition it by how. A node cannot land in both from a
 // single reply.
 func TestGather_IdentityMode_RespondersPartitionSuccessAndError(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.partition", "node-ok", []byte(`{"ok":true}`), 0)
 	subscribeAsNode(t, nc, "test.gather.identity.partition", "node-err",
@@ -1142,6 +1162,7 @@ func TestGather_IdentityMode_RespondersPartitionSuccessAndError(t *testing.T) {
 // rather than silently folded into the responder sets — a describe-level
 // completeness judgement must be able to see it and refuse to trust the sweep.
 func TestGather_IdentityMode_UnidentifiedFrameCounted(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.unident", "node-a", []byte(`{"ok":true}`), 0)
 	// No node ID set on this reply.
@@ -1151,7 +1172,7 @@ func TestGather_IdentityMode_UnidentifiedFrameCounted(t *testing.T) {
 	require.NoError(t, err)
 
 	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.unident", []byte("{}"),
-		GatherOpts{Timeout: 500 * time.Millisecond, ExpectedResponders: 2})
+		GatherOpts{Timeout: 300 * time.Millisecond, ExpectedResponders: 2})
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, sum.Unidentified)
@@ -1163,6 +1184,7 @@ func TestGather_IdentityMode_UnidentifiedFrameCounted(t *testing.T) {
 // its first payload — never the second, win or lose — and is flagged in
 // ConflictNodes so a completeness judgement downstream can refuse to trust it.
 func TestGather_IdentityMode_DuplicateDisagreeingFrame_FirstPayloadWinsAndFlagsConflict(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	// Two subscribers answering as the same node ID: the first reply must be
 	// the one retained regardless of arrival order tie-breaks, so give the
@@ -1171,7 +1193,7 @@ func TestGather_IdentityMode_DuplicateDisagreeingFrame_FirstPayloadWinsAndFlagsC
 	subscribeAsNode(t, nc, "test.gather.identity.dup", "node-a", []byte(`{"value":"second"}`), 50*time.Millisecond)
 
 	frames, sum, err := Gather(context.Background(), nc, "test.gather.identity.dup", []byte("{}"),
-		GatherOpts{Timeout: time.Second, Mode: CollectUntilDeadline, ExpectedResponders: 1})
+		GatherOpts{Timeout: 300 * time.Millisecond, Mode: CollectUntilDeadline, ExpectedResponders: 1})
 
 	require.NoError(t, err)
 	require.Len(t, frames, 1, "the disagreeing duplicate's bytes must never be retained")
@@ -1184,6 +1206,7 @@ func TestGather_IdentityMode_DuplicateDisagreeingFrame_FirstPayloadWinsAndFlagsC
 // redelivery) is still counted as a duplicate frame, but is not a conflict:
 // there is nothing to disagree about.
 func TestGather_IdentityMode_DuplicateIdenticalFrame_NotFlaggedAsConflict(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.dupsame", "node-a", []byte(`{"value":"same"}`), 0)
 	subscribeAsNode(t, nc, "test.gather.identity.dupsame", "node-a", []byte(`{"value":"same"}`), 50*time.Millisecond)
@@ -1200,6 +1223,7 @@ func TestGather_IdentityMode_DuplicateIdenticalFrame_NotFlaggedAsConflict(t *tes
 // from a prefix of the replies: it must not exit early just because every
 // currently-expected responder has already answered.
 func TestGather_CollectUntilDeadline_DoesNotExitEarly(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.deadline", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1226,6 +1250,7 @@ func TestGather_CollectUntilDeadline_DoesNotExitEarly(t *testing.T) {
 // the documented first-payload-wins rule the disagreeing reply's data is
 // dropped regardless, only the conflict flag survives it.
 func TestGather_CollectUntilDeadline_RestartOverlap_SurfacesConflictAndMissingNode(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.restart", "node-1", []byte(`{"value":"stale"}`), 0)
 	subscribeAsNode(t, nc, "test.gather.identity.restart", "node-1", []byte(`{"value":"fresh"}`), 50*time.Millisecond)
@@ -1261,6 +1286,7 @@ func TestGather_Settled_EndsCollectionBeforeTheDeadline(t *testing.T) {
 // A predicate that never settles must leave CollectUntilDeadline's guarantee
 // intact, since that is the case where absence is still being proven.
 func TestGather_Settled_NeverTrue_StillRunsToTheDeadline(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.settled.miss", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1280,6 +1306,7 @@ func TestGather_Settled_NeverTrue_StillRunsToTheDeadline(t *testing.T) {
 }
 
 func TestGather_Settled_IgnoredUnderCollectServeData(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.settled.mode", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1299,6 +1326,7 @@ func TestGather_Settled_IgnoredUnderCollectServeData(t *testing.T) {
 // duplicate from a node already heard, which core NATS delivers alongside the
 // first. Waiting out the deadline for it buys nothing.
 func TestGather_ResponderGrace_EndsCollectionAfterFullCoverage(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.grace.covered", "node-a", []byte(`{"ok":true}`), 0)
 	subscribeAsNode(t, nc, "test.gather.grace.covered", "node-b", []byte(`{"ok":true}`), 0)
@@ -1323,6 +1351,7 @@ func TestGather_ResponderGrace_EndsCollectionAfterFullCoverage(t *testing.T) {
 // The grace window only opens on full coverage. A missing node is exactly the
 // case absence proofs exist for, so it must still cost the whole deadline.
 func TestGather_ResponderGrace_PartialCoverageStillRunsToTheDeadline(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.grace.partial", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1374,6 +1403,7 @@ func TestGather_ResponderGrace_ArmedOnceNotExtendedByRepeatReplies(t *testing.T)
 // Zero ResponderGrace is the pre-existing behaviour: collect to the deadline
 // even when every node has answered.
 func TestGather_ResponderGrace_ZeroKeepsTheFullDeadline(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.grace.zero", "node-a", []byte(`{"ok":true}`), 0)
 
@@ -1396,6 +1426,7 @@ func TestGather_ResponderGrace_ZeroKeepsTheFullDeadline(t *testing.T) {
 // replacement has not yet subscribed must be retried, not dropped: the address
 // is released while its host route still delivers to the guest that held it.
 func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
+	shortenDeleteNATRetryDelay(t)
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -1427,6 +1458,7 @@ func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 // The retry is bounded: with nothing ever subscribing it gives up rather than
 // blocking the API call that issued the disassociate.
 func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
+	shortenDeleteNATRetryDelay(t)
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -1437,6 +1469,17 @@ func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
 	PublishNATEvent(nc, "vpc.delete-nat", "vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
 	elapsed := time.Since(start)
 
+	assert.GreaterOrEqual(t, elapsed, time.Duration(deleteNATRetries-1)*deleteNATRetryDelay,
+		"every retry must be attempted before giving up")
 	assert.Less(t, elapsed, deleteNATTimeout,
 		"no-responders must fail fast rather than burn the reply timeout")
+}
+
+// shortenDeleteNATRetryDelay keeps the gap test's delay/2 subscribe well clear
+// of the first retry while not paying the production delay.
+func shortenDeleteNATRetryDelay(t *testing.T) {
+	t.Helper()
+	prev := deleteNATRetryDelay
+	deleteNATRetryDelay = 50 * time.Millisecond
+	t.Cleanup(func() { deleteNATRetryDelay = prev })
 }

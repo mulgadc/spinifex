@@ -1,10 +1,13 @@
 package invariants
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -14,6 +17,7 @@ import (
 //	 interface. Every cross-layer call passes through the typed interface
 //	 of the immediate lower neighbor."
 func TestS1_LayerSkipProhibited(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S1: "No code above layer Lk calls through to a ` +
 		`layer below Lk's immediate interface. Every cross-layer call ` +
 		`passes through the typed interface of the immediate lower neighbor."`
@@ -206,24 +210,47 @@ type goListPackage struct {
 	Imports    []string `json:"Imports"`
 }
 
+var (
+	goListOnce sync.Once
+	goListPkgs []goListPackage
+	errGoList  error
+)
+
+// goListNetwork runs go list once per test binary. The pattern ends in
+// "network..." so it selects exactly the import paths prefixed by networkRoot.
+func goListNetwork(t *testing.T) []goListPackage {
+	t.Helper()
+	root := repoRoot(t)
+	goListOnce.Do(func() {
+		cmd := exec.Command("go", "list", "-json=ImportPath,Imports", "./spinifex/network...")
+		cmd.Dir = root
+		out, err := cmd.Output()
+		if err != nil {
+			errGoList = fmt.Errorf("go list: %w", err)
+			return
+		}
+		dec := json.NewDecoder(bytes.NewReader(out))
+		for dec.More() {
+			var p goListPackage
+			if err := dec.Decode(&p); err != nil {
+				errGoList = fmt.Errorf("decode go list output: %w", err)
+				return
+			}
+			if strings.HasPrefix(p.ImportPath, networkRoot) {
+				goListPkgs = append(goListPkgs, p)
+			}
+		}
+	})
+	if errGoList != nil {
+		t.Fatalf("%v", errGoList)
+	}
+	return goListPkgs
+}
+
 func listNetworkPackages(t *testing.T) []goListPackage {
 	t.Helper()
-	cmd := exec.Command("go", "list", "-json", "./...")
-	cmd.Dir = repoRoot(t)
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
 	var pkgs []goListPackage
-	dec := json.NewDecoder(strings.NewReader(string(out)))
-	for dec.More() {
-		var p goListPackage
-		if err := dec.Decode(&p); err != nil {
-			t.Fatalf("decode go list output: %v", err)
-		}
-		if !strings.HasPrefix(p.ImportPath, networkRoot) {
-			continue
-		}
+	for _, p := range goListNetwork(t) {
 		if layerOf(p.ImportPath) == kindInvariants {
 			continue
 		}

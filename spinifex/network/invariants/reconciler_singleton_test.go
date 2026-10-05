@@ -18,6 +18,7 @@ import (
 //	 pass runs against the NATS KV snapshot and OVN NB DB actual state. No
 //	 additional serial retrofit passes exist."
 func TestS9_SingleReconcilerNoRetrofitPasses(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S9: "On each leader-gated startup, exactly one ` +
 		`intent-actual reconciliation pass runs against the NATS KV snapshot ` +
 		`and OVN NB DB actual state. No additional serial retrofit passes exist."`

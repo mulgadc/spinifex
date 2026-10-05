@@ -187,9 +187,9 @@ func TestGoleakParsesElidedFrameStacks(t *testing.T) {
 	<-ready
 
 	assert.NotPanics(t, func() {
-		// Find legitimately reports the parked goroutine as a leak;
-		// only a panic escaping the call is a failure here.
-		_ = goleak.Find()
+		// Ignoring the parked goroutine still parses its whole stack, but stops
+		// Find retrying it as a leak; only an escaping panic is a failure here.
+		_ = goleak.Find(goleak.IgnoreAnyFunction("github.com/mulgadc/spinifex/spinifex/vm.deepRecurse"))
 	})
 
 	close(block)

@@ -187,7 +187,10 @@ func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return assert.ObjectsAreEqual(want, centralTags(t, daemon, testAccountID, id))
 	}, 5*time.Second, 50*time.Millisecond, "central tag store must receive launch tags")
-	assert.Equal(t, want, recordTags(t, daemon, id))
+
+	// The launch fails (the AMI has no snapshot) and the record is dropped at
+	// once, so the record's tags are read from the reply built from it.
+	assert.Equal(t, want, tagsAsMap(reservation.Instances[0].Tags))
 }
 
 // Missing InstanceTagsData, and a set with no tags, are rejected with

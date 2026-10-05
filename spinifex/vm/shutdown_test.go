@@ -1473,7 +1473,7 @@ func TestShutdownAndUnmount_PIDFileRemovedBeforeTimeout_NoForceKill(t *testing.T
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
 
 	go func() {
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 		_ = utils.RemovePidFile("i-pid-removed")
 	}()
 

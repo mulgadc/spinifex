@@ -8,6 +8,7 @@ import (
 )
 
 func TestLookupAddon_KnownAndUnknown(t *testing.T) {
+	t.Parallel()
 	spec, ok := lookupAddon("aws-load-balancer-controller")
 	require.True(t, ok)
 	assert.Equal(t, "aws-load-balancer-controller", spec.Name)
@@ -18,6 +19,7 @@ func TestLookupAddon_KnownAndUnknown(t *testing.T) {
 }
 
 func TestAddonSpec_DefaultVersionIsNewest(t *testing.T) {
+	t.Parallel()
 	for name, spec := range addonCatalog {
 		require.NotEmpty(t, spec.Versions, "addon %s must list versions", name)
 		assert.Equal(t, spec.Versions[0], spec.DefaultVersion,
@@ -26,6 +28,7 @@ func TestAddonSpec_DefaultVersionIsNewest(t *testing.T) {
 }
 
 func TestAddonSpec_SupportsVersion(t *testing.T) {
+	t.Parallel()
 	spec, ok := lookupAddon("aws-load-balancer-controller")
 	require.True(t, ok)
 	assert.True(t, spec.supportsVersion(spec.DefaultVersion))
@@ -33,6 +36,7 @@ func TestAddonSpec_SupportsVersion(t *testing.T) {
 }
 
 func TestCatalogSpecs_SortedByName(t *testing.T) {
+	t.Parallel()
 	specs := catalogSpecs()
 	require.Len(t, specs, len(addonCatalog))
 	for i := 1; i < len(specs); i++ {
@@ -87,6 +91,8 @@ func TestValidateAddonCatalog(t *testing.T) {
 	}
 }
 
+// Not parallel: it swaps the package-wide catalog that every service the
+// parallel tests construct is validated against.
 func TestNewEKSServiceImpl_RejectsInvalidAddonCatalog(t *testing.T) {
 	previousCatalog := addonCatalog
 	addonCatalog = buildAddonCatalog(newAddonSpec("broken", false, "no versions"))

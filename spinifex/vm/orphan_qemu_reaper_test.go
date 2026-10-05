@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,7 @@ func newOrphanReaperManager(t *testing.T) (*OrphanQEMUReaper, *fakeStateStore) {
 }
 
 func TestOrphanQEMUReaper(t *testing.T) {
+	utils.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	t.Run("kills live QEMU for a terminated instance and removes its PID file", func(t *testing.T) {
 		reaper, store := newOrphanReaperManager(t)
 

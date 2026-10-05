@@ -293,6 +293,7 @@ func (f *fakeNLBProvisioner) SetLoadBalancerIngressCIDRs(lbArn string, cidrs []s
 }
 
 func TestEnsureClusterNLB_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "", []string{"subnet-aaa"}, false, nil, nil)
@@ -305,6 +306,7 @@ func TestEnsureClusterNLB_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_LongNameTruncatedDeterministically(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	longName := strings.Repeat("x", maxELBv2NameLen) // "eks-" + 32x = 36 chars, over the ELBv2 limit
@@ -333,6 +335,7 @@ func TestEnsureClusterNLB_LongNameTruncatedDeterministically(t *testing.T) {
 }
 
 func TestSafeELBv2Name(t *testing.T) {
+	t.Parallel()
 	short := ClusterNLBName("alpha")
 	assert.Equal(t, "eks-alpha", short)
 
@@ -348,6 +351,7 @@ func TestSafeELBv2Name(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa", "subnet-bbb"}, false, nil, nil)
@@ -404,6 +408,7 @@ func TestEnsureClusterNLB_FreshCreatesAllThree(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.frontendIP = "" // no external IP pool → LB comes up without a reachable address
 
@@ -415,6 +420,7 @@ func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.frontendIP = "203.0.113.7"
 
@@ -426,6 +432,7 @@ func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	first, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
@@ -449,6 +456,7 @@ func TestEnsureClusterNLB_IdempotentReusesExisting(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_LBCreateErrorSurfaced(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.createLBErr = errors.New("InsufficientCapacity")
 
@@ -459,6 +467,7 @@ func TestEnsureClusterNLB_LBCreateErrorSurfaced(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_InternetFacingSchemeAndPublicFrontendIP(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	// Internet-facing LB record exposes a public IpAddress in its AZ addresses.
 	arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/net/eks-alpha/lb-001"
@@ -486,6 +495,7 @@ func TestEnsureClusterNLB_InternetFacingSchemeAndPublicFrontendIP(t *testing.T) 
 }
 
 func TestEnsureClusterNLB_InternalSchemeUsesPrivateFrontendIP(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	arn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/net/eks-alpha/lb-001"
 	nlbp.createLBOut = &elbv2.CreateLoadBalancerOutput{
@@ -511,6 +521,7 @@ func TestEnsureClusterNLB_InternalSchemeUsesPrivateFrontendIP(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_NarrowedPublicAccessSetsIngressCIDRs(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	cidrs := []string{"203.0.113.0/24", "198.51.100.7/32"}
@@ -541,6 +552,7 @@ func TestEnsureClusterNLB_DefaultPublicAccessSkipsIngressCIDRs(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_InternalSkipsIngressCIDRs(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	// Even with narrowed CIDRs, an internal NLB ignores them — its ingress
@@ -551,6 +563,7 @@ func TestEnsureClusterNLB_InternalSkipsIngressCIDRs(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.setIngressErr = errors.New("InvalidLoadBalancer")
 
@@ -560,6 +573,7 @@ func TestEnsureClusterNLB_SetIngressErrorSurfaced(t *testing.T) {
 }
 
 func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTarget(context.Background(), nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
@@ -574,6 +588,7 @@ func TestRegisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 }
 
 func TestRegisterClusterTarget_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	require.Error(t, RegisterClusterTarget(context.Background(), nlbp, "111122223333", "", "10.0.1.42", k3sAPIServerPort))
 	require.Error(t, RegisterClusterTarget(context.Background(), nlbp, "111122223333", "arn:tg/alpha", "", k3sAPIServerPort))
@@ -581,6 +596,7 @@ func TestRegisterClusterTarget_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha",
@@ -598,6 +614,7 @@ func TestRegisterClusterTargets_RegistersEveryENIIPInOneCall(t *testing.T) {
 }
 
 func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	err := RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha",
@@ -610,6 +627,7 @@ func TestRegisterClusterTargets_SkipsEmptyIPs(t *testing.T) {
 }
 
 func TestRegisterClusterTargets_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	require.Error(t, RegisterClusterTargets(context.Background(), nlbp, "111122223333", "", []string{"10.0.1.10"}, k3sAPIServerPort))
 	require.Error(t, RegisterClusterTargets(context.Background(), nlbp, "111122223333", "arn:tg/alpha", nil, k3sAPIServerPort))
@@ -618,6 +636,7 @@ func TestRegisterClusterTargets_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.registerErr = errors.New("TargetGroupNotFound")
 
@@ -627,6 +646,7 @@ func TestRegisterClusterTargets_RegisterErrorSurfaced(t *testing.T) {
 }
 
 func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	err := DeregisterClusterTarget(context.Background(), nlbp, "111122223333", "arn:tg/alpha", "10.0.1.42", k3sAPIServerPort)
@@ -641,6 +661,7 @@ func TestDeregisterClusterTarget_PostsENIIPAndAPIPort(t *testing.T) {
 }
 
 func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	out, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
@@ -658,6 +679,7 @@ func TestDeleteClusterNLB_DeletesBoth(t *testing.T) {
 }
 
 func TestDeleteClusterNLB_MissingResourcesNoOp(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	require.NoError(t, DeleteClusterNLB(context.Background(), nlbp, "111122223333", "alpha"))
@@ -666,6 +688,7 @@ func TestDeleteClusterNLB_MissingResourcesNoOp(t *testing.T) {
 }
 
 func TestDeleteClusterNLB_FirstErrorSurfacedSweepContinues(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
 	require.NoError(t, err)
@@ -712,6 +735,7 @@ func (f *fakeNLBProvisioner) seedLBCALB(name, vpcID, ownerCluster string) string
 // Only an LBC ALB in the customer VPC carrying this cluster's ownership tag is
 // reaped — a different VPC, a different cluster, or no ownership tag is left alone.
 func TestReapLBCLoadBalancers_DeletesOnlyOwnedInVPC(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	owned := nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
 	nlbp.seedLBCALB("k8s-toc-othervpc", "vpc-other", "alpha")   // wrong VPC
@@ -726,6 +750,7 @@ func TestReapLBCLoadBalancers_DeletesOnlyOwnedInVPC(t *testing.T) {
 
 // Empty cluster name or VPC id is a no-op (nothing to scope the reap to).
 func TestReapLBCLoadBalancers_EmptyArgsNoop(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
 
@@ -737,6 +762,7 @@ func TestReapLBCLoadBalancers_EmptyArgsNoop(t *testing.T) {
 // A delete failure surfaces so the teardown backstop retries rather than leaking
 // the ALB (which would pin the VPC undeletable).
 func TestReapLBCLoadBalancers_DeleteErrorSurfaces(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	nlbp.seedLBCALB("k8s-toc-owned", "vpc-cust", "alpha")
 	nlbp.deleteLBErr = errors.New("boom")

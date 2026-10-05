@@ -61,6 +61,7 @@ func TestCanaryRoundTrip_WritesADistinctValueEachRun(t *testing.T) {
 // A deleted bucket stands in for the unreachable-store case: the probe must
 // report an error rather than treating a failed write as success.
 func TestCanaryRoundTrip_FailsWhenBucketIsGone(t *testing.T) {
+	t.Parallel()
 	kv, js := newCanaryBucket(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

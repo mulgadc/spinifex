@@ -740,7 +740,10 @@ func assertLeavesRunning(t *testing.T, daemon *Daemon, instanceID string, want .
 
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		var status vm.InstanceState
-		daemon.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
+		if !daemon.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status }) {
+			// A finished terminate drops the instance from the manager.
+			status = vm.StateTerminated
+		}
 		assert.Contains(c, want, status)
 	}, 10*time.Second, 10*time.Millisecond)
 }

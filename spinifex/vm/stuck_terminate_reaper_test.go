@@ -23,6 +23,7 @@ func newStuckTerminateReaper(t *testing.T, cleaner InstanceCleaner) (*StuckTermi
 }
 
 func TestStuckTerminateReaper(t *testing.T) {
+	utils.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	t.Run("force-completes a terminate wedged past the timeout, reclaiming DoT volume space", func(t *testing.T) {
 		cleaner := &recordingInstanceCleaner{}
 		reaper, store := newStuckTerminateReaper(t, cleaner)

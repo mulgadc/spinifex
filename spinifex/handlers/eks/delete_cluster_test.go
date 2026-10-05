@@ -162,6 +162,7 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 // the VPC on DependencyViolation. All other teardown steps succeed, isolating the
 // SG failure as the sole cause.
 func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
+	t.Parallel()
 	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
 	sgDeleteWaitBudget, sgDeleteWaitInterval = 10*time.Millisecond, time.Millisecond
 	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
@@ -186,6 +187,7 @@ func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
 // while the private route table still routes to it fails with DependencyViolation
 // and strands the billable NAT-GW EIP.
 func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.ngw.routeGuard = f.rt
 	f.ngw.gws = []*fakeCPNatGateway{{
@@ -242,6 +244,7 @@ func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
 }
 
 func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
@@ -262,6 +265,7 @@ func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 // cluster wedges in DELETING. The fake models that in-use-until-detached semantics,
 // so the teardown only completes if detach precedes delete.
 func TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	meta, err := GetClusterMeta(t.Context(), f.kv, "alpha")
@@ -280,6 +284,7 @@ func TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete(t *testing.T) {
 }
 
 func TestDeleteCluster_NLBFailureLeavesMetaAndDELETING(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	// Seed the LB so delete is attempted, then force it to fail.
@@ -300,6 +305,7 @@ func TestDeleteCluster_NLBFailureLeavesMetaAndDELETING(t *testing.T) {
 }
 
 func TestDeleteCluster_VMTerminateFailureLeavesMeta(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
@@ -315,6 +321,7 @@ func TestDeleteCluster_VMTerminateFailureLeavesMeta(t *testing.T) {
 // so ReleaseAddress returns InvalidAllocationID.NotFound. That is idempotent
 // success — teardown must complete and sweep the KV, not wedge in DELETING.
 func TestDeleteCluster_EgressEIPAlreadyReleasedSweepsKV(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.eip.releaseErr = errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
 
@@ -330,6 +337,7 @@ func TestDeleteCluster_EgressEIPAlreadyReleasedSweepsKV(t *testing.T) {
 // A genuine release failure (not a NotFound) is retryable and must still wedge
 // the cluster in DELETING so the billable EIP is not orphaned.
 func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.eip.releaseErr = errors.New("AddressLimitExceeded")
 
@@ -348,6 +356,7 @@ func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
 // without running purgeClusterInfra — no duplicate ENI/NLB/EIP teardown — and
 // must leave the meta for the lease holder to sweep.
 func TestDeleteClusterSingleFlightLoserSkipsTeardown(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	// Stand in for the winning handler: hold the teardown lease.
@@ -372,6 +381,7 @@ func TestDeleteClusterSingleFlightLoserSkipsTeardown(t *testing.T) {
 // must release the teardown lease so a later delete or the backstop reaper can
 // re-acquire it (a leaked lease would wedge every future teardown until TTL).
 func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
@@ -382,6 +392,7 @@ func TestDeleteClusterWinnerReleasesTeardownLease(t *testing.T) {
 }
 
 func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -401,6 +412,7 @@ func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
 // there too, or they orphan — cross-referencing each other — and pin the
 // customer VPC with DependencyViolation, hanging tofu destroy of the VPC.
 func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	meta, err := GetClusterMeta(t.Context(), f.kv, "alpha")
@@ -434,6 +446,7 @@ func TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs(t *testing.T) {
 // single failure into the reaper's permanent "DependencyViolation" loop. A
 // later re-drive, once the unrelated failure clears, must then fully converge.
 func TestDeleteCluster_ManagedCPVPCAlreadyGoneClearsStateRecord(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	meta, err := GetClusterMeta(t.Context(), f.kv, "alpha")

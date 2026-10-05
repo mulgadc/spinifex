@@ -107,6 +107,7 @@ func (f *fakeIGWProvisioner) seedAttached(igwID, vpcID string, tagKV ...string) 
 }
 
 func TestEnsureClusterIGW_FreshCreatesAndAttaches(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 
 	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
@@ -125,6 +126,7 @@ func TestEnsureClusterIGW_FreshCreatesAndAttaches(t *testing.T) {
 }
 
 func TestEnsureClusterIGW_ExistingIsReusedNotRecreated(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-customer", "vpc-1") // untagged, customer-provisioned
 
@@ -135,6 +137,7 @@ func TestEnsureClusterIGW_ExistingIsReusedNotRecreated(t *testing.T) {
 }
 
 func TestEnsureClusterIGW_Idempotent(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
 	require.NoError(t, EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo"))
@@ -142,6 +145,7 @@ func TestEnsureClusterIGW_Idempotent(t *testing.T) {
 }
 
 func TestDeleteClusterIGW_RemovesOnlyOwned(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-owned", "vpc-1", tags.ManagedByKey, tags.ManagedByEKS, clusterEKSClusterTagKey, "demo")
 
@@ -154,6 +158,7 @@ func TestDeleteClusterIGW_RemovesOnlyOwned(t *testing.T) {
 }
 
 func TestDeleteClusterIGW_LeavesCustomerIGW(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-customer", "vpc-1") // untagged
 
@@ -165,6 +170,7 @@ func TestDeleteClusterIGW_LeavesCustomerIGW(t *testing.T) {
 }
 
 func TestDeleteClusterIGW_WrongClusterTagNotOwned(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 	f.seedAttached("igw-other", "vpc-1", tags.ManagedByKey, tags.ManagedByEKS, clusterEKSClusterTagKey, "other-cluster")
 
@@ -174,6 +180,7 @@ func TestDeleteClusterIGW_WrongClusterTagNotOwned(t *testing.T) {
 }
 
 func TestEnsureClusterIGW_CreateErrorPropagates(t *testing.T) {
+	t.Parallel()
 	f := newFakeIGWProvisioner()
 	f.createErr = errors.New("boom")
 	err := EnsureClusterIGW(context.Background(), f, "acct", "vpc-1", "demo")

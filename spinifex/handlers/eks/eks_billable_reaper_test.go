@@ -39,6 +39,7 @@ func cpVM(id, eniID string) *vm.VM {
 // by the GC backstop — the real fix for the orphan CP VM surviving a
 // daemon restart after DeleteCluster swept the meta.
 func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.vpc.describeByENI = map[string]*ec2.NetworkInterface{
 		"eni-orphan": cpENI("eni-orphan", "gone-cluster", testAccountID),
@@ -86,6 +87,7 @@ func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 // DELETING) is left to the cluster's own teardown, and a VM whose ENI is gone or
 // untagged is never reaped (orphan-hood cannot be confirmed).
 func TestRLC5_EKSBillableReaperSpareLiveAndUncertain(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta("alive")))
 

@@ -732,8 +732,9 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 
 // ownerProbeTimeout bounds the wait for a volume's owner subject to answer.
 // A mounted volume's owner is on the same NATS as the deleting node, so a
-// reply is a round trip away; no reply within this means nobody holds it.
-const ownerProbeTimeout = 2 * time.Second
+// reply is a round trip away; no reply within this means nobody holds it. A
+// var so tests can shorten it; nothing in production writes it.
+var ownerProbeTimeout = 2 * time.Second
 
 // volumeOwnership is what probing a volume's owner subject established.
 // ownershipUnknown is the zero value so a path that forgets to set it refuses

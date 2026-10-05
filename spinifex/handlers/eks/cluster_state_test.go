@@ -36,6 +36,7 @@ func sampleClusterMeta(name string) *ClusterMeta {
 }
 
 func TestPutClusterMeta_NilOrEmptyNameRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	require.Error(t, PutClusterMeta(t.Context(), kv, nil))
@@ -43,6 +44,7 @@ func TestPutClusterMeta_NilOrEmptyNameRejected(t *testing.T) {
 }
 
 func TestPutClusterMeta_RoundTrip(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	in := sampleClusterMeta("alpha")
@@ -61,6 +63,7 @@ func TestPutClusterMeta_RoundTrip(t *testing.T) {
 }
 
 func TestGetClusterMeta_MissingReturnsErrClusterNotFound(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, err := GetClusterMeta(t.Context(), kv, "missing")
@@ -68,6 +71,7 @@ func TestGetClusterMeta_MissingReturnsErrClusterNotFound(t *testing.T) {
 }
 
 func TestGetClusterMeta_EmptyNameRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, err := GetClusterMeta(t.Context(), kv, "")
@@ -76,6 +80,7 @@ func TestGetClusterMeta_EmptyNameRejected(t *testing.T) {
 }
 
 func TestGetClusterMeta_CorruptBlobRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, err := kv.Put(t.Context(), ClusterMetaKey("corrupt"), []byte("{not json"))
@@ -87,6 +92,7 @@ func TestGetClusterMeta_CorruptBlobRejected(t *testing.T) {
 }
 
 func TestSetClusterStatus_TransitionsAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
@@ -102,6 +108,7 @@ func TestSetClusterStatus_TransitionsAndIsIdempotent(t *testing.T) {
 }
 
 func TestSetClusterStatus_DeletingAlwaysAllowedFromAnyState(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	for _, from := range []ClusterStatus{ClusterStatusCreating, ClusterStatusActive, ClusterStatusFailed} {
@@ -116,6 +123,7 @@ func TestSetClusterStatus_DeletingAlwaysAllowedFromAnyState(t *testing.T) {
 }
 
 func TestSetClusterStatus_MissingReturnsErrClusterNotFound(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	err := SetClusterStatus(t.Context(), kv, "missing", ClusterStatusActive)
@@ -123,6 +131,7 @@ func TestSetClusterStatus_MissingReturnsErrClusterNotFound(t *testing.T) {
 }
 
 func TestSetClusterStatus_RecoversFromConcurrentRevisionBump(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
@@ -148,6 +157,7 @@ func TestSetClusterStatus_RecoversFromConcurrentRevisionBump(t *testing.T) {
 }
 
 func TestMarkClusterFailed_FromCreatingSetsStatusAndReason(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
@@ -159,6 +169,7 @@ func TestMarkClusterFailed_FromCreatingSetsStatusAndReason(t *testing.T) {
 }
 
 func TestMarkClusterFailed_NoopFromNonCreating(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	for _, from := range []ClusterStatus{ClusterStatusActive, ClusterStatusDeleting, ClusterStatusFailed} {
@@ -175,6 +186,7 @@ func TestMarkClusterFailed_NoopFromNonCreating(t *testing.T) {
 }
 
 func TestMarkClusterFailed_MissingReturnsErrClusterNotFound(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	err := MarkClusterFailed(t.Context(), kv, "ghost", "boom")
@@ -182,6 +194,7 @@ func TestMarkClusterFailed_MissingReturnsErrClusterNotFound(t *testing.T) {
 }
 
 func TestSetClusterCertificateAuthority_WritesAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
 
@@ -197,6 +210,7 @@ func TestSetClusterCertificateAuthority_WritesAndIsIdempotent(t *testing.T) {
 }
 
 func TestSetClusterCertificateAuthority_MissingReturnsErrClusterNotFound(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	err := SetClusterCertificateAuthority(t.Context(), kv, "ghost", "ca-blob")
@@ -204,6 +218,7 @@ func TestSetClusterCertificateAuthority_MissingReturnsErrClusterNotFound(t *test
 }
 
 func TestSetClusterCertificateAuthority_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	require.Error(t, SetClusterCertificateAuthority(t.Context(), kv, "", "ca-blob"))
@@ -211,6 +226,7 @@ func TestSetClusterCertificateAuthority_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	require.NoError(t, PutClusterMeta(t.Context(), kv, sampleClusterMeta("alpha")))
@@ -244,12 +260,14 @@ func TestDeleteClusterPrefix_SweepsEveryKey(t *testing.T) {
 }
 
 func TestDeleteClusterPrefix_EmptyBucketIsNoop(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "ghost"))
 }
 
 func TestDeleteClusterPrefix_EmptyNameRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	require.Error(t, DeleteClusterPrefix(t.Context(), kv, ""))

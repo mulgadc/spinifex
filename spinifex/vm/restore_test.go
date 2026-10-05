@@ -275,6 +275,7 @@ func spawnLiveChild(t *testing.T) int {
 // guest can outlive the daemon when it refuses to power down, and reconnecting to
 // it silently discarded the terminate and re-advertised the instance as running.
 func TestClassifyRestoredInstances_ShuttingDownWithLiveQEMUTerminates(t *testing.T) {
+	utils.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	m, store, _ := classifyTestManager(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	v := &VM{ID: "i-shutdown-live", Status: StateShuttingDown, InstanceType: "t3.micro"}
@@ -293,6 +294,7 @@ func TestClassifyRestoredInstances_ShuttingDownWithLiveQEMUTerminates(t *testing
 // to Stopped rather than reconnect, so a guest that ignored the power button does
 // not come back running.
 func TestClassifyRestoredInstances_StoppingWithLiveQEMUStops(t *testing.T) {
+	utils.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	m, store, _ := classifyTestManager(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	v := &VM{ID: "i-stopping-live", Status: StateStopping, InstanceType: "t3.micro"}
@@ -563,6 +565,7 @@ func TestIsInstanceProcessRunning(t *testing.T) {
 }
 
 func TestKillOrphanedQEMU(t *testing.T) {
+	utils.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	t.Run("ReadPidFile fails returns false without kill", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 		instance := &VM{ID: "i-no-pidfile"}

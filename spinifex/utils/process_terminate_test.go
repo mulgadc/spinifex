@@ -40,6 +40,7 @@ func TestTerminateProcessReturnsAsSoonAsTheProcessExits(t *testing.T) {
 // the caller escalates to ForceKillProcess, and can only do that if this
 // returns.
 func TestTerminateProcessGivesUpAtTheGraceAndDoesNotKill(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sh", "-c", "trap '' TERM; echo ready; while true; do sleep 1; done")
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)

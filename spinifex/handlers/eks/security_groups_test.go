@@ -194,6 +194,7 @@ func (f *fakeSGProvisioner) AuthorizeSecurityGroupIngress(_ context.Context, inp
 }
 
 func TestEnsureClusterSGs_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
 	_, _, err := EnsureClusterSGs(context.Background(), sgp, "111122223333", "", "vpc-aaa")
@@ -207,6 +208,7 @@ func TestEnsureClusterSGs_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestEnsureClusterSGs_FreshCreatesBoth(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-cp-001", "sg-ng-002"}
 
@@ -222,6 +224,7 @@ func TestEnsureClusterSGs_FreshCreatesBoth(t *testing.T) {
 }
 
 func TestEnsureClusterSGs_IdempotentReusesExisting(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
@@ -234,6 +237,7 @@ func TestEnsureClusterSGs_IdempotentReusesExisting(t *testing.T) {
 }
 
 func TestEnsureClusterSGs_MixedExistenceCreatesMissing(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.createIDs = []string{"sg-new-ng"}
@@ -248,6 +252,7 @@ func TestEnsureClusterSGs_MixedExistenceCreatesMissing(t *testing.T) {
 }
 
 func TestEnsureClusterSGs_CreateErrorSurfacedFromControlPlane(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.createErr = errors.New("vpcd unavailable")
 
@@ -257,6 +262,7 @@ func TestEnsureClusterSGs_CreateErrorSurfacedFromControlPlane(t *testing.T) {
 }
 
 func TestDeleteClusterSGs_DeletesBothExisting(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
@@ -273,6 +279,7 @@ func TestDeleteClusterSGs_DeletesBothExisting(t *testing.T) {
 // deleted alongside the named cluster SGs, while an untagged third-party SG in the
 // same VPC has its rules revoked but is left intact.
 func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
@@ -299,6 +306,7 @@ func TestDeleteClusterSGs_ReapsLBCTaggedSGs(t *testing.T) {
 }
 
 func TestDeleteClusterSGs_MissingSGsNoOp(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
 	err := DeleteClusterSGs(context.Background(), sgp, "111122223333", "alpha", "vpc-aaa")
@@ -307,6 +315,7 @@ func TestDeleteClusterSGs_MissingSGsNoOp(t *testing.T) {
 }
 
 func TestDeleteClusterSGs_FirstErrorSurfacedSweepContinues(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-existing-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-existing-ng"
@@ -357,6 +366,7 @@ func TestDeleteClusterSGs_RetriesDependencyViolation(t *testing.T) {
 // AWS rejects deleting either while the other's rule points at it. DeleteClusterSGs
 // must revoke all ingress on both before deleting, or the SGs leak and pin the VPC.
 func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
@@ -386,6 +396,7 @@ func TestDeleteClusterSGs_RevokesCrossRefsBeforeDelete(t *testing.T) {
 // directions on every non-default SG so the cluster SGs delete, must NOT delete
 // the referrer SGs (their owners do), and must leave the default SG untouched.
 func TestDeleteClusterSGs_RevokesEgressAndNonClusterReferrers(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"
 	sgp.existing["eks-cluster-alpha-nodegroup-sg|vpc-aaa"] = "sg-ng"
@@ -440,6 +451,7 @@ func groupRefPerm(proto string, port int64, refSG string) *ec2.IpPermission {
 }
 
 func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
 	err := EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "sg-cp-001", "10.0.0.0/16")
@@ -463,6 +475,7 @@ func TestEnsureControlPlaneIngress_AuthorizesAPIServerFromVPCCIDR(t *testing.T) 
 }
 
 func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
 	require.Error(t, EnsureControlPlaneIngress(context.Background(), sgp, "111122223333", "", "10.0.0.0/16"))
@@ -471,6 +484,7 @@ func TestEnsureControlPlaneIngress_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestEnsureControlPlaneIngress_DuplicateTolerated(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
@@ -479,6 +493,7 @@ func TestEnsureControlPlaneIngress_DuplicateTolerated(t *testing.T) {
 }
 
 func TestEnsureControlPlaneIngress_AuthorizeErrorSurfaced(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New("vpcd unavailable")
 
@@ -488,6 +503,7 @@ func TestEnsureControlPlaneIngress_AuthorizeErrorSurfaced(t *testing.T) {
 }
 
 func TestEnsureControlPlaneHAIngress_AuthorizesEtcdAndKubeletSelfReferenced(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
 	err := EnsureControlPlaneHAIngress(context.Background(), sgp, "111122223333", "sg-cp-001")
@@ -523,6 +539,7 @@ func TestEnsureControlPlaneHAIngress_AuthorizesEtcdAndKubeletSelfReferenced(t *t
 }
 
 func TestEnsureControlPlaneHAIngress_EmptyInputRejected(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 
 	require.Error(t, EnsureControlPlaneHAIngress(context.Background(), sgp, "111122223333", ""))
@@ -530,6 +547,7 @@ func TestEnsureControlPlaneHAIngress_EmptyInputRejected(t *testing.T) {
 }
 
 func TestEnsureControlPlaneHAIngress_DuplicateTolerated(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
@@ -538,6 +556,7 @@ func TestEnsureControlPlaneHAIngress_DuplicateTolerated(t *testing.T) {
 }
 
 func TestEnsureControlPlaneHAIngress_AuthorizeErrorSurfaced(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New("vpcd unavailable")
 

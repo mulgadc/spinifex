@@ -402,10 +402,7 @@ func TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged(t *testing.T) {
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-referenced1", Socket: socket}
-	reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate)
-
-	// Give a real signal every chance to have landed before asserting it did not.
-	time.Sleep(100 * time.Millisecond)
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate), "a referenced orphan must never be signalled")
 	assert.True(t, utils.ProcessAlive(pid), "a referenced orphan must never be signalled")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "a live orphan's socket must not be removed")
@@ -427,9 +424,7 @@ func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *test
 		"driver=nbd,node-name=vol0,server.type=inet,server.host=127.0.0.1,server.port=10899,export=")
 
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-tcp1", Port: 10899}
-	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
-
-	time.Sleep(100 * time.Millisecond)
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "a referenced orphan must never be signalled")
 	assert.True(t, utils.ProcessAlive(pid), "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
 }
 
@@ -500,9 +495,7 @@ func TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged(t *testing.
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-eacces1", Socket: socket}
-	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
-
-	time.Sleep(100 * time.Millisecond)
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "an inconclusive scan must never result in a signal")
 	assert.True(t, utils.ProcessAlive(pid), "an inconclusive scan must never result in a signal")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because the scan was inconclusive must keep its socket")
@@ -574,9 +567,7 @@ func TestReapOrphanedNbdkit_HidepidInvisible_DeclinesEvenOnACleanScan(t *testing
 
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-hidepid1", Socket: socket}
-	reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable)
-
-	time.Sleep(100 * time.Millisecond)
+	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "hidepid=invisible must never be read as a clean scan")
 	assert.True(t, utils.ProcessAlive(pid), "hidepid=invisible must never be read as a clean 'no referencer' scan")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because entries could be hidden must keep its socket")

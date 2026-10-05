@@ -460,8 +460,8 @@ func TestParamGuard_LeavesARecoveringEngineAlone(t *testing.T) {
 	engine := &fakeRecovery{restored: true}
 	guard := newTestGuard(engine, stubProbe(t, 1, nil))
 	// Bounded so the deadline-resetting loop cannot run forever if it stops
-	// resetting; the assertion is that the rollback was never reached.
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	// resetting; four rollback budgets, so a missed reset would roll back.
+	ctx, cancel := context.WithTimeout(t.Context(), 80*time.Millisecond)
 	defer cancel()
 	guard.Run(ctx)
 

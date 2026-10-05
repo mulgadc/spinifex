@@ -35,6 +35,7 @@ func fakeDrainResponder(t *testing.T, nc *nats.Conn, released int, errMsg string
 }
 
 func TestDrainDHCPLeasesSumsReleased(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	fakeDrainResponder(t, nc, 7, "")
 
@@ -44,6 +45,7 @@ func TestDrainDHCPLeasesSumsReleased(t *testing.T) {
 }
 
 func TestDrainDHCPLeasesReportsResponderError(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	fakeDrainResponder(t, nc, 0, "list leases for drain: boom")
 
@@ -55,6 +57,7 @@ func TestDrainDHCPLeasesReportsResponderError(t *testing.T) {
 }
 
 func TestDrainDHCPLeasesNoResponders(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	// No vpcd subscribed: the collection window elapses with zero replies.
@@ -281,7 +284,7 @@ func captureSlog(t *testing.T, fn func()) string {
 // at WARN level, and names only the running instance, not the stopped one.
 func TestWarnIfGuestsLeftRunningNamesRunningGuests(t *testing.T) {
 	origTimeout := guestEnumerationTimeout
-	guestEnumerationTimeout = 200 * time.Millisecond
+	guestEnumerationTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { guestEnumerationTimeout = origTimeout })
 
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -312,7 +315,7 @@ func TestWarnIfGuestsLeftRunningNamesRunningGuests(t *testing.T) {
 // running guests produces no warning.
 func TestWarnIfGuestsLeftRunningNoGuestsIsSilent(t *testing.T) {
 	origTimeout := guestEnumerationTimeout
-	guestEnumerationTimeout = 200 * time.Millisecond
+	guestEnumerationTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { guestEnumerationTimeout = origTimeout })
 
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -510,7 +513,7 @@ func TestCollectLocalShutdownACKExhaustedReturnsWithinBudget(t *testing.T) {
 // must log at ERROR, not WARN, and still name only the running instance.
 func TestReportGuestsLeftRunningSevereLogsErrorAndNamesGuests(t *testing.T) {
 	origTimeout := guestEnumerationTimeout
-	guestEnumerationTimeout = 200 * time.Millisecond
+	guestEnumerationTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { guestEnumerationTimeout = origTimeout })
 
 	_, nc, _ := testutil.StartTestJetStream(t)

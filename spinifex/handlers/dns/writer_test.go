@@ -144,9 +144,7 @@ secret_key = "READONLY"
 }
 
 func TestZoneS3ConfigRejectsTOMLInsecure(t *testing.T) {
-	// The SDK retries the TLS failure; the 2026 retry mode backs off from 50ms
-	// instead of 1s. t.Setenv rules out t.Parallel.
-	t.Setenv("AWS_NEW_RETRIES_2026", "true")
+	t.Parallel()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

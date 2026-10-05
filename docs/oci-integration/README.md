@@ -34,6 +34,7 @@ resources:
 - [4. Write your Terraform inputs](#4-write-your-terraform-inputs)
 - [5. Deploy](#5-deploy)
 - [6. Check it worked](#6-check-it-worked)
+- [7. Set up your cluster](#7-set-up-your-cluster)
 - [Harden it before production](#harden-it-before-production)
 - [Next steps](#next-steps)
 - [Removing the deployment](#removing-the-deployment)
@@ -371,21 +372,26 @@ grep compartment_ocid terraform.auto.tfvars
     --topology vm-single \
     --channel dev \
     --credential-hook ./spx-oci-config.sh \
+    --skip-workload \
     --keep
 ```
 
-One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing, verifies it, then launches real guests on public addresses and tears those guests down again.
+> [!IMPORTANT]
+> **`--channel dev` is needed today.** OCI support is not in a published release yet, so the current release cannot allocate an OCI public address. From the next release onward, drop `--channel dev` and the deploy takes `latest`.
+
+One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies that the address allocator came up.
 
 | Argument            | What to pass                                                                                                                                                                                                                                                  |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent                       |
 | `--channel`         | **`dev` until the next release ships**, because OCI support is not in the current stable release yet. It resolves to the newest pre-release at the moment you run it. `latest` is the default and becomes the right answer once a release carries OCI support |
 | `--credential-hook` | `./spx-oci-config.sh`, which installs the credential from step 2 on every node. With an instance principal, replace it with `--instance-principal` and there is no key to install                                                                             |
+| `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                                              |
 | `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                                         |
 
 **Your `terraform.auto.tfvars` outranks the topology**, so `--topology bm` with `compute_shape = "BM.Standard.E5.192"` in that file deploys on that shape rather than the one CI runs. The run logs the shape and node count it actually built, straight after the host addresses.
 
-Add `--skip-workload` to stop once the cluster is verified, without launching the validation guests. Add `--dry-run` to print the plan and change nothing.
+Add `--dry-run` to print the plan and change nothing.
 
 > [!NOTE]
 > **If the install step fails to download, pass a tag instead of the channel.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited and then 404s. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
@@ -400,38 +406,58 @@ The stages print as they finish, and all of these have to appear:
 [validate-vm-single] installing Spinifex on each node
 [validate-vm-single] initializing the single node
 [validate-vm-single] running the credential hook
+[validate-vm-single] credential hook ok
 [validate-vm-single] configuring the IMDS remap and the external pool
 [validate-vm-single] checking the allocator came up
 [validate-vm-single] 150.230.13.131 allocator ready
 [validate-vm-single] cluster membership
+[validate-vm-single] --skip-workload: stopping before the workbook
 [validate-vm-single] --keep: leaving the infrastructure up, no verdict recorded
 ```
 
 **`allocator ready` is the line to look for.** Every line above it also prints on a node that cannot allocate a public address, and that failure stays silent until a guest asks for one.
 
-`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, or if `allocator ready` never arrives, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes.
+`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes.
 
-Then prove it the way a customer would. On the node, use the `[spinifex]` profile that `spx admin init` wrote into `~/.aws/credentials`:
+### Access the Spinifex node
+
+SSH to the node at the address on the `allocator ready` line:
+
+```bash
+ssh -i ~/.ssh/oci-spx ubuntu@<node-ip>
+```
+
+Then call the AWS surface with the `[spinifex]` profile that `spx admin init` wrote into `~/.aws/credentials`:
 
 ```bash
 export AWS_PROFILE=spinifex
-
-aws ec2 allocate-address
-aws ec2 run-instances --image-id <ami> --instance-type t3.micro --key-name <key> \
-    --subnet-id <subnet> --associate-public-ip-address
-aws ec2 describe-instances --query \
-    'Reservations[].Instances[].[InstanceId,PublicIpAddress,State.Name]' --output text
+aws ec2 describe-instance-types
 ```
 
-Then reach the guest **from your workstation, not from the node**:
-
-```bash
-ping -c 3 <public-ip>
-ssh -i <key> ubuntu@<public-ip> hostname
+```text
+{
+    "InstanceTypes": [
+        {
+            "InstanceType": "c7a.12xlarge",
+            "CurrentGeneration": true,
+        ...
+        }
+    ]
+}
 ```
+
+If this returns a list of available instance types, your installation is working.
+
+**Congratulations! Spinifex is installed.**
+
+## 7. Set up your cluster
+
+Spinifex is running, but it holds nothing yet — no machine images, no networks, no instances.
+
+Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance.
 
 > [!IMPORTANT]
-> **Probe a public address from outside the VCN.** A node is a poor vantage point for its own network's public addresses, so a timeout measured from a node says nothing about the guest. Private addresses are a separate question, and those do work from inside.
+> **Probe a guest's public address from your workstation, not from the node.** A node is a poor vantage point for its own network's public addresses, so a timeout measured there says nothing about the guest. Private addresses are a separate question, and those do work from inside.
 
 ## Harden it before production
 

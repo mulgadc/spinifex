@@ -99,7 +99,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_wrapper: false
 
@@ -250,7 +250,7 @@ jobs:
       # collect step above chose, so terraform.tfstate cannot reach an artifact.
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-oci-${{ github.run_id }}
           path: |

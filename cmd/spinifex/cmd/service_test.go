@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/services/northstar"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/northstar"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

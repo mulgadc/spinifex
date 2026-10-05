@@ -853,6 +853,62 @@ func TestAttachRolePolicy_ConcurrentDistinctPolicies(t *testing.T) {
 	assert.ElementsMatch(t, arns, got, "all concurrently-attached policies must persist")
 }
 
+// A recorded ARN whose policy cannot be read must fail the call, not shorten
+// the list. Reporting it as not attached makes a client delete its own record
+// of the attachment while DeleteRole keeps refusing on the same field, so the
+// attachment can never be cleared through the API.
+func TestListAttachedRolePolicies_UnreadablePolicyIsAnError(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "unreadable-attach")
+	policy := createTestPolicy(t, svc, "UnreadablePolicy")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: policy.Arn,
+	})
+	require.NoError(t, err)
+
+	// DeletePolicy refuses while the policy is attached, so the only way to this
+	// state is the bucket directly — which is the point: it models a failed read.
+	require.NoError(t, svc.policiesBucket.Delete(t.Context(), testAccountID+".UnreadablePolicy"))
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.Error(t, err, "an unresolvable attached ARN must not be dropped")
+	assert.Nil(t, out)
+	assert.Contains(t, err.Error(), *policy.Arn, "the error must name the ARN it could not read")
+
+	// The attachment is still recorded, which is what DeleteRole refuses on.
+	_, err = svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}
+
+// AWS-managed ARNs are stored without a policy record by design, so they must
+// still round-trip once an unreadable ARN is an error.
+func TestListAttachedRolePolicies_AWSManagedNeedsNoRecord(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "aws-managed-attach")
+	const arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String(arn),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, arn, *out.AttachedPolicies[0].PolicyArn)
+	assert.Equal(t, "AmazonEKSClusterPolicy", *out.AttachedPolicies[0].PolicyName)
+}
+
 func TestListAttachedRolePolicies_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

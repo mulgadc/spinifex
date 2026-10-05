@@ -8,6 +8,10 @@ output "security_list_ocids" { value = { public = oci_core_security_list.public.
 output "compute_ocids" { value = [for instance in oci_core_instance.mulgadc : instance.id] }
 output "data_volume_ocids" { value = [for volume in oci_core_volume.mulgadc_data : volume.id] }
 
+# Read back rather than assumed: the shape can come from a tfvars file, so this is
+# the only place that knows what was actually built.
+output "compute_shape" { value = var.compute_shape }
+
 # What the Spinifex deploy path consumes. The primary VNIC is the host plane, so
 # these are the addresses update-nodes.sh and install-node.sh connect to.
 output "nodes" {

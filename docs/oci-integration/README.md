@@ -1,8 +1,8 @@
 ---
-title: "Spinifex on Oracle Cloud"
+title: "Oracle Cloud Infrastructure (OCI)"
 seoTitle: "Run Spinifex on Oracle Cloud Infrastructure — Spinifex Docs"
-description: "Deploy Spinifex on OCI end to end with Terraform, single node or three, and give guests real public addresses through OCI's own API."
-category: "Install"
+description: "Deploy Spinifex on Oracle Cloud Infrastructure end to end with Terraform, on one node or three, and give guests real public addresses through OCI's own API."
+category: "Cloud Install"
 tags:
   - install
   - oci
@@ -10,10 +10,10 @@ tags:
   - terraform
   - cluster
 resources:
+  - title: "OCI Architecture and Operations"
+    url: "/docs/oci-architecture"
   - title: "Multi-Node Install"
     url: "/docs/install-multi-node"
-  - title: "VPC Networking"
-    url: "/docs/vpc-networking"
   - title: "Host Firewall"
     url: "/docs/host-firewall"
   - title: "Spinifex Repository"
@@ -22,58 +22,107 @@ resources:
 
 # Running Spinifex on Oracle Cloud Infrastructure
 
-> Run the AWS surface — EC2, EBS, S3, VPC — inside your own OCI tenancy, with guests that get real, publicly reachable addresses through OCI's API.
-
-Spinifex brings core AWS services to hardware you control: a node runs the Spinifex daemon, QEMU/KVM for guests, OVN for VPC networking, [Predastore](https://github.com/mulgadc/predastore) for S3 and [Viperblock](https://github.com/mulgadc/viperblock) for EBS, all behind a SigV4 endpoint the ordinary AWS SDKs and CLI talk to unmodified.
-
-This guide runs that stack on OCI. **Terraform does the whole deployment** — the VCN, the block volumes, both VNICs per node, the install, the cluster formation and the OCI public-address allocator — so [Deploy](#deploy) is four steps and one command, and everything after it is reference. One node is a working install; three is the minimum that survives losing a node. Every command below was run against a live OCI tenancy.
+> Run the AWS surface (EC2, EBS, S3, VPC) inside your own OCI tenancy, with guests that get real, publicly reachable addresses through OCI's API.
 
 ## Table of Contents
 
-- [Deploy](#deploy)
-  - [What you need](#what-you-need)
-  - [1. Get the configuration](#1-get-the-configuration)
-  - [2. Choose one node or three](#2-choose-one-node-or-three)
-  - [3. Write your Terraform inputs](#3-write-your-terraform-inputs)
-  - [4. Run the deploy](#4-run-the-deploy)
-  - [What a successful run looks like](#what-a-successful-run-looks-like)
-  - [If a stage fails](#if-a-stage-fails)
-  - [Removing the deployment](#removing-the-deployment)
-- [Verify end to end](#verify-end-to-end)
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [1. Clone the Spinifex repository](#1-clone-the-spinifex-repository)
+- [2. Give the nodes a limited scoped OCI credential](#2-give-the-nodes-a-limited-scoped-oci-credential)
+- [3. Choose deployment method](#3-choose-deployment-method)
+- [4. Write your Terraform inputs](#4-write-your-terraform-inputs)
+- [5. Deploy](#5-deploy)
+- [6. Check it worked](#6-check-it-worked)
+- [Harden it before production](#harden-it-before-production)
 - [Next steps](#next-steps)
-- [Reference](#reference)
-  - [Why run Spinifex on OCI](#why-run-spinifex-on-oci)
-  - [Sizing](#sizing)
-  - [How it fits together](#how-it-fits-together)
-  - [Credentials — an instance principal, or an API key](#credentials--an-instance-principal-or-an-api-key)
-  - [The IAM policy](#the-iam-policy)
-  - [Quotas](#quotas)
-  - [The `oci` CLI](#the-oci-cli)
-  - [What Terraform builds, per node](#what-terraform-builds-per-node)
-  - [Every Terraform variable](#every-terraform-variable)
+- [Removing the deployment](#removing-the-deployment)
 - [Troubleshooting](#troubleshooting)
-- [Deploying without Terraform](#deploying-without-terraform)
 
 ---
 
-## Deploy
+## Overview
 
-### What you need
+Spinifex is an open-source infrastructure platform that brings core AWS services to bare-metal, edge, and on-prem environments. It serves the EC2, EBS, S3, VPC, IAM and STS APIs over a SigV4 endpoint of your own, so the AWS CLI, the AWS SDKs and the AWS Terraform provider all work against it unmodified. Nothing a tenant has written has to be rewritten to run on it.
 
-| On your workstation                 | Why                                                                                                                                                   |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Terraform or OpenTofu, `git`, Python 3 | Python is used only by a helper that is standard library only, so there is nothing to `pip install`                                                |
-| An SSH keypair at `~/.ssh/oci-spx`  | Created in step 1. The deploy refuses to start without it rather than building instances you cannot log in to                                         |
-| An OCI compartment **OCID**         | This deploys into a compartment that already exists. Creating one needs tenancy-root rights the API user must not have                                 |
-| OCI API credentials in `~/.oci/config` | For Terraform itself, to build the infrastructure                                                                                                  |
-| A way for **the nodes** to call OCI | Separate from the above, and the one prerequisite worth reading first: an [instance principal or an API key](#credentials--an-instance-principal-or-an-api-key) |
+This guide installs Spinifex on Oracle Cloud Infrastructure, on one instance or three, with guests that get real public addresses from OCI's own pool. The install is the same product you would put on your own servers, so [Single-Node Install](/docs/install) and [Multi-Node Install](/docs/install-multi-node) describe the same formation, storage and networking. What differs here is the layer underneath, because a VCN is not an Ethernet segment and public addresses come from an API rather than a range you choose.
 
-> [!IMPORTANT]
-> **That last row is the one that bites.** Terraform's credentials build the infrastructure; the nodes need their own credentials at runtime to allocate public addresses. A node with none forms, passes every health check, and then refuses every launch that wants a public address with `InsufficientAddressCapacity`, naming no cause outside its own journal. Decide between the two now — it changes one argument in step 4.
+**Why run it on OCI:**
 
-### 1. Get the configuration
+- **Cost.** OCI prices compute and block storage below the large US clouds, and one Spinifex node serves a tenant's whole fleet as QEMU guests on hardware you are billed for once.
+- **Egress.** Oracle's outbound-transfer allowance and per-GB rate are far cheaper than the majors, and guest-to-guest traffic rides the private plane, where it is not billed as internet egress at all.
+- **Portability.** Your tenants code against Spinifex, not against OCI, so the same workloads move to your own rack or an edge site later as a deployment decision rather than a rewrite.
+- **Real public addresses.** Spinifex registers each guest's address with OCI, so a guest is reachable on the internet rather than hidden behind a shared NAT.
 
-The Terraform configuration and the deploy driver live in the Spinifex repository:
+**What gets installed**, on every node:
+
+- Spinifex daemon and CLI
+- QEMU/KVM for guests
+- OVN and Open vSwitch for VPC networking
+- [Predastore](https://github.com/mulgadc/predastore), S3-compatible object storage
+- [Viperblock](https://github.com/mulgadc/viperblock), EBS-compatible block storage
+- The OCI public-address allocator, which is the one component specific to this platform
+
+Nodes run **Ubuntu 26.04**, resolved at plan time as the newest Canonical platform image for your shape and region. Oracle Linux support as the host OS to run Spinifex is under active development.
+
+**Terraform does the whole deployment:** the VCN, the block volumes, both VNICs per node, the Spinifex install, the cluster formation and the allocator. Six steps below, one command, about ten minutes for a single node.
+
+What sits underneath is in [Architecture and Operations](../oci-architecture/README.md), which also carries the IAM policy, the quotas, every variable and the troubleshooting.
+
+## Prerequisites
+
+|                                            |                                                                                                                                         |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **An OCI compartment OCID**                | This deploys into a compartment that already exists. Creating one needs tenancy-root rights the API user must not have                  |
+| **OCI credentials in `~/.oci/config`**     | For Terraform, to build the infrastructure. `oci setup config` writes one, or write it by hand                                          |
+| **An OCI API key for the nodes**           | Separate from the above, and the subject of step 2. Without it a node comes up healthy and still cannot give any guest a public address |
+| **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install`                                   |
+
+Check two quotas before you start, because both refuse at apply time rather than at plan time. **Reserved public IPs** are capped at 50 per region across the whole tenancy, and the **compute limit for your shape** starts at zero for bare metal on many new tenancies. [Quotas](../oci-architecture/README.md#quotas) has the commands.
+
+For the workstation (Linux, MacOS, Windows [WSL]) that will be used to deploy Spinifex on OCI the following prerequisites are required.
+
+### OCI CLI tool
+
+Ensure the `oci` CLI tool is pre-installed. Follow the install guide at: [https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm)
+
+Once installed configure your OCI credentials (~/.oci/config) which will be used in later steps in the installation tutorial.
+
+`oci setup config`
+
+Once setup validate your OCI credentials work as expected. `$CID` is the compartment you are deploying into, which is a `ocid1.compartment.oc1..` OCID, or your tenancy OCID if that compartment is the root. The same value is used throughout this guide and again as `compartment_ocid` in step 4.
+
+```sh
+export CID="ocid1.compartment.oc1..xxx"
+oci compute shape list --compartment-id $CID
+```
+
+Expected output to confirm API key works as expected:
+
+```json
+{
+  "data": [
+    {
+      "baseline-ocpu-utilizations": null,
+      "billing-type": "PAID",
+      ...
+    }
+  ]
+}
+```
+
+### Install Terraform / OpenTofu
+
+The next prerequisite is to install Terraform or OpenTofu to deploy the Spinifex stack on OCI.
+
+- Terraform - [https://developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install)
+- OpenTofu - [https://opentofu.org/docs/intro/install/](https://opentofu.org/docs/intro/install/)
+
+## Instructions
+
+## 1. Clone the Spinifex repository
+
+To begin the deployment of Spinifex on OCI deploy the repository:
 
 ```bash
 git clone https://github.com/mulgadc/spinifex.git
@@ -82,101 +131,273 @@ git switch dev
 cd scripts/terraform/oci-spx
 ```
 
+> [!IMPORTANT]
+> **`git switch dev` is needed today.** OCI support is not in the current release, so the deploy driver is not on `main` yet. From the next release onward `main` carries it and you can skip that line. This chooses the _Terraform and the driver_ only. Which Spinifex build lands on the nodes is step 5.
+
+Then make a new SSH keypair the deploy installs on every Spinifex node which you can login with:
+
 ```bash
-# The deploy installs this on every node and logs in with it. Any type OpenSSH
-# supports is fine; it must be at this path, or named with --ssh-public-key.
 ssh-keygen -t ed25519 -f ~/.ssh/oci-spx -N '' -C spinifex-oci
 ```
 
-> [!NOTE]
-> **`git switch dev` is needed until the next release ships.** OCI support is not in `v1.21.0`, so the configuration you are about to run is not on `main` yet. That ref decides the _Terraform and the driver_ only — which Spinifex build lands on the nodes is a separate choice, made by `--version` in step 4.
+Terraform reads your OCI credential from `~/.oci/config` which is a prerequisites step above, taking the tenancy, the user, the fingerprint, the key and **the region** from the profile. A config holding a single `[DEFAULT]` profile, which is what `oci setup config` writes, needs nothing further.
 
-### 2. Choose one node or three
-
-**This is the only architectural decision, and it is one line in step 3.**
-
-|                                | Single node                                  | Three nodes                                                                                      |
-| ------------------------------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **`node_count`**               | `1`                                          | `3`                                                                                              |
-| **Survives losing a node**     | No                                           | Yes — NATS keeps quorum, predastore RS(2,1) keeps the data readable, the OVN raft keeps a leader |
-| **Public addresses available** | 64 — the per-VNIC secondary private IP limit | 192, three VNICs' worth, still bounded by the regional reserved-public-IP quota                  |
-| **Fault domains**              | One                                          | Three, one per node, chosen by Terraform                                                         |
-| **Use it for**                 | Evaluation, a lab, an edge site with one box | Anything you would be unhappy to lose                                                            |
-
-Two is not an option worth taking: it doubles the cost of a single node and gives you a cluster that cannot form a quorum. See [Cluster sizing](/docs/install-multi-node#cluster-sizing) and [Sizing](#sizing) for shapes.
-
-### 3. Write your Terraform inputs
-
-One hand-edited file, in the directory you are already in. Every variable has a default that builds a working single node, so only `compartment_ocid` is strictly required:
+Optionally with more than one profile you can define one using the environment variable `OCI_CLI_PROFILE`
 
 ```bash
-cat > terraform.auto.tfvars <<'EOF'
-compartment_ocid            = "ocid1.compartment.oc1..aaaa..."
-deployment_name             = "spinifex"
+export OCI_CLI_PROFILE=customprofile
+```
 
-# Shape and size. Bare metal is preferred; a flex VM is what the quota allows.
-compute_shape               = "VM.Standard.E6.Flex"
-compute_ocpus               = 8          # OCI counts an OCPU as a full core
-compute_memory_in_gbs       = 32
+## 2. Give the nodes a limited scoped OCI credential
 
-# 1 for a single node, 3 for a cluster. This is the only line that chooses.
-node_count                  = 3
+Spinifex calls the OCI API at runtime to register each guest's public address and related functions for Spinifex to support running within an OCI environment. This step gives Spinifex a credential with a limited permission scope for improved security.
+
+### Generate the key
+
+```bash
+openssl genrsa -out ~/.oci/oci_api_key_spx.pem 2048
+chmod 600 ~/.oci/oci_api_key_spx.pem
+openssl rsa -pubout -in ~/.oci/oci_api_key_spx.pem -out ~/.oci/oci_api_key_spx_public.pem
+openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key_spx.pem | openssl md5 -c
+```
+
+The last command prints the **fingerprint**, which is how OCI names a key everywhere it refers to one. Keep it; you need it in the config file at the end of this step.
+
+### Create a user and a group for it
+
+Both of these are identity resources, so they are created in the tenancy rather than in your compartment. This step requires the prerequisite `oci` CLI tool to be installed and configured with an API scope that includes creating new user accounts and groups.
+
+Replace `admin@yourdomain.com` with your administrator email which will be linked to the new OCI user account.
+
+```bash
+export ADMIN_EMAIL=admin@yourdomain.com
+
+USER_OCID=$(oci iam user create --name spinifex-allocator \
+    --email $ADMIN_EMAIL \
+    --description "Spinifex external-address allocator" \
+    --query 'data.id' --raw-output)
+
+GROUP_OCID=$(oci iam group create --name SpinifexOperators \
+    --description "May manage the private and public IPs behind Spinifex external addresses" \
+    --query 'data.id' --raw-output)
+
+oci iam group add-user --group-id "$GROUP_OCID" --user-id "$USER_OCID"
+```
+
+On success the output will include:
+
+```json
+{
+  "data": {
+    "compartment-id": "ocid1.tenancy.oc1..xxx",
+    "group-id": "ocid1.group.oc1..xxx",
+    "id": "ocid1.groupmembership.oc1..axxx",
+    "inactive-status": null,
+    "lifecycle-state": "ACTIVE",
+    "time-created": "2026-10-05T19:39:48.478000+00:00",
+    "user-id": "ocid1.user.oc1..xxx"
+  }
+}
+```
+
+An email will be sent to the designated `$ADMIN_EMAIL` defined, you are required to click the "Activate Your Account" link to fully activate the new account in OCI.
+
+> [!NOTE]
+> **If these fail with `NotAuthorizedOrNotFound`, you do not have identity rights in the tenancy**, which is normal when someone allocated you a compartment inside theirs. Ask whoever owns the tenancy to grant you the required permissions.
+
+### Grant the group its three permissions
+
+Spinifex calls [ten operations](../oci-architecture/README.md#the-iam-policy), and these three statements are what authorise them. Attach the policy to the compartment you are deploying into using the command below. Replace `$CID` with that compartment's OCID.
+
+```bash
+export CID="ocid1.compartment.oc1..xxx"
+
+oci iam policy create --compartment-id "$CID" --name SpinifexOperators \
+    --description "Spinifex external-address allocation" \
+    --statements '[
+      "Allow group SpinifexOperators to use vnics in compartment id '"$CID"'",
+      "Allow group SpinifexOperators to manage private-ips in compartment id '"$CID"'",
+      "Allow group SpinifexOperators to manage public-ips in compartment id '"$CID"'"
+    ]'
+```
+
+> [!NOTE]
+> **If this fails with `NotAuthorizedOrNotFound`, confirm `$CID` is the compartment you are deploying into.** It is a `ocid1.compartment.oc1..` OCID, or your tenancy OCID if you deploy into the root compartment. An identity-domain OCID is a different resource and will not work here.
+
+### Upload the public key to that user
+
+```bash
+oci iam user api-key upload --user-id "$USER_OCID" \
+    --key-file ~/.oci/oci_api_key_spx_public.pem
+```
+
+This will output:
+
+```json
+{
+  "data": {
+    "fingerprint": "xxx",
+    "inactive-status": null,
+    "key-id": "ocid1.tenancy.oc1..xxx",
+    "key-value": "-----BEGIN PUBLIC KEY-----xxxx-----END PUBLIC KEY-----",
+    "lifecycle-state": "ACTIVE",
+    "time-created": "2026-10-05T19:51:58.843000+00:00",
+    "user-id": "ocid1.user.oc1..axxx"
+  },
+  "etag": "xxx"
+}
+```
+
+### Write the profile and prove it works
+
+The Spinifex nodes authenticate with an OCI SDK config under the profile name `spinifex`. Write that profile on your workstation first, because it is both what the nodes get and the only way to test the credential before a deployment depends on it:
+
+```ini
+# ~/.oci/config
+[spinifex]
+user=<the USER_OCID from above>
+fingerprint=<the fingerprint from above>
+tenancy=<your tenancy OCID, the same one your DEFAULT profile uses>
+region=<your region, e.g. ap-sydney-1>
+key_file=~/.oci/oci_api_key_spx.pem
+```
+
+Then confirm the key, the user, the group and the policy all line up. This call needs exactly the `public-ips` grant above, so it fails in the same way a node would:
+
+```bash
+oci network public-ip list --compartment-id "$CID" --scope REGION --all --profile spinifex
+```
+
+An empty response is a pass, because the permission is what is being tested rather than the contents. `NotAuthorizedOrNotFound` means the policy is not in force: check that the statements name the compartment by `compartment id`, and that the user is actually in the group.
+
+**Do this before step 5.** confirm the new OCI account can correctly authenticate and issue the required API calls for Spinifex to function correctly once installed.
+
+> [!WARNING]
+> **Do not set `OCI_CLI_PROFILE=spinifex`.** That variable chooses the profile **Terraform** builds the infrastructure with, and this one cannot: creating a VCN, a subnet and instances is far outside the three grants above, so the apply fails on the first resource. The nodes find the `spinifex` profile by name without being told.
+
+### Validate deployment
+
+Prior to running the Terraform scripts to deploy Spinifex, verify the OCI configuration and environment is correctly setup:
+
+```bash
+./spx-oci-config.sh --dry-run ~/.ssh/oci-spx
+```
+
+Expected output:
+
+```text
+[spx-oci-config] credential: the [spinifex] profile in ~/.oci/config
+[spx-oci-config] user: ocid1.user.oc1..aaaa...
+[spx-oci-config] fingerprint: a1:b2:...
+[spx-oci-config] region: ap-sydney-1
+[spx-oci-config] would write /etc/spinifex/oci/config and /etc/spinifex/oci/oci_api_key.pem as 0640 root:spinifex on: (no hosts given)
+```
+
+Step 5 runs this script for real, over SSH, once the nodes are formed. Those two files are what the allocator authenticates with, and the `spinifex` profile name in the second one is what it looks for.
+
+**The `credential:` line is the one to check.** It has to name the `[spinifex]` profile. If instead it prints two `WARNING:` lines about falling back to "the credential Terraform builds with", the profile was not found and your nodes would get your full-access credential rather than the scoped one you just made.
+
+> [!TIP]
+> **A tenancy admin can skip key files altogether** and authenticate the nodes as the instance itself, which leaves no credential on disk to rotate or leak. It needs a dynamic group and a policy created once at the tenancy root, so it is not available in a compartment someone allocated to you. [Instance principal](../oci-architecture/README.md#an-instance-principal-no-key-material-but-it-needs-a-tenancy-admin) covers it, and you then pass `--instance-principal` in step 5 instead of `--credential-hook`.
+
+## 3. Choose deployment method
+
+Choose how to deploy Spinifex on OCI, either as a single node, or at minimum a three node cluster for added resiliency and redundancy.
+
+|                                | Single node                                  | Three nodes                                                                                     |
+| ------------------------------ | -------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| **`node_count`**               | `1`                                          | `3`                                                                                             |
+| **Survives losing a node**     | No                                           | Yes. NATS keeps quorum, predastore RS(2,1) keeps the data readable, the OVN raft keeps a leader |
+| **Public addresses available** | 64                                           | 192, three VNICs' worth, still bounded by the regional quota                                    |
+| **Fault domains**              | One                                          | Three, one per node, chosen by Terraform                                                        |
+| **Use it for**                 | Evaluation, a lab, an edge site with one box | Production. Multi-node resiliency                                                               |
+
+## 4. Write your Terraform inputs
+
+One file, in the directory you are already in. Only `compartment_ocid` is required, because every other variable has a default that builds a working single node:
+
+Recommended compute shapes for a VM deployment:
+
+- `VM.Standard.E6.Flex` - Higher performance, 5th Gen AMD EPYC processor
+- `VM.Standard.E5.Flex` - Base-line performance, 4th Gen AMD EPYC processor
+
+Recommended bare metal shapes, preferred for large-scale production:
+
+- `BM.Standard.E5.192` - 192 OCPU / 2304 GB RAM. Higher performance, 4th Gen AMD EPYC processor
+- `BM.Standard3.64` - 64 OCPU / 1024 GB RAM. Baseline, Intel Xeon Platinum 8358
+- `BM.Standard.E2.64` - 64 OCPU / 512 GB RAM. Legacy, 1st Gen AMD EPYC processor
+
+```bash
+cat > terraform.auto.tfvars <<EOF
+compartment_ocid        = "$CID"
+deployment_name         = "spinifex"
+
+# Shape and size.
+# Bare metal is preferred for large scale production usage.
+compute_shape           = "VM.Standard.E5.Flex"
+compute_ocpus           = 8          # OCI counts an OCPU as a full core, 1 OCPU = 2vCPU
+compute_memory_in_gbs   = 32
+
+# 1 for a single node, 3 required for a cluster.
+node_count              = 1
 
 # The block volume behind /var/lib/spinifex, attached over iSCSI.
-data_volume_size_in_gbs     = 256
-data_volume_vpus_per_gb     = 120        # 120 = Ultra High Performance
+data_volume_size_in_gbs = 256
+data_volume_vpus_per_gb = 120        # 120 = Ultra High Performance
 
-node_client_cidr_allow_list = ["203.0.113.10/32"]
+# Firewall. A list, so it can hold several ranges. Read the note below before
+# narrowing it.
+node_client_cidr_allow_list = ["0.0.0.0/0"]
 EOF
 ```
 
-Add `instance_principal = "adopt"` if you went that way in [Credentials](#credentials--an-instance-principal-or-an-api-key). [Every Terraform variable](#every-terraform-variable) has the full list.
+The heredoc delimiter is unquoted, which is what lets `$CID` expand from the variable you exported in step 2. Check the file rather than assume, because a literal `$CID` in there fails at plan time with an unhelpful message about an invalid OCID:
 
-> [!WARNING]
-> **`node_client_cidr_allow_list` defaults to `0.0.0.0/0`.** Nodes sit in a public subnet with public addresses because they serve the UI, the S3 gate and the AWS gateway directly — there is no bastion. Restrict it to your own address before any real use, as the example above does.
+```bash
+grep compartment_ocid terraform.auto.tfvars
+```
 
-### 4. Run the deploy
+**This file is what decides the deployment.** `compute_ocpus` and `compute_memory_in_gbs` size a VM flex shape and are ignored on a fixed bare-metal one, which comes at one fixed size with all available OCPU/memory.
 
-One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies the result:
+[Every Terraform variable](../oci-architecture/README.md#every-terraform-variable) has the full list.
+
+> [!NOTE]
+> **Leave `node_client_cidr_allow_list` at its `0.0.0.0/0` default for now.** It is an OCI security-list rule covering the whole public subnet, and your guests' public addresses cross it too, so narrowing it to your own address cuts internet access to every guest rather than just to the node. [Harden it before production](#harden-it-before-production) locks the node down in the layer that can tell the two apart.
+
+## 5. Deploy
 
 ```bash
 ./validate-topology.sh \
     --topology vm-single \
-    --version v1.21.0-70-g1743b602-dev-1-g66bc1172-dev \
-    --credential-hook ~/.spinifex/oci-credential-hook.sh \
+    --channel dev \
+    --credential-hook ./spx-oci-config.sh \
     --keep
 ```
 
-About ten minutes for a single node, printing each stage as it finishes. The four arguments:
+One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing, verifies it, then launches real guests on public addresses and tears those guests down again.
 
-| Argument            | What to pass                                                                                                                                                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--topology`        | `vm-single` for one VM, `vm-multi` for a three-node cluster, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission                   |
-| `--version`         | The Spinifex release to install on the nodes. **Use the tag above until the next release ships**, because OCI support is not in the current stable release yet                                    |
-| `--credential-hook` | Only when nodes authenticate with an API key — see [Credentials](#credentials--an-instance-principal-or-an-api-key). With an instance principal, replace it with `--instance-principal`           |
-| `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is correct for CI and not what you want here                               |
+| Argument            | What to pass                                                                                                                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent                       |
+| `--channel`         | **`dev` until the next release ships**, because OCI support is not in the current stable release yet. It resolves to the newest pre-release at the moment you run it. `latest` is the default and becomes the right answer once a release carries OCI support |
+| `--credential-hook` | `./spx-oci-config.sh`, which installs the credential from step 2 on every node. With an instance principal, replace it with `--instance-principal` and there is no key to install                                                                             |
+| `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                                         |
 
-Also worth knowing:
+**Your `terraform.auto.tfvars` outranks the topology**, so `--topology bm` with `compute_shape = "BM.Standard.E5.192"` in that file deploys on that shape rather than the one CI runs. The run logs the shape and node count it actually built, straight after the host addresses.
 
-- `--skip-workload` stops after verifying the cluster. Without it the driver launches real guests on public addresses and tears them down again, which is the only check that proves end-to-end connectivity rather than inferring it.
-- `--dry-run` prints the plan and the per-node steps and changes nothing.
-- `--ssh-public-key` / `--ssh-private-key` if your keypair is not at `~/.ssh/oci-spx`.
+Add `--skip-workload` to stop once the cluster is verified, without launching the validation guests. Add `--dry-run` to print the plan and change nothing.
 
-> [!TIP]
-> Prefer `--version <tag>` over `--channel dev`. Both install a prerelease, but `--channel dev` resolves through a GitHub API call that is rate limited per source address, and when it trips it returns a 404 that looks exactly like a missing release. A tag is a plain redirect and has no such failure mode.
+> [!NOTE]
+> **If the install step fails to download, pass a tag instead of the channel.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited and then 404s. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
 
-### What a successful run looks like
+## 6. Check it worked
 
-The stages, in order, and all of them have to appear:
+The stages print as they finish, and all of these have to appear:
 
 ```text
-[validate-vm-single] VM.Standard.E6.Flex, 1 node(s), state in .validate-vm-single
 [validate-vm-single] building
-[validate-vm-single] hosts: 150.230.13.131
 [validate-vm-single] waiting for cloud-init on each node
-[validate-vm-single] 150.230.13.131 cloud-init: status: done
-[validate-vm-single] installing Spinifex on each node (published release)
-[validate-vm-single] 150.230.13.131 installed: spinifex v1.21.0-70-g1743b602-dev
+[validate-vm-single] installing Spinifex on each node
 [validate-vm-single] initializing the single node
 [validate-vm-single] running the credential hook
 [validate-vm-single] configuring the IMDS remap and the external pool
@@ -186,35 +407,11 @@ The stages, in order, and all of them have to appear:
 [validate-vm-single] --keep: leaving the infrastructure up, no verdict recorded
 ```
 
-**`allocator ready` is the line to look for.** Everything above it would also appear on a node that cannot allocate a public address, and that failure is otherwise silent until the first launch. `--keep` records no verdict by design: a deployment left running has not been proved destroyable, so the driver declines to call it a pass.
+**`allocator ready` is the line to look for.** Every line above it also prints on a node that cannot allocate a public address, and that failure stays silent until a guest asks for one.
 
-### If a stage fails
+`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, or if `allocator ready` never arrives, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes.
 
-The driver stops at the first failure, names the log, and leaves the rest alone. Logs are all under `.validate-<topology>/`:
-
-| Stage                                           | Log                                      |
-| ----------------------------------------------- | ---------------------------------------- |
-| Building the infrastructure                     | `apply.log`                              |
-| Installing Spinifex                             | `install-<host>.log`                     |
-| Forming the cluster                             | `form.log`                               |
-| Installing the credential, configuring the pool | `credential-hook.log`, `pool-<host>.log` |
-| Verifying public addressing                     | `allocator-<host>.log`                   |
-
-The last one is the log worth knowing about, because public addressing is the part with the most moving pieces. If the allocator never comes up, the driver captures the daemon journal, the pool as configured, the bridge and OCI MAC addresses, and whether each credential file exists and is readable — never the credentials themselves — before anything is torn down. [Troubleshooting](#troubleshooting) reads those.
-
-Add `--keep-on-fail` to leave a failed deployment running so you can log in and look. **It keeps billing** until you destroy it.
-
-### Removing the deployment
-
-```bash
-./validate-topology.sh --topology vm-single --destroy-only
-```
-
-It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
-
----
-
-## Verify end to end
+Then prove it the way a customer would. On the node, use the `[spinifex]` profile that `spx admin init` wrote into `~/.aws/credentials`:
 
 ```bash
 export AWS_PROFILE=spinifex
@@ -223,11 +420,10 @@ aws ec2 allocate-address
 aws ec2 run-instances --image-id <ami> --instance-type t3.micro --key-name <key> \
     --subnet-id <subnet> --associate-public-ip-address
 aws ec2 describe-instances --query \
-    'Reservations[].Instances[].[InstanceId,PrivateIpAddress,PublicIpAddress,State.Name]' \
-    --output text
+    'Reservations[].Instances[].[InstanceId,PublicIpAddress,State.Name]' --output text
 ```
 
-Then reach the guest on its public address — **from your workstation, not from the node**:
+Then reach the guest **from your workstation, not from the node**:
 
 ```bash
 ping -c 3 <public-ip>
@@ -235,50 +431,42 @@ ssh -i <key> ubuntu@<public-ip> hostname
 ```
 
 > [!IMPORTANT]
-> **Probe a public address from outside the VCN, not from a node.** Two things make a node a bad vantage point, and they are indistinguishable from each other and from a broken datapath: `node_client_cidr_allow_list` may not admit the node's own public address, and a VCN may not reflect its public addresses back into itself at all. Either way a healthy cluster fails the probe, so a timeout from a node is not evidence about the guest. Private addresses are the separate question and do work from inside.
+> **Probe a public address from outside the VCN.** A node is a poor vantage point for its own network's public addresses, so a timeout measured from a node says nothing about the guest. Private addresses are a separate question, and those do work from inside.
 
-**Confirm the OCI allocator came up**, which `spx get nodes` cannot tell you. Run this on the node:
+## Harden it before production
 
-```bash
-sudo journalctl -u spinifex-vpcd --since -5m | grep -i ocinet
-```
+The deployment comes up usable, not locked down. Three layers filter traffic here and the first job is telling them apart, which [Firewalls, in all three layers](../oci-architecture/README.md#firewalls-in-all-three-layers) does in full. The short version:
 
-```text
-"msg":"ocinet resolved the external VNIC from its interface","pool":"oci-public","iface":"br-wan",
-  "vnic_id":"ocid1.vnic.oc1.ap-sydney-1.abzxsljrjwlf...kimuq","private_ip":"10.200.1.31","subnet":"10.200.0.0/23"
-"msg":"OCI allocator ready","pool":"oci-public","collected":0,"stale_bindings":0,"skipped":1
-```
-
-**`resolved the external VNIC` is the line that matters** — it proves the credentials work, the compartment is right, and `br-wan`'s MAC matched a real VNIC. A node missing it will accept `allocate-address` and fail it.
-
-> [!NOTE]
-> On a cold cluster start you may instead see `OCI allocator reconcile failed … nats: no responders available for request` on some nodes. That is vpcd racing JetStream's KV at boot; the startup reconcile is skipped and not retried. It is harmless on a new cluster where nothing has been allocated, and it is tracked — restart `spinifex-vpcd` on that node to run it. The `resolved the external VNIC` line above is still the one that decides whether allocation works.
-
-And from inside the guest — note that IMDS is **IMDSv2, so it needs a token**; an untokened request correctly returns 401:
+**1. Arm the Spinifex host firewall.** It is installed but not armed on this path. Arming it gives you the proper policy: the public plane open, the cluster plane scoped to peers only, and SSH scoped to a list you own.
 
 ```bash
-TOK=$(curl -s -X PUT http://169.254.169.254/latest/api/token \
-      -H 'X-aws-ec2-metadata-token-ttl-seconds: 120')
-curl -s -H "X-aws-ec2-metadata-token: $TOK" \
-     http://169.254.169.254/latest/meta-data/instance-id
-traceroute -n 8.8.8.8
+# On every node.
+sudo env SETUP_STAGES=firewall /usr/local/share/spinifex/setup.sh --firewall on
 ```
 
----
+**2. Narrow SSH.** It is open to the world until you do, which comes from the Ubuntu image's own rules rather than from ours. Edit the one file the installer creates and never overwrites:
+
+```bash
+# /etc/spinifex/firewall/custom.nft
+define trusted_ssh_peers = { 203.0.113.10/32 }
+```
+
+```bash
+sudo nft -c -f /etc/spinifex/firewall/spinifex.nft     # check, then apply
+sudo /usr/local/lib/spinifex/spinifex-firewall-apply
+```
+
+**3. Decide about the console on port 3000.** The S3 gate (8443) and the AWS gateway (9999) are the product's public surface and should stay public. The web console need not be.
+
+**Leave the OCI security list open.** Guest public addresses cross it, so narrowing `node_client_cidr_allow_list` breaks your tenants instead of protecting the node. The host firewall above is the layer that can tell a node's listener from a guest's.
+
+Full detail, including which port serves what and why forming a cluster starts by turning the policy off, is in [Host Firewall](/docs/host-firewall).
 
 ## Next steps
 
-### Set up your cluster
+**Set up your cluster.** It is running but holds nothing yet: no images, no networks, no instances. [Setting Up Your Cluster](/docs/setting-up-your-cluster) imports an AMI, creates a key pair and a VPC, and launches your first instance.
 
-The cluster is running, but it holds nothing yet — no machine images, no networks, no instances.
-
-Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance. It ends by arming the [host firewall](/docs/host-firewall), which is also where you re-arm it if you turned it off to form the cluster.
-
-### Run your existing Terraform against the cluster
-
-This is the part worth pausing on. Everything above builds infrastructure **on** OCI using the OCI provider. Everything from here uses the **AWS** provider — unmodified, from the OpenTofu or Terraform registry — pointed at your own cluster. The same `aws_vpc`, `aws_instance`, `aws_db_instance`, `aws_ecs_service` and `aws_eks_cluster` resources a team already has in git apply against Spinifex on an OCI tenancy, with no rewriting and no OCI-specific module.
-
-Three things differ from a provider block aimed at AWS, and only three:
+**Run your existing Terraform against it.** Everything above builds infrastructure _on_ OCI with the OCI provider. From here you use the **AWS** provider, unmodified from the registry, pointed at your own cluster. Your `aws_vpc`, `aws_instance`, `aws_db_instance`, `aws_ecs_service` and `aws_eks_cluster` resources stay as they are in git. Three things differ, and only three:
 
 ```hcl
 provider "aws" {
@@ -299,353 +487,36 @@ provider "aws" {
 }
 ```
 
-Credentials come from the `[spinifex]` profile that `spx admin init` writes into `~/.aws/credentials` on node 1.
+> **Use the node's private address, not its public one.** The node certificate carries no SAN for the public address, because that address is never on the wire: OCI NATs it to a private one. A call to `https://<public IP>:9999` fails TLS verification with _hostname doesn't match_. Run Terraform from a node, or from anything else inside the VCN.
 
-> **Use the node's private address, not its OCI reserved public IP.** The node certificate carries no SAN for the public address, because that address is never on the wire — OCI NATs it to a private one. An `aws` or `terraform` call to `https://<public IP>:9999` fails TLS verification with _hostname doesn't match_. Until that is fixed, run Terraform from a node, or from anything else inside the VCN.
+The [Terraform workbooks](../terraform-workbooks/nginx-alb/README.md) we ship are the worked examples. `e2e-cloudvendor-nightly` runs them on a single VM, on three VMs and on bare metal, publishing a table per topology on its own run page, so read that for the build you are installing.
 
-That portability is a claim, so it is measured rather than asserted. Each workbook below is a full `apply`, a functional assertion against the thing it built, and a `destroy`, measured on 2026-09-26 against a three-node cluster of `VM.Standard.E6.Flex` instances in `ap-sydney-1` running `spinifex v1.20.0-113`.
-
-**This is a snapshot, and the current answer is the nightly.** `e2e-cloudvendor-nightly` runs the same workbooks on a single VM, on three VMs and on bare metal, and publishes a table per topology on its own run page. Read that for the build you are installing rather than taking this table as current.
-
-| Workbook                 | What it exercises                                                                               | Result            |
-| ------------------------ | ----------------------------------------------------------------------------------------------- | ----------------- |
-| `nginx-webserver`        | VPC, subnet, IGW, security group, key pair, EC2 instance, public IP; HTTP 200 from the internet | **Passed** (86s)  |
-| `bastion-private-subnet` | Public and private subnets, NAT egress, a bastion, SSH hop to a private host                    | **Passed** (117s) |
-| `rds-quickstart`         | DB subnet group, parameter group, `aws_db_instance` (PostgreSQL), client instance, connection   | **Passed** (296s) |
-| `ecs-quickstart`         | ECS cluster, task definition, service, container instances, ALB with a healthy target           | **Passed** (166s) |
-| `eks-quickstart`         | EKS control plane, managed node group, `kubectl` against the cluster, nodes `Ready`             | **Passed** (259s) |
-| `nginx-alb`              | Application Load Balancer across two subnets, two backends, health checks                       | **Passed** (123s) |
-| `s3-webapp`              | S3 bucket, IAM role and instance profile, IMDS-fetched credentials, upload from the guest       | **Passed**        |
-| `demo-app`               | Container image for the EKS workbooks, pushed to ECR                                            | **Passed**        |
-| `eks-https-ingress`      | Private-subnet workers behind a NAT gateway, LBC addon, ACM certificate, HTTPS Ingress          | **Passed** (252s) |
-| `eks-gitops-argocd`      | Private-subnet workers, Argo CD addon, EBS-CSI PersistentVolume, GitOps sync                    | **Passed** (225s) |
-
-### Oracle Linux as a guest image
-
-Spinifex ships four Oracle Linux entries in its image catalog, so a customer on OCI can run the same distro their Oracle support contract covers. They import exactly like any other AMI — nothing about them is OCI-specific, and they run equally well on bare metal:
-
-| Catalog name         | Release           | Arch   | Kernel |
-| -------------------- | ----------------- | ------ | ------ |
-| `oracle-10.1-x86_64` | Oracle Linux 10.1 | x86_64 | UEK 8  |
-| `oracle-10.1-arm64`  | Oracle Linux 10.1 | arm64  | UEK 8  |
-| `oracle-9.8-x86_64`  | Oracle Linux 9.8  | x86_64 | UEK 7  |
-| `oracle-9.8-arm64`   | Oracle Linux 9.8  | arm64  | UEK 7  |
+**Oracle Linux guests.** Four Oracle Linux images are in the catalog, so you can run the distro your Oracle support contract covers:
 
 ```bash
 sudo spx admin images import --name oracle-10.1-x86_64 --config /etc/spinifex/spinifex.toml
-aws ec2 describe-images --query 'Images[].[Name,State,BootMode]' --output text
 ```
 
-All four boot **UEFI**, so launch them into a shape that boots UEFI — a BIOS-only instance type will not come up, and the failure looks like a hung boot rather than a rejected image.
+The four are `oracle-10.1-x86_64`, `oracle-10.1-arm64`, `oracle-9.8-x86_64` and `oracle-9.8-arm64`. All of them boot **UEFI**, so launch them into a shape that boots UEFI or the failure looks like a hung boot rather than a rejected image. **Log in as `cloud-user`, not `opc`.** These are the generic KVM cloud images from `yum.oracle.com`, which refuse `opc`, `oracle` and `ec2-user` alike. The UI's instance detail page shows the right user per AMI.
 
-**The login user is `cloud-user`, not `opc`**, and this is the one that catches people:
+## Removing the deployment
 
 ```bash
-ssh -i path/to/key.pem cloud-user@<public-ip>
+./validate-topology.sh --topology vm-single --destroy-only
 ```
 
-`opc` is the default user on the images Oracle publishes _into OCI itself_; these are the generic **KVM cloud images** from `yum.oracle.com`, whose cloud-init `default_user` is `cloud-user`. Verified on both releases: `opc`, `oracle` and `ec2-user` are all refused. The Spinifex UI's instance detail page shows the right user per AMI, so read it there rather than guessing from the distro.
-
----
-
-## Reference
-
-### Why run Spinifex on OCI
-
-**Lower cost for the same shape of workload.** OCI's compute and block storage are priced well below the large US clouds for equivalent OCPU and IOPS, and Spinifex turns one large instance into a whole EC2/EBS/S3 surface — so a tenant's twenty small instances are twenty QEMU guests on hardware you are billed for once, not twenty billable cloud instances.
-
-**Egress stops being the line item that decides the architecture.** Oracle publishes a large monthly outbound-transfer allowance per tenancy and a per-GB rate beyond it that is roughly an order of magnitude below the majors — check the current pricing page rather than a number in a document, but the gap is the reason this integration exists. Traffic _between_ guests never leaves the host or, on a cluster, never leaves the VCN: it is Geneve over the private plane, which is not billed as internet egress at all.
-
-**Portability — the workload stops being AWS-shaped and starts being yours.** The API your tenants code against is Spinifex's, so the same Terraform, the same SDK calls and the same AMIs run on OCI today, on bare metal in your own rack tomorrow, and at an edge site after that. Moving off AWS becomes a deployment decision rather than a rewrite, and moving _again_ costs nothing extra.
-
-**You keep the parts of OCI that are worth keeping.** Bare-metal shapes, fault domains, block volumes with a chosen performance tier, and real public addresses out of OCI's own pool. Spinifex does not hide the cloud underneath it — it registers each guest's address with OCI so that guest is genuinely reachable on the internet, not behind a shared NAT.
-
-### Sizing
-
-**Bare metal is the recommendation.** `BM.Standard.E2.64` or similar gives you the hardware directly — no nested virtualisation, full NIC performance, and no hypervisor between your guests and the wire. If bare metal is out of scope, a single `VM.Standard.E6.Flex` is the recommendation for testing and development, or three of them for production.
-
-|                 | Minimum               | Recommended                                                       |
-| --------------- | --------------------- | ----------------------------------------------------------------- |
-| **Shape**       | `VM.Standard.E6.Flex` | Bare metal, e.g. `BM.Standard.E2.64`                              |
-| **OCPU**        | 8 (16 vCPU)           | 32+                                                               |
-| **RAM**         | 32 GB                 | 128 GB+                                                           |
-| **Data volume** | 256 GiB block volume  | 1 TB+ NVMe-backed                                                 |
-| **VNICs**       | 2                     | 2                                                                 |
-| **Nodes**       | 1                     | 3 — see [Cluster sizing](/docs/install-multi-node#cluster-sizing) |
-
-### How it fits together
-
-Everything in [Single-Node Install](/docs/install) and [Multi-Node Install](/docs/install-multi-node) still applies: formation, storage and OVN behave exactly as they do on hardware you own. What changes is the layer underneath — an OCI VCN is not an Ethernet segment, so the external datapath is wired differently, and public addresses come from OCI's API rather than from a range you write in a config file.
-
-**Single node — the whole AWS surface inside one OCI instance.** One instance runs the control plane and every tenant guest. Customers reach the AWS APIs on the node's own address; their instances reach the internet through addresses registered on the node's second VNIC.
-
-<p align="center">
-  <img src="../../.github/assets/diagrams/oci-single-node.svg" alt="Single node on OCI — the instance inside the VCN public subnet, both VNICs, br-wan, the routed-NAT transit veth, the control plane, tenant VPCs and the iSCSI data volume" width="900">
-</p>
-
-Two things in that picture are the whole integration. The guest's private address (`10.0.1.4`) never leaves the host — OVN and the host route both hold it. The address OCI delivers to is a **secondary private IP registered on VNIC 1**, appearing on `br-wan`, and the customer's public address (`150.230.13.131`) is a reserved public IP that OCI 1:1-NATs onto it upstream. `describe-instances` reports the public one; every datapath object holds the private one, which is why the two never appear together on the host.
-
-The third is storage. Every guest disk, every S3 object and the JetStream state all live under `/var/lib/spinifex`, which is an **OCI block volume attached over iSCSI**, not the boot disk. Size it for the guests you intend to run; a boot volume that quietly ends up carrying the stack is the most common way an install on OCI fails later rather than immediately.
-
-**Three nodes — the same surface, distributed.** Each node registers the addresses for **its own** guests on **its own** second VNIC, and the allocator runs per node, so nothing has to know another node's OCIDs. When a guest moves — a stop/start that lands elsewhere, or a host failure — the node it lands on claims the address's private half from the old VNIC through a single OCI call. The OCID and the public half are untouched, so the customer's address never changes.
-
-<p align="center">
-  <img src="../../.github/assets/diagrams/oci-three-node.svg" alt="Three nodes on OCI — three instances inside the VCN public subnet, one per fault domain, each with its own VNICs, addresses and iSCSI volume, joined east-west by Geneve, NATS, predastore and the OVN raft" width="900">
-</p>
-
-The overlay, the object shards and the OVN databases all cross **VNIC 0**, inside the VCN. Size that plane, not the external one: guest-to-guest traffic between nodes is Geneve over the VCN, and it is the link every distributed layer shares.
-
-> [!NOTE]
-> **The Spinifex region is your own naming and has nothing to do with the OCI region.** `ap-southeast-2` in `spinifex.toml` beside `ap-sydney-1` in OCI is correct and expected. Do not read one as evidence about the other.
-
-### Credentials — an instance principal, or an API key
-
-The allocator needs OCI credentials at runtime, and there are two ways to give it them.
-
-**An instance principal is the better one, and it is a one-time setup step.** The instance certificate is served at `/opc/v2/identity/cert.pem` and the Go SDK authenticates as the instance with no key material on disk — but it must also be _authorised_, by a dynamic group and a policy. On the reference tenancy it authenticated without being authorised for anything, which is the silent failure above. Those two resources live at the tenancy root, so creating them needs a tenancy admin once; every deployment and rebuild afterwards needs only a compartment-scoped user:
-
-```bash
-cd scripts/terraform/oci-spx
-./setup-identity.sh --dry-run     # always first
-./setup-identity.sh               # needs a tenancy-admin OCI profile
-```
-
-Then set `instance_principal = "adopt"` in your tfvars and pass `--instance-principal` to the deploy. The dynamic group matches on `instance.compartment.id`, so it covers every node you ever build in that compartment and nothing needs updating when nodes are replaced.
-
-**An API key is the fallback**, and the default, because it needs nothing from a tenancy admin — which makes it the only option when the compartment belongs to someone else's tenancy. The cost is key material on disk, with a rotation obligation, on every node:
-
-```bash
-# On your workstation, not the node.
-openssl genrsa -out ~/.oci/oci_api_key.pem 2048
-chmod 600 ~/.oci/oci_api_key.pem
-openssl rsa -pubout -in ~/.oci/oci_api_key.pem -out ~/.oci/oci_api_key_public.pem
-openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key.pem \
-  | openssl md5 -c        # this is the fingerprint
-```
-
-Upload the public key to the user under **Identity → Users → API Keys**, and record the user OCID, the fingerprint and the tenancy OCID.
-
-Each node then needs **two** files, and a node with only the first is the silent failure — it forms, looks healthy, and cannot allocate:
-
-| Path                                | Mode                 | Contents                                                                 |
-| ----------------------------------- | -------------------- | ------------------------------------------------------------------------ |
-| `/etc/spinifex/oci/oci_api_key.pem` | `0640 root:spinifex` | The private key                                                          |
-| `/etc/spinifex/oci/config`          | `0640 root:spinifex` | An ordinary OCI SDK config, profile `[spinifex]`, naming the key by path |
-
-Nothing creates the second one for you, and its profile name must be `spinifex` to match `oci_config_profile` in the pool:
-
-```ini
-[spinifex]
-user=ocid1.user.oc1..aaaa...
-fingerprint=12:34:56:78:90:ab:cd:ef:12:34:56:78:90:ab:cd:ef
-tenancy=ocid1.tenancy.oc1..aaaa...
-region=ap-sydney-1
-key_file=/etc/spinifex/oci/oci_api_key.pem
-```
-
-**Put that in a credential hook and the deploy installs it on every node.** The hook is an executable of yours, run as `hook <ssh-key> <host>...` after formation and before the pool is configured, which is the only window where a node has `/etc/spinifex` but has not started the allocator. It is yours rather than ours deliberately: a credential belongs to whoever owns it, and one rendered into user-data or Terraform state is readable from instance metadata for the life of the instance — on a host that runs other people's guests.
-
-### The IAM policy
-
-Spinifex calls exactly nine operations. Grant no more than these:
-
-| Operation                                  | Why                                                                              |
-| ------------------------------------------ | -------------------------------------------------------------------------------- |
-| `CreatePrivateIp`                          | Register the secondary private IP the datapath carries                           |
-| `DeletePrivateIp`                          | Release it                                                                       |
-| `GetPrivateIp`                             | Poll for `AVAILABLE` after an asynchronous assign                                |
-| `ListPrivateIps`                           | The startup reconcile, and the affinity pass that moves an address between nodes |
-| `UpdatePrivateIp`                          | Reassign a private IP to this node's VNIC when a guest moves here                |
-| `CreatePublicIp`                           | Create the RESERVED public IP                                                    |
-| `DeletePublicIp`                           | Release it                                                                       |
-| `GetPublicIp` / `GetPublicIpByPrivateIpId` | Poll lifecycle state, and reconcile a private IP back to its public half         |
-| `UpdatePublicIp`                           | Attach and detach the public IP from a private IP                                |
-
-The matching policy, scoped to the one compartment Spinifex allocates in:
-
-```text
-Allow group SpinifexOperators to manage private-ips in compartment <compartment-name>
-Allow group SpinifexOperators to manage public-ips  in compartment <compartment-name>
-Allow group SpinifexOperators to read   vnics       in compartment <compartment-name>
-Allow group SpinifexOperators to read   subnets     in compartment <compartment-name>
-Allow group SpinifexOperators to read   vcns        in compartment <compartment-name>
-```
-
-**Scope it to a compartment, not the tenancy.** `manage public-ips` at tenancy level lets a compromised node consume the whole regional reserved-public-IP quota.
-
-**Do not grant `manage instances` or `manage vnics`.** Spinifex never creates, attaches or deletes a VNIC — it only adds addresses to a VNIC that already exists. A grant that allows VNIC lifecycle is strictly more than the integration can use.
-
-### Quotas
-
-Two limits bound how many public addresses a deployment can hand out, and they do not scale the same way:
-
-| Quota                              | Default | Scope                     | Notes                                                                                          |
-| ---------------------------------- | ------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
-| **Reserved public IPs**            | 50      | Per region, whole tenancy | Shared by every node, so it does **not** grow with node count. This is the wall you hit first. |
-| **Secondary private IPs per VNIC** | 64      | Per VNIC, so per node     | Not raisable. Three nodes gives you 192 — this is the limit that does scale.                   |
-
-A raise on the first is a support request, not a setting: Console → Governance & Administration → Limits, Quotas and Usage → "Request a service limit increase". Cite the exact limit name from `oci limits definition list`, not a name from documentation.
-
-```bash
-oci limits definition list --service-name vcn --compartment-id <tenancy-ocid>
-oci limits value list       --service-name vcn --compartment-id <tenancy-ocid>
-oci limits resource-availability get --service-name vcn \
-    --limit-name <name-from-above> --compartment-id <tenancy-ocid>
-```
-
-**These calls need a grant the node does not have, and must not be given.** Limits and usage are tenancy-level, which cannot be compartment-scoped the way the policy above insists the node's is. Create a **second, read-only principal** for an operator or a reporting job and keep it off every node:
-
-```text
-Allow group SpinifexReporting to read limits        in tenancy
-Allow group SpinifexReporting to read usage-reports in tenancy
-```
-
-The second verb is what Cost Analysis and `oci usage-api usage-summary request-summarized-usages` read. Adding either to `SpinifexOperators` would hand every node tenancy-wide read, which is exactly what the node policy refuses.
-
-### The `oci` CLI
-
-**The `oci` CLI is not on the Ubuntu image**, and `apt` has no `python3-oci-cli` package. Nothing in [Deploy](#deploy) needs it; install it when you want to inspect allocations by hand:
-
-```bash
-sudo apt-get update && sudo apt-get install -y python3-venv
-python3 -m venv ~/.oci-cli-venv
-~/.oci-cli-venv/bin/pip install --upgrade pip oci-cli
-sudo ln -sf ~/.oci-cli-venv/bin/oci /usr/local/bin/oci
-oci --version
-```
-
-**What the CLI is and is not for.** Spinifex's daemon uses the OCI **Go SDK** for every allocation — the CLI is not on that path. You need it for bootstrap and for operational inspection. Do not build automation that shells out to it during an allocation; allocations run inside a request budget that a forked Python process will not respect.
-
-### What Terraform builds, per node
-
-| Resource                     | Detail                                                                                                                                             |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `oci_core_instance`          | One per `node_count`, round-robined across **fault domains** so three nodes land on three sets of racks rather than wherever placement puts them   |
-| Primary VNIC                 | Public IP, `hostname_label`, the host plane — SSH, the advertise address, the Geneve endpoint                                                      |
-| `oci_core_vnic_attachment`   | A **second VNIC** in the same subnet. Every Spinifex external address becomes a secondary private IP here at runtime                               |
-| `oci_core_volume`            | A block volume per node, `data_volume_size_in_gbs` at `data_volume_vpus_per_gb`                                                                    |
-| `oci_core_volume_attachment` | **`attachment_type = "iscsi"`**, with the Oracle Cloud Agent's Block Volume Management plugin enabled so the node logs the iSCSI session in itself |
-| cloud-init                   | Partitions, formats, mounts and `fstab`s the volume; builds `br-wan` over the second VNIC; opens the service ports                                 |
-
-The resource-by-resource architecture is in [`scripts/terraform/oci-spx`](../../scripts/terraform/oci-spx/README.md).
-
-**The data volume is iSCSI, and that is the detail that bites.** OCI presents the volume as an iSCSI target reachable at `169.254.2.2:3260` — attaching it in the API does not put a block device on the host. `is_agent_auto_iscsi_login_enabled` makes the Oracle Cloud Agent do the login, and because it does that _asynchronously_, the device is not there when cloud-init first runs. The mount script waits up to ten minutes for it, formats it **only if `blkid` reports no filesystem** (so a re-run cannot erase a populated volume), and writes an fstab entry by UUID:
-
-```text
-UUID=<uuid>  /var/lib/spinifex  ext4  defaults,_netdev,nofail  0 2
-```
-
-`_netdev` is what orders the mount after the network, and therefore after `iscsid` has a session. `nofail` is what keeps a missing volume from wedging the boot. Mounting `/var/lib/spinifex` _itself_ rather than somewhere else and symlinking is deliberate: viperblock, predastore and JetStream all land on the volume with no configuration pointing anywhere unusual.
-
-### Every Terraform variable
-
-All of these have defaults that build a working single node, except the first:
-
-| Variable                      | Default               | What it decides                                                                                                                                                                                                                                      |
-| ----------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `compartment_ocid`            | —                     | **Required.** An OCID, not a name: this deploys into a compartment that already exists, because creating one needs tenancy-root rights the API user must not have                                                                                    |
-| `deployment_name`             | `spinifex`            | Prefixes every resource and becomes the VCN `dns_label`, so 1–15 lowercase alphanumerics starting with a letter                                                                                                                                      |
-| `node_count`                  | `1`                   | Nodes, 1–25. `1` for a single node, `3` for a cluster. Each gets its own volume, its own second VNIC and its own fault domain                                                                                                                        |
-| `compute_shape`               | `VM.Standard.E6.Flex` | **`BM.*` for bare metal, `VM.*.Flex` for a VM.** A fixed bare-metal shape carries its own size, so `shape_config` is emitted only when the name contains `Flex` — set a BM shape and the two sizing variables below are ignored rather than rejected |
-| `compute_ocpus`               | `8`                   | OCPUs on a flex shape. Validated at ≥ 8 (16 vCPU), the minimum recommended for a node                                                                                                                                                                |
-| `compute_memory_in_gbs`       | `32`                  | GiB on a flex shape. Validated at ≥ 32                                                                                                                                                                                                               |
-| `data_volume_size_in_gbs`     | `256`                 | Size of each node's data volume. This is where guest disks, S3 objects and JetStream live — size it for the guests, not for the control plane                                                                                                        |
-| `data_volume_vpus_per_gb`     | `120`                 | Performance tier, 0–120 VPUs/GB. 120 is Ultra High Performance; 10 is Balanced. Higher is more IOPS and more cost                                                                                                                                    |
-| `data_mountpoint`             | `/var/lib/spinifex`   | Where cloud-init mounts it. Change only if you know why                                                                                                                                                                                              |
-| `vcn_cidr`                    | `10.200.0.0/22`       | VCN address space. A `/22` leaves room for the secondary private IPs Spinifex registers per node                                                                                                                                                     |
-| `public_subnet_cidr`          | `10.200.0.0/23`       | The subnet every node sits in, **on both VNICs**. Nodes serve the UI, the S3 gate and the AWS gateway directly, so they cannot live in a private subnet                                                                                              |
-| `node_client_cidr_allow_list` | `["0.0.0.0/0"]`       | Who may reach SSH and the service ports from the internet. **Change this**                                                                                                                                                                           |
-| `node_service_ports`          | `[3000, 8443, 9999]`  | Console, predastore gate, AWS gateway. SSH is opened separately                                                                                                                                                                                      |
-| `ubuntu_version`              | `26.04`               | Canonical platform image version. The newest image for the shape and region is resolved at plan time rather than pinned to a regional OCID                                                                                                           |
-| `wan_bridge_name`             | `br-wan`              | The Linux bridge built over the second VNIC                                                                                                                                                                                                          |
-| `wan_bridge_mtu`              | `9000`                | The OCI VCN carries 9000                                                                                                                                                                                                                             |
-
----
+It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
 
 ## Troubleshooting
 
-### Addresses and quotas
+The deploy stops at the first failure and names the log it wrote, all under `.validate-<topology>/`. Add `--keep-on-fail` to leave a failed deployment up so you can log in and look. **It keeps billing** until you run `--destroy-only`.
 
-**Spinifex enforces no limit of its own.** It attempts the allocation and reports what OCI says, so the ceiling you hit is always your tenancy's, never a number baked into the software. A quota is raised with Oracle, not reconfigured here, and there is nothing to restart afterwards.
+[Troubleshooting](../oci-architecture/README.md#troubleshooting) covers the symptoms worth knowing in advance, several of which point at the wrong layer on first reading:
 
-**`InsufficientAddressCapacity` on `allocate-address` is what exhaustion looks like.** It is the AWS error code for "out of addresses" and Spinifex returns it for either quota, mapped from OCI's own refusal. On a cluster the regional one is the likelier of the two.
+- [If a deploy stage fails](../oci-architecture/README.md#if-a-deploy-stage-fails), and which log holds the answer
+- [A guest's public address is unreachable](../oci-architecture/README.md#a-guests-public-address-is-unreachable)
+- [A node that was fine and then was not](../oci-architecture/README.md#a-node-that-was-fine-and-then-was-not), where one command answers all of it
+- [Guests cannot reach instance metadata](../oci-architecture/README.md#guests-cannot-reach-instance-metadata), because OCI and AWS guests want the same address
+- [Addresses and quotas](../oci-architecture/README.md#addresses-and-quotas), including why a detached address still bills
 
-**A detached reserved public IP still bills.** `disassociate-address` returns the address to `AVAILABLE` without deleting it, exactly as an unassociated AWS Elastic IP behaves, and it keeps consuming your regional quota as well as your bill. `release-address` is what frees both.
-
-**A stopped instance costs nothing for its auto-assigned address.** Stopping an instance returns its auto-assigned address to the pool and deletes the reserved public IP object behind it, as AWS does; the start that follows creates a new one. An **Elastic IP** is yours and survives the stop untouched — that is the whole distinction between the two, and on OCI it is also the difference between a stopped fleet that bills for addresses and one that does not.
-
-### Datapath
-
-**Instance launches but the public address is unreachable.** In order:
-
-1. `sudo ovn-nbctl lr-nat-list <router>` — is there a `dnat_and_snat` row, and does it hold the _private_ address?
-2. `ip route get <private-addr>` — does it route via the transit veth?
-3. `sudo iptables -S FORWARD | grep spinifex-eip-ingress` — both directions present?
-4. `oci network private-ip list --vnic-id <vnic>` — is the private address actually registered with OCI, **and on this node's VNIC**? If not, nothing else matters.
-
-**Egress works from one address and not another on the same NIC.** OCI enforces the source address per VNIC, so this means the address is not a registered private-IP object on it. It is never a routing problem on the host.
-
-**An address went dark after a guest moved node.** The affinity pass should have claimed it within 15 seconds. Check the new node's daemon journal for `ocinet affinity`, then confirm with step 4 above which VNIC OCI thinks holds the private half.
-
-### A node that was fine and then was not
-
-Terraform's cloud-init does the host jobs on each node — the iSCSI volume, `br-wan` and its source routing, the firewall. When one of them did not take, the symptom arrives much later and rarely looks like a networking or storage problem. This one command answers all of it:
-
-```bash
-ssh -i ~/.ssh/oci-spx ubuntu@<node-public-ip> '
-  cloud-init status                  # done
-  sudo iscsiadm -m session           # a session to 169.254.2.2:3260
-  findmnt /var/lib/spinifex          # mounted by UUID, with _netdev
-  ip -br addr show br-wan            # UP, second VNIC address as a /32
-  ip -br addr show enp1s0            # the bridge MEMBER holds NO address
-  ip route show default              # still on the PRIMARY interface
-  ls -l /dev/kvm                     # present
-'
-```
-
-Three answers are worth knowing in advance, because each looks wrong and is not:
-
-- **`br-wan` holds a `/32` and the default route is on the other interface.** That is how two VNICs share one subnet without the second stealing the first one's traffic, and it is what satisfies OCI's per-VNIC source check. `br-wan`'s address appears in `ip rule` instead of in the default route.
-- **`br-wan`'s address is not one you chose.** It is the second VNIC's own private IP, assigned by OCI, and not predictable before the apply.
-- **`enp1s0` carrying an address is the one real fault here.** The kernel derives an on-link route from it that beats the primary VNIC's, so every packet to another node leaves the wrong VNIC and OCI drops it. The node still forms a cluster and still reports `Ready` — formation uses outbound connections — and it surfaces later as `predastore … the stripe is short one holder` on the first AMI import. `sudo /usr/local/sbin/spinifex-setup-wan-bridge` repairs it in place.
-
-### Host
-
-**`RunInstances` returns `ServerInternal`.** Check the daemon journal for the real error — `journalctl -u spinifex-daemon --since -10m`. An OCI allocation failure surfaces this way.
-
-**The stack ends up on the boot disk and the node fills.** The data volume was mounted without `_netdev` and lost the race with `iscsid`. `findmnt /var/lib/spinifex` is the check; `ls` cannot tell the difference.
-
-### Guests cannot reach instance metadata
-
-**Guests boot but cloud-init hangs on metadata**, or the host stops answering its own. OCI uses `169.254.169.254` for its instance metadata, and so does every AWS-compatible guest — the host and the guests want the same address.
-
-Spinifex resolves this by moving the _host_ side of the per-guest metadata link to a different link-local pair, so guests keep asking `169.254.169.254` exactly as they do on AWS. [The deploy](#4-run-the-deploy) sets `imds_host_meta_ip` and `imds_host_dns_ip` for you. **Set both or neither** — a half-configured pair is ignored and the node behaves as if the remap were off, which is what this symptom looks like.
-
-Check it after your first guest launches:
-
-```bash
-ip route get 169.254.169.254                 # your real NIC, not lo
-curl -sH 'Authorization: Bearer Oracle' -o /dev/null -w '%{http_code}\n' \
-     http://169.254.169.254/opc/v2/instance/ # 200
-ip -br addr show | grep ime-                 # holds 169.254.42.x, not .169.x
-```
-
-`ip route get 169.254.169.254` returning `dev lo` is the signature of a missing remap. The same signature can appear after a guest terminates, from a leftover `ime-` endpoint still holding the address; with the remap configured it is harmless, and removing the stale OVS port clears it.
-
----
-
-## Deploying without Terraform
-
-**Terraform automates every step of a normal install, and that is the point of it.** The `oci-spx` configuration builds the VCN, the subnets, the gateways, the block volumes and both VNICs per node, then renders the cloud-init that installs Spinifex and sets up OVN — so the sequence below happens without anyone typing it, in the same order every time, on one node or three.
-
-If you need to install by hand — an existing OCI tenancy you cannot run Terraform against, an unsupported shape, or a stage you are debugging — the install itself is not OCI-specific. Follow the standard guides:
-
-- [Installing Spinifex](../install/install/README.md) for a single node.
-- [Multi-Node Installation](../install/install-multi-node/README.md) for a cluster, which covers `spx admin init` on the leader and `spx admin join` on the rest.
-
-Four things about OCI are not in those guides, and each has its own section above:
-
-- **The external pool** is `source = "oci"`, which needs the instance principal or API key from [Credentials](#credentials--an-instance-principal-or-an-api-key) and the [IAM policy](#the-iam-policy). Without it a node forms, passes every health check, and then refuses every launch that wants a public address.
-- **`br-wan` stays a Linux bridge** owned by netplan, linked to OVS `br-ext` by a veth pair. Pass `setup-ovn.sh --wan-bridge=br-wan` and it detects this itself; the NIC never becomes an OVS port, so the VNIC keeps its MAC identity. See [How it fits together](#how-it-fits-together).
-- **The block volume must be mounted with `_netdev`**, because it arrives over iSCSI and the mount is otherwise attempted before a session exists.
-- **IMDS needs the 169.254 remap** described under [Guests cannot reach instance metadata](#guests-cannot-reach-instance-metadata), since the guest's metadata address collides with OCI's own.
+Installing by hand instead of with Terraform is [Deploying without Terraform](../oci-architecture/README.md#deploying-without-terraform).

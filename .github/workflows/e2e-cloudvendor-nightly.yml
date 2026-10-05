@@ -99,7 +99,7 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_wrapper: false
 
@@ -183,6 +183,43 @@ jobs:
           OCI_NO_EXTERNAL_POOL: ${{ inputs.no_external_pool && '1' || '0' }}
         run: ./e2e-oci.sh --summary-only
 
+      # The sweep below deletes the per-topology state directories, so anything
+      # still only in one of them at that point is unrecoverable -- and a failing
+      # workbook writes its assertion output to exactly there. Copying into the
+      # artifact directory first is what makes a failure diagnosable by whoever
+      # reads the run page, rather than only on the runner that produced it.
+      - name: Collect the per-topology logs
+        if: always()
+        run: |
+          set -uo pipefail
+          dest="$RUNNER_TEMP/e2e-oci"
+          mkdir -p "$dest"
+          # The topologies this run drove, taken from the per-topology log the
+          # harness writes rather than from the dispatch input: a run that names
+          # none gets the harness's own default, and reading that back here would
+          # mean a second copy of the list to disagree with the first. A state
+          # directory left by an earlier run is then not collected, so the artifact
+          # cannot show a topology this run never attempted.
+          topologies=""
+          for log in "$dest"/*.log; do
+              [ -f "$log" ] || continue
+              name="${log##*/}"; name="${name%.log}"
+              [ -d "$OCI_STATE_ROOT/.validate-$name" ] && topologies="$topologies $name"
+          done
+          echo "collecting:${topologies:- nothing}"
+          for topology in $topologies; do
+              for file in "$OCI_STATE_ROOT/.validate-$topology"/*.log \
+                          "$OCI_STATE_ROOT/.validate-$topology"/*.txt \
+                          "$OCI_STATE_ROOT/.validate-$topology"/*.tsv; do
+                  [ -f "$file" ] || continue
+                  # The hook handles a private key and the one thing known about an
+                  # operator's executable is that it is not ours to publish.
+                  case "${file##*/}" in credential-hook.log) continue ;; esac
+                  cp -- "$file" "$dest/$topology-${file##*/}"
+              done
+          done
+          ls -l "$dest"
+
       # always(), and before the artifact upload: an OCI bare-metal host left
       # running by a cancelled or timed-out job is the most expensive way this
       # workflow can fail. The sweep works from the Terraform state files, so it
@@ -207,13 +244,13 @@ jobs:
         if: always()
         run: rm -f ~/.ssh/oci-spx ~/.ssh/oci-spx.pub
 
-      # Named files rather than a directory glob, for two reasons. The artifact
-      # directory also holds the distro tarball and the test archive, which are
-      # hundreds of megabytes and reproducible from the ref; and the per-topology
-      # state directories hold terraform.tfstate, which is never an artifact.
+      # Named extensions rather than a directory glob: the artifact directory also
+      # holds the distro tarball and the test archive, which are hundreds of
+      # megabytes and reproducible from the ref. Everything here is a file the
+      # collect step above chose, so terraform.tfstate cannot reach an artifact.
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-oci-${{ github.run_id }}
           path: |
@@ -221,13 +258,7 @@ jobs:
             ${{ runner.temp }}/e2e-oci/*.log
             ${{ runner.temp }}/e2e-oci/verdict.txt
             ${{ runner.temp }}/e2e-oci/summary.md
+            ${{ runner.temp }}/e2e-oci/*.txt
+            ${{ runner.temp }}/e2e-oci/*.tsv
             ${{ runner.temp }}/e2e-oci-sweep/*.log
-            ${{ runner.workspace }}/oci-state/.validate-*/*.log
-            ${{ runner.workspace }}/oci-state/.validate-*/*.txt
-            ${{ runner.workspace }}/oci-state/.validate-*/*.tsv
-            # The hook is the operator's own executable and the one thing known
-            # about it is that it handles a private key. Whatever it printed is not
-            # ours to publish in a downloadable artifact, so it is excluded rather
-            # than trusted to have been quiet.
-            !${{ runner.workspace }}/oci-state/.validate-*/credential-hook.log
           retention-days: 14

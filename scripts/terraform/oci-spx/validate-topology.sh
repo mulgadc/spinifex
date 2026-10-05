@@ -34,8 +34,10 @@ CHANNEL=latest
 INSTALL_VERSION=""
 WORKBOOKS=""
 
-# Shapes and counts per topology. Named here rather than passed in, because the
-# point of a topology is that it is the same every run.
+# What a topology is worth when nothing says otherwise, so a CI run of a named
+# topology is the same every time. Supplied as TF_VAR_, which terraform.auto.tfvars
+# outranks, so a deployment sets its shape and node count in that file and no
+# flag has to carry them.
 declare -A TOPO_SHAPE=(
     [bm]="BM.Standard.E2.64"
     [vm-single]="VM.Standard.E6.Flex"
@@ -135,8 +137,12 @@ fi
 # the dynamic group and policy outlive every topology. setup-identity.sh owns them.
 PRINCIPAL_MODE=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo adopt || echo off)
 
-SHAPE="${TOPO_SHAPE[$TOPOLOGY]}"
-NODES="${TOPO_NODES[$TOPOLOGY]}"
+TOPO_DEFAULT_SHAPE="${TOPO_SHAPE[$TOPOLOGY]}"
+TOPO_DEFAULT_NODES="${TOPO_NODES[$TOPOLOGY]}"
+# What the apply actually built, filled in from the hosts_file output once it has.
+# Until then these are what the topology asked for, which is all there is to say.
+SHAPE="$TOPO_DEFAULT_SHAPE"
+NODES="$TOPO_DEFAULT_NODES"
 # Outside the checkout on a persistent runner, because actions/checkout runs
 # git clean -ffdx: it would delete the Terraform state of a killed run before the
 # sweep could read it, leaving instances running that nothing can find.
@@ -154,7 +160,12 @@ WORKBOOKS_TSV="$STATE_DIR/workbooks.tsv"
 # A separate state directory per topology, so two topologies can be built from one
 # checkout without one destroying the other's instances.
 tf() {
-    python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" \
+    # The topology's shape and count go in as TF_VAR_, which is the weakest source
+    # Terraform reads: a terraform.auto.tfvars in the checkout outranks it, so a
+    # deployment sizes itself in that file and the topology only supplies the
+    # default a CI run wants.
+    TF_VAR_compute_shape="$TOPO_DEFAULT_SHAPE" TF_VAR_node_count="$TOPO_DEFAULT_NODES" \
+        python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" \
         ${OCI_PROFILE:+--profile "$OCI_PROFILE"} -- \
         terraform -chdir="$HERE" "$@"
 }
@@ -162,9 +173,9 @@ tf() {
 # terraform output takes -state but not -var, so the two sets are kept apart. They
 # were one set once, and the -var made output fail into the default state file.
 tf_state=(-state "$STATE_DIR/terraform.tfstate")
+# instance_principal stays a -var, and outranks any tfvars, because --instance-principal
+# is a choice about this run rather than about the infrastructure's size.
 tf_vars=(
-    -var "compute_shape=$SHAPE"
-    -var "node_count=$NODES"
     -var "instance_principal=$PRINCIPAL_MODE"
     "${tf_state[@]}"
 )
@@ -334,12 +345,22 @@ record build PASS
 
 mapfile -t HOSTS < <(tf output -raw "${tf_state[@]}" hosts_file) \
     || die "could not read the hosts_file output from $STATE_DIR/terraform.tfstate"
-[ "${#HOSTS[@]}" = "$NODES" ] || die "expected $NODES host(s) from the hosts_file output, got ${#HOSTS[@]}: ${HOSTS[*]}"
+[ "${#HOSTS[@]}" -ge 1 ] || die "the hosts_file output named no hosts, so the apply built nothing to install on"
 for host in "${HOSTS[@]}"; do
     [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]] \
         || die "the hosts_file output is not an address: '$host' -- something on the wrapper's stdout is in the capture"
 done
+
+# node_count can come from a tfvars file, so the hosts the apply produced are the
+# authority on how many there are. Every later count check reads this.
+if [ "${#HOSTS[@]}" != "$NODES" ]; then
+    log "note: $NODES node(s) is the $TOPOLOGY default, and the apply built ${#HOSTS[@]}; taking the apply's"
+    NODES="${#HOSTS[@]}"
+fi
+SHAPE=$(tf output -raw "${tf_state[@]}" compute_shape) \
+    || die "could not read the compute_shape output from $STATE_DIR/terraform.tfstate"
 log "hosts: ${HOSTS[*]}"
+log "$SHAPE, $NODES node(s)"
 
 # cloud-init owns the volume, the ports and br-wan, and all three are units now, so
 # the question is whether they converged rather than whether a runcmd happened to

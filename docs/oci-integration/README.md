@@ -316,24 +316,48 @@ Choose how to deploy Spinifex on OCI, either as a single node, or at minimum a t
 
 One file, in the directory you are already in. Only `compartment_ocid` is required, because every other variable has a default that builds a working single node:
 
+Recommended compute shapes for a VM deployment:
+
+- `VM.Standard.E6.Flex` - Higher performance, 5th Gen AMD EPYC processor
+- `VM.Standard.E5.Flex` - Base-line performance, 4th Gen AMD EPYC processor
+
+Recommended bare metal shapes, preferred for large-scale production:
+
+- `BM.Standard.E5.192` - 192 OCPU / 2304 GB RAM. Higher performance, 4th Gen AMD EPYC processor
+- `BM.Standard3.64` - 64 OCPU / 1024 GB RAM. Baseline, Intel Xeon Platinum 8358
+- `BM.Standard.E2.64` - 64 OCPU / 512 GB RAM. Legacy, 1st Gen AMD EPYC processor
+
 ```bash
-cat > terraform.auto.tfvars <<'EOF'
-compartment_ocid        = "ocid1.compartment.oc1..aaaa..."
+cat > terraform.auto.tfvars <<EOF
+compartment_ocid        = "$CID"
 deployment_name         = "spinifex"
 
-# Shape and size. Bare metal is preferred; a flex VM is what the quota allows.
-compute_shape           = "VM.Standard.E6.Flex"
-compute_ocpus           = 8          # OCI counts an OCPU as a full core
+# Shape and size.
+# Bare metal is preferred for large scale production usage.
+compute_shape           = "VM.Standard.E5.Flex"
+compute_ocpus           = 8          # OCI counts an OCPU as a full core, 1 OCPU = 2vCPU
 compute_memory_in_gbs   = 32
 
-# 1 for a single node, 3 for a cluster. This is the only line that chooses.
+# 1 for a single node, 3 required for a cluster.
 node_count              = 1
 
 # The block volume behind /var/lib/spinifex, attached over iSCSI.
 data_volume_size_in_gbs = 256
 data_volume_vpus_per_gb = 120        # 120 = Ultra High Performance
+
+# Firewall. A list, so it can hold several ranges. Read the note below before
+# narrowing it.
+node_client_cidr_allow_list = ["0.0.0.0/0"]
 EOF
 ```
+
+The heredoc delimiter is unquoted, which is what lets `$CID` expand from the variable you exported in step 2. Check the file rather than assume, because a literal `$CID` in there fails at plan time with an unhelpful message about an invalid OCID:
+
+```bash
+grep compartment_ocid terraform.auto.tfvars
+```
+
+**This file is what decides the deployment.** `compute_ocpus` and `compute_memory_in_gbs` size a VM flex shape and are ignored on a fixed bare-metal one, which comes at one fixed size with all available OCPU/memory.
 
 [Every Terraform variable](../oci-architecture/README.md#every-terraform-variable) has the full list.
 
@@ -354,10 +378,12 @@ One command builds the infrastructure, installs Spinifex, forms the cluster, con
 
 | Argument            | What to pass                                                                                                                                                                                                                                                  |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission                                                                                              |
+| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent                       |
 | `--channel`         | **`dev` until the next release ships**, because OCI support is not in the current stable release yet. It resolves to the newest pre-release at the moment you run it. `latest` is the default and becomes the right answer once a release carries OCI support |
 | `--credential-hook` | `./spx-oci-config.sh`, which installs the credential from step 2 on every node. With an instance principal, replace it with `--instance-principal` and there is no key to install                                                                             |
 | `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                                         |
+
+**Your `terraform.auto.tfvars` outranks the topology**, so `--topology bm` with `compute_shape = "BM.Standard.E5.192"` in that file deploys on that shape rather than the one CI runs. The run logs the shape and node count it actually built, straight after the host addresses.
 
 Add `--skip-workload` to stop once the cluster is verified, without launching the validation guests. Add `--dry-run` to print the plan and change nothing.
 

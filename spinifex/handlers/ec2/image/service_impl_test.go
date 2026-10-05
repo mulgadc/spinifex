@@ -1781,6 +1781,8 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 		RootDeviceType:  "ebs",
 		Description:     "arm source",
 		BootMode:        "uefi",
+		Distro:          "debian-12",
+		DistroFamily:    "debian",
 		SourceDigest:    digest,
 	})
 
@@ -1796,6 +1798,8 @@ func TestCopyImage_InheritsSourceFields(t *testing.T) {
 	assert.Equal(t, uint64(32), newMeta.VolumeSizeGiB)
 	assert.Equal(t, "ebs", newMeta.RootDeviceType)
 	assert.Equal(t, "uefi", newMeta.BootMode, "CopyImage must propagate BootMode from source")
+	assert.Equal(t, "debian-12", newMeta.Distro, "CopyImage must propagate Distro from source")
+	assert.Equal(t, "debian", newMeta.DistroFamily, "cloud-init family detection reads DistroFamily")
 	assert.Equal(t, digest, newMeta.SourceDigest, "a zero-copy share still holds the source artifact")
 	assert.False(t, newMeta.CreationDate.Before(before), "CreationDate must be refreshed on copy, not inherited")
 }

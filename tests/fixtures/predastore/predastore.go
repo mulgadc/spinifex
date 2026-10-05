@@ -54,7 +54,7 @@ const (
 	SecretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" //nolint:gosec // well-known AWS SDK example secret, test-only cluster
 
 	// DefaultBucket and DefaultBucket2 are pre-created by Start itself,
-	// matching the bucket set services/predastore's own integration tests
+	// matching the bucket set runtime/roles/predastore's own integration tests
 	// were written against. Callers that need a different bucket should
 	// EnsureBucket one of their own against the fixture (see
 	// objectstore.NewS3ObjectStoreFromConfig) rather than reuse these —

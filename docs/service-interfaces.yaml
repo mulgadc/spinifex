@@ -245,7 +245,7 @@ services:
     depends_on: []
 
   predastore:
-    path: spinifex/services/predastore
+    path: spinifex/runtime/roles/predastore
     # S3 / AMI / keypair storage. External submodule under mulga/predastore;
     # this dir contains only the spinifex-side adapter. Submodule pointer
     # bump → selector forces "run all".

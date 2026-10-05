@@ -4,13 +4,13 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/services/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/services/northstar"
-	"github.com/mulgadc/spinifex/spinifex/services/predastore"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 )

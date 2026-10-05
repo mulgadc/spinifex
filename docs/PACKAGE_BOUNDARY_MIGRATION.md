@@ -302,3 +302,4 @@ verification, and any finding exposed by the move. Record a conflict rather
 than folding a behavioural repair into a structural commit. When this branch
 is merged, the umbrella repository's execution plan records the resulting
 Spinifex commit.
+| `931d86d5c` | `spinifex/services/awsgw` | `spinifex/runtime/roles/awsgw` | The AWS gateway process is a named runtime role and its composition root wires every domain, which runtime may do. The quota reconcile loop (`runQuotaReconcile`, `quotaKeyFor`) moved with it unchanged but belongs to `domains/admission/quota`, and the EKS token-verify responder belongs with STS or EKS identity; both are recorded residuals, so the role is not yet thin. Service-interface manifest, design doc and architecture diagram paths were updated. Full preflight (excluding the pre-existing containerd advisory), focused role, role-catalogue and CLI suites, `manifest-check` and tagged integration/E2E compilation passed. |

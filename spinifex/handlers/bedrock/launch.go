@@ -14,10 +14,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
@@ -62,7 +62,7 @@ type LaunchDeps struct {
 	Config    *config.Config
 	SystemVPC handlers_systemvpc.Deps
 	VPC       launchVPCProvisioner
-	Instance  sysinstance.SystemInstanceLauncher
+	Instance  systeminstance.SystemInstanceLauncher
 	Image     amiResolver
 	Volume    launchVolumeProvisioner
 	Attacher  volumeAttacher
@@ -292,8 +292,8 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		Members: userDataMembers,
 	})
 
-	sysOut, err := deps.Instance.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
-		BootMode:     sysinstance.BootAMI,
+	sysOut, err := deps.Instance.LaunchSystemInstance(&systeminstance.SystemInstanceInput{
+		BootMode:     systeminstance.BootAMI,
 		ManagedBy:    tags.ManagedByBedrock,
 		InstanceType: in.InstanceType,
 		ImageID:      amiID,
@@ -316,7 +316,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 	instanceID := sysOut.InstanceID
 	terminateVM = func(ctx context.Context) {
 		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
-			!errors.Is(termErr, sysinstance.ErrSystemInstanceNotFound) {
+			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "bedrock: rollback terminate of failed serving VM failed",
 				"group", in.GroupID, "instanceId", instanceID, "err", termErr)
 		}
@@ -362,7 +362,7 @@ func TerminateServingVM(ctx context.Context, deps LaunchDeps, rec EndpointRecord
 	var errs []error
 	if rec.InstanceID != "" {
 		if err := deps.Instance.TerminateSystemInstance(rec.InstanceID); err != nil &&
-			!errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
+			!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 			errs = append(errs, fmt.Errorf("terminate instance %s: %w", rec.InstanceID, err))
 		}
 	}

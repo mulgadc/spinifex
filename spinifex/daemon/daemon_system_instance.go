@@ -15,11 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -60,7 +60,7 @@ func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID str
 // for an explicit DeleteOnTermination, persists it onto the record. An ENI that
 // has to outlive its VM is only safe once that flag is stored, so a failed stamp
 // fails the attach rather than leaving a disposable NIC behind.
-func (d *Daemon) attachExtraENI(eniAccountID string, extra sysinstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
+func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
 	if _, err := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instanceID, deviceIndex); err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func (d *Daemon) attachExtraENI(eniAccountID string, extra sysinstance.ExtraENII
 // (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
 // volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
-	if input.BootMode == sysinstance.BootAMI {
+	if input.BootMode == systeminstance.BootAMI {
 		return d.launchAMISystemInstance(input)
 	}
 	accountID := awsidentifiers.GlobalAccountID
@@ -442,7 +442,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 // gets the same admission, GPU claim and teardown-time release as a customer
 // VM: PrepareRunInstances gates on a free GPU slot, LaunchRunInstances claims
 // the device, and vm.Manager's cleanup chain releases it.
-func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (d *Daemon) launchAMISystemInstance(input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("sysinstance: instance service not initialized")
 	}
@@ -540,7 +540,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		"mgmtIP", inst.MgmtIP,
 		"privateIp", privateIP,
 	)
-	return &sysinstance.SystemInstanceOutput{
+	return &systeminstance.SystemInstanceOutput{
 		InstanceID: inst.ID,
 		PrivateIP:  privateIP,
 		MgmtIP:     inst.MgmtIP,
@@ -631,7 +631,7 @@ func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
 func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
-		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was

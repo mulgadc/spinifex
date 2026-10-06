@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,7 +153,7 @@ func TestEnsurePrivateEndpointENI_EmptyInputsRejected(t *testing.T) {
 
 func TestEnsureClusterNLB_ThreadsCrossAccountENIToSyncCreate(t *testing.T) {
 	nlbp := newFakeNLBProvisioner()
-	extras := []sysinstance.ExtraENIInput{{
+	extras := []systeminstance.ExtraENIInput{{
 		ENIID:     "eni-pe-001",
 		ENIMac:    "02:0a:01:23:45:67",
 		ENIIP:     "10.0.1.50",

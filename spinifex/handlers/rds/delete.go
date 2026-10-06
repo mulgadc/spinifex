@@ -11,10 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 )
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
@@ -235,7 +235,7 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 		return errors.New("rds: no system-instance launcher configured")
 	}
 	if err := launcher.TerminateSystemInstance(instanceID); err != nil &&
-		!errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
+		!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 		return err
 	}
 	return nil

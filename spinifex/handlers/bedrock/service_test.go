@@ -9,8 +9,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -352,7 +352,7 @@ func TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM(t *test
 
 	// The instance vanished out of band: the scoped delete must still clear the
 	// record rather than stall on a gone VM.
-	h.launcher.terminateErr = sysinstance.ErrSystemInstanceNotFound
+	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
 
 	scoped, err := s.Delete(t.Context(), &DeleteEndpointInput{ModelID: testModelID, AccountID: testAccountID}, "")
 	require.NoError(t, err)

@@ -23,13 +23,13 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -792,7 +792,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// extra NIC. Persist its refs immediately so teardown reclaims them on any later
 	// failure. nginx(L4) on the LB VM binds all addresses, so it answers the Set A
 	// NIC and proxies to the CP target group with no data-plane change.
-	var crossAccountENIs []sysinstance.ExtraENIInput
+	var crossAccountENIs []systeminstance.ExtraENIInput
 	if privateAccess {
 		pe, perr := EnsurePrivateEndpointENI(ctx, s.deps.VPCK3s, s.deps.VPCSG, s.deps.VPCSubnet, accountID, name, lc.subnetIDs[0], lc.vpcID)
 		if perr != nil {
@@ -805,7 +805,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist private endpoint refs", err)
 			return
 		}
-		crossAccountENIs = []sysinstance.ExtraENIInput{{
+		crossAccountENIs = []systeminstance.ExtraENIInput{{
 			ENIID:     pe.ENIID,
 			ENIMac:    pe.ENIMac,
 			ENIIP:     pe.ENIIP,

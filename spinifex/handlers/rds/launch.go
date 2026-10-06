@@ -15,10 +15,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -96,7 +96,7 @@ type launchVPCProvisioner interface {
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
 // how the agent reaches the gateway from a private subnet.
 type launchInstanceLauncher interface {
-	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
+	LaunchSystemInstance(input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error)
 	TerminateSystemInstance(instanceID string) error
 }
 
@@ -255,8 +255,8 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, fmt.Errorf("rds: resolve customer subnet network for %s: %w", in.DBInstanceIdentifier, err)
 	}
 
-	sysOut, err := deps.Instance.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
-		BootMode:     sysinstance.BootAMI,
+	sysOut, err := deps.Instance.LaunchSystemInstance(&systeminstance.SystemInstanceInput{
+		BootMode:     systeminstance.BootAMI,
 		ManagedBy:    tags.ManagedByRDS,
 		InstanceType: in.InstanceType,
 		ImageID:      amiID,
@@ -267,7 +267,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		ENIID:     systemENI.id,
 		ENIMac:    systemENI.mac,
 		ENIIP:     systemENI.ip,
-		ExtraENIs: []sysinstance.ExtraENIInput{{
+		ExtraENIs: []systeminstance.ExtraENIInput{{
 			ENIID:         customerENI.id,
 			ENIMac:        customerENI.mac,
 			ENIIP:         customerENI.ip,
@@ -292,7 +292,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	instanceID := sysOut.InstanceID
 	terminateVM = func(ctx context.Context) {
 		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
-			!errors.Is(termErr, sysinstance.ErrSystemInstanceNotFound) {
+			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "rds: rollback terminate of failed DB VM failed",
 				"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "err", termErr)
 		}

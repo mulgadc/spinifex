@@ -13,13 +13,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -917,7 +917,7 @@ func TestAttachExtraENI_DeleteOnTerminationFalseSurvivesTerminate(t *testing.T) 
 	f := newENIHotPlugFixture(t)
 	f.vmInst.AccountID = testAccountID
 
-	require.NoError(t, f.daemon.attachExtraENI(testAccountID, sysinstance.ExtraENIInput{
+	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID:               f.eniID,
 		DeleteOnTermination: aws.Bool(false),
 	}, f.vmInst.ID, 1))
@@ -942,7 +942,7 @@ func TestAttachExtraENI_NilDeleteOnTerminationStaysDisposable(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 	f.vmInst.AccountID = testAccountID
 
-	require.NoError(t, f.daemon.attachExtraENI(testAccountID, sysinstance.ExtraENIInput{
+	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID: f.eniID,
 	}, f.vmInst.ID, 1))
 

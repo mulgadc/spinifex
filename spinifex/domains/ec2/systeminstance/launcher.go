@@ -1,8 +1,8 @@
-// Package sysinstance holds the boot-agnostic contract for system-managed VMs.
+// Package systeminstance holds the boot-agnostic contract for system-managed VMs.
 // Hidden from DescribeInstances; supports two boot styles: BootDirect (fw_cfg microVM)
 // and BootAMI (AMI booting from the Ec2 IMDS datasource). Types live here to avoid an
 // eks→elbv2 import cycle.
-package sysinstance
+package systeminstance
 
 import "errors"
 

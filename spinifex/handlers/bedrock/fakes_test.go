@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
@@ -300,16 +300,16 @@ func (f *fakeAttacher) AttachVolume(_ context.Context, _, _, _, device string) (
 type fakeInstanceLauncher struct {
 	mu           sync.Mutex
 	launchCount  atomic.Int32
-	requests     []*sysinstance.SystemInstanceInput
+	requests     []*systeminstance.SystemInstanceInput
 	terminated   []string
 	nextID       int
 	failLaunch   error
 	terminateErr error
 }
 
-var _ sysinstance.SystemInstanceLauncher = (*fakeInstanceLauncher)(nil)
+var _ systeminstance.SystemInstanceLauncher = (*fakeInstanceLauncher)(nil)
 
-func (f *fakeInstanceLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (f *fakeInstanceLauncher) LaunchSystemInstance(in *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	f.launchCount.Add(1)
 	f.mu.Lock()
 	f.requests = append(f.requests, in)
@@ -321,12 +321,12 @@ func (f *fakeInstanceLauncher) LaunchSystemInstance(in *sysinstance.SystemInstan
 	f.nextID++
 	id := f.nextID
 	f.mu.Unlock()
-	return &sysinstance.SystemInstanceOutput{InstanceID: fmt.Sprintf("i-%d", id)}, nil
+	return &systeminstance.SystemInstanceOutput{InstanceID: fmt.Sprintf("i-%d", id)}, nil
 }
 
 // lastInput returns the most recent LaunchSystemInstance request, for tests
 // that assert on how a launch was wired.
-func (f *fakeInstanceLauncher) lastInput() *sysinstance.SystemInstanceInput {
+func (f *fakeInstanceLauncher) lastInput() *systeminstance.SystemInstanceInput {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.requests) == 0 {
@@ -335,7 +335,7 @@ func (f *fakeInstanceLauncher) lastInput() *sysinstance.SystemInstanceInput {
 	return f.requests[len(f.requests)-1]
 }
 
-func (f *fakeInstanceLauncher) launches() []*sysinstance.SystemInstanceInput {
+func (f *fakeInstanceLauncher) launches() []*systeminstance.SystemInstanceInput {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.requests

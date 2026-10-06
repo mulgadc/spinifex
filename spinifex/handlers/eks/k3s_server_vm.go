@@ -13,10 +13,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 )
 
 // ErrEKSServerAMINotFound is returned when no AMI with the EKS managed-by tag
@@ -41,10 +41,10 @@ type k3sVPCProvisioner interface {
 // The VM boots from the eks-server AMI and needs a mgmt-bridge NIC via the
 // system-instance path to reach the daemon's NATS endpoint.
 type k3sInstanceLauncher interface {
-	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
+	LaunchSystemInstance(input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error)
 	// LaunchSystemInstanceOnNode pins the VM to a specific host for HA spread.
 	// An empty nodeID launches in-process like LaunchSystemInstance.
-	LaunchSystemInstanceOnNode(nodeID string, input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
+	LaunchSystemInstanceOnNode(nodeID string, input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error)
 	TerminateSystemInstance(instanceID string) error
 }
 
@@ -248,8 +248,8 @@ func LaunchK3sServerVM(ctx context.Context,
 
 	userData := buildK3sUserData(in)
 
-	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &sysinstance.SystemInstanceInput{
-		BootMode:              sysinstance.BootAMI,
+	sysOut, err := instSvc.LaunchSystemInstanceOnNode(in.TargetNodeID, &systeminstance.SystemInstanceInput{
+		BootMode:              systeminstance.BootAMI,
 		ManagedBy:             tags.ManagedByEKS,
 		InstanceType:          instanceType,
 		ImageID:               amiID,
@@ -301,7 +301,7 @@ func TerminateK3sServerVM(ctx context.Context,
 	if instanceID != "" {
 		// "instance not found" on a retry is idempotent success; proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
-			if errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
+			if errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 				slog.DebugContext(ctx, "TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
 			} else {
 				slog.WarnContext(ctx, "TerminateK3sServerVM: terminate failed", "instanceId", instanceID, "err", err)

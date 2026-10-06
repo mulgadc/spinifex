@@ -16,9 +16,9 @@ import (
 	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -224,11 +224,11 @@ type seqK3sInst struct {
 
 var _ k3sInstanceLauncher = (*seqK3sInst)(nil)
 
-func (i *seqK3sInst) LaunchSystemInstance(in *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (i *seqK3sInst) LaunchSystemInstance(in *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	return i.LaunchSystemInstanceOnNode("", in)
 }
 
-func (i *seqK3sInst) LaunchSystemInstanceOnNode(nodeID string, in *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (i *seqK3sInst) LaunchSystemInstanceOnNode(nodeID string, in *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.failNodes[nodeID] {
@@ -243,7 +243,7 @@ func (i *seqK3sInst) LaunchSystemInstanceOnNode(nodeID string, in *sysinstance.S
 	if nodeID == "" {
 		id = "i-local"
 	}
-	return &sysinstance.SystemInstanceOutput{InstanceID: id, MgmtIP: "10.255.0.9"}, nil
+	return &systeminstance.SystemInstanceOutput{InstanceID: id, MgmtIP: "10.255.0.9"}, nil
 }
 
 func (i *seqK3sInst) TerminateSystemInstance(instanceID string) error {

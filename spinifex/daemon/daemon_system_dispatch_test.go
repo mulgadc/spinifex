@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -379,7 +379,7 @@ func TestTerminateSystemInstanceRemote_NoResponders(t *testing.T) {
 
 	err = d.terminateSystemInstanceRemote("i-orphan")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound,
+	assert.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound,
 		"no owner means the VM is gone — caller must see idempotent NotFound, not a hang")
 }
 
@@ -395,7 +395,7 @@ func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
 
 	sub, err := nc.Subscribe("system.TerminateInstance.i-gone", func(msg *nats.Msg) {
 		payload, _ := json.Marshal(systemInstanceTerminateEnvelope{
-			Error: sysinstance.ErrSystemInstanceNotFound.Error() + ": i-gone",
+			Error: systeminstance.ErrSystemInstanceNotFound.Error() + ": i-gone",
 		})
 		_ = msg.Respond(payload)
 	})
@@ -404,7 +404,7 @@ func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
 
 	err = d.terminateSystemInstanceRemote("i-gone")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+	assert.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 }
 
 // TestTerminateSystemInstanceRemote_ErrorPropagated: a real teardown failure on
@@ -427,7 +427,7 @@ func TestTerminateSystemInstanceRemote_ErrorPropagated(t *testing.T) {
 	err = d.terminateSystemInstanceRemote("i-stuck")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "volume detach timed out")
-	assert.NotErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound,
+	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound,
 		"a real failure must not be misreported as idempotent NotFound")
 }
 
@@ -437,7 +437,7 @@ func TestTerminateSystemInstanceRemote_WithoutConn(t *testing.T) {
 	d := &Daemon{node: "node-a"}
 	err := d.terminateSystemInstanceRemote("i-x")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+	assert.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 }
 
 // TestHandleSystemLaunchInstance_PanicRecovered drives a valid launch against a

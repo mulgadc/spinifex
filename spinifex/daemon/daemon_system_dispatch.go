@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -136,7 +136,7 @@ const systemTerminateRemoteTimeout = 90 * time.Second
 // ErrSystemInstanceNotFound, which callers treat as idempotent success.
 func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 	if d.natsConn == nil {
-		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
 	subject := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
 	reply, err := d.natsConn.Request(subject, nil, systemTerminateRemoteTimeout)
@@ -144,7 +144,7 @@ func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 		if errors.Is(err, nats.ErrNoResponders) {
 			slog.Debug("terminateSystemInstanceRemote: no owner subscribed; VM already gone",
 				"instanceId", instanceID)
-			return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 		}
 		return fmt.Errorf("route terminate %s: %w", instanceID, err)
 	}
@@ -153,8 +153,8 @@ func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 		return fmt.Errorf("decode routed terminate reply %s: %w", instanceID, err)
 	}
 	if env.Error != "" {
-		if strings.Contains(env.Error, sysinstance.ErrSystemInstanceNotFound.Error()) {
-			return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceNotFound.Error()) {
+			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 		}
 		return fmt.Errorf("routed terminate %s: %s", instanceID, env.Error)
 	}

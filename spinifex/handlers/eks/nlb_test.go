@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 type fakeNLBProvisioner struct {
 	createLBCalls          []*elbv2.CreateLoadBalancerInput
 	createLBSyncCalls      []*elbv2.CreateLoadBalancerInput
-	createClusterNLBExtras [][]sysinstance.ExtraENIInput
+	createClusterNLBExtras [][]systeminstance.ExtraENIInput
 	describeLBCalls        []*elbv2.DescribeLoadBalancersInput
 	deleteLBCalls          []*elbv2.DeleteLoadBalancerInput
 	createTGCalls          []*elbv2.CreateTargetGroupInput
@@ -95,7 +95,7 @@ func (f *fakeNLBProvisioner) CreateLoadBalancerSync(input *elbv2.CreateLoadBalan
 
 // CreateClusterNLBSync records the cross-account ENIs and delegates to the sync
 // path so existing front-end-IP assertions still hold.
-func (f *fakeNLBProvisioner) CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []sysinstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
+func (f *fakeNLBProvisioner) CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []systeminstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error) {
 	f.createClusterNLBExtras = append(f.createClusterNLBExtras, crossAccountENIs)
 	return f.CreateLoadBalancerSync(input, accountID)
 }

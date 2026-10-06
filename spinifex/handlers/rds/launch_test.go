@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -303,7 +303,7 @@ func (f *fakeENIs) CreateSecurityGroup(_ context.Context, in *ec2.CreateSecurity
 
 // fakeLauncher stands in for the system-instance launcher.
 type fakeLauncher struct {
-	input      *sysinstance.SystemInstanceInput
+	input      *systeminstance.SystemInstanceInput
 	instanceID string
 	err        error
 	terminated []string
@@ -321,7 +321,7 @@ type fakeLauncher struct {
 
 var _ launchInstanceLauncher = (*fakeLauncher)(nil)
 
-func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (f *fakeLauncher) LaunchSystemInstance(in *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	f.input = in
 	if f.err != nil {
 		return nil, f.err
@@ -333,7 +333,7 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 	if instanceID == "" {
 		instanceID = "i-rds0001"
 	}
-	return &sysinstance.SystemInstanceOutput{InstanceID: instanceID}, nil
+	return &systeminstance.SystemInstanceOutput{InstanceID: instanceID}, nil
 }
 
 func (f *fakeLauncher) TerminateSystemInstance(instanceID string) error {
@@ -603,14 +603,14 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	// customer ENI injected cross-account as an extra NIC.
 	in := h.launcher.input
 	require.NotNil(t, in)
-	assert.Equal(t, sysinstance.BootAMI, in.BootMode)
+	assert.Equal(t, systeminstance.BootAMI, in.BootMode)
 	assert.Equal(t, tags.ManagedByRDS, in.ManagedBy)
 	assert.Equal(t, testEngineAMI, in.ImageID)
 	assert.Equal(t, awsidentifiers.GlobalAccountID, in.AccountID)
 	assert.Equal(t, aws.StringValue(sysENI.SubnetId), in.SubnetID)
 	assert.Equal(t, out.SystemENIID, in.ENIID)
 	require.Len(t, in.ExtraENIs, 1)
-	assert.Equal(t, sysinstance.ExtraENIInput{
+	assert.Equal(t, systeminstance.ExtraENIInput{
 		ENIID:     out.CustomerENIID,
 		ENIMac:    "02:00:00:00:00:02",
 		ENIIP:     out.CustomerENIIP,

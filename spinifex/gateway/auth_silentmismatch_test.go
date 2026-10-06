@@ -14,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // captureLogs redirects the default slog logger into a buffer for the duration
@@ -103,4 +105,52 @@ func TestSigningTime_Sources(t *testing.T) {
 
 	none := httptest.NewRequest(http.MethodGet, "/", nil)
 	require.Empty(t, signingTime(none))
+}
+
+// A proxied request reaches the gateway from loopback. The auth-failure line
+// must name the client the request audit line names, while the lockout stays
+// keyed on the connection peer.
+func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		wantLogIP  string
+	}{
+		{"proxied via loopback", "127.0.0.1:41234", "203.0.113.7"},
+		{"direct client cannot choose the logged IP", "198.51.100.9:41234", "198.51.100.9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := NewAuthRateLimiter()
+			defer rl.Stop()
+			gw := &GatewayConfig{
+				DisableLogging: true,
+				Region:         testRegion,
+				IAMService:     &mockIAMService{masterKey: testMasterKey},
+				STSService:     &mockSTSService{},
+				RateLimiter:    rl,
+			}
+			handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("an unknown session credential must not reach the handler")
+			}))
+			logs := captureLogs(t)
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = "localhost:9999"
+			req.RemoteAddr = tc.remoteAddr
+			req.Header.Set("X-Real-IP", "203.0.113.7")
+			signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+			resp := doRequest(handler, req)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+			out := logs.String()
+			require.Contains(t, out, "session credential not found")
+			require.Contains(t, out, "sourceIP="+tc.wantLogIP)
+
+			rl.mu.RLock()
+			defer rl.mu.RUnlock()
+			require.NotNil(t, rl.records[utils.ClientIP(tc.remoteAddr)], "lockout must key on the connection peer")
+		})
+	}
 }

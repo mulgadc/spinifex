@@ -155,8 +155,18 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 // into the central tag store, so describe-tags sees them from birth. The write
 // is best-effort, so the assertion tolerates it landing slightly late.
 func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
-	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
+	daemon, memStore := createFullTestDaemonWithStore(t, sharedJSNATSURL)
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")
+
+	// The launch fails (the AMI has no snapshot), so the manager needs a
+	// terminated bucket to release the record into for its tags to be checked.
+	jsm, err := NewJetStreamManager(daemon.natsConn)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+	require.NoError(t, jsm.InitTerminatedInstanceBucket())
+	daemon.jsManager = jsm
+	daemon.stateStore = newStateStoreAdapter(jsm, daemon.persistState)
+	daemon.vmMgr.SetDeps(vm.Deps{NodeID: daemon.node, StateStore: daemon.stateStore})
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.launchtags", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
 	require.NoError(t, err)
@@ -187,10 +197,11 @@ func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return assert.ObjectsAreEqual(want, centralTags(t, daemon, testAccountID, id))
 	}, 5*time.Second, 50*time.Millisecond, "central tag store must receive launch tags")
-
-	// The launch fails (the AMI has no snapshot) and the record is dropped at
-	// once, so the record's tags are read from the reply built from it.
-	assert.Equal(t, want, tagsAsMap(reservation.Instances[0].Tags))
+	assert.Eventually(t, func() bool {
+		v, err := daemon.jsManager.LoadTerminatedInstance(id)
+		return err == nil && v != nil && v.Instance != nil &&
+			assert.ObjectsAreEqual(want, tagsAsMap(v.Instance.Tags))
+	}, 5*time.Second, 10*time.Millisecond, "the released record must carry the launch tags")
 }
 
 // Missing InstanceTagsData, and a set with no tags, are rejected with

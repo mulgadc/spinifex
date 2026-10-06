@@ -3,6 +3,7 @@ package ocinet_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -79,7 +80,8 @@ func TestAllocateWaitsOutAsyncAssignment(t *testing.T) {
 		"Allocate must not return an address that is still provisioning")
 }
 
-func TestAllocateSurfacesQuotaExhaustionAsInsufficientAddressCapacity(t *testing.T) {
+// A full VNIC is the AWS per-interface limit, not a shortage of addresses.
+func TestAllocateSurfacesAFullVNICAsPrivateIpAddressLimitExceeded(t *testing.T) {
 	ctx := context.Background()
 	fake := oci.NewFake()
 	fake.PrivateLimit = 1
@@ -90,8 +92,39 @@ func TestAllocateSurfacesQuotaExhaustionAsInsufficientAddressCapacity(t *testing
 
 	_, err = a.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-2"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInsufficientAddressCapacity,
+	assert.Contains(t, err.Error(), awserrors.ErrorPrivateIpAddressLimitExceeded,
 		"an OCI quota refusal must reach the customer as the AWS error that means the same thing")
+}
+
+// A tenancy out of reserved public IPs is the AWS Elastic IP limit. The two
+// ceilings resolved to one code before, which told an operator to wait for
+// capacity when the fix was to release an address they already hold.
+func TestAllocateSurfacesAnExhaustedPublicIPQuotaAsAddressLimitExceeded(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	fake.FailWith["CreatePublicIP"] = fmt.Errorf("public ip limit reached: %w", oci.ErrLimitExceeded)
+	a, _ := newTestAllocator(t, fake)
+
+	_, err := a.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorAddressLimitExceeded)
+	assert.NotContains(t, err.Error(), awserrors.ErrorInsufficientAddressCapacity,
+		"a quota the customer can free by releasing an address must not read as the region being out of them")
+}
+
+// Anything that is not a quota keeps its own error rather than being dressed up
+// as a limit, or an outage reads as an exhausted account.
+func TestAllocateLeavesANonQuotaFailureUnmapped(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	fake.FailWith["CreatePublicIP"] = errors.New("boom")
+	a, _ := newTestAllocator(t, fake)
+
+	_, err := a.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", AllocationID: "eipalloc-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+	assert.NotContains(t, err.Error(), awserrors.ErrorAddressLimitExceeded)
+	assert.NotContains(t, err.Error(), awserrors.ErrorInsufficientAddressCapacity)
 }
 
 // A failure after the private IP exists must not leave it behind: we are still

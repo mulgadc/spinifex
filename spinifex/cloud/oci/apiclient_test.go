@@ -263,3 +263,48 @@ func TestGetSubnetMapsTheUnauthorisedFourOhFour(t *testing.T) {
 	assert.ErrorIs(t, err, oci.ErrNotFound)
 	assert.Contains(t, err.Error(), "GetSubnet")
 }
+
+// The only call that can see an address no VNIC references. Both filters are
+// load bearing: without REGION scope it answers for one availability domain,
+// and without RESERVED it returns ephemeral addresses nothing may delete.
+func TestListReservedPublicIPsFiltersToReservedRegionalAndPages(t *testing.T) {
+	page := 0
+	c, seen := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		page++
+		if page == 1 {
+			w.Header().Set("opc-next-page", "p2")
+			_, _ = w.Write([]byte(`[{"id":"q1","ipAddress":"203.0.113.1","lifecycleState":"AVAILABLE","lifetime":"RESERVED","timeCreated":"2026-10-01T00:00:00.000Z"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":"q2","ipAddress":"203.0.113.2","lifecycleState":"ASSIGNED","lifetime":"RESERVED"}]`))
+	})
+
+	got, err := c.ListReservedPublicIPs(context.Background(), "ocid1.compartment.oc1..c1")
+	require.NoError(t, err)
+
+	require.Len(t, got, 2)
+	assert.Equal(t, "q1", got[0].ID)
+	assert.Equal(t, "q2", got[1].ID)
+	assert.Equal(t, 2026, got[0].TimeCreated.Year(), "the creation time is what the orphan grace period is measured from")
+	assert.True(t, got[1].TimeCreated.IsZero(), "a response with no creation time must not read as the zero epoch")
+
+	require.Len(t, *seen, 2)
+	q := (*seen)[0].query
+	assert.Equal(t, "REGION", q.Get("scope"))
+	assert.Equal(t, "RESERVED", q.Get("lifetime"))
+	assert.Equal(t, "ocid1.compartment.oc1..c1", q.Get("compartmentId"))
+	assert.Equal(t, "p2", (*seen)[1].query.Get("page"))
+}
+
+// A credential without `read public-ips` gets the same 404 as a missing
+// compartment, and reconcile distinguishes them by not treating either as fatal.
+func TestListReservedPublicIPsMapsTheUnauthorisedFourOhFour(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"NotAuthorizedOrNotFound","message":"nope"}`))
+	})
+
+	_, err := c.ListReservedPublicIPs(context.Background(), "ocid1.compartment.oc1..c1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, oci.ErrNotFound)
+}

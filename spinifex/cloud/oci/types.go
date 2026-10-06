@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 )
 
 // PrivateIP is a VCN private IP object on a VNIC. The OCID, not the address,
@@ -53,6 +54,9 @@ type PublicIP struct {
 	DisplayName    string
 	Lifetime       string
 	LifecycleState string
+	// TimeCreated is how a detached address is told from one still being
+	// attached, since both report no private IP and only age separates them.
+	TimeCreated time.Time
 }
 
 // IsAssigned reports whether the public IP has finished provisioning and is

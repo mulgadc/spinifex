@@ -15,10 +15,13 @@ func TestOutputStylingEnabled(t *testing.T) {
 	tests := []struct {
 		name     string
 		noColor  string
+		term     string
 		terminal bool
 		want     bool
 	}{
-		{name: "terminal keeps colour", terminal: true, want: true},
+		{name: "terminal keeps colour", term: "xterm-256color", terminal: true, want: true},
+		{name: "unset TERM on a terminal keeps colour", terminal: true, want: true},
+		{name: "TERM=dumb drops colour on a terminal", term: "dumb", terminal: true, want: false},
 		{name: "pipe drops colour", terminal: false, want: false},
 		{name: "NO_COLOR drops colour on a terminal", noColor: "1", terminal: true, want: false},
 		{name: "any non-empty NO_COLOR counts, even 0", noColor: "0", terminal: true, want: false},
@@ -26,8 +29,8 @@ func TestOutputStylingEnabled(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cmd.OutputStylingEnabled(tt.noColor, tt.terminal); got != tt.want {
-				t.Fatalf("OutputStylingEnabled(%q, %v) = %v, want %v", tt.noColor, tt.terminal, got, tt.want)
+			if got := cmd.OutputStylingEnabled(tt.noColor, tt.term, tt.terminal); got != tt.want {
+				t.Fatalf("OutputStylingEnabled(%q, %q, %v) = %v, want %v", tt.noColor, tt.term, tt.terminal, got, tt.want)
 			}
 		})
 	}
@@ -56,10 +59,10 @@ func TestIsTerminalFalseForNonTTYWriters(t *testing.T) {
 
 // renderNodesTable renders a table shaped like `spx get nodes` through the same
 // pterm.DefaultTable the CLI uses, after applying the styling decision.
-func renderNodesTable(t *testing.T, noColor string, terminal bool) string {
+func renderNodesTable(t *testing.T, noColor, termName string, terminal bool) string {
 	t.Helper()
 	t.Cleanup(func() { cmd.SetOutputStyling(true) })
-	cmd.SetOutputStyling(cmd.OutputStylingEnabled(noColor, terminal))
+	cmd.SetOutputStyling(cmd.OutputStylingEnabled(noColor, termName, terminal))
 
 	var buf bytes.Buffer
 	data := pterm.TableData{
@@ -81,17 +84,22 @@ func TestTableOutputPlainWhenNotTerminal(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
-	out := renderNodesTable(t, "", cmd.IsTerminal(w))
+	out := renderNodesTable(t, "", "xterm", cmd.IsTerminal(w))
 	assertPlainAlignedTable(t, out)
 }
 
 func TestTableOutputPlainWithNoColorOnTerminal(t *testing.T) {
-	out := renderNodesTable(t, "1", true)
+	out := renderNodesTable(t, "1", "xterm", true)
+	assertPlainAlignedTable(t, out)
+}
+
+func TestTableOutputPlainOnDumbTerminal(t *testing.T) {
+	out := renderNodesTable(t, "", "dumb", true)
 	assertPlainAlignedTable(t, out)
 }
 
 func TestTableOutputStyledOnTerminal(t *testing.T) {
-	out := renderNodesTable(t, "", true)
+	out := renderNodesTable(t, "", "xterm", true)
 	if !strings.Contains(out, "\x1b[") {
 		t.Fatalf("table on a terminal carries no ANSI styling, so the plain-output tests prove nothing:\n%q", out)
 	}

@@ -53,7 +53,7 @@ func Execute() {
 	cliLogLevel.Set(slog.LevelError)
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cliLogLevel})))
 
-	setOutputStyling(outputStylingEnabled(os.Getenv("NO_COLOR"), isTerminal(os.Stdout)))
+	setOutputStyling(outputStylingEnabled(os.Getenv("NO_COLOR"), os.Getenv("TERM"), isTerminal(os.Stdout)))
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -63,9 +63,9 @@ func Execute() {
 }
 
 // outputStylingEnabled reports whether spx may emit ANSI colour and text styling:
-// only when stdout is a terminal and NO_COLOR is unset or empty (no-color.org).
-func outputStylingEnabled(noColor string, stdoutIsTerminal bool) bool {
-	return noColor == "" && stdoutIsTerminal
+// only on a terminal that is not TERM=dumb, with NO_COLOR unset or empty.
+func outputStylingEnabled(noColor, termName string, stdoutIsTerminal bool) bool {
+	return noColor == "" && termName != "dumb" && stdoutIsTerminal
 }
 
 // isTerminal reports whether w is a file attached to a terminal.

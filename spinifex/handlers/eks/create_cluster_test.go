@@ -30,6 +30,7 @@ func createInput(name string) *eks.CreateClusterInput {
 // persisted on the (now FAILED) meta, otherwise the resources leak with no
 // owning record and DeleteCluster cannot reclaim them.
 func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	// Force the K3s VM launch to fail — this is after EnsureClusterNLB and the
@@ -52,6 +53,7 @@ func TestCreateCluster_NLBArnPersistedBeforeLaterFailure(t *testing.T) {
 // End-to-end: a failed create followed by delete-cluster leaves zero orphaned
 // NLB resources. The persisted ARNs from the partial create drive teardown.
 func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")
 
@@ -75,6 +77,7 @@ func TestCreateCluster_FailedCreateThenDeleteReclaimsNLB(t *testing.T) {
 // sys.medium VMs are unrecorded and neither DeleteCluster nor the FAILED-cluster
 // reclaim can reach them — they leak.
 func TestCreateCluster_PostPlacementFailureLeavesControlPlaneRecorded(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	// Placement succeeds and launches the CP VM, then target registration fails.
@@ -96,6 +99,7 @@ func TestCreateCluster_PostPlacementFailureLeavesControlPlaneRecorded(t *testing
 // terminate the control-plane VM the partial create launched — driven by the CP
 // refs the early persist recorded.
 func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.nlb.registerErr = errors.New("TargetGroupNotFound")
 
@@ -119,6 +123,7 @@ func TestCreateCluster_PostPlacementFailedThenDeleteTerminatesControlPlane(t *te
 // FAILED meta is retained for observability; purge is idempotent so a later
 // DeleteCluster re-purge is a no-op.
 func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.inst.launchErr = errors.New("no capacity")
 
@@ -139,6 +144,7 @@ func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
 // parameters must replay the in-progress/created cluster rather than launching
 // a second control plane (AWS ClientRequestToken semantics).
 func TestCreateCluster_SameTokenSameParamsReplaysInProgressCluster(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	in := createInput("alpha")
@@ -160,6 +166,7 @@ func TestCreateCluster_SameTokenSameParamsReplaysInProgressCluster(t *testing.T)
 // Reusing a ClientRequestToken with different CreateClusterInput parameters is
 // IdempotentParameterMismatch, not a second cluster or a silent replay.
 func TestCreateCluster_SameTokenDifferentParamsIsIdempotentMismatch(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	in1 := createInput("alpha")
@@ -181,6 +188,7 @@ func TestCreateCluster_SameTokenDifferentParamsIsIdempotentMismatch(t *testing.T
 // second create, not a duplicate — it must still hit the atomic name claim and
 // get ResourceInUse, same as with no token at all.
 func TestCreateCluster_DistinctTokenSameNameReturnsResourceInUse(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	in1 := createInput("alpha")
@@ -197,6 +205,7 @@ func TestCreateCluster_DistinctTokenSameNameReturnsResourceInUse(t *testing.T) {
 // A live (CREATING/ACTIVE) cluster of the same name blocks create with a
 // cluster-scoped ResourceInUseException, not the ELBv2 target-group message.
 func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	meta := sampleClusterMeta("alpha")
@@ -210,6 +219,7 @@ func TestCreateCluster_ExistingClusterReturnsResourceInUse(t *testing.T) {
 // A FAILED cluster from a prior attempt must not block a retry: create reclaims
 // it (tearing down recorded resources) and proceeds to a fresh CREATING cluster.
 func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	// First attempt fails at VM launch, leaving a FAILED meta with NLB ARNs.
@@ -238,6 +248,7 @@ func TestCreateCluster_FailedClusterIsReclaimedOnRetry(t *testing.T) {
 // A FAILED cluster is observable via Describe and List — no state
 // where create blocks but describe/list show nothing.
 func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	meta := sampleClusterMeta("alpha")
@@ -264,6 +275,7 @@ func TestCreateCluster_FailedClusterVisibleInDescribeAndList(t *testing.T) {
 // that as a ClusterHealth issue in describe-cluster, so a dead control plane is
 // visible behind the still-ACTIVE status .
 func TestDescribeCluster_SurfacesHealthIssueForActiveCluster(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	meta := sampleClusterMeta("alpha")
@@ -282,6 +294,7 @@ func TestDescribeCluster_SurfacesHealthIssueForActiveCluster(t *testing.T) {
 
 // A healthy ACTIVE cluster carries no health issue in describe-cluster.
 func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	meta := sampleClusterMeta("alpha")
@@ -297,6 +310,7 @@ func TestDescribeCluster_HealthyActiveClusterHasNoIssues(t *testing.T) {
 // launch: CreateCluster accepts the request (CREATING) and the background launch
 // marks the half-built cluster FAILED so the reclaim path can retry .
 func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.ami.describeOut = &ec2.DescribeImagesOutput{} // no images tagged managed-by=eks
 
@@ -310,6 +324,7 @@ func TestCreateCluster_MissingAMIReturnsServiceUnavailable(t *testing.T) {
 }
 
 func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	out, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
@@ -329,6 +344,7 @@ func TestCreateCluster_HappyPathPersistsActiveCreatingMeta(t *testing.T) {
 // with a known caller principal ARN mints a system:masters AccessEntry for the
 // caller, keyed by their exact ARN (the token webhook looks it up by the same).
 func TestCreateCluster_SeedsCreatorAdminAccessEntry(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	const caller = "arn:aws:iam::111122223333:role/admin"
 
@@ -345,6 +361,7 @@ func TestCreateCluster_SeedsCreatorAdminAccessEntry(t *testing.T) {
 
 // With the bootstrap flag explicitly false, no creator-admin entry is minted.
 func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	const caller = "arn:aws:iam::111122223333:role/admin"
 	in := createInput("alpha")
@@ -366,6 +383,7 @@ func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
 // gateway (no per-cluster hidden-pool EIP), so the persisted meta carries the CP
 // VPC refs and the NAT gateway is provisioned exactly once.
 func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.CreateCluster(context.Background(), createInput("setb"), testAccountID, "")
@@ -407,6 +425,7 @@ func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
 // actually lives in — otherwise the tenant's own DescribeSecurityGroups can
 // never resolve it. fakeSubnetResolver resolves every subnet to "vpc-aaa".
 func TestCreateCluster_ClusterSecurityGroupCreatedInCallerVPC(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
@@ -435,6 +454,7 @@ func TestCreateCluster_ClusterSecurityGroupCreatedInCallerVPC(t *testing.T) {
 // Security groups the caller explicitly passes on CreateCluster must come back
 // unchanged from DescribeCluster — never substituted with platform-created ids.
 func TestCreateCluster_CallerSecurityGroupIdsEchoedNotOverwritten(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	in := createInput("alpha")
@@ -456,6 +476,7 @@ func TestCreateCluster_CallerSecurityGroupIdsEchoedNotOverwritten(t *testing.T) 
 // platformVersion, upgradePolicy and logging immediately, without waiting on
 // any nodegroup — the registry module reads all of these on the bare cluster.
 func TestCreateCluster_DescribeSurfacesReadbackConformanceFields(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	in := createInput("alpha")
@@ -504,6 +525,7 @@ func TestCreateCluster_DescribeSurfacesReadbackConformanceFields(t *testing.T) {
 // otherwise every subsequent terraform-aws-eks plan would show a permanent
 // diff on access_config.authentication_mode.
 func TestCreateCluster_EchoesRequestedAuthenticationMode(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	in := createInput("alpha")
@@ -525,6 +547,7 @@ func TestCreateCluster_EchoesRequestedAuthenticationMode(t *testing.T) {
 // API — the AWS default, and the only mode a record predating this field can
 // mean.
 func TestCreateCluster_UnsetAuthenticationModeDescribesAsAPI(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")

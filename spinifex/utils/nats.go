@@ -718,10 +718,10 @@ const deleteNATTimeout = 15 * time.Second
 // hundred milliseconds — so a small bounded retry closes it. Only ErrNoResponders
 // is retried, and that returns immediately, so the added latency is bounded by
 // the delay and paid only when nothing is listening.
-const (
-	deleteNATRetries    = 3
-	deleteNATRetryDelay = 500 * time.Millisecond
-)
+const deleteNATRetries = 3
+
+// deleteNATRetryDelay is a var only so tests can shorten the gap between attempts.
+var deleteNATRetryDelay = 500 * time.Millisecond
 
 // PublishNATEvent sends a NAT lifecycle event. Both topics use request-reply:
 // vpc.add-nat to prevent ARP races, vpc.delete-nat so an undelivered teardown is

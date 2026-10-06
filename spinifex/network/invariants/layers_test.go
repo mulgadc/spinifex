@@ -14,6 +14,7 @@ import (
 //	 interface. Every cross-layer call passes through the typed interface
 //	 of the immediate lower neighbor."
 func TestS1_LayerSkipProhibited(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S1: "No code above layer Lk calls through to a ` +
 		`layer below Lk's immediate interface. Every cross-layer call ` +
 		`passes through the typed interface of the immediate lower neighbor."`

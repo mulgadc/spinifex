@@ -24,6 +24,7 @@ func newResetReconciler(t *testing.T, cp CPInstanceControl) (*ClusterReconciler,
 const etcdIssue = `apiserver healthz="fail": etcd:unreachable`
 
 func TestReformEtcd_DisabledIsNoop(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	// CP control wired but reset NOT enabled.
 	r := newRecoveryReconciler(t, cp)
@@ -35,6 +36,7 @@ func TestReformEtcd_DisabledIsNoop(t *testing.T) {
 }
 
 func TestReformEtcd_NonEtcdIssueIgnored(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, _ := newResetReconciler(t, cp)
 	r.resetSince = time.Now().Add(-time.Hour)
@@ -45,6 +47,7 @@ func TestReformEtcd_NonEtcdIssueIgnored(t *testing.T) {
 }
 
 func TestReformEtcd_SingleCPIgnored(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, _ := newResetReconciler(t, cp)
 	r.resetSince = time.Now().Add(-time.Hour)
@@ -55,6 +58,7 @@ func TestReformEtcd_SingleCPIgnored(t *testing.T) {
 }
 
 func TestReformEtcd_WithinGraceDoesNotReset(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, _ := newResetReconciler(t, cp)
 
@@ -65,6 +69,7 @@ func TestReformEtcd_WithinGraceDoesNotReset(t *testing.T) {
 }
 
 func TestReformEtcd_MemberNotRunningDefers(t *testing.T) {
+	t.Parallel()
 	// A stopped member is the in-place restart path's job; reset only fires when
 	// every member is VM-running but etcd is still wedged.
 	cp := &fakeCPControl{state: "stopped"}
@@ -77,6 +82,7 @@ func TestReformEtcd_MemberNotRunningDefers(t *testing.T) {
 }
 
 func TestReformEtcd_EscalatesAfterGrace(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, acctKV := newResetReconciler(t, cp)
 	r.resetSince = time.Now().Add(-10 * time.Minute)
@@ -101,6 +107,7 @@ func TestReformEtcd_EscalatesAfterGrace(t *testing.T) {
 }
 
 func TestReformEtcd_BackoffPreventsRapidReset(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, _ := newResetReconciler(t, cp)
 	r.resetSince = time.Now().Add(-10 * time.Minute)
@@ -112,6 +119,7 @@ func TestReformEtcd_BackoffPreventsRapidReset(t *testing.T) {
 }
 
 func TestReformEtcd_StopsAtMaxAttempts(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, _ := newResetReconciler(t, cp)
 	r.resetSince = time.Now().Add(-10 * time.Minute)
@@ -123,6 +131,7 @@ func TestReformEtcd_StopsAtMaxAttempts(t *testing.T) {
 }
 
 func TestReformEtcd_RecoveryClearsDirectivesAndClock(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r, acctKV := newResetReconciler(t, cp)
 	r.resetSince = time.Now().Add(-10 * time.Minute)
@@ -144,6 +153,7 @@ func TestReformEtcd_RecoveryClearsDirectivesAndClock(t *testing.T) {
 }
 
 func TestReformEtcd_SteadyHealthyDoesNotBumpEpoch(t *testing.T) {
+	t.Parallel()
 	// A healthy cluster that never escalated must not write directives each tick.
 	cp := &fakeCPControl{state: "running"}
 	r, acctKV := newResetReconciler(t, cp)

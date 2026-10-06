@@ -33,7 +33,9 @@ func TestRenderedConfig_EnforcesAuth(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "nats.conf")
 
-	// Generate test CA and server certs for TLS.
+	// Generate test CA and server certs for TLS. Key strength is irrelevant to
+	// what this proves, so skip the slow production key size.
+	admin.ShortenCertKeyBitsForTest(t, 2048)
 	caCertPath := filepath.Join(tmpDir, "ca.pem")
 	caKeyPath := filepath.Join(tmpDir, "ca.key")
 	require.NoError(t, admin.GenerateCACert(caCertPath, caKeyPath))

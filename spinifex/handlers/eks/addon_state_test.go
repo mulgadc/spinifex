@@ -22,6 +22,7 @@ func sampleAddonRecord(name string) *AddonRecord {
 }
 
 func TestAddonRecordGuards(t *testing.T) {
+	t.Parallel()
 	require.Error(t, PutAddonRecord(t.Context(), nil, "c1", nil))
 	require.Error(t, PutAddonRecord(t.Context(), nil, "", sampleAddonRecord("x")))
 	require.Error(t, PutAddonRecord(t.Context(), nil, "c1", &AddonRecord{}))
@@ -34,6 +35,7 @@ func TestAddonRecordGuards(t *testing.T) {
 }
 
 func TestAddonRecord_RoundTrip(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	in := sampleAddonRecord("aws-load-balancer-controller")
@@ -49,12 +51,14 @@ func TestAddonRecord_RoundTrip(t *testing.T) {
 }
 
 func TestGetAddonRecord_NotFound(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	_, err := GetAddonRecord(t.Context(), kv, "c1", "ghost")
 	assert.ErrorIs(t, err, ErrAddonNotFound)
 }
 
 func TestListAddonRecords_SkipsManifestSubKeys(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	require.NoError(t, PutAddonRecord(t.Context(), kv, "c1", sampleAddonRecord("coredns")))
@@ -72,6 +76,7 @@ func TestListAddonRecords_SkipsManifestSubKeys(t *testing.T) {
 }
 
 func TestDeleteAddonRecord_RemovesRecordAndManifest(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutAddonRecord(t.Context(), kv, "c1", sampleAddonRecord("coredns")))
 	_, err := kv.Put(t.Context(), AddonManifestKey("c1", "coredns"), []byte(`{}`))
@@ -89,6 +94,7 @@ func TestDeleteAddonRecord_RemovesRecordAndManifest(t *testing.T) {
 }
 
 func TestCasUpdateAddon(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, PutAddonRecord(t.Context(), kv, "c1", sampleAddonRecord("coredns")))
 

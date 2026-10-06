@@ -16,6 +16,7 @@ const testSysAcct = "000000000000"
 // role is created with the EC2 trust policy, carries the internal gateway
 // permissions, and its instance profile is returned for launch attachment.
 func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
+	t.Parallel()
 	f := newFakeEnsurer()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{IAM: f}}
 
@@ -46,6 +47,7 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 // against a pre-existing role does not re-create it but still re-asserts the
 // inline policy so a stale role converges onto the current permissions.
 func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
+	t.Parallel()
 	f := newFakeEnsurer()
 	f.Roles[CPInstanceRoleName] = &iam.Role{
 		RoleName: aws.String(CPInstanceRoleName),
@@ -62,6 +64,7 @@ func TestEnsureK3sServerInstanceProfile_ExistingRoleConverges(t *testing.T) {
 // TestEnsureCPInstanceProfile_NilIAMFallsBack asserts an unwired IAM service
 // yields "" so the caller falls back to baked static creds rather than failing.
 func TestEnsureCPInstanceProfile_NilIAMFallsBack(t *testing.T) {
+	t.Parallel()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{}}
 	assert.Empty(t, s.ensureCPInstanceProfile(testSysAcct))
 }
@@ -70,6 +73,7 @@ func TestEnsureCPInstanceProfile_NilIAMFallsBack(t *testing.T) {
 // via the lazily-resolved IAMProvider when the eager deps.IAM is unset — the
 // daemon wires only the provider so the build cannot race the NATS KV backend.
 func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
+	t.Parallel()
 	f := newFakeEnsurer()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{
 		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f },
@@ -83,6 +87,7 @@ func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
 // returns nil (NATS KV backend not yet up) yields "" so the launch falls back to
 // static creds and retries on the next call rather than bricking the cluster.
 func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
+	t.Parallel()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{
 		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil },
 	}}
@@ -93,6 +98,7 @@ func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
 // ships with is exactly the EC2 service-principal shape AssumeRoleForInstance
 // matches; a drift here silently breaks IMDS credential minting.
 func TestEKSServerTrustPolicyIsAssumable(t *testing.T) {
+	t.Parallel()
 	assert.Contains(t, handlers_iam.EC2InstanceTrustPolicy, `"Service":"ec2.amazonaws.com"`)
 	assert.Contains(t, handlers_iam.EC2InstanceTrustPolicy, `"Action":"sts:AssumeRole"`)
 }

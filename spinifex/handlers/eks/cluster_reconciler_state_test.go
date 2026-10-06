@@ -38,6 +38,7 @@ func freshReport(healthz string, nodes int) *ServerStateReport {
 }
 
 func TestClusterReconciler_CreatingTransitionsToActiveOnStateReport(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
@@ -53,6 +54,7 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnStateReport(t *testing.T
 }
 
 func TestClusterReconciler_CreatingStaysWithoutStateReport(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
@@ -66,6 +68,7 @@ func TestClusterReconciler_CreatingStaysWithoutStateReport(t *testing.T) {
 }
 
 func TestClusterReconciler_CreatingStaysOnUnhealthyReport(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)
@@ -79,6 +82,7 @@ func TestClusterReconciler_CreatingStaysOnUnhealthyReport(t *testing.T) {
 }
 
 func TestClusterReconciler_ActiveRecordsNodeCountAndClearsIssue(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	require.NoError(t, SetClusterHealthState(t.Context(), acctKV, "alpha", "stale", 0, nil))
@@ -94,6 +98,7 @@ func TestClusterReconciler_ActiveRecordsNodeCountAndClearsIssue(t *testing.T) {
 }
 
 func TestClusterReconciler_ActiveFlagsStaleReport(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t, WithStateStaleAfter(90*time.Second))
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(&ServerStateReport{Healthz: "ok", NodeCount: 2, TS: time.Now().Add(-5 * time.Minute).Unix()})
@@ -107,6 +112,7 @@ func TestClusterReconciler_ActiveFlagsStaleReport(t *testing.T) {
 }
 
 func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(&ServerStateReport{
@@ -124,6 +130,7 @@ func TestClusterReconciler_ActiveUnhealthyReportSurfacesReason(t *testing.T) {
 }
 
 func TestClusterReconciler_ActiveUnhealthyReportWithoutReasonStaysTerse(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(freshReport("fail", 0))
@@ -136,6 +143,7 @@ func TestClusterReconciler_ActiveUnhealthyReportWithoutReasonStaysTerse(t *testi
 }
 
 func TestClusterReconciler_StateReportSubscriptionDrivesActive(t *testing.T) {
+	t.Parallel()
 	r, nc, acctKV := newStateReconcilerHarness(t,
 		WithReconcileInterval(10*time.Millisecond),
 		WithLeaseRefresh(10*time.Second),

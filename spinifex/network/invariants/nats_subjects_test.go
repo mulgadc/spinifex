@@ -22,6 +22,7 @@ import (
 // rename. Test runs audit and t.Skip's with gap report; flip to t.Fatalf once
 // the rename ships.
 func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S7: "Every vpcd-originated NATS publication ` +
 		`uses a subject prefixed vpc.{azID}. A subscription never processes ` +
 		`a message whose subject AZ prefix does not match the local node's ` +

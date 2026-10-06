@@ -18,6 +18,7 @@ import (
 // paging path end-to-end: each page honours MaxResults, hands back a NextToken
 // pointing at the next name, and the final page carries no token.
 func TestEKSServiceImpl_ListClustersPagination(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	for _, n := range []string{"c01", "c02", "c03", "c04", "c05"} {
 		require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta(n)))
@@ -45,6 +46,7 @@ func TestEKSServiceImpl_ListClustersPagination(t *testing.T) {
 // MaxResults (zero, negative, or above the 100 ceiling) clamps to a single full
 // page rather than truncating or erroring.
 func TestEKSServiceImpl_ListClustersMaxResultsClamped(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	want := []string{"c01", "c02", "c03"}
 	for _, n := range want {
@@ -65,6 +67,7 @@ func TestEKSServiceImpl_ListClustersMaxResultsClamped(t *testing.T) {
 // to InternalError). Regression guard for list-clusters returning a misleading
 // 500 during the KV warmup window.
 func TestEKSReadUnavailableClassification(t *testing.T) {
+	t.Parallel()
 	transient := []error{
 		nats.ErrNoResponders,
 		nats.ErrTimeout,

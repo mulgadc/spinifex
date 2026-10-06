@@ -144,8 +144,20 @@ type volumeLeases struct {
 	// export to tear down wants.
 	onLost func(context.Context, string, leaseLossKind)
 
+	// checkEvery overrides volumeLeaseCheckInterval when set. Zero means the
+	// production interval; tests shorten it to reach a deadline quickly.
+	checkEvery time.Duration
+
 	mu   sync.Mutex
 	held map[string]*volumeLease
+}
+
+// checkInterval is how often a renew loop tests validity.
+func (l *volumeLeases) checkInterval() time.Duration {
+	if l.checkEvery > 0 {
+		return l.checkEvery
+	}
+	return volumeLeaseCheckInterval
 }
 
 // newVolumeLeases binds the lease bucket, creating it if this is the first node
@@ -368,7 +380,7 @@ func (l *volumeLeases) release(ctx context.Context, lease *volumeLease) {
 // first indefinitely while the server hands the entry to somebody else, and
 // only the second stops it.
 func (lease *volumeLease) renewLoop(ctx context.Context) {
-	ticker := time.NewTicker(volumeLeaseCheckInterval)
+	ticker := time.NewTicker(lease.leases.checkInterval())
 	defer ticker.Stop()
 
 	// The renewal runs on its own goroutine so a JetStream call that blocks for

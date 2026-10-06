@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -494,6 +495,7 @@ func TestDiscoverActiveNodes_NilNATS(t *testing.T) {
 }
 
 func TestDiscoverActiveNodes_NoResponders(t *testing.T) {
+	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	nc := startTestNATS(t)
 
 	gw := &GatewayConfig{
@@ -506,6 +508,7 @@ func TestDiscoverActiveNodes_NoResponders(t *testing.T) {
 }
 
 func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
+	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	nc := startTestNATS(t)
 
 	for _, nodeName := range []string{"node-1", "node-2"} {
@@ -529,6 +532,7 @@ func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
 }
 
 func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
+	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	nc := startTestNATS(t)
 
 	_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
@@ -547,6 +551,7 @@ func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
 }
 
 func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
+	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	nc := startTestNATS(t)
 
 	for range 2 {
@@ -1403,7 +1408,17 @@ func TestCheckPolicy_MissingAccountID(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }
 
+// shortenPolicyResolveRetry keeps the transient-NATS retries without paying
+// the production backoff. Tests that call it must not run in parallel.
+func shortenPolicyResolveRetry(t *testing.T) {
+	t.Helper()
+	prev := policyResolveRetryBase
+	policyResolveRetryBase = time.Millisecond
+	t.Cleanup(func() { policyResolveRetryBase = prev })
+}
+
 func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
+	shortenPolicyResolveRetry(t)
 	calls := 0
 	mock := &policyMockIAMService{
 		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
@@ -1425,6 +1440,7 @@ func TestCheckPolicy_NATSTransientRetriesAllAttempts(t *testing.T) {
 }
 
 func TestCheckPolicy_NATSTransientRetriesThenSucceeds(t *testing.T) {
+	shortenPolicyResolveRetry(t)
 	calls := 0
 	mock := &policyMockIAMService{
 		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {

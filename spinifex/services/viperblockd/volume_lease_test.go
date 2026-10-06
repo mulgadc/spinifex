@@ -519,6 +519,8 @@ type blockingKV struct {
 	jetstream.KeyValue
 
 	release chan struct{}
+	entered chan struct{}
+	enter   sync.Once
 
 	mu       sync.Mutex
 	inFlight bool
@@ -528,6 +530,7 @@ func (k *blockingKV) Update(ctx context.Context, _ string, _ []byte, _ uint64) (
 	k.mu.Lock()
 	k.inFlight = true
 	k.mu.Unlock()
+	k.enter.Do(func() { close(k.entered) })
 	defer func() {
 		k.mu.Lock()
 		k.inFlight = false
@@ -552,9 +555,6 @@ func (k *blockingKV) updateInFlight() bool {
 // does not run on the loop's goroutine. A renewal may now block for longer than
 // a device stall, and the holder has to stop writing on validity regardless —
 // so the surrender has to land while that renewal is still inside JetStream.
-//
-// Takes volumeLeaseValidity to run, because the clock it asserts is the real
-// one. A stall injector that could compress it is Phase 3 of the KV review.
 func TestVolumeLease_ValidityIsEnforcedWhileARenewalIsBlocked(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
@@ -571,25 +571,36 @@ func TestVolumeLease_ValidityIsEnforcedWhileARenewalIsBlocked(t *testing.T) {
 	lease.stop()
 	<-lease.done
 
-	blocking := &blockingKV{KeyValue: leases.kv, release: make(chan struct{})}
+	blocking := &blockingKV{KeyValue: leases.kv, release: make(chan struct{}), entered: make(chan struct{})}
 	t.Cleanup(func() { close(blocking.release) })
 	leases.kv = blocking
+	leases.checkEvery = 10 * time.Millisecond
 
-	// Old enough that a renewal comes due on the next check and validity lapses
-	// on the one after, so the renewal is in flight when the deadline arrives.
+	// Renewal due on the first check, validity still far off.
 	lease.mu.Lock()
-	lease.confirmed = time.Now().Add(-(volumeLeaseValidity - volumeLeaseCheckInterval - time.Second))
+	lease.confirmed = time.Now().Add(-volumeLeaseRenewInterval)
 	lease.done = make(chan struct{})
 	lease.mu.Unlock()
 
 	go lease.renewLoop(t.Context())
 
 	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the renewal never reached the store")
+	}
+
+	// The renewal is now inside JetStream; let validity lapse under it.
+	lease.mu.Lock()
+	lease.confirmed = time.Now().Add(-volumeLeaseValidity)
+	lease.mu.Unlock()
+
+	select {
 	case kind := <-lost:
 		assert.Equal(t, leaseLostStalled, kind, "a blocked renewal is not a peer taking the volume")
 		assert.True(t, blocking.updateInFlight(),
 			"the surrender waited for the renewal to return, so validity was enforced late and the guest kept writing past it")
-	case <-time.After(volumeLeaseValidity + volumeLeaseRenewTimeout):
+	case <-time.After(volumeLeaseRenewTimeout - time.Second):
 		t.Fatal("validity lapsed and nothing surrendered the volume, so a blocked renewal can hold a lease open indefinitely")
 	}
 }

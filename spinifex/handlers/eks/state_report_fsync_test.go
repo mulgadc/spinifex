@@ -21,11 +21,13 @@ func ptrFloat(v float64) *float64 { return &v }
 // and an etcd with too few fsyncs to average all arrive as nil, and treating any
 // of them as healthy would hide exactly the case the field exists to surface.
 func TestServerStateReport_SlowFsyncNeedsASample(t *testing.T) {
+	t.Parallel()
 	assert.False(t, fsyncReport("ok", nil).SlowFsync(), "no sample must not read as fast")
 	assert.False(t, fsyncReport("fail", nil).SlowFsync(), "no sample must not read as slow either")
 }
 
 func TestServerStateReport_SlowFsyncThreshold(t *testing.T) {
+	t.Parallel()
 	assert.False(t, fsyncReport("ok", ptrFloat(6.0)).SlowFsync(), "single-digit ms is healthy")
 	assert.True(t, fsyncReport("ok", ptrFloat(slowFsyncMs)).SlowFsync(), "the threshold itself is slow")
 	assert.True(t, fsyncReport("ok", ptrFloat(90.0)).SlowFsync(), "a stalled disk is slow")
@@ -35,6 +37,7 @@ func TestServerStateReport_SlowFsyncThreshold(t *testing.T) {
 // answers while its datastore is served at 90ms is the case that was previously
 // invisible until it degraded into etcd:unreachable.
 func TestServerStateReport_SlowFsyncOnAHealthyApiserver(t *testing.T) {
+	t.Parallel()
 	r := fsyncReport("ok", ptrFloat(90.0))
 	assert.True(t, r.Healthy(), "apiserver is still answering")
 	assert.True(t, r.SlowFsync(), "and its datastore is still slow")
@@ -43,6 +46,7 @@ func TestServerStateReport_SlowFsyncOnAHealthyApiserver(t *testing.T) {
 // A slow fsync must never make the cluster unhealthy. observe() gates cluster
 // state, and a working cluster on a slow disk is working.
 func TestClusterReconciler_SlowFsyncDoesNotFailHealth(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 	r.latest.Store(fsyncReport("ok", ptrFloat(90.0)))
 
@@ -55,6 +59,7 @@ func TestClusterReconciler_SlowFsyncDoesNotFailHealth(t *testing.T) {
 // a warning every interval is how a real signal gets tuned out. storeReport is
 // the only path that sees both the previous and the new report.
 func TestClusterReconciler_LogFsyncTransitionIsLatched(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 
 	// Crossing into slow, then staying slow, then recovering. Asserted through
@@ -78,6 +83,7 @@ func TestClusterReconciler_LogFsyncTransitionIsLatched(t *testing.T) {
 // first usable sample is the only chance to record what normal looks like — a
 // green cell-25 previously left nothing to compare a later slow run against.
 func TestClusterReconciler_FirstKnownSampleIsTheBaseline(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 
 	// A guest whose etcd has not warmed up yet reports no sample at all.
@@ -94,6 +100,7 @@ func TestClusterReconciler_FirstKnownSampleIsTheBaseline(t *testing.T) {
 // A report with no sample must not be read as a recovery from a slow one, or a
 // guest that stopped serving metrics would look like a disk that got faster.
 func TestClusterReconciler_MissingSampleIsNotRecovery(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 	r.storeReport(fsyncReport("ok", ptrFloat(90.0)))
 	r.storeReport(fsyncReport("ok", nil))

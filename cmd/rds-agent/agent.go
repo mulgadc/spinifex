@@ -365,15 +365,15 @@ func unescapeMountField(field string) string {
 
 // Boot-retry bounds. Tight to start, since the usual cause is a control plane
 // still creating this instance's record, and capped so an outage does not turn
-// a booting fleet into a retry storm.
-const (
+// a booting fleet into a retry storm. Vars so tests can shorten the wait.
+var (
 	retryMin = 1 * time.Second
 	retryMax = 30 * time.Second
-
-	// With the production backoff, attempt five is about 15 seconds into the
-	// failure and still precedes the first 30-second heartbeat.
-	retryErrorAttempt = 5
 )
+
+// With the production backoff, attempt five is about 15 seconds into the
+// failure and still precedes the first 30-second heartbeat.
+const retryErrorAttempt = 5
 
 // Wrapping an error in this stops retryObserved. For the failures the control
 // plane decides from its own record, no retry can change the answer, and looping

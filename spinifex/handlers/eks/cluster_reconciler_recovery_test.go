@@ -65,6 +65,7 @@ func newRecoveryReconciler(t *testing.T, cp CPInstanceControl) *ClusterReconcile
 }
 
 func TestMaybeRecoverCP_HealthyClearsDegradedClock(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-time.Hour)
@@ -78,6 +79,7 @@ func TestMaybeRecoverCP_HealthyClearsDegradedClock(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_WithinGraceDoesNotRestart(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 
@@ -88,6 +90,7 @@ func TestMaybeRecoverCP_WithinGraceDoesNotRestart(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_RestartsStoppedCPAfterGrace(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -101,6 +104,7 @@ func TestMaybeRecoverCP_RestartsStoppedCPAfterGrace(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_RestartsAllHAMembersAfterGrace(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -113,6 +117,7 @@ func TestMaybeRecoverCP_RestartsAllHAMembersAfterGrace(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_RunningCPNotRestarted(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "running"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -124,6 +129,7 @@ func TestMaybeRecoverCP_RunningCPNotRestarted(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_BackoffPreventsRapidRetry(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -135,6 +141,7 @@ func TestMaybeRecoverCP_BackoffPreventsRapidRetry(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_StopsAtMaxAttempts(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -146,6 +153,7 @@ func TestMaybeRecoverCP_StopsAtMaxAttempts(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_NilControlIsNoop(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t) // no CP control wired
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
 
@@ -155,6 +163,7 @@ func TestMaybeRecoverCP_NilControlIsNoop(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_EmptyInstanceIDIsNoop(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -166,6 +175,7 @@ func TestMaybeRecoverCP_EmptyInstanceIDIsNoop(t *testing.T) {
 }
 
 func TestMaybeRecoverCP_StateQueryErrorSkipsRestart(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{stateErr: errors.New("query-pci failed")}
 	r := newRecoveryReconciler(t, cp)
 	r.degradedSince = time.Now().Add(-10 * time.Minute)
@@ -179,6 +189,7 @@ func TestMaybeRecoverCP_StateQueryErrorSkipsRestart(t *testing.T) {
 // a stale state report records the health issue AND drives an in-place restart
 // once the CP has been degraded past the grace window.
 func TestActiveBranchRestartsWedgedCP(t *testing.T) {
+	t.Parallel()
 	cp := &fakeCPControl{state: "stopped"}
 	r, _, acctKV := newStateReconcilerHarness(t, WithCPInstanceControl(cp))
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))

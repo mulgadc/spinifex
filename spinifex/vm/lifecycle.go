@@ -99,10 +99,11 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	return m.launch(ctx, instance)
 }
 
-const (
-	rebootRunningTimeout     = 4 * time.Second
-	rebootStatusPollInterval = 100 * time.Millisecond
-)
+const rebootRunningTimeout = 4 * time.Second
+
+// rebootStatusPollInterval is how often Reboot samples the run state after
+// system_reset. A var so tests need not wait out the real interval.
+var rebootStatusPollInterval = 100 * time.Millisecond
 
 // rebootPowerdownTimeout is how long the guest gets to shut itself down before
 // it is reset under. Nova's shutdown_timeout, and the same shape as the hard
@@ -923,7 +924,7 @@ func removeStaleQMPSocket(path string) error {
 func dialQMPWithRetry(path string, greetingTimeout time.Duration) (*qmp.QMPClient, error) {
 	deadline := time.Now().Add(qmpDialTimeout)
 	for {
-		client, err := qmp.NewQMPClientWithGreetingTimeout(path, greetingTimeout)
+		client, err := qmpDial(path, greetingTimeout)
 		if err == nil {
 			return client, nil
 		}
@@ -933,6 +934,10 @@ func dialQMPWithRetry(path string, greetingTimeout time.Duration) (*qmp.QMPClien
 		time.Sleep(qmpDialRetryInterval)
 	}
 }
+
+// qmpDial is a test seam over the single QMP connect+greeting attempt, so a
+// test can count how many times dialQMPWithRetry dialled.
+var qmpDial = qmp.NewQMPClientWithGreetingTimeout
 
 // isTransientDialError reports whether a QMP connect failed because the listener
 // is not up yet: connection refused (bound but pre-listen, or a stale dead

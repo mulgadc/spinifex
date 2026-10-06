@@ -694,14 +694,15 @@ func TestHandleEC2Events_StopInstance(t *testing.T) {
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
 	instanceID := "i-test-stop-001"
-	daemon.vmMgr.Insert(&vm.VM{
+	instance := &vm.VM{
 		ID:           instanceID,
 		InstanceType: getTestInstanceType(t),
 		Status:       vm.StateRunning,
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 		AccountID:    testAccountID,
-	})
+	}
+	daemon.vmMgr.Insert(instance)
 
 	sub, err := daemon.natsConn.Subscribe(
 		fmt.Sprintf("ec2.cmd.%s", instanceID),
@@ -729,18 +730,22 @@ func TestHandleEC2Events_StopInstance(t *testing.T) {
 
 	// The ack comes first and the transition runs detached, so the state is a
 	// later fact than the reply — and it does not stop at stopping.
-	assertLeavesRunning(t, daemon, instanceID, vm.StateStopping, vm.StateStopped)
+	assertLeavesRunning(t, daemon, instance, vm.StateStopping, vm.StateStopped)
 }
 
 // assertLeavesRunning waits for a detached stop or terminate to move the
 // instance out of running. Asserting on the transient state alone is a race in
 // both directions: too early reads running, too late reads the final state.
-func assertLeavesRunning(t *testing.T, daemon *Daemon, instanceID string, want ...vm.InstanceState) {
+func assertLeavesRunning(t *testing.T, daemon *Daemon, instance *vm.VM, want ...vm.InstanceState) {
 	t.Helper()
 
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		var status vm.InstanceState
-		daemon.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
+		if !daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { status = v.Status }) {
+			// A finished stop or terminate drops the instance from the manager
+			// under the same lock, so the dropped VM holds the state it left in.
+			status = instance.Status
+		}
 		assert.Contains(c, want, status)
 	}, 10*time.Second, 10*time.Millisecond)
 }
@@ -751,14 +756,15 @@ func TestHandleEC2Events_TerminateInstance(t *testing.T) {
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
 	instanceID := "i-test-term-001"
-	daemon.vmMgr.Insert(&vm.VM{
+	instance := &vm.VM{
 		ID:           instanceID,
 		InstanceType: getTestInstanceType(t),
 		Status:       vm.StateRunning,
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 		AccountID:    testAccountID,
-	})
+	}
+	daemon.vmMgr.Insert(instance)
 
 	sub, err := daemon.natsConn.Subscribe(
 		fmt.Sprintf("ec2.cmd.%s", instanceID),
@@ -783,7 +789,7 @@ func TestHandleEC2Events_TerminateInstance(t *testing.T) {
 
 	assert.Equal(t, `{}`, string(reply.Data))
 
-	assertLeavesRunning(t, daemon, instanceID, vm.StateShuttingDown, vm.StateTerminated)
+	assertLeavesRunning(t, daemon, instance, vm.StateShuttingDown, vm.StateTerminated)
 }
 
 func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 // so lifecycle reconcile resumes without waiting for the next CreateCluster,
 // while terminal (FAILED/DELETING) clusters stay untouched.
 func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	active := sampleClusterMeta("alpha")
@@ -45,6 +46,7 @@ func TestSpawnRegisteredReconcilers_ResumesNonTerminal(t *testing.T) {
 // unreachable JetStream as "no accounts" and leave every cluster in the fleet
 // without a reconciler until the next daemon restart — with clean boot logs.
 func TestSpawnRegisteredReconcilers_EnumerationFailureIsReported(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	active := sampleClusterMeta("alpha")
@@ -62,6 +64,7 @@ func TestSpawnRegisteredReconcilers_EnumerationFailureIsReported(t *testing.T) {
 // safe no-op when orchestration deps are absent (the shim construction path),
 // so it never panics or registers phantom holders on a half-wired daemon.
 func TestSpawnRegisteredReconcilers_DepsNotReadyNoops(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	require.NoError(t, svc.SpawnRegisteredReconcilers())
 	assert.False(t, svc.registry.Has(testAccountID, "alpha"))

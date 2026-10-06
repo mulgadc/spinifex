@@ -92,6 +92,7 @@ func newReplaceReconciler(t *testing.T, cp CPInstanceControl, prov CPProvisioner
 }
 
 func TestMaybeReplaceCP_ReplacesLostMemberWithHealthyQuorum(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{node: ControlPlaneNode{NodeID: "node-c", InstanceID: "i-cp-new", ENIID: "eni-new", ENIIP: "10.0.0.20"}}
@@ -115,6 +116,7 @@ func TestMaybeReplaceCP_ReplacesLostMemberWithHealthyQuorum(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_DescribeErrorMemberTreatedAsLost(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{
 		states: map[string]string{"i-cp0": "running", "i-cp1": "running"},
@@ -131,6 +133,7 @@ func TestMaybeReplaceCP_DescribeErrorMemberTreatedAsLost(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_NoQuorumDoesNotReplace(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "terminated", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{}
@@ -144,6 +147,7 @@ func TestMaybeReplaceCP_NoQuorumDoesNotReplace(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_UnhealthyQuorumDoesNotReplace(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{}
@@ -157,6 +161,7 @@ func TestMaybeReplaceCP_UnhealthyQuorumDoesNotReplace(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_RestartableMemberIsNoop(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "stopped"}}
 	prov := &fakeCPProvisioner{}
@@ -171,6 +176,7 @@ func TestMaybeReplaceCP_RestartableMemberIsNoop(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_WithinGraceDoesNotReplace(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{}
@@ -184,6 +190,7 @@ func TestMaybeReplaceCP_WithinGraceDoesNotReplace(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_BackoffAndCap(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{node: ControlPlaneNode{NodeID: "node-c", InstanceID: "i-cp-new", ENIIP: "10.0.0.20"}}
@@ -203,6 +210,7 @@ func TestMaybeReplaceCP_BackoffAndCap(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_ProvisionFailureLeavesDegraded(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{err: errors.New("no free host")}
@@ -219,6 +227,7 @@ func TestMaybeReplaceCP_ProvisionFailureLeavesDegraded(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_SingleCPClusterIsNoop(t *testing.T) {
+	t.Parallel()
 	nodes := []ControlPlaneNode{{NodeID: "", InstanceID: "i-cp0", ENIIP: "10.0.0.10"}}
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "terminated"}}
 	prov := &fakeCPProvisioner{}
@@ -233,6 +242,7 @@ func TestMaybeReplaceCP_SingleCPClusterIsNoop(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_NoTemplateIsNoop(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{}
@@ -247,6 +257,7 @@ func TestMaybeReplaceCP_NoTemplateIsNoop(t *testing.T) {
 }
 
 func TestMaybeReplaceCP_NilProvisionerIsNoop(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	meta := haMeta(nodes)
@@ -260,6 +271,7 @@ func TestMaybeReplaceCP_NilProvisionerIsNoop(t *testing.T) {
 }
 
 func TestProvisionReplacementCP_LaunchesJoinOnFreeHost(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, inst)
@@ -287,6 +299,7 @@ func TestProvisionReplacementCP_LaunchesJoinOnFreeHost(t *testing.T) {
 }
 
 func TestProvisionReplacementCP_NoFreeHostErrors(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b"}}
 	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
 	tmpl := validK3sInput()
@@ -304,6 +317,7 @@ func TestProvisionReplacementCP_NoFreeHostErrors(t *testing.T) {
 }
 
 func TestProvisionReplacementCP_GuardsBadRequests(t *testing.T) {
+	t.Parallel()
 	svc := newPlacerService(&fakeHostScheduler{}, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
 
 	_, err := svc.ProvisionReplacementCP(context.Background(), ReplacementCPRequest{JoinURL: "x"})
@@ -318,6 +332,7 @@ func TestProvisionReplacementCP_GuardsBadRequests(t *testing.T) {
 // a healthy 2/3 quorum with one terminated member drives a replacement provision
 // and meta swap once past the grace window.
 func TestActiveBranchReplacesLostCPMember(t *testing.T) {
+	t.Parallel()
 	nodes := threeMemberCP()
 	cp := &mapCPControl{states: map[string]string{"i-cp0": "running", "i-cp1": "running", "i-cp2": "terminated"}}
 	prov := &fakeCPProvisioner{node: ControlPlaneNode{NodeID: "node-c", InstanceID: "i-cp-new", ENIIP: "10.0.0.20"}}

@@ -11,6 +11,7 @@ import (
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
@@ -155,8 +156,20 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 // into the central tag store, so describe-tags sees them from birth. The write
 // is best-effort, so the assertion tolerates it landing slightly late.
 func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
-	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
+	// The launch fails (the AMI has no snapshot), so the manager needs a
+	// terminated bucket to release the record into for its tags to be checked.
+	// Its own server keeps that record out of the shared terminated bucket.
+	ns, _, _ := testutil.StartTestJetStream(t)
+	daemon, memStore := createFullTestDaemonWithStore(t, ns.ClientURL())
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")
+
+	jsm, err := NewJetStreamManager(daemon.natsConn)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+	require.NoError(t, jsm.InitTerminatedInstanceBucket())
+	daemon.jsManager = jsm
+	daemon.stateStore = newStateStoreAdapter(jsm, daemon.persistState)
+	daemon.vmMgr.SetDeps(vm.Deps{NodeID: daemon.node, StateStore: daemon.stateStore})
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.launchtags", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
 	require.NoError(t, err)
@@ -187,7 +200,11 @@ func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		return assert.ObjectsAreEqual(want, centralTags(t, daemon, testAccountID, id))
 	}, 5*time.Second, 50*time.Millisecond, "central tag store must receive launch tags")
-	assert.Equal(t, want, recordTags(t, daemon, id))
+	assert.Eventually(t, func() bool {
+		v, err := daemon.jsManager.LoadTerminatedInstance(id)
+		return err == nil && v != nil && v.Instance != nil &&
+			assert.ObjectsAreEqual(want, tagsAsMap(v.Instance.Tags))
+	}, 5*time.Second, 10*time.Millisecond, "the released record must carry the launch tags")
 }
 
 // Missing InstanceTagsData, and a set with no tags, are rejected with

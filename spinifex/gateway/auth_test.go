@@ -2461,6 +2461,7 @@ func TestCheckPolicy_AssumedRole_ResolveError_InternalError(t *testing.T) {
 // TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails: a transient NATS
 // error is retried 3× then fails closed (no allow-on-error).
 func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
+	shortenPolicyResolveRetry(t)
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	var calls int
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {

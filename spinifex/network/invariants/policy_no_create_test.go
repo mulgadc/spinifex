@@ -17,6 +17,7 @@ import (
 //	 (ACLs, NAT rules, static routes) to objects that L2 already owns. L3
 //	 never calls create or delete on logical switches, routers, or ports."
 func TestS5_PolicyNeverCreatesOrDeletes(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S5: "L3 never creates or deletes logical ` +
 		`objects. L3 only attaches policy (ACLs, NAT rules, static routes) ` +
 		`to objects that L2 already owns. L3 never calls create or delete ` +

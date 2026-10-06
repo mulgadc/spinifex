@@ -745,6 +745,10 @@ func mustCtxString(r *http.Request, key contextKey) string {
 	return v
 }
 
+// policyResolveRetryBase scales the backoff between policy-resolve attempts
+// after a transient NATS error. A var only so tests can shorten it.
+var policyResolveRetryBase = 200 * time.Millisecond
+
 // evaluatePrincipalPolicyResources resolves policies once and evaluates every
 // resource in the request against that same snapshot.
 func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
@@ -804,7 +808,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 		if attempt < 2 {
 			slog.Debug("evaluatePrincipalPolicy: transient NATS error, retrying",
 				"identity", logIdentity, "attempt", attempt+1, "err", err)
-			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+			time.Sleep(time.Duration(attempt+1) * policyResolveRetryBase)
 		}
 	}
 	if err != nil {
@@ -1048,6 +1052,10 @@ func xmlErrorBody(svc, code, message, requestID, resource string) []byte {
 // the discovery fan-out's whole timeout in front of every API call it fronts.
 const activeNodesTTL = 5 * time.Second
 
+// discoverActiveNodesTimeout is how long the discovery fan-out collects replies.
+// A var only so tests can shorten it.
+var discoverActiveNodesTimeout = 500 * time.Millisecond
+
 // DiscoverActiveNodes discovers the number of active spinifex daemon nodes in the
 // cluster by publishing a discovery request and counting unique responses. It
 // carries the request context so the discovery fan-out joins the caller's trace.
@@ -1068,7 +1076,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 	}
 
 	frames, _, err := utils.Gather(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
-		utils.GatherOpts{Timeout: 500 * time.Millisecond})
+		utils.GatherOpts{Timeout: discoverActiveNodesTimeout})
 	if err != nil {
 		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes

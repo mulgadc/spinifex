@@ -26,13 +26,14 @@ const (
 	// whose acpid has not started yet never sees the first one, so a single
 	// signal is not a shutdown request — it is a bet on the guest being ready.
 	powerdownResendInterval = 10 * time.Second
-	// powerdownPollInterval is how often the guest's run state is sampled
-	// while it shuts down.
-	powerdownPollInterval = 500 * time.Millisecond
 	// qmpStatusShutdown is the run state QEMU reports once a guest has powered
 	// itself off under -action shutdown=pause: stopped, but not yet gone.
 	qmpStatusShutdown = "shutdown"
 )
+
+// powerdownPollInterval is how often the guest's run state is sampled while it
+// shuts down. A var so tests need not wait out the real interval.
+var powerdownPollInterval = 500 * time.Millisecond
 
 // errPowerdownTimedOut reports a guest still running at the end of its budget.
 // Callers escalate: Stop to SIGKILL, Reboot to a hard reset.

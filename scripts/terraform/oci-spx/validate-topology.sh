@@ -223,10 +223,13 @@ tf() {
 # terraform output takes -state but not -var, so the two sets are kept apart. They
 # were one set once, and the -var made output fail into the default state file.
 tf_state=(-state "$STATE_DIR/terraform.tfstate")
-tf_vars=(
-    "${tf_principal_var[@]}"
-    "${tf_state[@]}"
-)
+tf_vars=("${tf_state[@]}")
+# Expanded only when it holds something. bash before 4.4, which is what macOS
+# ships, calls "${arr[@]}" on an empty array an unbound variable under set -u, and
+# tf_principal_var is empty on every run that did not pass --instance-principal.
+if [ "${#tf_principal_var[@]}" -gt 0 ]; then
+    tf_vars=("${tf_principal_var[@]}" "${tf_vars[@]}")
+fi
 
 ssh_node() {
     local host="$1"
@@ -244,6 +247,9 @@ ssh_node() {
 # tail for context -- unbounded, a multi-hour suite's journal dwarfs the artifact.
 capture_journals() {
     local host
+    # A failure before the apply leaves no hosts, and on bash before 4.4 iterating
+    # the empty array is an unbound-variable error rather than zero passes.
+    [ "${#HOSTS[@]}" -gt 0 ] || return 0
     for host in "${HOSTS[@]}"; do
         ssh_node "$host" '
             echo "=== spinifex, warning and above ==="

@@ -501,12 +501,17 @@ func (s *ACMServiceImpl) GetCertificate(ctx context.Context, input *acm.GetCerti
 	if rec.Certificate == "" {
 		return nil, errors.New(awserrors.ErrorACMRequestInProgress)
 	}
-	out := &acm.GetCertificateOutput{Certificate: aws.String(rec.Certificate)}
-	// Left absent rather than empty for a self-signed leaf with no chain.
-	if rec.CertificateChain != "" {
-		out.CertificateChain = aws.String(rec.CertificateChain)
+	// AWS answers a certificate imported without a chain with the certificate
+	// itself as the chain. Only the response does this; the stored record keeps
+	// no chain, so ELBv2's leaf+chain bundle does not repeat the leaf.
+	chain := rec.CertificateChain
+	if chain == "" {
+		chain = rec.Certificate
 	}
-	return out, nil
+	return &acm.GetCertificateOutput{
+		Certificate:      aws.String(rec.Certificate),
+		CertificateChain: aws.String(chain),
+	}, nil
 }
 
 // ListCertificates returns summaries for every cert owned by accountID.

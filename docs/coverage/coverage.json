@@ -2549,6 +2549,7 @@
           "GetLBConfig",
           "LBAgentHeartbeat",
           "ModifyListener",
+          "ModifyListenerAttributes",
           "ModifyLoadBalancerAttributes",
           "ModifyRule",
           "ModifyTargetGroup",
@@ -2598,7 +2599,9 @@
           "SetSecurityGroups",
           "SetSubnets"
         ],
-        "stubbed": [],
+        "stubbed": [
+          "ModifyListenerAttributes"
+        ],
         "unsupported": [],
         "missing": [
           "AddTrustStoreRevocations",
@@ -2614,7 +2617,6 @@
           "GetTrustStoreRevocationContent",
           "ModifyCapacityReservation",
           "ModifyIpPools",
-          "ModifyListenerAttributes",
           "ModifyTrustStore",
           "RemoveTrustStoreRevocations"
         ],

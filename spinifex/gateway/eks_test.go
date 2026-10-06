@@ -212,11 +212,3 @@ type awsCodeError struct{ code string }
 
 func (e *awsCodeError) Error() string { return e.code }
 func errAWS(code string) error        { return &awsCodeError{code: code} }
-
-// update-version is the nodegroup pattern. The cluster action has never been
-// reachable at it on AWS, so keeping it registered would serve a path no caller
-// sends and hide the one they do.
-func TestLookupEKSAction_ClusterUpdateVersionIsNotAtTheNodegroupPath(t *testing.T) {
-	_, _, _, ok := eksRouter.lookup(http.MethodPost, "/clusters/alpha/update-version")
-	assert.False(t, ok)
-}

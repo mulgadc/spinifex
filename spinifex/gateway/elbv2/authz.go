@@ -76,6 +76,7 @@ var elbv2Scopes = map[string][]resourceSource{
 	"RemoveListenerCertificates":   {sourceListenerARN},
 	"DescribeListenerCertificates": {sourceListenerARN},
 	"DescribeListenerAttributes":   {sourceListenerARN},
+	"ModifyListenerAttributes":     {sourceListenerARN},
 
 	// Rules.
 	"CreateRule":        {sourceListenerARN, sourceNewRule, sourceActionTargetGroups},

@@ -46,6 +46,9 @@ func AWSOperationInventory() map[string]ServiceOperationInventory {
 		},
 		"elasticloadbalancingv2": {
 			Registered: mapKeys(elbv2Actions),
+			// Accepted so terraform-provider-aws 5.84-5.97 can create listeners,
+			// but nothing is persisted, so it is not counted as implemented.
+			Stubbed: []string{"ModifyListenerAttributes"},
 		},
 		"iam": {
 			Registered: mapKeys(iamActions),

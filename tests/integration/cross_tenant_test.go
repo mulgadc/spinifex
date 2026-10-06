@@ -451,7 +451,7 @@ func elbv2Uncased() map[string]string {
 		"ModifyTargetGroupAttributes", "DescribeTargetGroupAttributes", "RegisterTargets",
 		"DeregisterTargets", "DescribeTargetHealth", "CreateListener", "ModifyListener",
 		"DeleteListener", "AddListenerCertificates", "RemoveListenerCertificates",
-		"DescribeListenerCertificates", "DescribeListenerAttributes",
+		"DescribeListenerCertificates", "DescribeListenerAttributes", "ModifyListenerAttributes",
 		"CreateRule", "ModifyRule", "DeleteRule", "SetRulePriorities",
 	} {
 		uncased[action] = sameHelper("DeleteLoadBalancer")

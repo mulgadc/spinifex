@@ -162,10 +162,9 @@ func newDeleteClusterFixture(t *testing.T, clusterName string) *deleteClusterFix
 // the VPC on DependencyViolation. All other teardown steps succeed, isolating the
 // SG failure as the sole cause.
 func TestDeleteCluster_LeakedSGKeepsClusterDeleting(t *testing.T) {
-	t.Parallel()
 	origBudget, origInterval := sgDeleteWaitBudget, sgDeleteWaitInterval
 	sgDeleteWaitBudget, sgDeleteWaitInterval = 10*time.Millisecond, time.Millisecond
-	defer func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval }()
+	t.Cleanup(func() { sgDeleteWaitBudget, sgDeleteWaitInterval = origBudget, origInterval })
 
 	f := newDeleteClusterFixture(t, "alpha")
 	f.sg.existing["eks-cluster-alpha-control-plane-sg|vpc-aaa"] = "sg-cp"

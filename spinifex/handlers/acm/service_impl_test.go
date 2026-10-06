@@ -87,7 +87,7 @@ func TestImportCertificate_MintsArnAndParsesLeaf(t *testing.T) {
 	assert.Equal(t, "example.com", aws.StringValue(d.DomainName))
 	assert.Equal(t, certStatusIssued, aws.StringValue(d.Status))
 	assert.Equal(t, certTypeImported, aws.StringValue(d.Type))
-	assert.Equal(t, "EC_P-256", aws.StringValue(d.KeyAlgorithm))
+	assert.Equal(t, "EC-prime256v1", aws.StringValue(d.KeyAlgorithm))
 	assert.ElementsMatch(t, []string{"example.com", "www.example.com"}, aws.StringValueSlice(d.SubjectAlternativeNames))
 	require.NotNil(t, d.NotAfter)
 }

@@ -216,19 +216,19 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
+	if leaf.SerialNumber.Sign() == 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The serial number in the certificate is not supported by ACM.")
+	}
 
 	certArn := aws.StringValue(input.CertificateArn)
 	var inUseBy []string
+	now := time.Now().UTC()
+	createdAt := now
 	tags := tagsToMap(input.Tags)
 	reimport := certArn != ""
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
 	} else {
-		// AWS refuses tags on re-import. The stored tags carry forward below,
-		// so a plain re-import does not clear them.
-		if len(input.Tags) > 0 {
-			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Tagging is not permitted on re-import.")
-		}
 		// Re-import: the ARN must be one the gate can read, and must already
 		// exist and belong to the caller.
 		if _, ok := arn.ParseACMCertificateID(certArn); !ok {
@@ -241,9 +241,21 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		if existing == nil || existing.AccountID != accountID {
 			return nil, errors.New(awserrors.ErrorResourceNotFound)
 		}
+		// AWS refuses tags on re-import, once the ARN resolves. The stored tags
+		// carry forward below, so a plain re-import does not clear them.
+		if len(input.Tags) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Tagging is not permitted on re-import.")
+		}
+		// AWS names both keys in its API enum spelling (RSA_2048).
+		if newAlg := keyAlgorithm(leaf); newAlg != existing.KeyAlgorithm {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+				"New certificate has a key of %s which is different from %s in the current certificate.",
+				strings.Replace(newAlg, "-", "_", 1), strings.Replace(existing.KeyAlgorithm, "-", "_", 1))
+		}
 		// Carry the InUseBy index forward — new material under the same ARN
 		// must not silently drop the load balancers that reference it.
 		inUseBy = existing.InUseBy
+		createdAt = importedCreatedAt(existing)
 		tags = existing.Tags
 	}
 
@@ -261,7 +273,8 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		KeyAlgorithm:     keyAlgorithm(leaf),
 		NotBefore:        leaf.NotBefore,
 		NotAfter:         leaf.NotAfter,
-		ImportedAt:       time.Now().UTC(),
+		CreatedAt:        createdAt,
+		ImportedAt:       now,
 		Tags:             tags,
 		InUseBy:          inUseBy,
 		Type:             certTypeImported,
@@ -303,6 +316,10 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 	domain := aws.StringValue(input.DomainName)
 	// Before the mode is derived, so a malformed domain is a ValidationException
 	// in every mode rather than whatever the mode's own checks answer.
+	if len(domain) > 253 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must have length less than or equal to 253")
+	}
 	if !domainNameRE.MatchString(domain) {
 		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
 			"1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must satisfy regular expression pattern: %s",
@@ -543,17 +560,20 @@ func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCe
 	}
 	summaries := make([]*acm.CertificateSummary, 0, len(recs))
 	for _, rec := range recs {
-		summaries = append(summaries, &acm.CertificateSummary{
-			CertificateArn: aws.String(rec.CertificateArn),
-			DomainName:     aws.String(rec.DomainName),
-			Status:         aws.String(certStatusOrDefault(rec)),
-			Type:           aws.String(certTypeOrDefault(rec)),
-			KeyAlgorithm:   aws.String(rec.KeyAlgorithm),
-			NotBefore:      timePtr(rec.NotBefore),
-			NotAfter:       timePtr(rec.NotAfter),
-			ImportedAt:     timePtr(rec.ImportedAt),
-			InUse:          aws.Bool(len(rec.InUseBy) > 0),
-		})
+		sum := &acm.CertificateSummary{
+			CertificateArn:     aws.String(rec.CertificateArn),
+			DomainName:         aws.String(rec.DomainName),
+			Status:             aws.String(certStatusOrDefault(rec)),
+			Type:               aws.String(certTypeOrDefault(rec)),
+			KeyAlgorithm:       aws.String(rec.KeyAlgorithm),
+			NotBefore:          timePtr(rec.NotBefore),
+			NotAfter:           timePtr(rec.NotAfter),
+			ImportedAt:         timePtr(rec.ImportedAt),
+			InUse:              aws.Bool(len(rec.InUseBy) > 0),
+			RenewalEligibility: aws.String(renewalEligibilityOrDefault(rec)),
+		}
+		applyLeafSummary(sum, rec)
+		summaries = append(summaries, sum)
 	}
 	return &acm.ListCertificatesOutput{CertificateSummaryList: summaries}, nil
 }
@@ -645,6 +665,7 @@ func recordToDetail(rec *CertRecord) *acm.CertificateDetail {
 		}
 		detail.RenewalSummary = summary
 	}
+	applyLeafDetail(detail, rec)
 	return detail
 }
 
@@ -792,25 +813,37 @@ func leafDomain(leaf *x509.Certificate) string {
 	return ""
 }
 
-// keyAlgorithm maps the leaf public key to the KeyAlgorithm ACM returns: RSA-<bits>,
-// hyphenated as AWS returns it, unlike the RSA_2048 API enum. EC is EC_ plus Go's
-// curve name (EC_P-256), a spelling not yet checked against AWS.
+// ecCurveNames maps Go's curve names to the OpenSSL names ACM's KeyAlgorithm uses.
+var ecCurveNames = map[string]string{"P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1"}
+
+// keyAlgorithm maps the leaf public key to the KeyAlgorithm ACM returns:
+// RSA-<bits> or EC-<curve>, hyphenated unlike the RSA_2048 API enum.
 func keyAlgorithm(leaf *x509.Certificate) string {
 	switch pub := leaf.PublicKey.(type) {
 	case *rsa.PublicKey:
 		return fmt.Sprintf("RSA-%d", pub.N.BitLen())
 	case *ecdsa.PublicKey:
-		return "EC_" + pub.Curve.Params().Name
+		return ecKeyAlgorithm(pub.Curve.Params().Name)
 	default:
 		return "UNKNOWN"
 	}
 }
 
-// normaliseKeyAlgorithm rewrites the RSA_<bits> spelling stored by earlier
-// builds to the RSA-<bits> that keyAlgorithm now writes.
+func ecKeyAlgorithm(goCurve string) string {
+	if name, ok := ecCurveNames[goCurve]; ok {
+		return "EC-" + name
+	}
+	return "EC-" + goCurve
+}
+
+// normaliseKeyAlgorithm rewrites the RSA_<bits> and EC_<Go curve> spellings
+// stored by earlier builds to the ones keyAlgorithm now writes.
 func normaliseKeyAlgorithm(alg string) string {
 	if bits, ok := strings.CutPrefix(alg, "RSA_"); ok {
 		return "RSA-" + bits
+	}
+	if curve, ok := strings.CutPrefix(alg, "EC_"); ok {
+		return ecKeyAlgorithm(curve)
 	}
 	return alg
 }

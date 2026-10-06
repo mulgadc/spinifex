@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **36 operations** in the ELBv2 `2015-12-01` API model.
+Spinifex implements **35 operations** in the ELBv2 `2015-12-01` API model.
 
 ### Two data planes
 
@@ -52,7 +52,6 @@ The data plane is a system-managed load balancer VM, launched automatically duri
 | `DescribeTargetGroups` |
 | `DescribeTargetHealth` |
 | `ModifyListener` |
-| `ModifyListenerAttributes` |
 | `ModifyLoadBalancerAttributes` |
 | `ModifyRule` |
 | `ModifyTargetGroup` |

@@ -18,14 +18,13 @@ tags:
 
 ## Overview
 
-Spinifex implements **36 operations** in the EKS `2017-11-01` API model.
+Spinifex implements **27 operations** in the EKS `2017-11-01` API model.
 
 ### Operations
 
 | Operation |
 |---|
 | `AssociateAccessPolicy` |
-| `AssociateIdentityProviderConfig` |
 | `CreateAccessEntry` |
 | `CreateAddon` |
 | `CreateCluster` |
@@ -38,25 +37,17 @@ Spinifex implements **36 operations** in the EKS `2017-11-01` API model.
 | `DescribeAddon` |
 | `DescribeAddonVersions` |
 | `DescribeCluster` |
-| `DescribeIdentityProviderConfig` |
 | `DescribeNodegroup` |
-| `DescribeUpdate` |
 | `DisassociateAccessPolicy` |
-| `DisassociateIdentityProviderConfig` |
 | `ListAccessEntries` |
 | `ListAccessPolicies` |
 | `ListAddons` |
 | `ListAssociatedAccessPolicies` |
 | `ListClusters` |
-| `ListIdentityProviderConfigs` |
 | `ListNodegroups` |
 | `ListTagsForResource` |
-| `ListUpdates` |
 | `TagResource` |
 | `UntagResource` |
 | `UpdateAccessEntry` |
 | `UpdateAddon` |
-| `UpdateClusterConfig` |
-| `UpdateClusterVersion` |
 | `UpdateNodegroupConfig` |
-| `UpdateNodegroupVersion` |

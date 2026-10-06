@@ -200,7 +200,6 @@ func TestELBv2Request_AccountWideAllowStillPermitsEveryScopedAction(t *testing.T
 		"RemoveListenerCertificates":     "Action=RemoveListenerCertificates&ListenerArn=" + listener,
 		"DescribeListenerCertificates":   "Action=DescribeListenerCertificates&ListenerArn=" + listener,
 		"DescribeListenerAttributes":     "Action=DescribeListenerAttributes&ListenerArn=" + listener,
-		"ModifyListenerAttributes":       "Action=ModifyListenerAttributes&ListenerArn=" + listener,
 		"CreateRule":                     "Action=CreateRule&ListenerArn=" + listener,
 		"ModifyRule":                     "Action=ModifyRule&RuleArn=" + rule,
 		"DeleteRule":                     "Action=DeleteRule&RuleArn=" + rule,

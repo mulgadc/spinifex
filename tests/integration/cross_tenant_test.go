@@ -428,15 +428,13 @@ func eksUncased() map[string]string {
 		"UntagResource": sameHelper("ListTagsForResource"),
 	}
 	for _, action := range []string{
-		"AssociateAccessPolicy", "AssociateIdentityProviderConfig", "CreateAccessEntry", "CreateAddon",
-		"CreateCluster", "CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster",
-		"DeleteNodegroup", "DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions",
-		"DescribeCluster", "DescribeIdentityProviderConfig", "DescribeNodegroup", "DescribeUpdate",
-		"DisassociateAccessPolicy", "DisassociateIdentityProviderConfig", "GetRecoveryDirective",
+		"AssociateAccessPolicy", "CreateAccessEntry", "CreateAddon", "CreateCluster",
+		"CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster", "DeleteNodegroup",
+		"DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions", "DescribeCluster",
+		"DescribeNodegroup", "DisassociateAccessPolicy", "GetRecoveryDirective",
 		"ListAccessEntries", "ListAccessPolicies", "ListAddons", "ListAssociatedAccessPolicies",
-		"ListClusters", "ListIdentityProviderConfigs", "ListInternalAddons", "ListNodegroups",
-		"ListUpdates", "PublishInternal", "UpdateAccessEntry", "UpdateAddon", "UpdateClusterConfig",
-		"UpdateClusterVersion", "UpdateNodegroupConfig", "UpdateNodegroupVersion", "WebhookTokenReview",
+		"ListClusters", "ListInternalAddons", "ListNodegroups", "PublishInternal",
+		"UpdateAccessEntry", "UpdateAddon", "UpdateNodegroupConfig", "WebhookTokenReview",
 	} {
 		uncased[action] = byName
 	}
@@ -453,7 +451,7 @@ func elbv2Uncased() map[string]string {
 		"ModifyTargetGroupAttributes", "DescribeTargetGroupAttributes", "RegisterTargets",
 		"DeregisterTargets", "DescribeTargetHealth", "CreateListener", "ModifyListener",
 		"DeleteListener", "AddListenerCertificates", "RemoveListenerCertificates",
-		"DescribeListenerCertificates", "DescribeListenerAttributes", "ModifyListenerAttributes",
+		"DescribeListenerCertificates", "DescribeListenerAttributes",
 		"CreateRule", "ModifyRule", "DeleteRule", "SetRulePriorities",
 	} {
 		uncased[action] = sameHelper("DeleteLoadBalancer")

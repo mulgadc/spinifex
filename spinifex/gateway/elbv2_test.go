@@ -64,7 +64,6 @@ func TestELBv2ActionsMap_AllActionsRegistered(t *testing.T) {
 		"ModifyLoadBalancerAttributes",
 		"DescribeLoadBalancerAttributes",
 		"DescribeListenerAttributes",
-		"ModifyListenerAttributes",
 		"CreateRule",
 		"ModifyRule",
 		"DeleteRule",

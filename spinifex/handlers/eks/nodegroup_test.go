@@ -924,15 +924,6 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
 }
 
-func TestUpdateNodegroupVersion_NotImplemented(t *testing.T) {
-	t.Parallel()
-	f := newEKSServiceFixture(t)
-	_, err := f.svc.UpdateNodegroupVersion(context.Background(), &eks.UpdateNodegroupVersionInput{
-		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
-	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-}
-
 // TestSelectWorkerHost_NoSchedulerOrCapacity returns "" so the caller falls back
 // to a local launch when no scheduler is wired or no host has free capacity.
 func TestSelectWorkerHost_NoSchedulerOrCapacity(t *testing.T) {

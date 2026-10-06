@@ -29,8 +29,7 @@ func setupTestService(t *testing.T) *EKSServiceImpl {
 // are absent so CreateCluster/DeleteCluster short-circuit to ServiceUnavailable
 // (the missing deps are logged at ERROR), DescribeCluster hits an empty
 // per-account bucket and surfaces ResourceNotFoundException, and ListClusters
-// returns an empty list. The UpdateClusterConfig + UpdateClusterVersion paths
-// stay NotImplemented.
+// returns an empty list.
 func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -45,12 +44,6 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	require.Empty(t, out.Clusters)
-
-	_, err = svc.UpdateClusterConfig(context.Background(), &eks.UpdateClusterConfigInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.UpdateClusterVersion(context.Background(), &eks.UpdateClusterVersionInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
 	_, err = svc.DeleteCluster(context.Background(), &eks.DeleteClusterInput{Name: aws.String("c1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
@@ -206,8 +199,7 @@ func TestDeleteCluster_ZeroizesOIDCKeyBeforeTeardown(t *testing.T) {
 
 // In shim mode (orchestration deps absent) the mutating nodegroup methods
 // short-circuit to ServiceUnavailable, the read methods reach an empty
-// per-account bucket and surface ResourceNotFoundException, and
-// UpdateNodegroupVersion stays NotImplemented (v1 doesn't do AMI upgrades).
+// per-account bucket and surface ResourceNotFoundException.
 func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -223,9 +215,6 @@ func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 
 	_, err = svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
-
-	_, err = svc.UpdateNodegroupVersion(context.Background(), &eks.UpdateNodegroupVersionInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
 	_, err = svc.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
@@ -462,23 +451,6 @@ func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
 		assert.True(t, ok, "unexpected policy %s", aws.StringValue(p.Arn))
 		assert.NotEmpty(t, aws.StringValue(p.Name))
 	}
-}
-
-func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
-	t.Parallel()
-	svc := setupTestService(t)
-
-	_, err := svc.AssociateIdentityProviderConfig(context.Background(), &eks.AssociateIdentityProviderConfigInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DescribeIdentityProviderConfig(context.Background(), &eks.DescribeIdentityProviderConfigInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.ListIdentityProviderConfigs(context.Background(), &eks.ListIdentityProviderConfigsInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DisassociateIdentityProviderConfig(context.Background(), &eks.DisassociateIdentityProviderConfigInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 }
 
 func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {

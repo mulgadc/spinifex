@@ -39,14 +39,6 @@ func (s *NATSEKSService) ListClusters(ctx context.Context, input *eks.ListCluste
 	return utils.NATSRequest[eks.ListClustersOutput](ctx, s.natsConn, "eks.ListClusters", input, defaultTimeout, accountID)
 }
 
-func (s *NATSEKSService) UpdateClusterConfig(ctx context.Context, input *eks.UpdateClusterConfigInput, accountID string) (*eks.UpdateClusterConfigOutput, error) {
-	return utils.NATSRequest[eks.UpdateClusterConfigOutput](ctx, s.natsConn, "eks.UpdateClusterConfig", input, defaultTimeout, accountID)
-}
-
-func (s *NATSEKSService) UpdateClusterVersion(ctx context.Context, input *eks.UpdateClusterVersionInput, accountID string) (*eks.UpdateClusterVersionOutput, error) {
-	return utils.NATSRequest[eks.UpdateClusterVersionOutput](ctx, s.natsConn, "eks.UpdateClusterVersion", input, defaultTimeout, accountID)
-}
-
 func (s *NATSEKSService) DeleteCluster(ctx context.Context, input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error) {
 	return utils.NATSRequest[eks.DeleteClusterOutput](ctx, s.natsConn, "eks.DeleteCluster", input, defaultTimeout, accountID)
 }
@@ -67,10 +59,6 @@ func (s *NATSEKSService) ListNodegroups(ctx context.Context, input *eks.ListNode
 
 func (s *NATSEKSService) UpdateNodegroupConfig(ctx context.Context, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {
 	return utils.NATSRequest[eks.UpdateNodegroupConfigOutput](ctx, s.natsConn, "eks.UpdateNodegroupConfig", input, defaultTimeout, accountID)
-}
-
-func (s *NATSEKSService) UpdateNodegroupVersion(ctx context.Context, input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error) {
-	return utils.NATSRequest[eks.UpdateNodegroupVersionOutput](ctx, s.natsConn, "eks.UpdateNodegroupVersion", input, defaultTimeout, accountID)
 }
 
 func (s *NATSEKSService) DeleteNodegroup(ctx context.Context, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
@@ -155,24 +143,6 @@ func (s *NATSEKSService) SetRecoveryDirective(ctx context.Context, input *SetRec
 
 func (s *NATSEKSService) RestoreSnapshot(ctx context.Context, input *RestoreSnapshotInput, accountID string) (*RestoreSnapshotOutput, error) {
 	return utils.NATSRequest[RestoreSnapshotOutput](ctx, s.natsConn, "eks.RestoreSnapshot", input, defaultTimeout, accountID)
-}
-
-// --- OIDC identity-provider configs ---
-
-func (s *NATSEKSService) AssociateIdentityProviderConfig(ctx context.Context, input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error) {
-	return utils.NATSRequest[eks.AssociateIdentityProviderConfigOutput](ctx, s.natsConn, "eks.AssociateIdentityProviderConfig", input, defaultTimeout, accountID)
-}
-
-func (s *NATSEKSService) DescribeIdentityProviderConfig(ctx context.Context, input *eks.DescribeIdentityProviderConfigInput, accountID string) (*eks.DescribeIdentityProviderConfigOutput, error) {
-	return utils.NATSRequest[eks.DescribeIdentityProviderConfigOutput](ctx, s.natsConn, "eks.DescribeIdentityProviderConfig", input, defaultTimeout, accountID)
-}
-
-func (s *NATSEKSService) ListIdentityProviderConfigs(ctx context.Context, input *eks.ListIdentityProviderConfigsInput, accountID string) (*eks.ListIdentityProviderConfigsOutput, error) {
-	return utils.NATSRequest[eks.ListIdentityProviderConfigsOutput](ctx, s.natsConn, "eks.ListIdentityProviderConfigs", input, defaultTimeout, accountID)
-}
-
-func (s *NATSEKSService) DisassociateIdentityProviderConfig(ctx context.Context, input *eks.DisassociateIdentityProviderConfigInput, accountID string) (*eks.DisassociateIdentityProviderConfigOutput, error) {
-	return utils.NATSRequest[eks.DisassociateIdentityProviderConfigOutput](ctx, s.natsConn, "eks.DisassociateIdentityProviderConfig", input, defaultTimeout, accountID)
 }
 
 // --- Tags ---

@@ -170,9 +170,6 @@ var elbv2Actions = map[string]elbv2Action{
 	"DescribeListenerAttributes": elbv2Handler(func(ctx context.Context, input *gateway_elbv2.DescribeListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_elbv2.DescribeListenerAttributes(input, accountID)
 	}),
-	"ModifyListenerAttributes": elbv2Handler(func(ctx context.Context, input *gateway_elbv2.ModifyListenerAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_elbv2.ModifyListenerAttributes(input, accountID)
-	}),
 }
 
 // accountLoadBalancerLimit resolves the load balancer cap DescribeAccountLimits

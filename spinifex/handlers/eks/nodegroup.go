@@ -1117,15 +1117,6 @@ func (s *EKSServiceImpl) casPutNodegroup(ctx context.Context, kv jetstream.KeyVa
 	return true, nil
 }
 
-func (s *EKSServiceImpl) updateNodegroupVersion(input *eks.UpdateNodegroupVersionInput) (*eks.UpdateNodegroupVersionOutput, error) {
-	// Worker AMI version upgrades (drain + replace) are not implemented in v1.
-	if input != nil {
-		slog.Info("UpdateNodegroupVersion not implemented in v1",
-			"cluster", aws.StringValue(input.ClusterName), "nodegroup", aws.StringValue(input.NodegroupName))
-	}
-	return nil, notImpl()
-}
-
 func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

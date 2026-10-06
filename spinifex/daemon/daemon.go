@@ -1076,22 +1076,17 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
-	// EKS gateway → daemon subscriptions. Every handler currently returns
-	// NotImplemented; topics are subscribed up-front so the wiring layer is
-	// stable while real bodies land.
+	// EKS gateway → daemon subscriptions.
 	if d.eksService != nil {
 		subs = append(subs,
 			natsSub{"eks.CreateCluster", handleNATSRequestWithPrincipal(d.node, d.eksService.CreateCluster), "spinifex-workers"},
 			natsSub{"eks.DescribeCluster", handleNATSRequest(d.node, d.eksService.DescribeCluster), "spinifex-workers"},
 			natsSub{"eks.ListClusters", handleNATSRequest(d.node, d.eksService.ListClusters), "spinifex-workers"},
-			natsSub{"eks.UpdateClusterConfig", handleNATSRequest(d.node, d.eksService.UpdateClusterConfig), "spinifex-workers"},
-			natsSub{"eks.UpdateClusterVersion", handleNATSRequest(d.node, d.eksService.UpdateClusterVersion), "spinifex-workers"},
 			natsSub{"eks.DeleteCluster", handleNATSRequest(d.node, d.eksService.DeleteCluster), "spinifex-workers"},
 			natsSub{"eks.CreateNodegroup", handleNATSRequest(d.node, d.eksService.CreateNodegroup), "spinifex-workers"},
 			natsSub{"eks.DescribeNodegroup", handleNATSRequest(d.node, d.eksService.DescribeNodegroup), "spinifex-workers"},
 			natsSub{"eks.ListNodegroups", handleNATSRequest(d.node, d.eksService.ListNodegroups), "spinifex-workers"},
 			natsSub{"eks.UpdateNodegroupConfig", handleNATSRequest(d.node, d.eksService.UpdateNodegroupConfig), "spinifex-workers"},
-			natsSub{"eks.UpdateNodegroupVersion", handleNATSRequest(d.node, d.eksService.UpdateNodegroupVersion), "spinifex-workers"},
 			natsSub{"eks.DeleteNodegroup", handleNATSRequest(d.node, d.eksService.DeleteNodegroup), "spinifex-workers"},
 			natsSub{"eks.CreateAccessEntry", handleNATSRequest(d.node, d.eksService.CreateAccessEntry), "spinifex-workers"},
 			natsSub{"eks.DescribeAccessEntry", handleNATSRequest(d.node, d.eksService.DescribeAccessEntry), "spinifex-workers"},
@@ -1112,10 +1107,6 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.GetRecoveryDirective", handleNATSRequest(d.node, d.eksService.GetRecoveryDirective), "spinifex-workers"},
 			natsSub{"eks.SetRecoveryDirective", handleNATSRequest(d.node, d.eksService.SetRecoveryDirective), "spinifex-workers"},
 			natsSub{"eks.RestoreSnapshot", handleNATSRequest(d.node, d.eksService.RestoreSnapshot), "spinifex-workers"},
-			natsSub{"eks.AssociateIdentityProviderConfig", handleNATSRequest(d.node, d.eksService.AssociateIdentityProviderConfig), "spinifex-workers"},
-			natsSub{"eks.DescribeIdentityProviderConfig", handleNATSRequest(d.node, d.eksService.DescribeIdentityProviderConfig), "spinifex-workers"},
-			natsSub{"eks.ListIdentityProviderConfigs", handleNATSRequest(d.node, d.eksService.ListIdentityProviderConfigs), "spinifex-workers"},
-			natsSub{"eks.DisassociateIdentityProviderConfig", handleNATSRequest(d.node, d.eksService.DisassociateIdentityProviderConfig), "spinifex-workers"},
 			natsSub{"eks.TagResource", handleNATSRequest(d.node, d.eksService.TagResource), "spinifex-workers"},
 			natsSub{"eks.UntagResource", handleNATSRequest(d.node, d.eksService.UntagResource), "spinifex-workers"},
 			natsSub{"eks.ListTagsForResource", handleNATSRequest(d.node, d.eksService.ListTagsForResource), "spinifex-workers"},

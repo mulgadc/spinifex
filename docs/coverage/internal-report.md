@@ -882,12 +882,13 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## eks
 
-`2017-11-01` — 36 of 70 modelled operations implemented (51.4%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
+`2017-11-01` — 27 of 70 modelled operations implemented (38.6%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
 
 ### Not implemented
 
 - `ActivateCertificateAuthority`
 - `AssociateEncryptionConfig`
+- `AssociateIdentityProviderConfig`
 - `CancelUpdate`
 - `CreateCapability`
 - `CreateCertificateAuthority`
@@ -906,19 +907,27 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `DescribeClusterVersions`
 - `DescribeEksAnywhereSubscription`
 - `DescribeFargateProfile`
+- `DescribeIdentityProviderConfig`
 - `DescribeInsight`
 - `DescribeInsightsRefresh`
 - `DescribePodIdentityAssociation`
+- `DescribeUpdate`
+- `DisassociateIdentityProviderConfig`
 - `ListCapabilities`
 - `ListCertificateAuthorities`
 - `ListEksAnywhereSubscriptions`
 - `ListFargateProfiles`
+- `ListIdentityProviderConfigs`
 - `ListInsights`
 - `ListPodIdentityAssociations`
+- `ListUpdates`
 - `RegisterCluster`
 - `StartInsightsRefresh`
 - `UpdateCapability`
+- `UpdateClusterConfig`
+- `UpdateClusterVersion`
 - `UpdateEksAnywhereSubscription`
+- `UpdateNodegroupVersion`
 - `UpdatePodIdentityAssociation`
 
 ### Registered outside the pinned model

@@ -142,7 +142,7 @@ describe("NodegroupsTab", () => {
     ).toBeInTheDocument()
   })
 
-  it("surfaces an upgrade affordance when the node group lags the cluster", () => {
+  it("shows the version lag without an upgrade action when the node group lags the cluster", () => {
     renderWithClient(
       <NodegroupsTab
         clusterName={CLUSTER}
@@ -151,10 +151,10 @@ describe("NodegroupsTab", () => {
       />,
       seed({ nodegroupVersion: "1.29" }),
     )
-    expect(
-      screen.getByRole("button", { name: "Update node group version" }),
-    ).toBeInTheDocument()
     expect(screen.getByText("1.29 (cluster on 1.30)")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Update node group version" }),
+    ).not.toBeInTheDocument()
   })
 
   it("opens the delete confirmation for a node group", () => {

@@ -44,14 +44,10 @@ const (
 // dispatch table in both directions.
 var eksScopes = map[string][]resourceSource{
 	// Cluster.
-	"CreateCluster":        {sourceClusterFromBody},
-	"DescribeCluster":      {sourceCluster},
-	"DeleteCluster":        {sourceCluster},
-	"UpdateClusterConfig":  {sourceCluster},
-	"UpdateClusterVersion": {sourceCluster},
-	"ListUpdates":          {sourceCluster},
-	"DescribeUpdate":       {sourceCluster},
-	"ListClusters":         {sourceAny},
+	"CreateCluster":   {sourceClusterFromBody},
+	"DescribeCluster": {sourceCluster},
+	"DeleteCluster":   {sourceCluster},
+	"ListClusters":    {sourceAny},
 
 	// Internal control-plane routes. The cluster's owning account is a path
 	// segment on these two, and the ARN names that account rather than the
@@ -65,12 +61,11 @@ var eksScopes = map[string][]resourceSource{
 
 	// Nodegroups. Create evaluates the cluster and the nodegroup it is about
 	// to create, matching AWS.
-	"CreateNodegroup":        {sourceCluster, sourceNodegroupFromBody},
-	"DescribeNodegroup":      {sourceNodegroup},
-	"DeleteNodegroup":        {sourceNodegroup},
-	"UpdateNodegroupConfig":  {sourceNodegroup},
-	"UpdateNodegroupVersion": {sourceNodegroup},
-	"ListNodegroups":         {sourceCluster},
+	"CreateNodegroup":       {sourceCluster, sourceNodegroupFromBody},
+	"DescribeNodegroup":     {sourceNodegroup},
+	"DeleteNodegroup":       {sourceNodegroup},
+	"UpdateNodegroupConfig": {sourceNodegroup},
+	"ListNodegroups":        {sourceCluster},
 
 	// Access entries and policies.
 	"CreateAccessEntry":            {sourceCluster, sourceAccessEntryFromBody},
@@ -92,14 +87,6 @@ var eksScopes = map[string][]resourceSource{
 	"ListAddons":    {sourceCluster},
 	// The add-on version catalogue is not an account resource.
 	"DescribeAddonVersions": {sourceAny},
-
-	// Identity-provider configs. All four handlers are stubs and no
-	// identity-provider-config object exists here, so the cluster is the only
-	// resource these name.
-	"AssociateIdentityProviderConfig":    {sourceCluster},
-	"DescribeIdentityProviderConfig":     {sourceCluster},
-	"DisassociateIdentityProviderConfig": {sourceCluster},
-	"ListIdentityProviderConfigs":        {sourceCluster},
 
 	// Tags.
 	"TagResource":         {sourceTagARN},

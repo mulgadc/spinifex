@@ -1452,14 +1452,6 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	return nil
 }
 
-func (s *EKSServiceImpl) UpdateClusterConfig(ctx context.Context, _ *eks.UpdateClusterConfigInput, _ string) (*eks.UpdateClusterConfigOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) UpdateClusterVersion(ctx context.Context, _ *eks.UpdateClusterVersionInput, _ string) (*eks.UpdateClusterVersionOutput, error) {
-	return nil, notImpl()
-}
-
 // --- Nodegroup ---
 
 func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
@@ -1504,10 +1496,6 @@ func (s *EKSServiceImpl) UpdateNodegroupConfig(ctx context.Context, input *eks.U
 		return nil, err
 	}
 	return s.updateNodegroupConfig(ctx, acctKV, input, accountID)
-}
-
-func (s *EKSServiceImpl) UpdateNodegroupVersion(ctx context.Context, input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error) {
-	return s.updateNodegroupVersion(input)
 }
 
 func (s *EKSServiceImpl) DeleteNodegroup(ctx context.Context, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error) {
@@ -1812,24 +1800,6 @@ func accessPolicyName(arn string) string {
 }
 
 // --- Addons (see addons.go) ---
-
-// --- OIDC identity-provider configs ---
-
-func (s *EKSServiceImpl) AssociateIdentityProviderConfig(ctx context.Context, _ *eks.AssociateIdentityProviderConfigInput, _ string) (*eks.AssociateIdentityProviderConfigOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) DescribeIdentityProviderConfig(ctx context.Context, _ *eks.DescribeIdentityProviderConfigInput, _ string) (*eks.DescribeIdentityProviderConfigOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) ListIdentityProviderConfigs(ctx context.Context, _ *eks.ListIdentityProviderConfigsInput, _ string) (*eks.ListIdentityProviderConfigsOutput, error) {
-	return nil, notImpl()
-}
-
-func (s *EKSServiceImpl) DisassociateIdentityProviderConfig(ctx context.Context, _ *eks.DisassociateIdentityProviderConfigInput, _ string) (*eks.DisassociateIdentityProviderConfigOutput, error) {
-	return nil, notImpl()
-}
 
 // --- Tags ---
 //

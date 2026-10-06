@@ -13,8 +13,6 @@ type EKSService interface {
 	CreateCluster(ctx context.Context, input *eks.CreateClusterInput, accountID, callerPrincipalARN string) (*eks.CreateClusterOutput, error)
 	DescribeCluster(ctx context.Context, input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error)
 	ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error)
-	UpdateClusterConfig(ctx context.Context, input *eks.UpdateClusterConfigInput, accountID string) (*eks.UpdateClusterConfigOutput, error)
-	UpdateClusterVersion(ctx context.Context, input *eks.UpdateClusterVersionInput, accountID string) (*eks.UpdateClusterVersionOutput, error)
 	DeleteCluster(ctx context.Context, input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error)
 
 	// Nodegroup
@@ -22,7 +20,6 @@ type EKSService interface {
 	DescribeNodegroup(ctx context.Context, input *eks.DescribeNodegroupInput, accountID string) (*eks.DescribeNodegroupOutput, error)
 	ListNodegroups(ctx context.Context, input *eks.ListNodegroupsInput, accountID string) (*eks.ListNodegroupsOutput, error)
 	UpdateNodegroupConfig(ctx context.Context, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error)
-	UpdateNodegroupVersion(ctx context.Context, input *eks.UpdateNodegroupVersionInput, accountID string) (*eks.UpdateNodegroupVersionOutput, error)
 	DeleteNodegroup(ctx context.Context, input *eks.DeleteNodegroupInput, accountID string) (*eks.DeleteNodegroupOutput, error)
 
 	// AccessEntry + AccessPolicy
@@ -59,12 +56,6 @@ type EKSService interface {
 	// single-CP total-loss DR path — fresh CP launch, recovery-directive wiring,
 	// and NLB re-point.
 	RestoreSnapshot(ctx context.Context, input *RestoreSnapshotInput, accountID string) (*RestoreSnapshotOutput, error)
-
-	// OIDC identity-provider configs.
-	AssociateIdentityProviderConfig(ctx context.Context, input *eks.AssociateIdentityProviderConfigInput, accountID string) (*eks.AssociateIdentityProviderConfigOutput, error)
-	DescribeIdentityProviderConfig(ctx context.Context, input *eks.DescribeIdentityProviderConfigInput, accountID string) (*eks.DescribeIdentityProviderConfigOutput, error)
-	ListIdentityProviderConfigs(ctx context.Context, input *eks.ListIdentityProviderConfigsInput, accountID string) (*eks.ListIdentityProviderConfigsOutput, error)
-	DisassociateIdentityProviderConfig(ctx context.Context, input *eks.DisassociateIdentityProviderConfigInput, accountID string) (*eks.DisassociateIdentityProviderConfigOutput, error)
 
 	// Tags
 	TagResource(ctx context.Context, input *eks.TagResourceInput, accountID string) (*eks.TagResourceOutput, error)

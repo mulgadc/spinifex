@@ -44,26 +44,6 @@ var eksRoutes = []eksRoute{
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.ListClusters(ctx, gw.NATSConn, acct)
 		}},
-	{"POST", "/clusters/{clusterName}/update-config", "UpdateClusterConfig",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateClusterConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{"POST", "/clusters/{clusterName}/updates", "UpdateClusterVersion",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateClusterVersion(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	// The update surface these two read is absent, so they refuse here rather
-	// than through a service method: a round-trip to reach a constant refusal
-	// is surface for its own sake. Left unregistered they would answer
-	// InvalidAction, which blames the caller's spelling for a routing gap.
-	{"GET", "/clusters/{clusterName}/updates", "ListUpdates",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return nil, errors.New(awserrors.ErrorNotImplemented)
-		}},
-	{"GET", "/clusters/{clusterName}/updates/{updateId}", "DescribeUpdate",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return nil, errors.New(awserrors.ErrorNotImplemented)
-		}},
 	// Control-plane VM broker: relays bootstrap/state POSTs onto eks.bus.*/eks.state.* NATS subjects.
 	// acct and callerARN are ignored; cluster account comes from the body.
 	{"POST", "/clusters/{clusterName}/internal-publish", "PublishInternal",
@@ -107,10 +87,6 @@ var eksRoutes = []eksRoute{
 	{"POST", "/clusters/{clusterName}/node-groups/{nodegroupName}/update-config", "UpdateNodegroupConfig",
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.UpdateNodegroupConfig(ctx, gw.NATSConn, acct, p[0], p[1], b)
-		}},
-	{"POST", "/clusters/{clusterName}/node-groups/{nodegroupName}/update-version", "UpdateNodegroupVersion",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateNodegroupVersion(ctx, gw.NATSConn, acct, p[0], p[1], b)
 		}},
 	{"GET", "/clusters/{clusterName}/node-groups/{nodegroupName}", "DescribeNodegroup",
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
@@ -183,24 +159,6 @@ var eksRoutes = []eksRoute{
 	{"DELETE", "/clusters/{clusterName}/addons/{addonName}", "DeleteAddon",
 		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.DeleteAddon(ctx, gw.NATSConn, acct, p[0], p[1])
-		}},
-
-	// OIDC identity-provider configs
-	{"POST", "/clusters/{clusterName}/identity-provider-configs/associate", "AssociateIdentityProviderConfig",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.AssociateIdentityProviderConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{"POST", "/clusters/{clusterName}/identity-provider-configs/describe", "DescribeIdentityProviderConfig",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeIdentityProviderConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{"POST", "/clusters/{clusterName}/identity-provider-configs/disassociate", "DisassociateIdentityProviderConfig",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DisassociateIdentityProviderConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{"GET", "/clusters/{clusterName}/identity-provider-configs", "ListIdentityProviderConfigs",
-		func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListIdentityProviderConfigs(ctx, gw.NATSConn, acct, p[0])
 		}},
 
 	// Cluster CRUD — listed after more-specific /clusters/{name}/... routes.

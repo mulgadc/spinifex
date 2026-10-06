@@ -1,7 +1,7 @@
 import type { InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { ArrowUpCircle, SlidersHorizontal, Trash2 } from "lucide-react"
+import { SlidersHorizontal, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
@@ -34,7 +34,6 @@ import {
   useCreateNodegroup,
   useDeleteNodegroup,
   useScaleNodegroup,
-  useUpdateNodegroupVersion,
 } from "@/mutations/eks"
 import {
   ec2InstanceTypesQueryOptions,
@@ -198,11 +197,9 @@ function NodegroupRow({
   const { data } = useQuery(
     eksNodegroupQueryOptions(clusterName, nodegroupName),
   )
-  const updateVersion = useUpdateNodegroupVersion()
   const ng = data?.nodegroup
   const scaling = ng?.scalingConfig
   const [showScale, setShowScale] = useState(false)
-  const [showUpdate, setShowUpdate] = useState(false)
 
   const updateAvailable =
     !!clusterVersion && !!ng?.version && ng.version !== clusterVersion
@@ -217,18 +214,6 @@ function NodegroupRow({
             {isGpu && <Badge variant="secondary">GPU</Badge>}
           </div>
           <div className="flex items-center gap-1">
-            {updateAvailable && (
-              <Button
-                aria-label="Update node group version"
-                onClick={() => {
-                  setShowUpdate(true)
-                }}
-                size="icon"
-                variant="ghost"
-              >
-                <ArrowUpCircle className="size-4" />
-              </Button>
-            )}
             <Button
               aria-label="Scale node group"
               onClick={() => {
@@ -284,25 +269,6 @@ function NodegroupRow({
         nodegroupName={nodegroupName}
         onOpenChange={setShowScale}
         open={showScale}
-      />
-
-      <DeleteConfirmationDialog
-        confirmLabel="Update"
-        description={`Update node group "${nodegroupName}" from ${ng?.version} to ${clusterVersion}? Nodes are replaced in a rolling update.`}
-        isPending={updateVersion.isPending}
-        onConfirm={() => {
-          updateVersion.mutate(
-            { clusterName, nodegroupName, version: clusterVersion },
-            {
-              onSuccess: () => {
-                setShowUpdate(false)
-              },
-            },
-          )
-        }}
-        onOpenChange={setShowUpdate}
-        open={showUpdate}
-        title="Update node group version"
       />
     </DetailCard>
   )

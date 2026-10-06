@@ -44,17 +44,6 @@ func UpdateNodegroupConfig(ctx context.Context, natsConn *nats.Conn, accountID, 
 	return handlers_eks.NewNATSEKSService(natsConn).UpdateNodegroupConfig(ctx, input, accountID)
 }
 
-// UpdateNodegroupVersion — POST /clusters/{name}/node-groups/{ng}/update-version.
-func UpdateNodegroupVersion(ctx context.Context, natsConn *nats.Conn, accountID, cluster, ng string, body []byte) (*eks.UpdateNodegroupVersionOutput, error) {
-	input := new(eks.UpdateNodegroupVersionInput)
-	if err := unmarshalIfBody(body, input); err != nil {
-		return nil, err
-	}
-	input.ClusterName = aws.String(cluster)
-	input.NodegroupName = aws.String(ng)
-	return handlers_eks.NewNATSEKSService(natsConn).UpdateNodegroupVersion(ctx, input, accountID)
-}
-
 // DeleteNodegroup — DELETE /clusters/{name}/node-groups/{ng}.
 func DeleteNodegroup(ctx context.Context, natsConn *nats.Conn, accountID, cluster, ng string) (*eks.DeleteNodegroupOutput, error) {
 	input := &eks.DeleteNodegroupInput{

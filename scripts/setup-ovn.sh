@@ -1297,7 +1297,7 @@ fi
 # explicitly given. Reasons to pin:
 #   1. IPsec identity: ovs-monitor-ipsec uses chassis-id as the IKEv2
 #      `@<name>` peer identity. Our per-node IPsec peer cert
-#      (admin.GenerateIPSecPeerCert) carries the cluster node name as CN
+#      (host.GenerateIPSecPeerCert) carries the cluster node name as CN
 #      + dnsName SAN — see spx admin init/join, which take --node NAME and
 #      bake NAME into the cert. Leaving chassis-id as the package-generated
 #      UUID would cause `received AUTHENTICATION_FAILED` because charon

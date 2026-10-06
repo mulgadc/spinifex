@@ -1668,7 +1668,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	if ipsecEnabled {
 		caCertPath := filepath.Join(configDir, "ca.pem")
 		caKeyPath := filepath.Join(configDir, "ca.key")
-		if err := admin.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
 			os.Exit(1)
 		}
@@ -2655,7 +2655,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	if ipsecEnabled {
 		caCertPath := filepath.Join(configDir, "ca.pem")
 		caKeyPath := filepath.Join(configDir, "ca.key")
-		if err := admin.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
 			os.Exit(1)
 		}

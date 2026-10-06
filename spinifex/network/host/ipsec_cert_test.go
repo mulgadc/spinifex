@@ -1,19 +1,49 @@
-package admin
+package host
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenerateIPSecPeerCert shares a CA across subtests so the 4096-bit
-// CA-key generation runs once (~0.7s).
+func init() { ipsecCertKeyBits = 2048 }
+
+// writeTestCA writes a throwaway self-signed RSA CA in the PEM/PKCS8 form the
+// IPsec issuer loads.
+func writeTestCA(t *testing.T, certPath, keyPath string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644))
+	require.NoError(t, os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
+}
+
+// TestGenerateIPSecPeerCert shares a CA across subtests so the CA-key
+// generation runs once.
 //
 //nolint:tparallel // the parent cannot be parallel: it overrides the charonCATrustDir/charonRereadCAs package vars for the duration of the test
 func TestGenerateIPSecPeerCert(t *testing.T) {
@@ -33,7 +63,7 @@ func TestGenerateIPSecPeerCert(t *testing.T) {
 	caDir := t.TempDir()
 	caCertPath := filepath.Join(caDir, "ca.pem")
 	caKeyPath := filepath.Join(caDir, "ca.key")
-	require.NoError(t, GenerateCACert(caCertPath, caKeyPath))
+	writeTestCA(t, caCertPath, caKeyPath)
 
 	t.Run("happy path", func(t *testing.T) {
 		t.Parallel()

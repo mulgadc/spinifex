@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
@@ -274,7 +273,7 @@ func EnableOVNIPSec(ctx context.Context, configPath string, clusterConfig *confi
 // turn on encapsulation, once ovs-monitor-ipsec is up to act on both.
 func configureLocalIPSec(configPath string) error {
 	configDir := filepath.Dir(configPath)
-	certPath, keyPath := admin.IPSecCertPaths(configDir)
+	certPath, keyPath := IPSecCertPaths(configDir)
 	caCertPath := filepath.Join(configDir, "ca.pem")
 
 	for _, p := range []string{certPath, keyPath, caCertPath} {

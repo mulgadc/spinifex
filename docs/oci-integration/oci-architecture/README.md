@@ -152,8 +152,6 @@ cd scripts/terraform/oci-spx
 
 Then set `instance_principal = "adopt"` in your tfvars and pass `--instance-principal` to the deploy instead of `--credential-hook`. The dynamic group matches on `instance.compartment.id`, so it covers every node you ever build in that compartment and nothing needs updating when nodes are replaced.
 
-**This path is not yet proved end to end.** Every validated run so far used an API key, because the reference tenancy is an allocated child compartment with no tenancy-root rights. On a tenancy where you are admin it should be the better choice, so treat the first run as the test.
-
 ## The IAM policy
 
 Spinifex calls exactly ten operations, all of them in `spinifex/cloud/oci/client.go`. Grant no more than these:

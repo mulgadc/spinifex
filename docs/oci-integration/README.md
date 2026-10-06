@@ -29,7 +29,9 @@ resources:
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [1. Clone the Spinifex repository](#1-clone-the-spinifex-repository)
-- [2. Give the nodes a limited scoped OCI credential](#2-give-the-nodes-a-limited-scoped-oci-credential)
+- [2. OCI Credentials for Spinifex](#2-oci-credentials-for-spinifex)
+  - [2.1 Instance principal (preferred)](#21-instance-principal-preferred)
+  - [2.2 OCI IAM user with scoped permissions](#22-oci-iam-user-with-scoped-permissions)
 - [3. Choose deployment method](#3-choose-deployment-method)
 - [4. Write your Terraform inputs](#4-write-your-terraform-inputs)
 - [5. Deploy](#5-deploy)
@@ -76,7 +78,7 @@ What sits underneath is in [Architecture and Operations](../oci-architecture/REA
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
 | **An OCI compartment OCID**                | This deploys into a compartment that already exists. Creating one needs tenancy-root rights the API user must not have                  |
 | **OCI credentials in `~/.oci/config`**     | For Terraform, to build the infrastructure. `oci setup config` writes one, or write it by hand                                          |
-| **An OCI API key for the nodes**           | Separate from the above, and the subject of step 2. Without it a node comes up healthy and still cannot give any guest a public address |
+| **A runtime credential for the nodes**     | Separate from the above, and the subject of step 2: either an instance principal or a scoped API key. Without one a node comes up healthy and still cannot give any guest a public address |
 | **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install`                                   |
 
 Check two quotas before you start, because both refuse at apply time rather than at plan time. **Reserved public IPs** are capped at 50 per region across the whole tenancy, and the **compute limit for your shape** starts at zero for bare metal on many new tenancies. [Quotas](../oci-architecture/README.md#quotas) has the commands.
@@ -127,13 +129,11 @@ To begin the deployment of Spinifex on OCI deploy the repository:
 
 ```bash
 git clone https://github.com/mulgadc/spinifex.git
-cd spinifex
-git switch dev
-cd scripts/terraform/oci-spx
+cd spinifex/scripts/terraform/oci-spx
 ```
 
-> [!IMPORTANT]
-> **`git switch dev` is needed today.** OCI support is not in the current release, so the deploy driver is not on `main` yet. From the next release onward `main` carries it and you can skip that line. This chooses the _Terraform and the driver_ only. Which Spinifex build lands on the nodes is step 5.
+> [!NOTE]
+> **To deploy the development branch instead of the release**, add `git switch dev` before the `cd`, and pass `--channel dev` in step 5. The two choose different things: the branch chooses the Terraform and the deploy driver, and `--channel` chooses which Spinifex build lands on the nodes. Use the release for anything you intend to keep.
 
 Then make a new SSH keypair the deploy installs on every Spinifex node which you can login with:
 
@@ -149,11 +149,61 @@ Optionally with more than one profile you can define one using the environment v
 export OCI_CLI_PROFILE=customprofile
 ```
 
-## 2. Give the nodes a limited scoped OCI credential
+## 2. OCI Credentials for Spinifex
 
-Spinifex calls the OCI API at runtime to register each guest's public address and related functions for Spinifex to support running within an OCI environment. This step gives Spinifex a credential with a limited permission scope for improved security.
+Spinifex calls the OCI API at runtime to register each guest's public address, so every node needs a credential that can manage private and public IPs in your compartment. Without one a node forms and passes every health check, then refuses every launch that asks for a public address.
 
-### Generate the key
+There are two ways to provide it, and they differ in who has to authorise them rather than in what Spinifex is allowed to do. Both grant [the same three permissions](../oci-architecture/README.md#the-iam-policy).
+
+|                     | [2.1 Instance principal](#21-instance-principal-preferred)  | [2.2 OCI IAM user](#22-oci-iam-user-with-scoped-permissions) |
+| ------------------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
+| **Key material**    | None. Each node authenticates as itself                     | A private key on every node, at `/etc/spinifex/oci/`         |
+| **Who can set up**  | A tenancy admin, once per tenancy                           | Anyone with identity rights in the tenancy                   |
+| **Rotation**        | Nothing to rotate                                           | Yours to rotate and redistribute                             |
+| **Deploy argument** | `--instance-principal`                                      | `--credential-hook ./spx-oci-config.sh`                      |
+
+**Use 2.1 if you are a tenancy admin.** It is the better of the two because there is no key to leak, rotate or forget about, and a replaced node needs no handoff. Use 2.2 when your compartment was allocated to you inside someone else's tenancy, which is the common case and the reason 2.2 exists at all.
+
+Do one of the two, not both, then continue to step 3.
+
+### 2.1 Instance principal (preferred)
+
+Each node authenticates with the certificate its own metadata service serves at `/opc/v2/identity/cert.pem`, so no key is written anywhere. Authorising that takes a dynamic group and a policy, and **both are tenancy-root resources** — a compartment-scoped user cannot create them, and the attempt fails with `404-NotAuthorizedOrNotFound` on `CreateDynamicGroup`, which reads like a misconfiguration and is not one.
+
+Create them once, with a tenancy-admin OCI profile:
+
+```bash
+./setup-identity.sh --dry-run     # always first
+./setup-identity.sh
+```
+
+The dynamic group matches on the compartment, so it covers every node you build there and needs no update when a node is replaced. Its Terraform state goes in `.identity/`, separate from the deployment's — keep that directory, as it is the only record of what was created.
+
+Then set this in your step 4 tfvars:
+
+```hcl
+instance_principal = "adopt"
+```
+
+And in step 5, pass `--instance-principal` in place of `--credential-hook`:
+
+```bash
+./validate-topology.sh \
+    --topology vm-single \
+    --instance-principal \
+    --skip-workload \
+    --keep
+```
+
+Only `setup-identity.sh` needs tenancy-admin rights. Every deployment afterwards runs as your ordinary compartment user.
+
+To remove the group and policy again, `./setup-identity.sh --destroy`. Every node configured for `adopt` loses its credential the moment you do.
+
+### 2.2 OCI IAM user with scoped permissions
+
+This route creates a dedicated OCI user holding only the three permissions Spinifex needs, and installs its key on each node. It needs identity rights in the tenancy but no tenancy-root rights, so it works in an allocated compartment.
+
+#### Generate the key
 
 ```bash
 openssl genrsa -out ~/.oci/oci_api_key_spx.pem 2048
@@ -164,7 +214,7 @@ openssl rsa -pubout -outform DER -in ~/.oci/oci_api_key_spx.pem | openssl md5 -c
 
 The last command prints the **fingerprint**, which is how OCI names a key everywhere it refers to one. Keep it; you need it in the config file at the end of this step.
 
-### Create a user and a group for it
+#### Create a user and a group for it
 
 Both of these are identity resources, so they are created in the tenancy rather than in your compartment. This step requires the prerequisite `oci` CLI tool to be installed and configured with an API scope that includes creating new user accounts and groups.
 
@@ -206,7 +256,7 @@ An email will be sent to the designated `$ADMIN_EMAIL` defined, you are required
 > [!NOTE]
 > **If these fail with `NotAuthorizedOrNotFound`, you do not have identity rights in the tenancy**, which is normal when someone allocated you a compartment inside theirs. Ask whoever owns the tenancy to grant you the required permissions.
 
-### Grant the group its three permissions
+#### Grant the group its three permissions
 
 Spinifex calls [ten operations](../oci-architecture/README.md#the-iam-policy), and these three statements are what authorise them. Attach the policy to the compartment you are deploying into using the command below. Replace `$CID` with that compartment's OCID.
 
@@ -225,7 +275,7 @@ oci iam policy create --compartment-id "$CID" --name SpinifexOperators \
 > [!NOTE]
 > **If this fails with `NotAuthorizedOrNotFound`, confirm `$CID` is the compartment you are deploying into.** It is a `ocid1.compartment.oc1..` OCID, or your tenancy OCID if you deploy into the root compartment. An identity-domain OCID is a different resource and will not work here.
 
-### Upload the public key to that user
+#### Upload the public key to that user
 
 ```bash
 oci iam user api-key upload --user-id "$USER_OCID" \
@@ -249,7 +299,7 @@ This will output:
 }
 ```
 
-### Write the profile and prove it works
+#### Write the profile and prove it works
 
 The Spinifex nodes authenticate with an OCI SDK config under the profile name `spinifex`. Write that profile on your workstation first, because it is both what the nodes get and the only way to test the credential before a deployment depends on it:
 
@@ -276,7 +326,7 @@ An empty response is a pass, because the permission is what is being tested rath
 > [!WARNING]
 > **Do not set `OCI_CLI_PROFILE=spinifex`.** That variable chooses the profile **Terraform** builds the infrastructure with, and this one cannot: creating a VCN, a subnet and instances is far outside the three grants above, so the apply fails on the first resource. The nodes find the `spinifex` profile by name without being told.
 
-### Validate deployment
+#### Validate deployment
 
 Prior to running the Terraform scripts to deploy Spinifex, verify the OCI configuration and environment is correctly setup:
 
@@ -297,9 +347,6 @@ Expected output:
 Step 5 runs this script for real, over SSH, once the nodes are formed. Those two files are what the allocator authenticates with, and the `spinifex` profile name in the second one is what it looks for.
 
 **The `credential:` line is the one to check.** It has to name the `[spinifex]` profile. If instead it prints two `WARNING:` lines about falling back to "the credential Terraform builds with", the profile was not found and your nodes would get your full-access credential rather than the scoped one you just made.
-
-> [!TIP]
-> **A tenancy admin can skip key files altogether** and authenticate the nodes as the instance itself, which leaves no credential on disk to rotate or leak. It needs a dynamic group and a policy created once at the tenancy root, so it is not available in a compartment someone allocated to you. [Instance principal](../oci-architecture/README.md#an-instance-principal-no-key-material-but-it-needs-a-tenancy-admin) covers it, and you then pass `--instance-principal` in step 5 instead of `--credential-hook`.
 
 ## 3. Choose deployment method
 
@@ -370,22 +417,20 @@ grep compartment_ocid terraform.auto.tfvars
 ```bash
 ./validate-topology.sh \
     --topology vm-single \
-    --channel dev \
     --credential-hook ./spx-oci-config.sh \
     --skip-workload \
     --keep
 ```
 
-> [!IMPORTANT]
-> **`--channel dev` is needed today.** OCI support is not in a published release yet, so the current release cannot allocate an OCI public address. From the next release onward, drop `--channel dev` and the deploy takes `latest`.
+With an instance principal from [2.1](#21-instance-principal-preferred), pass `--instance-principal` in place of `--credential-hook`.
 
 One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies that the address allocator came up.
 
 | Argument            | What to pass                                                                                                                                                                                                                                                  |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent                       |
-| `--channel`         | **`dev` until the next release ships**, because OCI support is not in the current stable release yet. It resolves to the newest pre-release at the moment you run it. `latest` is the default and becomes the right answer once a release carries OCI support |
-| `--credential-hook` | `./spx-oci-config.sh`, which installs the credential from step 2 on every node. With an instance principal, replace it with `--instance-principal` and there is no key to install                                                                             |
+| `--channel`         | Nothing, normally. It defaults to `latest`, the published release. Pass `dev` to install the newest pre-release instead, or `--version <tag>` to pin an exact build                                                                                          |
+| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Mutually exclusive with `--instance-principal`, which installs no key at all                                                                                                    |
 | `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                                              |
 | `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                                         |
 
@@ -394,7 +439,7 @@ One command builds the infrastructure, installs Spinifex, forms the cluster, con
 Add `--dry-run` to print the plan and change nothing.
 
 > [!NOTE]
-> **If the install step fails to download, pass a tag instead of the channel.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited and then 404s. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
+> **If `--channel dev` fails to download, pass a tag instead.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited and then 404s. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
 
 ## 6. Check it worked
 
@@ -417,7 +462,7 @@ The stages print as they finish, and all of these have to appear:
 
 **`allocator ready` is the line to look for.** Every line above it also prints on a node that cannot allocate a public address, and that failure stays silent until a guest asks for one.
 
-`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes.
+`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes. Under `--instance-principal` those two lines are absent, because there is no handoff to make.
 
 ### Access the Spinifex node
 

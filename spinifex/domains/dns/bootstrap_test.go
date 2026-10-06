@@ -1,4 +1,4 @@
-package northstar
+package dns
 
 import (
 	"fmt"
@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,44 +18,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// fakeS3 is a minimal mutable path-style S3 endpoint (HEAD/PUT/GET) for the
-// bootstrap happy-path test.
-func fakeS3(t *testing.T, bucket string) (endpoint string, objects map[string]string) {
-	t.Helper()
-	var mu sync.Mutex
-	objects = map[string]string{}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := strings.TrimPrefix(r.URL.Path, "/"+bucket+"/")
-		mu.Lock()
-		defer mu.Unlock()
-		switch r.Method {
-		case http.MethodHead:
-			if _, ok := objects[key]; ok {
-				w.WriteHeader(http.StatusOK)
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-			}
-		case http.MethodPut:
-			body, _ := io.ReadAll(r.Body)
-			objects[key] = string(body)
-			w.WriteHeader(http.StatusOK)
-		case http.MethodGet:
-			body, ok := objects[key]
-			if !ok {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-			_, _ = w.Write([]byte(body))
-		default:
-			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL, objects
-}
 
 func TestBootstrapBaseZone(t *testing.T) {
 	endpoint, objects := fakeS3(t, "northstar")

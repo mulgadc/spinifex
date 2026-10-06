@@ -852,7 +852,7 @@ var northstarStartCmd = &cobra.Command{
 			baseDirOverride: viper.GetString("base-dir"),
 		}, northstarStartDependencies{
 			loadConfig:        loadRequiredClusterConfig,
-			bootstrapBaseZone: northstar.BootstrapBaseZone,
+			bootstrapBaseZone: dns.BootstrapBaseZone,
 			newService: func(cfg *northstar.Config) (northstarStarter, error) {
 				return service.New("northstar", cfg)
 			},

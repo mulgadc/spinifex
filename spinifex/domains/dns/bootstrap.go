@@ -1,4 +1,4 @@
-package northstar
+package dns
 
 import (
 	"fmt"
@@ -10,7 +10,6 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 )
 
 // baseZoneTXT is the marker TXT record seeded at the apex of the base zone.
@@ -77,7 +76,7 @@ func BootstrapBaseZone(configPath string, cluster *config.ClusterConfig) error {
 		SecretKey: sysCreds.SecretKey,
 	}
 
-	nameservers := dns.NameserverSeeds(cluster)
+	nameservers := NameserverSeeds(cluster)
 	slog.Info("northstar bootstrap: ensuring base zone",
 		"domain", domain, "nameservers", len(nameservers), "multi_node", len(nameservers) > 1)
 

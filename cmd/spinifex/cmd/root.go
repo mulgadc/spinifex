@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
 	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/term"
 )
 
 var (
@@ -50,10 +53,34 @@ func Execute() {
 	cliLogLevel.Set(slog.LevelError)
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cliLogLevel})))
 
+	setOutputStyling(outputStylingEnabled(os.Getenv("NO_COLOR"), isTerminal(os.Stdout)))
+
 	err := rootCmd.Execute()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// outputStylingEnabled reports whether spx may emit ANSI colour and text styling:
+// only when stdout is a terminal and NO_COLOR is unset or empty (no-color.org).
+func outputStylingEnabled(noColor string, stdoutIsTerminal bool) bool {
+	return noColor == "" && stdoutIsTerminal
+}
+
+// isTerminal reports whether w is a file attached to a terminal.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// setOutputStyling switches pterm's colour and bold/underline styling for every
+// printer at once. pterm forces colour on at init regardless of the terminal.
+func setOutputStyling(enabled bool) {
+	if enabled {
+		pterm.EnableStyling()
+	} else {
+		pterm.DisableStyling()
 	}
 }
 

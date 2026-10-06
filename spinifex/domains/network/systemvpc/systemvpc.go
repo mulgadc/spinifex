@@ -1,4 +1,4 @@
-// Package handlers_systemvpc builds the managed VPCs Spinifex platform
+// Package systemvpc builds the managed VPCs Spinifex platform
 // components run their own VMs in — the analogue of AWS's hidden managed-account
 // VPCs. A component asks for one by name; it is owned by the system account and
 // carries a public subnet routed to an IGW plus NAT-routed private subnets.
@@ -10,7 +10,7 @@
 // Every lookup is a describe-or-create keyed on the owner + role tags a Spec
 // carries, so two components never see each other's resources and a relaunch
 // after partial failure converges rather than duplicating.
-package handlers_systemvpc
+package systemvpc
 
 import (
 	"context"

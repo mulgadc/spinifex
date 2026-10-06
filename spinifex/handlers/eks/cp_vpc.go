@@ -3,8 +3,8 @@ package handlers_eks
 import (
 	"context"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // The managed control-plane VPC is the spinifex analogue of AWS EKS's hidden
@@ -33,28 +33,28 @@ const (
 const cpVPCPrivateSubnetCount = 1
 
 // cpVPCRoles are the role-tag values the managed CP VPC's resources carry.
-var cpVPCRoles = handlers_systemvpc.Spec{RolePrefix: cpVPCRolePrefix}.Roles()
+var cpVPCRoles = systemvpc.Spec{RolePrefix: cpVPCRolePrefix}.Roles()
 
 // CPVPCDeps and ManagedCPVPCRefs are the systemvpc types under the names EKS
 // callers (and ClusterMeta's projection) already use.
 type (
-	CPVPCDeps        = handlers_systemvpc.Deps
-	ManagedCPVPCRefs = handlers_systemvpc.Refs
+	CPVPCDeps        = systemvpc.Deps
+	ManagedCPVPCRefs = systemvpc.Refs
 )
 
 // The provisioner surfaces the CP VPC composes from, under their EKS-local
 // names so the service deps and their fakes read against one vocabulary.
 type (
-	vpcProvisioner        = handlers_systemvpc.VPCProvisioner
-	routeTableProvisioner = handlers_systemvpc.RouteTableProvisioner
-	natGatewayProvisioner = handlers_systemvpc.NATGatewayProvisioner
+	vpcProvisioner        = systemvpc.VPCProvisioner
+	routeTableProvisioner = systemvpc.RouteTableProvisioner
+	natGatewayProvisioner = systemvpc.NATGatewayProvisioner
 )
 
 // cpVPCOwner is the tag identity every managed CP VPC resource carries. Keyed on
 // the EKS cluster tags, so the EKS teardown and billable reapers see exactly
 // these resources and no other component's.
-func cpVPCOwner(clusterName string) handlers_systemvpc.Owner {
-	return handlers_systemvpc.Owner{
+func cpVPCOwner(clusterName string) systemvpc.Owner {
+	return systemvpc.Owner{
 		Name:        clusterName,
 		ManagedBy:   tags.ManagedByEKS,
 		OwnerTagKey: clusterEKSClusterTagKey,
@@ -63,8 +63,8 @@ func cpVPCOwner(clusterName string) handlers_systemvpc.Owner {
 }
 
 // cpVPCSpec is the full build spec for clusterName's managed control-plane VPC.
-func cpVPCSpec(clusterName, region string, privateCount int) handlers_systemvpc.Spec {
-	return handlers_systemvpc.Spec{
+func cpVPCSpec(clusterName, region string, privateCount int) systemvpc.Spec {
+	return systemvpc.Spec{
 		Owner:          cpVPCOwner(clusterName),
 		Region:         region,
 		RolePrefix:     cpVPCRolePrefix,
@@ -109,7 +109,7 @@ func (s *EKSServiceImpl) cpVPCDeps() CPVPCDeps {
 // EnsureClusterCPVPC builds (idempotently) the managed control-plane VPC under
 // accountID (the system account) for clusterName.
 func EnsureClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterName, region string, privateCount int) (*ManagedCPVPCRefs, error) {
-	return handlers_systemvpc.Ensure(ctx, deps, cpVPCSpec(clusterName, region, privateCount), accountID)
+	return systemvpc.Ensure(ctx, deps, cpVPCSpec(clusterName, region, privateCount), accountID)
 }
 
 // DeleteClusterCPVPC tears down the managed control-plane VPC for clusterName.
@@ -124,5 +124,5 @@ func DeleteClusterCPVPC(ctx context.Context, deps CPVPCDeps, accountID, clusterN
 	}
 	// Region and private-subnet count do not affect teardown: every lookup is a
 	// describe-by-tag, and the CIDRs are never re-derived.
-	return handlers_systemvpc.Delete(ctx, deps, cpVPCSpec(clusterName, "", cpVPCPrivateSubnetCount), accountID, gcFallback)
+	return systemvpc.Delete(ctx, deps, cpVPCSpec(clusterName, "", cpVPCPrivateSubnetCount), accountID, gcFallback)
 }

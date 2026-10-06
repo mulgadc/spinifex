@@ -3,10 +3,10 @@ package daemon
 import (
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/nats-io/nats.go/jetstream"
@@ -27,7 +27,7 @@ func (d *Daemon) buildBedrockLaunchDeps() handlers_bedrock.LaunchDeps {
 
 	return handlers_bedrock.LaunchDeps{
 		Config: d.config,
-		SystemVPC: handlers_systemvpc.Deps{
+		SystemVPC: systemvpc.Deps{
 			VPC:      d.vpcService,
 			SG:       d.vpcService,
 			IGW:      d.igwService,

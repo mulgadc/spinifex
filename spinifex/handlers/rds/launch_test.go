@@ -14,9 +14,9 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -55,11 +55,11 @@ type fakeSystemVPC struct {
 }
 
 var (
-	_ handlers_systemvpc.VPCProvisioner        = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.RouteTableProvisioner = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.NATGatewayProvisioner = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.EIPProvisioner        = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.IGWProvisioner        = (*fakeSystemVPC)(nil)
+	_ systemvpc.VPCProvisioner        = (*fakeSystemVPC)(nil)
+	_ systemvpc.RouteTableProvisioner = (*fakeSystemVPC)(nil)
+	_ systemvpc.NATGatewayProvisioner = (*fakeSystemVPC)(nil)
+	_ systemvpc.EIPProvisioner        = (*fakeSystemVPC)(nil)
+	_ systemvpc.IGWProvisioner        = (*fakeSystemVPC)(nil)
 )
 
 func (f *fakeSystemVPC) id(prefix string) *string {
@@ -67,8 +67,8 @@ func (f *fakeSystemVPC) id(prefix string) *string {
 	return aws.String(fmt.Sprintf("%s-%04d", prefix, f.seq))
 }
 
-func (f *fakeSystemVPC) deps() handlers_systemvpc.Deps {
-	return handlers_systemvpc.Deps{VPC: f, IGW: f, RT: f, NGW: f, EIP: f}
+func (f *fakeSystemVPC) deps() systemvpc.Deps {
+	return systemvpc.Deps{VPC: f, IGW: f, RT: f, NGW: f, EIP: f}
 }
 
 func (f *fakeSystemVPC) CreateVpc(context.Context, *ec2.CreateVpcInput, string) (*ec2.CreateVpcOutput, error) {

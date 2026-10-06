@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // One shared Bedrock system VPC per region holds every serving VM's primary
@@ -31,7 +31,7 @@ func SystemVPCName(region string) string {
 
 // cfg supplies the operator-overridable address space and subnet count; a nil
 // or unset cfg falls back to the defaults.
-func SystemVPCSpec(cfg *config.BedrockConfig, region string) handlers_systemvpc.Spec {
+func SystemVPCSpec(cfg *config.BedrockConfig, region string) systemvpc.Spec {
 	supernet := config.BedrockDefaultSystemVPCSupernet
 	privateSubnets := 1
 	if cfg != nil {
@@ -42,8 +42,8 @@ func SystemVPCSpec(cfg *config.BedrockConfig, region string) handlers_systemvpc.
 			privateSubnets = cfg.SystemVPCPrivateSubnets
 		}
 	}
-	return handlers_systemvpc.Spec{
-		Owner: handlers_systemvpc.Owner{
+	return systemvpc.Spec{
+		Owner: systemvpc.Owner{
 			Name:        SystemVPCName(region),
 			ManagedBy:   tags.ManagedByBedrock,
 			OwnerTagKey: bedrockSystemVPCTagKey,
@@ -59,11 +59,11 @@ func SystemVPCSpec(cfg *config.BedrockConfig, region string) handlers_systemvpc.
 // EnsureSystemVPC is idempotent. The private subnet the serving VMs sit in
 // routes 0.0.0.0/0 to the VPC's NAT gateway, which is the guest's only egress
 // to fetch anything the baked AMI doesn't already carry.
-func EnsureSystemVPC(ctx context.Context, deps handlers_systemvpc.Deps, cfg *config.BedrockConfig, accountID, region string) (*handlers_systemvpc.Refs, error) {
+func EnsureSystemVPC(ctx context.Context, deps systemvpc.Deps, cfg *config.BedrockConfig, accountID, region string) (*systemvpc.Refs, error) {
 	if region == "" {
 		return nil, errors.New("bedrock: EnsureSystemVPC empty region")
 	}
-	refs, err := handlers_systemvpc.Ensure(ctx, deps, SystemVPCSpec(cfg, region), accountID)
+	refs, err := systemvpc.Ensure(ctx, deps, SystemVPCSpec(cfg, region), accountID)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: ensure system VPC for %s: %w", region, err)
 	}

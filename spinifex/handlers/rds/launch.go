@@ -16,10 +16,10 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
@@ -117,7 +117,7 @@ type volumeAttacher interface {
 
 type LaunchDeps struct {
 	Config    *config.Config
-	SystemVPC handlers_systemvpc.Deps
+	SystemVPC systemvpc.Deps
 	VPC       launchVPCProvisioner
 	Instance  launchInstanceLauncher
 	Image     launchAMIResolver

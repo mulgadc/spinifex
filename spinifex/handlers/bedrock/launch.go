@@ -15,10 +15,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // vllmServePort is the vLLM OpenAI-compatible server's listen port, baked
@@ -60,7 +60,7 @@ type volumeAttacher interface {
 
 type LaunchDeps struct {
 	Config    *config.Config
-	SystemVPC handlers_systemvpc.Deps
+	SystemVPC systemvpc.Deps
 	VPC       launchVPCProvisioner
 	Instance  systeminstance.SystemInstanceLauncher
 	Image     amiResolver

@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // A launch can only arrive over the gateway, long after service init, so unlike
@@ -20,7 +20,7 @@ import (
 func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {
 	return handlers_rds.LaunchDeps{
 		Config: d.config,
-		SystemVPC: handlers_systemvpc.Deps{
+		SystemVPC: systemvpc.Deps{
 			VPC:      d.vpcService,
 			SG:       d.vpcService,
 			IGW:      d.igwService,

@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -411,7 +411,7 @@ func (f *fakeNatGatewayProvisioner) DeleteNatGateway(_ context.Context, input *e
 // a change to either orphans every deployed cluster from its own teardown,
 // stranding a billable NAT gateway and hanging DeleteCluster in DELETING.
 func TestCPVPCTagValuesAreFrozen(t *testing.T) {
-	assert.Equal(t, handlers_systemvpc.Roles{
+	assert.Equal(t, systemvpc.Roles{
 		VPC:           "cp-vpc",
 		PublicSubnet:  "cp-public",
 		PrivateSubnet: "cp-private",

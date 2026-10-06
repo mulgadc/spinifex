@@ -1,4 +1,4 @@
-package handlers_systemvpc
+package systemvpc
 
 import (
 	"context"

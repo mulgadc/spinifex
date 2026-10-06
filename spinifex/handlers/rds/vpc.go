@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // The security-group surface the system ENI's group is ensured through. Narrow
@@ -45,7 +45,7 @@ func SystemSecurityGroupName(region string) string {
 
 // cfg supplies the operator-overridable address space and subnet count; a nil
 // or unset cfg falls back to the defaults.
-func SystemVPCSpec(cfg *config.RDSConfig, region string) handlers_systemvpc.Spec {
+func SystemVPCSpec(cfg *config.RDSConfig, region string) systemvpc.Spec {
 	supernet := config.RDSDefaultSystemVPCSupernet
 	privateSubnets := 1
 	if cfg != nil {
@@ -56,8 +56,8 @@ func SystemVPCSpec(cfg *config.RDSConfig, region string) handlers_systemvpc.Spec
 			privateSubnets = cfg.SystemVPCPrivateSubnets
 		}
 	}
-	return handlers_systemvpc.Spec{
-		Owner: handlers_systemvpc.Owner{
+	return systemvpc.Spec{
+		Owner: systemvpc.Owner{
 			Name:        SystemVPCName(region),
 			ManagedBy:   tags.ManagedByRDS,
 			OwnerTagKey: rdsSystemVPCTagKey,
@@ -75,11 +75,11 @@ func SystemVPCSpec(cfg *config.RDSConfig, region string) handlers_systemvpc.Spec
 // management bridge exists. On a formed deployment one always does, and the
 // agent reaches the gateway over it instead — so this path carries almost no
 // required traffic.
-func EnsureSystemVPC(ctx context.Context, deps handlers_systemvpc.Deps, cfg *config.RDSConfig, accountID, region string) (*handlers_systemvpc.Refs, error) {
+func EnsureSystemVPC(ctx context.Context, deps systemvpc.Deps, cfg *config.RDSConfig, accountID, region string) (*systemvpc.Refs, error) {
 	if region == "" {
 		return nil, errors.New("rds: EnsureSystemVPC empty region")
 	}
-	refs, err := handlers_systemvpc.Ensure(ctx, deps, SystemVPCSpec(cfg, region), accountID)
+	refs, err := systemvpc.Ensure(ctx, deps, SystemVPCSpec(cfg, region), accountID)
 	if err != nil {
 		return nil, fmt.Errorf("rds: ensure system VPC for %s: %w", region, err)
 	}

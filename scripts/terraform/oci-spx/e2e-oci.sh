@@ -7,7 +7,9 @@
 # Configured entirely by environment variables so a dispatch needs no arguments:
 #
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
-#   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm".
+#   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm
+#                     vm-single-principal". Set one name to test one thing: a
+#                     single VM topology is roughly a quarter of the full run.
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
 #   OCI_VERSION       With OCI_SOURCE=release, install this exact release tag and
 #                     ignore OCI_CHANNEL. Preferred for anything repeatable: a tag
@@ -22,11 +24,14 @@
 #                     list. Set to "" to skip the workbook phase entirely.
 #   OCI_INSTANCE_PRINCIPAL  Authenticate the node's allocator as the instance
 #                     principal. Default 1, and it needs the tenancy's dynamic
-#                     group to exist.
+#                     group to exist. The vm-single-principal topology ignores it
+#                     and always authenticates that way, which is its purpose.
 #   OCI_NO_EXTERNAL_POOL    1 to form with no allocator at all, for a tenancy whose
 #                     dynamic group does not exist yet. The allocator and every
 #                     workbook are then recorded SKIPPED, never PASS, so a green
 #                     run with this set is not a claim about guest networking.
+#                     Not applied to vm-single-principal, which the allocator is
+#                     the entire test of; that pairing is refused rather than run.
 #   OCI_SSH_PUBLIC_KEY / OCI_SSH_PRIVATE_KEY   Paths. Default ~/.ssh/oci-spx[.pub].
 #   OCI_CREDENTIAL_HOOK     Executable run on each topology after formation and
 #                     before the pool, as "hook <ssh-key> <host>...". An API-key
@@ -47,7 +52,7 @@ SPINIFEX_ROOT="$(cd "$HERE/../../.." && pwd)"
 # under the workspace. Deriving one from the other is only right in the first case.
 MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 
-TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm}"
+TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal}"
 SOURCE="${OCI_SOURCE:-tree}"
 CHANNEL="${OCI_CHANNEL:-latest}"
 INSTALL_VERSION="${OCI_VERSION:-}"
@@ -141,12 +146,14 @@ summary() {
     # In the header, not left to a SKIPPED row further down. A run with no allocator
     # is not evidence about public addressing, and that is precisely the claim a
     # reader of a green table would otherwise take from it.
+    # Said per topology rather than once for the run: vm-single-principal pins its
+    # own credential, so a single claim over a mixed run is wrong for one of them.
     if [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
-        printf '> **No external address pool.** Public-address allocation and every workbook needing a public address were skipped, so nothing here speaks to guest ingress.\n\n'
+        printf '> **No external address pool.** Public-address allocation and every workbook needing a public address were skipped, so nothing here speaks to guest ingress. `vm-single-principal`, if it ran, is the exception and did build one.\n\n'
     elif [ "${OCI_INSTANCE_PRINCIPAL:-1}" = 1 ]; then
         printf 'Allocator authenticated as the instance principal.\n\n'
     else
-        printf 'Allocator authenticated with an API key.\n\n'
+        printf 'Allocator authenticated with an API key, except `vm-single-principal` which authenticates as the instance.\n\n'
     fi
 
     local topology results workbooks gate status detail name secs
@@ -275,7 +282,13 @@ for topology in $TOPOLOGIES; do
     # Two separate choices. --no-external-pool is the one that forms without any
     # allocator, for a tenancy whose dynamic group does not exist yet; it records
     # the allocator and the workbooks as SKIPPED rather than passing them.
-    if [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
+    #
+    # vm-single-principal opts out of both: it sets its own credential, and a run
+    # of it without an allocator would exercise nothing. validate-topology.sh
+    # refuses that pairing, so skipping it here keeps a mixed run from aborting.
+    if [ "$topology" = vm-single-principal ]; then
+        :
+    elif [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
         args+=(--no-external-pool)
     elif [ "${OCI_INSTANCE_PRINCIPAL:-1}" = 1 ]; then
         args+=(--instance-principal)

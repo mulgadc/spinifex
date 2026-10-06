@@ -79,10 +79,18 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 func newClient(pool external.ExternalPoolConfig) (oci.Client, error) {
 	if pool.UsesInstancePrincipal() {
 		slog.Info("ocinet authenticating as the instance principal", "pool", pool.Name)
-		return oci.NewInstancePrincipalClient()
+		return newInstancePrincipalClient()
 	}
-	return oci.NewConfigFileClient(pool.OCIConfigFile, pool.OCIConfigProfile)
+	return newConfigFileClient(pool.OCIConfigFile, pool.OCIConfigProfile)
 }
+
+// Indirected so a test can assert which credential a pool selects. Both real
+// constructors need an instance or a key file, so the branch is otherwise only
+// observable on OCI, and it was wrong there for a release without anyone seeing.
+var (
+	newInstancePrincipalClient = oci.NewInstancePrincipalClient
+	newConfigFileClient        = oci.NewConfigFileClient
+)
 
 // resolveVNICID turns whichever VNIC key the operator set into an OCID.
 func resolveVNICID(ctx context.Context, pool external.ExternalPoolConfig) (string, error) {

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       topologies:
-        description: "Space-separated topologies (blank = vm-single vm-multi bm)"
+        description: "Space-separated topologies (blank = vm-single vm-multi bm vm-single-principal). One name runs one topology."
         required: false
       workbooks:
         description: "Space-separated workbooks (blank = the driver's default list)"
@@ -29,13 +29,13 @@ on:
         type: boolean
         default: false
       auth:
-        description: "How nodes reach the OCI API: instance_principal (needs the tenancy dynamic group) or api_key (needs the credential hook)"
+        description: "How nodes reach the OCI API: instance_principal (needs the tenancy dynamic group) or api_key (needs the credential hook). The vm-single-principal topology always uses instance_principal."
         required: false
         default: instance_principal
         type: choice
         options: [instance_principal, api_key]
       no_external_pool:
-        description: "Form without the OCI allocator. Skips every workbook needing a public address."
+        description: "Form without the OCI allocator. Skips every workbook needing a public address. Not applied to vm-single-principal."
         required: false
         type: boolean
         default: false

@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
@@ -129,11 +129,11 @@ const pubKeySubject = "imds.ec2.get_public_key"
 func TestNATSPublicKeyLookup_CachesMaterial(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	var gotReq handlers_ec2_key.GetPublicKeyRequest
+	var gotReq ec2key.GetPublicKeyRequest
 	calls := serveCounted(t, nc, pubKeySubject,
-		func(req *handlers_ec2_key.GetPublicKeyRequest) (*handlers_ec2_key.GetPublicKeyResponse, error) {
+		func(req *ec2key.GetPublicKeyRequest) (*ec2key.GetPublicKeyResponse, error) {
 			gotReq = *req
-			return &handlers_ec2_key.GetPublicKeyResponse{OpenSSHKey: "ssh-ed25519 AAAA " + req.KeyName}, nil
+			return &ec2key.GetPublicKeyResponse{OpenSSHKey: "ssh-ed25519 AAAA " + req.KeyName}, nil
 		})
 
 	lookup := NewNATSPublicKeyLookup(nc)
@@ -144,7 +144,7 @@ func TestNATSPublicKeyLookup_CachesMaterial(t *testing.T) {
 	}
 	// Three lookups, one round-trip: the TTL cache suppressed the repeats.
 	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
-	assert.Equal(t, handlers_ec2_key.GetPublicKeyRequest{AccountID: imdsTestAccountID, KeyName: "my-key"}, gotReq)
+	assert.Equal(t, ec2key.GetPublicKeyRequest{AccountID: imdsTestAccountID, KeyName: "my-key"}, gotReq)
 }
 
 // An error result is never cached: the next call must re-issue the RPC so a
@@ -153,7 +153,7 @@ func TestNATSPublicKeyLookup_DoesNotCacheError(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
 	calls := serveCounted(t, nc, pubKeySubject,
-		func(_ *handlers_ec2_key.GetPublicKeyRequest) (*handlers_ec2_key.GetPublicKeyResponse, error) {
+		func(_ *ec2key.GetPublicKeyRequest) (*ec2key.GetPublicKeyResponse, error) {
 			return nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 		})
 

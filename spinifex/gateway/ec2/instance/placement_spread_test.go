@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +23,9 @@ import (
 type spreadHarness struct {
 	mu sync.Mutex
 
-	reserveInput   handlers_ec2_placementgroup.ReserveSpreadNodesInput
-	finalizeInput  handlers_ec2_placementgroup.FinalizeSpreadInstancesInput
-	releaseInputs  []handlers_ec2_placementgroup.ReleaseSpreadNodesInput
+	reserveInput   ec2placementgroup.ReserveSpreadNodesInput
+	finalizeInput  ec2placementgroup.FinalizeSpreadInstancesInput
+	releaseInputs  []ec2placementgroup.ReleaseSpreadNodesInput
 	launchCounts   map[string]int64
 	terminatedIDs  []string
 	finalizeCalled bool
@@ -54,7 +54,7 @@ func mockSpreadCluster(t *testing.T, nc *nats.Conn, capacity map[string]int, res
 		h.mu.Lock()
 		_ = json.Unmarshal(msg.Data, &h.reserveInput)
 		h.mu.Unlock()
-		data, _ := json.Marshal(handlers_ec2_placementgroup.ReserveSpreadNodesOutput{ReservedNodes: reserved})
+		data, _ := json.Marshal(ec2placementgroup.ReserveSpreadNodesOutput{ReservedNodes: reserved})
 		_ = msg.Respond(data)
 	})
 	require.NoError(t, err)
@@ -69,19 +69,19 @@ func mockSpreadCluster(t *testing.T, nc *nats.Conn, capacity map[string]int, res
 			_ = msg.Respond(awserrors.GenerateErrorPayload(finalizeErr))
 			return
 		}
-		data, _ := json.Marshal(handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput{})
+		data, _ := json.Marshal(ec2placementgroup.FinalizeSpreadInstancesOutput{})
 		_ = msg.Respond(data)
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = finalizeSub.Unsubscribe() })
 
 	releaseSub, err := nc.QueueSubscribe("ec2.ReleaseSpreadNodes", "spinifex-workers", func(msg *nats.Msg) {
-		var in handlers_ec2_placementgroup.ReleaseSpreadNodesInput
+		var in ec2placementgroup.ReleaseSpreadNodesInput
 		_ = json.Unmarshal(msg.Data, &in)
 		h.mu.Lock()
 		h.releaseInputs = append(h.releaseInputs, in)
 		h.mu.Unlock()
-		data, _ := json.Marshal(handlers_ec2_placementgroup.ReleaseSpreadNodesOutput{})
+		data, _ := json.Marshal(ec2placementgroup.ReleaseSpreadNodesOutput{})
 		_ = msg.Respond(data)
 	})
 	require.NoError(t, err)

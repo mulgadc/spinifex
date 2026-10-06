@@ -14,11 +14,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/nats-io/nats.go"
@@ -95,8 +95,8 @@ func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesIn
 
 	requests := buildSpotRequests(input, runInput, reservation.Instances, az)
 
-	svc := handlers_ec2_spotinstance.NewNATSSpotInstanceService(natsConn)
-	if _, err := svc.PutSpotInstanceRequests(ctx, &handlers_ec2_spotinstance.PutSpotRequestsInput{Requests: requests}, accountID); err != nil {
+	svc := ec2spotinstance.NewNATSSpotInstanceService(natsConn)
+	if _, err := svc.PutSpotInstanceRequests(ctx, &ec2spotinstance.PutSpotRequestsInput{Requests: requests}, accountID); err != nil {
 		slog.ErrorContext(ctx, "RequestSpotInstances: VMs launched but SIR persist failed", "count", count, "accountID", accountID, "err", err)
 		return output, err
 	}
@@ -201,7 +201,7 @@ func buildSpotRequests(input *ec2.RequestSpotInstancesInput, runInput *ec2.RunIn
 			LaunchSpecification:      launchSpec,
 			Tags:                     tags,
 			Status: &ec2.SpotInstanceStatus{
-				Code:       aws.String(handlers_ec2_spotinstance.SpotStatusCodeFulfilled),
+				Code:       aws.String(ec2spotinstance.SpotStatusCodeFulfilled),
 				Message:    aws.String("Your Spot request is fulfilled."),
 				UpdateTime: aws.Time(now),
 			},

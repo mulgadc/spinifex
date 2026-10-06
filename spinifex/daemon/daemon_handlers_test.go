@@ -23,17 +23,17 @@ import (
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
@@ -81,7 +81,7 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	memStore := objectstore.NewMemoryObjectStore()
 	cfg := daemon.config
 
-	daemon.keyService = handlers_ec2_key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
+	daemon.keyService = ec2key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
 	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, cfg.Predastore.Bucket)
 	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, memStore, daemon.natsConn)
 	daemon.snapshotService = handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, memStore, daemon.natsConn)
@@ -160,7 +160,7 @@ func initAccountServiceForTest(t *testing.T, daemon *Daemon) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	svc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
+	svc, err := ec2account.NewAccountSettingsServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	daemon.accountService = svc
 }
@@ -592,7 +592,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 	memStore := objectstore.NewMemoryObjectStore()
 	bucket := daemon.config.Predastore.Bucket
 	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, bucket)
-	daemon.keyService = handlers_ec2_key.NewKeyServiceImplWithStore(memStore, bucket)
+	daemon.keyService = ec2key.NewKeyServiceImplWithStore(memStore, bucket)
 	seedTestAMI(t, memStore, bucket, "ami-sgprop")
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
 
@@ -3737,7 +3737,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	pgSvc, err := handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), daemon.config, nc)
+	pgSvc, err := ec2placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.placementGroupService = pgSvc
 
@@ -3768,7 +3768,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			name:    "ReserveSpreadNodes",
 			topic:   "ec2.test.ReserveSpreadNodes",
 			handler: asMsgHandler(handleNATSRequest(daemon.node, daemon.placementGroupService.ReserveSpreadNodes)),
-			input: &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
+			input: &ec2placementgroup.ReserveSpreadNodesInput{
 				GroupName:     "pg-nonexistent",
 				EligibleNodes: []string{"node-1"},
 				MinCount:      1,
@@ -3780,7 +3780,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			name:    "FinalizeSpreadInstances",
 			topic:   "ec2.test.FinalizeSpreadInstances",
 			handler: asMsgHandler(handleNATSRequest(daemon.node, daemon.placementGroupService.FinalizeSpreadInstances)),
-			input: &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
+			input: &ec2placementgroup.FinalizeSpreadInstancesInput{
 				GroupName:     "pg-nonexistent",
 				NodeInstances: map[string][]string{"node-1": {"i-123"}},
 			},
@@ -3790,7 +3790,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			name:    "ReleaseSpreadNodes",
 			topic:   "ec2.test.ReleaseSpreadNodes",
 			handler: asMsgHandler(handleNATSRequest(daemon.node, daemon.placementGroupService.ReleaseSpreadNodes)),
-			input: &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+			input: &ec2placementgroup.ReleaseSpreadNodesInput{
 				GroupName: "pg-nonexistent",
 				Nodes:     []string{"node-1"},
 			},
@@ -3800,7 +3800,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			name:    "RemoveInstanceFromPlacementGroup",
 			topic:   "ec2.test.RemoveInstanceFromPlacementGroup",
 			handler: asMsgHandler(handleNATSRequest(daemon.node, daemon.placementGroupService.RemoveInstance)),
-			input: &handlers_ec2_placementgroup.RemoveInstanceInput{
+			input: &ec2placementgroup.RemoveInstanceInput{
 				GroupName:  "pg-nonexistent",
 				NodeName:   "node-1",
 				InstanceID: "i-123",
@@ -3813,7 +3813,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			name:    "ReserveClusterNode",
 			topic:   "ec2.test.ReserveClusterNode",
 			handler: asMsgHandler(handleNATSRequest(daemon.node, daemon.placementGroupService.ReserveClusterNode)),
-			input: &handlers_ec2_placementgroup.ReserveClusterNodeInput{
+			input: &ec2placementgroup.ReserveClusterNodeInput{
 				GroupName:     "pg-nonexistent",
 				EligibleNodes: []string{"node-1"},
 			},
@@ -3823,7 +3823,7 @@ func TestDelegateHandlers_PlacementGroup(t *testing.T) {
 			name:    "FinalizeClusterInstances",
 			topic:   "ec2.test.FinalizeClusterInstances",
 			handler: asMsgHandler(handleNATSRequest(daemon.node, daemon.placementGroupService.FinalizeClusterInstances)),
-			input: &handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
+			input: &ec2placementgroup.FinalizeClusterInstancesInput{
 				GroupName:     "pg-nonexistent",
 				NodeInstances: map[string][]string{"node-1": {"i-123"}},
 			},

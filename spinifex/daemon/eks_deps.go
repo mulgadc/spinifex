@@ -9,7 +9,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -99,7 +99,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		VPCMgr:         d.vpcService,
 		NATGW:          d.natGatewayService,
 		RouteTable:     d.routeTableService,
-		PlacementGroup: handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
+		PlacementGroup: ec2placementgroup.NewNATSPlacementGroupService(d.natsConn),
 		Scheduler:      handlers_eks.NewNATSHostScheduler(d.natsConn),
 		CPControl:      d.newEKSCPControl(),
 	}

@@ -12,10 +12,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
@@ -283,13 +283,13 @@ func ExpandLaunchTemplate(ctx context.Context, natsConn *nats.Conn, input *ec2.R
 	if input == nil || input.LaunchTemplate == nil {
 		return nil
 	}
-	ltSvc := handlers_ec2_launchtemplate.NewNATSLaunchTemplateService(natsConn)
-	return handlers_ec2_launchtemplate.ExpandRunInstances(ctx, ltSvc, input, accountID)
+	ltSvc := ec2launchtemplate.NewNATSLaunchTemplateService(natsConn)
+	return ec2launchtemplate.ExpandRunInstances(ctx, ltSvc, input, accountID)
 }
 
 // lookupPlacementGroupStrategy returns the strategy of a placement group, or an error if absent/unavailable.
 func lookupPlacementGroupStrategy(ctx context.Context, natsConn *nats.Conn, accountID, groupName string) (string, error) {
-	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
+	pgSvc := ec2placementgroup.NewNATSPlacementGroupService(natsConn)
 	out, err := pgSvc.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{
 		GroupNames: []*string{aws.String(groupName)},
 	}, accountID)

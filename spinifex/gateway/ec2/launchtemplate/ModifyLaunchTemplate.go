@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	"github.com/nats-io/nats.go"
 )
 
@@ -27,7 +27,7 @@ func ModifyLaunchTemplate(ctx context.Context, input *ec2.ModifyLaunchTemplateIn
 		return output, err
 	}
 
-	svc := handlers_ec2_launchtemplate.NewNATSLaunchTemplateService(natsConn)
+	svc := ec2launchtemplate.NewNATSLaunchTemplateService(natsConn)
 	result, err := svc.ModifyLaunchTemplate(ctx, input, accountID)
 	if err != nil {
 		return output, err

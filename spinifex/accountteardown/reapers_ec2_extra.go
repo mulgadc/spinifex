@@ -5,9 +5,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -19,7 +19,7 @@ import (
 // makes teardown race its own fulfilment rather than merely leak.
 func EC2ExtraReapers(nc *nats.Conn) []Reaper {
 	return []Reaper{
-		&spotRequestReaper{svc: handlers_ec2_spotinstance.NewNATSSpotInstanceService(nc)},
+		&spotRequestReaper{svc: ec2spotinstance.NewNATSSpotInstanceService(nc)},
 		&natGatewayReaper{svc: handlers_ec2_natgw.NewNATSNatGatewayService(nc)},
 		&egressOnlyIGWReaper{svc: handlers_ec2_eigw.NewNATSEgressOnlyIGWService(nc)},
 	}
@@ -30,7 +30,7 @@ func EC2ExtraReapers(nc *nats.Conn) []Reaper {
 var terminalSpotStates = map[string]bool{"cancelled": true, "closed": true, "failed": true}
 
 type spotRequestReaper struct {
-	svc handlers_ec2_spotinstance.SpotInstanceService
+	svc ec2spotinstance.SpotInstanceService
 }
 
 func (r *spotRequestReaper) Kind() string { return "spot-request" }

@@ -165,7 +165,7 @@ type AMIMetaLoader interface {
 }
 
 // KeyPairValidator checks that a named key pair exists for an account during
-// RunInstances. Implemented by handlers/ec2/key.KeyServiceImpl.
+// RunInstances. Implemented by domains/ec2/key.KeyServiceImpl.
 type KeyPairValidator interface {
 	ValidateKeyPairExists(ctx context.Context, accountID, keyName string) error
 }

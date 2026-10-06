@@ -42,7 +42,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
@@ -55,19 +60,14 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
-	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -148,19 +148,19 @@ type Daemon struct {
 	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
 	dnsInternalDomain string
-	keyService        *handlers_ec2_key.KeyServiceImpl
+	keyService        *ec2key.KeyServiceImpl
 	imageService      *handlers_ec2_image.ImageServiceImpl
 	volumeService     *handlers_ec2_volume.VolumeServiceImpl
 	// ebsProvider is the sole EBS backend, set once during startup.
 	ebsProvider           ebsprovider.EBSProvider
-	accountService        *handlers_ec2_account.AccountSettingsServiceImpl
+	accountService        *ec2account.AccountSettingsServiceImpl
 	snapshotService       *handlers_ec2_snapshot.SnapshotServiceImpl
 	tagsService           *handlers_ec2_tags.TagsServiceImpl
 	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
 	igwService            *handlers_ec2_igw.IGWServiceImpl
-	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
-	launchTemplateService *handlers_ec2_launchtemplate.LaunchTemplateServiceImpl
-	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
+	placementGroupService *ec2placementgroup.PlacementGroupServiceImpl
+	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
+	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *handlers_ec2_vpc.VPCServiceImpl
 	eipService            handlers_ec2_eip.EIPService
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
@@ -1761,7 +1761,7 @@ func (d *Daemon) startCluster() error {
 	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
 	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
-	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
+	d.keyService = ec2key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 
 	type snapResult struct {
@@ -1810,22 +1810,22 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize IGW service: %w", err)
 	}
 
-	d.placementGroupService, err = initServiceWithRetry("placement group service", func() (*handlers_ec2_placementgroup.PlacementGroupServiceImpl, error) {
-		return handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.placementGroupService, err = initServiceWithRetry("placement group service", func() (*ec2placementgroup.PlacementGroupServiceImpl, error) {
+		return ec2placementgroup.NewPlacementGroupServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
 	}
 
-	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*handlers_ec2_launchtemplate.LaunchTemplateServiceImpl, error) {
-		return handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*ec2launchtemplate.LaunchTemplateServiceImpl, error) {
+		return ec2launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize launch template service: %w", err)
 	}
 
-	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {
-		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*ec2spotinstance.SpotInstanceServiceImpl, error) {
+		return ec2spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize spot instance service: %w", err)
@@ -1955,8 +1955,8 @@ func (d *Daemon) startCluster() error {
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
 	}
 
-	d.accountService, err = initServiceWithRetry("account settings service", func() (*handlers_ec2_account.AccountSettingsServiceImpl, error) {
-		return handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.accountService, err = initServiceWithRetry("account settings service", func() (*ec2account.AccountSettingsServiceImpl, error) {
+		return ec2account.NewAccountSettingsServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)

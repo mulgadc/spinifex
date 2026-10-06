@@ -15,9 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 
 	"github.com/nats-io/nats.go"
 )
@@ -247,7 +247,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
-	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
+	pgSvc := ec2placementgroup.NewNATSPlacementGroupService(natsConn)
 
 	nodes, err := queryNodeCapacity(ctx, natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
@@ -262,7 +262,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 		eligibleNodeIDs[i] = n.NodeID
 	}
 
-	reserveOut, err := pgSvc.ReserveSpreadNodes(ctx, &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
+	reserveOut, err := pgSvc.ReserveSpreadNodes(ctx, &ec2placementgroup.ReserveSpreadNodesInput{
 		GroupName:     groupName,
 		EligibleNodes: eligibleNodeIDs,
 		MinCount:      minCount,
@@ -312,7 +312,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 		if totalLaunched > 0 {
 			rollbackInstances(ctx, allInstances, natsConn, accountID)
 		}
-		if _, err := pgSvc.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+		if _, err := pgSvc.ReleaseSpreadNodes(ctx, &ec2placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     reservedNodes,
 		}, accountID); err != nil {
@@ -329,14 +329,14 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 	}
 
 	// Finalize: replace placeholders with instance IDs; roll back on failure.
-	if _, err := pgSvc.FinalizeSpreadInstances(ctx, &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
+	if _, err := pgSvc.FinalizeSpreadInstances(ctx, &ec2placementgroup.FinalizeSpreadInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, accountID); err != nil {
 		slog.ErrorContext(ctx, "distributeInstancesSpread: finalize failed, rolling back instances", "err", err)
 		rollbackInstances(ctx, allInstances, natsConn, accountID)
 		allReleaseNodes := append(reservedNodes[:0:0], reservedNodes...)
-		if _, releaseErr := pgSvc.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+		if _, releaseErr := pgSvc.ReleaseSpreadNodes(ctx, &ec2placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     allReleaseNodes,
 		}, accountID); releaseErr != nil {
@@ -346,7 +346,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 	}
 
 	if len(failedNodes) > 0 {
-		if _, err := pgSvc.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+		if _, err := pgSvc.ReleaseSpreadNodes(ctx, &ec2placementgroup.ReleaseSpreadNodesInput{
 			GroupName: groupName,
 			Nodes:     failedNodes,
 		}, accountID); err != nil {
@@ -367,7 +367,7 @@ func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInpu
 	minCount := int(aws.Int64Value(input.MinCount))
 	maxCount := int(aws.Int64Value(input.MaxCount))
 
-	pgSvc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
+	pgSvc := ec2placementgroup.NewNATSPlacementGroupService(natsConn)
 
 	nodes, err := queryNodeCapacity(ctx, natsConn, instanceType, expectedNodes, accountID)
 	if err != nil {
@@ -380,7 +380,7 @@ func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInpu
 		eligibleNodeIDs[i] = n.NodeID
 	}
 
-	reserveOut, err := pgSvc.ReserveClusterNode(ctx, &handlers_ec2_placementgroup.ReserveClusterNodeInput{
+	reserveOut, err := pgSvc.ReserveClusterNode(ctx, &ec2placementgroup.ReserveClusterNodeInput{
 		GroupName:     groupName,
 		EligibleNodes: eligibleNodeIDs,
 	}, accountID)
@@ -429,7 +429,7 @@ func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInpu
 		}
 	}
 
-	if _, err := pgSvc.FinalizeClusterInstances(ctx, &handlers_ec2_placementgroup.FinalizeClusterInstancesInput{
+	if _, err := pgSvc.FinalizeClusterInstances(ctx, &ec2placementgroup.FinalizeClusterInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, accountID); err != nil {

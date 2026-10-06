@@ -16,9 +16,9 @@ import (
 	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -261,10 +261,10 @@ type fakePlacer struct {
 
 	createGroups   []string
 	deleteGroups   []string
-	reserveInputs  []*handlers_ec2_placementgroup.ReserveSpreadNodesInput
-	releaseInputs  []*handlers_ec2_placementgroup.ReleaseSpreadNodesInput
-	finalizeInputs []*handlers_ec2_placementgroup.FinalizeSpreadInstancesInput
-	removeInputs   []*handlers_ec2_placementgroup.RemoveInstanceInput
+	reserveInputs  []*ec2placementgroup.ReserveSpreadNodesInput
+	releaseInputs  []*ec2placementgroup.ReleaseSpreadNodesInput
+	finalizeInputs []*ec2placementgroup.FinalizeSpreadInstancesInput
+	removeInputs   []*ec2placementgroup.RemoveInstanceInput
 
 	reserved    []string
 	createErr   error
@@ -291,7 +291,7 @@ func (p *fakePlacer) DeletePlacementGroup(_ context.Context, in *ec2.DeletePlace
 	return &ec2.DeletePlacementGroupOutput{}, nil
 }
 
-func (p *fakePlacer) ReserveSpreadNodes(_ context.Context, in *handlers_ec2_placementgroup.ReserveSpreadNodesInput, _ string) (*handlers_ec2_placementgroup.ReserveSpreadNodesOutput, error) {
+func (p *fakePlacer) ReserveSpreadNodes(_ context.Context, in *ec2placementgroup.ReserveSpreadNodesInput, _ string) (*ec2placementgroup.ReserveSpreadNodesOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reserveInputs = append(p.reserveInputs, in)
@@ -303,31 +303,31 @@ func (p *fakePlacer) ReserveSpreadNodes(_ context.Context, in *handlers_ec2_plac
 		n := min(in.MaxCount, len(in.EligibleNodes))
 		reserved = append([]string(nil), in.EligibleNodes[:n]...)
 	}
-	return &handlers_ec2_placementgroup.ReserveSpreadNodesOutput{ReservedNodes: reserved}, nil
+	return &ec2placementgroup.ReserveSpreadNodesOutput{ReservedNodes: reserved}, nil
 }
 
-func (p *fakePlacer) ReleaseSpreadNodes(_ context.Context, in *handlers_ec2_placementgroup.ReleaseSpreadNodesInput, _ string) (*handlers_ec2_placementgroup.ReleaseSpreadNodesOutput, error) {
+func (p *fakePlacer) ReleaseSpreadNodes(_ context.Context, in *ec2placementgroup.ReleaseSpreadNodesInput, _ string) (*ec2placementgroup.ReleaseSpreadNodesOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.releaseInputs = append(p.releaseInputs, in)
-	return &handlers_ec2_placementgroup.ReleaseSpreadNodesOutput{}, nil
+	return &ec2placementgroup.ReleaseSpreadNodesOutput{}, nil
 }
 
-func (p *fakePlacer) FinalizeSpreadInstances(_ context.Context, in *handlers_ec2_placementgroup.FinalizeSpreadInstancesInput, _ string) (*handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput, error) {
+func (p *fakePlacer) FinalizeSpreadInstances(_ context.Context, in *ec2placementgroup.FinalizeSpreadInstancesInput, _ string) (*ec2placementgroup.FinalizeSpreadInstancesOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.finalizeInputs = append(p.finalizeInputs, in)
 	if p.finalizeErr != nil {
 		return nil, p.finalizeErr
 	}
-	return &handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput{}, nil
+	return &ec2placementgroup.FinalizeSpreadInstancesOutput{}, nil
 }
 
-func (p *fakePlacer) RemoveInstance(_ context.Context, in *handlers_ec2_placementgroup.RemoveInstanceInput, _ string) (*handlers_ec2_placementgroup.RemoveInstanceOutput, error) {
+func (p *fakePlacer) RemoveInstance(_ context.Context, in *ec2placementgroup.RemoveInstanceInput, _ string) (*ec2placementgroup.RemoveInstanceOutput, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.removeInputs = append(p.removeInputs, in)
-	return &handlers_ec2_placementgroup.RemoveInstanceOutput{}, nil
+	return &ec2placementgroup.RemoveInstanceOutput{}, nil
 }
 
 // seqK3sAMI resolves the eks-server AMI; concurrency-safe so the parallel

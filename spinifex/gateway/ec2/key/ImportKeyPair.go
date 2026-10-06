@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	"github.com/nats-io/nats.go"
 )
 
@@ -33,7 +33,7 @@ func ImportKeyPair(ctx context.Context, input *ec2.ImportKeyPairInput, natsConn 
 		return output, err
 	}
 
-	keyService := handlers_ec2_key.NewNATSKeyService(natsConn)
+	keyService := ec2key.NewNATSKeyService(natsConn)
 	result, err := keyService.ImportKeyPair(ctx, input, accountID)
 
 	if err != nil {

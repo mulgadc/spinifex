@@ -205,7 +205,7 @@ func TestRequestSpotInstances_Lifecycle(t *testing.T) {
 	// in-process when a spot-backed instance is terminated (spinifex/daemon/vm_adapters.go
 	// RemoveFromSpotRequest) — that one-line delegation is already covered by
 	// TestRemoveFromSpotRequest_NoService_NoOp plus CloseForInstance's own unit tests
-	// (spinifex/handlers/ec2/spotinstance/service_impl_test.go). What those unit tests can't
+	// (spinifex/domains/ec2/spotinstance/service_impl_test.go). What those unit tests can't
 	// prove is that a SIR minted by the real gateway orchestration — a generated id, keyed by
 	// the account resolved from a genuine SigV4-authenticated request — closes correctly; this
 	// does, by calling CloseForInstance directly the same way the teardown cleaner would.

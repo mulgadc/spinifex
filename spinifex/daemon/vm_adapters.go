@@ -12,12 +12,12 @@ import (
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -1020,7 +1020,7 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error
 	if instance.PlacementGroupName == "" || a.d.placementGroupService == nil {
 		return nil
 	}
-	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &handlers_ec2_placementgroup.RemoveInstanceInput{
+	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &ec2placementgroup.RemoveInstanceInput{
 		GroupName:  instance.PlacementGroupName,
 		NodeName:   instance.PlacementGroupNode,
 		InstanceID: instance.ID,

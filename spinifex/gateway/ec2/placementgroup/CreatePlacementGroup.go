@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/nats-io/nats.go"
 )
 
@@ -28,7 +28,7 @@ func CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupIn
 		return output, err
 	}
 
-	svc := handlers_ec2_placementgroup.NewNATSPlacementGroupService(natsConn)
+	svc := ec2placementgroup.NewNATSPlacementGroupService(natsConn)
 	result, err := svc.CreatePlacementGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err

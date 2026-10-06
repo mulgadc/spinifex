@@ -18,7 +18,7 @@ import (
 // captureLaunchTemplateNodeInput wires a per-node launch responder that
 // forwards each decoded RunInstancesInput onto the returned channel before
 // replying, so a test can inspect exactly what expandLaunchTemplate
-// (handlers/ec2/launchtemplate/expand.go, called from RunInstances.go) merged
+// (domains/ec2/launchtemplate/expand.go, called from RunInstances.go) merged
 // onto the request the gateway actually dispatched.
 func captureLaunchTemplateNodeInput(t *testing.T, gw *Gateway, instanceType, nodeID string) <-chan *ec2.RunInstancesInput {
 	t.Helper()

@@ -13,10 +13,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
@@ -46,13 +46,13 @@ const testPredastoreBucket = "integration-test-bucket"
 // OVN-backed are not wired — those need real provisioning DaemonLite
 // intentionally avoids.
 type DaemonLite struct {
-	Key             *handlers_ec2_key.KeyServiceImpl
+	Key             *ec2key.KeyServiceImpl
 	Tags            *handlers_ec2_tags.TagsServiceImpl
 	VPC             *handlers_ec2_vpc.VPCServiceImpl
 	RouteTable      *handlers_ec2_routetable.RouteTableServiceImpl
 	IGW             *handlers_ec2_igw.IGWServiceImpl
 	EIGW            *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
-	AccountSettings *handlers_ec2_account.AccountSettingsServiceImpl
+	AccountSettings *ec2account.AccountSettingsServiceImpl
 
 	// MemStore backs Key and Tags — exposed so a test can seed or inspect
 	// stored objects directly without going through NATS.
@@ -109,7 +109,7 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 		Predastore: config.PredastoreConfig{Bucket: testPredastoreBucket},
 	}
 
-	keySvc := handlers_ec2_key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
+	keySvc := ec2key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
 
 	tagsJS, err := jetstream.New(nc)
 	require.NoError(t, err, "jetstream handle for the tag store")
@@ -129,7 +129,7 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct EIGW service")
 
-	acctSettingsSvc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), cfg, nc)
+	acctSettingsSvc, err := ec2account.NewAccountSettingsServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct account settings service")
 
 	dl := &DaemonLite{

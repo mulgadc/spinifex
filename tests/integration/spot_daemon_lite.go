@@ -5,11 +5,11 @@ package integration
 import (
 	"testing"
 
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/stretchr/testify/require"
 )
 
-// StartSpotDaemonLite subscribes a real handlers_ec2_spotinstance.SpotInstanceServiceImpl —
+// StartSpotDaemonLite subscribes a real ec2spotinstance.SpotInstanceServiceImpl —
 // the same production code a live daemon runs (daemon/daemon_handlers_spotinstance.go) — to
 // the ec2.PutSpotInstanceRequests/DescribeSpotInstanceRequests/CancelSpotInstanceRequests
 // subjects the gateway's NATSSpotInstanceService client calls, so RequestSpotInstances /
@@ -22,10 +22,10 @@ import (
 // carve-out for instance lifecycle. The returned service exposes CloseForInstance directly so
 // a test can invoke it the same way the teardown cleaner would, without standing up VM
 // lifecycle machinery.
-func StartSpotDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_spotinstance.SpotInstanceServiceImpl {
+func StartSpotDaemonLite(t *testing.T, gw *Gateway) *ec2spotinstance.SpotInstanceServiceImpl {
 	t.Helper()
 
-	svc, err := handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(t.Context(), nil, gw.NATSConn)
+	svc, err := ec2spotinstance.NewSpotInstanceServiceImplWithNATS(t.Context(), nil, gw.NATSConn)
 	require.NoError(t, err, "construct spot instance service")
 
 	subscribeServiceMethods(t, gw.NATSConn, "ec2", svc)

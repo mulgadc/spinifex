@@ -3,7 +3,7 @@ package gateway_ec2_spotinstance
 import (
 	"context"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -13,7 +13,7 @@ import (
 func DescribeSpotInstanceRequests(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeSpotInstanceRequestsOutput, error) {
 	var output ec2.DescribeSpotInstanceRequestsOutput
 
-	svc := handlers_ec2_spotinstance.NewNATSSpotInstanceService(natsConn)
+	svc := ec2spotinstance.NewNATSSpotInstanceService(natsConn)
 	result, err := svc.DescribeSpotInstanceRequests(ctx, input, accountID)
 	if err != nil {
 		return output, err

@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	"github.com/nats-io/nats.go"
 )
 
@@ -28,13 +28,13 @@ const haControlPlaneCount = 3
 type controlPlanePlacer interface {
 	CreatePlacementGroup(context.Context, *ec2.CreatePlacementGroupInput, string) (*ec2.CreatePlacementGroupOutput, error)
 	DeletePlacementGroup(context.Context, *ec2.DeletePlacementGroupInput, string) (*ec2.DeletePlacementGroupOutput, error)
-	ReserveSpreadNodes(context.Context, *handlers_ec2_placementgroup.ReserveSpreadNodesInput, string) (*handlers_ec2_placementgroup.ReserveSpreadNodesOutput, error)
-	ReleaseSpreadNodes(context.Context, *handlers_ec2_placementgroup.ReleaseSpreadNodesInput, string) (*handlers_ec2_placementgroup.ReleaseSpreadNodesOutput, error)
-	FinalizeSpreadInstances(context.Context, *handlers_ec2_placementgroup.FinalizeSpreadInstancesInput, string) (*handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput, error)
-	RemoveInstance(context.Context, *handlers_ec2_placementgroup.RemoveInstanceInput, string) (*handlers_ec2_placementgroup.RemoveInstanceOutput, error)
+	ReserveSpreadNodes(context.Context, *ec2placementgroup.ReserveSpreadNodesInput, string) (*ec2placementgroup.ReserveSpreadNodesOutput, error)
+	ReleaseSpreadNodes(context.Context, *ec2placementgroup.ReleaseSpreadNodesInput, string) (*ec2placementgroup.ReleaseSpreadNodesOutput, error)
+	FinalizeSpreadInstances(context.Context, *ec2placementgroup.FinalizeSpreadInstancesInput, string) (*ec2placementgroup.FinalizeSpreadInstancesOutput, error)
+	RemoveInstance(context.Context, *ec2placementgroup.RemoveInstanceInput, string) (*ec2placementgroup.RemoveInstanceOutput, error)
 }
 
-var _ controlPlanePlacer = (handlers_ec2_placementgroup.PlacementGroupService)(nil)
+var _ controlPlanePlacer = (ec2placementgroup.PlacementGroupService)(nil)
 
 // HostScheduler answers capacity + placement fan-out questions for HA CP placement.
 type HostScheduler interface {
@@ -68,7 +68,7 @@ func (s *EKSServiceImpl) placeControlPlane(ctx context.Context, accountID, clust
 		return nil, "", err
 	}
 
-	reserve, err := s.deps.PlacementGroup.ReserveSpreadNodes(ctx, &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
+	reserve, err := s.deps.PlacementGroup.ReserveSpreadNodes(ctx, &ec2placementgroup.ReserveSpreadNodesInput{
 		GroupName:     groupName,
 		EligibleNodes: hosts,
 		MinCount:      haControlPlaneCount,
@@ -116,7 +116,7 @@ func (s *EKSServiceImpl) placeControlPlane(ctx context.Context, accountID, clust
 	for _, n := range launched {
 		nodeInstances[n.NodeID] = []string{n.InstanceID}
 	}
-	if _, err := s.deps.PlacementGroup.FinalizeSpreadInstances(ctx, &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
+	if _, err := s.deps.PlacementGroup.FinalizeSpreadInstances(ctx, &ec2placementgroup.FinalizeSpreadInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, pgAccount); err != nil {
@@ -361,7 +361,7 @@ func (s *EKSServiceImpl) rollbackControlPlaneSpread(ctx context.Context, account
 			slog.WarnContext(ctx, "rollbackControlPlaneSpread: terminate failed", "instanceId", n.InstanceID, "err", err)
 		}
 	}
-	if _, err := s.deps.PlacementGroup.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+	if _, err := s.deps.PlacementGroup.ReleaseSpreadNodes(ctx, &ec2placementgroup.ReleaseSpreadNodesInput{
 		GroupName: groupName,
 		Nodes:     reserved,
 	}, pgAccount); err != nil {
@@ -405,7 +405,7 @@ func (s *EKSServiceImpl) teardownSpreadGroup(ctx context.Context, meta *ClusterM
 		if cp.NodeID == "" || cp.InstanceID == "" {
 			continue
 		}
-		if _, err := s.deps.PlacementGroup.RemoveInstance(ctx, &handlers_ec2_placementgroup.RemoveInstanceInput{
+		if _, err := s.deps.PlacementGroup.RemoveInstance(ctx, &ec2placementgroup.RemoveInstanceInput{
 			GroupName:  meta.ControlPlaneSpreadGroup,
 			NodeName:   cp.NodeID,
 			InstanceID: cp.InstanceID,

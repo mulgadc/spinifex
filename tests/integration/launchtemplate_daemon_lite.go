@@ -6,12 +6,12 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	"github.com/stretchr/testify/require"
 )
 
 // StartLaunchTemplateDaemonLite subscribes a real
-// handlers_ec2_launchtemplate.LaunchTemplateServiceImpl — the same production
+// ec2launchtemplate.LaunchTemplateServiceImpl — the same production
 // code a live daemon runs (daemon/daemon_handlers_launchtemplate.go) — to
 // every ec2.*LaunchTemplate* subject the gateway's NATSLaunchTemplateService
 // client calls (gateway/ec2/launchtemplate/*.go, RunInstances.go's
@@ -23,11 +23,11 @@ import (
 // Kept separate from StartDaemonLite (rather than folded into it) following
 // StartVolumeDaemonLite's precedent: only a test that actually exercises
 // launch templates should pay for wiring this service.
-func StartLaunchTemplateDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_launchtemplate.LaunchTemplateServiceImpl {
+func StartLaunchTemplateDaemonLite(t *testing.T, gw *Gateway) *ec2launchtemplate.LaunchTemplateServiceImpl {
 	t.Helper()
 
 	cfg := &config.Config{AZ: testAZ}
-	svc, err := handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(t.Context(), cfg, gw.NATSConn)
+	svc, err := ec2launchtemplate.NewLaunchTemplateServiceImplWithNATS(t.Context(), cfg, gw.NATSConn)
 	require.NoError(t, err, "construct launch template service")
 
 	subscribeServiceMethods(t, gw.NATSConn, "ec2", svc)

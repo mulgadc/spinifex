@@ -16,12 +16,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
@@ -37,7 +37,7 @@ var _ handlers_ec2_instance.InstanceTagWriter = (*TagsServiceImpl)(nil)
 var _ handlers_ec2_vpc.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // Ensure TagsServiceImpl can both project and clear key-pair record tags.
-var _ handlers_ec2_key.CentralTagStore = (*TagsServiceImpl)(nil)
+var _ ec2key.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
 // per resource, scoped by account in the key.

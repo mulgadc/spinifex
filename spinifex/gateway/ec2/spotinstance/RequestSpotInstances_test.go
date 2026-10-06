@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -203,7 +203,7 @@ func TestBuildSpotRequests_MapsInstancesAndDefaults(t *testing.T) {
 	require.Len(t, requests, 2)
 	for _, req := range requests {
 		assert.Equal(t, ec2.SpotInstanceStateActive, aws.StringValue(req.State))
-		assert.Equal(t, handlers_ec2_spotinstance.SpotStatusCodeFulfilled, aws.StringValue(req.Status.Code))
+		assert.Equal(t, ec2spotinstance.SpotStatusCodeFulfilled, aws.StringValue(req.Status.Code))
 		assert.Equal(t, ec2.SpotInstanceTypeOneTime, aws.StringValue(req.Type), "Type defaults to one-time")
 		assert.Equal(t, ec2.RIProductDescriptionLinuxUnix, aws.StringValue(req.ProductDescription))
 		assert.Equal(t, "ap-southeast-2a", aws.StringValue(req.LaunchedAvailabilityZone))

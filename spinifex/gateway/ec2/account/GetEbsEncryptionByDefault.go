@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	"github.com/nats-io/nats.go"
 )
 
@@ -24,7 +24,7 @@ func GetEbsEncryptionByDefault(ctx context.Context, input *ec2.GetEbsEncryptionB
 		return output, err
 	}
 
-	svc := handlers_ec2_account.NewNATSAccountSettingsService(natsConn)
+	svc := ec2account.NewNATSAccountSettingsService(natsConn)
 	result, err := svc.GetEbsEncryptionByDefault(ctx, input, accountID)
 	if err != nil {
 		return output, err

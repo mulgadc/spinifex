@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
@@ -118,7 +118,7 @@ func (p *NATSPublicKeyLookup) GetPublicKey(ctx context.Context, accountID, keyNa
 	if v, ok := p.cache.get(key); ok {
 		return v, nil
 	}
-	out, err := natsmsg.NATSRequest[handlers_ec2_key.GetPublicKeyResponse](ctx, p.nc, "imds.ec2.get_public_key", handlers_ec2_key.GetPublicKeyRequest{
+	out, err := natsmsg.NATSRequest[ec2key.GetPublicKeyResponse](ctx, p.nc, "imds.ec2.get_public_key", ec2key.GetPublicKeyRequest{
 		AccountID: accountID,
 		KeyName:   keyName,
 	}, imdsRPCTimeout, accountID)

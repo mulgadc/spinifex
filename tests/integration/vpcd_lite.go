@@ -56,7 +56,7 @@ func StartVPCDLite(t *testing.T, gw *Gateway) *VPCDLite {
 }
 
 // nbPollInterval/nbPollTimeout bound the wait in awaitNB. Topology events are
-// fire-and-forget (utils.PublishEvent), so there is no reply to synchronise
+// fire-and-forget (natsmsg.PublishEvent), so there is no reply to synchronise
 // on: the only honest assertion is to poll until the row appears. The timeout
 // is generous relative to an in-process OVSDB round-trip, since it is only
 // ever paid in full by a genuine failure.

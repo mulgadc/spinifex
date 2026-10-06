@@ -3,6 +3,7 @@ package gateway_ec2_capacityreservation
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,7 +87,7 @@ func TestValidateCreateCapacityReservationInput_Nil(t *testing.T) {
 
 func TestCreateCapacityReservation_NilNATS(t *testing.T) {
 	_, err := CreateCapacityReservation(context.Background(), validCreateInput(), nil, 1, testAccountID)
-	assert.ErrorIs(t, err, utils.ErrClusterUnavailable)
+	assert.ErrorIs(t, err, natsmsg.ErrClusterUnavailable)
 }
 
 // Create — census-driven paths
@@ -225,7 +225,7 @@ func TestDescribeCapacityReservations_InvalidFilter(t *testing.T) {
 
 func TestDescribeCapacityReservations_NilNATS(t *testing.T) {
 	_, err := DescribeCapacityReservations(context.Background(), &ec2.DescribeCapacityReservationsInput{}, nil, 1, testAccountID)
-	assert.ErrorIs(t, err, utils.ErrClusterUnavailable)
+	assert.ErrorIs(t, err, natsmsg.ErrClusterUnavailable)
 }
 
 // Describe merges reservations across nodes and applies filters to the union.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -79,7 +79,7 @@ func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamIns
 	}
 
 	subject := ec2v1.InstanceCommandSubject(*input.InstanceId)
-	assoc, err := utils.NATSRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
+	assoc, err := natsmsg.NATSRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
@@ -191,8 +191,8 @@ func broadcastForAssociation(ctx context.Context, natsConn *nats.Conn, subject s
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(ctx, natsConn, subject, jsonData,
-		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
+	frames, sum, err := natsmsg.Gather(ctx, natsConn, subject, jsonData,
+		natsmsg.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +223,8 @@ func broadcastDescribeAssociations(ctx context.Context, natsConn *nats.Conn, inp
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.IamProfileAssociation.describe", jsonData,
-		utils.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
+	frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.IamProfileAssociation.describe", jsonData,
+		natsmsg.GatherOpts{Timeout: fanOutTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -43,7 +43,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 	// The caller's account is a key segment, so it is needed before the read
 	// rather than after it.
-	callerAccountID := utils.AccountIDFromMsg(msg)
+	callerAccountID := natsmsg.AccountIDFromMsg(msg)
 
 	volMeta, err := d.volumeService.GetVolumeMetadata(callerAccountID, volumeID)
 	if err != nil {
@@ -206,19 +206,19 @@ func attachDetachErrorCode(err error) string {
 
 // handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests.
 func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
 	slog.DebugContext(ctx, "Received message", "subject", msg.Subject)
 	slog.DebugContext(ctx, "Message data", "data", string(msg.Data))
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	modifyVolumeInput := &ec2.ModifyVolumeInput{}
 	errResp := awserrors.UnmarshalJsonPayload(modifyVolumeInput, msg.Data)
 
 	if errResp != nil {
-		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
+		natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		if err := msg.Respond(errResp); err != nil {
 			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
@@ -232,7 +232,7 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 
 	if err != nil {
 		slog.ErrorContext(ctx, "handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		respondWithServiceError(d.node, msg, err)
 		return outcomeError
 	}

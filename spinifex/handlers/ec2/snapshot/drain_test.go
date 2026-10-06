@@ -3,6 +3,7 @@ package handlers_ec2_snapshot
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +19,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,7 +110,7 @@ func awaitDrainCommand(t *testing.T, got chan *nats.Msg) ec2v1.EC2InstanceComman
 	case msg := <-got:
 		var command ec2v1.EC2InstanceCommand
 		require.NoError(t, json.Unmarshal(msg.Data, &command))
-		assert.Equal(t, testAccountID, msg.Header.Get(utils.AccountIDHeader))
+		assert.Equal(t, testAccountID, msg.Header.Get(natsmsg.AccountIDHeader))
 		return command
 	case <-time.After(2 * time.Second):
 		t.Fatal("the node hosting the volume never received a drain command")

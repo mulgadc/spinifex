@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
 	"time"
@@ -479,7 +480,7 @@ func natgwMatchesFilters(record *NatGatewayRecord, filters map[string][]string) 
 // PublishAddEvent publishes a vpc.add-nat-gateway event for vpcd to create the SNAT rule.
 // Called by the route table service when CreateRoute targets a NAT GW.
 func (s *NatGatewayServiceImpl) PublishAddEvent(vpcId, natGatewayId, publicIp, subnetCidr string) {
-	utils.PublishEvent(s.natsConn, "vpc.add-nat-gateway", natGatewayEvent{
+	natsmsg.PublishEvent(s.natsConn, "vpc.add-nat-gateway", natGatewayEvent{
 		VpcId:        vpcId,
 		NatGatewayId: natGatewayId,
 		PublicIp:     publicIp,
@@ -489,7 +490,7 @@ func (s *NatGatewayServiceImpl) PublishAddEvent(vpcId, natGatewayId, publicIp, s
 
 // PublishDeleteEvent publishes a vpc.delete-nat-gateway event for vpcd to remove the SNAT rule.
 func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp, subnetCidr string) {
-	utils.PublishEvent(s.natsConn, "vpc.delete-nat-gateway", natGatewayEvent{
+	natsmsg.PublishEvent(s.natsConn, "vpc.delete-nat-gateway", natGatewayEvent{
 		VpcId:        vpcId,
 		NatGatewayId: natGatewayId,
 		PublicIp:     publicIp,

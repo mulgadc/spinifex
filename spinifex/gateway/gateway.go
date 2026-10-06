@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
 	"log/slog"
 	"maps"
@@ -43,7 +44,6 @@ import (
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -1081,8 +1081,8 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 		return count
 	}
 
-	frames, _, err := utils.Gather(ctx, gw.NATSConn, clusterv1.NodesDiscoverSubject, []byte("{}"),
-		utils.GatherOpts{Timeout: 500 * time.Millisecond})
+	frames, _, err := natsmsg.Gather(ctx, gw.NATSConn, clusterv1.NodesDiscoverSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: 500 * time.Millisecond})
 	if err != nil {
 		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes

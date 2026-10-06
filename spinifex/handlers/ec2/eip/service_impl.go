@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
 	"time"
@@ -909,7 +910,7 @@ func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, en
 		utils.PublishNATEvent(s.natsConn, topic, vpcID, externalIP, logicalIP, portName, mac)
 		return
 	}
-	utils.PublishEvent(s.natsConn, topic, natEvent{
+	natsmsg.PublishEvent(s.natsConn, topic, natEvent{
 		VpcId:      vpcID,
 		ExternalIP: externalIP,
 		LogicalIP:  logicalIP,

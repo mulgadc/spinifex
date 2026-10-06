@@ -3,13 +3,13 @@ package ecr
 import (
 	"context"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -124,7 +124,7 @@ func TestNATSMetaStore_LifecyclePolicy(t *testing.T) {
 func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(context.Context, *I, string) (*O, error)) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		in := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)

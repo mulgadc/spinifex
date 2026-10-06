@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
 	"strconv"
@@ -1659,7 +1660,7 @@ func (s *VPCServiceImpl) getSubnet(ctx context.Context, accountID, subnetId stri
 // publishVPCEvent publishes a VPC lifecycle event to NATS for vpcd consumption.
 // This is fire-and-forget; errors are logged but do not fail the API response.
 func (s *VPCServiceImpl) publishVPCEvent(topic, vpcId, cidrBlock string, vni int64) {
-	utils.PublishEvent(s.natsConn, topic, struct {
+	natsmsg.PublishEvent(s.natsConn, topic, struct {
 		VpcId     string `json:"vpc_id"`
 		CidrBlock string `json:"cidr_block"`
 		VNI       int64  `json:"vni"`
@@ -1668,7 +1669,7 @@ func (s *VPCServiceImpl) publishVPCEvent(topic, vpcId, cidrBlock string, vni int
 
 // publishSubnetEvent publishes a subnet lifecycle event to NATS for vpcd consumption.
 func (s *VPCServiceImpl) publishSubnetEvent(topic, subnetId, vpcId, cidrBlock string) {
-	utils.PublishEvent(s.natsConn, topic, struct {
+	natsmsg.PublishEvent(s.natsConn, topic, struct {
 		SubnetId  string `json:"subnet_id"`
 		VpcId     string `json:"vpc_id"`
 		CidrBlock string `json:"cidr_block"`

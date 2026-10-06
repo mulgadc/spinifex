@@ -2,6 +2,7 @@ package awsapi
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 
 	"encoding/json"
 	"testing"
@@ -11,7 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,7 +23,7 @@ const policyTestAccount = "000000000000"
 func serveMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(context.Context, *I, string) (*O, error)) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		in := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)

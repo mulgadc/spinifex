@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -85,8 +85,8 @@ func startLiveInstance(ctx context.Context, natsConn *nats.Conn, instanceID, acc
 
 	reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
 		// No live owner subscribed: fall back to the stopped-KV start path.
@@ -121,8 +121,8 @@ func startStoppedInstance(ctx context.Context, natsConn *nats.Conn, instanceID, 
 
 	reqMsg := nats.NewMsg("ec2.start")
 	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
 		slog.ErrorContext(ctx, "StartInstances: Failed to send start request", "instance_id", instanceID, "err", err)

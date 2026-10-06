@@ -3,6 +3,7 @@ package gateway_ec2_vpc
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -10,7 +11,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,7 +101,7 @@ func TestAttachNetworkInterface_Success(t *testing.T) {
 	var received ec2v1.EC2InstanceCommand
 	var receivedAccount string
 	sub, err := nc.Subscribe("ec2.cmd.i-success", func(msg *nats.Msg) {
-		receivedAccount = msg.Header.Get(utils.AccountIDHeader)
+		receivedAccount = msg.Header.Get(natsmsg.AccountIDHeader)
 		_ = json.Unmarshal(msg.Data, &received)
 		data, _ := json.Marshal(ec2.AttachNetworkInterfaceOutput{
 			AttachmentId: aws.String("eni-attach-xyz"),
@@ -255,7 +255,7 @@ func TestDetachNetworkInterface_Success(t *testing.T) {
 	var received ec2v1.EC2InstanceCommand
 	var receivedAccount string
 	sub, err := nc.Subscribe("ec2.cmd.i-detach", func(msg *nats.Msg) {
-		receivedAccount = msg.Header.Get(utils.AccountIDHeader)
+		receivedAccount = msg.Header.Get(natsmsg.AccountIDHeader)
 		_ = json.Unmarshal(msg.Data, &received)
 		data, _ := json.Marshal(ec2.DetachNetworkInterfaceOutput{})
 		_ = msg.Respond(data)

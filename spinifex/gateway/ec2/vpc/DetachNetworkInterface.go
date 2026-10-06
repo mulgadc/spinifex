@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -62,8 +62,8 @@ func DetachNetworkInterface(ctx context.Context, input *ec2.DetachNetworkInterfa
 
 	reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
 		slog.ErrorContext(ctx, "DetachNetworkInterface: NATS request failed",
@@ -99,8 +99,8 @@ func resolveAttachmentInstance(ctx context.Context, natsConn *nats.Conn, account
 	}
 	reqMsg := nats.NewMsg("ec2.DescribeNetworkInterfaces")
 	reqMsg.Data = reqData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 10*time.Second)
 	if err != nil {
 		return "", errors.New(awserrors.ErrorServerInternal)

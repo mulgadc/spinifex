@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"os"
 	"strings"
@@ -42,7 +43,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -3926,7 +3926,7 @@ func TestRespondWithJSON_MarshalSuccess(t *testing.T) {
 	var got testOutput
 	require.NoError(t, json.Unmarshal(reply.Data, &got))
 	assert.Equal(t, want, got)
-	assert.Equal(t, "node-a", reply.Header.Get(utils.NodeIDHeader))
+	assert.Equal(t, "node-a", reply.Header.Get(natsmsg.NodeIDHeader))
 }
 
 func TestRespondWithJSON_MarshalFailureReturnsServerInternal(t *testing.T) {

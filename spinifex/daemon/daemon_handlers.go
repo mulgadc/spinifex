@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"maps"
 	"net"
@@ -23,7 +24,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -56,7 +56,7 @@ func respondNATSMsg(nodeID string, msg *nats.Msg, data []byte) {
 	reply := nats.NewMsg("")
 	reply.Data = data
 	if nodeID != "" {
-		reply.Header.Set(utils.NodeIDHeader, nodeID)
+		reply.Header.Set(natsmsg.NodeIDHeader, nodeID)
 	}
 	if err := msg.RespondMsg(reply); err != nil {
 		slog.Error("Failed to respond to NATS request", "err", err)
@@ -73,7 +73,7 @@ func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
 // it for any error originating in a service call: the code alone collapses a
 // specific refusal ("only PRIVATE_CA certificates can be force-renewed") into
 // an opaque ServerInternal, leaving the reason visible only in the daemon log.
-// Mirrors utils.ServeNATSRequestCtx, which has always preserved the message.
+// Mirrors natsmsg.ServeNATSRequestCtx, which has always preserved the message.
 func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
 	_, message, _ := awserrors.ResolveErrorDetail(err)
 	payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
@@ -113,16 +113,16 @@ func respondWithJSON(nodeID string, msg *nats.Msg, data any) {
 // unmarshal-failure branch — so a fan-out can attribute this daemon's frame by identity.
 func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Context, *I, string) (*O, error)) natsHandler {
 	return func(msg *nats.Msg) string {
-		ctx, span := utils.StartConsumerSpan(msg)
+		ctx, span := natsmsg.StartConsumerSpan(msg)
 		defer span.End()
 
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		// Carried in ctx rather than the service signature so only the handlers
 		// that must deduplicate a retry have to look for it.
 		ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 		input := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
-			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
+			natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 			respondNATSMsg(nodeID, msg, errResp)
 			// A payload the daemon cannot parse is the caller's mistake, not a
 			// fault of its own.
@@ -134,7 +134,7 @@ func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Conte
 			// without a trace backend, so it is logged here too — at a level
 			// that says whether the daemon or its caller was at fault.
 			logHandlerError(ctx, "handleNATSRequest: service call failed", msg.Subject, err)
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			respondWithServiceError(nodeID, msg, err)
 			return outcomeForError(err)
 		}
@@ -149,21 +149,21 @@ func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Conte
 // caller.
 func handleNATSRequestWithPrincipal[I any, O any](nodeID string, serviceFn func(context.Context, *I, string, string) (*O, error)) natsHandler {
 	return func(msg *nats.Msg) string {
-		ctx, span := utils.StartConsumerSpan(msg)
+		ctx, span := natsmsg.StartConsumerSpan(msg)
 		defer span.End()
 
-		accountID := utils.AccountIDFromMsg(msg)
-		principalARN := utils.PrincipalARNFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
+		principalARN := natsmsg.PrincipalARNFromMsg(msg)
 		input := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
-			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
+			natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 			respondNATSMsg(nodeID, msg, errResp)
 			return outcomeClientError
 		}
 		output, err := serviceFn(ctx, input, accountID, principalARN)
 		if err != nil {
 			logHandlerError(ctx, "handleNATSRequestWithPrincipal: service call failed", msg.Subject, err)
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			respondWithServiceError(nodeID, msg, err)
 			return outcomeForError(err)
 		}
@@ -189,14 +189,14 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 // name and how it answered. A command that reaches no case is named rather than
 // dropped, so an attribute nothing handles is visible in the metric.
 func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
 	var command ec2v1.EC2InstanceCommand
 
 	if err := json.Unmarshal(msg.Data, &command); err != nil {
 		slog.ErrorContext(ctx, "Error unmarshaling EC2 instance command", "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
 		return "unknown", outcomeError
 	}
@@ -253,7 +253,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		err := d.instanceService.StartInstance(opCtx, instance, command)
 		endOpSpan(opSpan, err)
 		if err != nil {
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
@@ -265,7 +265,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		err := d.instanceService.RebootInstance(opCtx, instance, command)
 		endOpSpan(opSpan, err)
 		if err != nil {
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
@@ -281,7 +281,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		err := d.instanceService.StopOrTerminateInstance(opCtx, instance, command)
 		endOpSpan(opSpan, err)
 		if err != nil {
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {

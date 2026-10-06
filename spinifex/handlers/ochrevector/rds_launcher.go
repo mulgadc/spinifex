@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -100,7 +100,7 @@ func (l *rdsLauncher) create(ctx context.Context, identifier, masterUsername, ma
 		MasterUsername:       aws.String(masterUsername),
 		MasterUserPassword:   aws.String(masterPassword),
 	}
-	_, err := utils.NATSRequest[rds.CreateDBInstanceOutput](ctx, l.nc, rdsCreateSubject, input, rdsCreateTimeout, awsidentifiers.GlobalAccountID)
+	_, err := natsmsg.NATSRequest[rds.CreateDBInstanceOutput](ctx, l.nc, rdsCreateSubject, input, rdsCreateTimeout, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		if strings.Contains(err.Error(), awserrors.ErrorDBInstanceAlreadyExists) {
 			return nil
@@ -122,7 +122,7 @@ func (l *rdsLauncher) Delete(ctx context.Context, identifier string) error {
 		DBInstanceIdentifier: aws.String(identifier),
 		SkipFinalSnapshot:    aws.Bool(true),
 	}
-	_, err := utils.NATSRequest[rds.DeleteDBInstanceOutput](ctx, l.nc, rdsDeleteSubject, input, rdsDeleteTimeout, awsidentifiers.GlobalAccountID)
+	_, err := natsmsg.NATSRequest[rds.DeleteDBInstanceOutput](ctx, l.nc, rdsDeleteSubject, input, rdsDeleteTimeout, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		if strings.Contains(err.Error(), awserrors.ErrorDBInstanceNotFound) {
 			return nil
@@ -136,7 +136,7 @@ func (l *rdsLauncher) Delete(ctx context.Context, identifier string) error {
 // reports StatusAvailable with a resolved endpoint, or ctx is done.
 func (l *rdsLauncher) pollUntilAvailable(ctx context.Context, identifier string) (string, int, error) {
 	for {
-		out, err := utils.NATSRequest[rds.DescribeDBInstancesOutput](ctx, l.nc, rdsDescribeSubject,
+		out, err := natsmsg.NATSRequest[rds.DescribeDBInstancesOutput](ctx, l.nc, rdsDescribeSubject,
 			&rds.DescribeDBInstancesInput{DBInstanceIdentifier: aws.String(identifier)}, rdsDescribeTimeout, awsidentifiers.GlobalAccountID)
 		if err != nil {
 			return "", 0, fmt.Errorf("ochrevector: describe appliance db instance %s: %w", identifier, err)

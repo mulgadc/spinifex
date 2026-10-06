@@ -10,6 +10,7 @@ package qmpcollector
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"os"
@@ -18,7 +19,6 @@ import (
 	"time"
 
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 var serviceName = "qmp-collector"
@@ -87,7 +87,7 @@ func launchService(cfg *Config) error {
 		cfg.DiscoverInterval = 15 * time.Second
 	}
 
-	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
+	nc, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		return fmt.Errorf("connect NATS: %w", err)
 	}

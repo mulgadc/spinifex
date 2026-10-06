@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -80,7 +80,7 @@ func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName strin
 
 	msg := nats.NewMsg(subject)
 	msg.Data = req.Payload
-	utils.InjectTraceContext(ctx, msg.Header)
+	natsmsg.InjectTraceContext(ctx, msg.Header)
 	if err := natsConn.PublishMsg(msg); err != nil {
 		slog.ErrorContext(ctx, "PublishInternal: NATS publish failed", "subject", subject, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

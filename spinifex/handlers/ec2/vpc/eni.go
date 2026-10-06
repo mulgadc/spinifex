@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -1166,7 +1167,7 @@ type NATEvent struct {
 
 // publishNATEvent publishes a NAT lifecycle event (vpc.add-nat or vpc.delete-nat) to NATS.
 func (s *VPCServiceImpl) publishNATEvent(topic, vpcId, externalIP, logicalIP, portName, mac string) {
-	utils.PublishEvent(s.natsConn, topic, NATEvent{
+	natsmsg.PublishEvent(s.natsConn, topic, NATEvent{
 		VpcId: vpcId, ExternalIP: externalIP, LogicalIP: logicalIP, PortName: portName, MAC: mac,
 	})
 }

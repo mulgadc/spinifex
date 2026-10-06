@@ -3,10 +3,10 @@ package handlers_eks
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -116,7 +116,7 @@ func ResolveTokenReview(ctx context.Context, nc *nats.Conn, accountID, clusterNa
 	}
 
 	verify := func(presignedURL string) (*TokenVerifyResponse, error) {
-		return utils.NATSRequest[TokenVerifyResponse](
+		return natsmsg.NATSRequest[TokenVerifyResponse](
 			ctx, nc, TokenVerifySubject,
 			TokenVerifyRequest{PresignedURL: presignedURL, ClusterName: clusterName},
 			verifyTimeout, "")

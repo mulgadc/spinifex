@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -20,7 +21,6 @@ import (
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -253,7 +253,7 @@ func daemonHandlerShape(fn reflect.Type) (withPrincipal, ok bool) {
 }
 
 func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool) {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 	ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 
@@ -262,13 +262,13 @@ func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool)
 		respond(msg, errResp)
 		return
 	}
-	args := []reflect.Value{reflect.ValueOf(ctx), input, reflect.ValueOf(utils.AccountIDFromMsg(msg))}
+	args := []reflect.Value{reflect.ValueOf(ctx), input, reflect.ValueOf(natsmsg.AccountIDFromMsg(msg))}
 	if withPrincipal {
-		args = append(args, reflect.ValueOf(utils.PrincipalARNFromMsg(msg)))
+		args = append(args, reflect.ValueOf(natsmsg.PrincipalARNFromMsg(msg)))
 	}
 	results := handler.Call(args)
 	if err, _ := results[1].Interface().(error); err != nil {
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		_, message, _ := awserrors.ResolveErrorDetail(err)
 		respond(msg, awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
 		return

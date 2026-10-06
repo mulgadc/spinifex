@@ -2,11 +2,11 @@ package daemon
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +39,7 @@ func withRecordedSpans(t *testing.T) *tracetest.SpanRecorder {
 
 // TestEbsRequestWithTrace_HeaderCarriesTraceparent pins the minimum bar: the
 // outbound ebs.mount NATS message carries a non-empty traceparent header, so
-// a consumer that calls utils.ExtractTraceContext has something to join.
+// a consumer that calls natsmsg.ExtractTraceContext has something to join.
 func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
 	withRecordedSpans(t)
 	daemon := createTestDaemon(t, sharedNATSURL)
@@ -64,7 +64,7 @@ func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
 }
 
 // TestEbsRequestWithTrace_ProducerConsumerLinked proves the actual parent/child
-// linkage: the consumer span opened via utils.StartConsumerSpan (the same
+// linkage: the consumer span opened via natsmsg.StartConsumerSpan (the same
 // helper viperblockd's ebs.mount/ebs.unmount handlers use) shares the producer
 // span's trace ID and names it as its parent, rather than rooting a new trace
 // — the exact gap this fix closes for the 81 mount + 81 unmount rooted spans
@@ -76,7 +76,7 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
 		// Mirrors viperblockd's ebs.unmount handler: open a consumer span
 		// joining whatever trace context the producer injected.
-		_, span := utils.StartConsumerSpan(msg)
+		_, span := natsmsg.StartConsumerSpan(msg)
 		defer span.End()
 
 		resp := viperblocklegacyv1.EBSUnMountResponse{}
@@ -95,7 +95,7 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 
 	// Both spans share the "NATS ebs.node-1.unmount" name; distinguish by kind
 	// (producer = client, consumer = server, as set by ebsRequestWithTrace and
-	// utils.StartConsumerSpan respectively).
+	// natsmsg.StartConsumerSpan respectively).
 	var producer, consumer sdktrace.ReadOnlySpan
 	for _, s := range spans {
 		switch s.SpanKind() {
@@ -170,7 +170,7 @@ func TestEbsRequestWithTrace_CarriesTheAccount(t *testing.T) {
 	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-acct"}}
 	require.NoError(t, adapter.Mount(t.Context(), instance))
 
-	assert.Equal(t, "000000000042", (<-headerCh).Get(utils.AccountIDHeader),
+	assert.Equal(t, "000000000042", (<-headerCh).Get(natsmsg.AccountIDHeader),
 		"viperblockd reads the account off the header, so it must be set")
 
 	var producer sdktrace.ReadOnlySpan
@@ -194,7 +194,7 @@ func TestEbsRequestWithTrace_OmitsAnAbsentAccount(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 	require.NoError(t, adapter.MountOne(t.Context(), "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
 
-	assert.Empty(t, (<-headerCh).Get(utils.AccountIDHeader),
+	assert.Empty(t, (<-headerCh).Get(natsmsg.AccountIDHeader),
 		"an unattributed request must not carry a blank account header")
 	for _, s := range sr.Ended() {
 		if s.SpanKind() == trace.SpanKindClient {
@@ -206,7 +206,7 @@ func TestEbsRequestWithTrace_OmitsAnAbsentAccount(t *testing.T) {
 // spanAccountOf returns the account attribute of span, or "".
 func spanAccountOf(span sdktrace.ReadOnlySpan) string {
 	for _, attr := range span.Attributes() {
-		if string(attr.Key) == utils.AttrAccountID {
+		if string(attr.Key) == natsmsg.AttrAccountID {
 			return attr.Value.AsString()
 		}
 	}

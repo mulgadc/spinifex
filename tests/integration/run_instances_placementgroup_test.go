@@ -36,7 +36,7 @@ func stubNodeCapacity(t *testing.T, gw *Gateway, node, instanceType string, avai
 }
 
 // withExpectedNodes overrides StartGateway's default ExpectedNodes: 1 pin,
-// which utils.Gather uses to stop fanning out once that many nodes reply
+// which natsmsg.Gather uses to stop fanning out once that many nodes reply
 // rather than always waiting the full 3s timeout.
 func withExpectedNodes(n int) Option {
 	return func(cfg *gateway.GatewayConfig) { cfg.ExpectedNodes = n }

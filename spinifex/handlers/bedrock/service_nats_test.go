@@ -3,13 +3,13 @@ package handlers_bedrock
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ import (
 // NATSEndpointService and the real daemon subscription put on the wire.
 func stubNATSHandler[I any, O any](serviceFn func(context.Context, *I, string) (*O, error)) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		input := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)

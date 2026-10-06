@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -58,8 +58,8 @@ func StopInstances(ctx context.Context, input *ec2.StopInstancesInput, natsConn 
 		subject := ec2v1.InstanceCommandSubject(instanceID)
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = jsonData
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		utils.InjectTraceContext(ctx, reqMsg.Header)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
 		if err != nil {
 			slog.ErrorContext(ctx, "StopInstances: Failed to send command", "instance_id", instanceID, "err", err)

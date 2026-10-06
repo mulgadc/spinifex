@@ -3,13 +3,13 @@ package awsgw
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +40,7 @@ func TestEKSTokenVerify_ResolvesPrincipal(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 
 	req := handlers_eks.TokenVerifyRequest{PresignedURL: "https://sts/?x=1", ClusterName: "alpha"}
-	resp, err := utils.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
+	resp, err := natsmsg.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
 		nc, handlers_eks.TokenVerifySubject, req, 2*time.Second, "")
 	require.NoError(t, err)
 
@@ -59,7 +59,7 @@ func TestEKSTokenVerify_RejectedTokenIsError(t *testing.T) {
 	defer func() { _ = sub.Unsubscribe() }()
 
 	req := handlers_eks.TokenVerifyRequest{PresignedURL: "https://sts/?x=1", ClusterName: "alpha"}
-	_, err = utils.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
+	_, err = natsmsg.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
 		nc, handlers_eks.TokenVerifySubject, req, 2*time.Second, "")
 	require.Error(t, err, "a verify failure must surface as a NATS error payload")
 }
@@ -73,7 +73,7 @@ func TestEKSTokenVerify_RejectsEmptyFields(t *testing.T) {
 
 	// Missing ClusterName — responder rejects before calling the verifier.
 	req := handlers_eks.TokenVerifyRequest{PresignedURL: "https://sts/?x=1"}
-	_, err = utils.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
+	_, err = natsmsg.NATSRequest[handlers_eks.TokenVerifyResponse](context.Background(),
 		nc, handlers_eks.TokenVerifySubject, req, 2*time.Second, "")
 	require.Error(t, err)
 	assert.Empty(t, fake.gotURL, "verifier must not run on an invalid request")

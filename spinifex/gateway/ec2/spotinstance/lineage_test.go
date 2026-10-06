@@ -3,6 +3,7 @@ package gateway_ec2_spotinstance
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,7 +40,7 @@ func TestStampSpotLineage_TargetsOwnerWithSIRAndAccount(t *testing.T) {
 
 	select {
 	case m := <-got:
-		assert.Equal(t, lineageTestAccount, m.Header.Get(utils.AccountIDHeader))
+		assert.Equal(t, lineageTestAccount, m.Header.Get(natsmsg.AccountIDHeader))
 		var cmd ec2v1.EC2InstanceCommand
 		require.NoError(t, json.Unmarshal(m.Data, &cmd))
 		assert.Equal(t, "i-owner", cmd.ID)

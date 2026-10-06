@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -116,7 +117,7 @@ func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeState
 
 // ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
 // ctx and injecting it into the message headers so viperblockd's consumer span
-// (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
+// (natsmsg.StartConsumerSpan) joins this trace instead of rooting a new one.
 //
 // accountID names the owner on the span and on the header viperblockd reads,
 // so block-storage work is attributable to a tenant. Empty is left off: a
@@ -128,7 +129,7 @@ func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject 
 		attribute.String("messaging.destination.name", subject),
 	}
 	if accountID != "" {
-		attrs = append(attrs, attribute.String(utils.AttrAccountID, accountID))
+		attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, accountID))
 	}
 
 	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "NATS "+subject,
@@ -144,9 +145,9 @@ func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject 
 
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = data
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	if accountID != "" {
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
 	}
 
 	msg, err = nc.RequestMsg(reqMsg, timeout)

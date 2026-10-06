@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -806,7 +806,7 @@ func TestEnrichInstanceProfileIDs_NoOpInputs(t *testing.T) {
 }
 
 // frameWithInstances builds one daemon reply carrying the given instance IDs.
-func frameWithInstances(t *testing.T, nodeID string, instanceIDs ...string) utils.Frame {
+func frameWithInstances(t *testing.T, nodeID string, instanceIDs ...string) natsmsg.Frame {
 	t.Helper()
 	instances := make([]*ec2.Instance, 0, len(instanceIDs))
 	for _, id := range instanceIDs {
@@ -816,7 +816,7 @@ func frameWithInstances(t *testing.T, nodeID string, instanceIDs ...string) util
 		Reservations: []*ec2.Reservation{{Instances: instances}},
 	})
 	require.NoError(t, err)
-	return utils.Frame{NodeID: nodeID, Data: data}
+	return natsmsg.Frame{NodeID: nodeID, Data: data}
 }
 
 // reservationsWith builds the bucket-query shape the settler observes.
@@ -832,11 +832,11 @@ func TestInstanceSettler_SettlesOnlyWhenEveryIDIsSeen(t *testing.T) {
 	t.Parallel()
 	settler := newInstanceSettler([]*string{aws.String("i-a"), aws.String("i-b")})
 
-	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-a")}
-	assert.False(t, settler.settled(frames, utils.Summary{}), "one of two ids found is not settled")
+	frames := []natsmsg.Frame{frameWithInstances(t, "node-1", "i-a")}
+	assert.False(t, settler.settled(frames, natsmsg.Summary{}), "one of two ids found is not settled")
 
 	frames = append(frames, frameWithInstances(t, "node-2", "i-b"))
-	assert.True(t, settler.settled(frames, utils.Summary{}), "both ids found, nothing left to prove")
+	assert.True(t, settler.settled(frames, natsmsg.Summary{}), "both ids found, nothing left to prove")
 }
 
 // An id that no node holds must never settle, so absence keeps paying the full
@@ -845,22 +845,22 @@ func TestInstanceSettler_AbsentIDNeverSettles(t *testing.T) {
 	t.Parallel()
 	settler := newInstanceSettler([]*string{aws.String("i-missing")})
 
-	frames := []utils.Frame{
+	frames := []natsmsg.Frame{
 		frameWithInstances(t, "node-1", "i-other"),
 		frameWithInstances(t, "node-2", "i-another"),
 	}
-	assert.False(t, settler.settled(frames, utils.Summary{}))
+	assert.False(t, settler.settled(frames, natsmsg.Summary{}))
 }
 
 func TestInstanceSettler_UndecodableFrameDoesNotSettle(t *testing.T) {
 	t.Parallel()
 	settler := newInstanceSettler([]*string{aws.String("i-a")})
 
-	frames := []utils.Frame{{NodeID: "node-1", Data: []byte("not json")}}
-	assert.False(t, settler.settled(frames, utils.Summary{}))
+	frames := []natsmsg.Frame{{NodeID: "node-1", Data: []byte("not json")}}
+	assert.False(t, settler.settled(frames, natsmsg.Summary{}))
 
 	frames = append(frames, frameWithInstances(t, "node-2", "i-a"))
-	assert.True(t, settler.settled(frames, utils.Summary{}), "a later decodable frame still settles")
+	assert.True(t, settler.settled(frames, natsmsg.Summary{}), "a later decodable frame still settles")
 }
 
 // A stopped or terminated instance never appears in a fan-out frame, so the
@@ -869,17 +869,17 @@ func TestInstanceSettler_BucketHitAloneSettles(t *testing.T) {
 	t.Parallel()
 	settler := newInstanceSettler([]*string{aws.String("i-stopped")})
 
-	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-running")}
-	assert.False(t, settler.settled(frames, utils.Summary{}))
+	frames := []natsmsg.Frame{frameWithInstances(t, "node-1", "i-running")}
+	assert.False(t, settler.settled(frames, natsmsg.Summary{}))
 
 	settler.observe(reservationsWith("i-stopped"))
-	assert.True(t, settler.settled(frames, utils.Summary{}), "the bucket answered, so nothing is outstanding")
+	assert.True(t, settler.settled(frames, natsmsg.Summary{}), "the bucket answered, so nothing is outstanding")
 }
 
 func TestInstanceSettler_NoIDsSettlesImmediately(t *testing.T) {
 	t.Parallel()
-	assert.True(t, newInstanceSettler(nil).settled(nil, utils.Summary{}))
-	assert.True(t, newInstanceSettler([]*string{nil}).settled(nil, utils.Summary{}))
+	assert.True(t, newInstanceSettler(nil).settled(nil, natsmsg.Summary{}))
+	assert.True(t, newInstanceSettler([]*string{nil}).settled(nil, natsmsg.Summary{}))
 }
 
 // observe races settled in production: the bucket goroutines write while Gather
@@ -887,7 +887,7 @@ func TestInstanceSettler_NoIDsSettlesImmediately(t *testing.T) {
 func TestInstanceSettler_ConcurrentObserveAndSettled(t *testing.T) {
 	t.Parallel()
 	settler := newInstanceSettler([]*string{aws.String("i-a"), aws.String("i-b")})
-	frames := []utils.Frame{frameWithInstances(t, "node-1", "i-a")}
+	frames := []natsmsg.Frame{frameWithInstances(t, "node-1", "i-a")}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -897,11 +897,11 @@ func TestInstanceSettler_ConcurrentObserveAndSettled(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		settler.settled(frames, utils.Summary{})
+		settler.settled(frames, natsmsg.Summary{})
 	}()
 	wg.Wait()
 
-	assert.True(t, settler.settled(frames, utils.Summary{}))
+	assert.True(t, settler.settled(frames, natsmsg.Summary{}))
 }
 
 func TestAcquireAbsenceProofSlot_ThrottlesPastTheLimitAndRecovers(t *testing.T) {

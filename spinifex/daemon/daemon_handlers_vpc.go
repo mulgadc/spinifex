@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
 // handleAccountCreated creates a default VPC for a newly created account.
 func (d *Daemon) handleAccountCreated(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
 	var evt struct {
@@ -23,7 +23,7 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) string {
 	}
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.ErrorContext(ctx, "Failed to unmarshal account creation event", "error", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		return outcomeError
 	}
 	if evt.AccountID == "" {
@@ -33,7 +33,7 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) string {
 	if _, err := d.vpcService.EnsureDefaultVPC(evt.AccountID); err != nil {
 		slog.ErrorContext(ctx, "Failed to create default VPC for new account",
 			"accountID", evt.AccountID, "error", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		// Skip IGW setup — the VPC is missing or half-built. The next daemon
 		// startup or handleAccountCreated event will retry.
 		return outcomeError
@@ -47,7 +47,7 @@ func (d *Daemon) handleAccountCreated(msg *nats.Msg) string {
 // EnsureDefaultVPC is idempotent, so this and the event handler racing on the
 // same account is harmless.
 func (d *Daemon) handleEnsureDefaultVpc(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
 	var req struct {
@@ -72,7 +72,7 @@ func (d *Daemon) handleEnsureDefaultVpc(msg *nats.Msg) string {
 
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		reply.Error = "malformed request"
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		return outcomeError
 	}
 	if req.AccountID == "" {
@@ -88,7 +88,7 @@ func (d *Daemon) handleEnsureDefaultVpc(msg *nats.Msg) string {
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to ensure default VPC on request",
 			"accountID", req.AccountID, "error", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		reply.Error = "could not create default VPC"
 		return outcomeError
 	}

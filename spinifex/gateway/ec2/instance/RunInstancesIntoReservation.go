@@ -3,11 +3,11 @@ package gateway_ec2_instance
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -18,7 +18,7 @@ import (
 // error (type mismatch, full) rides back as the daemon's awserror code.
 func runIntoReservation(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID, crID string) (*ec2.Reservation, error) {
 	subject := "ec2.RunInstances.cr." + crID
-	reservation, err := utils.NATSRequest[ec2.Reservation](ctx, natsConn, subject, input, 5*time.Minute, accountID)
+	reservation, err := natsmsg.NATSRequest[ec2.Reservation](ctx, natsConn, subject, input, 5*time.Minute, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
 			return nil, errors.New(awserrors.ErrorInvalidCapacityReservationIdNotFound)

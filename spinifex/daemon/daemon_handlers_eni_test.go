@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -153,7 +153,7 @@ func driveHandler(t *testing.T, nc *nats.Conn, subject string, handler func(*nat
 	defer func() { _ = sub.Unsubscribe() }()
 
 	reqMsg := nats.NewMsg(subject)
-	reqMsg.Header.Set(utils.AccountIDHeader, testAccountID)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
 	reply, err := nc.RequestMsg(reqMsg, 5*time.Second)
 	require.NoError(t, err)
 	return reply.Data

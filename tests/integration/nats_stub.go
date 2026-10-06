@@ -22,7 +22,7 @@ var (
 // StubSubject registers a responder for subject on the gateway's NATS
 // connection that replies to every request with payload, standing in for the
 // daemon-side subscriber a live spinifex node would run. It satisfies both
-// wire patterns the control plane uses: utils.Gather's scatter-gather (a
+// wire patterns the control plane uses: natsmsg.Gather's scatter-gather (a
 // fresh inbox per call, subject.Reply set) and a plain nc.RequestMsg — both
 // publish with Reply set to an inbox, so a direct subscription on subject
 // that calls msg.Respond answers either.
@@ -30,7 +30,7 @@ var (
 // To make a future test exercise a different control-plane path, call
 // StubSubject once per NATS subject the handler under test publishes to (grep
 // spinifex/gateway/**/*.go for the literal subject string passed to
-// utils.Gather or natsConn.RequestMsg), then use SetSubjectReply to vary the
+// natsmsg.Gather or natsConn.RequestMsg), then use SetSubjectReply to vary the
 // response per test case — e.g. an error envelope from awserrors.GenerateErrorPayload
 // for a validation-error test, or a populated output struct for a happy path.
 func (gw *Gateway) StubSubject(t *testing.T, subject string, payload []byte) {

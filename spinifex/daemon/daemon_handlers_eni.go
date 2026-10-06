@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -29,7 +29,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	eniID := command.AttachENIData.NetworkInterfaceID
 	deviceIndex := command.AttachENIData.DeviceIndex
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	if status := d.vmMgr.Status(instance); status != vm.StateRunning {
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorIncorrectInstanceState)
@@ -111,7 +111,7 @@ func (d *Daemon) handleDetachNetworkInterface(ctx context.Context, msg *nats.Msg
 
 	attachmentID := command.DetachENIData.AttachmentID
 	force := command.DetachENIData.Force
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	record, err := d.vpcService.FindENIByAttachment(accountID, attachmentID)
 	if err != nil {

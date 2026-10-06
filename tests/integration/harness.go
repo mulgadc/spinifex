@@ -112,7 +112,7 @@ type Option func(*gateway.GatewayConfig)
 // and authorize exactly as they would against a live environment — root
 // bypasses IAM policy evaluation, matching gateway.evaluatePrincipalPolicy.
 //
-// ExpectedNodes is pinned to 1: utils.Gather waits the FULL timeout on every
+// ExpectedNodes is pinned to 1: natsmsg.Gather waits the FULL timeout on every
 // call when ExpectedNodes is 0, which would make every stubbed NATS
 // round-trip pathologically slow.
 //

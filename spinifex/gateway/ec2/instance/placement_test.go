@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -522,7 +522,7 @@ func TestDistributeInstances_MultiNodeLaunchSharesOneReservationID(t *testing.T)
 	receivedIDs := make(chan string, 2)
 	makeHandler := func(node string) nats.MsgHandler {
 		return func(msg *nats.Msg) {
-			resID := msg.Header.Get(utils.ReservationIDHeader)
+			resID := msg.Header.Get(natsmsg.ReservationIDHeader)
 			receivedIDs <- resID
 			reservation := ec2.Reservation{
 				ReservationId: aws.String(resID),

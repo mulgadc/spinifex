@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -85,7 +85,7 @@ func CreateCapacityReservation(ctx context.Context, input *ec2.CreateCapacityRes
 	}
 
 	subject := fmt.Sprintf("ec2.CreateCapacityReservation.%s", node)
-	reservation, err := utils.NATSRequest[ec2.CapacityReservation](ctx, natsConn, subject, input, createReservationTimeout, accountID)
+	reservation, err := natsmsg.NATSRequest[ec2.CapacityReservation](ctx, natsConn, subject, input, createReservationTimeout, accountID)
 	if err != nil {
 		return output, err
 	}

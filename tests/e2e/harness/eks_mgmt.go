@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/viper"
 )
@@ -22,7 +22,7 @@ import (
 func ControlPlaneMgmtIP(t *testing.T, env *Env, accountID, clusterName string) string {
 	t.Helper()
 	host, token, ca := natsConn(t, env)
-	nc, err := utils.ConnectNATS(host, token, ca)
+	nc, err := natsmsg.ConnectNATS(host, token, ca)
 	if err != nil {
 		t.Fatalf("connect NATS %s: %v", host, err)
 	}

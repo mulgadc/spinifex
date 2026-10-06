@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -37,8 +37,8 @@ func CancelCapacityReservation(ctx context.Context, input *ec2.CancelCapacityRes
 		return output, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, _, err := utils.Gather(ctx, natsConn, "ec2.CancelCapacityReservation", payload,
-		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
+	frames, _, err := natsmsg.Gather(ctx, natsConn, "ec2.CancelCapacityReservation", payload,
+		natsmsg.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return output, err
 	}

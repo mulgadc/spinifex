@@ -2,9 +2,9 @@ package qmpcollector
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,7 +66,7 @@ func TestBridgeMirrorsTheAccountDimension(t *testing.T) {
 
 	assert.Equal(t, "000000000042", attrValue(attrs, cloudwatchAccountDimension),
 		"the CloudWatch dimension must survive unchanged")
-	assert.Equal(t, "000000000042", attrValue(attrs, utils.AttrAccountID),
+	assert.Equal(t, "000000000042", attrValue(attrs, natsmsg.AttrAccountID),
 		"the account must also appear under the field traces use")
 	assert.Equal(t, "node-1", attrValue(attrs, "node"))
 }
@@ -76,6 +76,6 @@ func TestBridgeMirrorsTheAccountDimension(t *testing.T) {
 func TestBridgeOmitsAnAbsentAccount(t *testing.T) {
 	attrs := handleOne(t, map[string]string{"instance_id": "i-test"})
 
-	assert.Empty(t, attrValue(attrs, utils.AttrAccountID),
+	assert.Empty(t, attrValue(attrs, natsmsg.AttrAccountID),
 		"an unattributed series must carry no account attribute")
 }

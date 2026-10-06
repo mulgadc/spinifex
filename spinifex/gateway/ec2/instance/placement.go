@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"math/rand/v2"
 	"sort"
@@ -17,7 +18,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 
 	"github.com/nats-io/nats.go"
 )
@@ -68,8 +68,8 @@ func distributeInstances(ctx context.Context, input *ec2.RunInstancesInput, nats
 // Early-exits once expectedNodes reply; on a degraded cluster it waits the full timeout
 // rather than placing on a partial view.
 func queryNodeCapacity(ctx context.Context, natsConn *nats.Conn, instanceType string, expectedNodes int, accountID string) ([]nodeAllocation, error) {
-	frames, _, err := utils.Gather(ctx, natsConn, clusterv1.NodeStatusSubject, []byte("{}"),
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
+	frames, _, err := natsmsg.Gather(ctx, natsConn, clusterv1.NodeStatusSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +180,11 @@ func launchOnNodes(ctx context.Context, allocations []nodeAllocation, input *ec2
 			nodeInput.MaxCount = aws.Int64(int64(a.Assigned))
 
 			topic := fmt.Sprintf("ec2.RunInstances.%s.%s", instanceType, a.NodeID)
-			var headers []utils.NATSHeader
+			var headers []natsmsg.NATSHeader
 			if reservationID != "" {
-				headers = append(headers, utils.NATSHeader{Key: utils.ReservationIDHeader, Value: reservationID})
+				headers = append(headers, natsmsg.NATSHeader{Key: natsmsg.ReservationIDHeader, Value: reservationID})
 			}
-			reservation, err := utils.NATSRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID, headers...)
+			reservation, err := natsmsg.NATSRequest[ec2.Reservation](ctx, natsConn, topic, &nodeInput, 5*time.Minute, accountID, headers...)
 			if err != nil {
 				results[idx] = nodeLaunchResult{NodeID: a.NodeID, Err: fmt.Errorf("launch on %s: %w", a.NodeID, err)}
 				return

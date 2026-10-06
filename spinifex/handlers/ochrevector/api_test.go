@@ -7,13 +7,13 @@ package handlers_ochrevector
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -308,7 +308,7 @@ func TestVectorService_Query_ShortChunkUntouched(t *testing.T) {
 // wire.
 func stubVectorNATSHandler[I any, O any](serviceFn func(context.Context, *I, string) (*O, error)) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		input := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)

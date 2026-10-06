@@ -31,7 +31,7 @@ The gateway (`spinifex/runtime/roles/awsgw/awsgw.go`) is the entry point:
 
 ```go
 // Connect to NATS (retries while the local broker comes up)
-natsConn, err := utils.ConnectNATSWithRetry(...)
+natsConn, err := natsmsg.ConnectNATSWithRetry(...)
 
 // Load IAM (master key + JetStream KV) and create the gateway
 gw := gateway.GatewayConfig{
@@ -97,12 +97,12 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 
 ### 4. NATS Messaging
 
-The gateway communicates with daemons via NATS request/response. Most calls go through `utils.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
+The gateway communicates with daemons via NATS request/response. Most calls go through `natsmsg.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
 ```go
 func (s *NATSInstanceService) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
     topic := fmt.Sprintf("ec2.RunInstances.%s", aws.StringValue(input.InstanceType))
-    return utils.NATSRequest[ec2.Reservation](s.natsConn, topic, input, 5*time.Minute, accountID)
+    return natsmsg.NATSRequest[ec2.Reservation](s.natsConn, topic, input, 5*time.Minute, accountID)
 }
 ```
 
@@ -214,7 +214,7 @@ func DescribeInstances(...) {
     pubMsg := nats.NewMsg("ec2.DescribeInstances")
     pubMsg.Reply = inbox
     pubMsg.Data = jsonData
-    pubMsg.Header.Set(utils.AccountIDHeader, accountID)
+    pubMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
     _ = natsConn.PublishMsg(pubMsg)
 
     // Collect responses, returning early once expectedNodes have replied

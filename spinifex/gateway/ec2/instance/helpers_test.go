@@ -1,12 +1,12 @@
 package gateway_ec2_instance
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -36,7 +36,7 @@ func subscribeAsNode(t *testing.T, nc *nats.Conn, subject, nodeID string, data [
 		reply := nats.NewMsg(msg.Reply)
 		reply.Data = data
 		if nodeID != "" {
-			reply.Header.Set(utils.NodeIDHeader, nodeID)
+			reply.Header.Set(natsmsg.NodeIDHeader, nodeID)
 		}
 		_ = msg.RespondMsg(reply)
 	})

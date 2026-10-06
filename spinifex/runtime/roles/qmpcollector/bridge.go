@@ -3,11 +3,11 @@ package qmpcollector
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -86,7 +86,7 @@ func (b *bridge) handle(msg *nats.Msg) {
 		// under the name traces use, so one account field spans both and guest
 		// metrics answer to the same filter as every other signal.
 		if account := s.Labels[cloudwatchAccountDimension]; account != "" {
-			attrs = append(attrs, attribute.String(utils.AttrAccountID, account))
+			attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, account))
 		}
 		b.observe(s.Name, labelKey(s.Name, s.Labels), bridgeEntry{
 			value:   s.Value,

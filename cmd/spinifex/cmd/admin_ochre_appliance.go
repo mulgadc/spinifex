@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"os"
 	"time"
 
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -61,7 +61,7 @@ var applianceTeardownFn = func(ctx context.Context, purgeMetadata bool) error {
 		return err
 	}
 	defer nc.Close()
-	_, err = utils.NATSRequest[handlers_ochrevector.TeardownApplianceResponse](ctx, nc,
+	_, err = natsmsg.NATSRequest[handlers_ochrevector.TeardownApplianceResponse](ctx, nc,
 		handlers_ochrevector.SubjectTeardownAppliance, &handlers_ochrevector.TeardownApplianceRequest{PurgeMetadata: purgeMetadata},
 		applianceTeardownTimeout, awsidentifiers.GlobalAccountID)
 	return err

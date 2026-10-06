@@ -2,9 +2,9 @@ package handlers_bedrock
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -30,17 +30,17 @@ func NewNATSEndpointService(nc *nats.Conn) *NATSEndpointService {
 }
 
 func (s *NATSEndpointService) Ensure(ctx context.Context, in *EnsureEndpointInput, accountID string) (*EnsureEndpointOutput, error) {
-	return utils.NATSRequest[EnsureEndpointOutput](ctx, s.nc, SubjectEnsureEndpoint, in, s.timeout, accountID)
+	return natsmsg.NATSRequest[EnsureEndpointOutput](ctx, s.nc, SubjectEnsureEndpoint, in, s.timeout, accountID)
 }
 
 func (s *NATSEndpointService) Describe(ctx context.Context, in *DescribeEndpointInput, accountID string) (*DescribeEndpointOutput, error) {
-	return utils.NATSRequest[DescribeEndpointOutput](ctx, s.nc, SubjectDescribeEndpoint, in, s.timeout, accountID)
+	return natsmsg.NATSRequest[DescribeEndpointOutput](ctx, s.nc, SubjectDescribeEndpoint, in, s.timeout, accountID)
 }
 
 func (s *NATSEndpointService) List(ctx context.Context, in *ListEndpointsInput, accountID string) (*ListEndpointsOutput, error) {
-	return utils.NATSRequest[ListEndpointsOutput](ctx, s.nc, SubjectListEndpoints, in, s.timeout, accountID)
+	return natsmsg.NATSRequest[ListEndpointsOutput](ctx, s.nc, SubjectListEndpoints, in, s.timeout, accountID)
 }
 
 func (s *NATSEndpointService) Delete(ctx context.Context, in *DeleteEndpointInput, accountID string) (*DeleteEndpointOutput, error) {
-	return utils.NATSRequest[DeleteEndpointOutput](ctx, s.nc, SubjectDeleteEndpoint, in, s.timeout, accountID)
+	return natsmsg.NATSRequest[DeleteEndpointOutput](ctx, s.nc, SubjectDeleteEndpoint, in, s.timeout, accountID)
 }

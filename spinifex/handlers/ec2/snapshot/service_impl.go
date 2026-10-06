@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
 	"path/filepath"
@@ -393,7 +394,7 @@ func drainOnHostNode(ctx context.Context, natsConn *nats.Conn, volumeID, instanc
 		DrainVolumeData: &ec2v1.DrainVolumeData{VolumeID: volumeID},
 	}
 
-	resp, err := utils.NATSRequest[ec2v1.DrainVolumeResponse](ctx, natsConn,
+	resp, err := natsmsg.NATSRequest[ec2v1.DrainVolumeResponse](ctx, natsConn,
 		ec2v1.InstanceCommandSubject(instanceID), command, drainRequestTimeout, accountID)
 	if err != nil {
 		// No subscriber at all: the instance runs nowhere in the cluster, so it

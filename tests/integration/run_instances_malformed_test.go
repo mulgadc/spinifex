@@ -14,7 +14,7 @@ import (
 // (gateway/ec2/instance/RunInstances.go) before any NATS hop. No StubSubject
 // is registered for spinifex.node.status or any per-node launch subject: if
 // the gateway ever dispatched this request instead of rejecting it up front,
-// the call would hang on utils.Gather's timeout rather than fail fast, making
+// the call would hang on natsmsg.Gather's timeout rather than fail fast, making
 // this test itself a tripwire for that regression.
 func TestRunInstances_MalformedAMIIDRejected(t *testing.T) {
 	gw := StartGateway(t)

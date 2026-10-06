@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"maps"
@@ -230,7 +231,7 @@ type Daemon struct {
 	deviceDeletedTimeout time.Duration
 
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
-	natsRetryOpts []utils.RetryOption
+	natsRetryOpts []natsmsg.RetryOption
 
 	// requireNATSTimeout caps the first connectNATS attempt under
 	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
@@ -1697,7 +1698,7 @@ func (d *Daemon) startCluster() error {
 		// the pre-DDIL fail-fast UX for dev/test/single-node deploys without
 		// flipping the prod default (which would re-introduce the SPOF that 1d
 		// removed).
-		if err := d.connectNATS(utils.WithMaxWait(d.requireNATSTimeout)); err != nil {
+		if err := d.connectNATS(natsmsg.WithMaxWait(d.requireNATSTimeout)); err != nil {
 			slog.Error("SPINIFEX_REQUIRE_NATS=1 set, NATS connect failed within 30s, aborting", "err", err, "timeout_ms", otelsetup.Millis(d.requireNATSTimeout))
 			d.exitFunc(1)
 			return fmt.Errorf("connect NATS (strict): %w", err)
@@ -2416,19 +2417,19 @@ func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests
 // override d.natsRetryOpts; extraOpts override any conflicting fields.
-func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
-	opts := append([]utils.RetryOption{
-		utils.WithMaxWait(0), // infinite retry; cancelled via d.ctx
-		utils.WithMaxRetryDelay(60 * time.Second),
-		utils.WithContext(d.ctx),
-		utils.WithDisconnectHandler(d.onNATSDisconnect),
-		utils.WithReconnectHandler(d.onNATSReconnect),
-		utils.WithAttemptErrHandler(func(_ error, _ int) {
+func (d *Daemon) connectNATS(extraOpts ...natsmsg.RetryOption) error {
+	opts := append([]natsmsg.RetryOption{
+		natsmsg.WithMaxWait(0), // infinite retry; cancelled via d.ctx
+		natsmsg.WithMaxRetryDelay(60 * time.Second),
+		natsmsg.WithContext(d.ctx),
+		natsmsg.WithDisconnectHandler(d.onNATSDisconnect),
+		natsmsg.WithReconnectHandler(d.onNATSReconnect),
+		natsmsg.WithAttemptErrHandler(func(_ error, _ int) {
 			d.natsRetryCount.Add(1)
 		}),
 	}, d.natsRetryOpts...)
 	opts = append(opts, extraOpts...)
-	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
+	nc, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
 	if err != nil {
 		return err
 	}

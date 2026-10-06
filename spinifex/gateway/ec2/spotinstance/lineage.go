@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -66,8 +66,8 @@ func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID
 	for attempt := range spotLineageRetries {
 		reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 		reqMsg.Data = jsonData
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		utils.InjectTraceContext(ctx, reqMsg.Header)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 
 		msg, err := natsConn.RequestMsg(reqMsg, spotLineageReqTimeout)
 		if err == nil {

@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"os"
 	"strconv"
 	"time"
 
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -190,7 +190,7 @@ var backupAccountFn = func(ctx context.Context, accountID string) (*handlers_och
 		return nil, err
 	}
 	defer nc.Close()
-	return utils.NATSRequest[handlers_ochrevector.BackupAccountResponse](ctx, nc,
+	return natsmsg.NATSRequest[handlers_ochrevector.BackupAccountResponse](ctx, nc,
 		handlers_ochrevector.SubjectBackupAccount, &handlers_ochrevector.BackupAccountRequest{AccountID: accountID},
 		vectorBackupRestoreTimeout, awsidentifiers.GlobalAccountID)
 }
@@ -203,7 +203,7 @@ var restoreAccountFn = func(ctx context.Context, accountID, objectKey string) er
 		return err
 	}
 	defer nc.Close()
-	_, err = utils.NATSRequest[handlers_ochrevector.RestoreAccountResponse](ctx, nc,
+	_, err = natsmsg.NATSRequest[handlers_ochrevector.RestoreAccountResponse](ctx, nc,
 		handlers_ochrevector.SubjectRestoreAccount, &handlers_ochrevector.RestoreAccountRequest{AccountID: accountID, ObjectKey: objectKey},
 		vectorBackupRestoreTimeout, awsidentifiers.GlobalAccountID)
 	return err

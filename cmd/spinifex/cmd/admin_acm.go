@@ -4,13 +4,13 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -86,7 +86,7 @@ func runCertForceRenew(cmd *cobra.Command, _ []string) {
 	defer cancel()
 
 	fmt.Printf("Force-renewing %s (account %s)...\n", certArn, accountID)
-	out, err := utils.NATSRequest[acmdomain.ForceRenewCertificateOutput](
+	out, err := natsmsg.NATSRequest[acmdomain.ForceRenewCertificateOutput](
 		ctx, nc, "acm.ForceRenewCertificate",
 		&acmdomain.ForceRenewCertificateInput{CertificateArn: certArn},
 		30*time.Second, accountID,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sort"
 	"strings"
@@ -15,7 +16,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -224,7 +224,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 	}
 
 	identity := len(nodeIDs) > 0
-	gatherOpts := utils.GatherOpts{Timeout: cfg.fanoutTimeout, AccountID: accountID}
+	gatherOpts := natsmsg.GatherOpts{Timeout: cfg.fanoutTimeout, AccountID: accountID}
 	if identity {
 		gatherOpts.ExpectedResponders = len(nodeIDs)
 		if len(input.InstanceIds) > 0 {
@@ -240,7 +240,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 			// Only the path that could assert absence collects past the point
 			// where every node has answered; a filters-only listing may still
 			// exit on the first frames.
-			gatherOpts.Mode = utils.CollectUntilDeadline
+			gatherOpts.Mode = natsmsg.CollectUntilDeadline
 			gatherOpts.ResponderGrace = describeResponderGrace
 			gatherOpts.Settled = settler.settled
 		}
@@ -248,7 +248,7 @@ func gatherInstances(ctx context.Context, input *ec2.DescribeInstancesInput, nat
 		gatherOpts.ExpectedNodes = expectedNodes
 	}
 
-	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, gatherOpts)
+	frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, gatherOpts)
 	if err != nil {
 		kvWg.Wait()
 		return nil, false, nil, err
@@ -365,7 +365,7 @@ func (s *instanceSettler) observe(reservations []*ec2.Reservation) {
 
 // settled is the Gather predicate. It decodes only the frames it has not seen
 // before, so a large fan-out does not re-decode its whole backlog per frame.
-func (s *instanceSettler) settled(frames []utils.Frame, _ utils.Summary) bool {
+func (s *instanceSettler) settled(frames []natsmsg.Frame, _ natsmsg.Summary) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for ; s.consumed < len(frames); s.consumed++ {
@@ -399,7 +399,7 @@ func (s *instanceSettler) forget(reservations []*ec2.Reservation) {
 // Completeness requires ValidResponders to cover nodeIDs and fails closed on
 // any ambiguity: a frame with no node ID, a node that answered as both a
 // success and an error, or a node whose repeated frames disagreed.
-func judgeIdentityCompleteness(ctx context.Context, frames []utils.Frame, sum utils.Summary, nodeIDs []string) (reservations []*ec2.Reservation, complete bool) {
+func judgeIdentityCompleteness(ctx context.Context, frames []natsmsg.Frame, sum natsmsg.Summary, nodeIDs []string) (reservations []*ec2.Reservation, complete bool) {
 	validResponders := map[string]bool{}
 	for _, frame := range frames {
 		var nodeOutput ec2.DescribeInstancesOutput
@@ -492,8 +492,8 @@ func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_
 func queryInstanceBucket(ctx context.Context, natsConn *nats.Conn, topic string, jsonData []byte, accountID string) (reservations []*ec2.Reservation, ok bool) {
 	reqMsg := nats.NewMsg(topic)
 	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstances: Failed to query instance bucket", "topic", topic, "err", err)

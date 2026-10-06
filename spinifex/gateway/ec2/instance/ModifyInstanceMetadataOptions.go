@@ -3,12 +3,12 @@ package gateway_ec2_instance
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -22,5 +22,5 @@ func ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanc
 	if !strings.HasPrefix(*input.InstanceId, "i-") {
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
 	}
-	return utils.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
+	return natsmsg.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
 }

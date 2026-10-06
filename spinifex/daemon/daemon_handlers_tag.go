@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
 	"sync"
@@ -12,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -208,7 +208,7 @@ func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *ec2v1
 
 	reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 	reqMsg.Data = body
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
 
 	msg, err := d.natsConn.RequestMsg(reqMsg, instanceOwnerCommandTimeout)
 	switch {

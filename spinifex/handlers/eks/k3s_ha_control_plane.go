@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sync"
 	"time"
@@ -16,7 +17,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -607,7 +607,7 @@ func (h *natsHostScheduler) fanout(ctx context.Context, subject string, handle f
 	msg := nats.NewMsg(subject)
 	msg.Reply = inbox
 	msg.Data = []byte("{}")
-	utils.InjectTraceContext(ctx, msg.Header)
+	natsmsg.InjectTraceContext(ctx, msg.Header)
 	if err := h.nc.PublishMsg(msg); err != nil {
 		slog.WarnContext(ctx, "hostScheduler: publish failed", "subject", subject, "err", err)
 		return

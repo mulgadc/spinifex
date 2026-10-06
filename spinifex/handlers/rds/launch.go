@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
 	"slices"
@@ -20,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -579,7 +579,7 @@ func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instan
 			Device:   device,
 		},
 	}
-	out, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,
+	out, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,
 		ec2v1.InstanceCommandSubject(instanceID), cmd, a.timeout, accountID)
 	if err != nil {
 		if !errors.Is(err, nats.ErrNoResponders) {
@@ -612,7 +612,7 @@ func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instan
 // shared stopped-instance lookup disambiguates those AWS errors for the caller.
 func (a *natsVolumeAttacher) isStoppedInstance(ctx context.Context, accountID, instanceID string) (bool, error) {
 	input := ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}}
-	out, err := utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, a.nc,
+	out, err := natsmsg.NATSRequest[ec2.DescribeInstancesOutput](ctx, a.nc,
 		"ec2.DescribeStoppedInstances", &input, 3*time.Second, accountID)
 	if err != nil {
 		return false, err

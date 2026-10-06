@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Predastore health verdicts, as reported under service_health.predastore in
@@ -339,5 +339,5 @@ func loadClusterTrustRoot(d *Daemon) (*x509.CertPool, error) {
 	if d.config == nil || d.config.NATS.CACert == "" {
 		return nil, fmt.Errorf("cluster CA not configured (nats.cacert)")
 	}
-	return utils.LoadCertPool(d.config.NATS.CACert)
+	return natsmsg.LoadCertPool(d.config.NATS.CACert)
 }

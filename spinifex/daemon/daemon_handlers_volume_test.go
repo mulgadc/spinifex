@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -357,7 +357,7 @@ func drainRequest(t *testing.T, daemon *Daemon, instanceID, volumeID string) *na
 func sendDrainCommand(daemon *Daemon, instanceID string, command []byte) (*nats.Msg, error) {
 	msg := nats.NewMsg("ec2.cmd." + instanceID)
 	msg.Data = command
-	msg.Header.Set(utils.AccountIDHeader, testAccountID)
+	msg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
 	return daemon.natsConn.RequestMsg(msg, 5*time.Second)
 }
 

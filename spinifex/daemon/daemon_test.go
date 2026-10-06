@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"math/big"
 	"net"
 	"net/http"
@@ -54,7 +55,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -3918,9 +3918,9 @@ func TestConnectNATS_RetriesOnFailure(t *testing.T) {
 	clusterCfg.Nodes["node-1"] = cfg
 	daemon, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
-	daemon.natsRetryOpts = []utils.RetryOption{
-		utils.WithMaxWait(500 * time.Millisecond),
-		utils.WithRetryDelay(50 * time.Millisecond),
+	daemon.natsRetryOpts = []natsmsg.RetryOption{
+		natsmsg.WithMaxWait(500 * time.Millisecond),
+		natsmsg.WithRetryDelay(50 * time.Millisecond),
 	}
 
 	start := time.Now()
@@ -4621,7 +4621,7 @@ func TestNodeIDNamespace_Agrees(t *testing.T) {
 	reply, err := daemon.natsConn.Request("test.nodediscover", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	assert.Equal(t, daemon.node, reply.Header.Get(utils.NodeIDHeader),
+	assert.Equal(t, daemon.node, reply.Header.Get(natsmsg.NodeIDHeader),
 		"the reply header must carry the same node ID as everything else")
 
 	var resp clusterv1.NodeDiscoverResponse

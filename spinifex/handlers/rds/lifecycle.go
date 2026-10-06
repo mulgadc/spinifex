@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"slices"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -431,7 +431,7 @@ func (c *natsInstanceCommander) RebootInstance(ctx context.Context, instanceID s
 // ownership check on the far side compares against that same account.
 func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, attrs ec2v1.EC2CommandAttributes) error {
 	cmd := ec2v1.EC2InstanceCommand{ID: instanceID, Attributes: attrs}
-	_, err := utils.NATSRequest[struct{}](ctx, c.nc, ec2v1.InstanceCommandSubject(instanceID), cmd, c.timeout, awsidentifiers.GlobalAccountID)
+	_, err := natsmsg.NATSRequest[struct{}](ctx, c.nc, ec2v1.InstanceCommandSubject(instanceID), cmd, c.timeout, awsidentifiers.GlobalAccountID)
 	if err == nil {
 		return nil
 	}
@@ -448,7 +448,7 @@ func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, att
 }
 
 func (c *natsInstanceCommander) StartStoppedInstance(ctx context.Context, instanceID string) error {
-	_, err := utils.NATSRequest[handlers_ec2_instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
+	_, err := natsmsg.NATSRequest[handlers_ec2_instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
 		handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
 	return err
 }

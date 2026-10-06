@@ -1,4 +1,4 @@
-package utils
+package natsmsg
 
 import (
 	"context"
@@ -13,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// natsTracerName keeps the instrumentation scope this code has always exported
+// under, so existing APM queries and dashboards keep matching its spans.
 const natsTracerName = "github.com/mulgadc/spinifex/spinifex/utils"
 
 var _ propagation.TextMapCarrier = (*natsHeaderCarrier)(nil)

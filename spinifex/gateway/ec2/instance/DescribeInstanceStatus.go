@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -35,8 +35,8 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 		return nil, fmt.Errorf("failed to marshal input: %w", err)
 	}
 
-	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceStatus", jsonData,
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedResponders: expectedNodes, AccountID: accountID})
+	frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.DescribeInstanceStatus", jsonData,
+		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedResponders: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}

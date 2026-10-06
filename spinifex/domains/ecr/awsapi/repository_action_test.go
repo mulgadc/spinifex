@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +38,7 @@ func newRepositoryActionTestConn(t *testing.T) *nats.Conn {
 func serveRepositoryActionMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(context.Context, *I, string) (*O, error)) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		in := new(I)
 		if errResp := awserrors.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)

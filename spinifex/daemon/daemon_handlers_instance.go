@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -14,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -51,7 +51,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
 		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
@@ -122,11 +122,11 @@ func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg,
 // preserves the original respond-then-launch timing — AWS gets a reservation
 // before the launch loop starts.
 func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 	slog.DebugContext(ctx, "Received message on subject", "subject", msg.Subject)
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 	if accountID == "" {
 		slog.Error("handleEC2RunInstances: missing account ID in NATS header")
 		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
@@ -167,7 +167,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	// A multi-node spread carries the reservation ID the gateway minted once
 	// for the whole call. reservation is the same pointer every instance
 	// holds, so this override reaches all of them.
-	if gatewayReservationID := utils.ReservationIDFromMsg(msg); gatewayReservationID != "" {
+	if gatewayReservationID := natsmsg.ReservationIDFromMsg(msg); gatewayReservationID != "" {
 		reservation.SetReservationId(gatewayReservationID)
 	}
 
@@ -296,7 +296,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 		targetTopic := fmt.Sprintf("ec2.start.%s", lastNode)
 		forwardMsg := nats.NewMsg(targetTopic)
 		forwardMsg.Data = msg.Data
-		forwardMsg.Header.Set(utils.AccountIDHeader, utils.AccountIDFromMsg(msg))
+		forwardMsg.Header.Set(natsmsg.AccountIDHeader, natsmsg.AccountIDFromMsg(msg))
 
 		slog.Info("ec2.start: forwarding to original node",
 			"instanceId", peek.InstanceID, "lastNode", lastNode)

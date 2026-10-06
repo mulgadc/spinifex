@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"maps"
 	"os"
@@ -15,7 +16,6 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -77,7 +77,7 @@ func loadConfigAndConnect() (*config.ClusterConfig, *nats.Conn, error) {
 	}
 
 	nodeConfig := cfg.Nodes[cfg.Node]
-	nc, err := utils.ConnectNATS(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
+	nc, err := natsmsg.ConnectNATS(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to connect to NATS: %w", err)
 	}

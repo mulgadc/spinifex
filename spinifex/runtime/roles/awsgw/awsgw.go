@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"maps"
@@ -44,7 +45,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
@@ -155,7 +155,7 @@ func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager) (
 func launchService(config *config.ClusterConfig) error {
 	nodeConfig := config.Nodes[config.Node]
 
-	natsConn, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
+	natsConn, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(nodeConfig.NATS.Host), nodeConfig.NATS.ACL.Token, nodeConfig.NATS.CACert)
 	if err != nil {
 		return err
 	}
@@ -165,7 +165,7 @@ func launchService(config *config.ClusterConfig) error {
 	// dials directly, across every host in the cluster.
 	var rootCAs *x509.CertPool
 	if nodeConfig.NATS.CACert != "" {
-		rootCAs, err = utils.LoadCertPool(nodeConfig.NATS.CACert)
+		rootCAs, err = natsmsg.LoadCertPool(nodeConfig.NATS.CACert)
 		if err != nil {
 			return fmt.Errorf("load cluster CA: %w", err)
 		}

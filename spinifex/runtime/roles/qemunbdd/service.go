@@ -3,6 +3,7 @@ package qemunbdd
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"os"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // serviceName roots this daemon's PID file: baseDir/qemunbd.pid.
@@ -59,7 +59,7 @@ func (svc *Service) Start() (int, error) {
 // serves ebs.provider.v1.* until SIGINT/SIGTERM, then unsubscribes. It blocks
 // for the life of the process.
 func launchService(cfg *Config) error {
-	nc, err := utils.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
+	nc, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		return fmt.Errorf("connect to NATS: %w", err)
 	}

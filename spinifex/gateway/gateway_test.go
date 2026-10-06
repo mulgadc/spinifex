@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,6 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1149,7 +1149,7 @@ func TestEC2Request_DescribeAccountAttributes_DefaultVPC(t *testing.T) {
 	sub, err := nc.Subscribe("ec2.DescribeVpcs", func(msg *nats.Msg) {
 		var in awsec2.DescribeVpcsInput
 		if err := json.Unmarshal(msg.Data, &in); err != nil || len(in.Filters) != 1 ||
-			aws.StringValue(in.Filters[0].Name) != "is-default" || msg.Header.Get(utils.AccountIDHeader) != "123456789012" {
+			aws.StringValue(in.Filters[0].Name) != "is-default" || msg.Header.Get(natsmsg.AccountIDHeader) != "123456789012" {
 			_ = msg.Respond([]byte(`{}`))
 			return
 		}

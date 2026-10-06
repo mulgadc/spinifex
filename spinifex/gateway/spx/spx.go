@@ -5,12 +5,12 @@ package spx
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"runtime"
 	"strings"
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -46,8 +46,8 @@ type GetNodesOutput struct {
 
 // GetNodes queries all daemon nodes via NATS fan-out and returns their status.
 func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
-	frames, _, err := utils.Gather(ctx, nc, clusterv1.NodeStatusSubject, []byte("{}"),
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
+	frames, _, err := natsmsg.Gather(ctx, nc, clusterv1.NodeStatusSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}
@@ -85,8 +85,8 @@ type GetVMsOutput struct {
 
 // GetVMs queries all daemon nodes via NATS fan-out and returns their VMs.
 func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
-	frames, _, err := utils.Gather(ctx, nc, clusterv1.NodeVMsSubject, []byte("{}"),
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
+	frames, _, err := natsmsg.Gather(ctx, nc, clusterv1.NodeVMsSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}

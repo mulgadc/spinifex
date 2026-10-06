@@ -3,13 +3,13 @@ package gateway_ec2_instance
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,7 +78,7 @@ func TestGetPasswordData_Success(t *testing.T) {
 	var gotAccountID string
 	sub, err := nc.Subscribe("ec2."+instanceID+".GetPasswordData", func(msg *nats.Msg) {
 		gotSubject = msg.Subject
-		gotAccountID = msg.Header.Get(utils.AccountIDHeader)
+		gotAccountID = msg.Header.Get(natsmsg.AccountIDHeader)
 
 		var receivedInput ec2.GetPasswordDataInput
 		require.NoError(t, json.Unmarshal(msg.Data, &receivedInput))

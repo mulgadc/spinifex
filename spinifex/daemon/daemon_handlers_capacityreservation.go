@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -17,7 +17,7 @@ import (
 // the per-instance carve-out from the local catalog, generate the id, and commit
 // under the fit re-check. A lost race returns InsufficientInstanceCapacity.
 func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 	input := new(ec2.CreateCapacityReservationInput)
 	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
@@ -84,7 +84,7 @@ func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 // node returns its own in-memory reservations for the account (possibly empty);
 // the gateway aggregates and applies id/filter scoping.
 func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) string {
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	out := &ec2.DescribeCapacityReservationsOutput{}
 	for _, rec := range d.resourceMgr.ListReservations(accountID) {
@@ -98,7 +98,7 @@ func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) string {
 // node owning the reservation releases it; every node acks with Return set so
 // the gateway can tell "cancelled" from "no node owns this id".
 func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) string {
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 	input := new(ec2.CancelCapacityReservationInput)
 	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {

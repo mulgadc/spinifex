@@ -3,12 +3,12 @@ package gateway_ec2_capacityreservation
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"slices"
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -33,8 +33,8 @@ func collectCensus(ctx context.Context, natsConn *nats.Conn, expectedNodes int, 
 		expectedNodes = 1
 	}
 
-	frames, _, err := utils.Gather(ctx, natsConn, clusterv1.NodeStatusSubject, []byte("{}"),
-		utils.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
+	frames, _, err := natsmsg.Gather(ctx, natsConn, clusterv1.NodeStatusSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: censusTimeout, ExpectedNodes: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}

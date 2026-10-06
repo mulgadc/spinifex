@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +52,7 @@ func requestHandler(t *testing.T, nc *nats.Conn, subject string, fn nats.MsgHand
 
 	msg := nats.NewMsg(subject)
 	msg.Data = body
-	msg.Header.Set(utils.AccountIDHeader, accountID)
+	msg.Header.Set(natsmsg.AccountIDHeader, accountID)
 	reply, err := nc.RequestMsg(msg, 5*time.Second)
 	require.NoError(t, err)
 	return reply

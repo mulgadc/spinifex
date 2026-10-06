@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"os"
@@ -15,7 +16,6 @@ import (
 	nsserver "github.com/mulgadc/northstar/pkg/server"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -104,7 +104,7 @@ func (svc *Service) subscribeReload() {
 		return
 	}
 	endpoint := netaddr.DialTarget(svc.Config.NatsHost)
-	nc, err := utils.ConnectNATS(endpoint, svc.Config.NatsToken, svc.Config.NatsCACert)
+	nc, err := natsmsg.ConnectNATS(endpoint, svc.Config.NatsToken, svc.Config.NatsCACert)
 	if err != nil {
 		slog.Warn("northstar: connect TLS NATS for zone reload", "endpoint", endpoint, "error", err)
 		return

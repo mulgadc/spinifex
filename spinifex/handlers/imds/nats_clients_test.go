@@ -3,6 +3,7 @@ package handlers_imds
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,7 +16,6 @@ import (
 	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +31,7 @@ func serveCounted[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 	var calls int32
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		atomic.AddInt32(&calls, 1)
-		utils.ServeNATSRequest(msg, fn)
+		natsmsg.ServeNATSRequest(msg, fn)
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })

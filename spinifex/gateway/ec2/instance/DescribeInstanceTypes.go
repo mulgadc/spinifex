@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sort"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	filterutil "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -30,7 +30,7 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 
 	// Only a request naming types can assert absence, so only it waits on
 	// every configured node by identity.
-	gatherOpts := utils.GatherOpts{Timeout: 3 * time.Second, AccountID: accountID}
+	gatherOpts := natsmsg.GatherOpts{Timeout: 3 * time.Second, AccountID: accountID}
 	proveAbsence := len(input.InstanceTypes) > 0 && len(nodeIDs) > 0
 	if proveAbsence {
 		gatherOpts.ExpectedResponders = len(nodeIDs)
@@ -38,7 +38,7 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 		gatherOpts.ExpectedNodes = expectedNodes
 	}
 
-	frames, sum, err := utils.Gather(ctx, natsConn, "ec2.DescribeInstanceTypes", jsonData, gatherOpts)
+	frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.DescribeInstanceTypes", jsonData, gatherOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func missingInstanceTypes(found []*ec2.InstanceTypeInfo, requested []*string) []
 
 // everyNodeAnswered reports whether each configured node sent a usable reply
 // and none sent an error, so a type absent from the aggregate is absent.
-func everyNodeAnswered(nodeIDs []string, answered map[string]bool, sum utils.Summary) bool {
+func everyNodeAnswered(nodeIDs []string, answered map[string]bool, sum natsmsg.Summary) bool {
 	for _, id := range nodeIDs {
 		if !answered[id] || sum.ErrorResponders[id] {
 			return false

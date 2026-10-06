@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"hash/fnv"
 	"log/slog"
 	"net/netip"
@@ -25,7 +26,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -677,7 +677,7 @@ func gcTopology(ctx context.Context, nc *nats.Conn, name, vpcID string) {
 	if nc == nil || vpcID == "" {
 		return
 	}
-	utils.PublishEvent(nc, "vpc.delete", struct {
+	natsmsg.PublishEvent(nc, "vpc.delete", struct {
 		VpcId     string `json:"vpc_id"`
 		CidrBlock string `json:"cidr_block"`
 		VNI       int64  `json:"vni"`

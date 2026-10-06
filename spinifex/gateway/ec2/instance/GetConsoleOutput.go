@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -39,8 +39,8 @@ func GetConsoleOutput(ctx context.Context, input *ec2.GetConsoleOutputInput, nat
 	topic := fmt.Sprintf("ec2.%s.GetConsoleOutput", *input.InstanceId)
 	reqMsg := nats.NewMsg(topic)
 	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
 	if err != nil {
 		// No daemon subscription or timeout: stopped/terminated/non-existent instances all surface as NotFound.

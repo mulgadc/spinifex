@@ -6,12 +6,12 @@ package accountteardown
 import (
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ import (
 func replyWith(t *testing.T, nc *nats.Conn, subject string, payload []byte, accounts *[]string) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		*accounts = append(*accounts, msg.Header.Get(utils.AccountIDHeader))
+		*accounts = append(*accounts, msg.Header.Get(natsmsg.AccountIDHeader))
 		require.NoError(t, msg.Respond(payload))
 	})
 	require.NoError(t, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,7 +15,6 @@ import (
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -161,7 +161,7 @@ func (p *poller) tick(ctx context.Context) {
 	if err != nil {
 		slog.WarnContext(ctx, "qmp-collector: collect failed, re-priming",
 			"instanceId", meta.InstanceID, "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		p.mu.Lock()
 		p.prev = nil
 		p.mu.Unlock()
@@ -183,12 +183,12 @@ func (p *poller) tick(ctx context.Context) {
 	data, err := json.Marshal(batch)
 	if err != nil {
 		slog.ErrorContext(ctx, "qmp-collector: marshal batch", "instanceId", meta.InstanceID, "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		return
 	}
 	if err := p.nc.Publish(MetricsEC2SubjectPrefix+meta.InstanceID, data); err != nil {
 		slog.WarnContext(ctx, "qmp-collector: publish failed", "instanceId", meta.InstanceID, "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		return
 	}
 	slog.DebugContext(ctx, "qmp-collector: published", "instanceId", meta.InstanceID, "series", len(batch.Series))

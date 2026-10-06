@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -53,7 +53,7 @@ func (d *Daemon) RunWorkerInstanceOnNode(ctx context.Context, nodeID string, inp
 		return nil, errors.New("eks worker: NATS connection not initialized")
 	}
 	subject := fmt.Sprintf("ec2.RunInstances.%s.%s", aws.StringValue(input.InstanceType), nodeID)
-	return utils.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
+	return natsmsg.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
 }
 
 // TerminateWorkerInstances terminates nodegroup workers by routing a terminate
@@ -107,8 +107,8 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 	for attempt := range 3 {
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = data
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		utils.InjectTraceContext(ctx, reqMsg.Header)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err = d.natsConn.RequestMsg(reqMsg, 5*time.Second)
 		if err == nil || !errors.Is(err, nats.ErrNoResponders) {
 			break
@@ -153,8 +153,8 @@ func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, account
 	}
 	reqMsg := nats.NewMsg("ec2.terminate")
 	reqMsg.Data = req
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := d.natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if errors.Is(err, nats.ErrNoResponders) {
 		slog.DebugContext(ctx, "TerminateWorkerInstances: no ec2.terminate responder, instance already gone", "instanceId", instanceID)

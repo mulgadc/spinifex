@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 
@@ -11,7 +12,6 @@ import (
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -48,7 +48,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 		return outcomeError
 	}
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		respondWithError(d.node, msg, awserrors.ErrorMissingParameter)

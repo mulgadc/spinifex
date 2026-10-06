@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -63,8 +63,8 @@ func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsC
 		subject := ec2v1.InstanceCommandSubject(instanceID)
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = jsonData
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		utils.InjectTraceContext(ctx, reqMsg.Header)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err := natsConn.RequestMsg(reqMsg, rebootInstancesTimeout)
 		if err != nil {
 			slog.ErrorContext(ctx, "RebootInstances: Failed to send command", "instance_id", instanceID, "err", err)

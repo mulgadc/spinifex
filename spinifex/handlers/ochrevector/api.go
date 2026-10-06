@@ -3,9 +3,9 @@ package handlers_ochrevector
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -375,33 +375,33 @@ func NewNATSVectorService(nc *nats.Conn) *NATSVectorService {
 }
 
 func (c *NATSVectorService) CreateIndex(ctx context.Context, req *CreateIndexRequest, accountID string) (*CreateIndexResponse, error) {
-	return utils.NATSRequest[CreateIndexResponse](ctx, c.nc, SubjectCreateIndex, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[CreateIndexResponse](ctx, c.nc, SubjectCreateIndex, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) DeleteIndex(ctx context.Context, req *DeleteIndexRequest, accountID string) (*DeleteIndexResponse, error) {
-	return utils.NATSRequest[DeleteIndexResponse](ctx, c.nc, SubjectDeleteIndex, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[DeleteIndexResponse](ctx, c.nc, SubjectDeleteIndex, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) ListIndexes(ctx context.Context, req *ListIndexesRequest, accountID string) (*ListIndexesResponse, error) {
-	return utils.NATSRequest[ListIndexesResponse](ctx, c.nc, SubjectListIndexes, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[ListIndexesResponse](ctx, c.nc, SubjectListIndexes, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) Ingest(ctx context.Context, req *IngestRequest, accountID string) (*IngestResponse, error) {
-	return utils.NATSRequest[IngestResponse](ctx, c.nc, SubjectIngest, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[IngestResponse](ctx, c.nc, SubjectIngest, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) DescribeJob(ctx context.Context, req *DescribeJobRequest, accountID string) (*DescribeJobResponse, error) {
-	return utils.NATSRequest[DescribeJobResponse](ctx, c.nc, SubjectDescribeJob, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[DescribeJobResponse](ctx, c.nc, SubjectDescribeJob, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) ListJobs(ctx context.Context, req *ListJobsRequest, accountID string) (*ListJobsResponse, error) {
-	return utils.NATSRequest[ListJobsResponse](ctx, c.nc, SubjectListJobs, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[ListJobsResponse](ctx, c.nc, SubjectListJobs, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) Query(ctx context.Context, req *QueryRequest, accountID string) (*QueryResponse, error) {
-	return utils.NATSRequest[QueryResponse](ctx, c.nc, SubjectQuery, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[QueryResponse](ctx, c.nc, SubjectQuery, req, c.timeout, accountID)
 }
 
 func (c *NATSVectorService) StopJob(ctx context.Context, req *StopJobRequest, accountID string) (*StopJobResponse, error) {
-	return utils.NATSRequest[StopJobResponse](ctx, c.nc, SubjectStopJob, req, c.timeout, accountID)
+	return natsmsg.NATSRequest[StopJobResponse](ctx, c.nc, SubjectStopJob, req, c.timeout, accountID)
 }

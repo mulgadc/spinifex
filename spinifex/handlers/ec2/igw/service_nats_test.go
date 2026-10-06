@@ -3,11 +3,11 @@ package handlers_ec2_igw
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,7 +46,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In,
 		_ = msg.Respond([]byte(`{"error":"unmarshal"}`))
 		return
 	}
-	accountID := msg.Header.Get(utils.AccountIDHeader)
+	accountID := msg.Header.Get(natsmsg.AccountIDHeader)
 	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
 		errResp, _ := json.Marshal(map[string]string{"error": err.Error()})

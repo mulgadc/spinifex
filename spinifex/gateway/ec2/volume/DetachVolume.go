@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -95,8 +95,8 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 	subject := ec2v1.InstanceCommandSubject(instanceID)
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = jsonData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, detachRequestTimeout)
 	if err != nil {
 		slog.ErrorContext(ctx, "DetachVolume: NATS request failed", "instanceId", instanceID, "volumeId", volumeID, "err", err)
@@ -139,7 +139,7 @@ const forceDetachSubject = "ec2.ForceDetachVolume"
 // forever, which also makes it undeletable. Reaching here needs Force, which is
 // the caller stating that no clean guest unmount is expected.
 func forceDetach(ctx context.Context, natsConn *nats.Conn, accountID, volumeID, instanceID string) (ec2.VolumeAttachment, error) {
-	attachment, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, natsConn, forceDetachSubject,
+	attachment, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, natsConn, forceDetachSubject,
 		&ec2.DetachVolumeInput{VolumeId: &volumeID, Force: aws.Bool(true)}, 30*time.Second, accountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "DetachVolume: force detach failed", "volumeId", volumeID, "instanceId", instanceID, "err", err)

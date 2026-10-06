@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"maps"
 	"net"
@@ -30,7 +31,6 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1324,7 +1324,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 			if len(meta.ResourcesVpcConfig.SubnetIds) > 0 {
 				subnetID = meta.ResourcesVpcConfig.SubnetIds[0]
 			}
-			utils.PublishEvent(s.deps.NATSConn, "vpc.delete-system-egress", systemEgressEvent{
+			natsmsg.PublishEvent(s.deps.NATSConn, "vpc.delete-system-egress", systemEgressEvent{
 				VpcId:      meta.ResourcesVpcConfig.VpcId,
 				SubnetId:   subnetID,
 				InstanceIp: meta.ControlPlaneENIIP,

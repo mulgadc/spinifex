@@ -3,6 +3,7 @@ package accountteardown
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"slices"
 	"strings"
 	"time"
@@ -22,7 +23,6 @@ import (
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -700,7 +700,7 @@ const forceDetachTimeout = 30 * time.Second
 // instance that will not terminate leaves both undeletable, and the account
 // can never be emptied.
 func forceDeleteVolume(ctx context.Context, nc *nats.Conn, expectedNodes int, accountID, volumeID string) error {
-	_, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, nc, forceDetachSubject,
+	_, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, nc, forceDetachSubject,
 		&ec2.DetachVolumeInput{VolumeId: aws.String(volumeID), Force: aws.Bool(true)},
 		forceDetachTimeout, accountID)
 	if err != nil && !isAlreadyGone(err) {

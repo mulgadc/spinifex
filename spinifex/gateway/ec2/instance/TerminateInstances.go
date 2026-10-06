@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -70,8 +70,8 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 		for attempt := range 3 {
 			reqMsg := nats.NewMsg(subject)
 			reqMsg.Data = jsonData
-			reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-			utils.InjectTraceContext(ctx, reqMsg.Header)
+			reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+			natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 			msg, err = natsConn.RequestMsg(reqMsg, 5*time.Second)
 			if err == nil || !errors.Is(err, nats.ErrNoResponders) {
 				break
@@ -94,8 +94,8 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 				}
 				terminateReqMsg := nats.NewMsg("ec2.terminate")
 				terminateReqMsg.Data = terminateReq
-				terminateReqMsg.Header.Set(utils.AccountIDHeader, accountID)
-				utils.InjectTraceContext(ctx, terminateReqMsg.Header)
+				terminateReqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+				natsmsg.InjectTraceContext(ctx, terminateReqMsg.Header)
 				terminateMsg, terminateErr := natsConn.RequestMsg(terminateReqMsg, 30*time.Second)
 				if terminateErr == nil {
 					responseError, parseErr := awserrors.ValidateErrorPayload(terminateMsg.Data)
@@ -177,8 +177,8 @@ func lookupTerminated(ctx context.Context, natsConn *nats.Conn, instanceID, acco
 	}
 	reqMsg := nats.NewMsg("ec2.DescribeTerminatedInstances")
 	reqMsg.Data = reqData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
 	if err != nil {
 		slog.WarnContext(ctx, "lookupTerminated: failed to query terminated instances", "instanceId", instanceID, "err", err)

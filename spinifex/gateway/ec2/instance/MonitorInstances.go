@@ -3,12 +3,12 @@ package gateway_ec2_instance
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -41,7 +41,7 @@ func MonitorInstances(ctx context.Context, input *ec2.MonitorInstancesInput, nat
 	if err := validateMonitoringInstanceIDs(input.InstanceIds); err != nil {
 		return nil, err
 	}
-	return utils.NATSRequest[ec2.MonitorInstancesOutput](ctx, natsConn, "ec2.MonitorInstances", input, monitoringRequestTimeout, accountID)
+	return natsmsg.NATSRequest[ec2.MonitorInstancesOutput](ctx, natsConn, "ec2.MonitorInstances", input, monitoringRequestTimeout, accountID)
 }
 
 // UnmonitorInstances returns the given instances to the 300s basic tier.
@@ -52,5 +52,5 @@ func UnmonitorInstances(ctx context.Context, input *ec2.UnmonitorInstancesInput,
 	if err := validateMonitoringInstanceIDs(input.InstanceIds); err != nil {
 		return nil, err
 	}
-	return utils.NATSRequest[ec2.UnmonitorInstancesOutput](ctx, natsConn, "ec2.UnmonitorInstances", input, monitoringRequestTimeout, accountID)
+	return natsmsg.NATSRequest[ec2.UnmonitorInstancesOutput](ctx, natsConn, "ec2.UnmonitorInstances", input, monitoringRequestTimeout, accountID)
 }

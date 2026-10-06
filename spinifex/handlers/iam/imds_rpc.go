@@ -2,7 +2,7 @@ package handlers_iam
 
 import (
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 )
 
@@ -33,7 +33,7 @@ type GetRoleRequest struct {
 // Returns subscriptions for caller-side cleanup.
 func (s *IAMServiceImpl) SubscribeIMDSResponders(nc *nats.Conn) ([]*nats.Subscription, error) {
 	profileSub, err := nc.QueueSubscribe(SubjectResolveInstanceProfile, imdsResponderQueue, func(msg *nats.Msg) {
-		utils.ServeNATSRequest(msg, func(req *ResolveInstanceProfileRequest) (*InstanceProfile, error) {
+		natsmsg.ServeNATSRequest(msg, func(req *ResolveInstanceProfileRequest) (*InstanceProfile, error) {
 			return s.ResolveInstanceProfile(req.AccountID, req.NameOrARN)
 		})
 	})
@@ -42,7 +42,7 @@ func (s *IAMServiceImpl) SubscribeIMDSResponders(nc *nats.Conn) ([]*nats.Subscri
 	}
 
 	roleSub, err := nc.QueueSubscribe(SubjectGetRole, imdsResponderQueue, func(msg *nats.Msg) {
-		utils.ServeNATSRequest(msg, func(req *GetRoleRequest) (*iam.GetRoleOutput, error) {
+		natsmsg.ServeNATSRequest(msg, func(req *GetRoleRequest) (*iam.GetRoleOutput, error) {
 			return s.GetRole(req.AccountID, req.Input)
 		})
 	})

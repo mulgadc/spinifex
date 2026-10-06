@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +19,7 @@ func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In,
 		_ = msg.Respond(awserrors.GenerateErrorPayload("ValidationError"))
 		return
 	}
-	accountID := msg.Header.Get(utils.AccountIDHeader)
+	accountID := msg.Header.Get(natsmsg.AccountIDHeader)
 	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
 		_ = msg.Respond(awserrors.GenerateErrorPayload(err.Error()))

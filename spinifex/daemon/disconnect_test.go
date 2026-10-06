@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"net"
 	"net/http"
 	"os"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ import (
 // testReconnectWait shortens the client's per-server reconnect delay from the
 // 1s production default. Tests that kill and restart a server otherwise wait
 // out that delay before the reconnect handler fires.
-var testReconnectWait = utils.WithReconnectWait(50 * time.Millisecond)
+var testReconnectWait = natsmsg.WithReconnectWait(50 * time.Millisecond)
 
 // TestDaemonModeDefaultStandalone — Mode() returns standalone before Start().
 func TestDaemonModeDefaultStandalone(t *testing.T) {
@@ -341,7 +341,7 @@ func TestStartCluster_StrictRequireNATS_BoundedAndExits(t *testing.T) {
 	d, err := NewDaemon(cfg)
 	require.NoError(t, err)
 	d.requireNATSTimeout = 200 * time.Millisecond
-	d.natsRetryOpts = []utils.RetryOption{utils.WithRetryDelay(20 * time.Millisecond)}
+	d.natsRetryOpts = []natsmsg.RetryOption{natsmsg.WithRetryDelay(20 * time.Millisecond)}
 
 	exitCh := make(chan int, 1)
 	d.exitFunc = func(code int) { exitCh <- code }
@@ -386,7 +386,7 @@ func TestStartCluster_NoStrictEnv_UsesInfiniteRetry(t *testing.T) {
 
 	d, err := NewDaemon(cfg)
 	require.NoError(t, err)
-	d.natsRetryOpts = []utils.RetryOption{utils.WithRetryDelay(20 * time.Millisecond)}
+	d.natsRetryOpts = []natsmsg.RetryOption{natsmsg.WithRetryDelay(20 * time.Millisecond)}
 
 	exitCalled := make(chan int, 1)
 	d.exitFunc = func(code int) { exitCalled <- code }
@@ -432,7 +432,7 @@ func TestStartCluster_RetriesUntilContextCancelled(t *testing.T) {
 	d, err := NewDaemon(cfg)
 	require.NoError(t, err)
 	// Bound retry delay so ctx-cancel unblocks promptly.
-	d.natsRetryOpts = []utils.RetryOption{utils.WithRetryDelay(50 * time.Millisecond)}
+	d.natsRetryOpts = []natsmsg.RetryOption{natsmsg.WithRetryDelay(50 * time.Millisecond)}
 
 	done := make(chan error, 1)
 	go func() { done <- d.startCluster() }()

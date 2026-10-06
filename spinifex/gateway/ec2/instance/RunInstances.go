@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"slices"
 	"strings"
@@ -16,7 +17,6 @@ import (
 	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -308,7 +308,7 @@ func lookupPlacementGroupStrategy(ctx context.Context, natsConn *nats.Conn, acco
 
 // isKnownInstanceType checks whether any daemon recognizes the given instance type.
 func isKnownInstanceType(ctx context.Context, natsConn *nats.Conn, instanceType string) bool {
-	result, err := utils.NATSRequest[ec2.DescribeInstanceTypesOutput](ctx, natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, awsidentifiers.GlobalAccountID)
+	result, err := natsmsg.NATSRequest[ec2.DescribeInstanceTypesOutput](ctx, natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, awsidentifiers.GlobalAccountID)
 	if err != nil || result == nil {
 		return false
 	}

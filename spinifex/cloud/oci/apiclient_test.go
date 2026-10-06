@@ -217,3 +217,49 @@ func TestGetPublicIPByPrivateIPIDAsksByPrivateIP(t *testing.T) {
 	assert.Equal(t, "q1", got.ID)
 	assert.Equal(t, "p1", (*seen)[0].body["privateIpId"])
 }
+
+// The subnet read is the allocator's authorisation probe, so the request has to
+// address one subnet by OCID. A GET of the collection would answer from a
+// different permission and report a credential as working when it is not.
+func TestGetSubnetAddressesOneSubnetByOCID(t *testing.T) {
+	c, seen := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"ocid1.subnet.oc1..s1","cidrBlock":"10.200.0.0/23"}`))
+	})
+
+	got, err := c.GetSubnet(context.Background(), "ocid1.subnet.oc1..s1")
+	require.NoError(t, err)
+	assert.Equal(t, "ocid1.subnet.oc1..s1", got.ID)
+	assert.Equal(t, "10.200.0.0/23", got.CIDRBlock)
+	require.Len(t, *seen, 1)
+	assert.Equal(t, http.MethodGet, (*seen)[0].method)
+	assert.Equal(t, "/20160918/subnets/ocid1.subnet.oc1..s1", (*seen)[0].path)
+}
+
+// A subnet with no CIDR is not an error: the probe only needs the call to be
+// authorised, and treating a sparse response as a failure would report a
+// working credential as broken.
+func TestGetSubnetKeepsTheOCIDWhenTheBodyHasNoCIDR(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"ocid1.subnet.oc1..s1"}`))
+	})
+
+	got, err := c.GetSubnet(context.Background(), "ocid1.subnet.oc1..s1")
+	require.NoError(t, err)
+	assert.Equal(t, "ocid1.subnet.oc1..s1", got.ID)
+	assert.Empty(t, got.CIDRBlock)
+}
+
+// The 404 OCI returns for an unauthorised call has to arrive as ErrNotFound, or
+// the allocator's check cannot tell it from a transport failure and would retry
+// a verdict that will never change.
+func TestGetSubnetMapsTheUnauthorisedFourOhFour(t *testing.T) {
+	c, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"NotAuthorizedOrNotFound","message":"Authorization failed or requested resource not found."}`))
+	})
+
+	_, err := c.GetSubnet(context.Background(), "ocid1.subnet.oc1..s1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, oci.ErrNotFound)
+	assert.Contains(t, err.Error(), "GetSubnet")
+}

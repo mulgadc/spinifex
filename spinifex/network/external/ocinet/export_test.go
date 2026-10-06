@@ -34,3 +34,7 @@ func PoolWithAuth(auth, configFile, profile string) external.ExternalPoolConfig 
 		OCIConfigProfile: profile,
 	}
 }
+
+// ReportAuthorisation logs the line validate-topology.sh gates the whole OCI
+// suite on, so a test pins the exact text and not just the behaviour.
+var ReportAuthorisation = reportAuthorisation

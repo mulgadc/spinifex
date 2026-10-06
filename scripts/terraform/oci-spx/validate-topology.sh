@@ -388,6 +388,23 @@ for res in state.get("resources", []):
     [ -n "$stray" ] && log "NOTE: the hand-driven state in $HERE still holds: $stray"
 fi
 
+# Terraform ranks a *.auto.tfvars file above TF_VAR_*, so a leftover one wins
+# silently over an operator targeting a different tenancy by environment. The
+# guide tells every operator to write one, which is what makes this likely.
+assert_no_tfvars_override() {
+    local f want got
+    want="${TF_VAR_compartment_ocid:-}"
+    [ -n "$want" ] || return 0
+    for f in "$HERE"/*.auto.tfvars "$HERE"/terraform.tfvars; do
+        [ -f "$f" ] || continue
+        got=$(sed -n 's/^[[:space:]]*compartment_ocid[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | tail -1)
+        [ -n "$got" ] || continue
+        [ "$got" = "$want" ] && continue
+        die "${f##*/} sets compartment_ocid=$got, which Terraform ranks above the TF_VAR_compartment_ocid=$want this run was given, so it would build in a compartment nobody chose. Remove that file or make it agree."
+    done
+}
+assert_no_tfvars_override
+
 if [ "$DRY_RUN" = 1 ]; then
     tf plan -no-color "${tf_vars[@]}" | tail -30
     plan="install Spinifex on $NODES node(s), form the cluster"

@@ -2056,7 +2056,7 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 			}
 
 			const ip = "10.15.8.11"
-			code := gw.checkSessionPrincipal(principal, testSessionAKID, ip)
+			code := gw.checkSessionPrincipal(principal, testSessionAKID, authSource{limitKey: ip, logIP: ip})
 			require.Equal(t, awserrors.ErrorInvalidClientTokenId, code)
 
 			rl.mu.RLock()

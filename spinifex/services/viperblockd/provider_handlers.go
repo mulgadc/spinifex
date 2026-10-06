@@ -1504,7 +1504,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 
 		exitChan <- exitCode
 
-		slog.Error("NBDKit exited", "code", exitCode)
+		slog.Info("NBDKit exited", "code", exitCode)
 	}()
 
 	pid := <-processChan

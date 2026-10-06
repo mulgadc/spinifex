@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"regexp"
 	"strings"
 	"time"
 	"uuid"
@@ -28,7 +29,15 @@ const (
 
 	certStatusIssued = "ISSUED"
 	certTypeImported = "IMPORTED"
+
+	// domainNamePattern is AWS's DomainName constraint, quoted verbatim in the
+	// ValidationException message.
+	domainNamePattern = `(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])`
 )
+
+// domainNameRE is domainNamePattern with its (?!-) lookaheads rewritten, since
+// Go regexp has none.
+var domainNameRE = regexp.MustCompile(`^(\*\.)?([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]$`)
 
 // CertAuthority issues leaf certificates from the tenant private CA and
 // authorizes domains against the CA's own x509 name constraints. Satisfied by
@@ -287,8 +296,10 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 	domain := aws.StringValue(input.DomainName)
 	// Before the mode is derived, so a malformed domain is a ValidationException
 	// in every mode rather than whatever the mode's own checks answer.
-	if err := validateDomainName(domain); err != nil {
-		return nil, err
+	if !domainNameRE.MatchString(domain) {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must satisfy regular expression pattern: %s",
+			domainNamePattern)
 	}
 	sans := aws.StringValueSlice(input.SubjectAlternativeNames)
 	allDomains := uniqueDomains(domain, sans)

@@ -26,6 +26,14 @@
 #                     principal. Default 1, and it needs the tenancy's dynamic
 #                     group to exist. The vm-single-principal topology ignores it
 #                     and always authenticates that way, which is its purpose.
+#
+#                     A tenancy where setup-identity.sh cannot run has no such
+#                     group, and then no principal run can pass: the node forms,
+#                     authenticates, and is refused every allocation. That now
+#                     fails at the allocator gate within a minute of the daemon
+#                     starting rather than an hour later inside a workbook, but
+#                     it still costs a full provision, so drop the topology from
+#                     OCI_TOPOLOGIES until the group exists.
 #   OCI_NO_EXTERNAL_POOL    1 to form with no allocator at all, for a tenancy whose
 #                     dynamic group does not exist yet. The allocator and every
 #                     workbook are then recorded SKIPPED, never PASS, so a green

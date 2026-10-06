@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"testing"
 
@@ -17,7 +18,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -572,7 +572,7 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	// The system NIC sits in the RDS system VPC's private subnet under the
 	// system account. That is the NIC with NAT egress, which is how the in-guest
 	// agent reaches the gateway from a customer DB subnet that has none.
-	assert.Equal(t, utils.GlobalAccountID, h.enis.accts[0])
+	assert.Equal(t, awsidentifiers.GlobalAccountID, h.enis.accts[0])
 	assert.True(t, strings.HasPrefix(aws.StringValue(sysENI.SubnetId), "subnet-rdssys"),
 		"the primary NIC must land in the RDS system VPC, got %s", aws.StringValue(sysENI.SubnetId))
 	// Its own ingress-free group, not the system VPC's default one — whose sole
@@ -606,7 +606,7 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	assert.Equal(t, sysinstance.BootAMI, in.BootMode)
 	assert.Equal(t, tags.ManagedByRDS, in.ManagedBy)
 	assert.Equal(t, testEngineAMI, in.ImageID)
-	assert.Equal(t, utils.GlobalAccountID, in.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, in.AccountID)
 	assert.Equal(t, aws.StringValue(sysENI.SubnetId), in.SubnetID)
 	assert.Equal(t, out.SystemENIID, in.ENIID)
 	require.Len(t, in.ExtraENIs, 1)
@@ -718,12 +718,12 @@ func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
 	assert.Equal(t, "ap-southeast-2a", aws.StringValue(vol.AvailabilityZone))
 	assert.Equal(t, tags.ManagedByRDS, tagOf(vol.TagSpecifications, tags.ManagedByKey))
 	assert.Equal(t, "mydb", tagOf(vol.TagSpecifications, rdsInstanceTagKey))
-	assert.Equal(t, utils.GlobalAccountID, h.volumes.accts[0], "the data volume belongs to the system account, like the VM it serves")
+	assert.Equal(t, awsidentifiers.GlobalAccountID, h.volumes.accts[0], "the data volume belongs to the system account, like the VM it serves")
 
 	assert.Equal(t, "i-rds0001", h.attacher.instanceID)
 	assert.Equal(t, "vol-rdsdata01", h.attacher.volumeID)
 	assert.Equal(t, dataVolumeDevice, h.attacher.device)
-	assert.Equal(t, utils.GlobalAccountID, h.attacher.accountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, h.attacher.accountID)
 
 	assert.Equal(t, "vol-rdsdata01", out.DataVolumeID)
 	assert.Equal(t, vm.VolumeSerial(out.DataVolumeID), out.DataVolumeSerial)

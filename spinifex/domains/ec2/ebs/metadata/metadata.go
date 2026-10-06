@@ -6,10 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"time"
-
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // SchemaVersion is the document's field generation, and moves independently of
@@ -150,7 +149,7 @@ func AMIKey(imageID string) (string, error) { return key("amis", imageID) }
 // untenanted document cannot be written, cannot exist, and never has to be
 // read. A transposed (id, account) pair fails here too.
 func partitionedKey(kind, accountID, id string) (string, error) {
-	if !utils.IsAccountID(accountID) {
+	if !awsidentifiers.IsAccountID(accountID) {
 		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
 	}
 	return key(kind+"/"+accountID, id)

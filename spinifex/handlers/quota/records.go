@@ -3,12 +3,12 @@ package handlers_quota
 import (
 	"context"
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // InstanceVCPULister totals the vCPUs each account currently holds, in one
@@ -61,7 +61,7 @@ func RecordVCPULister(records recordSource, prefix string) InstanceVCPULister {
 		for i := range items {
 			record := &items[i].Value
 			accountID := record.Metadata.AccountID
-			if accountID == "" || accountID == utils.GlobalAccountID {
+			if accountID == "" || accountID == awsidentifiers.GlobalAccountID {
 				continue
 			}
 			if recordIsTerminal(record) {
@@ -113,7 +113,7 @@ func AccountForRecord(value []byte) (accountID string, ok bool) {
 	if err := json.Unmarshal(value, &record); err != nil {
 		return "", false
 	}
-	if record.Metadata.AccountID == "" || record.Metadata.AccountID == utils.GlobalAccountID {
+	if record.Metadata.AccountID == "" || record.Metadata.AccountID == awsidentifiers.GlobalAccountID {
 		return "", false
 	}
 	return record.Metadata.AccountID, true

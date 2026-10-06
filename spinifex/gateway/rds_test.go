@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,13 +40,13 @@ func setupRDSUserRequest(body, accountID string) *http.Request {
 // whose underlying role is the DB VM instance role.
 func setupRDSAgentRequest(body, sessionName string) *http.Request {
 	req := setupRDSRequest(body)
-	roleARN := "arn:aws:iam::" + utils.GlobalAccountID + ":role/" + handlers_rds.InstanceRoleName
-	ctx := context.WithValue(req.Context(), ctxAccountID, utils.GlobalAccountID)
+	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + handlers_rds.InstanceRoleName
+	ctx := context.WithValue(req.Context(), ctxAccountID, awsidentifiers.GlobalAccountID)
 	ctx = context.WithValue(ctx, ctxIdentity, sessionName)
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
 	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, roleARN)
 	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
-		"arn:aws:sts::"+utils.GlobalAccountID+":assumed-role/"+handlers_rds.InstanceRoleName+"/"+sessionName)
+		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+handlers_rds.InstanceRoleName+"/"+sessionName)
 	return req.WithContext(ctx)
 }
 

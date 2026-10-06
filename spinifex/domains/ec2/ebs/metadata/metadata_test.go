@@ -1,10 +1,10 @@
 package ebsmetadata
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,7 +113,7 @@ func TestPartitionedKeysRejectNonAccountOwner(t *testing.T) {
 	require.Error(t, err)
 
 	// The system account is an ordinary account and partitions like any other.
-	key, err := VolumeKey(utils.GlobalAccountID, "vol-1")
+	key, err := VolumeKey(awsidentifiers.GlobalAccountID, "vol-1")
 	require.NoError(t, err)
 	assert.Equal(t, "spinifex/ebsmetadata/v2/volumes/000000000000/vol-1.json", key)
 }

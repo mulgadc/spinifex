@@ -534,7 +534,7 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 	// An untenanted caller has no prefix to read under; refuse here rather than
 	// report a snapshot that may well exist as absent. The key builder owns the
 	// wording, so the strict variant reports what the listing path reports.
-	if !utils.IsAccountID(accountID) {
+	if !awsidentifiers.IsAccountID(accountID) {
 		_, keyErr := ebsmetadata.SnapshotKey(accountID, snapshotIDs[0])
 		slog.ErrorContext(ctx, "DescribeSnapshots refused a caller with no account", "accountID", accountID)
 		if strict {

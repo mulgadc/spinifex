@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net/netip"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // The appliance's reachable address is the customer-ENI IP RDS places in the
@@ -81,7 +81,7 @@ func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeI
 			{Name: aws.String("subnet-id"), Values: aws.StringSlice([]string{subnetID})},
 			{Name: aws.String("description"), Values: aws.StringSlice([]string{desc})},
 		},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("ochrevector: describe daemon ENI in subnet %s: %w", subnetID, err)
 	}
@@ -123,7 +123,7 @@ func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeI
 				{Key: aws.String(ochreDaemonNodeTagKey), Value: aws.String(nodeID)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("ochrevector: create daemon ENI in subnet %s: %w", subnetID, err)
 	}
@@ -153,7 +153,7 @@ func ensureENIGroups(ctx context.Context, vpcSvc vpcProvisioner, ni *ec2.Network
 	_, err := vpcSvc.ModifyNetworkInterfaceAttribute(ctx, &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: ni.NetworkInterfaceId,
 		Groups:             aws.StringSlice(groupIDs),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return fmt.Errorf("ochrevector: set daemon ENI %s security groups: %w", aws.StringValue(ni.NetworkInterfaceId), err)
 	}
@@ -201,7 +201,7 @@ func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier s
 		Filters: []*ec2.Filter{
 			{Name: aws.String("tag:" + applianceInstanceTagKey), Values: aws.StringSlice([]string{identifier})},
 		},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", "", "", nil, fmt.Errorf("ochrevector: describe appliance ENI for %s: %w", identifier, err)
 	}
@@ -238,7 +238,7 @@ func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier s
 
 	subOut, err := deps.VPC.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("subnet-id"), Values: aws.StringSlice([]string{subnetID})}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", "", "", nil, fmt.Errorf("ochrevector: describe subnet %s: %w", subnetID, err)
 	}

@@ -2,6 +2,7 @@ package handlers_ec2_image
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,7 +19,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1095,7 +1095,7 @@ func TestDescribeImages_OwnerSelf_GlobalAccountIncludesSystemAMI(t *testing.T) {
 
 	out, err := svc.DescribeImages(context.Background(), &ec2.DescribeImagesInput{
 		Owners: []*string{aws.String("self")},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 
 	gotIDs := make([]string, len(out.Images))
@@ -1379,15 +1379,15 @@ func TestRegisterImage_EmptyCallerAccountIsRefusedAtTheBoundary(t *testing.T) {
 func TestRegisterImage_SystemAccountSnapshot(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	putTestSnapshotConfig(t, store, "snap-sys01", 8, utils.GlobalAccountID)
+	putTestSnapshotConfig(t, store, "snap-sys01", 8, awsidentifiers.GlobalAccountID)
 
-	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-sys01"), utils.GlobalAccountID)
+	out, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-sys01"), awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.ImageId)
 
 	meta, err := svc.GetAMIConfig(context.Background(), *out.ImageId)
 	require.NoError(t, err)
-	assert.Equal(t, utils.GlobalAccountID, meta.ImageOwnerAlias)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, meta.ImageOwnerAlias)
 }
 
 func TestRegisterImage_ArchitectureAndVirtualizationDefaults(t *testing.T) {

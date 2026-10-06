@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -14,7 +15,7 @@ func checkInstanceOwnership(nodeID string, msg *nats.Msg, instanceID, ownerAccou
 	callerAccountID := utils.AccountIDFromMsg(msg)
 
 	if ownerAccountID == "" {
-		if callerAccountID != utils.GlobalAccountID {
+		if callerAccountID != awsidentifiers.GlobalAccountID {
 			slog.Warn("Untenanted instance access denied (not root)",
 				"instanceId", instanceID, "callerAccount", callerAccountID)
 			respondWithError(nodeID, msg, awserrors.ErrorInvalidInstanceIDNotFound)

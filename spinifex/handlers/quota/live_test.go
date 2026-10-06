@@ -2,10 +2,10 @@ package handlers_quota
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // liveLimits is a representative enabled tier with distinct caps per dimension.
@@ -54,20 +54,22 @@ func TestEnforceLiveExemptShortCircuits(t *testing.T) {
 		{"vpc disabled", func() error { return disabled.EnforceVPCs(context.Background(), nil, normalAccount, 1) }},
 		{"subnet disabled", func() error { return disabled.EnforceSubnets(context.Background(), nil, normalAccount, 1) }},
 		{"eip disabled", func() error { return disabled.EnforceEIPs(context.Background(), nil, normalAccount, 1) }},
-		{"vpc system account", func() error { return enabled.EnforceVPCs(context.Background(), nil, utils.GlobalAccountID, 1) }},
-		{"subnet system account", func() error { return enabled.EnforceSubnets(context.Background(), nil, utils.GlobalAccountID, 1) }},
-		{"eip system account", func() error { return enabled.EnforceEIPs(context.Background(), nil, utils.GlobalAccountID, 1) }},
+		{"vpc system account", func() error { return enabled.EnforceVPCs(context.Background(), nil, awsidentifiers.GlobalAccountID, 1) }},
+		{"subnet system account", func() error {
+			return enabled.EnforceSubnets(context.Background(), nil, awsidentifiers.GlobalAccountID, 1)
+		}},
+		{"eip system account", func() error { return enabled.EnforceEIPs(context.Background(), nil, awsidentifiers.GlobalAccountID, 1) }},
 		{"lb disabled", func() error {
 			return disabled.EnforceLoadBalancers(context.Background(), nil, normalAccount, 1)
 		}},
 		{"lb system account", func() error {
-			return enabled.EnforceLoadBalancers(context.Background(), nil, utils.GlobalAccountID, 1)
+			return enabled.EnforceLoadBalancers(context.Background(), nil, awsidentifiers.GlobalAccountID, 1)
 		}},
 		{"rds disabled", func() error {
 			return disabled.EnforceRDSInstances(context.Background(), nil, normalAccount, 1)
 		}},
 		{"rds system account", func() error {
-			return enabled.EnforceRDSInstances(context.Background(), nil, utils.GlobalAccountID, 1)
+			return enabled.EnforceRDSInstances(context.Background(), nil, awsidentifiers.GlobalAccountID, 1)
 		}},
 	}
 	for _, tc := range cases {

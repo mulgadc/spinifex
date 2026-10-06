@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"regexp"
 	"slices"
@@ -24,7 +25,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 const (
@@ -438,7 +438,7 @@ func matchAWSPrincipalEntry(clause, callerARN string) bool {
 	if clause == globalWildcard {
 		return true
 	}
-	if utils.IsAccountID(clause) {
+	if awsidentifiers.IsAccountID(clause) {
 		clause = arn.FormatIAMRoot(clause)
 	}
 	if clause == callerARN {

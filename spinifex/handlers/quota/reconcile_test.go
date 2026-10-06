@@ -3,9 +3,8 @@ package handlers_quota
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
-
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // staticTotals serves a fixed per-account total as one scan, and records how
@@ -81,13 +80,13 @@ func TestReconcileSkipsSystemAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
 	// Park a non-zero value directly under the system key; AddVCPU would no-op it.
-	seedCounter(t, s, utils.GlobalAccountID, 42)
+	seedCounter(t, s, awsidentifiers.GlobalAccountID, 42)
 
-	if err := s.Reconcile(context.Background(), accountList(utils.GlobalAccountID, testAccount),
-		staticTotals(map[string]int{utils.GlobalAccountID: 99, testAccount: 2}, true, nil)); err != nil {
+	if err := s.Reconcile(context.Background(), accountList(awsidentifiers.GlobalAccountID, testAccount),
+		staticTotals(map[string]int{awsidentifiers.GlobalAccountID: 99, testAccount: 2}, true, nil)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	assertCounter(t, s, utils.GlobalAccountID, 42)
+	assertCounter(t, s, awsidentifiers.GlobalAccountID, 42)
 	assertCounter(t, s, testAccount, 2)
 }
 
@@ -186,12 +185,12 @@ func TestReconcileAccountTouchesOnlyThatAccount(t *testing.T) {
 func TestReconcileAccountSkipsSystemAccount(t *testing.T) {
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 100})
 
-	seedCounter(t, s, utils.GlobalAccountID, 42)
-	if err := s.ReconcileAccount(context.Background(), utils.GlobalAccountID,
-		staticTotals(map[string]int{utils.GlobalAccountID: 0}, true, nil)); err != nil {
+	seedCounter(t, s, awsidentifiers.GlobalAccountID, 42)
+	if err := s.ReconcileAccount(context.Background(), awsidentifiers.GlobalAccountID,
+		staticTotals(map[string]int{awsidentifiers.GlobalAccountID: 0}, true, nil)); err != nil {
 		t.Fatalf("ReconcileAccount: %v", err)
 	}
-	assertCounter(t, s, utils.GlobalAccountID, 42)
+	assertCounter(t, s, awsidentifiers.GlobalAccountID, 42)
 }
 
 // A disabled service never reaches the KV: both entry points are a no-op even

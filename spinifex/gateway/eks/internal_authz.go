@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -84,7 +84,7 @@ func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, 
 // one — the binding to a cluster is AuthorizeInternal's, and needs NATS.
 func requireCPAgent(ctx context.Context, action string, caller Caller) error {
 	if caller.PrincipalType != principalTypeAssumedRole ||
-		caller.AccountID != utils.GlobalAccountID ||
+		caller.AccountID != awsidentifiers.GlobalAccountID ||
 		caller.RoleName != handlers_eks.CPInstanceRoleName ||
 		caller.SessionName == "" {
 		slog.WarnContext(ctx, "EKS: internal route rejected for non-CP-agent caller",

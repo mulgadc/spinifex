@@ -2,6 +2,7 @@ package handlers_ec2_instance
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +54,7 @@ func TestValidateMetadataOptions(t *testing.T) {
 // Enabling IMDSv1 on an existing instance is applied and echoed back; IMDSv1-only
 // guest agents can be switched on after launch without a relaunch.
 func TestModifyInstanceMetadataOptions_EnableV1(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	id := "i-imdsv1"
 	v := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateRunning,
@@ -77,7 +77,7 @@ func TestModifyInstanceMetadataOptions_EnableV1(t *testing.T) {
 // An unrecognised http-tokens state is still refused, and the instance is left
 // untouched — no partial application of a rejected request.
 func TestModifyInstanceMetadataOptions_RejectUnknownTokensState(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	id := "i-imdsbad"
 	v := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateRunning,
@@ -98,7 +98,7 @@ func TestModifyInstanceMetadataOptions_RejectUnknownTokensState(t *testing.T) {
 // allows this in any state, so it must not return IncorrectInstanceState. The
 // no-op http-tokens=required is accepted alongside it.
 func TestModifyInstanceMetadataOptions_HopLimitRunning(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	id := "i-hop-run"
 	v := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateRunning,
@@ -120,7 +120,7 @@ func TestModifyInstanceMetadataOptions_HopLimitRunning(t *testing.T) {
 
 // The stopped-store fallback persists the hop-limit change too.
 func TestModifyInstanceMetadataOptions_HopLimitStopped(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	id := "i-hop-stop"
 	stored := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateStopped,
@@ -148,7 +148,7 @@ func TestModifyInstanceMetadataOptions_NotFound(t *testing.T) {
 	_, err := svc.ModifyInstanceMetadataOptions(context.Background(), &ec2.ModifyInstanceMetadataOptionsInput{
 		InstanceId:              aws.String("i-ghost"),
 		HttpPutResponseHopLimit: aws.Int64(2),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "got %v", err)
 }
@@ -157,7 +157,7 @@ func TestModifyInstanceMetadataOptions_NotFound(t *testing.T) {
 // guards) returns ServerInternal rather than panicking the daemon — on both the
 // running and stopped paths.
 func TestModifyInstanceMetadataOptions_NilInstance(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 
 	t.Run("running", func(t *testing.T) {
 		id := "i-nil-run"
@@ -186,7 +186,7 @@ func TestModifyInstanceMetadataOptions_NilInstance(t *testing.T) {
 // A legacy instance launched before the constant block (nil MetadataOptions) is
 // stamped with the full IMDSv2-only block on the first modify, not just the hop.
 func TestModifyInstanceMetadataOptions_LegacyNilBlockStamped(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	id := "i-legacy"
 	v := &vm.VM{
 		ID: id, AccountID: owner, Status: vm.StateRunning,
@@ -285,7 +285,7 @@ func TestPrepareRunInstances_RejectUnsupportedMetadataOptions(t *testing.T) {
 		MetadataOptions: &ec2.InstanceMetadataOptionsRequest{
 			HttpEndpoint: aws.String(ec2.InstanceMetadataEndpointStateDisabled),
 		},
-	}, utils.GlobalAccountID, "")
+	}, awsidentifiers.GlobalAccountID, "")
 	require.Error(t, err)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorUnsupportedOperation), "got %v", err)
 }

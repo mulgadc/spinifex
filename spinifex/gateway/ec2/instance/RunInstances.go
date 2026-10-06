@@ -3,6 +3,7 @@ package gateway_ec2_instance
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"slices"
 	"strings"
@@ -307,7 +308,7 @@ func lookupPlacementGroupStrategy(ctx context.Context, natsConn *nats.Conn, acco
 
 // isKnownInstanceType checks whether any daemon recognizes the given instance type.
 func isKnownInstanceType(ctx context.Context, natsConn *nats.Conn, instanceType string) bool {
-	result, err := utils.NATSRequest[ec2.DescribeInstanceTypesOutput](ctx, natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, utils.GlobalAccountID)
+	result, err := utils.NATSRequest[ec2.DescribeInstanceTypesOutput](ctx, natsConn, "ec2.DescribeInstanceTypes", &ec2.DescribeInstanceTypesInput{}, 3*time.Second, awsidentifiers.GlobalAccountID)
 	if err != nil || result == nil {
 		return false
 	}

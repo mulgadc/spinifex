@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"maps"
 	"net/netip"
@@ -30,7 +31,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 const (
@@ -828,7 +828,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	ctx := context.Background()
 	// --- Seed system account (000000000000) ---
 	systemAccount := Account{
-		AccountID:   utils.GlobalAccountID,
+		AccountID:   awsidentifiers.GlobalAccountID,
 		AccountName: "system",
 		Status:      AccountStatusActive,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -837,16 +837,16 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal system account: %w", err)
 	}
-	if _, err := s.accountsBucket.Create(ctx, utils.GlobalAccountID, accountData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+	if _, err := s.accountsBucket.Create(ctx, awsidentifiers.GlobalAccountID, accountData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("seed system account: %w", err)
 	}
 
-	kvKey := utils.GlobalAccountID + ".root"
+	kvKey := awsidentifiers.GlobalAccountID + ".root"
 	rootUser := User{
 		UserName:         "root",
 		UserID:           "AIDAAAAAAAAAAAAAAAAA",
-		AccountID:        utils.GlobalAccountID,
-		ARN:              arn.FormatIAMRoot(utils.GlobalAccountID),
+		AccountID:        awsidentifiers.GlobalAccountID,
+		ARN:              arn.FormatIAMRoot(awsidentifiers.GlobalAccountID),
 		Path:             "/",
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 		AccessKeys:       []string{data.AccessKeyID},
@@ -873,7 +873,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		AccessKeyID:     data.AccessKeyID,
 		SecretAccessKey: data.EncryptedSecret,
 		UserName:        "root",
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 		Status:          AccessKeyStatusActive,
 		CreatedAt:       rootUser.CreatedAt,
 	}
@@ -889,7 +889,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	} else if err != nil {
 		return fmt.Errorf("seed root access key: %w", err)
 	} else {
-		slog.Info("System root user seeded", "accountID", utils.GlobalAccountID, "accessKeyID", data.AccessKeyID)
+		slog.Info("System root user seeded", "accountID", awsidentifiers.GlobalAccountID, "accessKeyID", data.AccessKeyID)
 	}
 
 	// --- Seed admin account (000000000001) if present ---

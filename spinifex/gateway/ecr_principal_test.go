@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -177,15 +177,15 @@ func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
 
 func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
 	iamSvc := newECRMockIAMService()
-	seedECRTestUser(iamSvc, utils.GlobalAccountID, "root", ecrPrincipalTestAKID)
+	seedECRTestUser(iamSvc, awsidentifiers.GlobalAccountID, "root", ecrPrincipalTestAKID)
 	gw := &GatewayConfig{IAMService: iamSvc}
 
 	claims := &ecrauth.Claims{
-		AccountID:     utils.GlobalAccountID,
+		AccountID:     awsidentifiers.GlobalAccountID,
 		PrincipalType: principalTypeUser,
 		AccessKeyID:   ecrPrincipalTestAKID,
 	}
-	claims.Subject = "arn:aws:iam::" + utils.GlobalAccountID + ":root"
+	claims.Subject = "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":root"
 
 	got, err := gw.resolveECRPrincipal(claims)
 	require.NoError(t, err)

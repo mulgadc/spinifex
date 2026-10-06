@@ -2,13 +2,13 @@ package handlers_iam
 
 import (
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -370,28 +370,28 @@ func TestSeedBootstrap_AccountScoped(t *testing.T) {
 	err = svc.SeedBootstrap(&BootstrapData{
 		AccessKeyID:     "AKIAROOTEXAMPLE12345",
 		EncryptedSecret: encryptedSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 	})
 	require.NoError(t, err)
 
 	// Root user stored at 000000000000:root
-	out, err := svc.GetUser(utils.GlobalAccountID, &iam.GetUserInput{
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "root", *out.User.UserName)
-	assert.Contains(t, *out.User.Arn, utils.GlobalAccountID)
+	assert.Contains(t, *out.User.Arn, awsidentifiers.GlobalAccountID)
 
 	// Access key has correct AccountID
 	ak, err := svc.LookupAccessKey("AKIAROOTEXAMPLE12345")
 	require.NoError(t, err)
-	assert.Equal(t, utils.GlobalAccountID, ak.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, ak.AccountID)
 	assert.Equal(t, "root", ak.UserName)
 
 	// Global account record was created
-	account, err := svc.GetAccount(utils.GlobalAccountID)
+	account, err := svc.GetAccount(awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, utils.GlobalAccountID, account.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, account.AccountID)
 	assert.Equal(t, "system", account.AccountName)
 	assert.Equal(t, "ACTIVE", account.Status)
 }

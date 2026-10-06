@@ -3,6 +3,7 @@ package handlers_ec2_image_test
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,7 +17,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -156,7 +156,7 @@ func TestDescribeImagesByID_SystemAMIIsVisibleToEveryAccount(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, out.Images, 1)
-	assert.Equal(t, utils.GlobalAccountID, aws.StringValue(out.Images[0].OwnerId))
+	assert.Equal(t, awsidentifiers.GlobalAccountID, aws.StringValue(out.Images[0].OwnerId))
 	assert.Equal(t, "amazon", aws.StringValue(out.Images[0].ImageOwnerAlias))
 }
 

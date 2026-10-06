@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway/bedrock/hfhub"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -471,7 +471,7 @@ func TestResolveHFToken_FallsBackToStoredPlatformCredential(t *testing.T) {
 	require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(baseDir, "config", "master.key"), masterKey))
 
 	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, nil)
-	require.NoError(t, credStore.PutCredential(context.Background(), utils.GlobalAccountID, vendorHuggingFace, "hf_stored_token"))
+	require.NoError(t, credStore.PutCredential(context.Background(), awsidentifiers.GlobalAccountID, vendorHuggingFace, "hf_stored_token"))
 
 	cmd := newOchreWeightsPullTestCmd(t, selfHostModelID, testHFRepo, "main", "", "")
 	cfg := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": {BaseDir: baseDir}}}
@@ -622,7 +622,7 @@ func TestRunOchreCredentialsSet_RoundTripsAndDefaultsToPlatformAccount(t *testin
 	verifyJS := testutil.NewJetStream(t, verifyConn)
 
 	credStore := gateway_bedrock.NewCredentialStore(verifyJS, masterKey, nil)
-	token, ok, err := credStore.Resolve(context.Background(), utils.GlobalAccountID, vendorHuggingFace)
+	token, ok, err := credStore.Resolve(context.Background(), awsidentifiers.GlobalAccountID, vendorHuggingFace)
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "hf_supersecret", token)

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // ModifyVolume refuses a volume a running VM holds, so a storage grow is
@@ -128,7 +128,7 @@ func (s *Service) growDataVolume(ctx context.Context, volumeID string, targetGiB
 	if _, err := s.deps.Storage.ModifyVolume(ctx, &ec2.ModifyVolumeInput{
 		VolumeId: aws.String(volumeID),
 		Size:     aws.Int64(targetGiB),
-	}, utils.GlobalAccountID); err != nil {
+	}, awsidentifiers.GlobalAccountID); err != nil {
 		return fmt.Errorf("grow the data volume %s to %d GiB: %w", volumeID, targetGiB, err)
 	}
 	slog.InfoContext(ctx, "rds: data volume grown",
@@ -142,7 +142,7 @@ func (s *Service) growDataVolume(ctx context.Context, volumeID string, targetGiB
 func (s *Service) dataVolumeSize(ctx context.Context, volumeID string) (int64, error) {
 	out, err := s.deps.Storage.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		VolumeIds: aws.StringSlice([]string{volumeID}),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return 0, fmt.Errorf("read the data volume %s: %w", volumeID, err)
 	}

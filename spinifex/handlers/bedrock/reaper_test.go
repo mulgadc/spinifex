@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
 	"strings"
@@ -14,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -120,7 +120,7 @@ func (f *reaperFixture) ready(t *testing.T) EndpointRecord {
 // endpoint that has been up and quiet for a while.
 func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) EndpointRecord {
 	t.Helper()
-	key := resolveKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
 	rec, rev, found, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)
@@ -137,7 +137,7 @@ func (f *reaperFixture) age(t *testing.T, readyAgo, activeAgo time.Duration) End
 
 func (f *reaperFixture) current(t *testing.T) (EndpointRecord, bool) {
 	t.Helper()
-	rec, _, found, err := f.store.getRevision(t.Context(), resolveKey(utils.GlobalAccountID, testModelID))
+	rec, _, found, err := f.store.getRevision(t.Context(), resolveKey(awsidentifiers.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	return rec, found
 }
@@ -175,7 +175,7 @@ func TestReaper_NeverReapsPinnedEndpoint(t *testing.T) {
 	f.ready(t)
 	f.age(t, time.Hour, time.Hour)
 
-	key := resolveKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
 	rec, rev, _, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	rec.Pinned = true
@@ -289,7 +289,7 @@ func TestReaper_PinnedEndpointNotReapedOnScrapeFailure(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	f.ready(t)
 
-	key := resolveKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
 	rec, rev, found, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)
@@ -316,9 +316,9 @@ func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Nanosecond})
 
 	const embedModelID = "embed-only-bundle"
-	key := resolveKey(utils.GlobalAccountID, embedModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, embedModelID)
 	rec := EndpointRecord{
-		AccountID:    utils.GlobalAccountID,
+		AccountID:    awsidentifiers.GlobalAccountID,
 		ModelID:      embedModelID,
 		State:        StateReady,
 		BaseURL:      "http://10.0.0.1:8001",
@@ -378,9 +378,9 @@ func TestReaper_UnchangedObservationWritesNothing(t *testing.T) {
 // scrapes neither, so a launch in progress cannot be torn down under it.
 func TestReaper_SkipsNonReadyRecords(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Nanosecond})
-	key := resolveKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
 	rec := EndpointRecord{
-		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
+		AccountID: awsidentifiers.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
 	}
 	_, err := f.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)

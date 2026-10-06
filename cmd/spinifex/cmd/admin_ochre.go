@@ -26,7 +26,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway/bedrock/hfhub"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
@@ -641,7 +640,7 @@ func registerWeightsSnapshot(store objectstore.ObjectStore, bucket, snapshotID, 
 		StartTime:        time.Now(),
 		Description:      fmt.Sprintf("Ochre weights volume %s", volumeID),
 		Encrypted:        encrypted,
-		OwnerID:          utils.GlobalAccountID,
+		OwnerID:          awsidentifiers.GlobalAccountID,
 		AvailabilityZone: az,
 	}
 	if err := ebsmetadata.NewStore(store, bucket).PutSnapshot(context.Background(), cfg); err != nil {
@@ -809,7 +808,7 @@ func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvi
 func newWeightsSnapshotChecker(store objectstore.ObjectStore, bucket string) weightsSnapshotChecker {
 	metadata := ebsmetadata.NewStore(store, bucket)
 	return func(ctx context.Context, snapshotID string) (bool, error) {
-		if _, err := metadata.GetSnapshot(ctx, utils.GlobalAccountID, snapshotID); err != nil {
+		if _, err := metadata.GetSnapshot(ctx, awsidentifiers.GlobalAccountID, snapshotID); err != nil {
 			if objectstore.IsNoSuchKeyError(err) {
 				return false, nil
 			}
@@ -1012,7 +1011,7 @@ func resolveHFToken(ctx context.Context, cmd *cobra.Command, cfg *config.Cluster
 		return ""
 	}
 	credStore := gateway_bedrock.NewCredentialStore(js, masterKey, nil)
-	token, ok, err := credStore.Resolve(ctx, utils.GlobalAccountID, vendorHuggingFace)
+	token, ok, err := credStore.Resolve(ctx, awsidentifiers.GlobalAccountID, vendorHuggingFace)
 	if err != nil || !ok {
 		return ""
 	}
@@ -1099,7 +1098,7 @@ func runOchreCredentialsSet(cmd *cobra.Command, _ []string) {
 		return
 	}
 	if accountID == "" {
-		accountID = utils.GlobalAccountID
+		accountID = awsidentifiers.GlobalAccountID
 	}
 
 	token, err := readTokenFromStdin(os.Stdin)

@@ -84,7 +84,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 	if input.BootMode == sysinstance.BootAMI {
 		return d.launchAMISystemInstance(input)
 	}
-	accountID := utils.GlobalAccountID
+	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
 	// the caller's account, so lookups/updates must use that account ID.
 	eniAccountID := resolveENIAccount(input.AccountID, accountID)

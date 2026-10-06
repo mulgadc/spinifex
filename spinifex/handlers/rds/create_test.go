@@ -3,6 +3,7 @@ package handlers_rds
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"slices"
 	"strings"
 	"testing"
@@ -16,7 +17,6 @@ import (
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -282,7 +282,7 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.Equal(t, int64(firstVMGeneration), entry.VMGeneration)
 
 	require.NotNil(t, h.launch.launcher.input)
-	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(awsidentifiers.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }
 
 func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {

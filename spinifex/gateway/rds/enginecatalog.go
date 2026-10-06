@@ -3,6 +3,7 @@ package gateway_rds
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -146,7 +146,7 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 // collapse both onto the same answer.
 func clusterRunnableTypes(ctx context.Context, nc *nats.Conn, env Env) (func(string) bool, error) {
 	out, err := gateway_ec2_instance.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{},
-		nc, env.ExpectedNodes, nil, utils.GlobalAccountID)
+		nc, env.ExpectedNodes, nil, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "RDS: instance-type capability probe failed", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

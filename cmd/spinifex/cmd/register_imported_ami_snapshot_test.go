@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +28,7 @@ func TestRegisterImportedAMISnapshot_WritesEC2ReadableMetadata(t *testing.T) {
 
 	require.NoError(t, registerImportedAMISnapshot(store, bucket, ami, "ap-southeast-2a", true))
 
-	cfg, err := ebsmetadata.NewStore(store, bucket).GetSnapshot(context.Background(), utils.GlobalAccountID, "snap-ami-import01")
+	cfg, err := ebsmetadata.NewStore(store, bucket).GetSnapshot(context.Background(), awsidentifiers.GlobalAccountID, "snap-ami-import01")
 	require.NoError(t, err)
 	assert.Equal(t, "snap-ami-import01", cfg.SnapshotID)
 	assert.Equal(t, "ami-import01", cfg.VolumeID, "the import path creates the volume under the AMI's own ID")
@@ -37,7 +37,7 @@ func TestRegisterImportedAMISnapshot_WritesEC2ReadableMetadata(t *testing.T) {
 	assert.Equal(t, "100%", cfg.Progress)
 	assert.Equal(t, "ap-southeast-2a", cfg.AvailabilityZone)
 	assert.True(t, cfg.Encrypted)
-	assert.Equal(t, utils.GlobalAccountID, cfg.OwnerID, "a system-catalog import has no tenant account to own its snapshot")
+	assert.Equal(t, awsidentifiers.GlobalAccountID, cfg.OwnerID, "a system-catalog import has no tenant account to own its snapshot")
 	assert.Contains(t, cfg.Description, ami.Name)
 }
 
@@ -49,7 +49,7 @@ func TestRegisterImportedAMISnapshot_UnencryptedVolume(t *testing.T) {
 
 	require.NoError(t, registerImportedAMISnapshot(store, "predastore", ami, "ap-southeast-2a", false))
 
-	cfg, err := ebsmetadata.NewStore(store, "predastore").GetSnapshot(context.Background(), utils.GlobalAccountID, "snap-ami-plain01")
+	cfg, err := ebsmetadata.NewStore(store, "predastore").GetSnapshot(context.Background(), awsidentifiers.GlobalAccountID, "snap-ami-plain01")
 	require.NoError(t, err)
 	assert.False(t, cfg.Encrypted)
 }

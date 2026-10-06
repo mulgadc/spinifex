@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net/netip"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // The system-VPC subnet lives inside OVN on br-int, so the daemon host has no
@@ -86,7 +86,7 @@ func ensureDaemonENI(ctx context.Context, vpcSvc launchVPCProvisioner, subnetID,
 			{Name: aws.String("subnet-id"), Values: aws.StringSlice([]string{subnetID})},
 			{Name: aws.String("description"), Values: aws.StringSlice([]string{desc})},
 		},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: describe daemon ENI in subnet %s: %w", subnetID, err)
 	}
@@ -118,7 +118,7 @@ func ensureDaemonENI(ctx context.Context, vpcSvc launchVPCProvisioner, subnetID,
 				{Key: aws.String(bedrockDaemonNodeTagKey), Value: aws.String(nodeID)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: create daemon ENI in subnet %s: %w", subnetID, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"sync"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -357,7 +357,7 @@ func (r *Reconciler) remediateSystemENISG(ctx context.Context, kv *kvstore.Bucke
 	if _, err := r.svc.deps.Launch.VPC.ModifyNetworkInterfaceAttribute(ctx, &ec2.ModifyNetworkInterfaceAttributeInput{
 		NetworkInterfaceId: aws.String(rec.SystemENIID),
 		Groups:             aws.StringSlice([]string{sgID}),
-	}, utils.GlobalAccountID); err != nil {
+	}, awsidentifiers.GlobalAccountID); err != nil {
 		return false, fmt.Errorf("rds: move the system NIC of %s onto %s: %w", rec.DBInstanceIdentifier, sgID, err)
 	}
 	// Recorded only once vpcd has accepted the change, so a failure above is
@@ -383,11 +383,11 @@ func (r *Reconciler) ensuredSystemSG(ctx context.Context) (string, error) {
 	if deps.VPC == nil || deps.Config == nil {
 		return "", errors.New("rds reconciler: no VPC path is configured to place system NICs on their own security group")
 	}
-	refs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, utils.GlobalAccountID, deps.Config.Region)
+	refs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, awsidentifiers.GlobalAccountID, deps.Config.Region)
 	if err != nil {
 		return "", err
 	}
-	sgID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, utils.GlobalAccountID, deps.Config.Region, refs.VpcID)
+	sgID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, awsidentifiers.GlobalAccountID, deps.Config.Region, refs.VpcID)
 	if err != nil {
 		return "", err
 	}
@@ -764,7 +764,7 @@ func (s *Service) findEC2SnapshotFor(ctx context.Context, accountID, dbSnapshotI
 				Values: aws.StringSlice([]string{accountID}),
 			},
 		},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		if awserrors.IsNotFound(err) {
 			return "", nil
@@ -879,7 +879,7 @@ func NewDescribeInstanceState(describe func(*ec2.DescribeInstancesInput, string)
 func (d *describeInstanceState) InstanceState(_ context.Context, instanceID, _ string) (string, error) {
 	out, err := d.describe(&ec2.DescribeInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}

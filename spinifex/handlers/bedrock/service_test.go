@@ -1,6 +1,7 @@
 package handlers_bedrock
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"sync"
 	"testing"
@@ -11,7 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,9 +209,9 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
-	key := resolveKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
 	rec := EndpointRecord{
-		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
+		AccountID: awsidentifiers.GlobalAccountID, ModelID: testModelID, State: StateStarting, Generation: 1,
 	}
 	_, err := s.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
@@ -229,9 +229,9 @@ func TestDelete_ResumesFromDraining(t *testing.T) {
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
-	key := resolveKey(utils.GlobalAccountID, testModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
 	rec := EndpointRecord{
-		AccountID: utils.GlobalAccountID, ModelID: testModelID, State: StateDraining,
+		AccountID: awsidentifiers.GlobalAccountID, ModelID: testModelID, State: StateDraining,
 		InstanceID: "i-stranded", Generation: 2,
 	}
 	_, err := s.store.Create(t.Context(), key, &rec)
@@ -246,7 +246,7 @@ func TestDelete_ResumesFromDraining(t *testing.T) {
 	assert.Contains(t, h.launcher.terminated, "i-stranded", "the resume must still tear the VM down")
 }
 
-// testAccountID is a non-Global account, distinct from utils.GlobalAccountID,
+// testAccountID is a non-Global account, distinct from awsidentifiers.GlobalAccountID,
 // standing in for a real tenant across the account-scoping tests below.
 const testAccountID = "111111111111"
 
@@ -260,11 +260,11 @@ func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 
 	out, err := s.Ensure(t.Context(), &EnsureEndpointInput{ModelID: testModelID}, "")
 	require.NoError(t, err)
-	assert.Equal(t, utils.GlobalAccountID, out.Endpoint.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, out.Endpoint.AccountID)
 	assert.False(t, out.Endpoint.Pinned)
 	s.WaitLaunches()
 
-	rec, found, err := s.store.get(t.Context(), resolveKey(utils.GlobalAccountID, testModelID))
+	rec, found, err := s.store.get(t.Context(), resolveKey(awsidentifiers.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	require.True(t, found, "an empty AccountID must key the record under GlobalAccountID")
 	assert.False(t, rec.Pinned)
@@ -291,7 +291,7 @@ func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
 	assert.True(t, rec.Pinned)
 
 	// Nothing must have landed under the shared Global key.
-	_, foundGlobal, err := s.store.get(t.Context(), resolveKey(utils.GlobalAccountID, testModelID))
+	_, foundGlobal, err := s.store.get(t.Context(), resolveKey(awsidentifiers.GlobalAccountID, testModelID))
 	require.NoError(t, err)
 	assert.False(t, foundGlobal)
 }
@@ -405,7 +405,7 @@ func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
 	}
 	global, ok := byModel[testModelID]
 	require.True(t, ok, "the shared GlobalAccountID endpoint must still list unchanged")
-	assert.Equal(t, utils.GlobalAccountID, global.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, global.AccountID)
 	assert.False(t, global.Pinned)
 
 	pinned, ok := byModel[pinnedModelID]

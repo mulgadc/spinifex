@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,7 +17,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -180,13 +180,13 @@ func dispatchEKSAsCPAgent(t *testing.T, gw *GatewayConfig, path, instanceID stri
 	roleName := handlers_eks.CPInstanceRoleName
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	ctx := context.WithValue(req.Context(), ctxService, "eks")
-	ctx = context.WithValue(ctx, ctxAccountID, utils.GlobalAccountID)
+	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
 	ctx = context.WithValue(ctx, ctxIdentity, instanceID)
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
 	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
-		"arn:aws:iam::"+utils.GlobalAccountID+":role/"+roleName)
+		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
 	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
-		"arn:aws:sts::"+utils.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
+		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
 	return gw.EKS_Request(httptest.NewRecorder(), req.WithContext(ctx))
 }
 

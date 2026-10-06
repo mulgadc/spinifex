@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 	"time"
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // RemoveImageOpts configures RemoveSystemImage.
@@ -90,7 +90,7 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 		preview.Name = meta.Name
 		preview.Owner = meta.ImageOwnerAlias
 		preview.Created = meta.CreationDate
-		preview.IsSystemOwned = meta.ImageOwnerAlias != "" && !utils.IsAccountID(meta.ImageOwnerAlias)
+		preview.IsSystemOwned = meta.ImageOwnerAlias != "" && !awsidentifiers.IsAccountID(meta.ImageOwnerAlias)
 	case objectstore.IsNoSuchKeyError(configErr):
 		// Config absent — salvage candidate. Leave ConfigPresent=false.
 	case errors.Is(configErr, ebsmetadata.ErrCorruptDocument):
@@ -213,7 +213,7 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 	}
 
 	if configErr == nil && !opts.Force {
-		if meta.ImageOwnerAlias != "" && utils.IsAccountID(meta.ImageOwnerAlias) {
+		if meta.ImageOwnerAlias != "" && awsidentifiers.IsAccountID(meta.ImageOwnerAlias) {
 			return nil, fmt.Errorf("%s is account-owned (%s); use `aws ec2 deregister-image` followed by `aws ec2 delete-snapshot`",
 				opts.ImageID, meta.ImageOwnerAlias)
 		}

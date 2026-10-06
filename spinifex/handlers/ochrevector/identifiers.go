@@ -2,10 +2,10 @@ package handlers_ochrevector
 
 import (
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"regexp"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // indexIDPattern is a conservative allowlist for anything that reaches a SQL
@@ -18,7 +18,7 @@ var indexIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 // AWS-style account id before it ever reaches a SQL identifier or
 // search_path.
 func validateAccountID(accountID string) error {
-	if !utils.IsAccountID(accountID) {
+	if !awsidentifiers.IsAccountID(accountID) {
 		return fmt.Errorf("ochrevector: invalid account id %q", accountID)
 	}
 	return nil

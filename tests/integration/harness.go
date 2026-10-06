@@ -20,6 +20,7 @@
 package integration
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
@@ -41,7 +42,6 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -90,7 +90,7 @@ type Gateway struct {
 	// responders.
 	NATSConn *nats.Conn
 	// AccountID is the account the seeded root credentials belong to
-	// (utils.GlobalAccountID).
+	// (awsidentifiers.GlobalAccountID).
 	AccountID string
 	// Config is the GatewayConfig SetupRoutes was built from, exposed so
 	// tests can inspect or further wire fields StartGateway did not set.
@@ -149,7 +149,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	require.NoError(t, iamSvc.SeedBootstrap(&handlers_iam.BootstrapData{
 		AccessKeyID:     testAccessKeyID,
 		EncryptedSecret: encryptedSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 	}))
 
 	// ECR auth bridge signing key: reuses the IAM master key to encrypt the
@@ -173,7 +173,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		// repositories must additionally call StartECRDaemonLite to subscribe a
 		// real MetaServiceImpl or every ECR request will time out with no
 		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
+		ECRRegistry:      ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), awsidentifiers.GlobalAccountID),
 		ECRTokenIssuer:   ecrauth.NewIssuer(signingKey, testECRAudience),
 		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
 		// Ochre model access is deny-by-default, so without a grant store every
@@ -198,7 +198,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	gw := &Gateway{
 		Server:    srv,
 		NATSConn:  nc,
-		AccountID: utils.GlobalAccountID,
+		AccountID: awsidentifiers.GlobalAccountID,
 		Config:    cfg,
 	}
 

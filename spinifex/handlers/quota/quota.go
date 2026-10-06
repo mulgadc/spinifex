@@ -6,10 +6,10 @@ package handlers_quota
 
 import (
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -132,5 +132,5 @@ func (s *Service) Exempt(accountID string) bool {
 	if s == nil || !s.limits.Enabled {
 		return true
 	}
-	return accountID == utils.GlobalAccountID
+	return accountID == awsidentifiers.GlobalAccountID
 }

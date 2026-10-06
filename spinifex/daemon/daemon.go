@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"maps"
@@ -2178,7 +2179,7 @@ func (d *Daemon) startCluster() error {
 	// (matches AWS: every account has a default VPC with IGW + default SG)
 	if d.vpcService != nil {
 		failedDefaultVPCs := map[string]struct{}{}
-		for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
+		for _, accountID := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
 			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
 			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
 			var opts []handlers_ec2_vpc.BootstrapIDs

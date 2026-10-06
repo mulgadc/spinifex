@@ -7,10 +7,10 @@ package gateway_bedrock
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ import (
 type systemBypassInner struct{}
 
 func (systemBypassInner) Granted(_ context.Context, accountID, _ string) (bool, error) {
-	return accountID == utils.GlobalAccountID, nil
+	return accountID == awsidentifiers.GlobalAccountID, nil
 }
 
 func TestStagedOpenAccessResolver_StagedSelfHostGrantedWithoutInnerGrant(t *testing.T) {
@@ -66,7 +66,7 @@ func TestStagedOpenAccessResolver_ExplicitInnerGrantStillWins(t *testing.T) {
 func TestStagedOpenAccessResolver_SystemAccountBypassIntact(t *testing.T) {
 	r := NewStagedOpenAccessResolver(systemBypassInner{})
 
-	granted, err := r.Granted(context.Background(), utils.GlobalAccountID, "nonexistent.model-v1:0")
+	granted, err := r.Granted(context.Background(), awsidentifiers.GlobalAccountID, "nonexistent.model-v1:0")
 	require.NoError(t, err)
 	assert.True(t, granted, "the inner resolver's system-account bypass must still win")
 }

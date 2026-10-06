@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +28,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1367,7 +1367,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "root",
-					AccountID:       utils.GlobalAccountID,
+					AccountID:       awsidentifiers.GlobalAccountID,
 					Status:          "Active",
 				},
 			},
@@ -2400,7 +2400,7 @@ func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
 // other session.
 func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
 	cred := assumedRoleSessionCred("root",
-		"arn:aws:iam::"+utils.GlobalAccountID+":role/sneaky-role", utils.GlobalAccountID)
+		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/sneaky-role", awsidentifiers.GlobalAccountID)
 	var roleResolved bool
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
 		roleResolved = true

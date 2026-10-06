@@ -1,12 +1,12 @@
 package handlers_quota
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"sync"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -62,8 +62,8 @@ func TestVCPUExemptShortCircuits(t *testing.T) {
 	}{
 		{"check disabled", func() error { return disabled.CheckVCPU(t.Context(), testAccount, 1000) }},
 		{"add disabled", func() error { return disabled.AddVCPU(t.Context(), testAccount, 1000) }},
-		{"check system account", func() error { return enabled.CheckVCPU(t.Context(), utils.GlobalAccountID, 1000) }},
-		{"add system account", func() error { return enabled.AddVCPU(t.Context(), utils.GlobalAccountID, 1000) }},
+		{"check system account", func() error { return enabled.CheckVCPU(t.Context(), awsidentifiers.GlobalAccountID, 1000) }},
+		{"add system account", func() error { return enabled.AddVCPU(t.Context(), awsidentifiers.GlobalAccountID, 1000) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,6 @@ import (
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -261,7 +261,7 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 	daemon, _ := createDefaultVPCTestDaemon(t)
 
 	adminAccount := admin.DefaultAccountID()
-	for _, accountID := range []string{utils.GlobalAccountID, adminAccount} {
+	for _, accountID := range []string{awsidentifiers.GlobalAccountID, adminAccount} {
 		_, err := daemon.vpcService.EnsureDefaultVPC(accountID)
 		require.NoError(t, err)
 	}
@@ -273,7 +273,7 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, skipped.InternetGateways, "a skipped account must not have infrastructure attached")
 
-	built, err := daemon.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, utils.GlobalAccountID)
+	built, err := daemon.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Len(t, built.InternetGateways, 1)
 

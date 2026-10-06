@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"sync"
 	"testing"
 	"time"
@@ -19,7 +20,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -48,7 +48,7 @@ func newTestCache(t *testing.T, mutate ...func(*Config)) (*Cache, jetstream.KeyV
 		Bucket:            kvstore.Config{Name: bucket, History: 1},
 		Prefix:            testPrefix,
 		VisibleToCaller:   instance.IsInstanceVisibleToCaller,
-		FallbackAccountID: utils.GlobalAccountID,
+		FallbackAccountID: awsidentifiers.GlobalAccountID,
 		RetryInterval:     20 * time.Millisecond,
 	}
 	for _, m := range mutate {
@@ -259,7 +259,7 @@ func TestPeriodicResync_TTLExpiredRecordRemovedWithNoWatchEvent(t *testing.T) {
 		Bucket:            kvstore.Config{Name: bucket, History: 1},
 		Prefix:            testPrefix,
 		VisibleToCaller:   instance.IsInstanceVisibleToCaller,
-		FallbackAccountID: utils.GlobalAccountID,
+		FallbackAccountID: awsidentifiers.GlobalAccountID,
 		RetryInterval:     20 * time.Millisecond,
 	})
 	putRecord(t, kv, "i-ttl", testRecord("i-ttl", acctA, vm.StateTerminated))
@@ -614,7 +614,7 @@ func TestList_ReturnsOnlyThatAccountsInstances(t *testing.T) {
 func TestList_GlobalDoesNotSeeOtherAccountsInstances(t *testing.T) {
 	c, kv, _ := newTestCache(t)
 	putRecord(t, kv, "i-cust", testRecord("i-cust", acctA, vm.StateRunning))
-	putRecord(t, kv, "i-global", testRecord("i-global", utils.GlobalAccountID, vm.StateRunning))
+	putRecord(t, kv, "i-global", testRecord("i-global", awsidentifiers.GlobalAccountID, vm.StateRunning))
 	putRecord(t, kv, "i-legacy", testRecord("i-legacy", "", vm.StateRunning))
 
 	ctx := t.Context()
@@ -626,7 +626,7 @@ func TestList_GlobalDoesNotSeeOtherAccountsInstances(t *testing.T) {
 		return len(c.entries) == 3
 	})
 
-	listGlobal, ready := c.List(ctx, utils.GlobalAccountID)
+	listGlobal, ready := c.List(ctx, awsidentifiers.GlobalAccountID)
 	require.True(t, ready)
 	require.ElementsMatch(t, []string{"i-global", "i-legacy"}, idsOf(listGlobal))
 

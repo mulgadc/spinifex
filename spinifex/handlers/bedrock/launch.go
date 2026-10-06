@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net"
 	"slices"
@@ -18,7 +19,6 @@ import (
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
 	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // vllmServePort is the vLLM OpenAI-compatible server's listen port, baked
@@ -211,7 +211,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		snapshotIDs[m.ModelID] = snapshotID
 	}
 
-	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.Bedrock, utils.GlobalAccountID, region)
+	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.Bedrock, awsidentifiers.GlobalAccountID, region)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		}
 		volumeIDs[m.ModelID] = weightsVolumeID
 		rollback = append(rollback, func(ctx context.Context) {
-			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(weightsVolumeID)}, utils.GlobalAccountID); delErr != nil {
+			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(weightsVolumeID)}, awsidentifiers.GlobalAccountID); delErr != nil {
 				slog.WarnContext(ctx, "bedrock: rollback delete of orphaned weights volume failed",
 					"model", m.ModelID, "volumeId", weightsVolumeID, "err", delErr)
 			}
@@ -300,7 +300,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		// The VM and its primary NIC live in the system account: a serving VM
 		// has no customer owner of its own, only the accountID the endpoint
 		// record is keyed under (a separate, KV-level concern from VM ownership).
-		AccountID: utils.GlobalAccountID,
+		AccountID: awsidentifiers.GlobalAccountID,
 		SubnetID:  systemSubnetID,
 		ENIID:     eni.id,
 		ENIMac:    eni.mac,
@@ -326,7 +326,7 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 	primaryModelID := in.Members[0].ModelID
 	for _, m := range in.Members {
 		weightsVolumeID := volumeIDs[m.ModelID]
-		attachedDevice, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, weightsVolumeID, devices[m.ModelID])
+		attachedDevice, err := deps.Attacher.AttachVolume(ctx, awsidentifiers.GlobalAccountID, instanceID, weightsVolumeID, devices[m.ModelID])
 		if err != nil {
 			return nil, fmt.Errorf("bedrock: attach weights volume %s to %s: %w", weightsVolumeID, instanceID, err)
 		}
@@ -373,7 +373,7 @@ func TerminateServingVM(ctx context.Context, deps LaunchDeps, rec EndpointRecord
 		if member.WeightsVolumeID == "" {
 			continue
 		}
-		if _, err := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(member.WeightsVolumeID)}, utils.GlobalAccountID); err != nil &&
+		if _, err := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(member.WeightsVolumeID)}, awsidentifiers.GlobalAccountID); err != nil &&
 			!awserrors.IsNotFound(err) {
 			errs = append(errs, fmt.Errorf("delete weights volume %s for %s: %w", member.WeightsVolumeID, modelID, err))
 		}
@@ -417,7 +417,7 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, subnetID,
 				{Key: aws.String(bedrockInstanceTagKey), Value: aws.String(modelID)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("bedrock: create ENI in subnet %s: %w", subnetID, err)
 	}
@@ -437,12 +437,12 @@ func createLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, subnetID,
 // Detach comes first because a terminated VM can leave the attachment record
 // behind, which a plain delete rejects as InUse.
 func deleteLaunchENI(ctx context.Context, vpcSvc launchVPCProvisioner, eniID string) {
-	if err := vpcSvc.DetachENI(ctx, utils.GlobalAccountID, eniID); err != nil && !awserrors.IsNotFound(err) {
+	if err := vpcSvc.DetachENI(ctx, awsidentifiers.GlobalAccountID, eniID); err != nil && !awserrors.IsNotFound(err) {
 		slog.DebugContext(ctx, "bedrock: rollback ENI detach failed", "eniId", eniID, "err", err)
 	}
 	if _, err := vpcSvc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniID),
-	}, utils.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
+	}, awsidentifiers.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
 		slog.WarnContext(ctx, "bedrock: rollback delete of orphaned ENI failed", "eniId", eniID, "err", err)
 	}
 }
@@ -462,7 +462,7 @@ func createWeightsVolume(ctx context.Context, volSvc launchVolumeProvisioner, az
 				{Key: aws.String(bedrockInstanceTagKey), Value: aws.String(modelID)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", fmt.Errorf("bedrock: clone weights volume for %s from snapshot %s: %w", modelID, snapshotID, err)
 	}

@@ -1,13 +1,13 @@
 package handlers_bedrock
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -213,7 +213,7 @@ func TestSelectEvictable_SkipsRecordCreatedPinnedViaEnsure(t *testing.T) {
 func seedReadyEndpoint(t *testing.T, s *Service, modelID string, readyAt time.Time) EndpointRecord {
 	t.Helper()
 	rec := EndpointRecord{
-		AccountID:  utils.GlobalAccountID,
+		AccountID:  awsidentifiers.GlobalAccountID,
 		ModelID:    modelID,
 		State:      StateReady,
 		NodeID:     s.deps.NodeID,
@@ -222,14 +222,14 @@ func seedReadyEndpoint(t *testing.T, s *Service, modelID string, readyAt time.Ti
 		ReadyAt:    readyAt,
 		Generation: 2,
 	}
-	_, err := s.store.Create(t.Context(), EndpointKey(utils.GlobalAccountID, modelID), &rec)
+	_, err := s.store.Create(t.Context(), EndpointKey(awsidentifiers.GlobalAccountID, modelID), &rec)
 	require.NoError(t, err)
 	return rec
 }
 
 func pinEndpoint(t *testing.T, s *Service, modelID string) {
 	t.Helper()
-	key := EndpointKey(utils.GlobalAccountID, modelID)
+	key := EndpointKey(awsidentifiers.GlobalAccountID, modelID)
 	rec, rev, found, err := s.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
 	require.True(t, found)

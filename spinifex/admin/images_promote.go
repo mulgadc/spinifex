@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // SystemOwnerAlias is the fixed owner alias written to AMI config on promotion.
@@ -59,7 +59,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if meta.ImageOwnerAlias == "" || !utils.IsAccountID(meta.ImageOwnerAlias) {
+	if meta.ImageOwnerAlias == "" || !awsidentifiers.IsAccountID(meta.ImageOwnerAlias) {
 		return nil, fmt.Errorf("%s is already a system-owned AMI (owner: %q); promotion not allowed", opts.ImageID, meta.ImageOwnerAlias)
 	}
 
@@ -81,7 +81,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if moveSnapshot {
-		snap.OwnerID = utils.GlobalAccountID
+		snap.OwnerID = awsidentifiers.GlobalAccountID
 		if err := metaStore.PutSnapshot(context.Background(), snap); err != nil {
 			slog.Error("PromoteSystemImage: write snapshot document under the global account",
 				"imageId", opts.ImageID, "snapshotId", meta.SnapshotID, "err", err)

@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/assert"
@@ -62,7 +62,7 @@ func TestCheckBedrockTokens_DisabledIsNoop(t *testing.T) {
 func TestCheckBedrockTokens_ExemptSystemAccount(t *testing.T) {
 	s := New(Limits{TokensPerMonthEnabled: true, TokensPerMonth: 1}, nil)
 	s.SetBedrockUsage(stubBedrockUsageReader{tokens: 1_000_000})
-	assert.NoError(t, s.CheckBedrockTokens(context.Background(), utils.GlobalAccountID))
+	assert.NoError(t, s.CheckBedrockTokens(context.Background(), awsidentifiers.GlobalAccountID))
 }
 
 // TestCheckBedrockTokens_NoReaderIsNoop covers a wiring gap: the dimension is
@@ -103,7 +103,7 @@ func TestCheckBedrockRPM_DisabledIsNoop(t *testing.T) {
 func TestCheckBedrockRPM_ExemptSystemAccount(t *testing.T) {
 	s := New(Limits{RequestsPerMinuteEnabled: true, RequestsPerMinute: 1}, nil)
 	for range 10 {
-		assert.NoError(t, s.CheckBedrockRPM(utils.GlobalAccountID))
+		assert.NoError(t, s.CheckBedrockRPM(awsidentifiers.GlobalAccountID))
 	}
 }
 

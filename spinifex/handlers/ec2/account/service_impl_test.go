@@ -2,11 +2,11 @@ package handlers_ec2_account
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,6 +140,6 @@ func TestSerialConsole_MultiAccountIsolation(t *testing.T) {
 }
 
 func TestSettingsKey_EmptyAccountIDFallback(t *testing.T) {
-	assert.Equal(t, utils.GlobalAccountID, settingsKey(""))
+	assert.Equal(t, awsidentifiers.GlobalAccountID, settingsKey(""))
 	assert.Equal(t, "123456789012", settingsKey("123456789012"))
 }

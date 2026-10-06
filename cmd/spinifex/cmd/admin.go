@@ -46,7 +46,6 @@ import (
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
@@ -889,7 +888,7 @@ func registerImportedAMISnapshot(store objectstore.ObjectStore, bucket string, a
 		StartTime:        time.Now(),
 		Description:      fmt.Sprintf("Imported AMI volume for %s", ami.Name),
 		Encrypted:        encrypted,
-		OwnerID:          utils.GlobalAccountID,
+		OwnerID:          awsidentifiers.GlobalAccountID,
 		AvailabilityZone: az,
 	}
 	if err := ebsmetadata.NewStore(store, bucket).PutSnapshot(context.Background(), cfg); err != nil {

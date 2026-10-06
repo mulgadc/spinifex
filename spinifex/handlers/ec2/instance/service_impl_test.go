@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -806,7 +806,7 @@ func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
 
 func TestDescribeInstances_Empty(t *testing.T) {
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
-	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations)
 }
@@ -879,17 +879,17 @@ func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
 func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
 	v := &vm.VM{
 		ID:        "i-lb",
-		AccountID: utils.GlobalAccountID,
+		AccountID: awsidentifiers.GlobalAccountID,
 		ManagedBy: tags.ManagedByELBv2,
 		Reservation: &ec2.Reservation{
 			ReservationId: aws.String("r-lb"),
-			OwnerId:       aws.String(utils.GlobalAccountID),
+			OwnerId:       aws.String(awsidentifiers.GlobalAccountID),
 		},
 		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
 
-	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
@@ -922,7 +922,7 @@ func TestDescribeInstances_MalformedID(t *testing.T) {
 	input := &ec2.DescribeInstancesInput{
 		InstanceIds: []*string{aws.String("not-an-id")},
 	}
-	_, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
+	_, err := svc.DescribeInstances(context.Background(), input, awsidentifiers.GlobalAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
 }
@@ -948,7 +948,7 @@ func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
 	}), config: &config.Config{}}
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-keep")}}
-	out, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), input, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-keep", *out.Reservations[0].Instances[0].InstanceId)
@@ -968,7 +968,7 @@ func TestDescribeInstances_ReservationGrouping(t *testing.T) {
 	}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(instances), config: &config.Config{}}
 
-	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
@@ -990,7 +990,7 @@ func TestDescribeInstances_FilterExcludesOnlyInstance_ReturnsZeroReservations(t 
 	input := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
 	}
-	out, err := svc.DescribeInstances(context.Background(), input, utils.GlobalAccountID)
+	out, err := svc.DescribeInstances(context.Background(), input, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
 }
@@ -1010,7 +1010,7 @@ func TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservati
 	input := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
 	}
-	out, err := svc.describeInstancesFromKV(context.Background(), input, utils.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances")
+	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances")
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
 }
@@ -1035,7 +1035,7 @@ func TestDescribeInstanceAttribute_MissingAttribute(t *testing.T) {
 
 func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 	id := "i-attr1"
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	v := &vm.VM{
 		ID:           id,
 		InstanceType: "t3.large",
@@ -1128,7 +1128,7 @@ func TestDescribeInstanceAttribute_NotRunning_NoStore(t *testing.T) {
 
 func TestDescribeInstanceAttribute_FoundInStoppedStore(t *testing.T) {
 	id := "i-stopped1"
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
 		id: {ID: id, InstanceType: "t3.medium", AccountID: owner},
 	}}
@@ -1153,7 +1153,7 @@ func TestDescribeInstanceAttribute_NotFound(t *testing.T) {
 	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String("i-ghost"),
 		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
 }
@@ -1172,7 +1172,7 @@ func TestDescribeInstanceAttribute_HiddenForOtherAccount(t *testing.T) {
 }
 
 func TestDescribeInstanceAttribute_DisableApiTermination(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 
 	tests := []struct {
 		name     string
@@ -1236,7 +1236,7 @@ func TestDescribeStoppedInstances_NilStore(t *testing.T) {
 }
 
 func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	store := &vmmock.StateStore{
 		Stopped: map[string]*vm.VM{
 			"i-stop1": {
@@ -1266,7 +1266,7 @@ func TestDescribeTerminatedInstances_NilStore(t *testing.T) {
 }
 
 func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
-	owner := utils.GlobalAccountID
+	owner := awsidentifiers.GlobalAccountID
 	store := &vmmock.StateStore{
 		Terminated: map[string]*vm.VM{
 			"i-term1": {
@@ -1346,7 +1346,7 @@ func TestIsInstanceVisible(t *testing.T) {
 		owner  string
 		want   bool
 	}{
-		{"empty owner, global caller", utils.GlobalAccountID, "", true},
+		{"empty owner, global caller", awsidentifiers.GlobalAccountID, "", true},
 		{"empty owner, non-global caller", "111122223333", "", false},
 		{"matching account", "111122223333", "111122223333", true},
 		{"different accounts", "111122223333", "999988887777", false},
@@ -4472,7 +4472,7 @@ func runningVM(id, owner string) *vm.VM {
 
 func TestDescribeInstanceStatus_Empty(t *testing.T) {
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
-	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, utils.GlobalAccountID)
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	assert.Empty(t, out.InstanceStatuses)
@@ -4683,7 +4683,7 @@ func TestDescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
 	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
 	_, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
 		InstanceIds: []*string{aws.String("not-an-id")},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
 }

@@ -2,12 +2,12 @@ package handlers_quota
 
 import (
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // reservation builds a single reservation whose instances carry the given type
@@ -153,7 +153,7 @@ func TestEnforceRetypeExemptShortCircuits(t *testing.T) {
 			return disabled.EnforceRetype(t.Context(), failResolver, testAccount, "i-a", "m5.xlarge")
 		}},
 		{"system account", func() (int, error) {
-			return enabled.EnforceRetype(t.Context(), failResolver, utils.GlobalAccountID, "i-a", "m5.xlarge")
+			return enabled.EnforceRetype(t.Context(), failResolver, awsidentifiers.GlobalAccountID, "i-a", "m5.xlarge")
 		}},
 	}
 	for _, tc := range cases {

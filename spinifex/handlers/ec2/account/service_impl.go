@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -67,7 +67,7 @@ func NewAccountSettingsServiceImplWithNATS(ctx context.Context, cfg *config.Conf
 // Falls back to GlobalAccountID for pre-Phase-4 resources with no accountID.
 func settingsKey(accountID string) string {
 	if accountID == "" {
-		return utils.GlobalAccountID
+		return awsidentifiers.GlobalAccountID
 	}
 	return accountID
 }

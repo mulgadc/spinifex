@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"time"
 
@@ -107,7 +108,7 @@ func (d *Daemon) handleEnsureDefaultVpc(msg *nats.Msg) string {
 // in skipAccounts are not touched — used to avoid attaching infrastructure to
 // a half-built VPC when EnsureDefaultVPC failed earlier in startup.
 func (d *Daemon) ensureDefaultVPCInfrastructure(skipAccounts map[string]struct{}) {
-	for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
+	for _, accountID := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
 		if _, skip := skipAccounts[accountID]; skip {
 			continue
 		}

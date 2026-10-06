@@ -1,12 +1,12 @@
 package handlers_quota
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // reservationOf builds a reservation of n instances of one type, modelling what
@@ -130,9 +130,11 @@ func TestLaunchExemptShortCircuits(t *testing.T) {
 	}{
 		{"enforce disabled", func() error { return disabled.EnforceLaunch(t.Context(), testAccount, "t3.micro", 1000) }},
 		{"charge disabled", func() error { return disabled.ChargeLaunch(t.Context(), testAccount, reservationOf("t3.micro", 1000)) }},
-		{"enforce system account", func() error { return enabled.EnforceLaunch(t.Context(), utils.GlobalAccountID, "t3.micro", 1000) }},
+		{"enforce system account", func() error {
+			return enabled.EnforceLaunch(t.Context(), awsidentifiers.GlobalAccountID, "t3.micro", 1000)
+		}},
 		{"charge system account", func() error {
-			return enabled.ChargeLaunch(t.Context(), utils.GlobalAccountID, reservationOf("t3.micro", 1000))
+			return enabled.ChargeLaunch(t.Context(), awsidentifiers.GlobalAccountID, reservationOf("t3.micro", 1000))
 		}},
 	}
 	for _, tc := range cases {

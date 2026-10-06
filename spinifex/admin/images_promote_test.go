@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -9,7 +10,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,9 +58,9 @@ func TestPromoteSystemImage_MovesSnapshotToGlobalAccount(t *testing.T) {
 	require.NoError(t, err)
 
 	metaStore := ebsmetadata.NewStore(store, testRemoveBucket)
-	moved, err := metaStore.GetSnapshot(t.Context(), utils.GlobalAccountID, snapID)
+	moved, err := metaStore.GetSnapshot(t.Context(), awsidentifiers.GlobalAccountID, snapID)
 	require.NoError(t, err)
-	assert.Equal(t, utils.GlobalAccountID, moved.OwnerID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, moved.OwnerID)
 	assert.Equal(t, "vol-source-001", moved.VolumeID)
 
 	_, err = metaStore.GetSnapshot(t.Context(), testRemoveAccountID, snapID)

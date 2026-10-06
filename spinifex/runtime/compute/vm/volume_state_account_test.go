@@ -17,7 +17,7 @@ import (
 
 // stateAccountID is the instance-owning account these tests seed. It is a real
 // account ID rather than a placeholder because the production key builder
-// rejects anything utils.IsAccountID refuses.
+// rejects anything awsidentifiers.IsAccountID refuses.
 const stateAccountID = "000000000042"
 
 // Volume documents are keyed under the owning account, so UpdateVolumeState's

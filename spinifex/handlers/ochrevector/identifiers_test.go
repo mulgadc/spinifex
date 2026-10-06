@@ -5,14 +5,14 @@
 package handlers_ochrevector
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestValidateAccountID(t *testing.T) {
-	assert.NoError(t, validateAccountID(utils.GlobalAccountID))
+	assert.NoError(t, validateAccountID(awsidentifiers.GlobalAccountID))
 	assert.NoError(t, validateAccountID("123456789012"))
 
 	assert.Error(t, validateAccountID(""))
@@ -34,8 +34,8 @@ func TestValidateIndexID(t *testing.T) {
 }
 
 func TestSchemaAndRoleNames(t *testing.T) {
-	assert.Equal(t, "kb_"+utils.GlobalAccountID, schemaName(utils.GlobalAccountID))
-	assert.Equal(t, "kb_"+utils.GlobalAccountID+"_role", roleName(utils.GlobalAccountID))
+	assert.Equal(t, "kb_"+awsidentifiers.GlobalAccountID, schemaName(awsidentifiers.GlobalAccountID))
+	assert.Equal(t, "kb_"+awsidentifiers.GlobalAccountID+"_role", roleName(awsidentifiers.GlobalAccountID))
 }
 
 func TestTableAndIndexNames(t *testing.T) {

@@ -1,6 +1,7 @@
 package gateway_rds
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"slices"
 	"testing"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,11 +46,11 @@ func TestAuthorizeCaller_DeniesInternalActionsToCustomers(t *testing.T) {
 			RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID,
 		}},
 		{"system user rather than a session", Caller{
-			AccountID: utils.GlobalAccountID, PrincipalType: "user",
+			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user",
 			RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID,
 		}},
 		{"system session under another role", Caller{
-			AccountID: utils.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
+			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
 			RoleName: "ecsInstanceRole", SessionName: testInstanceID,
 		}},
 	}

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"os"
 	"strconv"
 	"time"
 
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -122,7 +122,7 @@ func waitForEndpointReady(ctx context.Context, svc handlers_bedrock.EndpointServ
 	timeout time.Duration, clock endpointWaitClock) (handlers_bedrock.EndpointRecord, time.Duration, error) {
 	start := clock.now()
 	for {
-		out, err := svc.Describe(ctx, &handlers_bedrock.DescribeEndpointInput{ModelID: modelID}, utils.GlobalAccountID)
+		out, err := svc.Describe(ctx, &handlers_bedrock.DescribeEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
 		if err != nil {
 			return handlers_bedrock.EndpointRecord{}, clock.now().Sub(start), err
 		}
@@ -216,7 +216,7 @@ func reclaimRows(rec handlers_bedrock.EndpointRecord) [][2]string {
 // shared platform one — List itself now returns every account's records, not
 // just the shared platform account's.
 func listEndpointsOutput(ctx context.Context, svc handlers_bedrock.EndpointService) (string, error) {
-	out, err := svc.List(ctx, &handlers_bedrock.ListEndpointsInput{}, utils.GlobalAccountID)
+	out, err := svc.List(ctx, &handlers_bedrock.ListEndpointsInput{}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -239,7 +239,7 @@ func listEndpointsOutput(ctx context.Context, svc handlers_bedrock.EndpointServi
 // the endpoint, then optionally wait for it. Returns the message to print.
 func runEnsureEndpoint(ctx context.Context, svc handlers_bedrock.EndpointService, modelID string,
 	wait bool, timeout time.Duration, clock endpointWaitClock) (string, error) {
-	out, err := svc.Ensure(ctx, &handlers_bedrock.EnsureEndpointInput{ModelID: modelID}, utils.GlobalAccountID)
+	out, err := svc.Ensure(ctx, &handlers_bedrock.EnsureEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -305,7 +305,7 @@ func runOchreEndpointDescribe(cmd *cobra.Command, _ []string) {
 	}
 	defer closeFn()
 
-	out, err := svc.Describe(context.Background(), &handlers_bedrock.DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, utils.GlobalAccountID)
+	out, err := svc.Describe(context.Background(), &handlers_bedrock.DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)
@@ -337,7 +337,7 @@ func runOchreEndpointList(_ *cobra.Command, _ []string) {
 // no record must not claim a teardown, and it points the operator at --account
 // so a pinned, account-scoped record they can see in 'list' is reachable.
 func deleteEndpointOutput(ctx context.Context, svc handlers_bedrock.EndpointService, modelID, accountID string) (string, error) {
-	out, err := svc.Delete(ctx, &handlers_bedrock.DeleteEndpointInput{ModelID: modelID, AccountID: accountID}, utils.GlobalAccountID)
+	out, err := svc.Delete(ctx, &handlers_bedrock.DeleteEndpointInput{ModelID: modelID, AccountID: accountID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -353,7 +353,7 @@ func deleteEndpointOutput(ctx context.Context, svc handlers_bedrock.EndpointServ
 // no-op message names the shared platform account rather than an empty string.
 func resolveAccountLabel(accountID string) string {
 	if accountID == "" {
-		return utils.GlobalAccountID + " (shared platform)"
+		return awsidentifiers.GlobalAccountID + " (shared platform)"
 	}
 	return accountID
 }

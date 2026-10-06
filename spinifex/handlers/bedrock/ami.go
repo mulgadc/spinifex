@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // servingAMIRoleTag identifies the single vllm-serving runtime AMI, the same
@@ -36,7 +36,7 @@ func resolveServingAMI(ctx context.Context, imgSvc amiResolver) (string, error) 
 			{Name: aws.String("tag:" + tags.ManagedByKey), Values: aws.StringSlice([]string{tags.ManagedByBedrock})},
 			{Name: aws.String("tag:" + servingAMIRoleTag), Values: aws.StringSlice([]string{"vllm-serving"})},
 		},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", fmt.Errorf("bedrock: describe vllm-serving AMI: %w", err)
 	}

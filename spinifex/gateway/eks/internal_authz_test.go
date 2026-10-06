@@ -1,13 +1,13 @@
 package gateway_eks_test
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -28,7 +28,7 @@ const (
 // cpAgent is the principal an IMDS-credentialed control-plane VM presents.
 func cpAgent(instanceID string) gateway_eks.Caller {
 	return gateway_eks.Caller{
-		AccountID:     utils.GlobalAccountID,
+		AccountID:     awsidentifiers.GlobalAccountID,
 		PrincipalType: principalTypeAssumedRole,
 		RoleName:      handlers_eks.CPInstanceRoleName,
 		SessionName:   instanceID,
@@ -71,16 +71,16 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 			SessionName:   cpInstanceID,
 		}},
 		{"system user, not a role session", gateway_eks.Caller{
-			AccountID: utils.GlobalAccountID, PrincipalType: "user", SessionName: "root",
+			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user", SessionName: "root",
 		}},
 		{"another role in the system account", gateway_eks.Caller{
-			AccountID:     utils.GlobalAccountID,
+			AccountID:     awsidentifiers.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      "spinifex-rds-instance",
 			SessionName:   cpInstanceID,
 		}},
 		{"no session name", gateway_eks.Caller{
-			AccountID:     utils.GlobalAccountID,
+			AccountID:     awsidentifiers.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      handlers_eks.CPInstanceRoleName,
 		}},

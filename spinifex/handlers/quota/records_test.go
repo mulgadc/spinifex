@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -11,7 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,7 +69,7 @@ func TestRecordVCPULister_ChargesStoppedButNotTerminal(t *testing.T) {
 // rather than present as zero — the caller's account list is what zeroes it.
 func TestRecordVCPULister_SkipsSystemAccountAndReportsNothingAsAbsent(t *testing.T) {
 	store := recordStore(t)
-	putRecord(t, store, "i-1", utils.GlobalAccountID, "m5.xlarge", vm.StateRunning)
+	putRecord(t, store, "i-1", awsidentifiers.GlobalAccountID, "m5.xlarge", vm.StateRunning)
 
 	totals, complete, err := handlers_quota.RecordVCPULister(store, recordPrefix)(t.Context())
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestAccountForRecord(t *testing.T) {
 	})
 	require.NoError(t, err)
 	system, err := json.Marshal(vm.InstanceRecord{
-		Metadata: resource.Metadata{Name: "i-2", AccountID: utils.GlobalAccountID},
+		Metadata: resource.Metadata{Name: "i-2", AccountID: awsidentifiers.GlobalAccountID},
 	})
 	require.NoError(t, err)
 	unowned, err := json.Marshal(vm.InstanceRecord{Metadata: resource.Metadata{Name: "i-3"}})

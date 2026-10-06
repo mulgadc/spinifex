@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"log/slog"
 	"sync"
@@ -13,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Store persists Spinifex-owned metadata documents in the existing object
@@ -192,7 +192,7 @@ func (s *Store) listSnapshotDocuments(ctx context.Context, accountID string, ski
 // accountPrefix rejects the same accounts the key builders do, so a listing
 // cannot widen to the whole tree by being handed an empty account.
 func accountPrefix(kindPrefix, accountID string) (string, error) {
-	if !utils.IsAccountID(accountID) {
+	if !awsidentifiers.IsAccountID(accountID) {
 		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
 	}
 	return kindPrefix + accountID + "/", nil

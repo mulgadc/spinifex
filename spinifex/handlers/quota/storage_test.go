@@ -2,12 +2,12 @@ package handlers_quota
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 func vol(id string, size int64) *ec2.Volume {
@@ -101,9 +101,11 @@ func TestEnforceVolumeExemptShortCircuits(t *testing.T) {
 		{"modify disabled", func() error {
 			return disabled.EnforceVolumeModify(context.Background(), nil, normalAccount, "vol-a", 1)
 		}},
-		{"create system account", func() error { return enabled.EnforceVolumeCreate(context.Background(), nil, utils.GlobalAccountID, 1) }},
+		{"create system account", func() error {
+			return enabled.EnforceVolumeCreate(context.Background(), nil, awsidentifiers.GlobalAccountID, 1)
+		}},
 		{"modify system account", func() error {
-			return enabled.EnforceVolumeModify(context.Background(), nil, utils.GlobalAccountID, "vol-a", 1)
+			return enabled.EnforceVolumeModify(context.Background(), nil, awsidentifiers.GlobalAccountID, "vol-a", 1)
 		}},
 	}
 	for _, tc := range cases {

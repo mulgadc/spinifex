@@ -3,11 +3,11 @@ package handlers_quota
 import (
 	"context"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // AccountLister enumerates the account IDs whose vCPU counters reconcile should
@@ -37,7 +37,7 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 	}
 	charged := make([]string, 0, len(ids))
 	for _, accountID := range ids {
-		if accountID != utils.GlobalAccountID {
+		if accountID != awsidentifiers.GlobalAccountID {
 			charged = append(charged, accountID)
 		}
 	}
@@ -75,7 +75,7 @@ func (s *Service) Reconcile(ctx context.Context, accounts AccountLister, list In
 // nothing indexes it by account, but it runs once per settled burst instead of
 // once per account per tick.
 func (s *Service) ReconcileAccount(ctx context.Context, accountID string, list InstanceVCPULister) error {
-	if s == nil || !s.limits.Enabled || accountID == utils.GlobalAccountID {
+	if s == nil || !s.limits.Enabled || accountID == awsidentifiers.GlobalAccountID {
 		return nil
 	}
 	before := s.counterRevisions(ctx, []string{accountID})

@@ -12,7 +12,6 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // The first VM behind a DB instance. Replacement and recovery increment it,
@@ -50,7 +49,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	}
 	// The agent cannot bootstrap without this profile, so resolve it before the
 	// identifier reservation or any launch side effects.
-	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, err
 	}

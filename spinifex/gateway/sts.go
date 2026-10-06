@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net/http"
 
@@ -13,7 +14,6 @@ import (
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // stsCaller bundles the SigV4-derived caller fields that any STS action may
@@ -225,7 +225,7 @@ func buildCallerARN(accountID, identity, principalType, assumedRoleARN string) (
 	case principalTypeRoot:
 		return spxarn.FormatIAMRoot(accountID), nil
 	case principalTypeUser:
-		if identity == "root" && accountID == utils.GlobalAccountID {
+		if identity == "root" && accountID == awsidentifiers.GlobalAccountID {
 			return spxarn.FormatIAMRoot(accountID), nil
 		}
 		if identity == "" {

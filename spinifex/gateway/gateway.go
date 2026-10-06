@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"log/slog"
 	"maps"
@@ -777,7 +778,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 
 	switch principal.principalType {
 	case principalTypeUser:
-		if principal.identity == "root" && principal.accountID == utils.GlobalAccountID {
+		if principal.identity == "root" && principal.accountID == awsidentifiers.GlobalAccountID {
 			// Global root bypass — user branch only.
 			return nil
 		}

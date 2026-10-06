@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Builds a new DB instance on a volume created from the snapshot. It is a fresh
@@ -65,7 +65,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	}
 	// The agent cannot bootstrap without this profile, so resolve it before the
 	// identifier reservation or restored-volume creation.
-	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +384,7 @@ func (s *Service) createRestoreVolume(ctx context.Context, req *validatedCreate,
 				{Key: aws.String(rdsInstanceTagKey), Value: aws.String(req.Identifier)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("rds: create the data volume for %s from %s: %w",
 			req.Identifier, snapshot.DBSnapshotIdentifier, err)
@@ -404,7 +404,7 @@ func (s *Service) discardRestoreVolume(ctx context.Context, volumeID string) {
 	defer cancel()
 	if _, err := s.deps.Launch.Volume.DeleteVolume(rbCtx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
-	}, utils.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
+	}, awsidentifiers.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
 		slog.WarnContext(rbCtx, "rds: rollback delete of a restored data volume failed",
 			"volumeId", volumeID, "err", err)
 	}

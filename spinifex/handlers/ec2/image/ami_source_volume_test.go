@@ -2,13 +2,13 @@ package handlers_ec2_image
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +93,7 @@ func TestGetAMISourceVolumeID_ImportedSystemAMI(t *testing.T) {
 	// registerImportedAMISnapshot writes. Deriving it here would let the
 	// fixture follow the read path and pin nothing.
 	require.NoError(t, svc.MetadataStore().PutSnapshot(context.Background(), ebsmetadata.Snapshot{
-		SnapshotID: "snap-sysimp01", VolumeID: "vol-imported", OwnerID: utils.GlobalAccountID,
+		SnapshotID: "snap-sysimp01", VolumeID: "vol-imported", OwnerID: awsidentifiers.GlobalAccountID,
 	}))
 
 	got, err := svc.GetAMISourceVolumeID(context.Background(), "ami-sysimp01")

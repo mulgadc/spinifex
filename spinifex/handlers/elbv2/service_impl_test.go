@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"sort"
 	"strings"
 	"sync"
@@ -16,7 +17,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -2375,7 +2375,7 @@ func TestLBAgentHeartbeat_SystemAccountAllowed(t *testing.T) {
 
 	out, err := svc.LBAgentHeartbeat(context.Background(), &LBAgentHeartbeatInput{
 		LBID: aws.String("lb-sys1"),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, StateActive, *out.Status)
 }
@@ -2471,7 +2471,7 @@ func TestGetLBConfig_SystemAccountAllowed(t *testing.T) {
 
 	out, err := svc.GetLBConfig(context.Background(), &GetLBConfigInput{
 		LBID: aws.String("lb-syscfg1"),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, "global\n    log stdout\n", *out.ConfigText)
 }

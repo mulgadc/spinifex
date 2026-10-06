@@ -1,11 +1,11 @@
 package handlers_elbv2
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,8 +17,8 @@ func TestEnsureLBInstanceProfile_UsesLazyProvider(t *testing.T) {
 	f := iammock.New()
 	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f }}
 
-	arn := s.ensureLBInstanceProfile(utils.GlobalAccountID)
-	assert.Equal(t, "arn:aws:iam::"+utils.GlobalAccountID+":instance-profile/"+lbAgentSystemRoleName, arn)
+	arn := s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
+	assert.Equal(t, "arn:aws:iam::"+awsidentifiers.GlobalAccountID+":instance-profile/"+lbAgentSystemRoleName, arn)
 }
 
 // TestEnsureLBInstanceProfile_CreatesInSystemAccount asserts the role and profile
@@ -30,9 +30,9 @@ func TestEnsureLBInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 	f := iammock.New()
 	s := &ELBv2ServiceImpl{IAM: f}
 
-	s.ensureLBInstanceProfile(utils.GlobalAccountID)
-	assert.Equal(t, utils.GlobalAccountID, f.LastRoleAcct)
-	assert.Equal(t, utils.GlobalAccountID, f.LastProfileAcct)
+	s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, f.LastRoleAcct)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, f.LastProfileAcct)
 }
 
 // TestEnsureLBInstanceProfile_NotReadyFallsBack asserts an unwired IAM (no field,
@@ -41,5 +41,5 @@ func TestEnsureLBInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 func TestEnsureLBInstanceProfile_NotReadyFallsBack(t *testing.T) {
 	t.Parallel()
 	s := &ELBv2ServiceImpl{IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil }}
-	assert.Empty(t, s.ensureLBInstanceProfile(utils.GlobalAccountID))
+	assert.Empty(t, s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID))
 }

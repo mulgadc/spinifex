@@ -2,6 +2,7 @@ package handlers_rds
 
 import (
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,7 +57,7 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 	assert.Equal(t, tags.ManagedByRDS, tagOf(created[0].TagSpecifications, tags.ManagedByKey))
 	// System-owned like every RDS data volume, so the customer reaches it only
 	// through the DB instance.
-	assert.Equal(t, []string{utils.GlobalAccountID}, h.launch.volumes.accts)
+	assert.Equal(t, []string{awsidentifiers.GlobalAccountID}, h.launch.volumes.accts)
 
 	stored := h.instance(t, testRestoredID)
 	assert.Equal(t, "vol-rdsdata01", stored.DataVolumeID)
@@ -72,7 +72,7 @@ func TestRestoreDBInstanceFromDBSnapshot_BuildsANewInstanceOnTheSnapshotsData(t 
 	assert.Empty(t, stored.Bootstrap.MasterUserPassword)
 
 	require.NotNil(t, h.launch.launcher.input)
-	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(awsidentifiers.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }
 
 func TestRestoreDBInstanceFromDBSnapshot_IAMFailurePrecedesReservationAndVolume(t *testing.T) {

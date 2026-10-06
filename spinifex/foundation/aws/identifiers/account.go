@@ -1,4 +1,4 @@
-package utils
+package identifiers
 
 // GlobalAccountID is the root/system account ID.
 const GlobalAccountID = "000000000000"

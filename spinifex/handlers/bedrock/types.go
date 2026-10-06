@@ -15,7 +15,7 @@ const (
 // current record without launching a second VM.
 //
 // AccountID scopes the endpoint to a tenant; empty resolves to
-// utils.GlobalAccountID, the shared platform endpoint every caller used
+// awsidentifiers.GlobalAccountID, the shared platform endpoint every caller used
 // before per-account endpoints existed. Pinned marks a created endpoint
 // exempt from idle reaping and eviction.
 type EnsureEndpointInput struct {
@@ -29,7 +29,7 @@ type EnsureEndpointOutput struct {
 }
 
 // DescribeEndpointInput looks up modelID's current endpoint record.
-// AccountID scopes the lookup; empty resolves to utils.GlobalAccountID.
+// AccountID scopes the lookup; empty resolves to awsidentifiers.GlobalAccountID.
 type DescribeEndpointInput struct {
 	ModelID   string `json:"model_id"`
 	AccountID string `json:"account_id,omitempty"`
@@ -49,7 +49,7 @@ type ListEndpointsOutput struct {
 
 // DeleteEndpointInput requests a READY endpoint move to DRAINING and its VM
 // be torn down. Idempotent: an already-ABSENT endpoint returns success.
-// AccountID scopes the target; empty resolves to utils.GlobalAccountID.
+// AccountID scopes the target; empty resolves to awsidentifiers.GlobalAccountID.
 type DeleteEndpointInput struct {
 	ModelID   string `json:"model_id"`
 	AccountID string `json:"account_id,omitempty"`

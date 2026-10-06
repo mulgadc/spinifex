@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -141,12 +141,12 @@ func (s *Service) httpClient() *http.Client {
 	return &http.Client{}
 }
 
-// resolveAccountID returns accountID, or utils.GlobalAccountID for the zero
+// resolveAccountID returns accountID, or awsidentifiers.GlobalAccountID for the zero
 // value, so every existing Ensure/Describe/Delete caller that leaves the
 // input's AccountID unset keeps resolving to the shared platform endpoint.
 func resolveAccountID(accountID string) string {
 	if accountID == "" {
-		return utils.GlobalAccountID
+		return awsidentifiers.GlobalAccountID
 	}
 	return accountID
 }
@@ -262,7 +262,7 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 // Delete takes the per-key mutex for the victim while Ensure holds it for
 // wantModelID. The two can never be the same key, so the locks are disjoint.
 func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minVRAMMiB int) bool {
-	recs, err := s.store.list(ctx, utils.GlobalAccountID)
+	recs, err := s.store.list(ctx, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "bedrock: list endpoints for eviction failed", "model", wantModelID, "err", err)
 		return false
@@ -284,7 +284,7 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 	slog.InfoContext(ctx, "bedrock: evicting an idle endpoint to make room",
 		"evicting", victim.ModelID, "instanceId", victim.InstanceID, "for", wantModelID,
 		"idleSince", victim.LastActive())
-	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, utils.GlobalAccountID); err != nil {
+	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
 		slog.ErrorContext(ctx, "bedrock: eviction failed; the pending launch keeps its capacity refusal",
 			"evicting", victim.ModelID, "for", wantModelID, "err", err)
 		return false

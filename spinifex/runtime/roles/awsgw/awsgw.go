@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"maps"
@@ -540,7 +541,7 @@ func launchService(config *config.ClusterConfig) error {
 		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
 		Prefix:            daemon.InstanceRecordPrefix,
 		VisibleToCaller:   handlers_ec2_instance.IsInstanceVisibleToCaller,
-		FallbackAccountID: utils.GlobalAccountID,
+		FallbackAccountID: awsidentifiers.GlobalAccountID,
 	})
 	go instanceCache.Run(janitorCtx)
 

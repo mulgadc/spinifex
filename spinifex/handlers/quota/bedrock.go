@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/time/rate"
 )
@@ -42,7 +42,7 @@ func (s *Service) SetBedrockUsage(r BedrockUsageReader) {
 // stream-fed counter catches up. A few seconds of lag behind real usage is
 // an accepted property of a monthly cap.
 func (s *Service) CheckBedrockTokens(ctx context.Context, accountID string) error {
-	if s == nil || !s.limits.TokensPerMonthEnabled || accountID == utils.GlobalAccountID {
+	if s == nil || !s.limits.TokensPerMonthEnabled || accountID == awsidentifiers.GlobalAccountID {
 		return nil
 	}
 	if s.bedrockUsage == nil {
@@ -66,7 +66,7 @@ func (s *Service) CheckBedrockTokens(ctx context.Context, accountID string) erro
 // limit is to occasionally allow a little more, never to add network latency
 // to every invocation for a slightly tighter cap.
 func (s *Service) CheckBedrockRPM(accountID string) error {
-	if s == nil || !s.limits.RequestsPerMinuteEnabled || accountID == utils.GlobalAccountID {
+	if s == nil || !s.limits.RequestsPerMinuteEnabled || accountID == awsidentifiers.GlobalAccountID {
 		return nil
 	}
 	if !s.rpm.allow(accountID, s.limits.RequestsPerMinute) {

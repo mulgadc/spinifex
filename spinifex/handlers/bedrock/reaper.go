@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Sweep and lease timing. The holder refreshes well inside the bucket's TTL,
@@ -127,7 +127,7 @@ func (r *Reaper) IsLeader() bool {
 // sweepOnce scrapes every READY endpoint once and acts on what it saw. One
 // endpoint's failure does not stop the pass: the others still need deciding.
 func (r *Reaper) sweepOnce(ctx context.Context) error {
-	recs, err := r.svc.store.list(ctx, utils.GlobalAccountID)
+	recs, err := r.svc.store.list(ctx, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord) error {
 		slog.InfoContext(ctx, "bedrock reaper: reclaiming an idle endpoint",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
 			"idle_ms", otelsetup.Millis(now.Sub(updated.LastActive())))
-		if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, utils.GlobalAccountID); err != nil {
+		if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
 			return fmt.Errorf("reap idle endpoint: %w", err)
 		}
 		return nil
@@ -254,13 +254,13 @@ func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, ca
 	slog.ErrorContext(ctx, "bedrock reaper: endpoint unreachable; terminating and relaunching",
 		"model", rec.ModelID, "instanceId", rec.InstanceID,
 		"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-	if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, utils.GlobalAccountID); err != nil {
+	if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
 		return fmt.Errorf("terminate unreachable endpoint: %w", err)
 	}
 	// A relaunch that cannot be admitted (the device did not come back, or
 	// another model took it) is not a sweep failure: the endpoint is gone, which
 	// was the point, and the next invoke will ask for it again.
-	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: rec.ModelID}, utils.GlobalAccountID); err != nil {
+	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: rec.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
 		slog.WarnContext(ctx, "bedrock reaper: relaunch of an unreachable endpoint was refused",
 			"model", rec.ModelID, "err", err)
 	}
@@ -275,7 +275,7 @@ func (r *Reaper) persistObservation(ctx context.Context, prev, next EndpointReco
 		prev.SuccessTotal == next.SuccessTotal && prev.ScrapeFailures == next.ScrapeFailures {
 		return nil
 	}
-	key := resolveKey(utils.GlobalAccountID, next.ModelID)
+	key := resolveKey(awsidentifiers.GlobalAccountID, next.ModelID)
 	current, rev, found, err := r.svc.store.getRevision(ctx, key)
 	if err != nil {
 		return err

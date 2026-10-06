@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net"
 	"slices"
@@ -185,13 +186,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, err
 	}
 
-	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, utils.GlobalAccountID, region)
+	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, awsidentifiers.GlobalAccountID, region)
 	if err != nil {
 		return nil, err
 	}
 	systemSubnetID := sysRefs.PrivateSubnetIDs[0]
 
-	systemSGID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, utils.GlobalAccountID, region, sysRefs.VpcID)
+	systemSGID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, awsidentifiers.GlobalAccountID, region, sysRefs.VpcID)
 	if err != nil {
 		return nil, err
 	}
@@ -223,13 +224,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}()
 
-	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, []string{systemSGID},
+	systemENI, err := createLaunchENI(ctx, deps.VPC, awsidentifiers.GlobalAccountID, systemSubnetID, []string{systemSGID},
 		"RDS management NIC for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier, false)
 	if err != nil {
 		return nil, err
 	}
 	rollback = append(rollback, func(ctx context.Context) {
-		deleteLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemENI.id)
+		deleteLaunchENI(ctx, deps.VPC, awsidentifiers.GlobalAccountID, systemENI.id)
 	})
 
 	// A replace adopts the ENI the endpoint already resolves to; only a create
@@ -261,7 +262,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		ImageID:      amiID,
 		// The VM and its primary NIC live in the system account; the customer
 		// ENI carries its own account so the daemon updates the right record.
-		AccountID: utils.GlobalAccountID,
+		AccountID: awsidentifiers.GlobalAccountID,
 		SubnetID:  systemSubnetID,
 		ENIID:     systemENI.id,
 		ENIMac:    systemENI.mac,
@@ -314,7 +315,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 					{Key: aws.String(rdsInstanceTagKey), Value: aws.String(in.DBInstanceIdentifier)},
 				},
 			}},
-		}, utils.GlobalAccountID)
+		}, awsidentifiers.GlobalAccountID)
 		if volErr != nil {
 			return nil, fmt.Errorf("rds: create data volume for %s: %w", in.DBInstanceIdentifier, volErr)
 		}
@@ -324,7 +325,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		volumeID = aws.StringValue(volume.VolumeId)
 		volumeEncrypted = aws.BoolValue(volume.Encrypted)
 		rollback = append(rollback, func(ctx context.Context) {
-			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, utils.GlobalAccountID); delErr != nil {
+			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, awsidentifiers.GlobalAccountID); delErr != nil {
 				slog.WarnContext(ctx, "rds: rollback delete of orphaned data volume failed",
 					"dbInstance", in.DBInstanceIdentifier, "volumeId", volumeID, "err", delErr)
 			}
@@ -338,7 +339,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}
 
-	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
+	device, err := deps.Attacher.AttachVolume(ctx, awsidentifiers.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
 	if err != nil {
 		return nil, fmt.Errorf("rds: attach data volume %s to %s: %w", volumeID, instanceID, err)
 	}
@@ -532,7 +533,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		})
 	}
 
-	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, utils.GlobalAccountID)
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", fmt.Errorf("rds: describe %s AMI: %w", engine, err)
 	}

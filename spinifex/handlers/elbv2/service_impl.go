@@ -503,7 +503,7 @@ func (s *ELBv2ServiceImpl) launchLBVM(ctx context.Context, lbID, scheme string, 
 	// secret rides in fw_cfg. Falls back to baked system keys when IAM is unwired.
 	// The role lives in the system account because the LB VM (and its ENI) run
 	// there — IMDS resolves the profile under the instance's account.
-	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+	profileARN := s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
 
 	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
 	launchInput := &SystemInstanceInput{
@@ -610,7 +610,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*Syst
 	// Re-ensure the instance profile so a recovered LB VM keeps IMDS creds; the
 	// ensure is idempotent and converges on the existing role/profile. The role
 	// lives in the system account where the LB VM runs, not the LB owner account.
-	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+	profileARN := s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
 
 	return &SystemInstanceInput{
 		InstanceType:          rc.InstanceType,
@@ -1047,7 +1047,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+	if lb == nil || (lb.AccountID != accountID && accountID != awsidentifiers.GlobalAccountID) {
 		// Log to distinguish a stuck-in-provisioning LB from one whose heartbeat never arrived.
 		slog.WarnContext(ctx, "LBAgentHeartbeat: LB not found or account mismatch",
 			"lbId", lbID, "accountId", accountID, "found", lb != nil)
@@ -1106,7 +1106,7 @@ func (s *ELBv2ServiceImpl) GetLBConfig(ctx context.Context, input *GetLBConfigIn
 		slog.ErrorContext(ctx, "GetLBConfig: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+	if lb == nil || (lb.AccountID != accountID && accountID != awsidentifiers.GlobalAccountID) {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 

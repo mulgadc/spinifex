@@ -248,14 +248,14 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput, accountID string,
 	parsedFilters map[string][]string, encryptedAtRest bool) *ec2.Image {
 	amiOwner := amiMeta.ImageOwnerAlias
-	isSystemAMI := amiOwner != "" && !utils.IsAccountID(amiOwner)
+	isSystemAMI := amiOwner != "" && !awsidentifiers.IsAccountID(amiOwner)
 
 	// Resolved up front so the owner filter below compares against the same
 	// value the OwnerId field reports, rather than the raw alias string a
 	// system AMI carries instead of a numeric account ID.
 	ownerID := amiOwner
 	if isSystemAMI {
-		ownerID = utils.GlobalAccountID
+		ownerID = awsidentifiers.GlobalAccountID
 	}
 
 	if !callerCanReadAMI(amiMeta, accountID) {
@@ -619,10 +619,10 @@ func (s *ImageServiceImpl) GetAMIConfig(ctx context.Context, imageID string) (eb
 // drift from this predicate. An empty alias is a corrupt document rather than a
 // system image, so it derives nothing and the fallback cannot answer for it.
 func snapshotAccountForAMI(meta ebsmetadata.AMI) (accountID string, derived bool) {
-	if utils.IsAccountID(meta.ImageOwnerAlias) {
+	if awsidentifiers.IsAccountID(meta.ImageOwnerAlias) {
 		return meta.ImageOwnerAlias, false
 	}
-	return utils.GlobalAccountID, meta.ImageOwnerAlias != ""
+	return awsidentifiers.GlobalAccountID, meta.ImageOwnerAlias != ""
 }
 
 // GetAMISourceVolumeID returns the volume whose blocks imageID's snapshot
@@ -745,7 +745,7 @@ func (s *ImageServiceImpl) checkAMIOwnership(meta ebsmetadata.AMI, accountID str
 		slog.Error("checkAMIOwnership: AMI config has empty ImageOwnerAlias", "imageId", meta.ImageID)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if !utils.IsAccountID(owner) || owner != accountID {
+	if !awsidentifiers.IsAccountID(owner) || owner != accountID {
 		return errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 	return nil
@@ -758,7 +758,7 @@ func callerCanReadAMI(meta ebsmetadata.AMI, accountID string) bool {
 	if owner == "" {
 		return false
 	}
-	if !utils.IsAccountID(owner) {
+	if !awsidentifiers.IsAccountID(owner) {
 		return true
 	}
 	return owner == accountID

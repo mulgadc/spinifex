@@ -7,6 +7,7 @@ package handlers_ec2_snapshot
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"testing"
 
@@ -19,7 +20,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -52,17 +52,17 @@ func TestDeleteSnapshot_LeavesNoDocument(t *testing.T) {
 func TestSnapshot_SystemAccountIsAnOrdinaryAccount(t *testing.T) {
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
-	createTestVolumeForAccount(t, svc, store, "vol-sys", 8, utils.GlobalAccountID)
+	createTestVolumeForAccount(t, svc, store, "vol-sys", 8, awsidentifiers.GlobalAccountID)
 
-	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-sys")}, utils.GlobalAccountID)
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-sys")}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 
-	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, utils.GlobalAccountID)
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	require.Len(t, listed.Snapshots, 1)
 	assert.Equal(t, aws.StringValue(snap.SnapshotId), aws.StringValue(listed.Snapshots[0].SnapshotId))
 
-	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, utils.GlobalAccountID)
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 }
 
@@ -257,9 +257,9 @@ func TestDescribeSnapshots_ForeignOwnerIDReadsNothing(t *testing.T) {
 func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
-	createTestVolumeForAccount(t, svc, store, "vol-system", 8, utils.GlobalAccountID)
+	createTestVolumeForAccount(t, svc, store, "vol-system", 8, awsidentifiers.GlobalAccountID)
 
-	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-system")}, utils.GlobalAccountID)
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-system")}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
@@ -268,7 +268,7 @@ func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
 		SnapshotID: aws.StringValue(snap.SnapshotId),
 	})
 
-	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, utils.GlobalAccountID)
+	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, awsidentifiers.GlobalAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, err.Error())
 }

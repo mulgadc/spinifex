@@ -192,7 +192,7 @@ var backupAccountFn = func(ctx context.Context, accountID string) (*handlers_och
 	defer nc.Close()
 	return utils.NATSRequest[handlers_ochrevector.BackupAccountResponse](ctx, nc,
 		handlers_ochrevector.SubjectBackupAccount, &handlers_ochrevector.BackupAccountRequest{AccountID: accountID},
-		vectorBackupRestoreTimeout, utils.GlobalAccountID)
+		vectorBackupRestoreTimeout, awsidentifiers.GlobalAccountID)
 }
 
 // restoreAccountFn indirects the NATS call so runRestoreAccount is testable
@@ -205,7 +205,7 @@ var restoreAccountFn = func(ctx context.Context, accountID, objectKey string) er
 	defer nc.Close()
 	_, err = utils.NATSRequest[handlers_ochrevector.RestoreAccountResponse](ctx, nc,
 		handlers_ochrevector.SubjectRestoreAccount, &handlers_ochrevector.RestoreAccountRequest{AccountID: accountID, ObjectKey: objectKey},
-		vectorBackupRestoreTimeout, utils.GlobalAccountID)
+		vectorBackupRestoreTimeout, awsidentifiers.GlobalAccountID)
 	return err
 }
 
@@ -331,7 +331,7 @@ func runIndexCreate(ctx context.Context, svc handlers_ochrevector.VectorService,
 		Name:           name,
 		Dimension:      dimension,
 		EmbeddingModel: model,
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -340,7 +340,7 @@ func runIndexCreate(ctx context.Context, svc handlers_ochrevector.VectorService,
 
 // runIndexDelete is the testable core of 'ochre vector index delete'.
 func runIndexDelete(ctx context.Context, svc handlers_ochrevector.VectorService, indexID string) (string, error) {
-	if _, err := svc.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: indexID}, utils.GlobalAccountID); err != nil {
+	if _, err := svc.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: indexID}, awsidentifiers.GlobalAccountID); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("✅ Index %s deleted.", indexID), nil
@@ -349,7 +349,7 @@ func runIndexDelete(ctx context.Context, svc handlers_ochrevector.VectorService,
 // listIndexesOutput renders 'ochre vector index list'. Split from its Run
 // function so it is testable against a fake service with no NATS connection.
 func listIndexesOutput(ctx context.Context, svc handlers_ochrevector.VectorService) (string, error) {
-	out, err := svc.ListIndexes(ctx, &handlers_ochrevector.ListIndexesRequest{}, utils.GlobalAccountID)
+	out, err := svc.ListIndexes(ctx, &handlers_ochrevector.ListIndexesRequest{}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -376,7 +376,7 @@ func runIngest(ctx context.Context, svc handlers_ochrevector.VectorService, inde
 			ChunkOverlap: chunkOverlap,
 			Metadata:     meta,
 		},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -385,7 +385,7 @@ func runIngest(ctx context.Context, svc handlers_ochrevector.VectorService, inde
 
 // runJobDescribe is the testable core of 'ochre vector job describe'.
 func runJobDescribe(ctx context.Context, svc handlers_ochrevector.VectorService, jobID string) (string, error) {
-	out, err := svc.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, utils.GlobalAccountID)
+	out, err := svc.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -398,7 +398,7 @@ func runQuery(ctx context.Context, svc handlers_ochrevector.VectorService, index
 	if err != nil {
 		return "", err
 	}
-	out, err := svc.Query(ctx, &handlers_ochrevector.QueryRequest{IndexID: indexID, Text: text, K: k, Filter: filter}, utils.GlobalAccountID)
+	out, err := svc.Query(ctx, &handlers_ochrevector.QueryRequest{IndexID: indexID, Text: text, K: k, Filter: filter}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}

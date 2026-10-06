@@ -2,12 +2,12 @@ package handlers_bedrock
 
 import (
 	"context"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"sync"
 	"time"
 
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -159,7 +159,7 @@ func (r *DynamicEndpointResolver) Endpoint(ctx context.Context, modelID string) 
 // empty base URL means "not resolved", which is the only outcome a cold model
 // can have: the launch outlives this request by design.
 func (r *DynamicEndpointResolver) resolve(ctx context.Context, modelID string) (string, error) {
-	baseURL, err := r.describeAndEnsure(ctx, utils.GlobalAccountID, modelID, false)
+	baseURL, err := r.describeAndEnsure(ctx, awsidentifiers.GlobalAccountID, modelID, false)
 	if err != nil || baseURL == "" {
 		return baseURL, err
 	}

@@ -30,7 +30,7 @@ const applianceBucketHistory = 1
 const appliancePostgresKey = "postgres"
 
 // ApplianceIdentifier is the appliance's reserved, deployment-wide identifier
-// (D2): a system resource under utils.GlobalAccountID, never a
+// (D2): a system resource under awsidentifiers.GlobalAccountID, never a
 // caller-supplied or generated id.
 const ApplianceIdentifier = "ochre-vector-pg"
 

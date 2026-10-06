@@ -662,7 +662,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	}
 	// Caller must own the AMI or the owner alias must be non-account-ID (e.g. "self", "spinifex", "").
 	amiOwner := amiMeta.ImageOwnerAlias
-	if amiOwner != "" && amiOwner != accountID && utils.IsAccountID(amiOwner) {
+	if amiOwner != "" && amiOwner != accountID && awsidentifiers.IsAccountID(amiOwner) {
 		slog.WarnContext(ctx, "PrepareRunInstances: AMI not owned by caller", "imageId", *input.ImageId, "amiOwner", amiOwner, "accountID", accountID)
 		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
@@ -1965,7 +1965,7 @@ var DescribeInstanceStatusValidFilters = map[string]bool{
 // Pre-Phase4 instances (empty AccountID) are only visible to root (GlobalAccountID).
 func IsInstanceVisible(callerAccountID, ownerAccountID string) bool {
 	if ownerAccountID == "" {
-		return callerAccountID == utils.GlobalAccountID
+		return callerAccountID == awsidentifiers.GlobalAccountID
 	}
 	return callerAccountID == ownerAccountID
 }
@@ -1977,7 +1977,7 @@ func IsInstanceVisibleToCaller(accountID string, v *vm.VM) bool {
 	if !IsInstanceVisible(accountID, v.AccountID) {
 		return false
 	}
-	return v.ManagedBy == "" || accountID == utils.GlobalAccountID
+	return v.ManagedBy == "" || accountID == awsidentifiers.GlobalAccountID
 }
 
 // instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed awsfilters.

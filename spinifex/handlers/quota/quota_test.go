@@ -1,9 +1,9 @@
 package handlers_quota
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	toml "github.com/pelletier/go-toml/v2"
 )
 
@@ -73,10 +73,10 @@ func TestExempt(t *testing.T) {
 		accountID string
 		want      bool
 	}{
-		{"system account when enabled", Limits{Enabled: true}, utils.GlobalAccountID, true},
+		{"system account when enabled", Limits{Enabled: true}, awsidentifiers.GlobalAccountID, true},
 		{"normal account when enabled", Limits{Enabled: true}, normalAccount, false},
 		{"normal account when disabled", Limits{Enabled: false}, normalAccount, true},
-		{"system account when disabled", Limits{Enabled: false}, utils.GlobalAccountID, true},
+		{"system account when disabled", Limits{Enabled: false}, awsidentifiers.GlobalAccountID, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

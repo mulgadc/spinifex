@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // The one primitive a class change, a storage grow that rides the same outage,
@@ -55,7 +55,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv *kvstore.Bucket, acc
 	}
 	// Resolve the profile before stopping the engine or terminating its VM. A
 	// profile failure must leave the current database serving.
-	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return err
 	}
@@ -248,5 +248,5 @@ func (s *Service) deleteSystemENI(ctx context.Context, rec *DBInstanceRecord) {
 	if rec.SystemENIID == "" || s.deps.Launch.VPC == nil {
 		return
 	}
-	deleteLaunchENI(ctx, s.deps.Launch.VPC, utils.GlobalAccountID, rec.SystemENIID)
+	deleteLaunchENI(ctx, s.deps.Launch.VPC, awsidentifiers.GlobalAccountID, rec.SystemENIID)
 }

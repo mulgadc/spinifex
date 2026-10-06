@@ -8,6 +8,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/pki"
 	"log/slog"
 	"math/big"
 	"net"
@@ -55,7 +56,7 @@ func GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, hostname, nodeIP st
 		return fmt.Errorf("ipsec peer cert: invalid nodeIP %q", nodeIP)
 	}
 
-	caCert, caKey, err := LoadCAKeyPair(caCertPath, caKeyPath)
+	caCert, caKey, err := pki.LoadCAKeyPair(caCertPath, caKeyPath)
 	if err != nil {
 		return err
 	}
@@ -160,41 +161,6 @@ var charonRereadCAs = func() error {
 		return fmt.Errorf("ipsec rereadcacerts: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
-}
-
-// Exported so runtime services that mint from the cluster CA share one loader
-// rather than each re-implementing the PEM/PKCS8 handling.
-func LoadCAKeyPair(caCertPath, caKeyPath string) (*x509.Certificate, *rsa.PrivateKey, error) {
-	certPEM, err := os.ReadFile(caCertPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read CA cert %s: %w", caCertPath, err)
-	}
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return nil, nil, fmt.Errorf("decode CA cert PEM at %s", caCertPath)
-	}
-	caCert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse CA cert: %w", err)
-	}
-
-	keyPEM, err := os.ReadFile(caKeyPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read CA key %s: %w", caKeyPath, err)
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, nil, fmt.Errorf("decode CA key PEM at %s", caKeyPath)
-	}
-	caKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse CA key: %w", err)
-	}
-	rsaKey, ok := caKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, nil, fmt.Errorf("CA key is not RSA")
-	}
-	return caCert, rsaKey, nil
 }
 
 func writePEMFile(path, blockType string, der []byte, mode os.FileMode) error {

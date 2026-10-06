@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/pki"
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -222,7 +222,7 @@ func (s *Service) loadCA() (*x509.Certificate, *rsa.PrivateKey, error) {
 	if s.deps.CACertPath == "" || s.deps.CAKeyPath == "" {
 		return nil, nil, errors.New("rds service: incomplete cluster CA configuration")
 	}
-	return admin.LoadCAKeyPair(s.deps.CACertPath, s.deps.CAKeyPath)
+	return pki.LoadCAKeyPair(s.deps.CACertPath, s.deps.CAKeyPath)
 }
 
 // Whether this deployment can serve TLS at all, which is whether it holds a

@@ -35,7 +35,7 @@ func TestUpdateSecurityGroupRuleDescriptions_MissingGroupId(t *testing.T) {
 }
 
 func TestUpdateSecurityGroupRuleDescriptions_MalformedRuleID(t *testing.T) {
-	for _, bad := range []string{"sgr-toolong0123456789abcdef", "sgr-XYZ", "sg-0123456789abcdef0", ""} {
+	for _, bad := range []string{"sgr-toolong0123456789abcdef", "SGR-0123456789abcdef0", "sg-0123456789abcdef0", ""} {
 		_, err := gateway_ec2_vpc.UpdateSecurityGroupRuleDescriptionsIngress(context.Background(), &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{
 			GroupId: aws.String("sg-0123456789abcdef0"),
 			SecurityGroupRuleDescriptions: []*ec2.SecurityGroupRuleDescription{

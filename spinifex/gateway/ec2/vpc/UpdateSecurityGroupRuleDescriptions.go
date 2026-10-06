@@ -10,11 +10,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// validateSGRuleDescriptions checks the sgr-<17 hex> shape before the request
-// crosses NATS so a malformed ID never reaches the handler.
+// validateSGRuleDescriptions rejects a rule ID AWS calls malformed before the
+// request crosses NATS; whether a well-formed ID exists is the handler's to answer.
 func validateSGRuleDescriptions(descriptions []*ec2.SecurityGroupRuleDescription) error {
 	for _, d := range descriptions {
-		if d == nil || d.SecurityGroupRuleId == nil || !handlers_ec2_vpc.SGRuleIDRegex.MatchString(*d.SecurityGroupRuleId) {
+		if d == nil || d.SecurityGroupRuleId == nil || handlers_ec2_vpc.SGRuleIDIsMalformed(*d.SecurityGroupRuleId) {
 			return errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 		}
 	}

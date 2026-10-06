@@ -210,10 +210,16 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 
 	certArn := aws.StringValue(input.CertificateArn)
 	var inUseBy []string
+	tags := tagsToMap(input.Tags)
 	reimport := certArn != ""
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
 	} else {
+		// AWS refuses tags on re-import. The stored tags carry forward below,
+		// so a plain re-import does not clear them.
+		if len(input.Tags) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Tagging is not permitted on re-import.")
+		}
 		// Re-import: the ARN must be one the gate can read, and must already
 		// exist and belong to the caller.
 		if _, ok := arn.ParseACMCertificateID(certArn); !ok {
@@ -229,6 +235,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		// Carry the InUseBy index forward — new material under the same ARN
 		// must not silently drop the load balancers that reference it.
 		inUseBy = existing.InUseBy
+		tags = existing.Tags
 	}
 
 	rec := &CertRecord{
@@ -246,7 +253,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		NotBefore:        leaf.NotBefore,
 		NotAfter:         leaf.NotAfter,
 		ImportedAt:       time.Now().UTC(),
-		Tags:             tagsToMap(input.Tags),
+		Tags:             tags,
 		InUseBy:          inUseBy,
 		Type:             certTypeImported,
 		Status:           certStatusIssued,

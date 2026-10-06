@@ -27,7 +27,6 @@ func TestProviderTracing_ServerSpanJoinsTheCallersTrace(t *testing.T) {
 
 	clientSpan, serverSpan := testutil.SpansByKind(t, recorder)
 	require.NotNil(t, clientSpan, "no client span recorded")
-	require.NotNil(t, serverSpan, "no server span recorded")
 	assert.Equal(t, "ebs.capabilities", clientSpan.Name())
 	assert.Equal(t, "ebs.capabilities", serverSpan.Name())
 	assert.Equal(t, clientSpan.SpanContext().TraceID(), serverSpan.SpanContext().TraceID())
@@ -65,7 +64,6 @@ func TestProviderTracing_SpanNamesDropTheVolumeID(t *testing.T) {
 	require.NotNil(t, response.Error)
 
 	_, serverSpan := testutil.SpansByKind(t, recorder)
-	require.NotNil(t, serverSpan, "no server span recorded")
 	assert.Equal(t, "ebs.volume.describe", serverSpan.Name())
 	assert.NotContains(t, serverSpan.Name(), volumeID)
 	assert.Equal(t, ownerSubject, testutil.SpanAttribute(t, serverSpan, "ebs.provider.subject").AsString())

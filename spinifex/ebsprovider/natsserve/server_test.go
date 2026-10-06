@@ -20,7 +20,6 @@ func spansByKind(t *testing.T, recorder *tracetest.SpanRecorder) (client, server
 	t.Helper()
 	client, server = testutil.SpansByKind(t, recorder)
 	require.NotNil(t, client, "no client span recorded")
-	require.NotNil(t, server, "no server span recorded")
 	return client, server
 }
 

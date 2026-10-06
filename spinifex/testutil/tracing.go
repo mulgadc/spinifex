@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -42,12 +43,26 @@ func SpanAttribute(t *testing.T, span sdktrace.ReadOnlySpan, key string) attribu
 	return attribute.Value{}
 }
 
-// SpansByKind returns the last recorded span of each kind. Owner-first
-// routing can produce more than one client span for a single call, and the
-// leg that answered is the last one.
+// SpansByKind returns the last recorded span of each kind (owner-first routing
+// can record several client legs; the last answered). Servers reply before
+// ending their span, so this waits for one and fails the test if none ends.
 func SpansByKind(t *testing.T, recorder *tracetest.SpanRecorder) (client, server sdktrace.ReadOnlySpan) {
 	t.Helper()
-	for _, span := range recorder.Ended() {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		client, server = lastSpansByKind(recorder.Ended())
+		if server != nil {
+			return client, server
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no server span recorded within 5s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func lastSpansByKind(spans []sdktrace.ReadOnlySpan) (client, server sdktrace.ReadOnlySpan) {
+	for _, span := range spans {
 		switch span.SpanKind() {
 		case trace.SpanKindClient:
 			client = span

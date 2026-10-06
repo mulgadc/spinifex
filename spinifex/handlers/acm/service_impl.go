@@ -764,15 +764,25 @@ func leafDomain(leaf *x509.Certificate) string {
 	return ""
 }
 
-// keyAlgorithm maps the leaf public key to an ACM-style algorithm string
-// (RSA_2048, EC_prime256v1, ...).
+// keyAlgorithm maps the leaf public key to the KeyAlgorithm ACM returns: RSA-<bits>,
+// hyphenated as AWS returns it, unlike the RSA_2048 API enum. EC is EC_ plus Go's
+// curve name (EC_P-256), a spelling not yet checked against AWS.
 func keyAlgorithm(leaf *x509.Certificate) string {
 	switch pub := leaf.PublicKey.(type) {
 	case *rsa.PublicKey:
-		return fmt.Sprintf("RSA_%d", pub.N.BitLen())
+		return fmt.Sprintf("RSA-%d", pub.N.BitLen())
 	case *ecdsa.PublicKey:
 		return "EC_" + pub.Curve.Params().Name
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// normaliseKeyAlgorithm rewrites the RSA_<bits> spelling stored by earlier
+// builds to the RSA-<bits> that keyAlgorithm now writes.
+func normaliseKeyAlgorithm(alg string) string {
+	if bits, ok := strings.CutPrefix(alg, "RSA_"); ok {
+		return "RSA-" + bits
+	}
+	return alg
 }

@@ -285,6 +285,11 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	domain := aws.StringValue(input.DomainName)
+	// Before the mode is derived, so a malformed domain is a ValidationException
+	// in every mode rather than whatever the mode's own checks answer.
+	if err := validateDomainName(domain); err != nil {
+		return nil, err
+	}
 	sans := aws.StringValueSlice(input.SubjectAlternativeNames)
 	allDomains := uniqueDomains(domain, sans)
 

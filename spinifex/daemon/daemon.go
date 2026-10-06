@@ -2137,7 +2137,7 @@ func (d *Daemon) startCluster() error {
 	// operator can tell at a glance, from daemon startup logs alone, which one
 	// they are in.
 	configDir := filepath.Dir(d.configPath)
-	tenantCA, tenantCAErr := acmdomain.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
+	tenantCA, tenantCAErr := acmdomain.LoadTenantCA(acmdomain.TenantCACertPath(configDir), acmdomain.TenantCAKeyPath(configDir))
 	if tenantCAErr != nil {
 		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
 			"err", tenantCAErr)

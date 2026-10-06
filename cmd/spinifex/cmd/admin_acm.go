@@ -107,8 +107,8 @@ func runCertCreateTenantCA(cmd *cobra.Command, _ []string) {
 	yes, _ := cmd.Flags().GetBool("yes")
 
 	configDir, _ := cmd.Root().Flags().GetString("config-dir")
-	certPath := admin.TenantCACertPath(configDir)
-	keyPath := admin.TenantCAKeyPath(configDir)
+	certPath := acmdomain.TenantCACertPath(configDir)
+	keyPath := acmdomain.TenantCAKeyPath(configDir)
 
 	existed := admin.FileExists(certPath) && admin.FileExists(keyPath)
 

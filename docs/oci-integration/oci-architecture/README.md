@@ -174,12 +174,15 @@ The matching policy, scoped to the one compartment Spinifex allocates in:
 Allow group SpinifexOperators to use    vnics       in compartment <compartment-name>
 Allow group SpinifexOperators to manage private-ips in compartment <compartment-name>
 Allow group SpinifexOperators to manage public-ips  in compartment <compartment-name>
+Allow group SpinifexOperators to use    subnets     in compartment <compartment-name>
 ```
 
-`instance-principal.tf` grants the dynamic group these same three statements, so an instance principal can allocate a public address exactly as an IAM user can. The two credential routes differ in who is authorised, never in what.
+`instance-principal.tf` grants the dynamic group these same four statements, so an instance principal can allocate a public address exactly as an IAM user can. The two credential routes differ in who is authorised, never in what.
 
 > [!IMPORTANT]
-> **`use vnics` is required, and `read vnics` is not enough.** Registering a secondary private IP is an operation *on a VNIC*, so OCI checks `VNIC_ASSIGN` as well as `PRIVATE_IP_CREATE`, and `VNIC_ASSIGN` lives in the `use` verb. Grant only `read` and every allocation fails with `NotAuthorizedOrNotFound` on a node that looks entirely healthy, which reads as a wrong compartment OCID rather than a missing verb.
+> **Allocating one address needs permissions on three resource types, and a 404 names none of them.** `CreatePrivateIp` is checked against `PRIVATE_IP_CREATE`, `PRIVATE_IP_ASSIGN`, `VNIC_ASSIGN` and `SUBNET_ATTACH`, and `DeletePrivateIp` against `SUBNET_DETACH`. `VNIC_ASSIGN` lives in the vnics `use` verb, so `read vnics` is not enough; `SUBNET_ATTACH` and `SUBNET_DETACH` live in the subnets `use` verb, so a policy naming only vnics and IPs authorises nothing. Either omission fails every allocation with `NotAuthorizedOrNotFound` on a node that looks entirely healthy, and OCI uses that one error for "you may not" and "it is not there" alike, so it reads as a wrong compartment OCID rather than a missing verb.
+
+To tell the two apart, make one call per permission class and see which is the first to fail. `GetVnic` tests `VNIC_READ`, `ListPrivateIps` tests `PRIVATE_IP_READ`, and `GetSubnet` tests `SUBNET_READ`. If the first two succeed and the third does not, the credential is authentic and in the right compartment, and the policy is missing its subnet statement.
 
 **Scope it to a compartment, not the tenancy.** `manage public-ips` at tenancy level lets a compromised node consume the whole regional reserved-public-IP quota.
 
@@ -430,10 +433,20 @@ sudo journalctl -u spinifex-vpcd --since -5m | grep -i ocinet
 ```text
 "msg":"ocinet resolved the external VNIC from its interface","pool":"oci-public","iface":"br-wan",
   "vnic_id":"ocid1.vnic.oc1.ap-sydney-1.abzxsljrjwlf...kimuq","private_ip":"10.200.1.31","subnet":"10.200.0.0/23"
+"msg":"ocinet credential authorised to allocate","pool":"oci-public",
+  "vnic_id":"ocid1.vnic.oc1.ap-sydney-1.abzxsljrjwlf...kimuq","compartment":"ocid1.compartment.oc1..aaaa"
 "msg":"OCI allocator ready","pool":"oci-public","collected":0,"stale_bindings":0,"skipped":1
 ```
 
-**`resolved the external VNIC` is the line that matters.** It proves the credentials work, the compartment is right, and `br-wan`'s MAC matched a real VNIC. A node missing it will accept `allocate-address` and then fail it.
+**`credential authorised to allocate` is the line that matters, and `resolved the external VNIC` is not.** The authorisation line is logged after the node has made one real read in each permission class an allocation needs, so it proves the credential is accepted, the compartment is right and every verb in the policy is held. The resolution line above it comes from the instance metadata service and needs no IAM policy at all, so a node with a policy missing a verb logs it and still refuses every allocation.
+
+The refusal has its own line, which names the verb:
+
+```text
+"msg":"ocinet credential cannot allocate an external address","pool":"oci-public",
+  "error":"reading subnet ocid1.subnet... failed, which needs `use subnets` in compartment ocid1...;
+    AssignPrivateIP requires SUBNET_ATTACH from that same verb: ... NotAuthorizedOrNotFound"
+```
 
 On a cold cluster start you may instead see `OCI allocator reconcile failed … nats: no responders available for request` on some nodes. That is vpcd racing JetStream's KV at boot, where the startup reconcile is skipped and not retried. It is harmless on a new cluster where nothing has been allocated, and it is tracked; restart `spinifex-vpcd` on that node to run it.
 

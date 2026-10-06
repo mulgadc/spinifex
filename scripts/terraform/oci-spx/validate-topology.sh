@@ -633,9 +633,16 @@ allocator_diagnostics() {
     ' 2>&1
 }
 
-# resolved the external VNIC is the line that proves the credential works, the
-# compartment is right and br-wan's MAC matched a real VNIC. A node missing it
-# accepts allocate-address and then fails it.
+# credential authorised to allocate is the line that proves the credential is
+# accepted, in the right compartment, and holds every permission an allocation
+# needs. A node missing it accepts allocate-address and then fails it.
+#
+# "resolved the external VNIC" is not enough and was what this used to wait for.
+# That line comes from the metadata service and needs no IAM policy at all, so a
+# node with an unauthorised credential passed here and failed hours later inside
+# a workbook, reported as capacity.
+ALLOCATOR_READY='ocinet credential authorised to allocate'
+ALLOCATOR_DENIED='ocinet credential cannot allocate an external address'
 if [ "$SKIP_POOL" = 1 ]; then
     log "--no-external-pool: no allocator to check"
     record "oci allocator" SKIPPED "no external pool configured"
@@ -647,9 +654,15 @@ else
             # spinifex-daemon, not spinifex-vpcd: the allocator is built in the
             # daemon, and vpcd only consumes the addresses it hands out. Gating on
             # vpcd's journal failed a node whose allocator was working.
-            if ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
+            if ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -q '$ALLOCATOR_READY'" 2>/dev/null; then
                 found=1
                 break
+            fi
+            # A refusal is final, so waiting out the remaining five minutes only
+            # delays a verdict the node has already reached.
+            if denial=$(ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -m1 '$ALLOCATOR_DENIED'" 2>/dev/null) && [ -n "$denial" ]; then
+                allocator_diagnostics "$host" > "$STATE_DIR/allocator-$host.log" 2>&1 || true
+                die "$host refused its own OCI credential: ${denial#*$ALLOCATOR_DENIED}. Diagnostics: $STATE_DIR/allocator-$host.log"
             fi
             sleep 10
         done
@@ -659,7 +672,7 @@ else
             # not load, a bridge MAC matching no VNIC, and a pool vpcd never read --
             # and they are indistinguishable from the missing log line alone.
             allocator_diagnostics "$host" > "$STATE_DIR/allocator-$host.log" 2>&1 || true
-            die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address. Diagnostics: $STATE_DIR/allocator-$host.log"
+            die "$host never logged '$ALLOCATOR_READY'; the OCI allocator is not up, so no guest can get a public address. Diagnostics: $STATE_DIR/allocator-$host.log"
         fi
         log "$host allocator ready"
     done

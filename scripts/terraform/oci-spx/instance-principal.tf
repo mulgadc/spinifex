@@ -23,7 +23,7 @@ resource "oci_identity_dynamic_group" "nodes" {
 
 # Narrower than it looks. The allocator creates, moves and deletes secondary
 # private IPs on a node's own VNIC and attaches public IPs to them, which is what
-# these three verbs cover; nothing here grants compute, storage or identity.
+# these four verbs cover; nothing here grants compute, storage or identity.
 resource "oci_identity_policy" "nodes" {
   provider       = oci.home
   count          = var.instance_principal == "create" ? 1 : 0
@@ -35,5 +35,10 @@ resource "oci_identity_policy" "nodes" {
     "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to use vnics in compartment id ${var.compartment_ocid}",
     "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to manage private-ips in compartment id ${var.compartment_ocid}",
     "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to manage public-ips in compartment id ${var.compartment_ocid}",
+
+    # CreatePrivateIp needs SUBNET_ATTACH and DeletePrivateIp needs SUBNET_DETACH,
+    # both of which only the subnets `use` verb carries. Without it every allocation
+    # is refused as a 404, which reads as a missing resource rather than a missing grant.
+    "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to use subnets in compartment id ${var.compartment_ocid}",
   ]
 }

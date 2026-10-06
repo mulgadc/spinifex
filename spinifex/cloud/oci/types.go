@@ -35,6 +35,14 @@ type PrivateIP struct {
 	IsPrimary   bool
 }
 
+// Subnet is the VCN subnet a VNIC's private IPs live in. Reading one is the
+// cheapest call needing a subnet permission, which is why the allocator uses it
+// to prove its credential: CreatePrivateIp is refused without SUBNET_ATTACH.
+type Subnet struct {
+	ID        string
+	CIDRBlock string
+}
+
 // PublicIP is an OCI public IP object. PrivateIPID is empty when the address
 // is reserved but not currently attached to anything — the state an allocated
 // but unassociated AWS EIP maps onto.

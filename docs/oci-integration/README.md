@@ -93,35 +93,38 @@ Once installed configure your OCI credentials (~/.oci/config) which will be used
 
 `oci setup config`
 
-Now set `$CID` to the compartment you are deploying into. It is used throughout this guide and again as `compartment_ocid` in step 4, so set it once and keep the same shell.
-
-The CLI can look it up by name, so there is no OCID to copy:
+That writes a `[DEFAULT]` profile, which every command below reads with no flag. **If your config holds named profiles instead, name the one to use once:**
 
 ```sh
-export CID=$(oci iam compartment list --compartment-id-in-subtree true \
-    --access-level ACCESSIBLE --all \
-    --query "data[?name=='my-compartment' && \"lifecycle-state\"=='ACTIVE'].id | [0]" \
-    --raw-output)
-
-echo "${CID:?no ACTIVE compartment of that name is visible to this profile}"
+export OCI_CLI_PROFILE=my-profile
 ```
 
-The second line is the check, not decoration: the query exits 0 and prints nothing when the name matches nothing, so without it an unset `$CID` reaches Terraform and fails much later with an OCI error that names neither the compartment nor the cause.
+Spinifex's Terraform helper reads the same variable, so this one export covers the CLI commands here and the deployment in step 5.
 
-To see the names you can choose from, drop the `--query` and ask for a table:
+### OCI Compartment
+
+Now set `$CID` to the compartment you are deploying into. It is used throughout this guide and again as `compartment_ocid` in step 4, so set it once and keep the same shell.
+
+Which OCID to use depends on how your tenancy is laid out.
+
+**A tenancy with compartments in it.** List compartments in OCI and pick one where to deploy Spinifex. The OCID is in the `id` column:
 
 ```sh
 oci iam compartment list --compartment-id-in-subtree true --access-level ACCESSIBLE --all \
     --query 'data[?"lifecycle-state"==`ACTIVE`].{name:name,id:id}' --output table
 ```
 
-Two compartments in one tenancy can share a name. If the table shows the name twice, take the OCID from it and set `$CID` directly, because the lookup above returns the first match and cannot tell you which one you wanted:
+**A tenancy with nothing but the root.** The command above will return nothing, which is correct rather than broken: it lists the children of your tenancy and never the tenancy itself. To deploy into the root by using the tenancy OCID, which is the `tenancy=` line of your `~/.oci/config`, or ask the CLI for it:
+
+```sh
+oci iam availability-domain list --query 'data[0]."compartment-id"' --raw-output
+```
+
+Next, specify your tenancy as `CID`:
 
 ```sh
 export CID="ocid1.compartment.oc1..xxx"
 ```
-
-> **Deploy into a compartment, not the tenancy root.** The root's OCID is the tenancy OCID and will work, but the instance-principal policy in step 2.1 is scoped to whatever `$CID` holds, so a root value grants every instance in the tenancy the right to consume the regional public-IP quota.
 
 Confirm the credential and the compartment together:
 
@@ -129,7 +132,7 @@ Confirm the credential and the compartment together:
 oci compute shape list --compartment-id $CID
 ```
 
-Expected output to confirm API key works as expected:
+Expected output to confirm API key and compartment works as expected:
 
 ```json
 {
@@ -149,6 +152,8 @@ The next prerequisite is to install Terraform or OpenTofu to deploy the Spinifex
 
 - Terraform - [https://developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install)
 - OpenTofu - [https://opentofu.org/docs/intro/install/](https://opentofu.org/docs/intro/install/)
+
+The deployment scripts of Spinifex will automatically detect to use Terraform or OpenTofu depending what is setup in your environment.
 
 ## Instructions
 
@@ -180,9 +185,9 @@ export OCI_CLI_PROFILE=customprofile
 
 ## 2. OCI Credentials for Spinifex
 
-Spinifex calls the OCI API at runtime to register each guest's public address, so every node needs a credential that can manage private and public IPs in your compartment. Without one a node forms and passes every health check, then refuses every launch that asks for a public address.
+Spinifex calls the OCI API at runtime to register each guest's public address, so every node needs a credential that can manage private and public IPs in your compartment.
 
-There are two ways to provide it, and they differ in who has to authorise them rather than in what Spinifex is allowed to do. Both grant [the same three permissions](../oci-architecture/README.md#the-iam-policy).
+There are two ways to provide OCI API access to Spinifex, and they differ in who has to authorise them rather than in what Spinifex is allowed to do. Both grant [the same four permissions](../oci-architecture/README.md#the-iam-policy).
 
 |                    | [2.1 Instance principal](#21-instance-principal-preferred) | [2.2 OCI IAM user](#22-oci-iam-user-with-scoped-permissions) |
 | ------------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
@@ -193,7 +198,7 @@ There are two ways to provide it, and they differ in who has to authorise them r
 
 **Use 2.1 if you are a tenancy admin.** It is the better of the two because there is no key to leak, rotate or forget about, and a replaced node needs no handoff. Use 2.2 when your compartment was allocated to you inside someone else's tenancy, which is the common case and the reason 2.2 exists at all.
 
-Both routes below need `$CID` from the prerequisites, so confirm it is still set in this shell:
+Both routes below need `$CID` from the prerequisites step, so confirm it is still set in this shell:
 
 ```bash
 echo "${CID:?set it as shown under OCI CLI tool}"
@@ -281,9 +286,9 @@ An email will be sent to the designated `$ADMIN_EMAIL` defined, you are required
 > [!NOTE]
 > **If these fail with `NotAuthorizedOrNotFound`, you do not have identity rights in the tenancy**, which is normal when someone allocated you a compartment inside theirs. Ask whoever owns the tenancy to grant you the required permissions.
 
-#### Grant the group its three permissions
+#### Grant the group its four permissions
 
-Spinifex calls [ten operations](../oci-architecture/README.md#the-iam-policy), and these three statements are what authorise them. This attaches the policy to `$CID`, the compartment you are deploying into.
+Spinifex calls [ten operations](../oci-architecture/README.md#the-iam-policy), and these four statements are what authorise them. This attaches the policy to `$CID`, the compartment you are deploying into.
 
 ```bash
 oci iam policy create --compartment-id "$CID" --name SpinifexOperators \
@@ -291,7 +296,8 @@ oci iam policy create --compartment-id "$CID" --name SpinifexOperators \
     --statements '[
       "Allow group SpinifexOperators to use vnics in compartment id '"$CID"'",
       "Allow group SpinifexOperators to manage private-ips in compartment id '"$CID"'",
-      "Allow group SpinifexOperators to manage public-ips in compartment id '"$CID"'"
+      "Allow group SpinifexOperators to manage public-ips in compartment id '"$CID"'",
+      "Allow group SpinifexOperators to use subnets in compartment id '"$CID"'"
     ]'
 ```
 
@@ -385,14 +391,14 @@ Choose how to deploy Spinifex on OCI, either as a single node, or at minimum a t
 
 ## 4. Write your Terraform inputs
 
-One file, in the directory you are already in. Only `compartment_ocid` is required, because every other variable has a default that builds a working single node:
+The next step is to define a `terraform.auto.tfvars` configuration file with your desired deployment method for Spinifex on OCI.
 
 Recommended compute shapes for a VM deployment:
 
 - `VM.Standard.E6.Flex` - Higher performance, 5th Gen AMD EPYC processor
 - `VM.Standard.E5.Flex` - Base-line performance, 4th Gen AMD EPYC processor
 
-Recommended bare metal shapes, preferred for large-scale production:
+Recommended bare metal shapes, preferred for large-scale production workloads:
 
 - `BM.Standard.E5.192` - 192 OCPU / 2304 GB RAM. Higher performance, 4th Gen AMD EPYC processor
 - `BM.Standard3.64` - 64 OCPU / 1024 GB RAM. Baseline, Intel Xeon Platinum 8358
@@ -441,9 +447,19 @@ grep compartment_ocid terraform.auto.tfvars
 
 ## 5. Deploy
 
+Choose the deployment method below:
+
+- `vm-single` - Single node instance (best for testing/development)
+- `vm-multi` - A recommended 3-node cluster (production)
+- `bm` - Bare metal for larger scale production use.
+
 ```bash
 export TOPOLOGY=vm-single
+```
 
+Next deploy Spinifex on OCI:
+
+```bash
 ./validate-topology.sh \
     --topology "$TOPOLOGY" \
     --credential-hook ./spx-oci-config.sh \
@@ -461,14 +477,14 @@ One command builds the infrastructure, installs Spinifex, forms the cluster, con
 | `--channel`         | Nothing, normally. It defaults to `latest`, the published release. Pass `dev` to install the newest pre-release instead, or `--version <tag>` to pin an exact build                                                                     |
 | `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Not used when your tfvars set `instance_principal`, because there is then no key to install                                                                |
 | `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                         |
-| `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                   |
+| `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and testing a deployment                                                                         |
 
-**Your `terraform.auto.tfvars` outranks the topology**, so `--topology bm` with `compute_shape = "BM.Standard.E5.192"` in that file deploys on that shape rather than the one CI runs. The run logs the shape and node count it actually built, straight after the host addresses.
+**Your `terraform.auto.tfvars` outranks the topology**, so `--topology bm` with `compute_shape = "BM.Standard.E5.192"` in that file deploys on that shape.
 
 Add `--dry-run` to print the plan and change nothing.
 
 > [!NOTE]
-> **If `--channel dev` fails to download, pass a tag instead.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited and then 404s. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
+> **If `--channel dev` fails to download, pass a tag instead.** `dev` is the one channel that resolves through an unauthenticated GitHub API call, so it can be rate-limited by Github. Take the newest tag from the [releases page](https://github.com/mulgadc/spinifex/releases) and swap `--channel dev` for `--version <tag>`, which resolves by redirect and cannot trip the same limit. A tag is also what to use for a repeatable deployment, where you want the build pinned rather than current.
 
 ## 6. Check it worked
 
@@ -488,7 +504,7 @@ The stages print as they finish, and all of these have to appear:
 [validate-vm-single] cluster membership
 [validate-vm-single] --skip-workload: stopping before the workbook
 [validate-vm-single] --keep: leaving the infrastructure up, no verdict recorded
-[validate-vm-single] ssh in with: ssh -i ~/.ssh/oci-spx ubuntu@150.230.13.131
+[validate-vm-single] ssh in with: ssh -i ~/.ssh/oci-spx ubuntu@public.ip
 [validate-vm-single] destroy it with: ./validate-topology.sh --topology vm-single --destroy-only
 ```
 
@@ -529,6 +545,25 @@ aws ec2 describe-instance-types
 
 If this returns a list of available instance types, your installation is working.
 
+### Console access
+
+Next login to the Spinifex console at:
+
+```
+https://YOURIP:3000/
+```
+
+Fetch your generated AWS credentials via SSH and login to the console using your new Spinifex account.
+
+```bash
+ubuntu@spinifexnode01:~$ cat ~/.aws/credentials
+[spinifex]
+aws_access_key_id     = XXXX
+aws_secret_access_key = XXXX
+```
+
+![https://raw.githubusercontent.com/mulgadc/spinifex/refs/heads/main/.github/assets/spinifex-ui.jpg](https://raw.githubusercontent.com/mulgadc/spinifex/refs/heads/main/.github/assets/spinifex-ui.jpg)
+
 **Congratulations! Spinifex is installed.**
 
 ## 7. Set up your cluster
@@ -536,9 +571,6 @@ If this returns a list of available instance types, your installation is working
 Spinifex is running, but it holds nothing yet — no machine images, no networks, no instances.
 
 Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance.
-
-> [!IMPORTANT]
-> **Probe a guest's public address from your workstation, not from the node.** A node is a poor vantage point for its own network's public addresses, so a timeout measured there says nothing about the guest. Private addresses are a separate question, and those do work from inside.
 
 ## Harden it before production
 

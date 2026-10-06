@@ -33,6 +33,11 @@ type Client interface {
 	GetPrivateIP(ctx context.Context, privateIPID string) (PrivateIP, error)
 	ListPrivateIPs(ctx context.Context, vnicID string) ([]PrivateIP, error)
 
+	// GetSubnet reads one subnet. The allocator calls it at startup to prove
+	// its credential holds a subnet permission, since AssignPrivateIP needs
+	// SUBNET_ATTACH from the same verb and is otherwise refused as a 404.
+	GetSubnet(ctx context.Context, subnetID string) (Subnet, error)
+
 	// CreatePublicIP creates a RESERVED public IP in compartmentID and, when
 	// privateIPID is non-empty, attaches it in the same call.
 	CreatePublicIP(ctx context.Context, compartmentID, privateIPID, displayName string) (PublicIP, error)
@@ -186,6 +191,18 @@ func (c *apiClient) ListPrivateIPs(ctx context.Context, vnicID string) ([]Privat
 		}
 		page = resp.OpcNextPage
 	}
+}
+
+func (c *apiClient) GetSubnet(ctx context.Context, subnetID string) (Subnet, error) {
+	resp, err := c.net.GetSubnet(ctx, core.GetSubnetRequest{SubnetId: &subnetID})
+	if err != nil {
+		return Subnet{}, wrap("GetSubnet", err)
+	}
+	out := Subnet{ID: subnetID}
+	if resp.CidrBlock != nil {
+		out.CIDRBlock = *resp.CidrBlock
+	}
+	return out, nil
 }
 
 func (c *apiClient) CreatePublicIP(ctx context.Context, compartmentID, privateIPID, displayName string) (PublicIP, error) {

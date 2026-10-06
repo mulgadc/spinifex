@@ -214,6 +214,17 @@ func (f *Fake) ListPrivateIPs(_ context.Context, vnicID string) ([]PrivateIP, er
 	return out, nil
 }
 
+// Subnets are not modelled, so any OCID reads back. FailWith["GetSubnet"] is
+// how a test reproduces the credential that holds no subnet permission.
+func (f *Fake) GetSubnet(_ context.Context, subnetID string) (Subnet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("GetSubnet"); err != nil {
+		return Subnet{}, err
+	}
+	return Subnet{ID: subnetID, CIDRBlock: "10.200.0.0/23"}, nil
+}
+
 func (f *Fake) CreatePublicIP(_ context.Context, compartmentID, privateIPID, displayName string) (PublicIP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

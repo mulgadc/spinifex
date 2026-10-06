@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -452,10 +452,10 @@ func TestNATSENIController_Release_NotFoundIsSuccess(t *testing.T) {
 	c := newNATSENIController(nc)
 
 	respond(t, nc, "ec2.cmd.i-1", func([]byte) any {
-		return json.RawMessage(utils.GenerateErrorPayload("InvalidAttachmentID.NotFound"))
+		return json.RawMessage(awserrors.GenerateErrorPayload("InvalidAttachmentID.NotFound"))
 	})
 	respond(t, nc, "ec2.DeleteNetworkInterface", func([]byte) any {
-		return json.RawMessage(utils.GenerateErrorPayload("InvalidNetworkInterfaceID.NotFound"))
+		return json.RawMessage(awserrors.GenerateErrorPayload("InvalidNetworkInterfaceID.NotFound"))
 	})
 
 	// Both legs report already-gone; Release converges without error.

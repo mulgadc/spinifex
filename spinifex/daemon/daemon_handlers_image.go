@@ -41,7 +41,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 	slog.Debug("Received message", "subject", msg.Subject)
 
 	input := &ec2.CreateImageInput{}
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}

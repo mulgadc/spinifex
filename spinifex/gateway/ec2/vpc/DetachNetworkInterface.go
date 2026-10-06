@@ -74,7 +74,7 @@ func DetachNetworkInterface(ctx context.Context, input *ec2.DetachNetworkInterfa
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	responseError, err := utils.ValidateErrorPayload(msg.Data)
+	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
 		return output, errors.New(*responseError.Code)
 	}
@@ -105,7 +105,7 @@ func resolveAttachmentInstance(ctx context.Context, natsConn *nats.Conn, account
 	if err != nil {
 		return "", errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := utils.ValidateErrorPayload(msg.Data); err != nil {
+	if _, err := awserrors.ValidateErrorPayload(msg.Data); err != nil {
 		return "", errors.New(awserrors.ErrorInvalidAttachmentIDNotFound)
 	}
 	var desc ec2.DescribeNetworkInterfacesOutput

@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,7 +95,7 @@ func TestRunIntoReservation_DaemonErrorPropagates(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	sub, err := nc.Subscribe("ec2.RunInstances.cr."+testCRID, func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorReservationCapacityExceeded))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorReservationCapacityExceeded))
 	})
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()

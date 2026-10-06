@@ -74,7 +74,7 @@ func AttachNetworkInterface(ctx context.Context, input *ec2.AttachNetworkInterfa
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	responseError, err := utils.ValidateErrorPayload(msg.Data)
+	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
 		return output, errors.New(*responseError.Code)
 	}

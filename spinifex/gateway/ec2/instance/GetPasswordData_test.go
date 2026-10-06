@@ -149,7 +149,7 @@ func TestGetPasswordData_DaemonError(t *testing.T) {
 
 	instanceID := "i-error"
 	sub, err := nc.Subscribe("ec2."+instanceID+".GetPasswordData", func(msg *nats.Msg) {
-		require.NoError(t, msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound)))
+		require.NoError(t, msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound)))
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()

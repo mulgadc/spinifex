@@ -3,6 +3,7 @@ package handlers_ec2_eip
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -15,13 +16,13 @@ import (
 func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In, string) (*Out, error)) {
 	var input In
 	if err := json.Unmarshal(msg.Data, &input); err != nil {
-		_ = msg.Respond(utils.GenerateErrorPayload("ValidationError"))
+		_ = msg.Respond(awserrors.GenerateErrorPayload("ValidationError"))
 		return
 	}
 	accountID := msg.Header.Get(utils.AccountIDHeader)
 	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
-		_ = msg.Respond(utils.GenerateErrorPayload(err.Error()))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(err.Error()))
 		return
 	}
 	data, _ := json.Marshal(result)

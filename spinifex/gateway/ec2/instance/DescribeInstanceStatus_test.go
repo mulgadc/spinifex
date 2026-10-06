@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -89,7 +89,7 @@ func TestDescribeInstanceStatus_OneNodeErrorOthersData(t *testing.T) {
 	nc2, err := nats.Connect(nc.ConnectedUrl())
 	require.NoError(t, err)
 	defer nc2.Close()
-	subscribeAsNode(t, nc2, "ec2.DescribeInstanceStatus", "node-b", utils.GenerateErrorPayload("InvalidParameterValue"))
+	subscribeAsNode(t, nc2, "ec2.DescribeInstanceStatus", "node-b", awserrors.GenerateErrorPayload("InvalidParameterValue"))
 
 	require.NoError(t, nc.Flush())
 	require.NoError(t, nc2.Flush())
@@ -104,7 +104,7 @@ func TestDescribeInstanceStatus_AllNodesError(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", utils.GenerateErrorPayload("InvalidParameterValue"))
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", awserrors.GenerateErrorPayload("InvalidParameterValue"))
 
 	_, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, "123456789012", "az-a", StatusSynthesis{})
 	require.Error(t, err)

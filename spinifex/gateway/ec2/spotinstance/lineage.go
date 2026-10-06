@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"log/slog"
 	"time"
 
@@ -70,7 +71,7 @@ func sendSpotLineageCommand(ctx context.Context, natsConn *nats.Conn, instanceID
 
 		msg, err := natsConn.RequestMsg(reqMsg, spotLineageReqTimeout)
 		if err == nil {
-			if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+			if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 				return errors.New(*responseError.Code)
 			}
 			return nil

@@ -499,7 +499,7 @@ func queryInstanceBucket(ctx context.Context, natsConn *nats.Conn, topic string,
 		slog.WarnContext(ctx, "DescribeInstances: Failed to query instance bucket", "topic", topic, "err", err)
 		return nil, false
 	}
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.WarnContext(ctx, "DescribeInstances: Instance bucket query returned error", "topic", topic, "code", responseError.Code)
 		return nil, false
 	}

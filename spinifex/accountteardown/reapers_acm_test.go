@@ -5,6 +5,7 @@ package accountteardown
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -62,7 +63,7 @@ func TestCertificateReaperTreatsAMissingCertificateAsDeleted(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	var accounts []string
-	replyWith(t, nc, "acm.DeleteCertificate", utils.GenerateErrorPayload("ResourceNotFound"), &accounts)
+	replyWith(t, nc, "acm.DeleteCertificate", awserrors.GenerateErrorPayload("ResourceNotFound"), &accounts)
 
 	reaper := &certificateReaper{nc: nc}
 	assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "arn:acm/gone"}, false))

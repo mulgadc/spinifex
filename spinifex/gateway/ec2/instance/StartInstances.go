@@ -97,7 +97,7 @@ func startLiveInstance(ctx context.Context, natsConn *nats.Conn, instanceID, acc
 		return nil, false, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.ErrorContext(ctx, "StartInstances: owner returned error", "instance_id", instanceID, "code", *responseError.Code)
 		return nil, false, startRefusalError(responseError)
 	}
@@ -129,7 +129,7 @@ func startStoppedInstance(ctx context.Context, natsConn *nats.Conn, instanceID, 
 		return newStateChange(instanceID, 80, "stopped", 80, "stopped"), nil
 	}
 
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.ErrorContext(ctx, "StartInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 		return nil, startRefusalError(responseError)
 	}

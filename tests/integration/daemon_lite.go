@@ -258,7 +258,7 @@ func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool)
 	ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 
 	input := reflect.New(handler.Type().In(1).Elem())
-	if errResp := utils.UnmarshalJsonPayload(input.Interface(), msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input.Interface(), msg.Data); errResp != nil {
 		respond(msg, errResp)
 		return
 	}
@@ -270,12 +270,12 @@ func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool)
 	if err, _ := results[1].Interface().(error); err != nil {
 		utils.MarkSpanError(span, err)
 		_, message, _ := awserrors.ResolveErrorDetail(err)
-		respond(msg, utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
+		respond(msg, awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
 		return
 	}
 	payload, err := json.Marshal(results[0].Interface())
 	if err != nil {
-		respond(msg, utils.GenerateErrorPayload(awserrors.ErrorServerInternal))
+		respond(msg, awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
 		return
 	}
 	respond(msg, payload)

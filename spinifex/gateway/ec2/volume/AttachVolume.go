@@ -83,7 +83,7 @@ func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *n
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	responseError, err := utils.ValidateErrorPayload(msg.Data)
+	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
 		return output, errors.New(*responseError.Code)
 	}
@@ -117,7 +117,7 @@ func isStoppedInstance(ctx context.Context, instanceID string, natsConn *nats.Co
 		return false
 	}
 
-	if _, err := utils.ValidateErrorPayload(msg.Data); err != nil {
+	if _, err := awserrors.ValidateErrorPayload(msg.Data); err != nil {
 		return false
 	}
 

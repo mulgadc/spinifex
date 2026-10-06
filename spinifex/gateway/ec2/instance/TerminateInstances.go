@@ -98,7 +98,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 				utils.InjectTraceContext(ctx, terminateReqMsg.Header)
 				terminateMsg, terminateErr := natsConn.RequestMsg(terminateReqMsg, 30*time.Second)
 				if terminateErr == nil {
-					responseError, parseErr := utils.ValidateErrorPayload(terminateMsg.Data)
+					responseError, parseErr := awserrors.ValidateErrorPayload(terminateMsg.Data)
 					if parseErr == nil {
 						slog.InfoContext(ctx, "TerminateInstances: Stopped instance terminated via ec2.terminate", "instance_id", instanceID)
 						stateChanges = append(stateChanges, newStateChange(instanceID, 32, "shutting-down", 80, "stopped"))
@@ -144,7 +144,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 			return nil, fmt.Errorf("failed to terminate instance %s: %w", instanceID, err)
 		}
 
-		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+		if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.ErrorContext(ctx, "TerminateInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)
 		}

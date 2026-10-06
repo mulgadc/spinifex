@@ -50,7 +50,7 @@ func GetConsoleOutput(ctx context.Context, input *ec2.GetConsoleOutputInput, nat
 		return nil, fmt.Errorf("failed to get console output: %w", err)
 	}
 
-	responseError, parseErr := utils.ValidateErrorPayload(msg.Data)
+	responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data)
 	if parseErr != nil {
 		slog.ErrorContext(ctx, "GetConsoleOutput: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
 		return nil, errors.New(*responseError.Code)

@@ -601,7 +601,7 @@ func TestGatewayDispatch_ValidationGuards(t *testing.T) {
 func TestGatewayDispatch_ErrorEnvelopePropagates(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	serveOnce(t, nc, "elbv2.DeleteLoadBalancer",
-		utils.GenerateErrorPayload(awserrors.ErrorELBv2LoadBalancerNotFound))
+		awserrors.GenerateErrorPayload(awserrors.ErrorELBv2LoadBalancerNotFound))
 
 	_, err := gateway_elbv2.DeleteLoadBalancer(context.Background(),
 		&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(testLBArn)}, nc, testAccountID)

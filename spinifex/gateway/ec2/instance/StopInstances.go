@@ -67,7 +67,7 @@ func StopInstances(ctx context.Context, input *ec2.StopInstancesInput, natsConn 
 			continue
 		}
 
-		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+		if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.ErrorContext(ctx, "StopInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)
 		}

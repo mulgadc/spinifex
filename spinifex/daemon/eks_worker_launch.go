@@ -130,7 +130,7 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 	if err != nil {
 		return err
 	}
-	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if errPayload, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
 			slog.DebugContext(ctx, "TerminateWorkerInstances: owner reports instance gone, idempotent", "instanceId", instanceID)
 			return nil
@@ -163,7 +163,7 @@ func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, account
 	if err != nil {
 		return fmt.Errorf("ec2.terminate stopped worker %s: %w", instanceID, err)
 	}
-	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if errPayload, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
 			slog.DebugContext(ctx, "TerminateWorkerInstances: stopped worker already gone, idempotent", "instanceId", instanceID)
 			return nil

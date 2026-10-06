@@ -134,7 +134,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	}
 
 	input := &ec2.RunInstancesInput{}
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
@@ -304,7 +304,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 		if err == nil {
 			// ValidateErrorPayload returns a non-nil error when the payload IS an
 			// AWS error response; nil means it is a success payload.
-			errPayload, isErrPayload := utils.ValidateErrorPayload(resp.Data)
+			errPayload, isErrPayload := awserrors.ValidateErrorPayload(resp.Data)
 			isCapacity := isErrPayload != nil &&
 				errPayload.Code != nil &&
 				*errPayload.Code == awserrors.ErrorInsufficientInstanceCapacity

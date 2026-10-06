@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"os"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -140,7 +140,7 @@ func TestNATSInstanceService_RunInstances_DaemonError(t *testing.T) {
 	// Subscribe to the per-instance-type topic for the requested type
 	_, err = nc.QueueSubscribe("ec2.RunInstances.invalid.type", "spinifex-workers", func(msg *nats.Msg) {
 		// Send back error response
-		errorResponse := utils.GenerateErrorPayload("InvalidInstanceType")
+		errorResponse := awserrors.GenerateErrorPayload("InvalidInstanceType")
 		msg.Respond(errorResponse)
 	})
 	require.NoError(t, err)

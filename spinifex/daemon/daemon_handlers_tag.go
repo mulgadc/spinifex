@@ -221,7 +221,7 @@ func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *ec2v1
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		return errors.New(*responseError.Code)
 	}
 	return nil

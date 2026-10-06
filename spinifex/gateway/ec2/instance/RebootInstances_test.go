@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -155,7 +154,7 @@ func TestRebootInstances_DaemonError(t *testing.T) {
 			instanceID := "i-error"
 
 			nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
-				msg.Respond(utils.GenerateErrorPayload(code))
+				msg.Respond(awserrors.GenerateErrorPayload(code))
 			})
 
 			input := &ec2.RebootInstancesInput{

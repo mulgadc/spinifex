@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,7 +102,7 @@ func TestRDSApplianceLauncher_LaunchIsIdempotentOnAlreadyExists(t *testing.T) {
 		// suffix being present, so a hand-written message would not exercise
 		// the real production shape.
 		rdsErr := awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists, "DB instance %s already exists", "ochre-vector-pg")
-		payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(rdsErr), rdsErr.Error())
+		payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(rdsErr), rdsErr.Error())
 		_ = msg.Respond(payload)
 	})
 	require.NoError(t, err)
@@ -137,7 +136,7 @@ func TestRDSApplianceLauncher_LaunchPropagatesOtherCreateErrors(t *testing.T) {
 	defer nc.Close()
 
 	createSub, err := nc.Subscribe(rdsCreateSubject, func(msg *nats.Msg) {
-		payload := utils.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "DBInstanceClass is not supported")
+		payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "DBInstanceClass is not supported")
 		_ = msg.Respond(payload)
 	})
 	require.NoError(t, err)

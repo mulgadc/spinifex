@@ -65,7 +65,7 @@ func respondNATSMsg(nodeID string, msg *nats.Msg, data []byte) {
 
 // respondWithError sends an error payload for the given error code on the NATS message.
 func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
-	respondNATSMsg(nodeID, msg, utils.GenerateErrorPayload(errCode))
+	respondNATSMsg(nodeID, msg, awserrors.GenerateErrorPayload(errCode))
 }
 
 // respondWithServiceError sends the sanitized error code AND the handler's
@@ -76,7 +76,7 @@ func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
 // Mirrors utils.ServeNATSRequestCtx, which has always preserved the message.
 func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
 	_, message, _ := awserrors.ResolveErrorDetail(err)
-	payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
+	payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
 	respondNATSMsg(nodeID, msg, payload)
 }
 
@@ -121,7 +121,7 @@ func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Conte
 		// that must deduplicate a retry have to look for it.
 		ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 		input := new(I)
-		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 			respondNATSMsg(nodeID, msg, errResp)
 			// A payload the daemon cannot parse is the caller's mistake, not a
@@ -155,7 +155,7 @@ func handleNATSRequestWithPrincipal[I any, O any](nodeID string, serviceFn func(
 		accountID := utils.AccountIDFromMsg(msg)
 		principalARN := utils.PrincipalARNFromMsg(msg)
 		input := new(I)
-		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 			respondNATSMsg(nodeID, msg, errResp)
 			return outcomeClientError

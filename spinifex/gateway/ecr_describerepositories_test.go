@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,13 +25,13 @@ func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		accountID := utils.AccountIDFromMsg(msg)
 		in := new(I)
-		if errResp := utils.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
+		if errResp := awserrors.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)
 			return
 		}
 		out, err := fn(context.Background(), in, accountID)
 		if err != nil {
-			_ = msg.Respond(utils.GenerateErrorPayload("ServerInternal"))
+			_ = msg.Respond(awserrors.GenerateErrorPayload("ServerInternal"))
 			return
 		}
 		data, _ := json.Marshal(out)

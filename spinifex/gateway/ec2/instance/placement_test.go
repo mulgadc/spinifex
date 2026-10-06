@@ -607,7 +607,7 @@ func TestDistributeInstances_PropagatesAMINotFound(t *testing.T) {
 
 	// Mock daemon responds with InvalidAMIID.NotFound (AMI doesn't exist)
 	sub1, err := nc.Subscribe("ec2.RunInstances.t3.micro.node-1", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidAMIIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidAMIIDNotFound))
 	})
 	require.NoError(t, err)
 	defer sub1.Unsubscribe()
@@ -661,7 +661,7 @@ func TestDistributeInstances_PropagatesSGValidationErrors(t *testing.T) {
 			defer statusSub.Unsubscribe()
 
 			daemonSub, err := nc.Subscribe("ec2.RunInstances.t3.micro.node-1", func(msg *nats.Msg) {
-				_ = msg.Respond(utils.GenerateErrorPayload(tc.daemonErrCode))
+				_ = msg.Respond(awserrors.GenerateErrorPayload(tc.daemonErrCode))
 			})
 			require.NoError(t, err)
 			defer daemonSub.Unsubscribe()

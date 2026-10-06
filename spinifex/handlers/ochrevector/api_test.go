@@ -310,19 +310,19 @@ func stubVectorNATSHandler[I any, O any](serviceFn func(context.Context, *I, str
 	return func(msg *nats.Msg) {
 		accountID := utils.AccountIDFromMsg(msg)
 		input := new(I)
-		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)
 			return
 		}
 		output, err := serviceFn(context.Background(), input, accountID)
 		if err != nil {
-			payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error())
+			payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), err.Error())
 			_ = msg.Respond(payload)
 			return
 		}
 		data, err := json.Marshal(output)
 		if err != nil {
-			_ = msg.Respond(utils.GenerateErrorPayloadWithMessage(awserrors.ErrorServerInternal, err.Error()))
+			_ = msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorServerInternal, err.Error()))
 			return
 		}
 		_ = msg.Respond(data)

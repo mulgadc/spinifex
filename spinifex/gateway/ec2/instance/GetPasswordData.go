@@ -55,7 +55,7 @@ func GetPasswordData(ctx context.Context, input *ec2.GetPasswordDataInput, natsC
 		return nil, fmt.Errorf("failed to get password data: %w", err)
 	}
 
-	responseError, parseErr := utils.ValidateErrorPayload(msg.Data)
+	responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data)
 	if parseErr != nil {
 		slog.ErrorContext(ctx, "GetPasswordData: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
 		return nil, errors.New(*responseError.Code)

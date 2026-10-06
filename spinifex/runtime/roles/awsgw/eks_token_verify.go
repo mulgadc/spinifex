@@ -7,7 +7,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -70,7 +69,7 @@ func handleEKSTokenVerify(verifier presignedVerifier) nats.MsgHandler {
 }
 
 func respondTokenVerifyErr(msg *nats.Msg, code string) {
-	if err := msg.Respond(utils.GenerateErrorPayload(code)); err != nil {
+	if err := msg.Respond(awserrors.GenerateErrorPayload(code)); err != nil {
 		slog.Error("EKS token verify: failed to respond with error", "err", err)
 	}
 }

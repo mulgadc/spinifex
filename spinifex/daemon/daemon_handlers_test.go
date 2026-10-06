@@ -1013,7 +1013,7 @@ func TestHandleEC2ModifyVolume_MalformedInput(t *testing.T) {
 	reply, err := daemon.natsConn.Request("ec2.ModifyVolume", []byte(`{bad}`), 5*time.Second)
 	require.NoError(t, err)
 
-	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
+	// awserrors.UnmarshalJsonPayload returns ValidationError on parse failure.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
@@ -1177,7 +1177,7 @@ func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
 	reply, err := daemon.natsConn.Request("ec2.CreateImage", []byte(`{bad json}`), 5*time.Second)
 	require.NoError(t, err)
 
-	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
+	// awserrors.UnmarshalJsonPayload returns ValidationError on parse failure.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
@@ -1959,7 +1959,7 @@ func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
-	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
+	// awserrors.UnmarshalJsonPayload returns ValidationError on parse failure.
 	assert.Equal(t, awserrors.ErrorValidationError, errResp["Code"])
 }
 
@@ -3289,7 +3289,7 @@ func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
 	reply, err := natsRequest(daemon.natsConn, "ec2.RunInstances.bad", []byte(`{not valid}`), 5*time.Second)
 	require.NoError(t, err)
 
-	// utils.UnmarshalJsonPayload returns ValidationError on parse failure.
+	// awserrors.UnmarshalJsonPayload returns ValidationError on parse failure.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)

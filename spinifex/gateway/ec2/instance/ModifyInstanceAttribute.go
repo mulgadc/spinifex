@@ -77,7 +77,7 @@ func ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttri
 		return ec2.ModifyInstanceAttributeOutput{}, fmt.Errorf("failed to send modify request: %w", err)
 	}
 
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.ErrorContext(ctx, "ModifyInstanceAttribute: Daemon returned error", "instance_id", *input.InstanceId, "code", *responseError.Code)
 		return ec2.ModifyInstanceAttributeOutput{}, errors.New(*responseError.Code)
 	}

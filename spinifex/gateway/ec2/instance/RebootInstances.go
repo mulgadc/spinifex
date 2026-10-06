@@ -92,7 +92,7 @@ func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsC
 			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
 
-		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+		if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.ErrorContext(ctx, "RebootInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
 			return nil, errors.New(*responseError.Code)
 		}

@@ -251,7 +251,7 @@ func TestDescribeInstances_NodeReturnsError(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
-		errorPayload := utils.GenerateErrorPayload("InternalError")
+		errorPayload := awserrors.GenerateErrorPayload("InternalError")
 		msg.Respond(errorPayload)
 	})
 
@@ -271,7 +271,7 @@ func TestDescribeInstancesChecked_NodeClientErrorKeepsMessage(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1",
-		utils.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "The filter 'bogus-filter' is invalid"))
+		awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "The filter 'bogus-filter' is invalid"))
 
 	input := &ec2.DescribeInstancesInput{Filters: []*ec2.Filter{{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}}}}
 	_, err := DescribeInstancesChecked(context.Background(), input, nc, 1, nil, "123456789012",
@@ -306,7 +306,7 @@ func TestDescribeInstances_MixedResponses(t *testing.T) {
 	defer nc2.Close()
 
 	nc2.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
-		errorPayload := utils.GenerateErrorPayload("InternalError")
+		errorPayload := awserrors.GenerateErrorPayload("InternalError")
 		msg.Respond(errorPayload)
 	})
 
@@ -638,7 +638,7 @@ func TestDescribeInstancesChecked_Identity_ErroringNode_ReturnsRetryableUnavaila
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1",
 		mustMarshalDescribeOutput(t, &ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}}))
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-2",
-		utils.GenerateErrorPayload(awserrors.ErrorBandwidthLimitExceeded))
+		awserrors.GenerateErrorPayload(awserrors.ErrorBandwidthLimitExceeded))
 
 	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
 	output, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",

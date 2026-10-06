@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -183,7 +182,7 @@ func TestDescribeInstanceTypes_NodeReturnsError(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	nc.Subscribe("ec2.DescribeInstanceTypes", func(msg *nats.Msg) {
-		errorPayload := utils.GenerateErrorPayload("InternalError")
+		errorPayload := awserrors.GenerateErrorPayload("InternalError")
 		msg.Respond(errorPayload)
 	})
 
@@ -345,7 +344,7 @@ func TestDescribeInstanceTypes_UnknownNamedTypeIncompleteFanout(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n1", instanceTypesPayload(t, "t3.micro"))
-	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n2", utils.GenerateErrorPayload("InternalError"))
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceTypes", "n2", awserrors.GenerateErrorPayload("InternalError"))
 	input := &ec2.DescribeInstanceTypesInput{InstanceTypes: aws.StringSlice([]string{"m5.large"})}
 
 	for _, nodes := range [][]string{{"n1", "n2"}, nil} {

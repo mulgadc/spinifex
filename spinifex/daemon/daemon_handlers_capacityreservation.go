@@ -19,7 +19,7 @@ import (
 func (d *Daemon) handleEC2CreateCapacityReservation(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := new(ec2.CreateCapacityReservationInput)
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
@@ -100,7 +100,7 @@ func (d *Daemon) handleEC2DescribeCapacityReservations(msg *nats.Msg) string {
 func (d *Daemon) handleEC2CancelCapacityReservation(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 	input := new(ec2.CancelCapacityReservationInput)
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}

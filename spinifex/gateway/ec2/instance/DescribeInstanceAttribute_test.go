@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,10 +98,10 @@ func respondWithInstance(t *testing.T, instanceID, instanceType string) nats.Msg
 }
 
 // respondWithError returns a subscriber callback that emits a daemon-style
-// ResponseError envelope (matches utils.GenerateErrorPayload).
+// ResponseError envelope (matches awserrors.GenerateErrorPayload).
 func respondWithError(code string) nats.MsgHandler {
 	return func(msg *nats.Msg) {
-		msg.Respond(utils.GenerateErrorPayload(code))
+		msg.Respond(awserrors.GenerateErrorPayload(code))
 	}
 }
 

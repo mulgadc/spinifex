@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +21,7 @@ func TestNATSCreateImage_OwnerServerErrorNotMaskedByNotFound(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("ec2.CreateImage", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
 	})
 	require.NoError(t, err)
 
@@ -30,7 +29,7 @@ func TestNATSCreateImage_OwnerServerErrorNotMaskedByNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer nc2.Close()
 	_, err = nc2.Subscribe("ec2.CreateImage", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 	})
 	require.NoError(t, err)
 
@@ -51,7 +50,7 @@ func TestNATSCreateImage_AllNotFound(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("ec2.CreateImage", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 	})
 	require.NoError(t, err)
 	nc.Flush()

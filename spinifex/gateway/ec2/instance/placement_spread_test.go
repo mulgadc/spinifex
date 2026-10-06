@@ -12,7 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -67,7 +66,7 @@ func mockSpreadCluster(t *testing.T, nc *nats.Conn, capacity map[string]int, res
 		_ = json.Unmarshal(msg.Data, &h.finalizeInput)
 		h.mu.Unlock()
 		if finalizeErr != "" {
-			_ = msg.Respond(utils.GenerateErrorPayload(finalizeErr))
+			_ = msg.Respond(awserrors.GenerateErrorPayload(finalizeErr))
 			return
 		}
 		data, _ := json.Marshal(handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput{})
@@ -207,7 +206,7 @@ func TestDistributeInstancesSpread_ReserveErrorPropagates(t *testing.T) {
 
 	// The CAS layer rejects the reservation (e.g. group already at capacity).
 	reserveSub, err := nc.QueueSubscribe("ec2.ReserveSpreadNodes", "spinifex-workers", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
 	})
 	require.NoError(t, err)
 	defer reserveSub.Unsubscribe()
@@ -239,7 +238,7 @@ func TestDistributeInstancesSpread_PartialSuccessMeetsMinCount(t *testing.T) {
 		map[string][]byte{
 			"node-1": spreadReservation(t, "r-p1", "i-p1"),
 			"node-2": spreadReservation(t, "r-p2", "i-p2"),
-			"node-3": utils.GenerateErrorPayload(awserrors.ErrorServerInternal),
+			"node-3": awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal),
 		}, "")
 
 	reservation, err := distributeInstancesSpread(context.Background(), spreadInput(2, 3), nc, "test-account", "my-spread", 3)
@@ -267,7 +266,7 @@ func TestDistributeInstancesSpread_BelowMinCountRollsBackAndReleases(t *testing.
 		[]string{"node-1", "node-2"},
 		map[string][]byte{
 			"node-1": spreadReservation(t, "r-b1", "i-b1"),
-			"node-2": utils.GenerateErrorPayload(awserrors.ErrorServerInternal),
+			"node-2": awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal),
 		}, "")
 
 	_, err := distributeInstancesSpread(context.Background(), spreadInput(2, 2), nc, "test-account", "my-spread", 2)
@@ -293,7 +292,7 @@ func TestDistributeInstancesSpread_PropagatesClientError(t *testing.T) {
 		map[string]int{"node-1": 2},
 		[]string{"node-1"},
 		map[string][]byte{
-			"node-1": utils.GenerateErrorPayload(awserrors.ErrorInvalidAMIIDNotFound),
+			"node-1": awserrors.GenerateErrorPayload(awserrors.ErrorInvalidAMIIDNotFound),
 		}, "")
 
 	_, err := distributeInstancesSpread(context.Background(), spreadInput(1, 1), nc, "test-account", "my-spread", 1)

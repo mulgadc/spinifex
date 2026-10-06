@@ -1,4 +1,4 @@
-package utils
+package awserrors
 
 import (
 	"testing"

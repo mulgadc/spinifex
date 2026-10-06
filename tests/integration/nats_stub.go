@@ -31,7 +31,7 @@ var (
 // StubSubject once per NATS subject the handler under test publishes to (grep
 // spinifex/gateway/**/*.go for the literal subject string passed to
 // utils.Gather or natsConn.RequestMsg), then use SetSubjectReply to vary the
-// response per test case — e.g. an error envelope from utils.GenerateErrorPayload
+// response per test case — e.g. an error envelope from awserrors.GenerateErrorPayload
 // for a validation-error test, or a populated output struct for a happy path.
 func (gw *Gateway) StubSubject(t *testing.T, subject string, payload []byte) {
 	t.Helper()

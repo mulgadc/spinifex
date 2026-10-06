@@ -5,6 +5,7 @@ package accountteardown
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"sync"
 	"testing"
 
@@ -12,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,11 +73,11 @@ func (f *fakeRDS) serve(msg *nats.Msg) {
 
 	switch {
 	case code != "":
-		_ = msg.Respond(utils.GenerateErrorPayload(code))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(code))
 	case hasReply:
 		payload, err := json.Marshal(reply)
 		if err != nil {
-			_ = msg.Respond(utils.GenerateErrorPayload("InternalError"))
+			_ = msg.Respond(awserrors.GenerateErrorPayload("InternalError"))
 			return
 		}
 		_ = msg.Respond(payload)

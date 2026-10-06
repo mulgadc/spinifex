@@ -15,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -351,7 +350,7 @@ func TestAssociateIamInstanceProfile_DaemonAlreadyAssociated(t *testing.T) {
 	}}
 	const instanceID = "i-already-bound"
 	_, err := nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
-		msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorIamInstanceProfileAlreadyAssociated))
+		msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorIamInstanceProfileAlreadyAssociated))
 	})
 	require.NoError(t, err)
 

@@ -215,7 +215,7 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 	accountID := utils.AccountIDFromMsg(msg)
 
 	modifyVolumeInput := &ec2.ModifyVolumeInput{}
-	errResp := utils.UnmarshalJsonPayload(modifyVolumeInput, msg.Data)
+	errResp := awserrors.UnmarshalJsonPayload(modifyVolumeInput, msg.Data)
 
 	if errResp != nil {
 		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))

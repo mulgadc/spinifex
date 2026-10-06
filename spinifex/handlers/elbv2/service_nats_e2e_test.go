@@ -3,6 +3,7 @@ package handlers_elbv2
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -73,13 +74,13 @@ func setupNATSELBv2Test(t *testing.T) (ELBv2Service, *ELBv2ServiceImpl) {
 func handleNATSMsg[In any, Out any](msg *nats.Msg, fn func(context.Context, *In, string) (*Out, error)) {
 	var input In
 	if err := json.Unmarshal(msg.Data, &input); err != nil {
-		_ = msg.Respond(utils.GenerateErrorPayload("ServerInternal"))
+		_ = msg.Respond(awserrors.GenerateErrorPayload("ServerInternal"))
 		return
 	}
 	accountID := msg.Header.Get(utils.AccountIDHeader)
 	result, err := fn(context.Background(), &input, accountID)
 	if err != nil {
-		_ = msg.Respond(utils.GenerateErrorPayload(err.Error()))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(err.Error()))
 		return
 	}
 	data, _ := json.Marshal(result)

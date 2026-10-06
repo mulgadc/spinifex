@@ -109,7 +109,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	responseError, err := utils.ValidateErrorPayload(msg.Data)
+	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
 		if responseError.Code != nil {
 			return output, errors.New(*responseError.Code)

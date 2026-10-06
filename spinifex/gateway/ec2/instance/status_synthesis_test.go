@@ -6,6 +6,7 @@ package gateway_ec2_instance
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 	"time"
 
@@ -13,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -343,7 +343,7 @@ func TestSynthesis_ErrorResponderInstancesAreSynthesised(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", utils.GenerateErrorPayload("InvalidParameterValue"))
+	subscribeAsNode(t, nc, "ec2.DescribeInstanceStatus", "node-a", awserrors.GenerateErrorPayload("InvalidParameterValue"))
 
 	synth := StatusSynthesis{
 		Records: fakeRecords{ready: true, vms: []*vm.VM{

@@ -1,4 +1,4 @@
-package utils
+package awserrors
 
 import (
 	"bytes"
@@ -8,7 +8,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // GenerateErrorPayload serializes an ec2.ResponseError with the given code as JSON.
@@ -54,7 +53,7 @@ func UnmarshalJsonPayload(input any, jsonData []byte) []byte {
 	decoder.DisallowUnknownFields()
 	err := decoder.Decode(input)
 	if err != nil {
-		return GenerateErrorPayload(awserrors.ErrorValidationError)
+		return GenerateErrorPayload(ErrorValidationError)
 	}
 
 	return nil

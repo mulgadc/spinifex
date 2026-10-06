@@ -272,7 +272,7 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 
 	// Responder returns an error payload
 	_, err = nc.Subscribe("test.fail", func(msg *nats.Msg) {
-		errPayload := GenerateErrorPayload("InvalidParameterValue")
+		errPayload := awserrors.GenerateErrorPayload("InvalidParameterValue")
 		msg.Respond(errPayload)
 	})
 	require.NoError(t, err)
@@ -300,7 +300,7 @@ func TestNATSRequest_DecodedErrorContainsCode(t *testing.T) {
 	const code = "EntityAlreadyExists"
 	const reason = "access key AKIA... already exists for user provisioning-bot"
 	_, err = nc.Subscribe("test.fail.classify", func(msg *nats.Msg) {
-		msg.Respond(GenerateErrorPayloadWithMessage(code, reason))
+		msg.Respond(awserrors.GenerateErrorPayloadWithMessage(code, reason))
 	})
 	require.NoError(t, err)
 
@@ -321,7 +321,7 @@ func TestNATSRequest_ErrorResponseSurfacesMessage(t *testing.T) {
 	// still reach the caller instead of the bare code.
 	const reason = "eks: snapshot \"snap-bogus\" not found; refusing to restore"
 	_, err = nc.Subscribe("test.fail.msg", func(msg *nats.Msg) {
-		msg.Respond(GenerateErrorPayloadWithMessage("ServerInternal", reason))
+		msg.Respond(awserrors.GenerateErrorPayloadWithMessage("ServerInternal", reason))
 	})
 	require.NoError(t, err)
 
@@ -869,13 +869,13 @@ func TestGather_MixedSuccessAndErrors(t *testing.T) {
 	require.NoError(t, err)
 	for range 2 {
 		_, err = nc.Subscribe("test.gather.mixed", func(msg *nats.Msg) {
-			_ = msg.Respond(GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 		})
 		require.NoError(t, err)
 	}
 	// A 5xx error must be counted but must not become FirstClient4xx.
 	_, err = nc.Subscribe("test.gather.mixed", func(msg *nats.Msg) {
-		_ = msg.Respond(GenerateErrorPayload(awserrors.ErrorBandwidthLimitExceeded))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorBandwidthLimitExceeded))
 	})
 	require.NoError(t, err)
 
@@ -895,7 +895,7 @@ func TestGather_Client4xxErrorKeepsNodeMessage(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
 	_, err := nc.Subscribe("test.gather.msg", func(msg *nats.Msg) {
-		_ = msg.Respond(GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "The filter 'x' is invalid"))
+		_ = msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, "The filter 'x' is invalid"))
 	})
 	require.NoError(t, err)
 
@@ -923,7 +923,7 @@ func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
 
 	for range 2 {
 		_, err := nc.Subscribe("test.gather.first", func(msg *nats.Msg) {
-			_ = msg.Respond(GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 		})
 		require.NoError(t, err)
 	}
@@ -1126,7 +1126,7 @@ func TestGather_IdentityMode_RespondersPartitionSuccessAndError(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	subscribeAsNode(t, nc, "test.gather.identity.partition", "node-ok", []byte(`{"ok":true}`), 0)
 	subscribeAsNode(t, nc, "test.gather.identity.partition", "node-err",
-		GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound), 0)
+		awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound), 0)
 
 	_, sum, err := Gather(context.Background(), nc, "test.gather.identity.partition", []byte("{}"),
 		GatherOpts{Timeout: 2 * time.Second, ExpectedResponders: 2})

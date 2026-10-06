@@ -153,7 +153,7 @@ func TestCreateCapacityReservation_DaemonRejection(t *testing.T) {
 		{Node: "node-a", AZ: "az-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 4}}},
 	})
 	sub, err := nc.Subscribe("ec2.CreateCapacityReservation.node-a", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
 	})
 	require.NoError(t, err)
 	defer func() { _ = sub.Unsubscribe() }()

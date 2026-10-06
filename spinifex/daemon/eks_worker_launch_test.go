@@ -11,7 +11,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,7 +81,7 @@ func TestTerminateWorkerInstances_OwnerNotFoundPayloadIdempotent(t *testing.T) {
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.cmd.i-raced", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -99,7 +98,7 @@ func TestTerminateWorkerInstances_OwnerErrorSurfaces(t *testing.T) {
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.cmd.i-protected", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -151,7 +150,7 @@ func TestTerminateWorkerInstances_StoppedFallbackNotFoundIdempotent(t *testing.T
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -169,7 +168,7 @@ func TestTerminateWorkerInstances_StoppedFallbackErrorSurfaces(t *testing.T) {
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })

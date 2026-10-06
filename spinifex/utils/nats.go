@@ -308,7 +308,7 @@ func NATSRequest[Out any](ctx context.Context, conn *nats.Conn, subject string, 
 		return nil, fmt.Errorf("NATS request failed: %w", err)
 	}
 
-	responseError, err := ValidateErrorPayload(msg.Data)
+	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
 		if responseError.Message != nil && *responseError.Message != "" {
 			return nil, awserrors.Errorf(*responseError.Code, "%s", *responseError.Message)
@@ -339,7 +339,7 @@ func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *
 	defer span.End()
 
 	input := new(I)
-	if errResp := UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		respondNATS(msg, errResp)
 		return false
@@ -348,13 +348,13 @@ func ServeNATSRequestCtx[I any, O any](msg *nats.Msg, fn func(context.Context, *
 	if err != nil {
 		MarkSpanError(span, err)
 		_, message, _ := awserrors.ResolveErrorDetail(err)
-		respondNATS(msg, GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
+		respondNATS(msg, awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
 		return false
 	}
 	data, err := json.Marshal(out)
 	if err != nil {
 		MarkSpanError(span, err)
-		respondNATS(msg, GenerateErrorPayload(awserrors.ErrorServerInternal))
+		respondNATS(msg, awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
 		return false
 	}
 	respondNATS(msg, data)
@@ -612,7 +612,7 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 				if sha256.Sum256(msg.Data) != prevHash {
 					sum.ConflictNodes[nodeID] = true
 				}
-				if _, verr := ValidateErrorPayload(msg.Data); verr != nil {
+				if _, verr := awserrors.ValidateErrorPayload(msg.Data); verr != nil {
 					sum.ErrorResponders[nodeID] = true
 				} else {
 					sum.SuccessResponders[nodeID] = true
@@ -621,7 +621,7 @@ func Gather(ctx context.Context, conn *nats.Conn, subject string, payload []byte
 			}
 		}
 
-		responseError, verr := ValidateErrorPayload(msg.Data)
+		responseError, verr := awserrors.ValidateErrorPayload(msg.Data)
 		if verr != nil {
 			code := ""
 			if responseError.Code != nil {

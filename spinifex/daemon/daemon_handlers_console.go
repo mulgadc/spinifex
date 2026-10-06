@@ -8,7 +8,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -18,7 +17,7 @@ func (d *Daemon) handleEC2GetConsoleOutput(msg *nats.Msg) {
 	slog.Debug("Received GetConsoleOutput request", "subject", msg.Subject, "data", string(msg.Data))
 
 	var input ec2.GetConsoleOutputInput
-	if errResp := utils.UnmarshalJsonPayload(&input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(&input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}

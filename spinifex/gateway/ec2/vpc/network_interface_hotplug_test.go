@@ -132,7 +132,7 @@ func TestAttachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 	nc := newTestNATS(t)
 
 	sub, err := nc.Subscribe("ec2.cmd.i-err", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -201,7 +201,7 @@ func TestDetachNetworkInterface_DescribeErrorResponse(t *testing.T) {
 	nc := newTestNATS(t)
 
 	sub, err := nc.Subscribe("ec2.DescribeNetworkInterfaces", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -282,7 +282,7 @@ func TestDetachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 	describeNetworkInterfacesResponder(context.Background(), t, nc, "eni-attach-err", "i-err", "eni-x")
 
 	sub, err := nc.Subscribe("ec2.cmd.i-err", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })

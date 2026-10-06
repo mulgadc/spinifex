@@ -13,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -263,7 +262,7 @@ func respondWithSystemLaunchError(msg *nats.Msg, errMsg string) {
 	payload, err := json.Marshal(systemInstanceLaunchEnvelope{Error: errMsg})
 	if err != nil {
 		// Fall back to bare error payload so the requester at least sees a non-empty reply.
-		if respErr := msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
+		if respErr := msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
 			slog.Error("system.LaunchInstance: respond (error fallback) failed", "err", respErr)
 		}
 		return
@@ -290,7 +289,7 @@ func respondWithSystemTerminateError(msg *nats.Msg, errMsg string) {
 	}
 	payload, err := json.Marshal(systemInstanceTerminateEnvelope{Error: errMsg})
 	if err != nil {
-		if respErr := msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
+		if respErr := msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
 			slog.Error("system.TerminateInstance: respond (error fallback) failed", "err", respErr)
 		}
 		return

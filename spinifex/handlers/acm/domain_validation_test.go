@@ -15,7 +15,7 @@ import (
 // awsBadDomainMessage is AWS's RequestCertificate answer for DomainName "not a domain".
 const awsBadDomainMessage = "1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must satisfy regular expression pattern: (\\*\\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])"
 
-func TestValidDomainName(t *testing.T) {
+func TestDomainNameRE(t *testing.T) {
 	label63 := strings.Repeat("a", 63)
 	label64 := strings.Repeat("a", 64)
 	cases := []struct {
@@ -50,10 +50,11 @@ func TestValidDomainName(t *testing.T) {
 		{"*example.com", false},
 		{"under_score.example.com", false},
 		{"bücher.example.com", false},
+		{"example.com\n", false},
 		{"", false},
 	}
 	for _, tc := range cases {
-		assert.Equal(t, tc.want, validDomainName(tc.domain), "domain %q", tc.domain)
+		assert.Equal(t, tc.want, domainNameRE.MatchString(tc.domain), "domain %q", tc.domain)
 	}
 }
 

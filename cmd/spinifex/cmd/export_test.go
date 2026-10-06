@@ -29,6 +29,13 @@ func SetFirewallApplyHelper(path string) func() {
 // InitCLILogger exposes initCLILogger for testing.
 var InitCLILogger = initCLILogger
 
+// OutputStylingEnabled, IsTerminal and SetOutputStyling expose the spx colour guard.
+var (
+	OutputStylingEnabled = outputStylingEnabled
+	IsTerminal           = isTerminal
+	SetOutputStyling     = setOutputStyling
+)
+
 // CLILogLevel exposes the CLI logger's level var for testing.
 var CLILogLevel = cliLogLevel
 

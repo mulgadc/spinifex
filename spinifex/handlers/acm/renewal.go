@@ -300,9 +300,9 @@ func (w *Worker) renewOne(ctx context.Context, certArn string) error {
 	rec.Certificate = certPEM
 	rec.CertificateChain = chainPEM
 	rec.PrivateKey = keyPEM
-	rec.Serial = formatSerial(leaf.SerialNumber)
+	rec.Serial = leaf.SerialNumber.Text(16)
 	rec.Subject = leaf.Subject.String()
-	rec.Issuer = issuerName(leaf)
+	rec.Issuer = leaf.Issuer.String()
 	rec.KeyAlgorithm = keyAlgorithm(leaf)
 	rec.NotBefore = leaf.NotBefore
 	rec.NotAfter = leaf.NotAfter

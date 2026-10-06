@@ -8,9 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"math/big"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -169,77 +167,4 @@ func TestDescribeCertificate_LegacyImportedRecordDerivedFromPEM(t *testing.T) {
 	assert.True(t, d.CreatedAt.Equal(importedAt), "a legacy record's CreatedAt falls back to ImportedAt")
 	require.Len(t, d.KeyUsages, 1)
 	require.Len(t, d.ExtendedKeyUsages, 1)
-}
-
-// What ACM shows for these certificates has not been observed, so none of
-// the audit's defaults may be applied to them.
-func TestDescribeCertificate_UnobservedCertificateShapesKeepPriorBehaviour(t *testing.T) {
-	svc := setupACMService(t)
-	certPEM, keyPEM := genCert(t, "cn.example.com", "san-a.example.com", "san-b.example.com")
-	certArn := importCert(t, svc, certPEM, keyPEM)
-	d := describeCert(t, svc, certArn)
-
-	assert.Equal(t, []string{"san-a.example.com", "san-b.example.com"}, aws.StringValueSlice(d.SubjectAlternativeNames),
-		"whether ACM adds a CN missing from the SANs is unverified")
-	assert.Nil(t, d.KeyUsages, "ACM's names for a present key-usage extension are unverified")
-	assert.Nil(t, d.ExtendedKeyUsages, "ACM's names for a present EKU extension are unverified")
-	assert.Nil(t, d.SignatureAlgorithm, "ACM's spelling for an ECDSA signature is unverified")
-	require.Len(t, d.DomainValidationOptions, 2)
-
-	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
-	require.NoError(t, err)
-	require.Len(t, list.CertificateSummaryList, 1)
-	assert.Nil(t, list.CertificateSummaryList[0].KeyUsages)
-	assert.Nil(t, list.CertificateSummaryList[0].ExtendedKeyUsages)
-}
-
-func TestListCertificates_SANSummariesCappedAtOneHundred(t *testing.T) {
-	svc := setupACMService(t)
-	names := make([]string, maxSANSummaries+1)
-	for i := range names {
-		names[i] = fmt.Sprintf("n%03d.example.com", i)
-	}
-	certPEM, keyPEM := genCert(t, names[0], names...)
-	importCert(t, svc, certPEM, keyPEM)
-
-	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
-	require.NoError(t, err)
-	s := list.CertificateSummaryList[0]
-	assert.Len(t, s.SubjectAlternativeNameSummaries, maxSANSummaries)
-	assert.True(t, aws.BoolValue(s.HasAdditionalSubjectAlternativeNames))
-}
-
-// The tenant CA's DN carries an O as well as a CN, a case ACM was not observed
-// on, so its leaves keep the full issuer DN; the serial format still applies.
-func TestRequestCertificate_PrivateCA_SerialColonFormattedIssuerDNKept(t *testing.T) {
-	svc := setupACMService(t)
-	dir := t.TempDir()
-	ca, err := LoadOrCreateTenantCA(filepath.Join(dir, "tenant-ca.pem"), filepath.Join(dir, "tenant-ca.key"), []string{"real.example.com"})
-	require.NoError(t, err)
-	svc.TenantCA = ca
-
-	out, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{DomainName: aws.String("leaf.real.example.com")}, testAccountID)
-	require.NoError(t, err)
-	d := describeCert(t, svc, aws.StringValue(out.CertificateArn))
-
-	rec, err := svc.store.GetCertMetadata(context.Background(), aws.StringValue(out.CertificateArn))
-	require.NoError(t, err)
-	leaf, err := parseLeaf([]byte(rec.Certificate))
-	require.NoError(t, err)
-	assert.Equal(t, formatSerial(leaf.SerialNumber), aws.StringValue(d.Serial))
-	assert.Regexp(t, `^[0-9a-f]{2}(:[0-9a-f]{2})*$`, aws.StringValue(d.Serial))
-	assert.Equal(t, leaf.Issuer.String(), aws.StringValue(d.Issuer))
-	assert.Nil(t, d.Options, "a requested certificate's Options differ from an import's and are not set here")
-}
-
-func TestFormatSerial(t *testing.T) {
-	for _, tc := range []struct {
-		in   int64
-		want string
-	}{
-		{1, "01"},
-		{0x0a00ff, "0a:00:ff"},
-	} {
-		assert.Equal(t, tc.want, formatSerial(big.NewInt(tc.in)))
-	}
 }

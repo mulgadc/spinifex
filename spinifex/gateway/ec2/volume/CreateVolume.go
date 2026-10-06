@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/nats-io/nats.go"
 )
 
@@ -29,8 +30,10 @@ func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != "gp3" {
-		return errors.New(awserrors.ErrorUnknownVolumeType)
+	if input.VolumeType != nil {
+		if err := types.ValidateVolumeType(*input.VolumeType); err != nil {
+			return err
+		}
 	}
 
 	return nil

@@ -207,8 +207,9 @@ func TestCreateVolume_Validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			svc := newTestVolumeService(tt.az)
 			_, err := svc.CreateVolume(context.Background(), tt.input, testVolAccountID)
-			assert.Error(t, err)
-			assert.Equal(t, tt.wantErr, err.Error())
+			code, _, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantErr, code)
 		})
 	}
 }

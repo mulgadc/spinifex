@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateCreateVolumeInput(t *testing.T) {
@@ -153,6 +154,15 @@ func TestValidateCreateVolumeInput(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "ValidInput_UppercaseGP3",
+			input: &ec2.CreateVolumeInput{
+				Size:             aws.Int64(80),
+				AvailabilityZone: aws.String("ap-southeast-2a"),
+				VolumeType:       aws.String("GP3"),
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -160,8 +170,9 @@ func TestValidateCreateVolumeInput(t *testing.T) {
 			err := ValidateCreateVolumeInput(tt.input)
 
 			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Equal(t, tt.errMsg, err.Error())
+				code, _, ok := awserrors.ResolveErrorDetail(err)
+				require.True(t, ok)
+				assert.Equal(t, tt.errMsg, code)
 			} else {
 				assert.NoError(t, err)
 			}

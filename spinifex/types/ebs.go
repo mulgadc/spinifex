@@ -2,7 +2,10 @@ package types
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
+
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
 type EBSRequests struct {
@@ -26,6 +29,25 @@ type EBSRequest struct {
 
 // VolumeTypeGP3 is the only EBS volume type this platform serves.
 const VolumeTypeGP3 = "gp3"
+
+// SupportedVolumeTypes lists the EBS volume types CreateVolume accepts.
+var SupportedVolumeTypes = []string{VolumeTypeGP3}
+
+// ValidateVolumeType accepts an empty type (the gp3 default) or a supported one,
+// matched case-insensitively as EC2 does, and answers UnknownVolumeType otherwise.
+func ValidateVolumeType(volumeType string) error {
+	if volumeType == "" {
+		return nil
+	}
+	for _, t := range SupportedVolumeTypes {
+		if strings.EqualFold(volumeType, t) {
+			return nil
+		}
+	}
+	return awserrors.Errorf(awserrors.ErrorUnknownVolumeType,
+		"Unsupported volume type '%s' for volume creation. Supported volume types: %s.",
+		volumeType, strings.Join(SupportedVolumeTypes, ", "))
+}
 
 const (
 	// gp3 IOPS envelope (AWS): 3000 baseline on any size, up to 500 IOPS/GiB,

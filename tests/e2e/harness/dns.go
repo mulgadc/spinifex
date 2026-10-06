@@ -15,7 +15,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 )
 
@@ -55,12 +55,12 @@ func NorthstarBaseDomain(env *Env) string {
 	// The local node's stanza is authoritative; fall back to any node carrying a
 	// domain, since the zone is cluster-wide.
 	if n, ok := cc.Nodes[cc.Node]; ok {
-		if d := handlers_dns.ResolveBaseDomain(&n); d != "" {
+		if d := dns.ResolveBaseDomain(&n); d != "" {
 			return d
 		}
 	}
 	for _, n := range cc.Nodes {
-		if d := handlers_dns.ResolveBaseDomain(&n); d != "" {
+		if d := dns.ResolveBaseDomain(&n); d != "" {
 			return d
 		}
 	}
@@ -78,12 +78,12 @@ func NorthstarInternalDomain(env *Env) string {
 		return ""
 	}
 	if n, ok := cc.Nodes[cc.Node]; ok {
-		if d := handlers_dns.ResolveInternalDomain(&n); d != "" {
+		if d := dns.ResolveInternalDomain(&n); d != "" {
 			return d
 		}
 	}
 	for _, n := range cc.Nodes {
-		if d := handlers_dns.ResolveInternalDomain(&n); d != "" {
+		if d := dns.ResolveInternalDomain(&n); d != "" {
 			return d
 		}
 	}

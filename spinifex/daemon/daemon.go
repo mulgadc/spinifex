@@ -41,6 +41,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -48,7 +49,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -144,8 +144,8 @@ type Daemon struct {
 	natsConn          *nats.Conn
 	resourceMgr       *ResourceManager
 	instanceService   *handlers_ec2_instance.InstanceServiceImpl
-	dnsWriter         *handlers_dns.Writer
-	dnsReconciler     *handlers_dns.Reconciler
+	dnsWriter         *dns.Writer
+	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
 	dnsInternalDomain string
 	keyService        *handlers_ec2_key.KeyServiceImpl
@@ -1757,10 +1757,10 @@ func (d *Daemon) startCluster() error {
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
 	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
-	d.dnsWriter = handlers_dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
-	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
-	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
-	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
+	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
+	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
+	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
+	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
 	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
 	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
 
@@ -1846,9 +1846,9 @@ func (d *Daemon) startCluster() error {
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
 	// Name interfaces as their instances are named, so the two agree.
-	region, internalDomain := d.config.Region, handlers_dns.ResolveInternalDomain(d.config)
+	region, internalDomain := d.config.Region, dns.ResolveInternalDomain(d.config)
 	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {
-		_, private := handlers_dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
+		_, private := dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
 		return private
 	})
 
@@ -2118,12 +2118,12 @@ func (d *Daemon) startCluster() error {
 	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
 
 	// deriveValidationMode needs to know whether northstar hosts a zone for a
-	// requested domain. handlers/acm deliberately does not import handlers/dns
+	// requested domain. handlers/acm deliberately does not import domains/dns
 	// (which would pull its S3/northstar-config dependencies into every acm
 	// test) — wired as a func field instead, the same pattern CertMaterialUpdated
 	// uses above to keep acm decoupled from elbv2.
 	d.acmService.NorthstarHostsZone = func(domain string) bool {
-		return handlers_dns.HostsZone(d.config, domain)
+		return dns.HostsZone(d.config, domain)
 	}
 
 	// The tenant private CA is optional, unlike the master key above: a
@@ -2266,7 +2266,7 @@ func (d *Daemon) startCluster() error {
 	// zone. No-op when northstar is not configured.
 	if d.dnsReconciler.Enabled() {
 		go d.dnsReconciler.Run(d.ctx)
-		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(handlers_dns.DefaultReconcileInterval))
+		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(dns.DefaultReconcileInterval))
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.

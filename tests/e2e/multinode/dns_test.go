@@ -15,7 +15,7 @@ import (
 	"github.com/miekg/dns"
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	spinconfig "github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	dnsdomain "github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -78,9 +78,9 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 		peerBase, peerInternal := harness.PeerNorthstarDomains(t, node)
 		require.Equalf(t, baseDomain, peerBase, "base domain differs on %s", node.Name)
 		require.Equalf(t, internalDomain, peerInternal, "internal domain differs on %s", node.Name)
-		require.Equalf(t, expectedSeeds, handlers_dns.NameserverSeeds(configs[node.Name]),
+		require.Equalf(t, expectedSeeds, dnsdomain.NameserverSeeds(configs[node.Name]),
 			"nameserver seeds differ on %s", node.Name)
-		require.Equalf(t, expectedResolvers, handlers_dns.ResolverNameserverIPs(configs[node.Name]),
+		require.Equalf(t, expectedResolvers, dnsdomain.ResolverNameserverIPs(configs[node.Name]),
 			"resolver backends differ on %s", node.Name)
 
 		for _, port := range []string{"53", "5300"} {
@@ -111,12 +111,12 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 
 	harness.Step(t, "D4: resolve internal and recursive names from a non-init-node guest")
 	harness.AssertGuestResolver(t, source.SSH)
-	sourceName := handlers_dns.EC2PrivateName(source.PrivateIP, region, internalDomain)
+	sourceName := dnsdomain.EC2PrivateName(source.PrivateIP, region, internalDomain)
 	assertGuestIPv4(t, source.SSH, sourceName, source.PrivateIP)
 	assertGuestIPv4(t, source.SSH, "google.com", "")
 
 	harness.Step(t, "D5: resolve a node3 guest record from the node2 guest and every backend")
-	targetName := handlers_dns.EC2PrivateName(target.PrivateIP, region, internalDomain)
+	targetName := dnsdomain.EC2PrivateName(target.PrivateIP, region, internalDomain)
 	assertGuestIPv4(t, source.SSH, targetName, target.PrivateIP)
 	for _, node := range fix.Cluster.Nodes {
 		assertNodeIPv4(t, node, targetName, target.PrivateIP)
@@ -141,11 +141,11 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 
 	// Converge a fresh record on every backend before stopping one. The guest has
 	// not queried this name, so its first lookup cannot be satisfied from cache.
-	failoverName := handlers_dns.EC2PrivateName(failoverRecord.PrivateIP, region, internalDomain)
+	failoverName := dnsdomain.EC2PrivateName(failoverRecord.PrivateIP, region, internalDomain)
 	for _, node := range fix.Cluster.Nodes {
 		assertNodeIPv4(t, node, failoverName, failoverRecord.PrivateIP)
 	}
-	publicFailoverName := handlers_dns.EC2PublicName(source.PublicIP, region, baseDomain)
+	publicFailoverName := dnsdomain.EC2PublicName(source.PublicIP, region, baseDomain)
 	for _, node := range fix.Cluster.Nodes {
 		assertNodeIPv4(t, node, publicFailoverName, source.PublicIP)
 	}

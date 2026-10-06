@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
@@ -140,7 +140,7 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 			"guest ping to own private IP %s never reached 0%% loss within 30s\n%s",
 			privIP, out)
 
-		privateName := handlers_dns.EC2PrivateName(privIP, region, internalDomain)
+		privateName := dns.EC2PrivateName(privIP, region, internalDomain)
 		harness.Step(t, "resolve internal EC2 name %s via guest resolver", privateName)
 		internalResult, err := sshCapture(tgt, "getent ahostsv4 "+privateName)
 		require.NoErrorf(t, err, "guest failed to resolve internal name %s\n%s", privateName, internalResult)

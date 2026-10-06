@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
@@ -68,7 +68,7 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		}
 
 		var privateDNS string
-		publicDNS, privateDNS = handlers_dns.EC2DNSNames(
+		publicDNS, privateDNS = dns.EC2DNSNames(
 			cfg.Region, cfg.DNSBaseDomain, cfg.DNSInternalDomain,
 			aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
 		)

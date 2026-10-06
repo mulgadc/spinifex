@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -314,7 +314,7 @@ func TestCreateDBInstance_ContributesEndpointRecordToDesiredSet(t *testing.T) {
 	require.True(t, authoritative)
 	require.Len(t, changes, 1)
 	change := changes[0]
-	assert.Equal(t, handlers_dns.ActionUpsert, change.Action)
+	assert.Equal(t, dns.ActionUpsert, change.Action)
 	assert.Equal(t, testBaseDomain, change.Zone)
 	assert.Equal(t, "A", change.Type)
 

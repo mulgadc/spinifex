@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +49,7 @@ func dnsTestDaemon(t *testing.T) (*Daemon, func(id, publicIP, privateIP string, 
 	return d, seed
 }
 
-func changeNames(changes []handlers_dns.Change) []string {
+func changeNames(changes []dns.Change) []string {
 	out := make([]string, 0, len(changes))
 	for _, c := range changes {
 		out = append(out, c.Name)

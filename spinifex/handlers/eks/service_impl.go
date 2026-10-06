@@ -23,12 +23,12 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
@@ -312,7 +312,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		registry:                 NewReconcilerRegistry(),
 		bgCtx:                    ctx,
 		bgCancel:                 cancel,
-		baseDomain:               handlers_dns.ResolveBaseDomain(deps.Config),
+		baseDomain:               dns.ResolveBaseDomain(deps.Config),
 		nodegroupReadyTimeout:    defaultNodegroupReadyTimeout,
 		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
 		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
@@ -840,7 +840,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// only external SDK/kubectl clients use the name.
 	meta.EndpointDNSName = ""
 	if s.baseDomain != "" {
-		meta.EndpointDNSName = handlers_dns.EKSName(name, accountID, region, s.baseDomain)
+		meta.EndpointDNSName = dns.EKSName(name, accountID, region, s.baseDomain)
 	}
 	endpointHost := meta.EndpointIP
 	if meta.EndpointDNSName != "" {
@@ -2140,7 +2140,7 @@ func clusterJoinEndpoint(meta *ClusterMeta) string {
 // live in per-account KV buckets, so a complete cross-tenant view requires
 // reading every one: any bucket-read failure yields ok=false so the reconcile
 // suppresses EKS pruning rather than delete a tenant's endpoint on a partial view.
-func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+func (s *EKSServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 	if s == nil || s.baseDomain == "" {
 		return nil, false
 	}
@@ -2172,8 +2172,8 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 				meta.EndpointDNSName == "" || meta.EndpointIP == "" {
 				continue
 			}
-			changes = append(changes, handlers_dns.EKSChanges(
-				handlers_dns.ActionUpsert, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP,
+			changes = append(changes, dns.EKSChanges(
+				dns.ActionUpsert, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP,
 			)...)
 		}
 	}

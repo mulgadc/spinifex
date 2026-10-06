@@ -36,7 +36,7 @@ const (
 
 // AWSGWServiceNames lists every AWS service published under AWS.ServicesDomain
 // in the shape {service}.{region}.{suffix}, minted both as a gateway cert SAN
-// (admin.AWSGWServiceDNSNames) and as a DNS A record (handlers/dns's
+// (admin.AWSGWServiceDNSNames) and as a DNS A record (domains/dns's
 // ServiceEndpointNames). One list feeds both so the SANs and the records can
 // never drift apart. ECR is excluded: it also carries a wildcard registry name
 // the other services don't share, so it stays a hand-written entry in each

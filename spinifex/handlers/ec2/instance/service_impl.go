@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
@@ -29,7 +30,6 @@ import (
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -287,8 +287,8 @@ func NewInstanceServiceImpl(
 		resourceMgr:       resourceMgr,
 		stoppedStore:      stoppedStore,
 		metadata:          ebsmetadata.NewStore(store, bucket),
-		dnsBaseDomain:     handlers_dns.ResolveBaseDomain(cfg),
-		dnsInternalDomain: handlers_dns.ResolveInternalDomain(cfg),
+		dnsBaseDomain:     dns.ResolveBaseDomain(cfg),
+		dnsInternalDomain: dns.ResolveInternalDomain(cfg),
 	}
 }
 

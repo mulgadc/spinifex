@@ -21,12 +21,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/network/topology"
@@ -189,7 +189,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 		nc:             nc,
 		nodeID:         nodeID,
 		region:         region,
-		dnsBaseDomain:  handlers_dns.ResolveBaseDomain(cfg),
+		dnsBaseDomain:  dns.ResolveBaseDomain(cfg),
 		ctx:            ctx,
 		cancel:         cancel,
 		hc:             hc,
@@ -1310,7 +1310,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	if elbZone == "" {
 		elbZone = "spinifex.local"
 	}
-	dnsName := handlers_dns.ELBName(dnsPrefix, name, lbID, s.region, elbZone)
+	dnsName := dns.ELBName(dnsPrefix, name, lbID, s.region, elbZone)
 
 	// Atomically claim the name before ENI/VM work. SDK retries lose the claim;
 	// orphaned claims from crashed creates are reclaimed. Every failure releases it.
@@ -1586,7 +1586,7 @@ func (s *ELBv2ServiceImpl) DNSWatchBucket() *kvstore.Bucket {
 	return s.store.WatchBucket()
 }
 
-func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
 		return nil, false
 	}
@@ -1599,8 +1599,8 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, o
 			lb.DNSName == "" || lbFrontendIP(lb) == "" {
 			continue
 		}
-		changes = append(changes, handlers_dns.ELBChanges(
-			handlers_dns.ActionUpsert, lb.DNSName, s.dnsBaseDomain, lbFrontendIP(lb),
+		changes = append(changes, dns.ELBChanges(
+			dns.ActionUpsert, lb.DNSName, s.dnsBaseDomain, lbFrontendIP(lb),
 		)...)
 	}
 	return changes, true

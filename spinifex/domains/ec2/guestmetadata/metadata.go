@@ -14,9 +14,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 )
 
 const (
@@ -763,7 +763,7 @@ func (s *IMDSServiceImpl) privateHostname(ip, region string) string {
 	if ip == "" || region == "" {
 		return ""
 	}
-	return handlers_dns.EC2PrivateName(ip, region, s.internalDomain)
+	return dns.EC2PrivateName(ip, region, s.internalDomain)
 }
 
 // publicHostname is the AWS-shaped public name (ec2-<dashed>.<region>.compute.<base
@@ -772,7 +772,7 @@ func (s *IMDSServiceImpl) publicHostname(ip, region string) string {
 	if ip == "" || region == "" || s.baseDomain == "" {
 		return ""
 	}
-	return handlers_dns.EC2PublicName(ip, region, s.baseDomain)
+	return dns.EC2PublicName(ip, region, s.baseDomain)
 }
 
 func writeText(w http.ResponseWriter, body string) {

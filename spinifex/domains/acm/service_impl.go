@@ -67,10 +67,10 @@ type ACMServiceImpl struct {
 	// NorthstarHostsZone, when set, reports whether northstar hosts a zone
 	// covering domain — consulted once per requested domain (primary + every
 	// SAN) by deriveValidationMode. Wired by the daemon post-construction
-	// (mirroring CertMaterialUpdated below) to handlers/dns.HostsZone. A func
-	// field stands in for a direct import of handlers/dns, the same pattern
+	// (mirroring CertMaterialUpdated below) to domains/dns.HostsZone. A func
+	// field stands in for a direct import of domains/dns, the same pattern
 	// CertMaterialUpdated uses for handlers/elbv2, so this package and its
-	// tests stay decoupled from handlers/dns's S3/northstar-config
+	// tests stay decoupled from domains/dns's S3/northstar-config
 	// dependencies. Nil means "northstar hosts nothing" — the safe default for
 	// tests and any deployment that never wires it, so an unwired service can
 	// never accidentally select MANUAL_TXT for a zone it cannot actually see.

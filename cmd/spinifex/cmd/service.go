@@ -11,7 +11,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
@@ -788,10 +788,10 @@ var vpcdStartCmd = &cobra.Command{
 			ExternalInterface:       nodeConfig.VPCD.ExternalInterface,
 			BridgeMode:              nodeConfig.VPCD.BridgeMode,
 			AZ:                      nodeConfig.AZ,
-			NorthstarBaseDomain:     handlers_dns.ResolveBaseDomain(&nodeConfig),
-			NorthstarInternalDomain: handlers_dns.ResolveInternalDomain(&nodeConfig),
+			NorthstarBaseDomain:     dns.ResolveBaseDomain(&nodeConfig),
+			NorthstarInternalDomain: dns.ResolveInternalDomain(&nodeConfig),
 			ServicesDomain:          clusterConfig.AWS.ServicesDomain,
-			ResolverNameservers:     handlers_dns.ResolverNameserverIPs(clusterConfig),
+			ResolverNameservers:     dns.ResolverNameserverIPs(clusterConfig),
 			NATExemptCIDRs:          clusterConfig.Network.NATExemptCIDRs,
 			IPSecEnabled:            clusterConfig.Network.IPSecEnabled,
 			UnderlayMTU:             clusterConfig.Network.UnderlayMTU,

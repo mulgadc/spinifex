@@ -17,8 +17,8 @@ import (
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
@@ -1051,13 +1051,13 @@ func TestSpinifexTomlTemplate_PeerNorthstarSeedsAreUniform(t *testing.T) {
 	wantHosts := []string{"ns1", "ns2", "ns3"}
 	for _, node := range []string{"node1", "node2", "node3"} {
 		cfg := renderClusterNode(t, node, allNodes)
-		seeds := handlers_dns.NameserverSeeds(cfg)
+		seeds := dns.NameserverSeeds(cfg)
 		require.Len(t, seeds, 3)
 		for i, seed := range seeds {
 			assert.Equal(t, wantHosts[i], seed.Host)
 			assert.Equal(t, wantIPs[i], seed.IP)
 		}
-		assert.Equal(t, wantIPs, handlers_dns.ResolverNameserverIPs(cfg),
+		assert.Equal(t, wantIPs, dns.ResolverNameserverIPs(cfg),
 			"%s derived a different nameserver set from its own config", node)
 	}
 }

@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
@@ -81,8 +81,8 @@ func (d *Daemon) rdsWatchBuckets(ctx context.Context) ([]*kvstore.Bucket, error)
 // Prune authority is granted per record class only when that class enumerated
 // completely, so a transient store error can never delete another tenant's live
 // records — the reconcile only ever repairs, never over-prunes, on a partial view.
-func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
-	ds := handlers_dns.DesiredSet{}
+func (d *Daemon) dnsDesiredSet() dns.DesiredSet {
+	ds := dns.DesiredSet{}
 	if ch, ok := d.desiredEC2DNSChanges(); ok {
 		ds.Changes = append(ds.Changes, ch...)
 		ds.Prunable.EC2 = true
@@ -119,14 +119,14 @@ func (d *Daemon) dnsDesiredSet() handlers_dns.DesiredSet {
 // to build it was readable. Unlike EC2/ELB/EKS/RDS, whose target is a single
 // resource address that answers the same from anywhere, a service endpoint's
 // natural target is a node address, so the desired value is a set rather than
-// one record — see handlers/dns.ServiceEndpointChanges.
+// one record — see domains/dns.ServiceEndpointChanges.
 //
 // The cluster's own gossiped node config (d.clusterConfig.Nodes) is used
 // rather than any single node's live state, so whichever node's reconcile
 // wins this cycle's leader election computes the same full-cluster set; a
 // pass that only ever asserted its own address would erase every other node's
 // on the next cycle it won.
-func (d *Daemon) desiredServiceEndpointDNSChanges() ([]handlers_dns.Change, bool) {
+func (d *Daemon) desiredServiceEndpointDNSChanges() ([]dns.Change, bool) {
 	if d.clusterConfig == nil {
 		return nil, false
 	}
@@ -164,7 +164,7 @@ func (d *Daemon) desiredServiceEndpointDNSChanges() ([]handlers_dns.Change, bool
 	// zone body (the writer skips a no-op write) regardless of map iteration.
 	sort.Strings(addresses)
 
-	return handlers_dns.ServiceEndpointChanges(d.config.Region, suffix, addresses), true
+	return dns.ServiceEndpointChanges(d.config.Region, suffix, addresses), true
 }
 
 // desiredEC2DNSChanges returns UPSERTs for every running instance in the
@@ -172,7 +172,7 @@ func (d *Daemon) desiredServiceEndpointDNSChanges() ([]handlers_dns.Change, bool
 // spans all nodes, unlike the vmMgr map it replaces here, which is what lets
 // the reconcile prune a record as well as repair one. The domains mirror the
 // lifecycle publish so re-asserting is a no-op when in sync.
-func (d *Daemon) desiredEC2DNSChanges() ([]handlers_dns.Change, bool) {
+func (d *Daemon) desiredEC2DNSChanges() ([]dns.Change, bool) {
 	if d.jsManager == nil {
 		return nil, false
 	}
@@ -186,11 +186,11 @@ func (d *Daemon) desiredEC2DNSChanges() ([]handlers_dns.Change, bool) {
 		return nil, false
 	}
 
-	var changes []handlers_dns.Change
+	var changes []dns.Change
 	for _, record := range records {
 		// Stopped instances keep their addresses and their names, which is why
 		// the state test is the same one the lifecycle publish withdraws on.
-		if record == nil || !handlers_dns.InstanceRetainsRecords(record.Status.Status) {
+		if record == nil || !dns.InstanceRetainsRecords(record.Status.Status) {
 			continue
 		}
 		if record.Metadata.DeletionTimestamp != nil {
@@ -203,8 +203,8 @@ func (d *Daemon) desiredEC2DNSChanges() ([]handlers_dns.Change, bool) {
 		if record.Status.PublicIP == "" && privateIP == "" {
 			continue
 		}
-		changes = append(changes, handlers_dns.EC2Changes(
-			handlers_dns.ActionUpsert, d.config.Region,
+		changes = append(changes, dns.EC2Changes(
+			dns.ActionUpsert, d.config.Region,
 			d.dnsBaseDomain, d.dnsInternalDomain, record.Status.PublicIP, privateIP,
 		)...)
 	}

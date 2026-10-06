@@ -14,7 +14,7 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	nsserver "github.com/mulgadc/northstar/pkg/server"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 )
@@ -111,8 +111,8 @@ func (svc *Service) subscribeReload() {
 	}
 	svc.nc = nc
 
-	if _, err := nc.Subscribe(handlers_dns.SubjectZoneReload, func(msg *nats.Msg) {
-		var evt handlers_dns.ZoneReload
+	if _, err := nc.Subscribe(dns.SubjectZoneReload, func(msg *nats.Msg) {
+		var evt dns.ZoneReload
 		if err := json.Unmarshal(msg.Data, &evt); err != nil || evt.Zone == "" {
 			return
 		}
@@ -125,5 +125,5 @@ func (svc *Service) subscribeReload() {
 		slog.Warn("northstar: subscribe zone reload", "error", err)
 		return
 	}
-	slog.Info("northstar: subscribed to live zone reload", "subject", handlers_dns.SubjectZoneReload)
+	slog.Info("northstar: subscribed to live zone reload", "subject", dns.SubjectZoneReload)
 }

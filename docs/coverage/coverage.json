@@ -2587,6 +2587,7 @@
           "DescribeTargetGroups",
           "DescribeTargetHealth",
           "ModifyListener",
+          "ModifyListenerAttributes",
           "ModifyLoadBalancerAttributes",
           "ModifyRule",
           "ModifyTargetGroup",
@@ -2599,9 +2600,7 @@
           "SetSecurityGroups",
           "SetSubnets"
         ],
-        "stubbed": [
-          "ModifyListenerAttributes"
-        ],
+        "stubbed": [],
         "unsupported": [],
         "missing": [
           "AddTrustStoreRevocations",

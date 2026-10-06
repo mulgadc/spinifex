@@ -93,10 +93,39 @@ Once installed configure your OCI credentials (~/.oci/config) which will be used
 
 `oci setup config`
 
-Once setup validate your OCI credentials work as expected. `$CID` is the compartment you are deploying into, which is a `ocid1.compartment.oc1..` OCID, or your tenancy OCID if that compartment is the root. The same value is used throughout this guide and again as `compartment_ocid` in step 4.
+Now set `$CID` to the compartment you are deploying into. It is used throughout this guide and again as `compartment_ocid` in step 4, so set it once and keep the same shell.
+
+The CLI can look it up by name, so there is no OCID to copy:
+
+```sh
+export CID=$(oci iam compartment list --compartment-id-in-subtree true \
+    --access-level ACCESSIBLE --all \
+    --query "data[?name=='my-compartment' && \"lifecycle-state\"=='ACTIVE'].id | [0]" \
+    --raw-output)
+
+echo "${CID:?no ACTIVE compartment of that name is visible to this profile}"
+```
+
+The second line is the check, not decoration: the query exits 0 and prints nothing when the name matches nothing, so without it an unset `$CID` reaches Terraform and fails much later with an OCI error that names neither the compartment nor the cause.
+
+To see the names you can choose from, drop the `--query` and ask for a table:
+
+```sh
+oci iam compartment list --compartment-id-in-subtree true --access-level ACCESSIBLE --all \
+    --query 'data[?"lifecycle-state"==`ACTIVE`].{name:name,id:id}' --output table
+```
+
+Two compartments in one tenancy can share a name. If the table shows the name twice, take the OCID from it and set `$CID` directly, because the lookup above returns the first match and cannot tell you which one you wanted:
 
 ```sh
 export CID="ocid1.compartment.oc1..xxx"
+```
+
+> **Deploy into a compartment, not the tenancy root.** The root's OCID is the tenancy OCID and will work, but the instance-principal policy in step 2.1 is scoped to whatever `$CID` holds, so a root value grants every instance in the tenancy the right to consume the regional public-IP quota.
+
+Confirm the credential and the compartment together:
+
+```sh
 oci compute shape list --compartment-id $CID
 ```
 
@@ -164,7 +193,13 @@ There are two ways to provide it, and they differ in who has to authorise them r
 
 **Use 2.1 if you are a tenancy admin.** It is the better of the two because there is no key to leak, rotate or forget about, and a replaced node needs no handoff. Use 2.2 when your compartment was allocated to you inside someone else's tenancy, which is the common case and the reason 2.2 exists at all.
 
-Do one of the two, not both, then continue to step 3.
+Both routes below need `$CID` from the prerequisites, so confirm it is still set in this shell:
+
+```bash
+echo "${CID:?set it as shown under OCI CLI tool}"
+```
+
+Do one of the two authentication methods below, not both, then continue to step 3.
 
 ### 2.1 Instance principal (preferred)
 
@@ -248,11 +283,9 @@ An email will be sent to the designated `$ADMIN_EMAIL` defined, you are required
 
 #### Grant the group its three permissions
 
-Spinifex calls [ten operations](../oci-architecture/README.md#the-iam-policy), and these three statements are what authorise them. Attach the policy to the compartment you are deploying into using the command below. Replace `$CID` with that compartment's OCID.
+Spinifex calls [ten operations](../oci-architecture/README.md#the-iam-policy), and these three statements are what authorise them. This attaches the policy to `$CID`, the compartment you are deploying into.
 
 ```bash
-export CID="ocid1.compartment.oc1..xxx"
-
 oci iam policy create --compartment-id "$CID" --name SpinifexOperators \
     --description "Spinifex external-address allocation" \
     --statements '[

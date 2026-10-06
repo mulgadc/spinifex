@@ -48,13 +48,20 @@ func TestValidateModifyInstanceAttributeInput_BadPrefix(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
 }
 
+func assertSingleAttributeError(t *testing.T, err error, wantMessage string) {
+	t.Helper()
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Equal(t, wantMessage, message)
+}
+
 func TestValidateModifyInstanceAttributeInput_NoAttributeSet(t *testing.T) {
 	t.Parallel()
 	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
 		InstanceId: aws.String("i-abc123"),
 	})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	assertSingleAttributeError(t, err, "No attributes specified.")
 }
 
 func TestValidateModifyInstanceAttributeInput_MultipleAttributes(t *testing.T) {
@@ -64,8 +71,7 @@ func TestValidateModifyInstanceAttributeInput_MultipleAttributes(t *testing.T) {
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.micro")},
 		UserData:     &ec2.BlobAttributeValue{Value: []byte("data")},
 	})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	assertSingleAttributeError(t, err, "The request must contain a single attribute")
 }
 
 func TestValidateModifyInstanceAttributeInput_EmptyInstanceType(t *testing.T) {
@@ -122,8 +128,7 @@ func TestValidateModifyInstanceAttributeInput_DisableApiTerminationWithOther(t *
 		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 		InstanceType:          &ec2.AttributeValue{Value: aws.String("t3.micro")},
 	})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	assertSingleAttributeError(t, err, "The request must contain a single attribute")
 }
 
 func TestValidateModifyInstanceAttributeInput_ValidSourceDestCheck(t *testing.T) {
@@ -142,8 +147,17 @@ func TestValidateModifyInstanceAttributeInput_SourceDestCheckWithOtherAttribute(
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
 		InstanceType:    &ec2.AttributeValue{Value: aws.String("t3.micro")},
 	})
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	assertSingleAttributeError(t, err, "The request must contain a single attribute")
+}
+
+func TestValidateModifyInstanceAttributeInput_SourceDestCheckWithDisableApiTermination(t *testing.T) {
+	t.Parallel()
+	err := ValidateModifyInstanceAttributeInput(&ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String("i-abc123"),
+		SourceDestCheck:       &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	})
+	assertSingleAttributeError(t, err, "The request must contain a single attribute")
 }
 
 // --- Gateway function tests ---

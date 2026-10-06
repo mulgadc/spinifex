@@ -86,7 +86,8 @@ jobs:
         working-directory: spinifex
         run: |
           set -euo pipefail
-          TAG="$(git describe --tags --always)-dev"
+          # Describing against a dev tag would nest it, growing the name every release.
+          TAG="$(git describe --tags --always --exclude '*-dev')-dev"
           case "$TAG" in
               v*) ;;
               *) echo "::error::git describe gave '$TAG', which is not a v-prefixed version"; exit 1 ;;

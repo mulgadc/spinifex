@@ -57,7 +57,7 @@ build-ui:
 	cd spinifex/services/spinifexui/frontend && pnpm build
 
 # GO commands
-VERSION ?= $(shell git describe --tags --always --dirty)
+VERSION ?= $(shell git describe --tags --always --dirty --exclude '*-dev')
 COMMIT  ?= $(shell git rev-parse --short HEAD)
 LDFLAGS := -s -w -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=$(VERSION) -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Commit=$(COMMIT)
 

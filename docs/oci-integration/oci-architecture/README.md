@@ -176,7 +176,7 @@ Allow group SpinifexOperators to manage private-ips in compartment <compartment-
 Allow group SpinifexOperators to manage public-ips  in compartment <compartment-name>
 ```
 
-These are the same three statements `instance-principal.tf` grants the dynamic group, which is the only version of this policy that has been exercised. Keep them identical: the two credential paths differ in who is authorised, never in what.
+`instance-principal.tf` grants the dynamic group these same three statements, so an instance principal can allocate a public address exactly as an IAM user can. The two credential routes differ in who is authorised, never in what.
 
 > [!IMPORTANT]
 > **`use vnics` is required, and `read vnics` is not enough.** Registering a secondary private IP is an operation *on a VNIC*, so OCI checks `VNIC_ASSIGN` as well as `PRIVATE_IP_CREATE`, and `VNIC_ASSIGN` lives in the `use` verb. Grant only `read` and every allocation fails with `NotAuthorizedOrNotFound` on a node that looks entirely healthy, which reads as a wrong compartment OCID rather than a missing verb.

@@ -34,20 +34,27 @@ CHANNEL=latest
 INSTALL_VERSION=""
 WORKBOOKS=""
 
-TOPOLOGIES="bm vm-single vm-multi"
+TOPOLOGIES="bm vm-single vm-multi vm-single-principal"
 
 # What a topology is worth when nothing says otherwise, so a CI run of a named
 # topology is the same every time. Supplied as TF_VAR_, which terraform.auto.tfvars
-# outranks, so a deployment sets its shape and node count in that file and no
-# flag has to carry them.
+# outranks, so a deployment sizes itself in that file and no flag has to carry it.
+#
+# TOPO_FORCE_PRINCIPAL is the exception: vm-single-principal exists to exercise
+# instance-principal authentication, so the credential is the topology rather than
+# a separate switch that could be left at the other value.
 #
 # A case rather than an associative array: macOS ships bash 3.2, where declare -A
 # is an indexed assignment and the key is read as an arithmetic variable.
 topo_defaults() {
+    TOPO_FORCE_PRINCIPAL=0
     case "$1" in
         bm)        TOPO_DEFAULT_SHAPE="BM.Standard.E2.64";  TOPO_DEFAULT_NODES=1 ;;
         vm-single) TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1 ;;
         vm-multi)  TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=3 ;;
+        vm-single-principal)
+            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1
+            TOPO_FORCE_PRINCIPAL=1 ;;
         *) return 1 ;;
     esac
 }
@@ -60,13 +67,15 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} --topology <bm|vm-single|vm-multi> [options]
+usage: ${0##*/} --topology <bm|vm-single|vm-multi|vm-single-principal> [options]
 
 Builds the topology, installs Spinifex, forms the cluster, runs a Terraform
 workbook against it, then destroys everything.
 
   --topology <name>       Required. No default: a command aimed at the wrong
                           topology is the easiest expensive mistake here.
+                          vm-single-principal is vm-single authenticating as the
+                          instance, and implies --instance-principal.
   --ssh-public-key PATH   Public half installed on each node. Default $SSH_PUBLIC_KEY
   --ssh-private-key PATH  Private half used to reach them. Default $SSH_PRIVATE_KEY
   --instance-principal    Configure the pool with oci_auth="instance_principal"
@@ -134,6 +143,15 @@ topo_defaults "$TOPOLOGY" || die "unknown topology $TOPOLOGY; one of: $TOPOLOGIE
 if [ -n "$DISTRO" ] || [ -n "$SETUP_SH" ]; then
     [ -r "$DISTRO" ] || die "--distro is not readable: '$DISTRO'"
     [ -r "$SETUP_SH" ] || die "--setup-sh is not readable: '$SETUP_SH'"
+fi
+
+if [ "$TOPO_FORCE_PRINCIPAL" = 1 ]; then
+    INSTANCE_PRINCIPAL=1
+    # The pool is the whole point of this topology: with no allocator built, the
+    # credential is never used and a green run says nothing about it. That is
+    # exactly how the auth branch stayed broken through passing nightlies.
+    [ "$SKIP_POOL" != 1 ] \
+        || die "--no-external-pool makes $TOPOLOGY meaningless: the allocator is what exercises the instance principal, so a run without it proves nothing"
 fi
 
 # adopt, never create: this script's state is destroyed at the end of every run, and

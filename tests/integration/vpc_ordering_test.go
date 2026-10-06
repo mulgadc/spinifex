@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )

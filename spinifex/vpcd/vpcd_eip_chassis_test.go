@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/network/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 )
 
 // ovsIfaceRunner answers the one `ovs-vsctl list Interface` query the chassis

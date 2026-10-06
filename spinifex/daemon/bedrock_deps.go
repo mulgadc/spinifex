@@ -3,11 +3,11 @@ package daemon
 import (
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/nats-io/nats.go/jetstream"
 )

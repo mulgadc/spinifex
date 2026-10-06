@@ -9,8 +9,8 @@ import (
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
-	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
 	"github.com/nats-io/nats.go"
 )
 

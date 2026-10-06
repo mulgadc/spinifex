@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )

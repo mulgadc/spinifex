@@ -1,0 +1,710 @@
+package reconcile
+
+import (
+	"context"
+	"encoding/json"
+	"net/netip"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
+	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
+	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
+	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// startKV returns a jetstream handle onto an embedded server, used both to seed
+// the control-plane buckets and to load intent through them.
+func startKV(t *testing.T) jetstream.JetStream {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	return js
+}
+
+func TestMatchesLocalAZ(t *testing.T) {
+	cases := []struct {
+		vpcAZ, localAZ string
+		want           bool
+	}{
+		{"", "us-east-1a", true}, // legacy record matches every AZ
+		{"us-east-1a", "us-east-1a", true},
+		{"us-east-1b", "us-east-1a", false},
+		{"us-east-1a", "", false}, // non-legacy vpc AZ does not match empty local AZ
+	}
+	for _, c := range cases {
+		if got := matchesLocalAZ(c.vpcAZ, c.localAZ); got != c.want {
+			t.Errorf("matchesLocalAZ(%q, %q) = %v, want %v", c.vpcAZ, c.localAZ, got, c.want)
+		}
+	}
+}
+
+func TestLoadIntentFromKV_AZFilter(t *testing.T) {
+	js := startKV(t)
+
+	localVPC := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
+	}
+	foreignVPC := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-foreign", CidrBlock: "10.1.0.0/16", State: "available", VNI: 101, AZ: "us-east-1b", CreatedAt: time.Now(),
+	}
+	legacyVPC := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-legacy", CidrBlock: "10.2.0.0/16", State: "available", VNI: 102, CreatedAt: time.Now(),
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/" + localVPC.VpcId:   mustJSON(t, localVPC),
+		"acct/" + foreignVPC.VpcId: mustJSON(t, foreignVPC),
+		"acct/" + legacyVPC.VpcId:  mustJSON(t, legacyVPC),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if _, ok := intent.VPCs["vpc-local"]; !ok {
+		t.Errorf("local VPC missing from intent")
+	}
+	if _, ok := intent.VPCs["vpc-legacy"]; !ok {
+		t.Errorf("legacy (empty-AZ) VPC missing from intent — backwards-compat rule broken")
+	}
+	if _, ok := intent.VPCs["vpc-foreign"]; ok {
+		t.Errorf("foreign-AZ VPC leaked into intent")
+	}
+}
+
+func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
+		}),
+		"acct/vpc-foreign": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-foreign", CidrBlock: "10.1.0.0/16", AZ: "us-east-1b", CreatedAt: time.Now(),
+		}),
+	})
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-local", VpcId: "vpc-local", CidrBlock: "10.0.1.0/24",
+		}),
+		"acct/subnet-foreign": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-foreign", VpcId: "vpc-foreign", CidrBlock: "10.1.1.0/24",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if _, ok := intent.Subnets["subnet-local"]; !ok {
+		t.Errorf("local subnet missing from intent")
+	}
+	if _, ok := intent.Subnets["subnet-foreign"]; ok {
+		t.Errorf("foreign-AZ subnet leaked into intent — transitive filter broken")
+	}
+}
+
+// TestLoadIntentFromKV_PortSuppressDHCP proves loadPorts carries the ENI
+// record's SuppressDHCP flag into the intent PortSpec, so a delete+recreate
+// (drift) of a statically-addressed customer ENI's LSP never re-adds DHCP.
+func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-a": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
+		}),
+	})
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-static": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-static", SubnetId: "subnet-a", VpcId: "vpc-a",
+			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
+			SuppressDHCP: true, CreatedAt: time.Now(),
+		}),
+		"acct/eni-dhcp": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-dhcp", SubnetId: "subnet-a", VpcId: "vpc-a",
+			PrivateIpAddress: "10.0.1.11", MacAddress: "02:00:00:00:00:02",
+			CreatedAt: time.Now(),
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	staticPort, ok := intent.Ports["eni-static"]
+	if !ok {
+		t.Fatalf("static ENI missing from intent")
+	}
+	if !staticPort.SuppressDHCP {
+		t.Errorf("static ENI's PortSpec.SuppressDHCP = false, want true")
+	}
+
+	dhcpPort, ok := intent.Ports["eni-dhcp"]
+	if !ok {
+		t.Fatalf("dhcp ENI missing from intent")
+	}
+	if dhcpPort.SuppressDHCP {
+		t.Errorf("ordinary ENI's PortSpec.SuppressDHCP = true, want false")
+	}
+}
+
+func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
+		"acct/eipassoc-a": mustJSON(t, handlers_ec2_eip.EIPRecord{
+			AllocationId: "eipalloc-a", PublicIp: "203.0.113.10", PrivateIp: "10.0.1.5",
+			VpcId: "vpc-local", State: "associated",
+		}),
+		"acct/eipassoc-b": mustJSON(t, handlers_ec2_eip.EIPRecord{
+			AllocationId: "eipalloc-b", PublicIp: "203.0.113.11", PrivateIp: "10.0.1.6",
+			VpcId: "vpc-local", State: "allocated", // not associated → excluded
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if _, ok := intent.EIPs["10.0.1.5"]; !ok {
+		t.Errorf("associated EIP missing from intent")
+	}
+	if _, ok := intent.EIPs["10.0.1.6"]; ok {
+		t.Errorf("non-associated EIP leaked into intent")
+	}
+}
+
+func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-attached": mustJSON(t, handlers_ec2_igw.IGWRecord{
+			InternetGatewayId: "igw-attached", VpcId: "vpc-local", State: "available",
+		}),
+		"acct/igw-detached": mustJSON(t, handlers_ec2_igw.IGWRecord{
+			InternetGatewayId: "igw-detached", VpcId: "", State: "available",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	spec, ok := intent.IGWs["vpc-local"]
+	if !ok {
+		t.Fatalf("attached IGW missing from intent")
+	}
+	// RecordKey is the only address the pass has to confirm the attachment
+	// against; dropping it silently stops every confirmation forever.
+	if spec.RecordKey != "acct/igw-attached" {
+		t.Errorf("RecordKey = %q, want %q — without it no attach is ever confirmed and "+
+			"DescribeInternetGateways reports every gateway as detached", spec.RecordKey, "acct/igw-attached")
+	}
+	if len(intent.IGWs) != 1 {
+		t.Errorf("got %d IGWs, want 1 (detached should be excluded)", len(intent.IGWs))
+	}
+}
+
+// Intent gates on State, never on AttachState: an IGW enters intent so a pass
+// can attach it, and every attach starts pending. Gating intent on the observed
+// state instead would mean nothing is ever attached, so nothing is ever
+// confirmed — a total IGW outage that no other test would catch.
+func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-pending": mustJSON(t, handlers_ec2_igw.IGWRecord{
+			InternetGatewayId: "igw-pending", VpcId: "vpc-local",
+			State: "available", AttachState: "pending",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	spec, ok := intent.IGWs["vpc-local"]
+	if !ok {
+		t.Fatal("a pending IGW was excluded from intent: no pass would attach it, so it would " +
+			"stay pending forever and no VPC would ever get an external gateway")
+	}
+	if !spec.AttachPending {
+		t.Error("AttachPending not set: the pass skips the confirmation, so the attachment " +
+			"stays pending and is never reported")
+	}
+}
+
+// TestLoadIntentFromKV_NATGWUsesAssociatedSubnet enforces that loadNATGWs emits
+// specs for associated *private* subnets, not the NATGW's own public home subnet.
+// Wrong CIDR corrupts conntrack reverse-NAT and causes 100% packet loss.
+func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-pub":  mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
+		"acct/subnet-priv": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-priv", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20"}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
+		"acct/nat-1": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
+			NatGatewayId: "nat-1", VpcId: "vpc-local", SubnetId: "subnet-pub",
+			PublicIp: "203.0.113.50", State: "available",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-priv": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-priv", VpcId: "vpc-local",
+			Routes: []handlers_ec2_routetable.RouteRecord{
+				{DestinationCidrBlock: "0.0.0.0/0", NatGatewayId: "nat-1", State: "active"},
+			},
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-x", SubnetId: "subnet-priv"},
+			},
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if len(intent.NATGWs) != 1 {
+		t.Fatalf("got %d NATGW specs, want 1; intent=%#v", len(intent.NATGWs), intent.NATGWs)
+	}
+	for _, spec := range intent.NATGWs {
+		if spec.SubnetCIDR != "172.31.16.0/20" {
+			t.Errorf("SubnetCIDR=%q, want %q (private subnet routed via NATGW, not NATGW's home subnet)",
+				spec.SubnetCIDR, "172.31.16.0/20")
+		}
+		if spec.NATGatewayID != "nat-1" || spec.PublicIP != "203.0.113.50" {
+			t.Errorf("spec mismatch: %#v", spec)
+		}
+	}
+}
+
+// TestLoadIntentFromKV_NATGWNoAssociationSkips guards against SNAT install for
+// a NATGW with no route-table association; emitting the home-subnet CIDR would corrupt the SNAT table.
+func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-pub": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
+		"acct/nat-orphan": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
+			NatGatewayId: "nat-orphan", VpcId: "vpc-local", SubnetId: "subnet-pub",
+			PublicIp: "203.0.113.51", State: "available",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if len(intent.NATGWs) != 0 {
+		t.Errorf("NATGW with no associated subnets must not produce specs, got %#v", intent.NATGWs)
+	}
+}
+
+func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
+	js := startKV(t)
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV on empty cluster: %v", err)
+	}
+	if len(intent.VPCs)+len(intent.Subnets)+len(intent.Ports)+len(intent.SGs)+len(intent.IGWs)+len(intent.EIPs)+len(intent.NATGWs)+len(intent.IGWRoutes)+len(intent.NATGWRoutes) != 0 {
+		t.Errorf("expected empty intent on fresh cluster, got %#v", intent)
+	}
+}
+
+// TestLoadIntentFromKV_IGWRoutesFanOutMainRT covers the bootstrap race: events
+// dropped before subscribers attach; reconcile must re-derive per-subnet egress
+// intent from the main RT, including implicit-main subnets.
+func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-implicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-implicit", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
+		}),
+		"acct/subnet-explicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-explicit", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
+			Routes: []handlers_ec2_routetable.RouteRecord{
+				{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1", State: "active"},
+			},
+		}),
+		"acct/rtb-explicit": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-explicit", VpcId: "vpc-local",
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-x", SubnetId: "subnet-explicit"},
+			},
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	if len(intent.IGWRoutes) != 1 {
+		t.Fatalf("got %d IGWRoutes, want 1; routes=%#v", len(intent.IGWRoutes), intent.IGWRoutes)
+	}
+	for _, spec := range intent.IGWRoutes {
+		if spec.SubnetID != "subnet-implicit" {
+			t.Errorf("SubnetID=%q, want %q (explicit subnet is on rtb-explicit which has no IGW route)",
+				spec.SubnetID, "subnet-implicit")
+		}
+		if spec.DestCIDR.String() != "0.0.0.0/0" {
+			t.Errorf("DestCIDR=%q, want 0.0.0.0/0", spec.DestCIDR.String())
+		}
+	}
+}
+
+// TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW: a subnet with no
+// 0.0.0.0/0 route in an IGW-attached VPC must produce a DropGates intent.
+func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-routed": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-routed", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
+		}),
+		"acct/subnet-isolated": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-isolated", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-1": mustJSON(t, handlers_ec2_igw.IGWRecord{
+			InternetGatewayId: "igw-1", VpcId: "vpc-local", State: "available",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-r", SubnetId: "subnet-routed"},
+			},
+			Routes: []handlers_ec2_routetable.RouteRecord{
+				{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1", State: "active"},
+			},
+		}),
+		"acct/rtb-isolated": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+			RouteTableId: "rtb-isolated", VpcId: "vpc-local",
+			Associations: []handlers_ec2_routetable.AssociationRecord{
+				{AssociationId: "rtbassoc-i", SubnetId: "subnet-isolated"},
+			},
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if _, ok := intent.IGWRoutes[subnetEgressKey("subnet-routed", netip.MustParsePrefix("0.0.0.0/0"))]; !ok {
+		t.Errorf("subnet-routed missing IGW egress intent")
+	}
+	if _, ok := intent.DropGates[subnetEgressKey("subnet-routed", netip.MustParsePrefix("0.0.0.0/0"))]; ok {
+		t.Errorf("subnet-routed must not have a drop gate (it has an IGW route)")
+	}
+	if _, ok := intent.DropGates[subnetEgressKey("subnet-isolated", netip.MustParsePrefix("0.0.0.0/0"))]; !ok {
+		t.Errorf("subnet-isolated missing drop gate intent (no 0.0.0.0/0 in its RT, IGW is attached)")
+	}
+}
+
+// TestLoadIntentFromKV_NoDropGateWithoutIGW: VPC with no IGW has no router-wide
+// default static route; lr_in_ip_routing already drops, so no drop policy needed.
+func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-air-gapped": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-air-gapped", CidrBlock: "10.99.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+			SubnetId: "subnet-local", VpcId: "vpc-air-gapped", CidrBlock: "10.99.1.0/24",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if len(intent.DropGates) != 0 {
+		t.Errorf("VPC has no IGW: expected 0 drop gates, got %d (%v)", len(intent.DropGates), intent.DropGates)
+	}
+}
+
+// Tenant SG rules reach the ACL builder only through sgRulesToPolicyRules. The
+// golden scenarios construct IntentState by hand and never exercise it, so a
+// field dropped or transposed here would silently ship an ACL that opens or
+// closes the wrong port.
+func TestLoadIntentFromKV_SGRuleFieldMapping(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
+		}),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSecurityGroups, map[string][]byte{
+		"acct/sg-app": mustJSON(t, handlers_ec2_vpc.SecurityGroupRecord{
+			GroupId: "sg-app", GroupName: "app", VpcId: "vpc-local",
+			IngressRules: []handlers_ec2_vpc.SGRule{
+				{RuleId: "sgr-1", IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0"},
+				{RuleId: "sgr-2", IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, SourceSG: "sg-db"},
+			},
+			EgressRules: []handlers_ec2_vpc.SGRule{
+				{RuleId: "sgr-3", IpProtocol: "-1", FromPort: -1, ToPort: -1, CidrIp: "0.0.0.0/0"},
+			},
+		}),
+		"acct/sg-empty": mustJSON(t, handlers_ec2_vpc.SecurityGroupRecord{
+			GroupId: "sg-empty", GroupName: "empty", VpcId: "vpc-local",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	spec, ok := intent.SGs["sg-app"]
+	if !ok {
+		t.Fatalf("sg-app missing from intent")
+	}
+	if spec.VPCID != "vpc-local" {
+		t.Errorf("VPCID = %q, want vpc-local", spec.VPCID)
+	}
+
+	wantIngress := []policy.Rule{
+		{IPProtocol: "tcp", FromPort: 443, ToPort: 443, CIDR: "0.0.0.0/0"},
+		{IPProtocol: "tcp", FromPort: 5432, ToPort: 5432, SourceSG: "sg-db"},
+	}
+	if !reflect.DeepEqual(spec.IngressRules, wantIngress) {
+		t.Errorf("IngressRules = %+v, want %+v", spec.IngressRules, wantIngress)
+	}
+
+	wantEgress := []policy.Rule{
+		{IPProtocol: "-1", FromPort: -1, ToPort: -1, CIDR: "0.0.0.0/0"},
+	}
+	if !reflect.DeepEqual(spec.EgressRules, wantEgress) {
+		t.Errorf("EgressRules = %+v, want %+v", spec.EgressRules, wantEgress)
+	}
+
+	// A rule-less SG must carry nil, not an empty non-nil slice: the ACL
+	// builder distinguishes "no tenant rules" from "rules that were dropped".
+	empty, ok := intent.SGs["sg-empty"]
+	if !ok {
+		t.Fatalf("sg-empty missing from intent")
+	}
+	if empty.IngressRules != nil || empty.EgressRules != nil {
+		t.Errorf("rule-less SG got ingress=%v egress=%v, want both nil", empty.IngressRules, empty.EgressRules)
+	}
+}
+
+// Only an instance nothing will relaunch marks its public-IP port idle. A DRAIN
+// stop is relaunched by restore, and a missing record is unknown, so both stay
+// probed; a port with no public IP is never read at all.
+func TestLoadIntentFromKV_IdlePortsFromInstanceState(t *testing.T) {
+	js := startKV(t)
+
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-a": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+			VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
+		}),
+	})
+	eni := func(id, ip, publicIP, instanceID string) []byte {
+		return mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: id, SubnetId: "subnet-a", VpcId: "vpc-a",
+			PrivateIpAddress: ip, MacAddress: "02:00:00:00:00:" + ip[len(ip)-2:],
+			PublicIpAddress: publicIP, InstanceId: instanceID, Status: "in-use", CreatedAt: time.Now(),
+		})
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-stopped": eni("eni-stopped", "10.0.1.11", "192.0.2.11", "i-stopped"),
+		"acct/eni-term":    eni("eni-term", "10.0.1.12", "192.0.2.12", "i-term"),
+		"acct/eni-drain":   eni("eni-drain", "10.0.1.13", "192.0.2.13", "i-drain"),
+		"acct/eni-running": eni("eni-running", "10.0.1.14", "192.0.2.14", "i-running"),
+		"acct/eni-gone":    eni("eni-gone", "10.0.1.15", "192.0.2.15", "i-gone"),
+		"acct/eni-eip":     eni("eni-eip", "10.0.1.16", "", "i-eip"),
+		"acct/eni-private": eni("eni-private", "10.0.1.17", "", "i-private"),
+	})
+	testutil.SeedKV(t, js, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
+		"acct/eipassoc-a": mustJSON(t, handlers_ec2_eip.EIPRecord{
+			AllocationId: "eipalloc-a", PublicIp: "203.0.113.16", PrivateIp: "10.0.1.16",
+			VpcId: "vpc-a", ENIId: "eni-eip", State: "associated",
+		}),
+	})
+	record := func(status vm.InstanceState, desired vm.DesiredState) []byte {
+		return mustJSON(t, &vm.InstanceRecord{
+			Spec:   vm.InstanceSpec{DesiredState: desired},
+			Status: vm.InstanceStatus{Status: status},
+		})
+	}
+	testutil.SeedKV(t, js, InstanceRecordBucket, map[string][]byte{
+		InstanceRecordPrefix + "i-stopped": record(vm.StateStopped, vm.DesiredStopped),
+		InstanceRecordPrefix + "i-term":    record(vm.StateTerminated, vm.DesiredRunning),
+		InstanceRecordPrefix + "i-drain":   record(vm.StateStopped, vm.DesiredRunning),
+		InstanceRecordPrefix + "i-running": record(vm.StateRunning, vm.DesiredRunning),
+		InstanceRecordPrefix + "i-eip":     record(vm.StateStopped, vm.DesiredStopped),
+		InstanceRecordPrefix + "i-private": record(vm.StateStopped, vm.DesiredStopped),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+
+	want := map[string]string{
+		"port-eni-stopped": "i-stopped",
+		"port-eni-term":    "i-term",
+		"port-eni-eip":     "i-eip",
+	}
+	if !reflect.DeepEqual(intent.IdlePorts, want) {
+		t.Errorf("IdlePorts = %v, want %v", intent.IdlePorts, want)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
+}
+
+// TestSGRulesToPolicyRules_DropsIPv6 pins that an IPv6 rule never reaches the
+// ACL builder. It carries no CIDR and no SourceSG, so an ACL built from it
+// would be unspecified rather than narrow, and no interface has an IPv6
+// address for it to match.
+func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
+	t.Parallel()
+	out := sgRulesToPolicyRules([]handlers_ec2_vpc.SGRule{
+		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
+		{IpProtocol: "-1", CidrIpv6: "::/0"},
+		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},
+	})
+	if len(out) != 2 {
+		t.Fatalf("want 2 policy rules, got %d: %+v", len(out), out)
+	}
+	if out[0].CIDR != "0.0.0.0/0" || out[1].SourceSG != "sg-abc" {
+		t.Fatalf("wrong rules survived: %+v", out)
+	}
+}
+
+// A read failure and an unparseable record are different faults and get
+// different answers: a failed Get fails the pass, because a dropped record
+// narrows intent and the orphan sweeps read that as permission to delete live
+// rows. A record that does not unmarshal is a poison record, not an unhealthy
+// store, so it is skipped — failing on it would wedge reconcile forever.
+func TestLoadIntentFromKV_PoisonRecordIsSkippedNotFatal(t *testing.T) {
+	js := startKV(t)
+
+	good := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-good", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-good":   mustJSON(t, good),
+		"acct/vpc-poison": []byte("{not json"),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if _, ok := intent.VPCs["vpc-good"]; !ok {
+		t.Errorf("readable VPC dropped because a sibling record was unparseable")
+	}
+	if len(intent.VPCs) != 1 {
+		t.Errorf("VPCs = %d, want only the readable one", len(intent.VPCs))
+	}
+}
+
+// An ENI whose VPC never loaded must not silently vanish from intent — that is
+// the amplifier that turns one unreadable VPC into every guest port in it being
+// swept. Its VPC failing to read now fails the pass instead.
+func TestLoadIntentFromKV_ENIsFollowTheirVPC(t *testing.T) {
+	js := startKV(t)
+
+	vpc := handlers_ec2_vpc.VPCRecord{
+		VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
+	}
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{"acct/vpc-a": mustJSON(t, vpc)})
+	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-local": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-local", VpcId: "vpc-a", SubnetId: "subnet-a",
+			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
+		}),
+		"acct/eni-foreign": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+			NetworkInterfaceId: "eni-foreign", VpcId: "vpc-absent", SubnetId: "subnet-z",
+			PrivateIpAddress: "10.9.1.10", MacAddress: "02:00:00:00:00:02",
+		}),
+	})
+
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if _, ok := intent.Ports["eni-local"]; !ok {
+		t.Errorf("ENI in a loaded VPC missing from intent")
+	}
+	if _, ok := intent.Ports["eni-foreign"]; ok {
+		t.Errorf("ENI in an unknown VPC admitted to intent")
+	}
+}

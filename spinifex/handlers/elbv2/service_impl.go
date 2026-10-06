@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -29,7 +30,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )

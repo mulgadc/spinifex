@@ -8,8 +8,8 @@
 
 # Network layer is governed by ADR-0006 invariant tests.
 # Changes here must respect those clauses
-# see spinifex/network/invariants/
+# see spinifex/domains/network/invariants/
 # docs/development/proposals/az-local-architecture/0006-spinifex-network-layer-contract.md
-/spinifex/network/          @joshsiv-mulga
+/spinifex/domains/network/          @joshsiv-mulga
 /spinifex/vpcd/             @joshsiv-mulga
-/spinifex/network/invariants/ @joshsiv-mulga
+/spinifex/domains/network/invariants/ @joshsiv-mulga

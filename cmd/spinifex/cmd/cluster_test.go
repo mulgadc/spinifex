@@ -12,7 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

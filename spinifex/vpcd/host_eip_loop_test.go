@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 )
 
 type countingReconciler struct {

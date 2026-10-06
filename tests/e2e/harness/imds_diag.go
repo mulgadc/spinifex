@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 )
 
 // DumpIMDSDatapathDiagnostics emits a triage bundle for an IMDS reachability

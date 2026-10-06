@@ -14,7 +14,7 @@ import (
 // escalation policy in NeedsPrivilege applies.
 var policyOwners = map[string]bool{
 	filepath.Join("spinifex", "runtime", "host", "command", "privilege.go"): true,
-	filepath.Join("spinifex", "network", "host", "run.go"):                  true,
+	filepath.Join("spinifex", "domains", "network", "host", "run.go"):       true,
 }
 
 // repoRoot walks up from this test file to the directory holding go.mod.

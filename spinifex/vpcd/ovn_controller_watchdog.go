@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
 )
 
 // Compile-time check: the gateway-claim prober satisfies the watchdog's needs.

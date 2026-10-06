@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
-	networkids "github.com/mulgadc/spinifex/spinifex/network/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	networkids "github.com/mulgadc/spinifex/spinifex/domains/network/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
 
 // TapSpec parameterises a single tap-on-OVS-bridge plumbing operation.

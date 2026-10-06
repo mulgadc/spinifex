@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"

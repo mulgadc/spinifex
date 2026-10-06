@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	reconcilelock "github.com/mulgadc/spinifex/spinifex/network/reconcile"
+	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

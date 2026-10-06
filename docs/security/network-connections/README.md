@@ -81,7 +81,7 @@ The inventory in [§1](#1-inbound-listeners)–[§2](#2-outbound-connections) sa
 - **Guest** — bound to a per-instance interface and reachable only by that instance's VM.
 - **Localhost** — bound to `127.0.0.1`; not reachable off-node.
 
-The listener invariant tests (`spinifex/network/invariants` and the multinode e2e suite) read
+The listener invariant tests (`spinifex/domains/network/invariants` and the multinode e2e suite) read
 this table and fail any Cluster- or Encap-scope port found bound to the wildcard address,
 unless that row's Purpose or Auth text contains the exact phrase **"binds the wildcard by
 design"**. That phrase is load-bearing, not incidental wording — a row that merely mentions

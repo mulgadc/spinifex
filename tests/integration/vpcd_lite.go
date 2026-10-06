@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/network/ovn"
-	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
 	vpcdfixture "github.com/mulgadc/spinifex/tests/fixtures/vpcd"
 	"github.com/stretchr/testify/require"
 )

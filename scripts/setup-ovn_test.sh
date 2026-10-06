@@ -126,7 +126,7 @@ esac
 # The script and the Go constant must agree: vpcd repairs a veth made before
 # this existed, and a disagreement would have the two fighting every pass.
 script_mac=$(printf '%s\n' "$nat_mode_body" | sed -n 's/.*NAT_TRANSIT_HOST_MAC="\([^"]*\)".*/\1/p' | head -1)
-go_mac=$(sed -n 's/.*NATTransitHostMAC = "\([^"]*\)".*/\1/p' "$SCRIPT_DIR/../spinifex/network/host/routed.go" | head -1)
+go_mac=$(sed -n 's/.*NATTransitHostMAC = "\([^"]*\)".*/\1/p' "$SCRIPT_DIR/../spinifex/domains/network/host/routed.go" | head -1)
 if [ -n "$script_mac" ] && [ "$script_mac" = "$go_mac" ]; then
     pass "the transit MAC matches host.NATTransitHostMAC"
 else

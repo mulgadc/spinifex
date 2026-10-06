@@ -12,7 +12,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/northstar"

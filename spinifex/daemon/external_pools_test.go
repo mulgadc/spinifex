@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

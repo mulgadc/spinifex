@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 )
 
 // reconcileGatewayLeases points every VPC gateway port at the address its lease

@@ -1,0 +1,716 @@
+package reconcile
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/netip"
+	"slices"
+	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
+	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
+	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
+	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// IntentState is the desired OVN state derived from the JetStream KV
+// snapshot, scoped to the local AZ. Empty maps are valid.
+type IntentState struct {
+	VPCs        map[string]topology.VPCSpec
+	Subnets     map[string]topology.SubnetSpec
+	Ports       map[string]topology.PortSpec
+	SGs         map[string]policy.SGSpec
+	IGWs        map[string]external.IGWSpec // attached only
+	EIPs        map[string]policy.EIPSpec   // keyed by logicalIP; associated only
+	NATGWs      map[string]policy.NATGWSpec
+	IGWRoutes   map[string]SubnetEgressIntent // per (subnet, dest) IGW egress reroute
+	NATGWRoutes map[string]SubnetEgressIntent // per (subnet, dest) NATGW egress reroute
+	DropGates   map[string]SubnetEgressIntent // per (subnet, dest=0.0.0.0/0) drop policy
+	// IdlePorts maps a public-IP guest LSP to its instance when that instance is
+	// stopped or terminated. Its port has no tap, so the datapath probe skips it.
+	IdlePorts map[string]string
+}
+
+// The instance record space the daemon owns. Duplicated rather than imported
+// because daemon imports this package; a daemon test pins the two together.
+const (
+	InstanceRecordBucket = "spinifex-instance-state"
+	InstanceRecordPrefix = "i."
+)
+
+// SubnetEgressIntent is a per-subnet default-route policy entry for the VPC LR,
+// keyed by (subnet, destCIDR) pointing at an IGW or NAT gateway.
+type SubnetEgressIntent struct {
+	VPCID    string
+	SubnetID string
+	DestCIDR netip.Prefix
+}
+
+// subnetEgressKey is the IGWRoutes/NATGWRoutes map key.
+func subnetEgressKey(subnetID string, prefix netip.Prefix) string {
+	return subnetID + "|" + prefix.String()
+}
+
+// LoadIntentFromKV assembles IntentState for localAZ. Missing buckets are empty.
+// AZ filter: `vpc.AZ == "" || vpc.AZ == localAZ`; children inherit it transitively.
+func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ string) (IntentState, error) {
+	intent := IntentState{
+		VPCs:        make(map[string]topology.VPCSpec),
+		Subnets:     make(map[string]topology.SubnetSpec),
+		Ports:       make(map[string]topology.PortSpec),
+		SGs:         make(map[string]policy.SGSpec),
+		IGWs:        make(map[string]external.IGWSpec),
+		EIPs:        make(map[string]policy.EIPSpec),
+		NATGWs:      make(map[string]policy.NATGWSpec),
+		IGWRoutes:   make(map[string]SubnetEgressIntent),
+		NATGWRoutes: make(map[string]SubnetEgressIntent),
+		DropGates:   make(map[string]SubnetEgressIntent),
+		IdlePorts:   make(map[string]string),
+	}
+
+	localVPCs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
+	if err != nil {
+		return IntentState{}, err
+	}
+	if err := loadSubnets(ctx, js, localVPCs, intent.Subnets); err != nil {
+		return IntentState{}, err
+	}
+	if err := loadSGs(ctx, js, localVPCs, intent.SGs); err != nil {
+		return IntentState{}, err
+	}
+	portInstances := make(map[string]string)
+	if err := loadPorts(ctx, js, localVPCs, intent.Ports, portInstances); err != nil {
+		return IntentState{}, err
+	}
+	if err := loadIGWs(ctx, js, localVPCs, intent.IGWs); err != nil {
+		return IntentState{}, err
+	}
+	if err := loadEIPs(ctx, js, localVPCs, intent.EIPs); err != nil {
+		return IntentState{}, err
+	}
+	loadIdlePorts(ctx, js, intent, portInstances)
+	routeTables, err := loadRouteTables(ctx, js, localVPCs)
+	if err != nil {
+		return IntentState{}, err
+	}
+	if err := loadNATGWs(ctx, js, localVPCs, intent.Subnets, routeTables, intent.NATGWs); err != nil {
+		return IntentState{}, err
+	}
+	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
+	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
+
+	return intent, nil
+}
+
+// loadSubnetEgressRoutes fans IGW/NATGW routes over associated subnets (explicit
+// non-main + implicit main-RT subnets). Mirrors the runtime event-publisher fan-out.
+func loadSubnetEgressRoutes(
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	routeTables []handlers_ec2_routetable.RouteTableRecord,
+	igwOut, natgwOut map[string]SubnetEgressIntent,
+) {
+	subnetsByVPC := make(map[string][]string, len(localVPCs))
+	for id, spec := range subnets {
+		subnetsByVPC[spec.VPCID] = append(subnetsByVPC[spec.VPCID], id)
+	}
+
+	explicitByVPC := make(map[string]map[string]struct{}, len(routeTables))
+	for _, rt := range routeTables {
+		if _, ok := localVPCs[rt.VpcId]; !ok {
+			continue
+		}
+		ex, ok := explicitByVPC[rt.VpcId]
+		if !ok {
+			ex = map[string]struct{}{}
+			explicitByVPC[rt.VpcId] = ex
+		}
+		for _, assoc := range rt.Associations {
+			if assoc.SubnetId == "" || assoc.Main {
+				continue
+			}
+			ex[assoc.SubnetId] = struct{}{}
+		}
+	}
+
+	for _, rt := range routeTables {
+		if _, ok := localVPCs[rt.VpcId]; !ok {
+			continue
+		}
+		targets := map[string]struct{}{}
+		for _, assoc := range rt.Associations {
+			if assoc.SubnetId == "" || assoc.Main {
+				continue
+			}
+			targets[assoc.SubnetId] = struct{}{}
+		}
+		if rt.IsMain {
+			for _, subnetID := range subnetsByVPC[rt.VpcId] {
+				if _, ok := explicitByVPC[rt.VpcId][subnetID]; ok {
+					continue
+				}
+				targets[subnetID] = struct{}{}
+			}
+		}
+		for _, r := range rt.Routes {
+			if r.State != "" && !strings.EqualFold(r.State, "active") {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(r.DestinationCidrBlock)
+			if err != nil {
+				slog.Warn("reconcile/intent: route CIDR parse failed",
+					"route_table_id", rt.RouteTableId, "cidr", r.DestinationCidrBlock, "err", err)
+				continue
+			}
+			var sink map[string]SubnetEgressIntent
+			switch {
+			case strings.HasPrefix(r.GatewayId, "igw-"):
+				sink = igwOut
+			case r.NatGatewayId != "":
+				sink = natgwOut
+			default:
+				continue
+			}
+			for subnetID := range targets {
+				sink[subnetEgressKey(subnetID, prefix)] = SubnetEgressIntent{
+					VPCID:    rt.VpcId,
+					SubnetID: subnetID,
+					DestCIDR: prefix,
+				}
+			}
+		}
+	}
+}
+
+// loadSubnetDropGates emits a drop intent for each subnet whose VPC has an IGW
+// but lacks a 0.0.0.0/0 reroute. VPCs without an IGW need no drop policy.
+func loadSubnetDropGates(
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	igws map[string]external.IGWSpec,
+	igwRoutes, natgwRoutes map[string]SubnetEgressIntent,
+	out map[string]SubnetEgressIntent,
+) {
+	defaultPrefix := netip.MustParsePrefix("0.0.0.0/0")
+	for _, subnet := range subnets {
+		if _, ok := localVPCs[subnet.VPCID]; !ok {
+			continue
+		}
+		if _, ok := igws[subnet.VPCID]; !ok {
+			continue
+		}
+		key := subnetEgressKey(subnet.SubnetID, defaultPrefix)
+		if _, ok := igwRoutes[key]; ok {
+			continue
+		}
+		if _, ok := natgwRoutes[key]; ok {
+			continue
+		}
+		out[key] = SubnetEgressIntent{
+			VPCID:    subnet.VPCID,
+			SubnetID: subnet.SubnetID,
+			DestCIDR: defaultPrefix,
+		}
+	}
+}
+
+// matchesLocalAZ enforces §11.1: empty AZ counts as local (legacy records).
+func matchesLocalAZ(vpcAZ, localAZ string) bool {
+	return vpcAZ == "" || vpcAZ == localAZ
+}
+
+func keyIsVersion(key string) bool { return key == kvutil.VersionKey }
+
+func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
+	localVPCs := make(map[string]struct{})
+
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketVPCs)
+	if err != nil {
+		slog.Debug("reconcile/intent: VPC bucket not available, skipping", "err", err)
+		return localVPCs, nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return localVPCs, nil
+		}
+		return nil, fmt.Errorf("list VPC keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		// Fail the pass; skipping narrows localVPCs, which drops every ENI in the
+		// VPC, which the port sweep reads as permission to delete every live
+		// guest's port. Unmarshal failures below stay skips — poison record, not
+		// an unhealthy store.
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("read VPC %s: %w", key, err)
+		}
+		var rec handlers_ec2_vpc.VPCRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: VPC unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if !matchesLocalAZ(rec.AZ, localAZ) {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(rec.CidrBlock)
+		if err != nil {
+			slog.Warn("reconcile/intent: VPC CIDR parse failed", "vpc_id", rec.VpcId, "cidr", rec.CidrBlock, "err", err)
+			continue
+		}
+		out[rec.VpcId] = topology.VPCSpec{
+			VPCID: rec.VpcId,
+			CIDR:  prefix,
+			VNI:   rec.VNI,
+		}
+		localVPCs[rec.VpcId] = struct{}{}
+	}
+	return localVPCs, nil
+}
+
+func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketSubnets)
+	if err != nil {
+		slog.Debug("reconcile/intent: subnet bucket not available, skipping", "err", err)
+		return nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list subnet keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read subnet %s: %w", key, err)
+		}
+		var rec handlers_ec2_vpc.SubnetRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: subnet unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(rec.CidrBlock)
+		if err != nil {
+			slog.Warn("reconcile/intent: subnet CIDR parse failed", "subnet_id", rec.SubnetId, "cidr", rec.CidrBlock, "err", err)
+			continue
+		}
+		out[rec.SubnetId] = topology.SubnetSpec{
+			SubnetID: rec.SubnetId,
+			VPCID:    rec.VpcId,
+			CIDR:     prefix,
+		}
+	}
+	return nil
+}
+
+func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketSecurityGroups)
+	if err != nil {
+		slog.Debug("reconcile/intent: SG bucket not available, skipping", "err", err)
+		return nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list SG keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read security group %s: %w", key, err)
+		}
+		var rec handlers_ec2_vpc.SecurityGroupRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: SG unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		out[rec.GroupId] = policy.SGSpec{
+			GroupID:      rec.GroupId,
+			VPCID:        rec.VpcId,
+			IngressRules: sgRulesToPolicyRules(rec.IngressRules),
+			EgressRules:  sgRulesToPolicyRules(rec.EgressRules),
+		}
+	}
+	return nil
+}
+
+func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketENIs)
+	if err != nil {
+		slog.Debug("reconcile/intent: ENI bucket not available, skipping", "err", err)
+		return nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list ENI keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read ENI %s: %w", key, err)
+		}
+		var rec handlers_ec2_vpc.ENIRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: ENI unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		addr, err := netip.ParseAddr(rec.PrivateIpAddress)
+		if err != nil {
+			slog.Warn("reconcile/intent: ENI IP parse failed", "eni", rec.NetworkInterfaceId, "ip", rec.PrivateIpAddress, "err", err)
+			continue
+		}
+		mac, err := net.ParseMAC(rec.MacAddress)
+		if err != nil {
+			slog.Warn("reconcile/intent: ENI MAC parse failed", "eni", rec.NetworkInterfaceId, "mac", rec.MacAddress, "err", err)
+			continue
+		}
+		// PublicIP (auto-assigned or ELB) marks the ENI for drop-gate exemption;
+		// zero/invalid when absent. User EIPs come from the EIP bucket instead.
+		publicIP, _ := netip.ParseAddr(rec.PublicIpAddress)
+		out[rec.NetworkInterfaceId] = topology.PortSpec{
+			PortID:       rec.NetworkInterfaceId,
+			SubnetID:     rec.SubnetId,
+			VPCID:        rec.VpcId,
+			PrivateIP:    addr,
+			MAC:          mac,
+			SGIDs:        append([]string(nil), rec.SecurityGroupIds...),
+			PublicIP:     publicIP,
+			SuppressDHCP: rec.SuppressDHCP,
+		}
+		if rec.InstanceId != "" {
+			instances[rec.NetworkInterfaceId] = rec.InstanceId
+		}
+	}
+	return nil
+}
+
+// loadIdlePorts fills intent.IdlePorts for the ports the EIP datapath probe would
+// visit. Anything it cannot read is left out, so the port is probed as before.
+func loadIdlePorts(ctx context.Context, js jetstream.JetStream, intent IntentState, instances map[string]string) {
+	candidates := make(map[string]struct{}, len(intent.EIPs))
+	for id, p := range intent.Ports {
+		if p.PublicIP.IsValid() {
+			candidates[topology.Port(id)] = struct{}{}
+		}
+	}
+	for _, e := range intent.EIPs {
+		if e.PortName != "" {
+			candidates[e.PortName] = struct{}{}
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	kv, err := js.KeyValue(ctx, InstanceRecordBucket)
+	if err != nil {
+		slog.Debug("reconcile/intent: instance record bucket not available, probing every guest port", "err", err)
+		return
+	}
+	for lsp := range candidates {
+		instanceID := instances[eniIDFromPort(lsp)]
+		if instanceID == "" {
+			continue
+		}
+		entry, err := kv.Get(ctx, InstanceRecordPrefix+instanceID)
+		if err != nil {
+			if !errors.Is(err, jetstream.ErrKeyNotFound) {
+				slog.Warn("reconcile/intent: instance record read failed", "instance_id", instanceID, "err", err)
+			}
+			continue
+		}
+		var rec vm.InstanceRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: instance record unmarshal failed", "instance_id", instanceID, "err", err)
+			continue
+		}
+		if instanceHasNoTap(&rec) {
+			intent.IdlePorts[lsp] = instanceID
+		}
+	}
+}
+
+// instanceHasNoTap reports an instance nothing will relaunch. A DRAIN also leaves
+// StateStopped, but restore relaunches those, so desired state has to agree.
+func instanceHasNoTap(rec *vm.InstanceRecord) bool {
+	switch rec.Status.Status {
+	case vm.StateTerminated:
+		return true
+	case vm.StateStopped:
+		return rec.Spec.DesiredState == vm.DesiredStopped
+	}
+	return false
+}
+
+func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+	if err != nil {
+		slog.Debug("reconcile/intent: IGW bucket not available, skipping", "err", err)
+		return nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list IGW keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read IGW %s: %w", key, err)
+		}
+		var rec handlers_ec2_igw.IGWRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: IGW unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if rec.VpcId == "" || !strings.EqualFold(rec.State, "available") {
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		out[rec.VpcId] = external.IGWSpec{
+			VPCID:             rec.VpcId,
+			InternetGatewayID: rec.InternetGatewayId,
+			RecordKey:         key,
+			AttachPending:     rec.AttachState == handlers_ec2_igw.AttachStatePending,
+		}
+	}
+	return nil
+}
+
+func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_eip.KVBucketEIPs)
+	if err != nil {
+		slog.Debug("reconcile/intent: EIP bucket not available, skipping", "err", err)
+		return nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list EIP keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read EIP %s: %w", key, err)
+		}
+		var rec handlers_ec2_eip.EIPRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: EIP unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if !strings.EqualFold(rec.State, "associated") || rec.VpcId == "" || rec.PublicIp == "" || rec.PrivateIp == "" {
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		spec := policy.EIPSpec{
+			VPCID:      rec.VpcId,
+			ExternalIP: rec.PublicIp,
+			LogicalIP:  rec.PrivateIp,
+		}
+		if rec.ENIId != "" {
+			spec.PortName = topology.Port(rec.ENIId)
+		}
+		// MAC drives distributed dnat_and_snat; empty falls back to centralised.
+		spec.MAC = rec.MacAddress
+		out[rec.PrivateIp] = spec
+	}
+	return nil
+}
+
+// loadRouteTables snapshots every local-VPC route table.
+func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) ([]handlers_ec2_routetable.RouteTableRecord, error) {
+	kv, err := js.KeyValue(ctx, handlers_ec2_routetable.KVBucketRouteTables)
+	if err != nil {
+		slog.Debug("reconcile/intent: route table bucket not available, skipping", "err", err)
+		return nil, nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list route table keys: %w", err)
+	}
+	var out []handlers_ec2_routetable.RouteTableRecord
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("read route table %s: %w", key, err)
+		}
+		var rec handlers_ec2_routetable.RouteTableRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: route table unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// natgwSpecKey is the intent-map key for NATGWSpec: one entry per (natgwID, subnetCIDR).
+func natgwSpecKey(natgwID, subnetCIDR string) string {
+	return natgwID + "|" + subnetCIDR
+}
+
+// loadNATGWs emits one NATGWSpec per (NATGW, associated private subnet) pair.
+// SNAT rewrites traffic from the private subnets routed through the NATGW, not its home subnet.
+func loadNATGWs(
+	ctx context.Context,
+	js jetstream.JetStream,
+	localVPCs map[string]struct{},
+	subnets map[string]topology.SubnetSpec,
+	routeTables []handlers_ec2_routetable.RouteTableRecord,
+	out map[string]policy.NATGWSpec,
+) error {
+	kv, err := js.KeyValue(ctx, handlers_ec2_natgw.KVBucketNatGateways)
+	if err != nil {
+		slog.Debug("reconcile/intent: NAT GW bucket not available, skipping", "err", err)
+		return nil
+	}
+	keys, err := kv.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list NAT GW keys: %w", err)
+	}
+	for _, key := range keys {
+		if keyIsVersion(key) {
+			continue
+		}
+		entry, err := kv.Get(ctx, key)
+		if err != nil {
+			return fmt.Errorf("read NAT gateway %s: %w", key, err)
+		}
+		var rec handlers_ec2_natgw.NatGatewayRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			slog.Warn("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
+			continue
+		}
+		if !strings.EqualFold(rec.State, "available") || rec.VpcId == "" || rec.PublicIp == "" {
+			continue
+		}
+		if _, ok := localVPCs[rec.VpcId]; !ok {
+			continue
+		}
+
+		emitted := false
+		for _, rt := range routeTables {
+			if rt.VpcId != rec.VpcId {
+				continue
+			}
+			if !slices.ContainsFunc(rt.Routes, func(r handlers_ec2_routetable.RouteRecord) bool {
+				return r.NatGatewayId == rec.NatGatewayId
+			}) {
+				continue
+			}
+			for _, assoc := range rt.Associations {
+				if assoc.SubnetId == "" || assoc.Main {
+					continue
+				}
+				subnet, ok := subnets[assoc.SubnetId]
+				if !ok {
+					slog.Warn("reconcile/intent: NAT GW associated subnet not in intent, skipping",
+						"natgw_id", rec.NatGatewayId, "subnet_id", assoc.SubnetId)
+					continue
+				}
+				cidr := subnet.CIDR.String()
+				out[natgwSpecKey(rec.NatGatewayId, cidr)] = policy.NATGWSpec{
+					VPCID:        rec.VpcId,
+					NATGatewayID: rec.NatGatewayId,
+					PublicIP:     rec.PublicIp,
+					SubnetCIDR:   cidr,
+				}
+				emitted = true
+			}
+		}
+		if !emitted {
+			slog.Debug("reconcile/intent: NAT GW has no associated private subnets, skipping",
+				"natgw_id", rec.NatGatewayId, "vpc_id", rec.VpcId)
+		}
+	}
+	return nil
+}
+
+// sgRulesToPolicyRules adapts handler-side SGRule to policy.Rule, dropping any
+// rule with no IPv4 source. The ACL builder is IPv4-only, and an IPv6 rule
+// reaching it carries an empty CIDR and an empty SourceSG, which is not a
+// narrower ACL but an unspecified one.
+func sgRulesToPolicyRules(in []handlers_ec2_vpc.SGRule) []policy.Rule {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]policy.Rule, 0, len(in))
+	for _, r := range in {
+		if r.CidrIp == "" && r.SourceSG == "" {
+			continue
+		}
+		out = append(out, policy.Rule{
+			IPProtocol: r.IpProtocol,
+			FromPort:   r.FromPort,
+			ToPort:     r.ToPort,
+			CIDR:       r.CidrIp,
+			SourceSG:   r.SourceSG,
+		})
+	}
+	return out
+}

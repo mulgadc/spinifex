@@ -17,7 +17,7 @@ import (
 )
 
 // runListenerInvariant is the runtime half of the listener invariant. The
-// static half in spinifex/network/invariants reads install scripts and
+// static half in spinifex/domains/network/invariants reads install scripts and
 // config templates; only this half reads what each node's kernel actually
 // bound, which is what caught the original OVN NB/SB wildcard defect (spinifex
 // #765) — that bug was found by hand on a live node with `ss -tulnp`, not by

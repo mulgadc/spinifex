@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 )
 
 func TestPreflightOVN_AllPass(t *testing.T) {

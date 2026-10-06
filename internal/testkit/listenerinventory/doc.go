@@ -4,7 +4,7 @@
 //
 // It exists so the inventory doc is the single fixture two otherwise
 // unrelated checks read: the static bind-site scan in
-// spinifex/network/invariants, which reads install scripts and config
+// spinifex/domains/network/invariants, which reads install scripts and config
 // templates, and the runtime e2e check in tests/e2e/multinode, which reads
 // `ss -tulnp` on live nodes. Neither belongs under the executable network
 // layer tree — this package is not part of that stack. It lives in the

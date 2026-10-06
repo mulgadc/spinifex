@@ -319,7 +319,7 @@ func VolumeBlkDeviceQMPArgs(volumeID, nodeName, iothreadID, bus string) map[stri
 const NBDReconnectDelaySeconds = 30
 
 // NBDServerOpts holds the server.* fields QEMU's nbd blockdev driver needs,
-// broken out of a parsed NBD URI (see utils.ParseNBDURI) so both the QMP
+// broken out of a parsed NBD URI (see nbd.ParseNBDURI) so both the QMP
 // blockdev-add nested "server" object and the command-line -blockdev
 // "server.*" options can be built from the same parse.
 type NBDServerOpts struct {

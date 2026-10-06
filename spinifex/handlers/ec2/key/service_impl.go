@@ -17,6 +17,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"io"
 	"log/slog"
 	"slices"
@@ -31,7 +32,6 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -1033,7 +1033,7 @@ func (s *KeyServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID s
 	if input == nil {
 		return nil
 	}
-	return s.mirrorKeyPairTags(context.Background(), input.Resources, accountID, utils.MergeTagsMut(input))
+	return s.mirrorKeyPairTags(context.Background(), input.Resources, accountID, tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning key-pair metadata with
@@ -1042,7 +1042,7 @@ func (s *KeyServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	if input == nil {
 		return nil
 	}
-	return s.mirrorKeyPairTags(context.Background(), input.Resources, accountID, utils.RemoveTagsMut(input))
+	return s.mirrorKeyPairTags(context.Background(), input.Resources, accountID, tagmirror.RemoveTagsMut(input))
 }
 
 // mirrorKeyPairTags read-modify-writes the metadata Tags slice for each key-

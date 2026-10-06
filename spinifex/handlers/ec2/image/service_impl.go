@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
 	"maps"
 	"strconv"
@@ -681,7 +682,7 @@ func (s *ImageServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID
 	if input == nil {
 		return nil
 	}
-	merge := utils.MergeTagsMut(input)
+	merge := tagmirror.MergeTagsMut(input)
 	for _, res := range input.Resources {
 		if res == nil || !strings.HasPrefix(*res, "ami-") {
 			continue
@@ -700,7 +701,7 @@ func (s *ImageServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountI
 	if input == nil {
 		return nil
 	}
-	remove := utils.RemoveTagsMut(input)
+	remove := tagmirror.RemoveTagsMut(input)
 	for _, res := range input.Resources {
 		if res == nil || !strings.HasPrefix(*res, "ami-") {
 			continue

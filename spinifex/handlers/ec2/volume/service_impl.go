@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
 	"slices"
 	"strings"
@@ -1174,7 +1175,7 @@ func (s *VolumeServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountI
 	if input == nil {
 		return nil
 	}
-	return s.mirrorVolumeTags(context.Background(), input.Resources, accountID, utils.MergeTagsMut(input))
+	return s.mirrorVolumeTags(context.Background(), input.Resources, accountID, tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning volume's tags.json with
@@ -1183,7 +1184,7 @@ func (s *VolumeServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, account
 	if input == nil {
 		return nil
 	}
-	return s.mirrorVolumeTags(context.Background(), input.Resources, accountID, utils.RemoveTagsMut(input))
+	return s.mirrorVolumeTags(context.Background(), input.Resources, accountID, tagmirror.RemoveTagsMut(input))
 }
 
 // mirrorVolumeTags read-modify-writes the ebsmetadata document for each vol-

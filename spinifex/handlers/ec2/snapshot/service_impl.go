@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
@@ -29,7 +30,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/volumestate"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -998,7 +998,7 @@ func (s *SnapshotServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accoun
 	if input == nil {
 		return nil
 	}
-	return s.mirrorSnapshotTags(input.Resources, accountID, utils.MergeTagsMut(input))
+	return s.mirrorSnapshotTags(input.Resources, accountID, tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning snapshot metadata with
@@ -1007,7 +1007,7 @@ func (s *SnapshotServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accou
 	if input == nil {
 		return nil
 	}
-	return s.mirrorSnapshotTags(input.Resources, accountID, utils.RemoveTagsMut(input))
+	return s.mirrorSnapshotTags(input.Resources, accountID, tagmirror.RemoveTagsMut(input))
 }
 
 // mirrorSnapshotTags read-modify-writes the snapshot document's Tags for each

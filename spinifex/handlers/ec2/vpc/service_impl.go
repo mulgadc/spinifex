@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
@@ -23,7 +24,6 @@ import (
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1091,7 +1091,7 @@ func (s *VPCServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID s
 	if input == nil {
 		return nil
 	}
-	merge := utils.MergeTagsMut(input)
+	merge := tagmirror.MergeTagsMut(input)
 	for _, res := range input.Resources {
 		if res == nil {
 			continue
@@ -1110,7 +1110,7 @@ func (s *VPCServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	if input == nil {
 		return nil
 	}
-	remove := utils.RemoveTagsMut(input)
+	remove := tagmirror.RemoveTagsMut(input)
 	for _, res := range input.Resources {
 		if res == nil {
 			continue
@@ -1163,28 +1163,28 @@ func (s *VPCServiceImpl) updateRecordTags(ctx context.Context, accountID, resour
 	case strings.HasPrefix(resourceID, "sgr-"):
 		return s.updateSGRuleTags(ctx, accountID, resourceID, mut)
 	case strings.HasPrefix(resourceID, "subnet-"):
-		return utils.UpdateKVRecordTags(ctx, s.subnetKV, accountID, resourceID, func(r *SubnetRecord) {
+		return tagmirror.UpdateKVRecordTags(ctx, s.subnetKV, accountID, resourceID, func(r *SubnetRecord) {
 			if r.Tags == nil {
 				r.Tags = map[string]string{}
 			}
 			mut(r.Tags)
 		})
 	case strings.HasPrefix(resourceID, "vpc-"):
-		return utils.UpdateKVRecordTags(ctx, s.vpcKV, accountID, resourceID, func(r *VPCRecord) {
+		return tagmirror.UpdateKVRecordTags(ctx, s.vpcKV, accountID, resourceID, func(r *VPCRecord) {
 			if r.Tags == nil {
 				r.Tags = map[string]string{}
 			}
 			mut(r.Tags)
 		})
 	case strings.HasPrefix(resourceID, "sg-"):
-		return utils.UpdateKVRecordTags(ctx, s.sgKV, accountID, resourceID, func(r *SecurityGroupRecord) {
+		return tagmirror.UpdateKVRecordTags(ctx, s.sgKV, accountID, resourceID, func(r *SecurityGroupRecord) {
 			if r.Tags == nil {
 				r.Tags = map[string]string{}
 			}
 			mut(r.Tags)
 		})
 	case strings.HasPrefix(resourceID, "eni-"):
-		return utils.UpdateKVRecordTags(ctx, s.eniKV, accountID, resourceID, func(r *ENIRecord) {
+		return tagmirror.UpdateKVRecordTags(ctx, s.eniKV, accountID, resourceID, func(r *ENIRecord) {
 			if r.Tags == nil {
 				r.Tags = map[string]string{}
 			}

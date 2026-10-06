@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
@@ -953,9 +954,9 @@ func (s *EIPServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, accountID s
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.eipKV, accountID, "eipalloc-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.eipKV, accountID, "eipalloc-", input.Resources,
 		func(r *EIPRecord) *map[string]string { return &r.Tags },
-		utils.MergeTagsMut(input))
+		tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning EIP KV record with
@@ -964,7 +965,7 @@ func (s *EIPServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, accountID 
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.eipKV, accountID, "eipalloc-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.eipKV, accountID, "eipalloc-", input.Resources,
 		func(r *EIPRecord) *map[string]string { return &r.Tags },
-		utils.RemoveTagsMut(input))
+		tagmirror.RemoveTagsMut(input))
 }

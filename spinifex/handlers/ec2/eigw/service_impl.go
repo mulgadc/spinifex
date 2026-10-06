@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
 	"strings"
 	"time"
@@ -20,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -278,9 +278,9 @@ func (s *EgressOnlyIGWServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, a
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.eigwKV, accountID, "eigw-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.eigwKV, accountID, "eigw-", input.Resources,
 		func(r *EgressOnlyIGWRecord) *map[string]string { return &r.Tags },
-		utils.MergeTagsMut(input))
+		tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning egress-only IGW KV
@@ -289,7 +289,7 @@ func (s *EgressOnlyIGWServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, 
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.eigwKV, accountID, "eigw-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.eigwKV, accountID, "eigw-", input.Resources,
 		func(r *EgressOnlyIGWRecord) *map[string]string { return &r.Tags },
-		utils.RemoveTagsMut(input))
+		tagmirror.RemoveTagsMut(input))
 }

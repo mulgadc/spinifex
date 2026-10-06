@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"io"
 	"log/slog"
 	"maps"
@@ -23,7 +24,6 @@ import (
 	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -385,7 +385,7 @@ func (s *TagsServiceImpl) DeleteTags(ctx context.Context, input *ec2.DeleteTagsI
 
 	slog.InfoContext(ctx, "DeleteTags request", "resources", len(input.Resources), "tags", len(input.Tags))
 
-	remove := utils.RemoveTagsMut(input)
+	remove := tagmirror.RemoveTagsMut(input)
 
 	for _, resourceID := range input.Resources {
 		if resourceID == nil {

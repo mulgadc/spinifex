@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
 	"net/netip"
 	"slices"
@@ -24,7 +25,6 @@ import (
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1615,9 +1615,9 @@ func (s *RouteTableServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, acco
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.rtbKV, accountID, "rtb-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.rtbKV, accountID, "rtb-", input.Resources,
 		func(r *RouteTableRecord) *map[string]string { return &r.Tags },
-		utils.MergeTagsMut(input))
+		tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning route-table KV record
@@ -1626,7 +1626,7 @@ func (s *RouteTableServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, acc
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.rtbKV, accountID, "rtb-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.rtbKV, accountID, "rtb-", input.Resources,
 		func(r *RouteTableRecord) *map[string]string { return &r.Tags },
-		utils.RemoveTagsMut(input))
+		tagmirror.RemoveTagsMut(input))
 }

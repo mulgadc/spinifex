@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
 	"maps"
 	"os"
@@ -457,9 +458,9 @@ func ApplyInstanceTagMutation(existing []*ec2.Tag, data *ec2v1.InstanceTagsData,
 
 	switch {
 	case remove && data == nil:
-		utils.ApplyTagRemovals(tags, nil, nil)
+		tagmirror.ApplyTagRemovals(tags, nil, nil)
 	case remove:
-		utils.ApplyTagRemovals(tags, data.TagKeys, data.Tags)
+		tagmirror.ApplyTagRemovals(tags, data.TagKeys, data.Tags)
 	case data != nil:
 		maps.Copy(tags, data.Tags)
 	}

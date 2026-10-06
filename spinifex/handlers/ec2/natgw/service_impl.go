@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
@@ -20,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -546,9 +546,9 @@ func (s *NatGatewayServiceImpl) ApplyRecordTags(input *ec2.CreateTagsInput, acco
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.natgwKV, accountID, "nat-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.natgwKV, accountID, "nat-", input.Resources,
 		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
-		utils.MergeTagsMut(input))
+		tagmirror.MergeTagsMut(input))
 }
 
 // RemoveRecordTags mirrors DeleteTags into the owning NAT gateway KV record
@@ -557,7 +557,7 @@ func (s *NatGatewayServiceImpl) RemoveRecordTags(input *ec2.DeleteTagsInput, acc
 	if input == nil {
 		return nil
 	}
-	return utils.MirrorKVRecordTags(context.Background(), s.natgwKV, accountID, "nat-", input.Resources,
+	return tagmirror.MirrorKVRecordTags(context.Background(), s.natgwKV, accountID, "nat-", input.Resources,
 		func(r *NatGatewayRecord) *map[string]string { return &r.Tags },
-		utils.RemoveTagsMut(input))
+		tagmirror.RemoveTagsMut(input))
 }

@@ -160,7 +160,7 @@ There are two ways to provide it, and they differ in who has to authorise them r
 | **Key material**    | None. Each node authenticates as itself                     | A private key on every node, at `/etc/spinifex/oci/`         |
 | **Who can set up**  | A tenancy admin, once per tenancy                           | Anyone with identity rights in the tenancy                   |
 | **Rotation**        | Nothing to rotate                                           | Yours to rotate and redistribute                             |
-| **Deploy argument** | `--instance-principal`                                      | `--credential-hook ./spx-oci-config.sh`                      |
+| **What you set**    | `export SPX_PRINCIPAL=adopt`, read by step 4               | Nothing extra; step 5 installs the key for you                |
 
 **Use 2.1 if you are a tenancy admin.** It is the better of the two because there is no key to leak, rotate or forget about, and a replaced node needs no handoff. Use 2.2 when your compartment was allocated to you inside someone else's tenancy, which is the common case and the reason 2.2 exists at all.
 
@@ -170,30 +170,18 @@ Do one of the two, not both, then continue to step 3.
 
 Each node authenticates with the certificate its own metadata service serves at `/opc/v2/identity/cert.pem`, so no key is written anywhere. Authorising that takes a dynamic group and a policy, and **both are tenancy-root resources** — a compartment-scoped user cannot create them, and the attempt fails with `404-NotAuthorizedOrNotFound` on `CreateDynamicGroup`, which reads like a misconfiguration and is not one.
 
-Create them once, with a tenancy-admin OCI profile:
+Create them once, with a tenancy-admin OCI profile, then set one variable:
 
 ```bash
 ./setup-identity.sh --dry-run     # always first
 ./setup-identity.sh
+
+export SPX_PRINCIPAL=adopt
 ```
+
+**That is all of it.** Step 4 writes `SPX_PRINCIPAL` into your Terraform inputs and step 5 reads it back from there, so neither step needs anything extra from you. Keep the same shell for both, as with `$CID`.
 
 The dynamic group matches on the compartment, so it covers every node you build there and needs no update when a node is replaced. Its Terraform state goes in `.identity/`, separate from the deployment's — keep that directory, as it is the only record of what was created.
-
-Then set this in your step 4 tfvars:
-
-```hcl
-instance_principal = "adopt"
-```
-
-And in step 5, pass `--instance-principal` in place of `--credential-hook`:
-
-```bash
-./validate-topology.sh \
-    --topology vm-single \
-    --instance-principal \
-    --skip-workload \
-    --keep
-```
 
 Only `setup-identity.sh` needs tenancy-admin rights. Every deployment afterwards runs as your ordinary compartment user.
 
@@ -380,6 +368,10 @@ cat > terraform.auto.tfvars <<EOF
 compartment_ocid        = "$CID"
 deployment_name         = "spinifex"
 
+# How the nodes authenticate to OCI, from step 2. "off" is an API key, which is
+# what step 2.2 installs; "adopt" is the instance principal from step 2.1.
+instance_principal      = "${SPX_PRINCIPAL:-off}"
+
 # Shape and size.
 # Bare metal is preferred for large scale production usage.
 compute_shape           = "VM.Standard.E5.Flex"
@@ -415,14 +407,16 @@ grep compartment_ocid terraform.auto.tfvars
 ## 5. Deploy
 
 ```bash
+export TOPOLOGY=vm-single
+
 ./validate-topology.sh \
-    --topology vm-single \
+    --topology "$TOPOLOGY" \
     --credential-hook ./spx-oci-config.sh \
     --skip-workload \
     --keep
 ```
 
-With an instance principal from [2.1](#21-instance-principal-preferred), pass `--instance-principal` in place of `--credential-hook`.
+The same command covers both credential routes. It reads `instance_principal` from the tfvars you wrote in step 4, so an instance-principal deployment needs no extra argument and `--credential-hook` is simply ignored.
 
 One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies that the address allocator came up.
 
@@ -430,7 +424,7 @@ One command builds the infrastructure, installs Spinifex, forms the cluster, con
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent                       |
 | `--channel`         | Nothing, normally. It defaults to `latest`, the published release. Pass `dev` to install the newest pre-release instead, or `--version <tag>` to pin an exact build                                                                                          |
-| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Mutually exclusive with `--instance-principal`, which installs no key at all                                                                                                    |
+| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Not used when your tfvars set `instance_principal`, because there is then no key to install                                                                                      |
 | `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                                              |
 | `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                                         |
 
@@ -447,6 +441,7 @@ The stages print as they finish, and all of these have to appear:
 
 ```text
 [validate-vm-single] building
+[validate-vm-single] VM.Standard.E5.Flex, 1 node(s), oci_auth from a key file
 [validate-vm-single] waiting for cloud-init on each node
 [validate-vm-single] installing Spinifex on each node
 [validate-vm-single] initializing the single node
@@ -458,19 +453,25 @@ The stages print as they finish, and all of these have to appear:
 [validate-vm-single] cluster membership
 [validate-vm-single] --skip-workload: stopping before the workbook
 [validate-vm-single] --keep: leaving the infrastructure up, no verdict recorded
+[validate-vm-single] ssh in with: ssh -i /home/you/.ssh/oci-spx ubuntu@150.230.13.131
+[validate-vm-single] destroy it with: ./validate-topology.sh --topology vm-single --destroy-only
 ```
 
 **`allocator ready` is the line to look for.** Every line above it also prints on a node that cannot allocate a public address, and that failure stays silent until a guest asks for one.
 
-`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes. Under `--instance-principal` those two lines are absent, because there is no handoff to make.
+`running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes. On the instance-principal route those two lines are absent, because there is no handoff to make.
 
 ### Access the Spinifex node
 
-SSH to the node at the address on the `allocator ready` line:
+The deploy's last line is the command to get in, so you can paste it straight back. The addresses are also on disk, one per line, which is what to read from a script:
 
 ```bash
-ssh -i ~/.ssh/oci-spx ubuntu@<node-ip>
+cat ".validate-$TOPOLOGY/hosts"
+
+ssh -i ~/.ssh/oci-spx ubuntu@"$(head -1 ".validate-$TOPOLOGY/hosts")"
 ```
+
+`$TOPOLOGY` is the variable you exported in step 5, so this is the same command whether you deployed one VM, three, or bare metal. The first line is the node the cluster formed on.
 
 Then call the AWS surface with the `[spinifex]` profile that `spx admin init` wrote into `~/.aws/credentials`:
 

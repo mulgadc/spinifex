@@ -33,6 +33,9 @@ WORKBOOKS_SET=0
 CHANNEL=latest
 INSTALL_VERSION=""
 WORKBOOKS=""
+# Declared here, not at the apply that fills it: the EXIT trap reads it, and under
+# set -u an unset array is an error rather than an empty one.
+HOSTS=()
 
 TOPOLOGIES="bm vm-single vm-multi vm-single-principal"
 
@@ -81,6 +84,8 @@ workbook against it, then destroys everything.
   --instance-principal    Configure the pool with oci_auth="instance_principal"
                           instead of a key file. Needs the dynamic group and
                           policy to exist already; see instance-principal.tf.
+                          Not needed when instance_principal is set in your
+                          tfvars, which this reads; the flag outranks it.
   --credential-hook PATH  Executable run after formation, before the pool, as
                           "hook <ssh-key> <host>...". Where an API-key deployment
                           installs its credential. Default \$OCI_CREDENTIAL_HOOK.
@@ -154,9 +159,35 @@ if [ "$TOPO_FORCE_PRINCIPAL" = 1 ]; then
         || die "--no-external-pool makes $TOPOLOGY meaningless: the allocator is what exercises the instance principal, so a run without it proves nothing"
 fi
 
+# Terraform's own order, as far as this script needs it: the last assignment across
+# terraform.tfvars then *.auto.tfvars alphabetically is the one that applies. Read
+# because the credential-hook gate has to run before the apply spends anything; the
+# apply's own output is checked against this afterwards.
+tfvars_instance_principal() {
+    local file mode="" found=""
+    for file in "$HERE/terraform.tfvars" "$HERE"/*.auto.tfvars; do
+        [ -r "$file" ] || continue
+        mode=$(sed -n 's/^[[:space:]]*instance_principal[[:space:]]*=[[:space:]]*"\([a-z]*\)".*/\1/p' \
+            "$file" | tail -1)
+        [ -n "$mode" ] && found="$mode"
+    done
+    [ -n "$found" ] || return 1
+    printf '%s\n' "$found"
+}
+
 # adopt, never create: this script's state is destroyed at the end of every run, and
 # the dynamic group and policy outlive every topology. setup-identity.sh owns them.
-PRINCIPAL_MODE=$([ "$INSTANCE_PRINCIPAL" = 1 ] && echo adopt || echo off)
+#
+# A flag goes in as -var and outranks the tfvars, because it is a choice about this
+# run. Without one the deployment's own tfvars decides, so a guide can set the
+# credential in the file it already writes and no flag has to carry it.
+tf_principal_var=()
+if [ "$INSTANCE_PRINCIPAL" = 1 ]; then
+    PRINCIPAL_MODE=adopt
+    tf_principal_var=(-var "instance_principal=$PRINCIPAL_MODE")
+else
+    PRINCIPAL_MODE="$(tfvars_instance_principal || echo off)"
+fi
 
 # What the apply actually built, filled in from the hosts_file output once it has.
 # Until then these are what the topology asked for, which is all there is to say.
@@ -192,10 +223,8 @@ tf() {
 # terraform output takes -state but not -var, so the two sets are kept apart. They
 # were one set once, and the -var made output fail into the default state file.
 tf_state=(-state "$STATE_DIR/terraform.tfstate")
-# instance_principal stays a -var, and outranks any tfvars, because --instance-principal
-# is a choice about this run rather than about the infrastructure's size.
 tf_vars=(
-    -var "instance_principal=$PRINCIPAL_MODE"
+    "${tf_principal_var[@]}"
     "${tf_state[@]}"
 )
 
@@ -261,6 +290,13 @@ cleanup() {
     local rc=$?
     if [ "$KEEP" = 1 ]; then
         log "--keep: leaving the infrastructure up, no verdict recorded"
+        # The command to get in, printed rather than left to be assembled from an
+        # address elsewhere in the log. HOSTS is empty if we never got as far as
+        # the apply, which is why this is guarded rather than assumed.
+        if [ "${#HOSTS[@]}" -gt 0 ]; then
+            log "ssh in with: ssh -i $SSH_PRIVATE_KEY ubuntu@${HOSTS[0]}"
+            log "destroy it with: $0 --topology $TOPOLOGY --destroy-only"
+        fi
         return
     fi
     # Only on a failure, and said out loud: the cost of forgetting is an OCI bare
@@ -379,6 +415,11 @@ for host in "${HOSTS[@]}"; do
         || die "the hosts_file output is not an address: '$host' -- something on the wrapper's stdout is in the capture"
 done
 
+# Written for every topology, not just the multi-node one that passes it to
+# install-node.sh: it is also how an operator gets the addresses afterwards
+# without a terraform invocation and the right -state path.
+printf '%s\n' "${HOSTS[@]}" > "$STATE_DIR/hosts"
+
 # node_count can come from a tfvars file, so the hosts the apply produced are the
 # authority on how many there are. Every later count check reads this.
 if [ "${#HOSTS[@]}" != "$NODES" ]; then
@@ -387,8 +428,18 @@ if [ "${#HOSTS[@]}" != "$NODES" ]; then
 fi
 SHAPE=$(tf output -raw "${tf_state[@]}" compute_shape) \
     || die "could not read the compute_shape output from $STATE_DIR/terraform.tfstate"
+
+# Terraform is the authority on which credential was built, and the reader above is
+# a guess made before the apply. They have to agree: the hook is skipped on the
+# strength of that guess, and a node left with no credential at all would otherwise
+# fail much later as an allocator that cannot resolve its VNIC.
+built_principal=$(tf output -raw "${tf_state[@]}" instance_principal) \
+    || die "could not read the instance_principal output from $STATE_DIR/terraform.tfstate"
+[ "$built_principal" = "$PRINCIPAL_MODE" ] \
+    || die "read instance_principal='$PRINCIPAL_MODE' from the tfvars and the apply built '$built_principal'; set it in one place"
+
 log "hosts: ${HOSTS[*]}"
-log "$SHAPE, $NODES node(s)"
+log "$SHAPE, $NODES node(s), oci_auth $([ "$PRINCIPAL_MODE" = off ] && echo "from a key file" || echo "as the instance principal")"
 
 # cloud-init owns the volume, the ports and br-wan, and all three are units now, so
 # the question is whether they converged rather than whether a runcmd happened to
@@ -480,7 +531,6 @@ if [ "$NODES" = 1 ]; then
     ' > "$STATE_DIR/form.log" 2>&1 \
         || die "single-node init failed; see $STATE_DIR/form.log"
 else
-    printf '%s\n' "${HOSTS[@]}" > "$STATE_DIR/hosts"
     log "forming the cluster"
     "$REPO_ROOT/scripts/install-node.sh" \
         --hosts-file "$STATE_DIR/hosts" \

@@ -11,6 +11,7 @@ import (
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
@@ -155,11 +156,13 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 // into the central tag store, so describe-tags sees them from birth. The write
 // is best-effort, so the assertion tolerates it landing slightly late.
 func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
-	daemon, memStore := createFullTestDaemonWithStore(t, sharedJSNATSURL)
-	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")
-
 	// The launch fails (the AMI has no snapshot), so the manager needs a
 	// terminated bucket to release the record into for its tags to be checked.
+	// Its own server keeps that record out of the shared terminated bucket.
+	ns, _, _ := testutil.StartTestJetStream(t)
+	daemon, memStore := createFullTestDaemonWithStore(t, ns.ClientURL())
+	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-launchtags")
+
 	jsm, err := NewJetStreamManager(daemon.natsConn)
 	require.NoError(t, err)
 	require.NoError(t, jsm.InitKVBucket())

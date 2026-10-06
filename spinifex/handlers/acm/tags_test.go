@@ -174,3 +174,18 @@ func TestImportCertificate_ReimportKeepsStoredTags(t *testing.T) {
 	assert.Equal(t, "rotated.example.com", aws.StringValue(desc.Certificate.DomainName), "material must be replaced")
 	assert.Equal(t, map[string]string{"Name": "ingress", "env": "dev"}, listTagMap(t, svc, arn))
 }
+
+// AWS resolves the ARN before refusing the tags, so an unknown ARN with tags is
+// a ResourceNotFoundException, not the tagging ValidationException.
+func TestImportCertificate_ReimportWithTagsUnknownArnIsNotFound(t *testing.T) {
+	svc := setupACMService(t)
+	c, k := genCert(t, "x.example.com", "x.example.com")
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c,
+		PrivateKey:     k,
+		CertificateArn: aws.String(svc.mintCertificateArn(testAccountID)),
+		Tags:           []*acm.Tag{{Key: aws.String("a"), Value: aws.String("b")}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFound, err.Error())
+}

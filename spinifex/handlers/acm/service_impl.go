@@ -216,6 +216,9 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
+	if leaf.SerialNumber.Sign() == 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException, "The serial number in the certificate is not supported by ACM.")
+	}
 
 	certArn := aws.StringValue(input.CertificateArn)
 	var inUseBy []string
@@ -226,11 +229,6 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
 	} else {
-		// AWS refuses tags on re-import. The stored tags carry forward below,
-		// so a plain re-import does not clear them.
-		if len(input.Tags) > 0 {
-			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Tagging is not permitted on re-import.")
-		}
 		// Re-import: the ARN must be one the gate can read, and must already
 		// exist and belong to the caller.
 		if _, ok := arn.ParseACMCertificateID(certArn); !ok {
@@ -242,6 +240,17 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		}
 		if existing == nil || existing.AccountID != accountID {
 			return nil, errors.New(awserrors.ErrorResourceNotFound)
+		}
+		// AWS refuses tags on re-import, once the ARN resolves. The stored tags
+		// carry forward below, so a plain re-import does not clear them.
+		if len(input.Tags) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Tagging is not permitted on re-import.")
+		}
+		// AWS names both keys in its API enum spelling (RSA_2048).
+		if newAlg := keyAlgorithm(leaf); newAlg != existing.KeyAlgorithm {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+				"New certificate has a key of %s which is different from %s in the current certificate.",
+				strings.Replace(newAlg, "-", "_", 1), strings.Replace(existing.KeyAlgorithm, "-", "_", 1))
 		}
 		// Carry the InUseBy index forward — new material under the same ARN
 		// must not silently drop the load balancers that reference it.
@@ -307,6 +316,10 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 	domain := aws.StringValue(input.DomainName)
 	// Before the mode is derived, so a malformed domain is a ValidationException
 	// in every mode rather than whatever the mode's own checks answer.
+	if len(domain) > 253 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must have length less than or equal to 253")
+	}
 	if !domainNameRE.MatchString(domain) {
 		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
 			"1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must satisfy regular expression pattern: %s",

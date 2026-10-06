@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -105,4 +106,44 @@ func TestKeyAlgorithm_StoredUnderscoreSpellingReadsBackHyphenated(t *testing.T) 
 			assert.Equal(t, tc.want, listed)
 		})
 	}
+}
+
+// AWS refuses a re-import whose key type differs from the current one, naming
+// both in the API enum spelling.
+func TestImportCertificate_ReimportWithDifferentKeyTypeRejected(t *testing.T) {
+	svc := setupACMService(t)
+	c1, k1 := genRSACert(t, "k.example.com", 2048)
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
+	require.NoError(t, err)
+
+	c2, k2 := genCert(t, "k.example.com", "k.example.com")
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		CertificateArn: out.CertificateArn, Certificate: c2, PrivateKey: k2,
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorValidationException, code)
+	assert.Equal(t, "New certificate has a key of EC_prime256v1 which is different from RSA_2048 in the current certificate.", msg)
+}
+
+func TestImportCertificate_SerialZeroRejected(t *testing.T) {
+	svc := setupACMService(t)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(0),
+		Subject:      pkix.Name{CommonName: "zero.example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		PrivateKey:  pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorValidationException, code)
+	assert.Equal(t, "The serial number in the certificate is not supported by ACM.", msg)
 }

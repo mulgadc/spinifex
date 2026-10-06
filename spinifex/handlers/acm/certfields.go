@@ -19,11 +19,7 @@ const maxSANSummaries = 100
 // formatSerial renders a serial number as ACM does: two lowercase hex digits
 // per byte, joined by colons.
 func formatSerial(serial *big.Int) string {
-	b := serial.Bytes()
-	if len(b) == 0 {
-		b = []byte{0}
-	}
-	return strings.ReplaceAll(fmt.Sprintf("% x", b), " ", ":")
+	return strings.ReplaceAll(fmt.Sprintf("% x", serial.Bytes()), " ", ":")
 }
 
 // signatureAlgorithms are ACM's spellings of the leaf's signature algorithm.

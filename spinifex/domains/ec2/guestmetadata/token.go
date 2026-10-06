@@ -1,4 +1,4 @@
-package handlers_imds
+package guestmetadata
 
 import (
 	"crypto/rand"

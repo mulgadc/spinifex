@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +128,7 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 		region := aws.StringValue(fix.AWS.EC2Conf.Config.Region)
 		require.NotEmpty(t, region, "AWS region is required to build the internal EC2 name")
 
-		harness.Step(t, "assert guest uses the VPC resolver %s", handlers_imds.VPCDNSServerIP)
+		harness.Step(t, "assert guest uses the VPC resolver %s", guestmetadata.VPCDNSServerIP)
 		harness.AssertGuestResolver(t, tgt)
 
 		// Ping the instance's own private IP — local datapath sanity, no DNS

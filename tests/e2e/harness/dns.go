@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 
 	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 )
 
 const (
@@ -211,9 +211,9 @@ func AssertGuestResolver(t *testing.T, target SSHTarget) {
 		if err != nil {
 			return err
 		}
-		if !slices.Contains(resolvers, handlers_imds.VPCDNSServerIP) {
+		if !slices.Contains(resolvers, guestmetadata.VPCDNSServerIP) {
 			return fmt.Errorf("guest forwards DNS to %v, want the VPC resolver %s",
-				resolvers, handlers_imds.VPCDNSServerIP)
+				resolvers, guestmetadata.VPCDNSServerIP)
 		}
 		return nil
 	}, 30*time.Second, 3*time.Second)

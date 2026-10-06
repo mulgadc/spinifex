@@ -19,9 +19,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
@@ -579,18 +579,18 @@ func launchService(cfg *Config) error {
 		return live, nil
 	}
 	// vpcd is the composition root for both planes IMDS straddles: it wires the
-	// on-disk VM state reader and the shared record space, so handlers/imds
+	// on-disk VM state reader and the shared record space, so domains/ec2/guestmetadata
 	// itself never needs to import the compute plane beyond vm.VM.
 	records, err := newInstanceRecordLoader(ctx, nc)
 	if err != nil {
 		return fmt.Errorf("open instance record space: %w", err)
 	}
-	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
+	imdsSvc, err := guestmetadata.NewIMDSServiceImpl(
 		ctx,
 		nc,
-		handlers_imds.NewNATSSTSAssumer(nc),
-		handlers_imds.NewNATSProfileLookup(nc),
-		handlers_imds.NewNATSPublicKeyLookup(nc),
+		guestmetadata.NewNATSSTSAssumer(nc),
+		guestmetadata.NewNATSProfileLookup(nc),
+		guestmetadata.NewNATSPublicKeyLookup(nc),
 		newLocalVMStateReader(cfg.DataDir),
 		records,
 		listTaps,
@@ -599,7 +599,7 @@ func launchService(cfg *Config) error {
 		cfg.ServicesDomain,
 		cfg.CACert,
 		cfg.ResolverNameservers,
-		handlers_imds.NewHostBindAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP),
+		guestmetadata.NewHostBindAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP),
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
@@ -824,7 +824,7 @@ func launchService(cfg *Config) error {
 // absent northstar it falls back to the upstream pool DNS.
 func resolverDNSServer(cfg *Config) string {
 	if len(cfg.ResolverNameservers) > 0 {
-		return handlers_imds.VPCDNSServerIP
+		return guestmetadata.VPCDNSServerIP
 	}
 	return pickDNSServer(cfg.ExternalPools)
 }

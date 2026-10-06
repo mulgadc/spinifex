@@ -30,7 +30,7 @@ const (
 	// DefaultResolverQPSPerIP is AWS's 10,000 UDP queries/sec per resolver-endpoint
 	// IP. The per-tap 169.254.169.253 shim is our resolver-endpoint analog, so
 	// this is the AWS-parity ceiling above which the forwarder sheds a flood
-	// (handlers/imds dnsQueryRatePerTap mirrors it).
+	// (domains/ec2/guestmetadata dnsQueryRatePerTap mirrors it).
 	DefaultResolverQPSPerIP = 10_000
 
 	// MaxRecordsPerChangeRequest is the hard cap on ResourceRecord elements in one

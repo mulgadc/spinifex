@@ -1,4 +1,4 @@
-package handlers_imds
+package guestmetadata
 
 import (
 	"context"
@@ -26,7 +26,7 @@ const tokenSweepInterval = time.Minute
 const tapReconcileInterval = 15 * time.Second
 
 // listTapsFunc enumerates the local primary-ENI IMDS taps as eniID → endpoint,
-// injected (like the veth hooks) to keep handlers/imds free of a network/host
+// injected (like the veth hooks) to keep domains/ec2/guestmetadata free of a network/host
 // import cycle. Backed by host.ListIMDSTaps in vpcd.
 type listTapsFunc func(ctx context.Context) (map[string]string, error)
 

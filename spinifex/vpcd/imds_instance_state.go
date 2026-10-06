@@ -15,7 +15,7 @@ import (
 
 // localVMStateReader adapts this node's on-disk instance state to IMDS's
 // local-first lookup. vpcd is the composition root for both the network and
-// compute planes IMDS straddles, so this adapter — not handlers/imds — is
+// compute planes IMDS straddles, so this adapter — not domains/ec2/guestmetadata — is
 // what knows the state lives in a daemon-owned file.
 type localVMStateReader struct {
 	dataDir string
@@ -74,7 +74,7 @@ func (r *localVMStateReader) LocalVM(instanceID string) (*vm.VM, error) {
 	return r.cached.VMS[instanceID], nil
 }
 
-// recordLoader mirrors handlers/imds's own narrow instance-record accessor
+// recordLoader mirrors domains/ec2/guestmetadata's own narrow instance-record accessor
 // interface, so a construction failure below returns a true nil interface
 // rather than a *daemon.JetStreamManager typed nil boxed into one.
 type recordLoader interface {

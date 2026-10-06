@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"regexp"
 	"strings"
 	"time"
 	"uuid"
@@ -28,7 +29,15 @@ const (
 
 	certStatusIssued = "ISSUED"
 	certTypeImported = "IMPORTED"
+
+	// domainNamePattern is AWS's DomainName constraint, quoted verbatim in the
+	// ValidationException message.
+	domainNamePattern = `(\*\.)?(((?!-)[A-Za-z0-9-]{0,62}[A-Za-z0-9])\.)+((?!-)[A-Za-z0-9-]{1,62}[A-Za-z0-9])`
 )
+
+// domainNameRE is domainNamePattern with its (?!-) lookaheads rewritten, since
+// Go regexp has none.
+var domainNameRE = regexp.MustCompile(`^(\*\.)?([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]$`)
 
 // CertAuthority issues leaf certificates from the tenant private CA and
 // authorizes domains against the CA's own x509 name constraints. Satisfied by
@@ -212,10 +221,16 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 	var inUseBy []string
 	now := time.Now().UTC()
 	createdAt := now
+	tags := tagsToMap(input.Tags)
 	reimport := certArn != ""
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
 	} else {
+		// AWS refuses tags on re-import. The stored tags carry forward below,
+		// so a plain re-import does not clear them.
+		if len(input.Tags) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Tagging is not permitted on re-import.")
+		}
 		// Re-import: the ARN must be one the gate can read, and must already
 		// exist and belong to the caller.
 		if _, ok := arn.ParseACMCertificateID(certArn); !ok {
@@ -232,6 +247,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		// must not silently drop the load balancers that reference it.
 		inUseBy = existing.InUseBy
 		createdAt = importedCreatedAt(existing)
+		tags = existing.Tags
 	}
 
 	rec := &CertRecord{
@@ -250,7 +266,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		NotAfter:         leaf.NotAfter,
 		CreatedAt:        createdAt,
 		ImportedAt:       now,
-		Tags:             tagsToMap(input.Tags),
+		Tags:             tags,
 		InUseBy:          inUseBy,
 		Type:             certTypeImported,
 		Status:           certStatusIssued,
@@ -289,6 +305,13 @@ func (s *ACMServiceImpl) RequestCertificate(ctx context.Context, input *acm.Requ
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	domain := aws.StringValue(input.DomainName)
+	// Before the mode is derived, so a malformed domain is a ValidationException
+	// in every mode rather than whatever the mode's own checks answer.
+	if !domainNameRE.MatchString(domain) {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value of the input at 'domainName' failed to satisfy constraint: Member must satisfy regular expression pattern: %s",
+			domainNamePattern)
+	}
 	sans := aws.StringValueSlice(input.SubjectAlternativeNames)
 	allDomains := uniqueDomains(domain, sans)
 
@@ -498,12 +521,17 @@ func (s *ACMServiceImpl) GetCertificate(ctx context.Context, input *acm.GetCerti
 	if rec.Certificate == "" {
 		return nil, errors.New(awserrors.ErrorACMRequestInProgress)
 	}
-	out := &acm.GetCertificateOutput{Certificate: aws.String(rec.Certificate)}
-	// Left absent rather than empty for a self-signed leaf with no chain.
-	if rec.CertificateChain != "" {
-		out.CertificateChain = aws.String(rec.CertificateChain)
+	// AWS answers a certificate imported without a chain with the certificate
+	// itself as the chain. Only the response does this; the stored record keeps
+	// no chain, so ELBv2's leaf+chain bundle does not repeat the leaf.
+	chain := rec.CertificateChain
+	if chain == "" {
+		chain = rec.Certificate
 	}
-	return out, nil
+	return &acm.GetCertificateOutput{
+		Certificate:      aws.String(rec.Certificate),
+		CertificateChain: aws.String(chain),
+	}, nil
 }
 
 // ListCertificates returns summaries for every cert owned by accountID.
@@ -772,15 +800,25 @@ func leafDomain(leaf *x509.Certificate) string {
 	return ""
 }
 
-// keyAlgorithm maps the leaf public key to an ACM-style algorithm string
-// (RSA_2048, EC_prime256v1, ...).
+// keyAlgorithm maps the leaf public key to the KeyAlgorithm ACM returns: RSA-<bits>,
+// hyphenated as AWS returns it, unlike the RSA_2048 API enum. EC is EC_ plus Go's
+// curve name (EC_P-256), a spelling not yet checked against AWS.
 func keyAlgorithm(leaf *x509.Certificate) string {
 	switch pub := leaf.PublicKey.(type) {
 	case *rsa.PublicKey:
-		return fmt.Sprintf("RSA_%d", pub.N.BitLen())
+		return fmt.Sprintf("RSA-%d", pub.N.BitLen())
 	case *ecdsa.PublicKey:
 		return "EC_" + pub.Curve.Params().Name
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// normaliseKeyAlgorithm rewrites the RSA_<bits> spelling stored by earlier
+// builds to the RSA-<bits> that keyAlgorithm now writes.
+func normaliseKeyAlgorithm(alg string) string {
+	if bits, ok := strings.CutPrefix(alg, "RSA_"); ok {
+		return "RSA-" + bits
+	}
+	return alg
 }

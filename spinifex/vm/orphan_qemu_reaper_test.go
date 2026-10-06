@@ -36,9 +36,9 @@ func TestOrphanQEMUReaper(t *testing.T) {
 		require.NoError(t, utils.WritePidFile(id, pid))
 		store.terminated[id] = &VM{ID: id, Status: StateTerminated}
 
+		t.Cleanup(func() { _ = cmd.Process.Kill(); wg.Wait() })
 		reaped, err := reaper.Sweep(context.Background())
 		require.NoError(t, err)
-		wg.Wait()
 
 		assert.Equal(t, 1, reaped, "the orphan QEMU for a terminated instance must be reaped")
 		assert.False(t, utils.ProcessAlive(pid),

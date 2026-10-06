@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"maps"
@@ -21,7 +22,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
@@ -734,7 +734,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// private-subnet egress drop) and the private CP egresses via the NAT gateway
 	// (DNS + docker.io image pulls). Composed from the real EC2 VPC-family APIs,
 	// so the per-subnet egress policies are wired by the topology subscribers.
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	cpRefs, err := EnsureClusterCPVPC(ctx, s.cpVPCDeps(), sysAcct, name, region, cpVPCPrivateSubnetCount)
 	if err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure managed CP VPC", err)
@@ -1273,7 +1273,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	// (ManagedCPVPC nil) under the customer account, matching how they launched.
 	infraAcct := accountID
 	if meta.ManagedCPVPC != nil {
-		infraAcct = admin.SystemAccountID()
+		infraAcct = awsidentifiers.GlobalAccountID
 	}
 
 	var teardownErrs []error
@@ -2237,7 +2237,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		// placeControlPlane), not the customer account that owns the cluster
 		// record. CP describe/recover must therefore run as the system account —
 		// the customer account cannot see or own its own cluster's CP VMs.
-		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: admin.SystemAccountID()}))
+		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: awsidentifiers.GlobalAccountID}))
 		// Member-count reconcile: replace a terminated/gone CP member with a fresh
 		// one that joins the surviving quorum. The service replays the persisted
 		// create template; gated on CPControl since replacement needs member describe.

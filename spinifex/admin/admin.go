@@ -591,12 +591,6 @@ type NorthstarCredentials struct {
 	Bucket    string
 }
 
-// SystemAccountID returns the system/root account ID (000000000000).
-// Used for service-to-service auth credentials baked into config files.
-func SystemAccountID() string {
-	return "000000000000"
-}
-
 // DefaultAccountID returns the default admin account ID (000000000001).
 // This is the first human-facing account created during bootstrap.
 func DefaultAccountID() string {

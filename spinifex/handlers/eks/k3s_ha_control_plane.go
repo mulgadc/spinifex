@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sync"
@@ -13,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
@@ -62,7 +62,7 @@ func (s *EKSServiceImpl) placeControlPlane(ctx context.Context, accountID, clust
 		return s.launchSingleControlPlane(ctx, tmpl)
 	}
 
-	pgAccount := admin.SystemAccountID()
+	pgAccount := awsidentifiers.GlobalAccountID
 	groupName := haSpreadGroupName(accountID, clusterName)
 	if err := s.ensureSpreadGroup(ctx, groupName, pgAccount); err != nil {
 		return nil, "", err
@@ -154,7 +154,7 @@ func (s *EKSServiceImpl) ProvisionReplacementCP(ctx context.Context, req Replace
 
 	// Re-derive rotating creds the same way CreateCluster does so a replacement
 	// picks up current credentials rather than a frozen create-time snapshot.
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	in.IamInstanceProfileArn = ""
 	in.AccessKey = ""
 	in.SecretKey = ""
@@ -213,7 +213,7 @@ func (s *EKSServiceImpl) ProvisionFreshControlPlane(ctx context.Context, req Fre
 	in.KonnServerCount = 1
 	in.PrunePeerIP = ""
 
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	in.IamInstanceProfileArn = ""
 	in.AccessKey = ""
 	in.SecretKey = ""
@@ -400,7 +400,7 @@ func (s *EKSServiceImpl) teardownSpreadGroup(ctx context.Context, meta *ClusterM
 	if meta.ControlPlaneSpreadGroup == "" {
 		return
 	}
-	pgAccount := admin.SystemAccountID()
+	pgAccount := awsidentifiers.GlobalAccountID
 	for _, cp := range meta.ControlPlaneNodes {
 		if cp.NodeID == "" || cp.InstanceID == "" {
 			continue

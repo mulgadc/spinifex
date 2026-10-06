@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
@@ -171,7 +171,7 @@ func (s *EKSServiceImpl) unwindFreshCP(ctx context.Context, accountID, clusterNa
 		slog.WarnContext(ctx, "RestoreSnapshot: clear directive during unwind failed; guest may still reset if it boots",
 			"cluster", clusterName, "instanceId", node.InstanceID, "err", err)
 	}
-	if err := TerminateK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance, admin.SystemAccountID(), node.InstanceID, node.ENIID); err != nil {
+	if err := TerminateK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance, awsidentifiers.GlobalAccountID, node.InstanceID, node.ENIID); err != nil {
 		slog.WarnContext(ctx, "RestoreSnapshot: terminate fresh CP during unwind failed; may orphan a resetting control plane",
 			"cluster", clusterName, "instanceId", node.InstanceID, "err", err)
 	}
@@ -294,7 +294,7 @@ func (s *EKSServiceImpl) RestoreSnapshot(ctx context.Context, input *RestoreSnap
 		return nil, fmt.Errorf("eks: persist replacement control plane: %w", perr)
 	}
 
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	// Re-point the cluster NLB: deregister the old (likely already-dead) CP,
 	// register the new one, on both the apiserver and konnectivity TGs. Deregister
 	// is best-effort (the old target is likely already unhealthy/absent). A failed

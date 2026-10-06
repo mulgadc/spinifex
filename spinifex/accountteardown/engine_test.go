@@ -7,6 +7,7 @@ package accountteardown
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 	"testing"
@@ -125,7 +126,7 @@ func request() Request {
 // system treats as undeletable. Two hard-coded lists that drift is exactly the
 // failure this guards against.
 func TestProtectedAccountsMatchTheRestOfTheSystem(t *testing.T) {
-	for _, id := range []string{admin.SystemAccountID(), admin.DefaultAccountID()} {
+	for _, id := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
 		if _, protected := protectedAccountIDs[id]; !protected {
 			t.Fatalf("account %s is not protected by teardown", id)
 		}
@@ -157,7 +158,7 @@ func TestTeardownRefusesTheSystemAccount(t *testing.T) {
 	engine := quietEngine(newFakeAccounts())
 
 	_, err := engine.Teardown(context.Background(), Request{
-		AccountID: admin.SystemAccountID(), AccountName: "system",
+		AccountID: awsidentifiers.GlobalAccountID, AccountName: "system",
 	})
 	if !errors.Is(err, ErrProtectedAccount) {
 		t.Fatalf("expected ErrProtectedAccount, got %v", err)
@@ -392,7 +393,7 @@ func TestInventoryIsReadOnlyAndNeedsNoConfirmation(t *testing.T) {
 func TestInventoryRefusesAProtectedAccount(t *testing.T) {
 	engine := quietEngine(newFakeAccounts())
 
-	if _, err := engine.Inventory(context.Background(), admin.SystemAccountID()); !errors.Is(err, ErrProtectedAccount) {
+	if _, err := engine.Inventory(context.Background(), awsidentifiers.GlobalAccountID); !errors.Is(err, ErrProtectedAccount) {
 		t.Fatalf("expected ErrProtectedAccount, got %v", err)
 	}
 }

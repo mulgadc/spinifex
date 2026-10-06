@@ -1568,7 +1568,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Error preparing IAM master key: %v\n", err)
 		os.Exit(1)
 	}
-	accountID := admin.SystemAccountID()
+	accountID := awsidentifiers.GlobalAccountID
 	bootstrapDir := filepath.Join(spxRoot, "awsgw")
 
 	var accessKey, secretKey, adminAccessKey, adminSecretKey string

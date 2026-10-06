@@ -3,12 +3,12 @@ package handlers_eks
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
@@ -383,7 +383,7 @@ func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
 	// The CP VPC is composed under the system account, not the caller's.
 	require.NotEmpty(t, f.vpcMgr.createVpcAccts)
 	for _, acct := range f.vpcMgr.createVpcAccts {
-		assert.Equal(t, admin.SystemAccountID(), acct, "managed CP VPC must be owned by the system account")
+		assert.Equal(t, awsidentifiers.GlobalAccountID, acct, "managed CP VPC must be owned by the system account")
 	}
 	assert.Len(t, f.ngw.createCalls, 1, "exactly one NAT gateway for the CP VPC")
 

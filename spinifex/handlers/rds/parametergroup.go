@@ -477,13 +477,12 @@ func engineForDefaultParameterGroup(name string) (Engine, bool) {
 	return Engine{}, false
 }
 
-// An omitted family takes PostgreSQL's rather than failing, which AWS clients
-// that predate a second engine depend on. The cost is that a group meant for
-// another engine is created as a PostgreSQL one and is only refused a call
-// later, when an instance of that engine tries to attach it.
+// The family is required: defaulting it would create a group for an engine the
+// caller never named, refused only later when another engine tries to attach it.
 func validateParameterGroupFamily(family string) (string, error) {
 	if normaliseFamily(family) == "" {
-		return enginePostgres.ParameterGroupFamily(), nil
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"The parameter ParameterGroupFamily must be provided and must not be empty.")
 	}
 	engine, err := engineForFamily(family)
 	if err != nil {

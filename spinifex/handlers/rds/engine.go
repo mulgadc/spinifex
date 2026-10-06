@@ -155,7 +155,7 @@ func engineForFamily(family string) (Engine, error) {
 	engine, ok := enginesByFamily[normaliseFamily(family)]
 	if !ok {
 		return Engine{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"DBParameterGroupFamily %q is not offered; supported families are %s",
+			"ParameterGroupFamily %s is not a valid parameter group family. Supported families: %s.",
 			family, strings.Join(SupportedParameterGroupFamilies(), ", "))
 	}
 	return engine, nil

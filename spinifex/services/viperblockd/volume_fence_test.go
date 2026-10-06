@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // stubExport starts a real process to stand in for nbdkit. The fence must
@@ -31,7 +32,15 @@ func stubExport(t *testing.T) int {
 	cmd := exec.Command("sleep", "300")
 	require.NoError(t, cmd.Start())
 	reaped := make(chan struct{})
-	go func() { defer close(reaped); _ = cmd.Wait() }()
+	go func() {
+		defer close(reaped)
+		// Observe the exit without reaping, then leave a zombie kill(pid,0) still
+		// reaches, so only a teardown that waited for the reap sees it gone.
+		var info unix.Siginfo
+		_ = unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		time.Sleep(50 * time.Millisecond)
+		_ = cmd.Wait()
+	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		<-reaped

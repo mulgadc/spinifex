@@ -403,7 +403,7 @@ func TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged(t *testing.T) {
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-referenced1", Socket: socket}
 	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonDuplicate), "a referenced orphan must never be signalled")
-	assert.True(t, utils.ProcessAlive(pid), "a referenced orphan must never be signalled")
+	assert.Never(t, func() bool { return !utils.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a referenced orphan must never be signalled")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "a live orphan's socket must not be removed")
 	assert.Contains(t, logs.String(), "left running deliberately")
@@ -425,7 +425,7 @@ func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *test
 
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-tcp1", Port: 10899}
 	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "a referenced orphan must never be signalled")
-	assert.True(t, utils.ProcessAlive(pid), "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
+	assert.Never(t, func() bool { return !utils.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
 }
 
 // unreadableProcDir creates procRoot/<pid> with a cmdline file inside, then
@@ -496,7 +496,7 @@ func TestReapOrphanedNbdkit_UnreadableCandidate_LeftRunningAndLogged(t *testing.
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-eacces1", Socket: socket}
 	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "an inconclusive scan must never result in a signal")
-	assert.True(t, utils.ProcessAlive(pid), "an inconclusive scan must never result in a signal")
+	assert.Never(t, func() bool { return !utils.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "an inconclusive scan must never result in a signal")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because the scan was inconclusive must keep its socket")
 	assert.Contains(t, logs.String(), "could not scan for processes")
@@ -568,7 +568,7 @@ func TestReapOrphanedNbdkit_HidepidInvisible_DeclinesEvenOnACleanScan(t *testing
 	logs := captureLogs(t)
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-hidepid1", Socket: socket}
 	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "hidepid=invisible must never be read as a clean scan")
-	assert.True(t, utils.ProcessAlive(pid), "hidepid=invisible must never be read as a clean 'no referencer' scan")
+	assert.Never(t, func() bool { return !utils.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "hidepid=invisible must never be read as a clean 'no referencer' scan")
 	_, err := os.Stat(socket)
 	assert.NoError(t, err, "an orphan left running because entries could be hidden must keep its socket")
 	assert.Contains(t, logs.String(), "hides other users' process entries")

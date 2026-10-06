@@ -309,6 +309,12 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 
 	cl := resp.ContentLength
 
+	// The bar and spinner write cursor escapes and per-write lines even with
+	// styling disabled, so plain output gets one start and one done line.
+	if pterm.RawOutput {
+		return downloadPlain(f, resp.Body, name, cl)
+	}
+
 	if cl > 0 {
 		total := safecast.Int64ToUint64(cl)
 		bar, update := NewByteProgressBar(fmt.Sprintf("Downloading %s", name), total)
@@ -350,6 +356,21 @@ func DownloadFileWithProgress(url string, name string, filename string, timeout 
 		}
 	}
 
+	return nil
+}
+
+func downloadPlain(dst io.Writer, src io.Reader, name string, contentLength int64) error {
+	size := "size unknown"
+	if contentLength > 0 {
+		size = HumanBytes(safecast.Int64ToUint64(contentLength))
+	}
+	pterm.Printfln("Downloading %s (%s) ...", name, size)
+
+	written, err := io.Copy(dst, src)
+	if err != nil {
+		return fmt.Errorf("copy error: %w", err)
+	}
+	pterm.Printfln("Downloaded %s (%s)", name, HumanBytes(safecast.Int64ToUint64(written)))
 	return nil
 }
 

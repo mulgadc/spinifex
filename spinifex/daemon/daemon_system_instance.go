@@ -16,10 +16,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -48,7 +48,7 @@ func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID str
 	if d.vpcService == nil || eniID == "" || instanceOwnerID == eniAccountID {
 		return
 	}
-	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *ec2vpc.ENIRecord) {
 		r.InstanceOwnerId = instanceOwnerID
 	}); err != nil {
 		slog.Warn("LaunchSystemInstance: failed to record ENI instance owner",
@@ -67,7 +67,7 @@ func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraE
 	if extra.DeleteOnTermination == nil {
 		return nil
 	}
-	if err := d.vpcService.UpdateENI(eniAccountID, extra.ENIID, func(r *handlers_ec2_vpc.ENIRecord) {
+	if err := d.vpcService.UpdateENI(eniAccountID, extra.ENIID, func(r *ec2vpc.ENIRecord) {
 		r.DeleteOnTermination = extra.DeleteOnTermination
 	}); err != nil {
 		return fmt.Errorf("set DeleteOnTermination on ENI %s: %w", extra.ENIID, err)
@@ -277,7 +277,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				region = d.config.Region
 				az = d.config.AZ
 			}
-			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(context.Background(), region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
+			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(context.Background(), region, az, ec2vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: failed to allocate public IP for internet-facing ALB", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)

@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	"github.com/nats-io/nats.go"
 )
 
@@ -15,7 +15,7 @@ func DescribeNatGateways(ctx context.Context, input *ec2.DescribeNatGatewaysInpu
 	if input == nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	svc := handlers_ec2_natgw.NewNATSNatGatewayService(natsConn)
+	svc := ec2natgw.NewNATSNatGatewayService(natsConn)
 	result, err := svc.DescribeNatGateways(ctx, input, accountID)
 	if err != nil {
 		return output, err

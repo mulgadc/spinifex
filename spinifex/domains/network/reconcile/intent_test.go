@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -47,16 +47,16 @@ func TestMatchesLocalAZ(t *testing.T) {
 func TestLoadIntentFromKV_AZFilter(t *testing.T) {
 	js := startKV(t)
 
-	localVPC := handlers_ec2_vpc.VPCRecord{
+	localVPC := ec2vpc.VPCRecord{
 		VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
 	}
-	foreignVPC := handlers_ec2_vpc.VPCRecord{
+	foreignVPC := ec2vpc.VPCRecord{
 		VpcId: "vpc-foreign", CidrBlock: "10.1.0.0/16", State: "available", VNI: 101, AZ: "us-east-1b", CreatedAt: time.Now(),
 	}
-	legacyVPC := handlers_ec2_vpc.VPCRecord{
+	legacyVPC := ec2vpc.VPCRecord{
 		VpcId: "vpc-legacy", CidrBlock: "10.2.0.0/16", State: "available", VNI: 102, CreatedAt: time.Now(),
 	}
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		"acct/" + localVPC.VpcId:   mustJSON(t, localVPC),
 		"acct/" + foreignVPC.VpcId: mustJSON(t, foreignVPC),
 		"acct/" + legacyVPC.VpcId:  mustJSON(t, legacyVPC),
@@ -81,20 +81,20 @@ func TestLoadIntentFromKV_AZFilter(t *testing.T) {
 func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
 		}),
-		"acct/vpc-foreign": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+		"acct/vpc-foreign": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-foreign", CidrBlock: "10.1.0.0/16", AZ: "us-east-1b", CreatedAt: time.Now(),
 		}),
 	})
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-local": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-local", VpcId: "vpc-local", CidrBlock: "10.0.1.0/24",
 		}),
-		"acct/subnet-foreign": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+		"acct/subnet-foreign": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-foreign", VpcId: "vpc-foreign", CidrBlock: "10.1.1.0/24",
 		}),
 	})
@@ -118,19 +118,19 @@ func TestLoadIntentFromKV_TransitiveSubnetFilter(t *testing.T) {
 func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-a": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-a": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
 		}),
 	})
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
-		"acct/eni-static": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-static": mustJSON(t, ec2vpc.ENIRecord{
 			NetworkInterfaceId: "eni-static", SubnetId: "subnet-a", VpcId: "vpc-a",
 			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 			SuppressDHCP: true, CreatedAt: time.Now(),
 		}),
-		"acct/eni-dhcp": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+		"acct/eni-dhcp": mustJSON(t, ec2vpc.ENIRecord{
 			NetworkInterfaceId: "eni-dhcp", SubnetId: "subnet-a", VpcId: "vpc-a",
 			PrivateIpAddress: "10.0.1.11", MacAddress: "02:00:00:00:00:02",
 			CreatedAt: time.Now(),
@@ -162,17 +162,17 @@ func TestLoadIntentFromKV_PortSuppressDHCP(t *testing.T) {
 func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
-		"acct/eipassoc-a": mustJSON(t, handlers_ec2_eip.EIPRecord{
+	testutil.SeedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
+		"acct/eipassoc-a": mustJSON(t, ec2eip.EIPRecord{
 			AllocationId: "eipalloc-a", PublicIp: "203.0.113.10", PrivateIp: "10.0.1.5",
 			VpcId: "vpc-local", State: "associated",
 		}),
-		"acct/eipassoc-b": mustJSON(t, handlers_ec2_eip.EIPRecord{
+		"acct/eipassoc-b": mustJSON(t, ec2eip.EIPRecord{
 			AllocationId: "eipalloc-b", PublicIp: "203.0.113.11", PrivateIp: "10.0.1.6",
 			VpcId: "vpc-local", State: "allocated", // not associated → excluded
 		}),
@@ -194,16 +194,16 @@ func TestLoadIntentFromKV_EIPStateFilter(t *testing.T) {
 func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
-		"acct/igw-attached": mustJSON(t, handlers_ec2_igw.IGWRecord{
+	testutil.SeedKV(t, js, ec2igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-attached": mustJSON(t, ec2igw.IGWRecord{
 			InternetGatewayId: "igw-attached", VpcId: "vpc-local", State: "available",
 		}),
-		"acct/igw-detached": mustJSON(t, handlers_ec2_igw.IGWRecord{
+		"acct/igw-detached": mustJSON(t, ec2igw.IGWRecord{
 			InternetGatewayId: "igw-detached", VpcId: "", State: "available",
 		}),
 	})
@@ -235,13 +235,13 @@ func TestLoadIntentFromKV_IGWAttachedFilter(t *testing.T) {
 func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
-		"acct/igw-pending": mustJSON(t, handlers_ec2_igw.IGWRecord{
+	testutil.SeedKV(t, js, ec2igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-pending": mustJSON(t, ec2igw.IGWRecord{
 			InternetGatewayId: "igw-pending", VpcId: "vpc-local",
 			State: "available", AttachState: "pending",
 		}),
@@ -269,28 +269,28 @@ func TestLoadIntentFromKV_PendingIGWStillEntersIntent(t *testing.T) {
 func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		"acct/subnet-pub":  mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
-		"acct/subnet-priv": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-priv", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20"}),
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-pub":  mustJSON(t, ec2vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
+		"acct/subnet-priv": mustJSON(t, ec2vpc.SubnetRecord{SubnetId: "subnet-priv", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20"}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
-		"acct/nat-1": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
+	testutil.SeedKV(t, js, ec2natgw.KVBucketNatGateways, map[string][]byte{
+		"acct/nat-1": mustJSON(t, ec2natgw.NatGatewayRecord{
 			NatGatewayId: "nat-1", VpcId: "vpc-local", SubnetId: "subnet-pub",
 			PublicIp: "203.0.113.50", State: "available",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
-		"acct/rtb-priv": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+	testutil.SeedKV(t, js, ec2routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-priv": mustJSON(t, ec2routetable.RouteTableRecord{
 			RouteTableId: "rtb-priv", VpcId: "vpc-local",
-			Routes: []handlers_ec2_routetable.RouteRecord{
+			Routes: []ec2routetable.RouteRecord{
 				{DestinationCidrBlock: "0.0.0.0/0", NatGatewayId: "nat-1", State: "active"},
 			},
-			Associations: []handlers_ec2_routetable.AssociationRecord{
+			Associations: []ec2routetable.AssociationRecord{
 				{AssociationId: "rtbassoc-x", SubnetId: "subnet-priv"},
 			},
 		}),
@@ -320,16 +320,16 @@ func TestLoadIntentFromKV_NATGWUsesAssociatedSubnet(t *testing.T) {
 func TestLoadIntentFromKV_NATGWNoAssociationSkips(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		"acct/subnet-pub": mustJSON(t, handlers_ec2_vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-pub": mustJSON(t, ec2vpc.SubnetRecord{SubnetId: "subnet-pub", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20"}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_natgw.KVBucketNatGateways, map[string][]byte{
-		"acct/nat-orphan": mustJSON(t, handlers_ec2_natgw.NatGatewayRecord{
+	testutil.SeedKV(t, js, ec2natgw.KVBucketNatGateways, map[string][]byte{
+		"acct/nat-orphan": mustJSON(t, ec2natgw.NatGatewayRecord{
 			NatGatewayId: "nat-orphan", VpcId: "vpc-local", SubnetId: "subnet-pub",
 			PublicIp: "203.0.113.51", State: "available",
 		}),
@@ -362,29 +362,29 @@ func TestLoadIntentFromKV_NoBucketsTolerated(t *testing.T) {
 func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		"acct/subnet-implicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-implicit": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-implicit", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
 		}),
-		"acct/subnet-explicit": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+		"acct/subnet-explicit": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-explicit", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
-		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+	testutil.SeedKV(t, js, ec2routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-main": mustJSON(t, ec2routetable.RouteTableRecord{
 			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
-			Routes: []handlers_ec2_routetable.RouteRecord{
+			Routes: []ec2routetable.RouteRecord{
 				{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1", State: "active"},
 			},
 		}),
-		"acct/rtb-explicit": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+		"acct/rtb-explicit": mustJSON(t, ec2routetable.RouteTableRecord{
 			RouteTableId: "rtb-explicit", VpcId: "vpc-local",
-			Associations: []handlers_ec2_routetable.AssociationRecord{
+			Associations: []ec2routetable.AssociationRecord{
 				{AssociationId: "rtbassoc-x", SubnetId: "subnet-explicit"},
 			},
 		}),
@@ -414,37 +414,37 @@ func TestLoadIntentFromKV_IGWRoutesFanOutMainRT(t *testing.T) {
 func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "172.31.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		"acct/subnet-routed": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-routed": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-routed", VpcId: "vpc-local", CidrBlock: "172.31.0.0/20",
 		}),
-		"acct/subnet-isolated": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+		"acct/subnet-isolated": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-isolated", VpcId: "vpc-local", CidrBlock: "172.31.16.0/20",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_igw.KVBucketIGW, map[string][]byte{
-		"acct/igw-1": mustJSON(t, handlers_ec2_igw.IGWRecord{
+	testutil.SeedKV(t, js, ec2igw.KVBucketIGW, map[string][]byte{
+		"acct/igw-1": mustJSON(t, ec2igw.IGWRecord{
 			InternetGatewayId: "igw-1", VpcId: "vpc-local", State: "available",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_routetable.KVBucketRouteTables, map[string][]byte{
-		"acct/rtb-main": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+	testutil.SeedKV(t, js, ec2routetable.KVBucketRouteTables, map[string][]byte{
+		"acct/rtb-main": mustJSON(t, ec2routetable.RouteTableRecord{
 			RouteTableId: "rtb-main", VpcId: "vpc-local", IsMain: true,
-			Associations: []handlers_ec2_routetable.AssociationRecord{
+			Associations: []ec2routetable.AssociationRecord{
 				{AssociationId: "rtbassoc-r", SubnetId: "subnet-routed"},
 			},
-			Routes: []handlers_ec2_routetable.RouteRecord{
+			Routes: []ec2routetable.RouteRecord{
 				{DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1", State: "active"},
 			},
 		}),
-		"acct/rtb-isolated": mustJSON(t, handlers_ec2_routetable.RouteTableRecord{
+		"acct/rtb-isolated": mustJSON(t, ec2routetable.RouteTableRecord{
 			RouteTableId: "rtb-isolated", VpcId: "vpc-local",
-			Associations: []handlers_ec2_routetable.AssociationRecord{
+			Associations: []ec2routetable.AssociationRecord{
 				{AssociationId: "rtbassoc-i", SubnetId: "subnet-isolated"},
 			},
 		}),
@@ -470,13 +470,13 @@ func TestLoadIntentFromKV_DropGatesForUnroutedSubnetWithIGW(t *testing.T) {
 func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-air-gapped": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-air-gapped": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-air-gapped", CidrBlock: "10.99.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSubnets, map[string][]byte{
-		"acct/subnet-local": mustJSON(t, handlers_ec2_vpc.SubnetRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+		"acct/subnet-local": mustJSON(t, ec2vpc.SubnetRecord{
 			SubnetId: "subnet-local", VpcId: "vpc-air-gapped", CidrBlock: "10.99.1.0/24",
 		}),
 	})
@@ -497,23 +497,23 @@ func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
 func TestLoadIntentFromKV_SGRuleFieldMapping(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-local": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-local": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-local", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a",
 		}),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketSecurityGroups, map[string][]byte{
-		"acct/sg-app": mustJSON(t, handlers_ec2_vpc.SecurityGroupRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSecurityGroups, map[string][]byte{
+		"acct/sg-app": mustJSON(t, ec2vpc.SecurityGroupRecord{
 			GroupId: "sg-app", GroupName: "app", VpcId: "vpc-local",
-			IngressRules: []handlers_ec2_vpc.SGRule{
+			IngressRules: []ec2vpc.SGRule{
 				{RuleId: "sgr-1", IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0"},
 				{RuleId: "sgr-2", IpProtocol: "tcp", FromPort: 5432, ToPort: 5432, SourceSG: "sg-db"},
 			},
-			EgressRules: []handlers_ec2_vpc.SGRule{
+			EgressRules: []ec2vpc.SGRule{
 				{RuleId: "sgr-3", IpProtocol: "-1", FromPort: -1, ToPort: -1, CidrIp: "0.0.0.0/0"},
 			},
 		}),
-		"acct/sg-empty": mustJSON(t, handlers_ec2_vpc.SecurityGroupRecord{
+		"acct/sg-empty": mustJSON(t, ec2vpc.SecurityGroupRecord{
 			GroupId: "sg-empty", GroupName: "empty", VpcId: "vpc-local",
 		}),
 	})
@@ -563,19 +563,19 @@ func TestLoadIntentFromKV_SGRuleFieldMapping(t *testing.T) {
 func TestLoadIntentFromKV_IdlePortsFromInstanceState(t *testing.T) {
 	js := startKV(t)
 
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
-		"acct/vpc-a": mustJSON(t, handlers_ec2_vpc.VPCRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+		"acct/vpc-a": mustJSON(t, ec2vpc.VPCRecord{
 			VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", AZ: "us-east-1a", CreatedAt: time.Now(),
 		}),
 	})
 	eni := func(id, ip, publicIP, instanceID string) []byte {
-		return mustJSON(t, handlers_ec2_vpc.ENIRecord{
+		return mustJSON(t, ec2vpc.ENIRecord{
 			NetworkInterfaceId: id, SubnetId: "subnet-a", VpcId: "vpc-a",
 			PrivateIpAddress: ip, MacAddress: "02:00:00:00:00:" + ip[len(ip)-2:],
 			PublicIpAddress: publicIP, InstanceId: instanceID, Status: "in-use", CreatedAt: time.Now(),
 		})
 	}
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketENIs, map[string][]byte{
 		"acct/eni-stopped": eni("eni-stopped", "10.0.1.11", "192.0.2.11", "i-stopped"),
 		"acct/eni-term":    eni("eni-term", "10.0.1.12", "192.0.2.12", "i-term"),
 		"acct/eni-drain":   eni("eni-drain", "10.0.1.13", "192.0.2.13", "i-drain"),
@@ -584,8 +584,8 @@ func TestLoadIntentFromKV_IdlePortsFromInstanceState(t *testing.T) {
 		"acct/eni-eip":     eni("eni-eip", "10.0.1.16", "", "i-eip"),
 		"acct/eni-private": eni("eni-private", "10.0.1.17", "", "i-private"),
 	})
-	testutil.SeedKV(t, js, handlers_ec2_eip.KVBucketEIPs, map[string][]byte{
-		"acct/eipassoc-a": mustJSON(t, handlers_ec2_eip.EIPRecord{
+	testutil.SeedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
+		"acct/eipassoc-a": mustJSON(t, ec2eip.EIPRecord{
 			AllocationId: "eipalloc-a", PublicIp: "203.0.113.16", PrivateIp: "10.0.1.16",
 			VpcId: "vpc-a", ENIId: "eni-eip", State: "associated",
 		}),
@@ -635,7 +635,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // address for it to match.
 func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 	t.Parallel()
-	out := sgRulesToPolicyRules([]handlers_ec2_vpc.SGRule{
+	out := sgRulesToPolicyRules([]ec2vpc.SGRule{
 		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
 		{IpProtocol: "-1", CidrIpv6: "::/0"},
 		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},
@@ -656,10 +656,10 @@ func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 func TestLoadIntentFromKV_PoisonRecordIsSkippedNotFatal(t *testing.T) {
 	js := startKV(t)
 
-	good := handlers_ec2_vpc.VPCRecord{
+	good := ec2vpc.VPCRecord{
 		VpcId: "vpc-good", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
 	}
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		"acct/vpc-good":   mustJSON(t, good),
 		"acct/vpc-poison": []byte("{not json"),
 	})
@@ -682,16 +682,16 @@ func TestLoadIntentFromKV_PoisonRecordIsSkippedNotFatal(t *testing.T) {
 func TestLoadIntentFromKV_ENIsFollowTheirVPC(t *testing.T) {
 	js := startKV(t)
 
-	vpc := handlers_ec2_vpc.VPCRecord{
+	vpc := ec2vpc.VPCRecord{
 		VpcId: "vpc-a", CidrBlock: "10.0.0.0/16", State: "available", VNI: 100, AZ: "us-east-1a", CreatedAt: time.Now(),
 	}
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketVPCs, map[string][]byte{"acct/vpc-a": mustJSON(t, vpc)})
-	testutil.SeedKV(t, js, handlers_ec2_vpc.KVBucketENIs, map[string][]byte{
-		"acct/eni-local": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{"acct/vpc-a": mustJSON(t, vpc)})
+	testutil.SeedKV(t, js, ec2vpc.KVBucketENIs, map[string][]byte{
+		"acct/eni-local": mustJSON(t, ec2vpc.ENIRecord{
 			NetworkInterfaceId: "eni-local", VpcId: "vpc-a", SubnetId: "subnet-a",
 			PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 		}),
-		"acct/eni-foreign": mustJSON(t, handlers_ec2_vpc.ENIRecord{
+		"acct/eni-foreign": mustJSON(t, ec2vpc.ENIRecord{
 			NetworkInterfaceId: "eni-foreign", VpcId: "vpc-absent", SubnetId: "subnet-z",
 			PrivateIpAddress: "10.9.1.10", MacAddress: "02:00:00:00:00:02",
 		}),

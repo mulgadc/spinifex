@@ -13,12 +13,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -761,7 +761,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	// known IP that the rollback must release back.
 	_, _, js := testutil.StartTestJetStream(t)
 
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
@@ -867,13 +867,13 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 
 	_, jsNC, js := testutil.StartTestJetStream(t)
 
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
 	d.externalIPAM = ipam
 
-	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService)
 	require.NoError(t, err)
 	d.eipService = eipSvc
 

@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	"github.com/nats-io/nats.go"
 )
 
@@ -25,7 +25,7 @@ func CreateRouteTable(ctx context.Context, input *ec2.CreateRouteTableInput, nat
 	if err := ValidateCreateRouteTableInput(input); err != nil {
 		return output, err
 	}
-	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
+	svc := ec2routetable.NewNATSRouteTableService(natsConn)
 	result, err := svc.CreateRouteTable(ctx, input, accountID)
 	if err != nil {
 		return output, err

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
@@ -30,7 +31,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
@@ -757,11 +757,11 @@ func launchService(cfg *Config) error {
 			return host.ListLocalPorts(ctx, host.NewExecRunner())
 		},
 		MarkIGWAttached: func(ctx context.Context, recordKey, vpcID string) error {
-			kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+			kv, err := js.KeyValue(ctx, ec2igw.KVBucketIGW)
 			if err != nil {
-				return fmt.Errorf("open %s: %w", handlers_ec2_igw.KVBucketIGW, err)
+				return fmt.Errorf("open %s: %w", ec2igw.KVBucketIGW, err)
 			}
-			return handlers_ec2_igw.MarkAttached(ctx, kv, recordKey, vpcID)
+			return ec2igw.MarkAttached(ctx, kv, recordKey, vpcID)
 		},
 	})
 	if err != nil {

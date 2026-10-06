@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go"
 )
 
@@ -31,7 +31,7 @@ func CreateSubnet(ctx context.Context, input *ec2.CreateSubnetInput, natsConn *n
 		return output, err
 	}
 
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.CreateSubnet(ctx, input, accountID)
 	if err != nil {
 		return output, err

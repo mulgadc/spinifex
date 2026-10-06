@@ -32,10 +32,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
@@ -1736,8 +1736,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			networkConfig.BootstrapVpcId = bootstrapVpcId
 			networkConfig.BootstrapSubnetId = bootstrapSubnetId
 			networkConfig.BootstrapIgwId = bootstrapIgwId
-			networkConfig.BootstrapCidr = handlers_ec2_vpc.DefaultVPCCidr
-			networkConfig.BootstrapSubnetCidr = handlers_ec2_vpc.DefaultSubnetCidr
+			networkConfig.BootstrapCidr = ec2vpc.DefaultVPCCidr
+			networkConfig.BootstrapSubnetCidr = ec2vpc.DefaultSubnetCidr
 		}
 
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
@@ -1856,8 +1856,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		BootstrapVpcId:      bootstrapVpcId,
 		BootstrapSubnetId:   bootstrapSubnetId,
 		BootstrapIgwId:      bootstrapIgwId,
-		BootstrapCidr:       handlers_ec2_vpc.DefaultVPCCidr,
-		BootstrapSubnetCidr: handlers_ec2_vpc.DefaultSubnetCidr,
+		BootstrapCidr:       ec2vpc.DefaultVPCCidr,
+		BootstrapSubnetCidr: ec2vpc.DefaultSubnetCidr,
 
 		GPUPassthrough: gpuPassthrough,
 		IPSecEnabled:   ipsecEnabled,
@@ -2946,7 +2946,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	// Create default VPC for the new account (belt-and-suspenders: daemon also
 	// does this via iam.account.created event, but daemon may not be running).
 	nodeConfig := cfg.Nodes[cfg.Node]
-	vpcSvc, vpcErr := handlers_ec2_vpc.NewVPCServiceImplWithNATS(ctx, &nodeConfig, nc)
+	vpcSvc, vpcErr := ec2vpc.NewVPCServiceImplWithNATS(ctx, &nodeConfig, nc)
 	if vpcErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC service: %v\n", vpcErr)
 	} else if _, vpcErr = vpcSvc.EnsureDefaultVPC(accountID); vpcErr != nil {

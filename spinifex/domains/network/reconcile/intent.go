@@ -11,15 +11,15 @@ import (
 	"slices"
 	"strings"
 
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -118,7 +118,7 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 func loadSubnetEgressRoutes(
 	localVPCs map[string]struct{},
 	subnets map[string]topology.SubnetSpec,
-	routeTables []handlers_ec2_routetable.RouteTableRecord,
+	routeTables []ec2routetable.RouteTableRecord,
 	igwOut, natgwOut map[string]SubnetEgressIntent,
 ) {
 	subnetsByVPC := make(map[string][]string, len(localVPCs))
@@ -235,7 +235,7 @@ func keyIsVersion(key string) bool { return key == kvutil.VersionKey }
 func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})
 
-	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketVPCs)
+	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketVPCs)
 	if err != nil {
 		slog.Debug("reconcile/intent: VPC bucket not available, skipping", "err", err)
 		return localVPCs, nil
@@ -259,7 +259,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		if err != nil {
 			return nil, fmt.Errorf("read VPC %s: %w", key, err)
 		}
-		var rec handlers_ec2_vpc.VPCRecord
+		var rec ec2vpc.VPCRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: VPC unmarshal failed", "key", key, "err", err)
 			continue
@@ -283,7 +283,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 }
 
 func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec) error {
-	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketSubnets)
+	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSubnets)
 	if err != nil {
 		slog.Debug("reconcile/intent: subnet bucket not available, skipping", "err", err)
 		return nil
@@ -303,7 +303,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 		if err != nil {
 			return fmt.Errorf("read subnet %s: %w", key, err)
 		}
-		var rec handlers_ec2_vpc.SubnetRecord
+		var rec ec2vpc.SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: subnet unmarshal failed", "key", key, "err", err)
 			continue
@@ -326,7 +326,7 @@ func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[stri
 }
 
 func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.SGSpec) error {
-	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketSecurityGroups)
+	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSecurityGroups)
 	if err != nil {
 		slog.Debug("reconcile/intent: SG bucket not available, skipping", "err", err)
 		return nil
@@ -346,7 +346,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 		if err != nil {
 			return fmt.Errorf("read security group %s: %w", key, err)
 		}
-		var rec handlers_ec2_vpc.SecurityGroupRecord
+		var rec ec2vpc.SecurityGroupRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: SG unmarshal failed", "key", key, "err", err)
 			continue
@@ -365,7 +365,7 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 }
 
 func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.PortSpec, instances map[string]string) error {
-	kv, err := js.KeyValue(ctx, handlers_ec2_vpc.KVBucketENIs)
+	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketENIs)
 	if err != nil {
 		slog.Debug("reconcile/intent: ENI bucket not available, skipping", "err", err)
 		return nil
@@ -385,7 +385,7 @@ func loadPorts(ctx context.Context, js jetstream.JetStream, localVPCs map[string
 		if err != nil {
 			return fmt.Errorf("read ENI %s: %w", key, err)
 		}
-		var rec handlers_ec2_vpc.ENIRecord
+		var rec ec2vpc.ENIRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: ENI unmarshal failed", "key", key, "err", err)
 			continue
@@ -482,7 +482,7 @@ func instanceHasNoTap(rec *vm.InstanceRecord) bool {
 }
 
 func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]external.IGWSpec) error {
-	kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+	kv, err := js.KeyValue(ctx, ec2igw.KVBucketIGW)
 	if err != nil {
 		slog.Debug("reconcile/intent: IGW bucket not available, skipping", "err", err)
 		return nil
@@ -502,7 +502,7 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		if err != nil {
 			return fmt.Errorf("read IGW %s: %w", key, err)
 		}
-		var rec handlers_ec2_igw.IGWRecord
+		var rec ec2igw.IGWRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: IGW unmarshal failed", "key", key, "err", err)
 			continue
@@ -517,14 +517,14 @@ func loadIGWs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 			VPCID:             rec.VpcId,
 			InternetGatewayID: rec.InternetGatewayId,
 			RecordKey:         key,
-			AttachPending:     rec.AttachState == handlers_ec2_igw.AttachStatePending,
+			AttachPending:     rec.AttachState == ec2igw.AttachStatePending,
 		}
 	}
 	return nil
 }
 
 func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]policy.EIPSpec) error {
-	kv, err := js.KeyValue(ctx, handlers_ec2_eip.KVBucketEIPs)
+	kv, err := js.KeyValue(ctx, ec2eip.KVBucketEIPs)
 	if err != nil {
 		slog.Debug("reconcile/intent: EIP bucket not available, skipping", "err", err)
 		return nil
@@ -544,7 +544,7 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 		if err != nil {
 			return fmt.Errorf("read EIP %s: %w", key, err)
 		}
-		var rec handlers_ec2_eip.EIPRecord
+		var rec ec2eip.EIPRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: EIP unmarshal failed", "key", key, "err", err)
 			continue
@@ -571,8 +571,8 @@ func loadEIPs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]
 }
 
 // loadRouteTables snapshots every local-VPC route table.
-func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) ([]handlers_ec2_routetable.RouteTableRecord, error) {
-	kv, err := js.KeyValue(ctx, handlers_ec2_routetable.KVBucketRouteTables)
+func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) ([]ec2routetable.RouteTableRecord, error) {
+	kv, err := js.KeyValue(ctx, ec2routetable.KVBucketRouteTables)
 	if err != nil {
 		slog.Debug("reconcile/intent: route table bucket not available, skipping", "err", err)
 		return nil, nil
@@ -584,7 +584,7 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 		}
 		return nil, fmt.Errorf("list route table keys: %w", err)
 	}
-	var out []handlers_ec2_routetable.RouteTableRecord
+	var out []ec2routetable.RouteTableRecord
 	for _, key := range keys {
 		if keyIsVersion(key) {
 			continue
@@ -593,7 +593,7 @@ func loadRouteTables(ctx context.Context, js jetstream.JetStream, localVPCs map[
 		if err != nil {
 			return nil, fmt.Errorf("read route table %s: %w", key, err)
 		}
-		var rec handlers_ec2_routetable.RouteTableRecord
+		var rec ec2routetable.RouteTableRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: route table unmarshal failed", "key", key, "err", err)
 			continue
@@ -618,10 +618,10 @@ func loadNATGWs(
 	js jetstream.JetStream,
 	localVPCs map[string]struct{},
 	subnets map[string]topology.SubnetSpec,
-	routeTables []handlers_ec2_routetable.RouteTableRecord,
+	routeTables []ec2routetable.RouteTableRecord,
 	out map[string]policy.NATGWSpec,
 ) error {
-	kv, err := js.KeyValue(ctx, handlers_ec2_natgw.KVBucketNatGateways)
+	kv, err := js.KeyValue(ctx, ec2natgw.KVBucketNatGateways)
 	if err != nil {
 		slog.Debug("reconcile/intent: NAT GW bucket not available, skipping", "err", err)
 		return nil
@@ -641,7 +641,7 @@ func loadNATGWs(
 		if err != nil {
 			return fmt.Errorf("read NAT gateway %s: %w", key, err)
 		}
-		var rec handlers_ec2_natgw.NatGatewayRecord
+		var rec ec2natgw.NatGatewayRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			slog.Warn("reconcile/intent: NAT GW unmarshal failed", "key", key, "err", err)
 			continue
@@ -658,7 +658,7 @@ func loadNATGWs(
 			if rt.VpcId != rec.VpcId {
 				continue
 			}
-			if !slices.ContainsFunc(rt.Routes, func(r handlers_ec2_routetable.RouteRecord) bool {
+			if !slices.ContainsFunc(rt.Routes, func(r ec2routetable.RouteRecord) bool {
 				return r.NatGatewayId == rec.NatGatewayId
 			}) {
 				continue
@@ -695,7 +695,7 @@ func loadNATGWs(
 // rule with no IPv4 source. The ACL builder is IPv4-only, and an IPv6 rule
 // reaching it carries an empty CIDR and an empty SourceSG, which is not a
 // narrower ACL but an unspecified one.
-func sgRulesToPolicyRules(in []handlers_ec2_vpc.SGRule) []policy.Rule {
+func sgRulesToPolicyRules(in []ec2vpc.SGRule) []policy.Rule {
 	if len(in) == 0 {
 		return nil
 	}

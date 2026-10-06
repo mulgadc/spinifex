@@ -27,12 +27,12 @@ const (
 	// writers, and each round has exactly one winner.
 	staticPoolCASRetries = 25
 
-	// purposeIGWLRP duplicates handlers/ec2/vpc.PurposeIGWLRP so the
+	// purposeIGWLRP duplicates domains/ec2/vpc.PurposeIGWLRP so the
 	// allocator can reserve the gateway slot without importing handlers.
 	// The string value is frozen by migration 002 — do not change it.
 	purposeIGWLRP = "igw-lrp"
 
-	// purposeEIP duplicates handlers/ec2/vpc.PurposeEIP, for the same reason
+	// purposeEIP duplicates domains/ec2/vpc.PurposeEIP, for the same reason
 	// and under the same freeze.
 	purposeEIP = "eip"
 )

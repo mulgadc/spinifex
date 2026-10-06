@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	"github.com/nats-io/nats.go"
 )
 
@@ -28,7 +28,7 @@ func ReleaseAddress(ctx context.Context, input *ec2.ReleaseAddressInput, natsCon
 		return output, err
 	}
 
-	svc := handlers_ec2_eip.NewNATSEIPService(natsConn)
+	svc := ec2eip.NewNATSEIPService(natsConn)
 	result, err := svc.ReleaseAddress(ctx, input, accountID)
 	if err != nil {
 		return output, err

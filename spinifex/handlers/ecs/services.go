@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -79,7 +79,7 @@ func newNATSEIPManager(nc *nats.Conn) *natsEIPManager {
 }
 
 func (m *natsEIPManager) AllocateAndAssociate(ctx context.Context, accountID, eniID string) (string, string, error) {
-	svc := handlers_ec2_eip.NewNATSEIPService(m.nc)
+	svc := ec2eip.NewNATSEIPService(m.nc)
 	alloc, err := svc.AllocateAddress(ctx, &ec2.AllocateAddressInput{Domain: aws.String("vpc")}, accountID)
 	if err != nil {
 		return "", "", err
@@ -99,7 +99,7 @@ func (m *natsEIPManager) AllocateAndAssociate(ctx context.Context, accountID, en
 }
 
 func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID string) error {
-	svc := handlers_ec2_eip.NewNATSEIPService(m.nc)
+	svc := ec2eip.NewNATSEIPService(m.nc)
 	// Disassociate first (VPC EIPs cannot be released while associated); the
 	// association ID is resolved from the allocation.
 	desc, err := svc.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{

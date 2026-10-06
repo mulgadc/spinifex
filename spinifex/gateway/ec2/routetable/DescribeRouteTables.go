@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	"github.com/nats-io/nats.go"
 )
 
@@ -15,7 +15,7 @@ func DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInpu
 	if input == nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	svc := handlers_ec2_routetable.NewNATSRouteTableService(natsConn)
+	svc := ec2routetable.NewNATSRouteTableService(natsConn)
 	result, err := svc.DescribeRouteTables(ctx, input, accountID)
 	if err != nil {
 		return output, err

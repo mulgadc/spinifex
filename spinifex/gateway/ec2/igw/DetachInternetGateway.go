@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	"github.com/nats-io/nats.go"
 )
 
@@ -31,7 +31,7 @@ func DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGateway
 		return output, err
 	}
 
-	svc := handlers_ec2_igw.NewNATSIGWService(natsConn)
+	svc := ec2igw.NewNATSIGWService(natsConn)
 	result, err := svc.DetachInternetGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err

@@ -25,7 +25,7 @@ func startVPCDEvents(t *testing.T) (*VPCDLite, *nats.Conn) {
 }
 
 // publishEvent marshals and fires a fire-and-forget vpc.* topology event, the
-// way handlers/ec2/vpc's publishVPCEvent/publishSubnetEvent do.
+// way domains/ec2/vpc's publishVPCEvent/publishSubnetEvent do.
 func publishEvent(t *testing.T, nc *nats.Conn, topic string, evt any) {
 	t.Helper()
 	payload, err := json.Marshal(evt)

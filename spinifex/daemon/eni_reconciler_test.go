@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +31,7 @@ func seedAttached(t *testing.T, f *eniHotPlugFixture, status string, slot int, a
 	t.Helper()
 	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, int64(slot))
 	require.NoError(t, err)
-	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *ec2vpc.ENIRecord) {
 		r.AttachmentStatus = status
 		r.HotPlugSlot = slot
 		r.DetachInFlight = detachInFlight
@@ -45,7 +45,7 @@ func seedAttached(t *testing.T, f *eniHotPlugFixture, status string, slot int, a
 	}
 }
 
-func eniStatus(t *testing.T, f *eniHotPlugFixture) handlers_ec2_vpc.ENIRecord {
+func eniStatus(t *testing.T, f *eniHotPlugFixture) ec2vpc.ENIRecord {
 	t.Helper()
 	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
 	require.NoError(t, err)

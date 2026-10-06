@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -78,7 +78,7 @@ func streamExists(t *testing.T, js jetstream.JetStream, name string) bool {
 // dropped vpc.* event would otherwise leave for the next scan.
 func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
-	kv := createIntentBucket(t, js, handlers_ec2_vpc.KVBucketVPCs)
+	kv := createIntentBucket(t, js, ec2vpc.KVBucketVPCs)
 	// The interval is long so a pass can only have come from the watch, and the
 	// floor is short so the write is not merely deferred behind it.
 	shrinkDriftTiming(t, time.Minute, time.Millisecond)
@@ -101,7 +101,7 @@ func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 // keeps a launch storm from turning a five-minute OVN scan into a running one.
 func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
-	kv := createIntentBucket(t, js, handlers_ec2_vpc.KVBucketENIs)
+	kv := createIntentBucket(t, js, ec2vpc.KVBucketENIs)
 	shrinkDriftTiming(t, time.Minute, 2*time.Second)
 
 	rec := &stubReconciler{outcomes: []error{nil}}
@@ -150,13 +150,13 @@ func TestIntentSource_DoesNotCreateMissingBuckets(t *testing.T) {
 // resync.
 func TestIntentSource_PicksUpABucketThatAppearsLater(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	createIntentBucket(t, js, handlers_ec2_vpc.KVBucketVPCs)
+	createIntentBucket(t, js, ec2vpc.KVBucketVPCs)
 
-	if got := bucketNames(t, js); len(got) != 1 || got[0] != handlers_ec2_vpc.KVBucketVPCs {
-		t.Fatalf("intentSource resolved %v, want just %s", got, handlers_ec2_vpc.KVBucketVPCs)
+	if got := bucketNames(t, js); len(got) != 1 || got[0] != ec2vpc.KVBucketVPCs {
+		t.Fatalf("intentSource resolved %v, want just %s", got, ec2vpc.KVBucketVPCs)
 	}
 
-	createIntentBucket(t, js, handlers_ec2_igw.KVBucketIGW)
+	createIntentBucket(t, js, ec2igw.KVBucketIGW)
 	got := bucketNames(t, js)
 	if len(got) != 2 {
 		t.Fatalf("intentSource resolved %v after a second bucket appeared, want both", got)
@@ -171,7 +171,7 @@ func bucketConstants(t *testing.T, path string) map[string]struct{} {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	out := map[string]struct{}{}
-	for _, m := range regexp.MustCompile(`handlers_ec2_\w+\.KVBucket\w+`).FindAllString(string(src), -1) {
+	for _, m := range regexp.MustCompile(`ec2\w+\.KVBucket\w+`).FindAllString(string(src), -1) {
 		out[m] = struct{}{}
 	}
 	return out

@@ -14,12 +14,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -48,10 +48,10 @@ const testPredastoreBucket = "integration-test-bucket"
 type DaemonLite struct {
 	Key             *ec2key.KeyServiceImpl
 	Tags            *handlers_ec2_tags.TagsServiceImpl
-	VPC             *handlers_ec2_vpc.VPCServiceImpl
-	RouteTable      *handlers_ec2_routetable.RouteTableServiceImpl
-	IGW             *handlers_ec2_igw.IGWServiceImpl
-	EIGW            *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
+	VPC             *ec2vpc.VPCServiceImpl
+	RouteTable      *ec2routetable.RouteTableServiceImpl
+	IGW             *ec2igw.IGWServiceImpl
+	EIGW            *ec2eigw.EgressOnlyIGWServiceImpl
 	AccountSettings *ec2account.AccountSettingsServiceImpl
 
 	// MemStore backs Key and Tags — exposed so a test can seed or inspect
@@ -117,16 +117,16 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	require.NoError(t, err, "tag store bucket")
 	tagsSvc := handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct VPC service")
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), cfg, nc)
+	rtbSvc, err := ec2routetable.NewRouteTableServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct route table service")
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), cfg, nc)
+	igwSvc, err := ec2igw.NewIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct IGW service")
 
-	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), cfg, nc)
+	eigwSvc, err := ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct EIGW service")
 
 	acctSettingsSvc, err := ec2account.NewAccountSettingsServiceImplWithNATS(t.Context(), cfg, nc)
@@ -145,7 +145,7 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 
 	// CreateVpc/EnsureDefaultVPC/DeleteVpc synchronously round-trip through
 	// vpcd (the OVN topology-translation daemon) to provision/tear down each
-	// VPC's default security group (handlers/ec2/vpc/security_group.go
+	// VPC's default security group (domains/ec2/vpc/security_group.go
 	// createDefaultSecurityGroupInternal/deleteSecurityGroupInternal ->
 	// requestSGEvent -> utils.RequestEvent). vpcd itself is out of scope for
 	// this tier (it's an external OVN process, not a key/tags/routetable/vpc

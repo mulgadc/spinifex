@@ -1,0 +1,1112 @@
+package igw
+
+import (
+	"context"
+	"encoding/json"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeGatePublisher records every PublishGateDecisionsForVPC invocation so
+// tests can assert the IGW handler fans out at attach / detach time.
+type fakeGatePublisher struct {
+	mu    sync.Mutex
+	calls []gateCall
+}
+
+type gateCall struct {
+	AccountID string
+	VpcID     string
+	DestCidr  string
+}
+
+func (p *fakeGatePublisher) PublishGateDecisionsForVPC(accountID, vpcID, destCidr string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, gateCall{accountID, vpcID, destCidr})
+}
+
+func (p *fakeGatePublisher) snapshot() []gateCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]gateCall, len(p.calls))
+	copy(out, p.calls)
+	return out
+}
+
+var _ GatePublisher = (*fakeGatePublisher)(nil)
+
+func setupTestIGWService(t *testing.T) (*IGWServiceImpl, *nats.Conn) {
+	t.Helper()
+	_, nc, js := testutil.StartTestJetStream(t)
+
+	// Create VPC KV bucket and register test VPCs so fail-closed ownership checks pass
+	vpcEntries := map[string][]byte{}
+	for _, vpcID := range []string{"vpc-test123", "vpc-other", "vpc-lifecycle", "vpc-event-test"} {
+		vpcEntries[kvutil.AccountKey(testAccountID, vpcID)] = []byte(`{"vpc_id":"` + vpcID + `","state":"available"}`)
+	}
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, vpcEntries)
+
+	svc, err := NewIGWServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+	return svc, nc
+}
+
+// confirmAttach stands in for the vpcd reconcile pass that observes the OVN
+// gateway come up. Without it an attach stays pending and reports no attachment.
+func confirmAttach(t *testing.T, svc *IGWServiceImpl, igwID, vpcID string) {
+	t.Helper()
+	require.NoError(t, MarkAttached(context.Background(), svc.igwKV, kvutil.AccountKey(testAccountID, igwID), vpcID))
+}
+
+func createTestIGW(t *testing.T, svc *IGWServiceImpl) string {
+	t.Helper()
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
+	require.NoError(t, err)
+	return *out.InternetGateway.InternetGatewayId
+}
+
+func TestCreateInternetGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.InternetGateway)
+	assert.Equal(t, "igw-", (*out.InternetGateway.InternetGatewayId)[:4])
+	// Should not have attachments when created
+	assert.Empty(t, out.InternetGateway.Attachments)
+	assert.Equal(t, testAccountID, aws.StringValue(out.InternetGateway.OwnerId))
+}
+
+func TestCreateInternetGateway_WithTags(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("internet-gateway"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String("Name"), Value: aws.String("my-igw")},
+					{Key: aws.String("Env"), Value: aws.String("test")},
+				},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.InternetGateway.Tags, 2)
+
+	// Verify tags persist through describe
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{out.InternetGateway.InternetGatewayId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Len(t, desc.InternetGateways[0].Tags, 2)
+}
+
+func TestCreateInternetGateway_TagsWrongResourceType(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("instance"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String("Name"), Value: aws.String("wrong-type")},
+				},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.InternetGateway.Tags)
+}
+
+func TestDeleteInternetGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	assert.ErrorContains(t, err, "InvalidInternetGatewayID.NotFound")
+}
+
+func TestDeleteInternetGateway_MissingID(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{}, testAccountID)
+	assert.ErrorContains(t, err, "MissingParameter")
+}
+
+func TestDeleteInternetGateway_EmptyID(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	_, err := svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String(""),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "MissingParameter")
+}
+
+func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	// Attach to a VPC
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Try to delete — should fail with DependencyViolation
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The internetGateway '"+igwID+"' has dependencies and cannot be deleted.")
+
+	// Attaching again names the gateway and the network it is on
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorResourceAlreadyAssociated, "resource "+igwID+" is already attached to network vpc-test123")
+}
+
+func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	createTestIGW(t, svc)
+
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String("igw-0000000000000dead")},
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
+
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-0000000000000dead"),
+	}, testAccountID)
+	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
+}
+
+func requireAWSError(t *testing.T, err error, code, message string) {
+	t.Helper()
+	got, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error %v carries no AWS code", err)
+	assert.Equal(t, code, got)
+	assert.Equal(t, message, msg)
+}
+
+func TestDescribeInternetGateways_All(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	createTestIGW(t, svc)
+	createTestIGW(t, svc)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 2)
+}
+
+func TestDescribeInternetGateways_ByID(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	createTestIGW(t, svc) // second one should be filtered out
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+	assert.Equal(t, testAccountID, aws.StringValue(desc.InternetGateways[0].OwnerId))
+}
+
+func TestDescribeInternetGateways_Empty(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, desc.InternetGateways)
+}
+
+func TestAttachInternetGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// The attach is only requested here; vpcd brings the OVN gateway up later,
+	// so AWS-faithfully there is no attachment to report yet.
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Empty(t, desc.InternetGateways[0].Attachments, "a pending attach must report no attachment: EC2 omits the attachment until it exists")
+
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	require.Len(t, desc.InternetGateways[0].Attachments, 1)
+	assert.Equal(t, "vpc-test123", *desc.InternetGateways[0].Attachments[0].VpcId)
+	assert.Equal(t, "available", *desc.InternetGateways[0].Attachments[0].State)
+}
+
+// AttachmentIntent is the seam every internal provisioning and teardown caller
+// uses, because they must see a requested attachment. Reading the AWS-facing
+// describe instead makes them create duplicate gateways and skip teardowns.
+func TestAttachmentIntent_SeesPendingAndConfirmedAlike(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	ctx := context.Background()
+
+	got, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	assert.Nil(t, got, "no attach requested yet")
+
+	_, err = svc.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got, err = svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, got, "a pending attach is still intent: missing it creates a second gateway")
+	assert.Equal(t, igwID, *got.InternetGatewayId)
+	require.Len(t, got.Attachments, 1)
+	assert.Equal(t, "vpc-test123", *got.Attachments[0].VpcId)
+
+	confirmAttach(t, svc, igwID, "vpc-test123")
+	got, err = svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, got, "a confirmed attachment is intent too")
+	assert.Equal(t, igwID, *got.InternetGatewayId)
+
+	_, err = svc.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got, err = svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	assert.Nil(t, got, "a detached gateway is no longer intent for that VPC")
+}
+
+// Scoped per account and per VPC: a gateway in another account or on another
+// VPC must not answer, or teardown detaches something it does not own.
+func TestAttachmentIntent_ScopedByAccountAndVPC(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	ctx := context.Background()
+
+	_, err := svc.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	got, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-other")
+	require.NoError(t, err)
+	assert.Nil(t, got, "another VPC must not match")
+
+	got, err = svc.AttachmentIntent(ctx, "000000009999", "vpc-test123")
+	require.NoError(t, err)
+	assert.Nil(t, got, "another account must not match")
+}
+
+// A record written before attach tracking existed has no AttachState. It must
+// still report its attachment rather than vanishing until the next drift pass.
+func TestDescribeInternetGateways_LegacyRecordReportsAttachment(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	key := kvutil.AccountKey(testAccountID, igwID)
+	entry, err := svc.igwKV.Get(context.Background(), key)
+	require.NoError(t, err)
+	var record IGWRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	record.VpcId = "vpc-test123"
+	record.AttachState = ""
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	_, err = svc.igwKV.Put(context.Background(), key, data)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	require.Len(t, desc.InternetGateways[0].Attachments, 1, "a record predating attach tracking must keep reporting its attachment")
+	assert.Equal(t, "vpc-test123", *desc.InternetGateways[0].Attachments[0].VpcId)
+}
+
+// A pending attach must not be reachable through the attachment filters either,
+// or a caller filtering on attachment.vpc-id sees a gateway that is not up.
+func TestDescribeInternetGateways_PendingAttachDoesNotMatchFilters(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	for _, f := range []*ec2.Filter{
+		{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
+		{Name: aws.String("attachment.state"), Values: []*string{aws.String("available")}},
+	} {
+		desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{f},
+		}, testAccountID)
+		require.NoError(t, err)
+		assert.Emptyf(t, desc.InternetGateways, "%s must not match a pending attach", *f.Name)
+	}
+
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 1, "the filter must match once the attachment is confirmed")
+}
+
+// MarkAttached is called on every pass, so it must not rewrite a record that is
+// already attached: the drift loop watches this bucket and would re-trigger.
+func TestMarkAttached_NoRewriteWhenAlreadyAttached(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	key := kvutil.AccountKey(testAccountID, igwID)
+	confirmAttach(t, svc, igwID, "vpc-test123")
+	first, err := svc.igwKV.Get(context.Background(), key)
+	require.NoError(t, err)
+
+	confirmAttach(t, svc, igwID, "vpc-test123")
+	second, err := svc.igwKV.Get(context.Background(), key)
+	require.NoError(t, err)
+
+	assert.Equal(t, first.Revision(), second.Revision(), "a second MarkAttached must not write, or every pass wakes the drift loop")
+}
+
+// A record key survives detach and re-attach, so a pass that converged the old
+// VPC must not confirm the new one: that reports an attachment to a VPC with no
+// gateway, and the confirmation is one-way.
+func TestMarkAttached_IgnoresAConfirmationForAnotherVPC(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	ctx := context.Background()
+
+	_, err := svc.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.AttachInternetGateway(ctx, &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-other"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// The in-flight pass converged vpc-test123, which is no longer the record's VPC.
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	desc, err := svc.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Empty(t, desc.InternetGateways[0].Attachments,
+		"a stale confirmation must not report vpc-other as attached: no gateway has come up for it")
+}
+
+// A detach clears the observed state, so a later re-attach starts pending again
+// rather than inheriting the previous attachment's confirmation.
+func TestDetachThenAttachStartsPending(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-other"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Empty(t, desc.InternetGateways[0].Attachments, "a re-attach must start pending, not inherit the previous confirmation")
+}
+
+func TestCreateAttachedInternetGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	ctx := context.Background()
+
+	created, err := svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-agreed", "vpc-test123")
+	require.NoError(t, err)
+	assert.True(t, created)
+
+	// A second node with the same agreed ID converges on the first gateway.
+	created, err = svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-agreed", "vpc-test123")
+	require.NoError(t, err)
+	assert.False(t, created)
+
+	igw, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, igw)
+	assert.Equal(t, "igw-agreed", aws.StringValue(igw.InternetGatewayId))
+
+	desc, err := svc.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 1)
+
+	_, err = svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-agreed", "vpc-other")
+	assert.ErrorContains(t, err, "Resource.AlreadyAssociated")
+
+	_, err = svc.CreateAttachedInternetGateway(ctx, testAccountID, "igw-novpc", "vpc-missing")
+	assert.ErrorContains(t, err, "InvalidVpcID.NotFound")
+}
+
+func TestCreateAttachedInternetGateway_AttachesDetachedGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	ctx := context.Background()
+	igwID := createTestIGW(t, svc)
+
+	created, err := svc.CreateAttachedInternetGateway(ctx, testAccountID, igwID, "vpc-test123")
+	require.NoError(t, err)
+	assert.False(t, created)
+
+	igw, err := svc.AttachmentIntent(ctx, testAccountID, "vpc-test123")
+	require.NoError(t, err)
+	require.NotNil(t, igw)
+	assert.Equal(t, igwID, aws.StringValue(igw.InternetGatewayId))
+}
+
+func TestAttachInternetGateway_NotFound(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-nonexistent"),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "InvalidInternetGatewayID.NotFound")
+}
+
+func TestAttachInternetGateway_AlreadyAttached(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Try attaching again — should fail
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-other"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "Resource.AlreadyAssociated")
+}
+
+func TestAttachInternetGateway_MissingParams(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		VpcId: aws.String("vpc-test123"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "MissingParameter")
+
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-test"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "MissingParameter")
+}
+
+func TestDetachInternetGateway(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	// Attach first
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Detach
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Verify detached
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Empty(t, desc.InternetGateways[0].Attachments)
+}
+
+func TestDetachInternetGateway_NotAttached(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "Gateway.NotAttached")
+}
+
+func TestDetachInternetGateway_WrongVPC(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Try detaching from wrong VPC
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-wrong"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "Gateway.NotAttached")
+}
+
+func TestDetachInternetGateway_NotFound(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-nonexistent"),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "InvalidInternetGatewayID.NotFound")
+}
+
+func TestDetachInternetGateway_MissingParams(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		VpcId: aws.String("vpc-test123"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "MissingParameter")
+
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-test"),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "MissingParameter")
+}
+
+func TestIGWLifecycle_CreateAttachDetachDelete(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+
+	// Create
+	igwID := createTestIGW(t, svc)
+
+	// Attach
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-lifecycle"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Cannot delete while attached
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+	}, testAccountID)
+	assert.ErrorContains(t, err, "DependencyViolation")
+
+	// Detach
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-lifecycle"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Now delete succeeds
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Verify gone
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, desc.InternetGateways)
+}
+
+func TestAttachInternetGateway_PublishesEvent(t *testing.T) {
+	svc, nc := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	// Subscribe to IGW attach events
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.igw-attach", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-event-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Verify event was published
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), igwID)
+		assert.Contains(t, string(msg.Data), "vpc-event-test")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for IGW attach event")
+	}
+}
+
+func TestDetachInternetGateway_PublishesEvent(t *testing.T) {
+	svc, nc := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	// Attach first
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-event-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Subscribe to IGW detach events
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.igw-detach", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-event-test"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Verify event was published
+	select {
+	case msg := <-eventCh:
+		assert.Contains(t, string(msg.Data), igwID)
+		assert.Contains(t, string(msg.Data), "vpc-event-test")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for IGW detach event")
+	}
+}
+
+func TestCreateInternetGateway_PublishesNoEvent(t *testing.T) {
+	svc, nc := setupTestIGWService(t)
+
+	// Subscribe to all vpc.* topics
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.>", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, testAccountID)
+	require.NoError(t, err)
+
+	// Verify no event was published
+	select {
+	case msg := <-eventCh:
+		t.Fatalf("unexpected event on topic %s", msg.Subject)
+	case <-time.After(200 * time.Millisecond):
+		// Expected — no event
+	}
+}
+
+// TestAttachInternetGateway_CrossAccountVPCRejected tests that attaching an IGW to another account's VPC is rejected.
+func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
+	svc, nc := setupTestIGWService(t)
+
+	// Add a VPC owned by testAccountID to the existing VPC bucket.
+	js := testutil.NewJetStream(t, nc)
+	vpcKV, err := js.KeyValue(t.Context(), ec2vpc.KVBucketVPCs)
+	require.NoError(t, err)
+
+	vpcID := "vpc-alpha123"
+	_, err = vpcKV.Put(t.Context(), kvutil.AccountKey(testAccountID, vpcID), []byte(`{"vpc_id":"vpc-alpha123","state":"available"}`))
+	require.NoError(t, err)
+
+	// Refresh service to pick up the VPC KV bucket
+	svc.vpcKV = vpcKV
+
+	// Create IGW owned by otherAccountID
+	otherAccount := "999999999999"
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{}, otherAccount)
+	require.NoError(t, err)
+	igwID := *out.InternetGateway.InternetGatewayId
+
+	// Other account tries to attach their IGW to testAccountID's VPC — should fail
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String(vpcID),
+	}, otherAccount)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "InvalidVpcID.NotFound")
+
+	// Owner attaches their own IGW to their own VPC — should succeed
+	ownIGW := createTestIGW(t, svc)
+	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(ownIGW),
+		VpcId:             aws.String(vpcID),
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestDescribeInternetGateways_FilterByIGWId(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	createTestIGW(t, svc)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID)}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+}
+
+func TestDescribeInternetGateways_FilterByAttachmentVpcId(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	createTestIGW(t, svc) // detached
+
+	// Attach first IGW
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+}
+
+func TestDescribeInternetGateways_FilterByAttachmentState(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	createTestIGW(t, svc) // detached, won't match
+
+	// Attach
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("attachment.state"), Values: []*string{aws.String("available")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+}
+
+func TestDescribeInternetGateways_FilterMultipleValues_OR(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID1 := createTestIGW(t, svc)
+	igwID2 := createTestIGW(t, svc)
+	createTestIGW(t, svc)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID1), aws.String(igwID2)}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 2)
+}
+
+func TestDescribeInternetGateways_FilterMultipleFilters_AND(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	createTestIGW(t, svc) // detached
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	// Match both
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID)}},
+			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-test123")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 1)
+
+	// Mismatch
+	desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String(igwID)}},
+			{Name: aws.String("attachment.vpc-id"), Values: []*string{aws.String("vpc-wrong")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, desc.InternetGateways)
+}
+
+func TestDescribeInternetGateways_FilterUnknownName_Error(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("bogus-filter"), Values: []*string{aws.String("x")}},
+		},
+	}, testAccountID)
+	assert.Error(t, err)
+}
+
+func TestDescribeInternetGateways_FilterWildcard(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String("igw-*")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.InternetGateways, 1)
+	assert.Equal(t, igwID, *desc.InternetGateways[0].InternetGatewayId)
+}
+
+func TestDescribeInternetGateways_FilterNoResults(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	createTestIGW(t, svc)
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("internet-gateway-id"), Values: []*string{aws.String("igw-nonexistent")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, desc.InternetGateways)
+}
+
+func TestDescribeInternetGateways_FilterByTag(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("internet-gateway"),
+				Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestIGW(t, svc) // untagged
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("tag:Env"), Values: []*string{aws.String("prod")}},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways, 1)
+	assert.Equal(t, *out.InternetGateway.InternetGatewayId, *desc.InternetGateways[0].InternetGatewayId)
+}
+
+func TestDescribeInternetGateways_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	out, err := svc.CreateInternetGateway(context.Background(), &ec2.CreateInternetGatewayInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("internet-gateway"),
+				Tags:         []*ec2.Tag{{Key: aws.String("Env"), Value: aws.String("prod")}},
+			},
+		},
+	}, testAccountID)
+	require.NoError(t, err)
+	createTestIGW(t, svc) // untagged
+
+	for _, tc := range []struct{ name, value string }{{"tag-key", "Env"}, {"tag-value", "prod"}} {
+		desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String(tc.value)}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		require.Len(t, desc.InternetGateways, 1, tc.name)
+		assert.Equal(t, *out.InternetGateway.InternetGatewayId, *desc.InternetGateways[0].InternetGatewayId, tc.name)
+
+		desc, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+			Filters: []*ec2.Filter{{Name: aws.String(tc.name), Values: []*string{aws.String("zz-awsdiff-none")}}},
+		}, testAccountID)
+		require.NoError(t, err, tc.name)
+		assert.Empty(t, desc.InternetGateways, tc.name)
+	}
+}
+
+func TestDeleteInternetGateway_PublishesNoEvent(t *testing.T) {
+	svc, nc := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	// Subscribe to all vpc.* topics
+	eventCh := make(chan *nats.Msg, 1)
+	sub, err := nc.Subscribe("vpc.>", func(msg *nats.Msg) {
+		eventCh <- msg
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Verify no event was published
+	select {
+	case msg := <-eventCh:
+		t.Fatalf("unexpected event on topic %s", msg.Subject)
+	case <-time.After(200 * time.Millisecond):
+		// Expected — no event
+	}
+}
+
+// TestAttachInternetGateway_NoGateFanOut verifies that IGW attach skips gate
+// fan-out to avoid racing the bootstrap CreateRoute path.
+func TestAttachInternetGateway_NoGateFanOut(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	pub := &fakeGatePublisher{}
+	svc.SetGatePublisher(pub)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	assert.Empty(t, pub.snapshot(), "attach must not fan out gate decisions")
+}
+
+func TestDetachInternetGateway_FanOutsGateDecisionsForVPC(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	// Wire publisher AFTER attach so detach is the only fan-out we observe.
+	pub := &fakeGatePublisher{}
+	svc.SetGatePublisher(pub)
+
+	_, err = svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	calls := pub.snapshot()
+	require.Len(t, calls, 1, "expected one gate fan-out call on detach")
+	assert.Equal(t, testAccountID, calls[0].AccountID)
+	assert.Equal(t, "vpc-test123", calls[0].VpcID)
+	assert.Equal(t, "0.0.0.0/0", calls[0].DestCidr)
+}
+
+func TestAttachInternetGateway_NoGatePublisher_NoOp(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+
+	// Default state — gatePublisher nil. Must not panic.
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestDescribeInternetGateways_PagingValidation(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+
+	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		MaxResults: aws.Int64(5), InternetGatewayIds: []*string{aws.String("igw-0123456789abcdef0")},
+	}, testAccountID)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterCombination, code)
+	assert.Equal(t, "The parameter InternetGatewayIds cannot be used with the parameter MaxResults", message)
+
+	_, err = svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		NextToken: aws.String("garbage"),
+	}, testAccountID)
+	code, _, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+}

@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
@@ -50,7 +50,7 @@ type eipDisassociator interface {
 // Cluster-wide rather than node-local: neither shape has a live instance, so no
 // node owns it, and nothing local would ever look at it again.
 type eniOrphanReaper struct {
-	vpc       *handlers_ec2_vpc.VPCServiceImpl
+	vpc       *ec2vpc.VPCServiceImpl
 	instances instanceIndex
 	eip       eipDisassociator
 	minAge    time.Duration
@@ -201,7 +201,7 @@ func (r *eniOrphanReaper) sweepStaleAttachments(ctx context.Context) (int, error
 // reapStale frees one zombie ENI, reporting whether the record is settled. An
 // interface the owner asked to keep is detached rather than deleted, matching
 // what terminate does with the same flag.
-func (r *eniOrphanReaper) reapStale(ctx context.Context, candidate handlers_ec2_vpc.AccountENI) bool {
+func (r *eniOrphanReaper) reapStale(ctx context.Context, candidate ec2vpc.AccountENI) bool {
 	if keep := candidate.Record.DeleteOnTermination; keep != nil && !*keep {
 		return r.detachStale(ctx, candidate)
 	}
@@ -231,7 +231,7 @@ func (r *eniOrphanReaper) reapStale(ctx context.Context, candidate handlers_ec2_
 // detachStale clears a dead instance off an ENI that was asked to outlive it —
 // an RDS endpoint, a customer's reserved address. Detaching takes the record
 // out of the sweep's reach and leaves the interface, and its EIP, in place.
-func (r *eniOrphanReaper) detachStale(ctx context.Context, candidate handlers_ec2_vpc.AccountENI) bool {
+func (r *eniOrphanReaper) detachStale(ctx context.Context, candidate ec2vpc.AccountENI) bool {
 	eniID := candidate.Record.NetworkInterfaceId
 	slog.InfoContext(ctx, "eni-orphan: detaching keep-on-terminate ENI whose instance no longer exists",
 		"eniId", eniID,

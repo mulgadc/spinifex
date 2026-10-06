@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go"
 )
 
@@ -22,11 +22,11 @@ func ModifySecurityGroupRules(ctx context.Context, input *ec2.ModifySecurityGrou
 	// Only the malformed half is decidable here; whether a well-formed ID
 	// exists is the handler's to answer.
 	for _, u := range input.SecurityGroupRules {
-		if u != nil && u.SecurityGroupRuleId != nil && handlers_ec2_vpc.SGRuleIDIsMalformed(*u.SecurityGroupRuleId) {
+		if u != nil && u.SecurityGroupRuleId != nil && ec2vpc.SGRuleIDIsMalformed(*u.SecurityGroupRuleId) {
 			return output, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 		}
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.ModifySecurityGroupRules(ctx, input, accountID)
 	if err != nil {
 		return output, err

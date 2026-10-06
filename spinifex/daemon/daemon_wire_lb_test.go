@@ -6,7 +6,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
@@ -220,7 +220,7 @@ func newSubscribeTestDaemon(t *testing.T, nc *nats.Conn, gatewayURL, accessKey s
 		// subscribeAll now binds d.eipService.Method eagerly; production always
 		// sets the disabled stub when EIP is unconfigured, so mirror that here to
 		// avoid a nil-interface method-value panic while building the table.
-		eipService: handlers_ec2_eip.NewDisabledEIPService(),
+		eipService: ec2eip.NewDisabledEIPService(),
 	}
 }
 

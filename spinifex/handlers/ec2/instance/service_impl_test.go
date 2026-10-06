@@ -20,9 +20,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
@@ -3811,7 +3811,7 @@ func TestPrepareRunInstances_PublicIPWithoutAllocator(t *testing.T) {
 		name string
 		ipam PublicIPAllocator
 	}{
-		{name: "typed_nil_external_ipam", ipam: (*handlers_ec2_vpc.ExternalIPAM)(nil)},
+		{name: "typed_nil_external_ipam", ipam: (*ec2vpc.ExternalIPAM)(nil)},
 		{name: "no_allocator_wired", ipam: nil},
 	}
 	for _, tc := range cases {

@@ -8,8 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -242,7 +242,7 @@ func TestCreateLoadBalancer_AsyncDefersFrontendIP(t *testing.T) {
 
 // setupSubnetTestService wires a VPC-backed ELBv2 service with a launcher mock
 // so SetSubnets can exercise ENI create/delete plus the LB-VM relaunch.
-func setupSubnetTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, *mockSystemInstanceLauncher) {
+func setupSubnetTestService(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl, *mockSystemInstanceLauncher) {
 	t.Helper()
 	svc, vpcSvc := setupTestServiceWithVPC(t)
 	mock := &mockSystemInstanceLauncher{
@@ -255,7 +255,7 @@ func setupSubnetTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.
 	return svc, vpcSvc, mock
 }
 
-func countManagedENIs(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) int {
+func countManagedENIs(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl) int {
 	t.Helper()
 	out, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
@@ -268,7 +268,7 @@ func countManagedENIs(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) int
 	return n
 }
 
-func vpcID(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) string {
+func vpcID(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl) string {
 	t.Helper()
 	vpcs, err := vpcSvc.DescribeVpcs(context.Background(), &ec2.DescribeVpcsInput{}, testAccountID)
 	require.NoError(t, err)

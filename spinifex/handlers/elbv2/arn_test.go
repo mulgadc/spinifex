@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,12 +100,12 @@ func TestSubnetGatewayIP(t *testing.T) {
 
 // setupMicrovmTestService creates an ELBv2 service wired to a real VPC
 // service. The VPC has one subnet (10.0.1.0/24) pre-created.
-func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, string) {
+func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl, string) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	cfg := &config.Config{

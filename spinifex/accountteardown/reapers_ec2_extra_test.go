@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +42,7 @@ func (f *fakeSpot) CancelSpotInstanceRequests(_ context.Context, in *ec2.CancelS
 }
 
 type fakeNatGateways struct {
-	handlers_ec2_natgw.NatGatewayService
+	ec2natgw.NatGatewayService
 
 	gateways []*ec2.NatGateway
 	deleted  []string
@@ -62,7 +62,7 @@ func (f *fakeNatGateways) DeleteNatGateway(_ context.Context, in *ec2.DeleteNatG
 }
 
 type fakeEgressGateways struct {
-	handlers_ec2_eigw.EgressOnlyIGWService
+	ec2eigw.EgressOnlyIGWService
 
 	gateways []*ec2.EgressOnlyInternetGateway
 	deleted  []string

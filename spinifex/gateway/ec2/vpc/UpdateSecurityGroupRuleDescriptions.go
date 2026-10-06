@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go"
 )
 
@@ -14,7 +14,7 @@ import (
 // crosses NATS so a malformed ID never reaches the handler.
 func validateSGRuleDescriptions(descriptions []*ec2.SecurityGroupRuleDescription) error {
 	for _, d := range descriptions {
-		if d == nil || d.SecurityGroupRuleId == nil || !handlers_ec2_vpc.SGRuleIDRegex.MatchString(*d.SecurityGroupRuleId) {
+		if d == nil || d.SecurityGroupRuleId == nil || !ec2vpc.SGRuleIDRegex.MatchString(*d.SecurityGroupRuleId) {
 			return errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 		}
 	}
@@ -32,7 +32,7 @@ func UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.
 	if err := validateSGRuleDescriptions(input.SecurityGroupRuleDescriptions); err != nil {
 		return output, err
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.UpdateSecurityGroupRuleDescriptionsIngress(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -51,7 +51,7 @@ func UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.U
 	if err := validateSGRuleDescriptions(input.SecurityGroupRuleDescriptions); err != nil {
 		return output, err
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.UpdateSecurityGroupRuleDescriptionsEgress(ctx, input, accountID)
 	if err != nil {
 		return output, err

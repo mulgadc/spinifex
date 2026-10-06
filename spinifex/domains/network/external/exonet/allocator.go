@@ -31,7 +31,7 @@ import (
 // who made one, and Reconcile never touches an EIP without our marker.
 const MarkerPrefix = "spinifex:"
 
-// purposeEIP duplicates handlers/ec2/vpc.PurposeEIP so the allocator can tell
+// purposeEIP duplicates domains/ec2/vpc.PurposeEIP so the allocator can tell
 // an Elastic IP from an auto-assigned address without importing handlers.
 const purposeEIP = "eip"
 

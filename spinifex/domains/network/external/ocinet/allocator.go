@@ -44,7 +44,7 @@ import (
 // where whoever is wondering what created an address will actually look.
 const DisplayNamePrefix = "spinifex-"
 
-// purposeEIP duplicates handlers/ec2/vpc.PurposeEIP so the allocator can tell
+// purposeEIP duplicates domains/ec2/vpc.PurposeEIP so the allocator can tell
 // an Elastic IP from an auto-assigned address without importing handlers.
 const purposeEIP = "eip"
 

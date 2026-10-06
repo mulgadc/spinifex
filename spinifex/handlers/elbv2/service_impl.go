@@ -22,13 +22,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
@@ -106,7 +106,7 @@ type ELBv2ServiceImpl struct {
 	store            *Store
 	acmStore         *acmdomain.Store                       // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
 	nc               *nats.Conn                             // NATS connection for JetStream KV store
-	VPCService       *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
+	VPCService       *ec2vpc.VPCServiceImpl                 // nil-safe: ENI ops skipped when nil (e.g. in tests)
 	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
 	IAM              handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
 	// IAMProvider lazily resolves the IAM ensurer at launch time so it cannot

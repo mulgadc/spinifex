@@ -11,9 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,15 +50,15 @@ func createDefaultVPCTestDaemons(t *testing.T, n int) []*Daemon {
 func wireDefaultVPCServices(t *testing.T, daemon *Daemon, nc *nats.Conn) *Daemon {
 	t.Helper()
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
+	igwSvc, err := ec2igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.igwService = igwSvc
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
+	rtbSvc, err := ec2routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 

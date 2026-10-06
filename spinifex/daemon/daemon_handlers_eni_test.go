@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -298,7 +298,7 @@ func attachedFixture(t *testing.T) (*eniHotPlugFixture, string) {
 	f := newENIHotPlugFixture(t)
 	attachID, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
 	require.NoError(t, err)
-	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *ec2vpc.ENIRecord) {
 		r.AttachmentStatus = "attached"
 		r.HotPlugSlot = 1
 	}))

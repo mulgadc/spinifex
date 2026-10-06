@@ -35,20 +35,20 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
@@ -4512,15 +4512,15 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		{name: "imageService", set: func(d *Daemon) { d.imageService = &handlers_ec2_image.ImageServiceImpl{} }, wantMsg: "imageService"},
 		{name: "snapshotService", set: func(d *Daemon) { d.snapshotService = &handlers_ec2_snapshot.SnapshotServiceImpl{} }, wantMsg: "snapshotService"},
 		{name: "volumeService", set: func(d *Daemon) { d.volumeService = &handlers_ec2_volume.VolumeServiceImpl{} }, wantMsg: "volumeService"},
-		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &handlers_ec2_eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
-		{name: "igwService", set: func(d *Daemon) { d.igwService = &handlers_ec2_igw.IGWServiceImpl{} }, wantMsg: "igwService"},
+		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &ec2eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
+		{name: "igwService", set: func(d *Daemon) { d.igwService = &ec2igw.IGWServiceImpl{} }, wantMsg: "igwService"},
 		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &ec2placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
 		{name: "spotInstanceService", set: func(d *Daemon) { d.spotInstanceService = &ec2spotinstance.SpotInstanceServiceImpl{} }, wantMsg: "spotInstanceService"},
-		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
-		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &handlers_ec2_routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
-		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &handlers_ec2_natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
-		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &handlers_ec2_vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
-		{name: "eipService", set: func(d *Daemon) { d.eipService = &handlers_ec2_eip.EIPServiceImpl{} }, wantMsg: "eipService"},
+		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &ec2vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
+		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &ec2routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
+		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &ec2natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
+		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &ec2vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
+		{name: "eipService", set: func(d *Daemon) { d.eipService = &ec2eip.EIPServiceImpl{} }, wantMsg: "eipService"},
 		{name: "accountService", set: func(d *Daemon) { d.accountService = &ec2account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},
 		{name: "elbv2Service", set: func(d *Daemon) { d.elbv2Service = &handlers_elbv2.ELBv2ServiceImpl{} }, wantMsg: "elbv2Service"},
 	}

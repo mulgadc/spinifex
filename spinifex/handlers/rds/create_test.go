@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -81,7 +81,7 @@ func (f *fakeNetwork) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInp
 	if input != nil {
 		f.vpcFilters = append(f.vpcFilters, input.Filters...)
 		for _, filter := range input.Filters {
-			if name := aws.StringValue(filter.Name); !handlers_ec2_vpc.SupportsDescribeVpcsFilter(name) {
+			if name := aws.StringValue(filter.Name); !ec2vpc.SupportsDescribeVpcsFilter(name) {
 				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 			}
 		}

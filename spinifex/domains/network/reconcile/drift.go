@@ -7,14 +7,14 @@ import (
 	"log/slog"
 	"time"
 
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	loop "github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -38,14 +38,14 @@ const driftBackoffFactor = 3
 // write a pass makes is confirming an IGW attachment, which fires only on the
 // pending transition and so costs one extra pass per attach, not a cycle.
 var intentBuckets = []string{
-	handlers_ec2_vpc.KVBucketVPCs,
-	handlers_ec2_vpc.KVBucketSubnets,
-	handlers_ec2_vpc.KVBucketSecurityGroups,
-	handlers_ec2_vpc.KVBucketENIs,
-	handlers_ec2_igw.KVBucketIGW,
-	handlers_ec2_eip.KVBucketEIPs,
-	handlers_ec2_routetable.KVBucketRouteTables,
-	handlers_ec2_natgw.KVBucketNatGateways,
+	ec2vpc.KVBucketVPCs,
+	ec2vpc.KVBucketSubnets,
+	ec2vpc.KVBucketSecurityGroups,
+	ec2vpc.KVBucketENIs,
+	ec2igw.KVBucketIGW,
+	ec2eip.KVBucketEIPs,
+	ec2routetable.KVBucketRouteTables,
+	ec2natgw.KVBucketNatGateways,
 }
 
 // intentSource watches the intent buckets. Enumerated rather than fixed so a

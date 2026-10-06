@@ -27,12 +27,12 @@ import (
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -845,7 +845,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		if input.SubnetId != nil && *input.SubnetId != "" && s.eniCreator != nil {
 			eniOut, eniErr := s.eniCreator.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 				SubnetId:         input.SubnetId,
-				Description:      aws.String(handlers_ec2_vpc.AutoENIDescriptionPrefix + instance.ID),
+				Description:      aws.String(ec2vpc.AutoENIDescriptionPrefix + instance.ID),
 				Groups:           input.SecurityGroupIds,
 				PrivateIpAddress: input.PrivateIpAddress,
 			}, accountID)
@@ -2950,7 +2950,7 @@ func (s *InstanceServiceImpl) allocatePublicIP(ctx context.Context, eniID, insta
 		region = s.config.Region
 		az = s.config.AZ
 	}
-	return s.ipAllocator.AllocateIP(ctx, region, az, handlers_ec2_vpc.PurposeENIPublic, "", eniID, instanceID)
+	return s.ipAllocator.AllocateIP(ctx, region, az, ec2vpc.PurposeENIPublic, "", eniID, instanceID)
 }
 
 // reassignAutoAssignedPublicIP gives a starting instance the fresh address AWS

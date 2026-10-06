@@ -25,20 +25,20 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -2322,11 +2322,11 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
+	igwSvc, err := ec2igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.igwService = igwSvc
 
@@ -2345,13 +2345,13 @@ func TestEnsureDefaultVPCInfrastructure_PendingAttachIsNotReDone(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
+	igwSvc, err := ec2igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.igwService = igwSvc
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
+	rtbSvc, err := ec2routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 
@@ -2630,7 +2630,7 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 	// Create an isolated JetStream NATS server for the EIGW service
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
+	eigwSvc, err := ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.eigwService = eigwSvc
 
@@ -3509,12 +3509,12 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 
 	_, nc, js := testutil.StartTestJetStream(t)
 
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "test-pool", RangeStart: "192.168.100.2", RangeEnd: "192.168.100.254", Gateway: "192.168.100.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
 
-	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 
@@ -3641,7 +3641,7 @@ func TestDelegateHandlers_RouteTable(t *testing.T) {
 	// Route table service needs its own JetStream for KV buckets
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
+	rtbSvc, err := ec2routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 

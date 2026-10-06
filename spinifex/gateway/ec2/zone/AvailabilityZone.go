@@ -6,9 +6,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	filterutil "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 )
 
 // The filter names AWS accepts on each call; any other, tag filters included,
@@ -45,7 +45,7 @@ func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region
 		OptInStatus:        aws.String("opt-in-not-required"),
 		RegionName:         aws.String(region),
 		ZoneName:           aws.String(az),
-		ZoneId:             aws.String(handlers_ec2_vpc.SingleZoneID),
+		ZoneId:             aws.String(ec2vpc.SingleZoneID),
 		GroupName:          aws.String(region),
 		NetworkBorderGroup: aws.String(region),
 		ZoneType:           aws.String("availability-zone"),
@@ -59,7 +59,7 @@ func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region
 		}
 	}
 	for _, id := range aws.StringValueSlice(input.ZoneIds) {
-		if id != handlers_ec2_vpc.SingleZoneID {
+		if id != ec2vpc.SingleZoneID {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Invalid availability zone-id: [%s]", id)
 		}
 	}

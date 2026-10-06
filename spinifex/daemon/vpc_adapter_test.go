@@ -7,7 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +47,7 @@ func TestDaemonENICreator_GetENI_DeleteOnTerminationMapping(t *testing.T) {
 			eniID := *eniOut.NetworkInterface.NetworkInterfaceId
 
 			if tt.dot != nil {
-				require.NoError(t, d.vpcService.UpdateENI(testAccountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+				require.NoError(t, d.vpcService.UpdateENI(testAccountID, eniID, func(r *ec2vpc.ENIRecord) {
 					r.DeleteOnTermination = tt.dot
 				}))
 			}
@@ -103,7 +103,7 @@ func TestDaemonENICreator_ListInstanceENIs_KVError(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 

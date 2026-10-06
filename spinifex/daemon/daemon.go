@@ -43,11 +43,17 @@ import (
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
@@ -60,17 +66,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
 	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
 	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -134,7 +134,7 @@ type ResourceManager struct {
 
 // Compile-time guarantee that the RouteTable service satisfies the IGW
 // handler's GatePublisher hook — the two services are wired together below.
-var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServiceImpl)(nil)
+var _ ec2igw.GatePublisher = (*ec2routetable.RouteTableServiceImpl)(nil)
 
 // Daemon represents the main daemon service.
 type Daemon struct {
@@ -156,13 +156,13 @@ type Daemon struct {
 	accountService        *ec2account.AccountSettingsServiceImpl
 	snapshotService       *handlers_ec2_snapshot.SnapshotServiceImpl
 	tagsService           *handlers_ec2_tags.TagsServiceImpl
-	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
-	igwService            *handlers_ec2_igw.IGWServiceImpl
+	eigwService           *ec2eigw.EgressOnlyIGWServiceImpl
+	igwService            *ec2igw.IGWServiceImpl
 	placementGroupService *ec2placementgroup.PlacementGroupServiceImpl
 	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
-	vpcService            *handlers_ec2_vpc.VPCServiceImpl
-	eipService            handlers_ec2_eip.EIPService
+	vpcService            *ec2vpc.VPCServiceImpl
+	eipService            ec2eip.EIPService
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
@@ -177,9 +177,9 @@ type Daemon struct {
 	ochreAppliance        *ochrevector.Appliance
 	ochreBackupService    *ochrevector.BackupService
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
-	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
-	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
-	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
+	routeTableService     *ec2routetable.RouteTableServiceImpl
+	natGatewayService     *ec2natgw.NatGatewayServiceImpl
+	externalIPAM          *ec2vpc.ExternalIPAM
 	// ociAllocators is every source="oci" pool on this node. Written once during
 	// startup, before anything reads it.
 	ociAllocators []ociPool
@@ -1283,7 +1283,7 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.node, d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
 		// Fan-out, no queue group: the association has to reach the node running
 		// the instance, which is rarely the one that served the request.
-		natsSub{handlers_ec2_eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
+		natsSub{ec2eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
 		// vpcd holds the leases, but the records naming those addresses live
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
@@ -1495,7 +1495,7 @@ func (d *Daemon) ovnSBAddr() string {
 // record, so a crash in between leaves a reserved public IP that bills and
 // holds one of the 50 per-region slots with nothing referencing it, and this
 // pass is the only thing that ever finds it.
-func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
 	for _, p := range ipam.PoolsWithSource(external.SourceOCI) {
 		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
 		if err != nil {
@@ -1527,7 +1527,7 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 // and reconciles it before it serves. As with OCI, Allocate creates the EIP
 // before recording it, and this pass is the only thing that finds one a crash
 // left behind — on a five-EIP quota, one leak is a fifth of the capacity.
-func (d *Daemon) installExoscaleAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+func (d *Daemon) installExoscaleAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
 	for _, p := range ipam.PoolsWithSource(external.SourceExoscale) {
 		alloc, err := exonet.FromPoolConfig(d.ctx, js, p)
 		if err != nil {
@@ -1796,15 +1796,15 @@ func (d *Daemon) startCluster() error {
 	// describe-tags sees them, and clear them when the key pair is deleted.
 	d.keyService.SetCentralTagStore(d.tagsService)
 
-	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
-		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*ec2eigw.EgressOnlyIGWServiceImpl, error) {
+		return ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EIGW service: %w", err)
 	}
 
-	d.igwService, err = initServiceWithRetry("IGW service", func() (*handlers_ec2_igw.IGWServiceImpl, error) {
-		return handlers_ec2_igw.NewIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.igwService, err = initServiceWithRetry("IGW service", func() (*ec2igw.IGWServiceImpl, error) {
+		return ec2igw.NewIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize IGW service: %w", err)
@@ -1831,8 +1831,8 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize spot instance service: %w", err)
 	}
 
-	d.vpcService, err = initServiceWithRetry("VPC service", func() (*handlers_ec2_vpc.VPCServiceImpl, error) {
-		return handlers_ec2_vpc.NewVPCServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.vpcService, err = initServiceWithRetry("VPC service", func() (*ec2vpc.VPCServiceImpl, error) {
+		return ec2vpc.NewVPCServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
@@ -1852,8 +1852,8 @@ func (d *Daemon) startCluster() error {
 		return private
 	})
 
-	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
-		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*ec2routetable.RouteTableServiceImpl, error) {
+		return ec2routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize RouteTable service: %w", err)
@@ -1862,8 +1862,8 @@ func (d *Daemon) startCluster() error {
 	// Wire IGW attach/detach to RT-aware per-subnet egress gate fan-out.
 	d.igwService.SetGatePublisher(d.routeTableService)
 
-	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*handlers_ec2_natgw.NatGatewayServiceImpl, error) {
-		return handlers_ec2_natgw.NewNatGatewayServiceImplWithNATS(d.ctx, d.natsConn)
+	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*ec2natgw.NatGatewayServiceImpl, error) {
+		return ec2natgw.NewNatGatewayServiceImplWithNATS(d.ctx, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
@@ -1874,12 +1874,12 @@ func (d *Daemon) startCluster() error {
 	// answers cluster-wide with an empty address list on the requests it wins.
 	if d.hasPublicIPPools() {
 		pools, anyDHCP := d.externalPoolConfigs()
-		d.externalIPAM, err = initServiceWithRetry("external IPAM", func() (*handlers_ec2_vpc.ExternalIPAM, error) {
+		d.externalIPAM, err = initServiceWithRetry("external IPAM", func() (*ec2vpc.ExternalIPAM, error) {
 			js, jsErr := jetstream.New(d.natsConn)
 			if jsErr != nil {
 				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
-			ipam, ipamErr := handlers_ec2_vpc.NewExternalIPAM(d.ctx, js, pools)
+			ipam, ipamErr := ec2vpc.NewExternalIPAM(d.ctx, js, pools)
 			if ipamErr != nil {
 				return nil, ipamErr
 			}
@@ -1904,8 +1904,8 @@ func (d *Daemon) startCluster() error {
 
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
-		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*handlers_ec2_eip.EIPServiceImpl, error) {
-			return handlers_ec2_eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
 		})
 		if eipErr != nil {
 			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
@@ -1920,7 +1920,7 @@ func (d *Daemon) startCluster() error {
 			if jsErr != nil {
 				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
-			return kvutil.GetOrCreateBucket(d.ctx, eipJS, handlers_ec2_eip.KVBucketEIPs, 10)
+			return kvutil.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
 		})
 		if eipKVErr != nil {
 			return fmt.Errorf("failed to get EIP KV bucket for VPC service: %w", eipKVErr)
@@ -1931,7 +1931,7 @@ func (d *Daemon) startCluster() error {
 	// Without external IPAM (nat mode or external disabled) serve EIP requests
 	// from the disabled stub so the API surface stays registered.
 	if d.eipService == nil {
-		d.eipService = handlers_ec2_eip.NewDisabledEIPService()
+		d.eipService = ec2eip.NewDisabledEIPService()
 		slog.Info("EIP service disabled — no external IPAM; serving empty/unsupported responses")
 	}
 
@@ -2183,9 +2183,9 @@ func (d *Daemon) startCluster() error {
 		for _, accountID := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
 			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
 			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
-			var opts []handlers_ec2_vpc.BootstrapIDs
+			var opts []ec2vpc.BootstrapIDs
 			if accountID == admin.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.VpcId != "" {
-				opts = append(opts, handlers_ec2_vpc.BootstrapIDs{
+				opts = append(opts, ec2vpc.BootstrapIDs{
 					VpcId:    d.clusterConfig.Bootstrap.VpcId,
 					SubnetId: d.clusterConfig.Bootstrap.SubnetId,
 					IgwId:    d.clusterConfig.Bootstrap.IgwId,

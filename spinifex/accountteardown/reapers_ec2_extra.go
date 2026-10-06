@@ -5,9 +5,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
 	"github.com/nats-io/nats.go"
 )
 
@@ -20,8 +20,8 @@ import (
 func EC2ExtraReapers(nc *nats.Conn) []Reaper {
 	return []Reaper{
 		&spotRequestReaper{svc: ec2spotinstance.NewNATSSpotInstanceService(nc)},
-		&natGatewayReaper{svc: handlers_ec2_natgw.NewNATSNatGatewayService(nc)},
-		&egressOnlyIGWReaper{svc: handlers_ec2_eigw.NewNATSEgressOnlyIGWService(nc)},
+		&natGatewayReaper{svc: ec2natgw.NewNATSNatGatewayService(nc)},
+		&egressOnlyIGWReaper{svc: ec2eigw.NewNATSEgressOnlyIGWService(nc)},
 	}
 }
 
@@ -72,7 +72,7 @@ func (r *spotRequestReaper) Delete(ctx context.Context, accountID string, resour
 var deletedNatGatewayStates = map[string]bool{"deleted": true}
 
 type natGatewayReaper struct {
-	svc handlers_ec2_natgw.NatGatewayService
+	svc ec2natgw.NatGatewayService
 }
 
 func (r *natGatewayReaper) Kind() string { return "nat-gateway" }
@@ -123,7 +123,7 @@ func (r *natGatewayReaper) Delete(ctx context.Context, accountID string, resourc
 }
 
 type egressOnlyIGWReaper struct {
-	svc handlers_ec2_eigw.EgressOnlyIGWService
+	svc ec2eigw.EgressOnlyIGWService
 }
 
 func (r *egressOnlyIGWReaper) Kind() string { return "egress-only-internet-gateway" }

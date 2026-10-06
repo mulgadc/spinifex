@@ -133,7 +133,7 @@ type VolumeCreator interface {
 	DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, accountID string) (*ec2.DeleteVolumeOutput, error)
 }
 
-// ENIDeleter deletes ENIs. Implemented by handlers/ec2/vpc's VPCServiceImpl.
+// ENIDeleter deletes ENIs. Implemented by domains/ec2/vpc's VPCServiceImpl.
 type ENIDeleter interface {
 	DeleteNetworkInterface(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, accountID string) (*ec2.DeleteNetworkInterfaceOutput, error)
 
@@ -146,7 +146,7 @@ type ENIDeleter interface {
 }
 
 // PublicIPReleaser releases a previously allocated public IP back to a pool.
-// Implemented by handlers/ec2/vpc.ExternalIPAM. ownerENIID scopes the release
+// Implemented by domains/ec2/vpc.ExternalIPAM. ownerENIID scopes the release
 // to the ENI that owns the lease so a stale teardown for a recycled IP no-ops.
 type PublicIPReleaser interface {
 	ReleaseIP(ctx context.Context, pool, ip, ownerENIID string) error
@@ -179,7 +179,7 @@ type SubnetInfo struct {
 }
 
 // ENIInfo carries the ENI metadata RunInstances needs for a pre-created primary
-// interface. Translated from handlers/ec2/vpc.ENIRecord to avoid a cyclic import.
+// interface. Translated from domains/ec2/vpc.ENIRecord to avoid a cyclic import.
 type ENIInfo struct {
 	NetworkInterfaceID string
 	SubnetID           string
@@ -222,7 +222,7 @@ type ENICreator interface {
 }
 
 // PublicIPAllocator allocates a public IP to an instance/ENI from a pool.
-// Implemented by handlers/ec2/vpc.ExternalIPAM.
+// Implemented by domains/ec2/vpc.ExternalIPAM.
 type PublicIPAllocator interface {
 	AllocateIP(ctx context.Context, region, az, allocType, allocID, eniID, instanceID string) (publicIP, poolName string, err error)
 }

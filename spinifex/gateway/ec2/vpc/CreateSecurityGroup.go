@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/nats-io/nats.go"
 )
 
@@ -18,7 +18,7 @@ func CreateSecurityGroup(ctx context.Context, input *ec2.CreateSecurityGroupInpu
 	if input.GroupName == nil || *input.GroupName == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.CreateSecurityGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -34,7 +34,7 @@ func DeleteSecurityGroup(ctx context.Context, input *ec2.DeleteSecurityGroupInpu
 	if input.GroupId == nil || *input.GroupId == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.DeleteSecurityGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -47,7 +47,7 @@ func DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGrou
 	if input == nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.DescribeSecurityGroups(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -63,7 +63,7 @@ func AuthorizeSecurityGroupIngress(ctx context.Context, input *ec2.AuthorizeSecu
 	if input.GroupId == nil || *input.GroupId == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.AuthorizeSecurityGroupIngress(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -79,7 +79,7 @@ func AuthorizeSecurityGroupEgress(ctx context.Context, input *ec2.AuthorizeSecur
 	if input.GroupId == nil || *input.GroupId == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.AuthorizeSecurityGroupEgress(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -95,7 +95,7 @@ func RevokeSecurityGroupIngress(ctx context.Context, input *ec2.RevokeSecurityGr
 	if input.GroupId == nil || *input.GroupId == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.RevokeSecurityGroupIngress(ctx, input, accountID)
 	if err != nil {
 		return output, err
@@ -111,7 +111,7 @@ func RevokeSecurityGroupEgress(ctx context.Context, input *ec2.RevokeSecurityGro
 	if input.GroupId == nil || *input.GroupId == "" {
 		return output, errors.New(awserrors.ErrorMissingParameter)
 	}
-	svc := handlers_ec2_vpc.NewNATSVPCService(natsConn)
+	svc := ec2vpc.NewNATSVPCService(natsConn)
 	result, err := svc.RevokeSecurityGroupEgress(ctx, input, accountID)
 	if err != nil {
 		return output, err

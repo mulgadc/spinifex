@@ -120,7 +120,7 @@ type SystemEgressEvent struct {
 	ExternalIp string `json:"external_ip"`
 }
 
-// SGRule mirrors handlers/ec2/vpc.SGRule on the wire (kept local to avoid
+// SGRule mirrors domains/ec2/vpc.SGRule on the wire (kept local to avoid
 // the handler import).
 type SGRule struct {
 	IpProtocol string `json:"ip_protocol"`
@@ -130,7 +130,7 @@ type SGRule struct {
 	SourceSG   string `json:"source_sg,omitempty"`
 }
 
-// SGEvent mirrors handlers/ec2/vpc.SGEvent.
+// SGEvent mirrors domains/ec2/vpc.SGEvent.
 type SGEvent struct {
 	GroupId      string   `json:"group_id"`
 	VpcId        string   `json:"vpc_id"`

@@ -11,10 +11,10 @@ import (
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -468,7 +468,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetac
 
 	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
 	require.NoError(t, err)
-	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *ec2vpc.ENIRecord) {
 		r.DeleteOnTermination = aws.Bool(false)
 	}))
 
@@ -487,7 +487,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetac
 // terminate reaches for has to be real; anything else panics rather than
 // silently answering.
 type stubEIPDisassociator struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	associated map[string]bool
 	calls      []string
@@ -617,7 +617,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_MultipleAttachedENIsReleased(
 	require.NoError(t, err)
 	_, err = f.daemon.vpcService.AttachENI(testAccountID, eniID2, f.vmInst.ID, 2)
 	require.NoError(t, err)
-	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, eniID2, func(r *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, eniID2, func(r *ec2vpc.ENIRecord) {
 		r.DeleteOnTermination = aws.Bool(false)
 	}))
 
@@ -662,7 +662,7 @@ func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerat
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 	nc.Close()

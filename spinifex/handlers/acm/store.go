@@ -273,6 +273,7 @@ func (s *Store) getCert(ctx context.Context, certArn string, decrypt bool) (*Cer
 	if err != nil {
 		return nil, err
 	}
+	rec.KeyAlgorithm = normaliseKeyAlgorithm(rec.KeyAlgorithm)
 	if !decrypt {
 		rec.PrivateKey = ""
 		return rec, nil
@@ -410,6 +411,7 @@ func (s *Store) listCerts(ctx context.Context, keep func(*CertRecord) bool, decr
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			continue
 		}
+		rec.KeyAlgorithm = normaliseKeyAlgorithm(rec.KeyAlgorithm)
 		if !keep(&rec) {
 			continue
 		}

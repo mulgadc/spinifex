@@ -74,12 +74,12 @@ What sits underneath is in [Architecture and Operations](../oci-architecture/REA
 
 ## Prerequisites
 
-|                                            |                                                                                                                                         |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| **An OCI compartment OCID**                | This deploys into a compartment that already exists. Creating one needs tenancy-root rights the API user must not have                  |
-| **OCI credentials in `~/.oci/config`**     | For Terraform, to build the infrastructure. `oci setup config` writes one, or write it by hand                                          |
+|                                            |                                                                                                                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **An OCI compartment OCID**                | This deploys into a compartment that already exists. Creating one needs tenancy-root rights the API user must not have                                                                     |
+| **OCI credentials in `~/.oci/config`**     | For Terraform, to build the infrastructure. `oci setup config` writes one, or write it by hand                                                                                             |
 | **A runtime credential for the nodes**     | Separate from the above, and the subject of step 2: either an instance principal or a scoped API key. Without one a node comes up healthy and still cannot give any guest a public address |
-| **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install`                                   |
+| **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install`                                                                                      |
 
 Check two quotas before you start, because both refuse at apply time rather than at plan time. **Reserved public IPs** are capped at 50 per region across the whole tenancy, and the **compute limit for your shape** starts at zero for bare metal on many new tenancies. [Quotas](../oci-architecture/README.md#quotas) has the commands.
 
@@ -155,12 +155,12 @@ Spinifex calls the OCI API at runtime to register each guest's public address, s
 
 There are two ways to provide it, and they differ in who has to authorise them rather than in what Spinifex is allowed to do. Both grant [the same three permissions](../oci-architecture/README.md#the-iam-policy).
 
-|                     | [2.1 Instance principal](#21-instance-principal-preferred)  | [2.2 OCI IAM user](#22-oci-iam-user-with-scoped-permissions) |
-| ------------------- | ----------------------------------------------------------- | ------------------------------------------------------------ |
-| **Key material**    | None. Each node authenticates as itself                     | A private key on every node, at `/etc/spinifex/oci/`         |
-| **Who can set up**  | A tenancy admin, once per tenancy                           | Anyone with identity rights in the tenancy                   |
-| **Rotation**        | Nothing to rotate                                           | Yours to rotate and redistribute                             |
-| **What you set**    | `export SPX_PRINCIPAL=adopt`, read by step 4               | Nothing extra; step 5 installs the key for you                |
+|                    | [2.1 Instance principal](#21-instance-principal-preferred) | [2.2 OCI IAM user](#22-oci-iam-user-with-scoped-permissions) |
+| ------------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
+| **Key material**   | None. Each node authenticates as itself                    | A private key on every node, at `/etc/spinifex/oci/`         |
+| **Who can set up** | A tenancy admin, once per tenancy                          | Anyone with identity rights in the tenancy                   |
+| **Rotation**       | Nothing to rotate                                          | Yours to rotate and redistribute                             |
+| **What you set**   | `export SPX_PRINCIPAL=adopt`, read by step 4               | Nothing extra; step 5 installs the key for you               |
 
 **Use 2.1 if you are a tenancy admin.** It is the better of the two because there is no key to leak, rotate or forget about, and a replaced node needs no handoff. Use 2.2 when your compartment was allocated to you inside someone else's tenancy, which is the common case and the reason 2.2 exists at all.
 
@@ -190,6 +190,8 @@ To remove the group and policy again, `./setup-identity.sh --destroy`. Every nod
 ### 2.2 OCI IAM user with scoped permissions
 
 This route creates a dedicated OCI user holding only the three permissions Spinifex needs, and installs its key on each node. It needs identity rights in the tenancy but no tenancy-root rights, so it works in an allocated compartment.
+
+Skip this section if you have enabled the instance principal authentication path.
 
 #### Generate the key
 
@@ -420,13 +422,13 @@ The same command covers both credential routes. It reads `instance_principal` fr
 
 One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies that the address allocator came up.
 
-| Argument            | What to pass                                                                                                                                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent                       |
-| `--channel`         | Nothing, normally. It defaults to `latest`, the published release. Pass `dev` to install the newest pre-release instead, or `--version <tag>` to pin an exact build                                                                                          |
-| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Not used when your tfvars set `instance_principal`, because there is then no key to install                                                                                      |
-| `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                                              |
-| `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                                         |
+| Argument            | What to pass                                                                                                                                                                                                                            |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent |
+| `--channel`         | Nothing, normally. It defaults to `latest`, the published release. Pass `dev` to install the newest pre-release instead, or `--version <tag>` to pin an exact build                                                                     |
+| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Not used when your tfvars set `instance_principal`, because there is then no key to install                                                                |
+| `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                         |
+| `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and wrong here                                                                                   |
 
 **Your `terraform.auto.tfvars` outranks the topology**, so `--topology bm` with `compute_shape = "BM.Standard.E5.192"` in that file deploys on that shape rather than the one CI runs. The run logs the shape and node count it actually built, straight after the host addresses.
 

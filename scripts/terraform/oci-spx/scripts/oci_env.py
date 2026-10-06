@@ -23,11 +23,8 @@ import sys
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
-REQUESTED_PROFILE = "apacanzset03child03"
-FALLBACK_PROFILE = "apacanzset03child3"
 # The OCI CLI's own name for "the profile when none is named", so a config written
-# by `oci setup config` works with no flag. Tried only when nothing was asked for
-# explicitly, which keeps a named profile a hard requirement rather than a hint.
+# by `oci setup config` works with no flag.
 DEFAULT_PROFILE = "DEFAULT"
 
 
@@ -35,10 +32,9 @@ def default_profile() -> str:
     """The profile to read when the caller named none.
 
     OCI_CLI_PROFILE is the OCI CLI's own variable, so an operator who has already
-    selected a profile for `oci` does not select it twice. The reference tenancy's
-    name remains the last resort, which is what every run of ours uses.
+    selected a profile for `oci` does not select it twice.
     """
-    return os.environ.get("OCI_CLI_PROFILE") or REQUESTED_PROFILE
+    return os.environ.get("OCI_CLI_PROFILE") or DEFAULT_PROFILE
 
 
 def has_profile(parser: configparser.RawConfigParser, name: str) -> bool:
@@ -64,22 +60,15 @@ def load_profile(config_path: Path, requested_profile: str) -> tuple[str, dict[s
     parser = configparser.RawConfigParser()
     parser.read(config_path)
     profile = requested_profile
+    # No fallback to another profile. A missing one is an error because the only
+    # alternative is building a cluster in whichever tenancy a different profile
+    # happens to point at.
     if not has_profile(parser, profile):
-        # Only an unasked-for profile falls back. A name the caller passed and the
-        # config does not hold is an error, because the alternative is building a
-        # cluster in whichever tenancy DEFAULT happens to point at.
-        implicit = profile == default_profile()
-        for candidate in (FALLBACK_PROFILE, DEFAULT_PROFILE) if implicit else ():
-            if has_profile(parser, candidate):
-                print(f"Profile {profile} not found; using {candidate}.", file=sys.stderr)
-                profile = candidate
-                break
-        else:
-            raise ValueError(
-                f"OCI profile {profile!r} was not found in {config_path}; "
-                f"profiles present: {', '.join(profile_names(parser)) or 'none'}. "
-                "Name one with --profile or OCI_CLI_PROFILE."
-            )
+        raise ValueError(
+            f"OCI profile {profile!r} was not found in {config_path}; "
+            f"profiles present: {', '.join(profile_names(parser)) or 'none'}. "
+            "Name one with --profile or OCI_CLI_PROFILE."
+        )
 
     values = {key: value.strip() for key, value in parser.items(profile)}
     required = ("tenancy", "user", "fingerprint", "key_file", "region")
@@ -209,7 +198,7 @@ def main() -> int:
     arg_parser.add_argument(
         "--profile",
         default=default_profile(),
-        help="Profile in ~/.oci/config. Defaults to $OCI_CLI_PROFILE, then the reference tenancy, then DEFAULT.",
+        help="Profile in ~/.oci/config. Defaults to $OCI_CLI_PROFILE, else DEFAULT.",
     )
     arg_parser.add_argument("--region")
     arg_parser.add_argument(

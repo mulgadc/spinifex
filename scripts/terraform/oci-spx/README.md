@@ -57,7 +57,7 @@ python3 scripts/oci_env.py --ssh-public-key-path <path_to_public_ssh_key> -- ter
 | `terraform.tfvars.example` | Example non-secret Terraform inputs. Copy it to untracked `terraform.auto.tfvars` for local overrides. |
 | `terraform.tfstate` | Terraform state; generated locally unless a remote backend is configured. Do not commit it. |
 
-The helper defaults to OCI profile `apacanzset03child03`. If it is absent and `apacanzset03child3` is locally configured, the helper explicitly falls back to that profile. Override either setting when needed:
+The helper reads the `DEFAULT` profile, which is what `oci setup config` writes. Set `OCI_CLI_PROFILE` or pass `--profile` to read a different one; a named profile the config does not hold is an error rather than a fallback, so a deployment cannot land in a tenancy nobody chose.
 
 ```bash
 python3 scripts/oci_env.py --profile my-profile --region ap-sydney-1 -- terraform plan

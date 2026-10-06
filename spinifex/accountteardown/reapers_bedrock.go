@@ -3,7 +3,7 @@ package accountteardown
 import (
 	"context"
 
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/nats-io/nats.go"
 )
 
@@ -13,11 +13,11 @@ import (
 // and a weights volume, and only its own delete releases all three. Terminating
 // its instance first would strand the other two with no record naming them.
 func BedrockReapers(nc *nats.Conn) []Reaper {
-	return []Reaper{&bedrockEndpointReaper{svc: handlers_bedrock.NewNATSEndpointService(nc)}}
+	return []Reaper{&bedrockEndpointReaper{svc: ochre.NewNATSEndpointService(nc)}}
 }
 
 type bedrockEndpointReaper struct {
-	svc handlers_bedrock.EndpointService
+	svc ochre.EndpointService
 }
 
 func (r *bedrockEndpointReaper) Kind() string { return "bedrock-endpoint" }
@@ -28,7 +28,7 @@ func (r *bedrockEndpointReaper) Stage() Stage { return StageCompute }
 // report — and then delete — endpoints belonging to other tenants and to the
 // shared global account.
 func (r *bedrockEndpointReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := r.svc.List(ctx, &handlers_bedrock.ListEndpointsInput{}, accountID)
+	out, err := r.svc.List(ctx, &ochre.ListEndpointsInput{}, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func (r *bedrockEndpointReaper) List(ctx context.Context, accountID string) ([]R
 // Delete names the account explicitly: an empty AccountID resolves to the
 // global one, which would delete the shared endpoint instead of the tenant's.
 func (r *bedrockEndpointReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := r.svc.Delete(ctx, &handlers_bedrock.DeleteEndpointInput{
+	_, err := r.svc.Delete(ctx, &ochre.DeleteEndpointInput{
 		ModelID:   resource.ID,
 		AccountID: accountID,
 	}, accountID)

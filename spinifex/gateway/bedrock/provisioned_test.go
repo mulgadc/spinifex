@@ -25,7 +25,7 @@ type stubEndpointProvisioner struct {
 
 	// state maps "accountID/modelID" to the endpoint state EndpointState
 	// reports; an absent entry reports "" (ABSENT), matching
-	// handlers_bedrock.StateAbsent's zero-value shape.
+	// ochre.StateAbsent's zero-value shape.
 	state map[string]string
 
 	ensureErr error
@@ -331,7 +331,7 @@ func TestDeleteProvisionedModelThroughput_RemovesEndpointAndRecord(t *testing.T)
 }
 
 // TestDeleteProvisionedModelThroughput_AbsentIsNoop mirrors
-// handlers_bedrock.Service.Delete's own idempotence: deleting an
+// ochre.Service.Delete's own idempotence: deleting an
 // already-absent commitment must succeed, not error.
 func TestDeleteProvisionedModelThroughput_AbsentIsNoop(t *testing.T) {
 	stub := newStubEndpointProvisioner()

@@ -406,7 +406,7 @@ type OchreVectorConfig struct {
 	Enabled bool `json:"Enabled" mapstructure:"enabled"`
 	// EmbeddingModel documents this deployment's served embedding model id;
 	// each index still pins its own model id at CreateIndex time. Any
-	// self-host model id resolves via handlers_bedrock.DynamicEndpointResolver.
+	// self-host model id resolves via ochre.DynamicEndpointResolver.
 	EmbeddingModel string `json:"EmbeddingModel" mapstructure:"embedding_model"`
 	// RerankModel is the served cross-encoder rerank model id, resolved the
 	// same way EmbeddingModel is. Empty disables reranking entirely: Query

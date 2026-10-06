@@ -7,36 +7,36 @@ import (
 	"testing"
 	"time"
 
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/stretchr/testify/require"
 )
 
 // fakeEndpointService serves scripted Describe responses so the wait loop can
 // be exercised without a daemon, a VM or a real cold start.
 type fakeEndpointService struct {
-	ensure        handlers_bedrock.EndpointRecord
+	ensure        ochre.EndpointRecord
 	ensureErr     error
-	describes     []handlers_bedrock.EndpointRecord
+	describes     []ochre.EndpointRecord
 	describeErr   error
-	list          []handlers_bedrock.EndpointRecord
+	list          []ochre.EndpointRecord
 	listErr       error
 	deleteErr     error
 	deleteRemoved bool
 
 	describeCalls  int
 	deleteCalls    int
-	describeInputs []*handlers_bedrock.DescribeEndpointInput
-	deleteInputs   []*handlers_bedrock.DeleteEndpointInput
+	describeInputs []*ochre.DescribeEndpointInput
+	deleteInputs   []*ochre.DeleteEndpointInput
 }
 
-func (f *fakeEndpointService) Ensure(_ context.Context, _ *handlers_bedrock.EnsureEndpointInput, _ string) (*handlers_bedrock.EnsureEndpointOutput, error) {
+func (f *fakeEndpointService) Ensure(_ context.Context, _ *ochre.EnsureEndpointInput, _ string) (*ochre.EnsureEndpointOutput, error) {
 	if f.ensureErr != nil {
 		return nil, f.ensureErr
 	}
-	return &handlers_bedrock.EnsureEndpointOutput{Endpoint: f.ensure}, nil
+	return &ochre.EnsureEndpointOutput{Endpoint: f.ensure}, nil
 }
 
-func (f *fakeEndpointService) Describe(_ context.Context, in *handlers_bedrock.DescribeEndpointInput, _ string) (*handlers_bedrock.DescribeEndpointOutput, error) {
+func (f *fakeEndpointService) Describe(_ context.Context, in *ochre.DescribeEndpointInput, _ string) (*ochre.DescribeEndpointOutput, error) {
 	f.describeInputs = append(f.describeInputs, in)
 	if f.describeErr != nil {
 		return nil, f.describeErr
@@ -45,26 +45,26 @@ func (f *fakeEndpointService) Describe(_ context.Context, in *handlers_bedrock.D
 	// terminal state keeps polling rather than running off the end.
 	idx := min(f.describeCalls, len(f.describes)-1)
 	f.describeCalls++
-	return &handlers_bedrock.DescribeEndpointOutput{Endpoint: f.describes[idx]}, nil
+	return &ochre.DescribeEndpointOutput{Endpoint: f.describes[idx]}, nil
 }
 
-func (f *fakeEndpointService) List(_ context.Context, _ *handlers_bedrock.ListEndpointsInput, _ string) (*handlers_bedrock.ListEndpointsOutput, error) {
+func (f *fakeEndpointService) List(_ context.Context, _ *ochre.ListEndpointsInput, _ string) (*ochre.ListEndpointsOutput, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return &handlers_bedrock.ListEndpointsOutput{Endpoints: f.list}, nil
+	return &ochre.ListEndpointsOutput{Endpoints: f.list}, nil
 }
 
-func (f *fakeEndpointService) Delete(_ context.Context, in *handlers_bedrock.DeleteEndpointInput, _ string) (*handlers_bedrock.DeleteEndpointOutput, error) {
+func (f *fakeEndpointService) Delete(_ context.Context, in *ochre.DeleteEndpointInput, _ string) (*ochre.DeleteEndpointOutput, error) {
 	f.deleteCalls++
 	f.deleteInputs = append(f.deleteInputs, in)
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
-	return &handlers_bedrock.DeleteEndpointOutput{Removed: f.deleteRemoved}, nil
+	return &ochre.DeleteEndpointOutput{Removed: f.deleteRemoved}, nil
 }
 
-var _ handlers_bedrock.EndpointService = (*fakeEndpointService)(nil)
+var _ ochre.EndpointService = (*fakeEndpointService)(nil)
 
 // fakeClock advances a virtual now by whatever the loop sleeps, so a
 // multi-minute wait costs nothing and elapsed times are exact.
@@ -78,20 +78,20 @@ func fakeClock(now *time.Time) endpointWaitClock {
 const testModelID = "meta.llama3-2-1b-instruct-v1:0"
 
 // testAccountID stands in for a caller's real (non-Global) account, mirroring
-// handlers_bedrock's own testAccountID.
+// domains/ochre's own testAccountID.
 const testAccountID = "111111111111"
 
 func TestWaitForEndpointReady_ReachesReadyAndReportsElapsed(t *testing.T) {
-	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateStarting},
-		{ModelID: testModelID, State: handlers_bedrock.StateStarting},
-		{ModelID: testModelID, State: handlers_bedrock.StateReady, BaseURL: "http://10.0.0.5:8000"},
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateStarting},
+		{ModelID: testModelID, State: ochre.StateStarting},
+		{ModelID: testModelID, State: ochre.StateReady, BaseURL: "http://10.0.0.5:8000"},
 	}}
 	now := time.Unix(0, 0).UTC()
 
 	rec, elapsed, err := waitForEndpointReady(context.Background(), svc, testModelID, time.Minute, fakeClock(&now))
 	require.NoError(t, err)
-	require.Equal(t, handlers_bedrock.StateReady, rec.State)
+	require.Equal(t, ochre.StateReady, rec.State)
 	require.Equal(t, "http://10.0.0.5:8000", rec.BaseURL)
 	// Two sleeps between three polls.
 	require.Equal(t, 2*endpointPollInterval, elapsed)
@@ -100,9 +100,9 @@ func TestWaitForEndpointReady_ReachesReadyAndReportsElapsed(t *testing.T) {
 // A failed launch deletes the record, so ABSENT after STARTING is the failure
 // signal and must not be mistaken for "not started yet".
 func TestWaitForEndpointReady_AbsentAfterStartingIsAbort(t *testing.T) {
-	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateStarting},
-		{ModelID: testModelID, State: handlers_bedrock.StateAbsent},
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateStarting},
+		{ModelID: testModelID, State: ochre.StateAbsent},
 	}}
 	now := time.Unix(0, 0).UTC()
 
@@ -111,28 +111,28 @@ func TestWaitForEndpointReady_AbsentAfterStartingIsAbort(t *testing.T) {
 }
 
 func TestWaitForEndpointReady_TimesOutWhileStillStarting(t *testing.T) {
-	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateStarting},
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateStarting},
 	}}
 	now := time.Unix(0, 0).UTC()
 
 	rec, elapsed, err := waitForEndpointReady(context.Background(), svc, testModelID, 10*time.Second, fakeClock(&now))
 	require.ErrorIs(t, err, errEndpointWaitTimeout)
-	require.Equal(t, handlers_bedrock.StateStarting, rec.State)
+	require.Equal(t, ochre.StateStarting, rec.State)
 	require.GreaterOrEqual(t, elapsed, 10*time.Second)
 }
 
 // A zero timeout must still report the endpoint's real state, not an empty
 // record, because the deadline is only checked after a Describe.
 func TestWaitForEndpointReady_ZeroTimeoutStillDescribesOnce(t *testing.T) {
-	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateStarting},
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateStarting},
 	}}
 	now := time.Unix(0, 0).UTC()
 
 	rec, _, err := waitForEndpointReady(context.Background(), svc, testModelID, 0, fakeClock(&now))
 	require.ErrorIs(t, err, errEndpointWaitTimeout)
-	require.Equal(t, handlers_bedrock.StateStarting, rec.State)
+	require.Equal(t, ochre.StateStarting, rec.State)
 	require.Equal(t, 1, svc.describeCalls)
 }
 
@@ -145,7 +145,7 @@ func TestWaitForEndpointReady_DescribeErrorSurfaces(t *testing.T) {
 }
 
 func TestRunEnsureEndpoint_NoWaitReportsStarting(t *testing.T) {
-	svc := &fakeEndpointService{ensure: handlers_bedrock.EndpointRecord{ModelID: testModelID, State: handlers_bedrock.StateStarting}}
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting}}
 	now := time.Unix(0, 0).UTC()
 
 	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, false, time.Minute, fakeClock(&now))
@@ -156,10 +156,10 @@ func TestRunEnsureEndpoint_NoWaitReportsStarting(t *testing.T) {
 
 func TestRunEnsureEndpoint_WaitReportsColdStart(t *testing.T) {
 	svc := &fakeEndpointService{
-		ensure: handlers_bedrock.EndpointRecord{ModelID: testModelID, State: handlers_bedrock.StateStarting},
-		describes: []handlers_bedrock.EndpointRecord{
-			{ModelID: testModelID, State: handlers_bedrock.StateStarting},
-			{ModelID: testModelID, State: handlers_bedrock.StateReady},
+		ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting},
+		describes: []ochre.EndpointRecord{
+			{ModelID: testModelID, State: ochre.StateStarting},
+			{ModelID: testModelID, State: ochre.StateReady},
 		},
 	}
 	now := time.Unix(0, 0).UTC()
@@ -172,7 +172,7 @@ func TestRunEnsureEndpoint_WaitReportsColdStart(t *testing.T) {
 // An endpoint already READY when ensure returns was a warm request; reporting
 // an elapsed cold start for it would be misleading.
 func TestRunEnsureEndpoint_AlreadyReadyDoesNotReportElapsed(t *testing.T) {
-	svc := &fakeEndpointService{ensure: handlers_bedrock.EndpointRecord{ModelID: testModelID, State: handlers_bedrock.StateReady}}
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady}}
 	now := time.Unix(0, 0).UTC()
 
 	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, time.Minute, fakeClock(&now))
@@ -194,8 +194,8 @@ func TestRunEnsureEndpoint_EnsureErrorSurfaces(t *testing.T) {
 // tell a slow launch from a stuck one.
 func TestRunEnsureEndpoint_WaitTimeoutIncludesRecord(t *testing.T) {
 	svc := &fakeEndpointService{
-		ensure:    handlers_bedrock.EndpointRecord{ModelID: testModelID, State: handlers_bedrock.StateStarting},
-		describes: []handlers_bedrock.EndpointRecord{{ModelID: testModelID, State: handlers_bedrock.StateStarting}},
+		ensure:    ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting},
+		describes: []ochre.EndpointRecord{{ModelID: testModelID, State: ochre.StateStarting}},
 	}
 	now := time.Unix(0, 0).UTC()
 
@@ -212,9 +212,9 @@ func TestListEndpointsOutput_NoEndpoints(t *testing.T) {
 }
 
 func TestListEndpointsOutput_ListsEndpoints(t *testing.T) {
-	svc := &fakeEndpointService{list: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateReady, InstanceID: "i-abc", BaseURL: "http://10.0.0.5:8000"},
-		{ModelID: "meta.llama3-2-3b-instruct-v1:0", State: handlers_bedrock.StateStarting},
+	svc := &fakeEndpointService{list: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateReady, InstanceID: "i-abc", BaseURL: "http://10.0.0.5:8000"},
+		{ModelID: "meta.llama3-2-3b-instruct-v1:0", State: ochre.StateStarting},
 	}}
 
 	msg, err := listEndpointsOutput(context.Background(), svc)
@@ -229,9 +229,9 @@ func TestListEndpointsOutput_ListsEndpoints(t *testing.T) {
 // indicator, while a bare GlobalAccountID endpoint keeps listing unchanged
 // (its ACCOUNT cell just reads GlobalAccountID, PINNED empty).
 func TestListEndpointsOutput_ShowsAccountAndPinnedColumns(t *testing.T) {
-	svc := &fakeEndpointService{list: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateReady, AccountID: "000000000001"},
-		{ModelID: "meta.llama3-2-3b-instruct-v1:0", State: handlers_bedrock.StateReady, AccountID: testAccountID, Pinned: true},
+	svc := &fakeEndpointService{list: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateReady, AccountID: "000000000001"},
+		{ModelID: "meta.llama3-2-3b-instruct-v1:0", State: ochre.StateReady, AccountID: testAccountID, Pinned: true},
 	}}
 
 	msg, err := listEndpointsOutput(context.Background(), svc)
@@ -250,9 +250,9 @@ func TestListEndpointsOutput_ErrorSurfaces(t *testing.T) {
 
 func TestFormatEndpointRecord_OmitsUnsetFieldsAndDerivesStartup(t *testing.T) {
 	created := time.Unix(1000, 0).UTC()
-	rec := handlers_bedrock.EndpointRecord{
+	rec := ochre.EndpointRecord{
 		ModelID:   testModelID,
-		State:     handlers_bedrock.StateReady,
+		State:     ochre.StateReady,
 		CreatedAt: created,
 		ReadyAt:   created.Add(97 * time.Second),
 		BaseURL:   "http://10.0.0.5:8000",
@@ -266,18 +266,18 @@ func TestFormatEndpointRecord_OmitsUnsetFieldsAndDerivesStartup(t *testing.T) {
 }
 
 func TestFormatEndpointRecord_AbsentIsMinimal(t *testing.T) {
-	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{ModelID: testModelID, State: handlers_bedrock.StateAbsent})
+	out := formatEndpointRecord(ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateAbsent})
 	require.Contains(t, out, "ABSENT")
 	require.Equal(t, 2, strings.Count(strings.TrimSpace(out), "\n")+1)
 }
 
 // withEndpointService swaps endpointServiceFn for one returning svc, so a Run
 // wrapper's real connect/validate/exit control flow runs without a daemon.
-func withEndpointService(t *testing.T, svc handlers_bedrock.EndpointService, connErr error) {
+func withEndpointService(t *testing.T, svc ochre.EndpointService, connErr error) {
 	t.Helper()
 	orig := endpointServiceFn
 	t.Cleanup(func() { endpointServiceFn = orig })
-	endpointServiceFn = func() (handlers_bedrock.EndpointService, func(), error) {
+	endpointServiceFn = func() (ochre.EndpointService, func(), error) {
 		if connErr != nil {
 			return nil, nil, connErr
 		}
@@ -287,7 +287,7 @@ func withEndpointService(t *testing.T, svc handlers_bedrock.EndpointService, con
 
 func TestRunOchreEndpointEnsure_PrintsRecord(t *testing.T) {
 	withEndpointService(t, &fakeEndpointService{
-		ensure: handlers_bedrock.EndpointRecord{ModelID: testModelID, State: handlers_bedrock.StateStarting},
+		ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting},
 	}, nil)
 
 	cmd := *ochreEndpointEnsureCmd
@@ -322,8 +322,8 @@ func TestRunOchreEndpointEnsure_ServiceErrorExits1(t *testing.T) {
 }
 
 func TestRunOchreEndpointDescribe_PrintsRecord(t *testing.T) {
-	withEndpointService(t, &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateReady, InstanceID: "i-abc"},
+	withEndpointService(t, &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateReady, InstanceID: "i-abc"},
 	}}, nil)
 
 	cmd := *ochreEndpointDescribeCmd
@@ -342,8 +342,8 @@ func TestRunOchreEndpointDescribe_PrintsRecord(t *testing.T) {
 // still send an empty AccountID — resolveAccountID's own GlobalAccountID
 // fallback, unchanged from before --account existed.
 func TestRunOchreEndpointDescribe_DefaultAccountIsEmpty(t *testing.T) {
-	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateReady},
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateReady},
 	}}
 	withEndpointService(t, svc, nil)
 
@@ -362,8 +362,8 @@ func TestRunOchreEndpointDescribe_DefaultAccountIsEmpty(t *testing.T) {
 // operator sees a pinned, account-scoped endpoint the GlobalAccountID lookup
 // would otherwise report ABSENT.
 func TestRunOchreEndpointDescribe_AccountFlagScopesLookup(t *testing.T) {
-	svc := &fakeEndpointService{describes: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateReady, AccountID: testAccountID, Pinned: true},
+	svc := &fakeEndpointService{describes: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateReady, AccountID: testAccountID, Pinned: true},
 	}}
 	withEndpointService(t, svc, nil)
 
@@ -392,8 +392,8 @@ func TestRunOchreEndpointDescribe_ErrorExits1(t *testing.T) {
 }
 
 func TestRunOchreEndpointList_PrintsTable(t *testing.T) {
-	withEndpointService(t, &fakeEndpointService{list: []handlers_bedrock.EndpointRecord{
-		{ModelID: testModelID, State: handlers_bedrock.StateReady},
+	withEndpointService(t, &fakeEndpointService{list: []ochre.EndpointRecord{
+		{ModelID: testModelID, State: ochre.StateReady},
 	}}, nil)
 
 	var out string
@@ -480,9 +480,9 @@ func TestRunOchreEndpointDelete_ErrorExits1(t *testing.T) {
 // endpoint reaped" or "why was it not", so a READY record must show them.
 func TestFormatEndpointRecord_ShowsReclaimInputs(t *testing.T) {
 	ready := time.Now().UTC().Add(-30 * time.Minute)
-	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+	out := formatEndpointRecord(ochre.EndpointRecord{
 		ModelID:      testModelID,
-		State:        handlers_bedrock.StateReady,
+		State:        ochre.StateReady,
 		ReadyAt:      ready,
 		LastActiveAt: ready.Add(20 * time.Minute),
 		InFlight:     3,
@@ -497,9 +497,9 @@ func TestFormatEndpointRecord_ShowsReclaimInputs(t *testing.T) {
 // An endpoint quiet since launch is idle since launch, not since the zero
 // time: the fallback is what keeps the reported figure meaningful.
 func TestFormatEndpointRecord_NeverActiveFallsBackToReadyAt(t *testing.T) {
-	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+	out := formatEndpointRecord(ochre.EndpointRecord{
 		ModelID: testModelID,
-		State:   handlers_bedrock.StateReady,
+		State:   ochre.StateReady,
 		ReadyAt: time.Now().UTC().Add(-90 * time.Second),
 	})
 
@@ -509,9 +509,9 @@ func TestFormatEndpointRecord_NeverActiveFallsBackToReadyAt(t *testing.T) {
 }
 
 func TestFormatEndpointRecord_SurfacesPinnedAndScrapeFailures(t *testing.T) {
-	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+	out := formatEndpointRecord(ochre.EndpointRecord{
 		ModelID:        testModelID,
-		State:          handlers_bedrock.StateReady,
+		State:          ochre.StateReady,
 		ReadyAt:        time.Now().UTC().Add(-time.Hour),
 		Pinned:         true,
 		ScrapeFailures: 2,
@@ -525,9 +525,9 @@ func TestFormatEndpointRecord_SurfacesPinnedAndScrapeFailures(t *testing.T) {
 // Only READY endpoints are swept, so reclaim rows on any other state would be
 // reporting a decision nothing is making.
 func TestFormatEndpointRecord_NoReclaimRowsWhenNotReady(t *testing.T) {
-	out := formatEndpointRecord(handlers_bedrock.EndpointRecord{
+	out := formatEndpointRecord(ochre.EndpointRecord{
 		ModelID: testModelID,
-		State:   handlers_bedrock.StateStarting,
+		State:   ochre.StateStarting,
 	})
 
 	require.NotContains(t, out, "In flight")

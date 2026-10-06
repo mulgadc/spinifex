@@ -44,11 +44,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
 	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
@@ -169,8 +169,8 @@ type Daemon struct {
 	ecsScheduler          *handlers_ecs.Scheduler
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
-	bedrockService        *handlers_bedrock.Service
-	bedrockReaper         *handlers_bedrock.Reaper
+	bedrockService        *ochre.Service
+	bedrockReaper         *ochre.Reaper
 	acmService            *acmdomain.ACMServiceImpl
 	acmRenewalWorker      *acmdomain.Worker
 	ochreVectorService    handlers_ochrevector.VectorService
@@ -1208,10 +1208,10 @@ func (d *Daemon) subscribeAll() error {
 	// touching JetStream directly).
 	if d.bedrockService != nil {
 		subs = append(subs,
-			natsSub{handlers_bedrock.SubjectEnsureEndpoint, handleNATSRequest(d.node, d.bedrockService.Ensure), "spinifex-workers"},
-			natsSub{handlers_bedrock.SubjectDescribeEndpoint, handleNATSRequest(d.node, d.bedrockService.Describe), "spinifex-workers"},
-			natsSub{handlers_bedrock.SubjectListEndpoints, handleNATSRequest(d.node, d.bedrockService.List), "spinifex-workers"},
-			natsSub{handlers_bedrock.SubjectDeleteEndpoint, handleNATSRequest(d.node, d.bedrockService.Delete), "spinifex-workers"},
+			natsSub{ochre.SubjectEnsureEndpoint, handleNATSRequest(d.node, d.bedrockService.Ensure), "spinifex-workers"},
+			natsSub{ochre.SubjectDescribeEndpoint, handleNATSRequest(d.node, d.bedrockService.Describe), "spinifex-workers"},
+			natsSub{ochre.SubjectListEndpoints, handleNATSRequest(d.node, d.bedrockService.List), "spinifex-workers"},
+			natsSub{ochre.SubjectDeleteEndpoint, handleNATSRequest(d.node, d.bedrockService.Delete), "spinifex-workers"},
 		)
 	}
 
@@ -2080,12 +2080,12 @@ func (d *Daemon) startCluster() error {
 	// Bedrock serving-endpoint lifecycle: the request-driven
 	// ensure/describe/list/delete surface, constructed synchronously since it
 	// touches no JetStream KV until its first request.
-	d.bedrockService = handlers_bedrock.NewService(d.natsConn, d.buildBedrockServiceDeps())
+	d.bedrockService = ochre.NewService(d.natsConn, d.buildBedrockServiceDeps())
 
 	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
 	// and hands an idle GPU back; every node keeps serving the API. Without it a
 	// launched model owns its device until an operator deletes the endpoint.
-	d.bedrockReaper = handlers_bedrock.NewReaper(d.bedrockService, d.node, handlers_bedrock.ReaperDeps{})
+	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.node, ochre.ReaperDeps{})
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {

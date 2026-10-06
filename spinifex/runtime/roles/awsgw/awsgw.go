@@ -28,13 +28,13 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
@@ -363,10 +363,10 @@ func launchService(config *config.ClusterConfig) error {
 	// returning ModelNotReadyException at once. Unset (the default) keeps the
 	// fail-fast contract: cold start is minutes, which no client retry spans.
 	bedrockEndpoints := parseBedrockEndpoints(os.Getenv("OCHRE_VLLM_ENDPOINTS"))
-	bedrockEndpointSvc := handlers_bedrock.NewNATSEndpointService(natsConn)
-	bedrockEndpointResolver := handlers_bedrock.NewDynamicEndpointResolver(
+	bedrockEndpointSvc := ochre.NewNATSEndpointService(natsConn)
+	bedrockEndpointResolver := ochre.NewDynamicEndpointResolver(
 		bedrockEndpointSvc, bedrockEndpoints, 0,
-		handlers_bedrock.WithColdStartWait(parseColdStartWait(os.Getenv("OCHRE_COLD_START_WAIT"))))
+		ochre.WithColdStartWait(parseColdStartWait(os.Getenv("OCHRE_COLD_START_WAIT"))))
 
 	// Guardrail topicPolicy's semantic match reuses this same endpoint
 	// resolver (the one every self-hosted model, including the embedding
@@ -390,10 +390,10 @@ func launchService(config *config.ClusterConfig) error {
 	// endpoint it commits to is requested through the same NATS endpoint
 	// service the dynamic resolver above uses, via an adapter satisfying
 	// gateway_bedrock's narrow EndpointProvisioner (see provisioned_adapter.go
-	// for why the adapter, not handlers_bedrock.EndpointService, is what
+	// for why the adapter, not ochre.EndpointService, is what
 	// gateway_bedrock depends on).
 	bedrockProvisioned := gateway_bedrock.NewProvisionedStore(js, nodeConfig.Region,
-		handlers_bedrock.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
+		ochre.NewProvisionedEndpointAdapter(bedrockEndpointSvc))
 
 	// Bedrock guardrails: control-plane CRUD only at this stage — the record
 	// stores the full policy config so a later stage's filter engine and

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -118,18 +118,18 @@ func realEndpointWaitClock() endpointWaitClock {
 // waitForEndpointReady polls Describe until the endpoint is READY, has gone
 // back to ABSENT, or the timeout expires, and returns the record it settled
 // on plus how long that took.
-func waitForEndpointReady(ctx context.Context, svc handlers_bedrock.EndpointService, modelID string,
-	timeout time.Duration, clock endpointWaitClock) (handlers_bedrock.EndpointRecord, time.Duration, error) {
+func waitForEndpointReady(ctx context.Context, svc ochre.EndpointService, modelID string,
+	timeout time.Duration, clock endpointWaitClock) (ochre.EndpointRecord, time.Duration, error) {
 	start := clock.now()
 	for {
-		out, err := svc.Describe(ctx, &handlers_bedrock.DescribeEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
+		out, err := svc.Describe(ctx, &ochre.DescribeEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
 		if err != nil {
-			return handlers_bedrock.EndpointRecord{}, clock.now().Sub(start), err
+			return ochre.EndpointRecord{}, clock.now().Sub(start), err
 		}
 		switch out.Endpoint.State {
-		case handlers_bedrock.StateReady:
+		case ochre.StateReady:
 			return out.Endpoint, clock.now().Sub(start), nil
-		case handlers_bedrock.StateAbsent:
+		case ochre.StateAbsent:
 			return out.Endpoint, clock.now().Sub(start), errEndpointLaunchAborted
 		}
 
@@ -144,7 +144,7 @@ func waitForEndpointReady(ctx context.Context, svc handlers_bedrock.EndpointServ
 
 // formatEndpointRecord renders one record as aligned key/value lines, omitting
 // fields that are only set once a launch has progressed far enough to have them.
-func formatEndpointRecord(rec handlers_bedrock.EndpointRecord) string {
+func formatEndpointRecord(rec ochre.EndpointRecord) string {
 	rows := [][2]string{
 		{"Model ID", rec.ModelID},
 	}
@@ -194,8 +194,8 @@ func formatEndpointRecord(rec handlers_bedrock.EndpointRecord) string {
 // "Idle for" is measured from the record's LastActive, which falls back to
 // ReadyAt, so an endpoint that has been quiet since launch reads as idle since
 // launch rather than since the zero time.
-func reclaimRows(rec handlers_bedrock.EndpointRecord) [][2]string {
-	if rec.State != handlers_bedrock.StateReady {
+func reclaimRows(rec ochre.EndpointRecord) [][2]string {
+	if rec.State != ochre.StateReady {
 		return nil
 	}
 	rows := [][2]string{{"In flight", strconv.Itoa(rec.InFlight)}}
@@ -215,8 +215,8 @@ func reclaimRows(rec handlers_bedrock.EndpointRecord) [][2]string {
 // ACCOUNT and PINNED distinguish a pinned, account-scoped endpoint from a
 // shared platform one — List itself now returns every account's records, not
 // just the shared platform account's.
-func listEndpointsOutput(ctx context.Context, svc handlers_bedrock.EndpointService) (string, error) {
-	out, err := svc.List(ctx, &handlers_bedrock.ListEndpointsInput{}, awsidentifiers.GlobalAccountID)
+func listEndpointsOutput(ctx context.Context, svc ochre.EndpointService) (string, error) {
+	out, err := svc.List(ctx, &ochre.ListEndpointsInput{}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -237,9 +237,9 @@ func listEndpointsOutput(ctx context.Context, svc handlers_bedrock.EndpointServi
 
 // runEnsureEndpoint is the testable core of 'ochre endpoint ensure': request
 // the endpoint, then optionally wait for it. Returns the message to print.
-func runEnsureEndpoint(ctx context.Context, svc handlers_bedrock.EndpointService, modelID string,
+func runEnsureEndpoint(ctx context.Context, svc ochre.EndpointService, modelID string,
 	wait bool, timeout time.Duration, clock endpointWaitClock) (string, error) {
-	out, err := svc.Ensure(ctx, &handlers_bedrock.EnsureEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
+	out, err := svc.Ensure(ctx, &ochre.EnsureEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -249,7 +249,7 @@ func runEnsureEndpoint(ctx context.Context, svc handlers_bedrock.EndpointService
 
 	// Already READY before any polling means this was a warm request, not a
 	// cold start, so reporting an elapsed time would be misleading.
-	if out.Endpoint.State == handlers_bedrock.StateReady {
+	if out.Endpoint.State == ochre.StateReady {
 		return fmt.Sprintf("Endpoint for %s was already READY.\n\n%s", modelID, formatEndpointRecord(out.Endpoint)), nil
 	}
 
@@ -263,12 +263,12 @@ func runEnsureEndpoint(ctx context.Context, svc handlers_bedrock.EndpointService
 
 // endpointServiceFn indirects the NATS-backed client so the Run functions'
 // connect/exit control flow can be tested without a live daemon.
-var endpointServiceFn = func() (handlers_bedrock.EndpointService, func(), error) {
+var endpointServiceFn = func() (ochre.EndpointService, func(), error) {
 	_, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, nil, err
 	}
-	return handlers_bedrock.NewNATSEndpointService(nc), nc.Close, nil
+	return ochre.NewNATSEndpointService(nc), nc.Close, nil
 }
 
 func runOchreEndpointEnsure(cmd *cobra.Command, _ []string) {
@@ -305,7 +305,7 @@ func runOchreEndpointDescribe(cmd *cobra.Command, _ []string) {
 	}
 	defer closeFn()
 
-	out, err := svc.Describe(context.Background(), &handlers_bedrock.DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, awsidentifiers.GlobalAccountID)
+	out, err := svc.Describe(context.Background(), &ochre.DescribeEndpointInput{ModelID: modelID, AccountID: accountID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)
@@ -336,8 +336,8 @@ func runOchreEndpointList(_ *cobra.Command, _ []string) {
 // tears the endpoint down and returns an honest message — a no-op that found
 // no record must not claim a teardown, and it points the operator at --account
 // so a pinned, account-scoped record they can see in 'list' is reachable.
-func deleteEndpointOutput(ctx context.Context, svc handlers_bedrock.EndpointService, modelID, accountID string) (string, error) {
-	out, err := svc.Delete(ctx, &handlers_bedrock.DeleteEndpointInput{ModelID: modelID, AccountID: accountID}, awsidentifiers.GlobalAccountID)
+func deleteEndpointOutput(ctx context.Context, svc ochre.EndpointService, modelID, accountID string) (string, error) {
+	out, err := svc.Delete(ctx, &ochre.DeleteEndpointInput{ModelID: modelID, AccountID: accountID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}

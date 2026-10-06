@@ -71,7 +71,7 @@ func daemonPortDescription(nodeID string) string {
 }
 
 // ensureDaemonENI describe-or-creates this node's ENI in subnetID. Mirrors
-// handlers/bedrock's helper of the same shape: description-filtered
+// domains/ochre's helper of the same shape: description-filtered
 // describe first, create only on a miss, so a restart reuses the same
 // address rather than leaking one per launch.
 func ensureDaemonENI(ctx context.Context, vpcSvc vpcProvisioner, subnetID, nodeID string, groupIDs []string) (*daemonENI, error) {

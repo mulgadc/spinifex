@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -117,7 +117,7 @@ func (d *Daemon) startOchreVector() {
 	// Embedder/reranker are bundle members: DynamicEndpointResolver resolves
 	// each model id to the co-resident bundle VM's own port, in-process
 	// against d.bedrockService rather than a NATS round trip to itself.
-	endpointResolver := handlers_bedrock.NewDynamicEndpointResolver(d.bedrockService, nil, 0)
+	endpointResolver := ochre.NewDynamicEndpointResolver(d.bedrockService, nil, 0)
 	embedder := gateway_bedrock.NewEmbedder(endpointResolver)
 
 	// RerankModel unset leaves reranker nil: Query degrades to plain KNN

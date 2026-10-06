@@ -8,40 +8,40 @@ import (
 	"errors"
 	"testing"
 
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type fakeEndpoints struct {
-	handlers_bedrock.EndpointService
+	ochre.EndpointService
 
-	records []handlers_bedrock.EndpointRecord
-	deleted []handlers_bedrock.DeleteEndpointInput
+	records []ochre.EndpointRecord
+	deleted []ochre.DeleteEndpointInput
 	err     error
 }
 
-func (f *fakeEndpoints) List(_ context.Context, _ *handlers_bedrock.ListEndpointsInput, _ string) (*handlers_bedrock.ListEndpointsOutput, error) {
-	return &handlers_bedrock.ListEndpointsOutput{Endpoints: f.records}, nil
+func (f *fakeEndpoints) List(_ context.Context, _ *ochre.ListEndpointsInput, _ string) (*ochre.ListEndpointsOutput, error) {
+	return &ochre.ListEndpointsOutput{Endpoints: f.records}, nil
 }
 
-func (f *fakeEndpoints) Delete(_ context.Context, in *handlers_bedrock.DeleteEndpointInput, _ string) (*handlers_bedrock.DeleteEndpointOutput, error) {
+func (f *fakeEndpoints) Delete(_ context.Context, in *ochre.DeleteEndpointInput, _ string) (*ochre.DeleteEndpointOutput, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	f.deleted = append(f.deleted, *in)
-	return &handlers_bedrock.DeleteEndpointOutput{}, nil
+	return &ochre.DeleteEndpointOutput{}, nil
 }
 
 // Bedrock's List answers with every endpoint in the cluster whatever account
 // it is called for, so the filter is the reaper's own responsibility: without
 // it a tenant teardown would delete the shared endpoint and other tenants'.
 func TestBedrockEndpointReaperListsOnlyItsOwnAccount(t *testing.T) {
-	svc := &fakeEndpoints{records: []handlers_bedrock.EndpointRecord{
-		{AccountID: "000000000002", ModelID: "mistral-7b", State: handlers_bedrock.StateReady},
-		{AccountID: "000000000003", ModelID: "llama-3", State: handlers_bedrock.StateReady},
-		{AccountID: "global", ModelID: "shared", State: handlers_bedrock.StateReady},
-		{AccountID: "000000000002", ModelID: "", State: handlers_bedrock.StateStarting},
+	svc := &fakeEndpoints{records: []ochre.EndpointRecord{
+		{AccountID: "000000000002", ModelID: "mistral-7b", State: ochre.StateReady},
+		{AccountID: "000000000003", ModelID: "llama-3", State: ochre.StateReady},
+		{AccountID: "global", ModelID: "shared", State: ochre.StateReady},
+		{AccountID: "000000000002", ModelID: "", State: ochre.StateStarting},
 	}}
 	reaper := &bedrockEndpointReaper{svc: svc}
 

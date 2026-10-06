@@ -6,6 +6,10 @@
 #
 # The argument shape is validate-topology.sh's credential-hook contract, so this
 # drops straight into --credential-hook or $OCI_CREDENTIAL_HOOK.
+#
+# MUST MAINTAIN BASH 3.X COMPATABILITY. Operators run this on macOS, which ships
+# bash 3.2: no declare -A, no mapfile, and under set -u an empty "${arr[@]}" is an
+# unbound variable, so guard every such expansion with ${#arr[@]}.
 set -euo pipefail
 
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)

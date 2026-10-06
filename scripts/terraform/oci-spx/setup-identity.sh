@@ -10,6 +10,10 @@
 # Its own state file, deliberately. validate-topology.sh destroys its state at the
 # end of every run, and these two resources outlive every topology -- holding them
 # in a per-topology state would let a nightly teardown delete the tenancy's policy.
+#
+# MUST MAINTAIN BASH 3.X COMPATABILITY. Operators run this on macOS, which ships
+# bash 3.2: no declare -A, no mapfile, and under set -u an empty "${arr[@]}" is an
+# unbound variable, so guard every such expansion with ${#arr[@]}.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -6,6 +6,10 @@
 #
 # Every run is build-prove-destroy. A topology that cannot be torn down is half
 # proved, so the teardown decides the verdict and runs even on failure.
+#
+# MUST MAINTAIN BASH 3.X COMPATABILITY. Operators run this on macOS, which ships
+# bash 3.2: no declare -A, no mapfile, and under set -u an empty "${arr[@]}" is an
+# unbound variable, so guard every such expansion with ${#arr[@]}.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

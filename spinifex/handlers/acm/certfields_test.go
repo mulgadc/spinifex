@@ -2,6 +2,8 @@ package handlers_acm
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -167,4 +169,42 @@ func TestDescribeCertificate_LegacyImportedRecordDerivedFromPEM(t *testing.T) {
 	assert.True(t, d.CreatedAt.Equal(importedAt), "a legacy record's CreatedAt falls back to ImportedAt")
 	require.Len(t, d.KeyUsages, 1)
 	require.Len(t, d.ExtendedKeyUsages, 1)
+}
+
+// Expected values are copied from real ACM's DescribeCertificate response for
+// a self-signed P-384 import carrying an O, SANs that omit the CN, and both
+// usage extensions.
+func TestDescribeCertificate_ImportedWithExtensionsMatchesAWS(t *testing.T) {
+	svc := setupACMService(t)
+	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber:       big.NewInt(1005),
+		Subject:            pkix.Name{Organization: []string{"Probe Org"}, CommonName: "cn.example.com"},
+		DNSNames:           []string{"a.example.com", "b.example.com"},
+		KeyUsage:           x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		NotBefore:          time.Now().Add(-time.Hour),
+		NotAfter:           time.Now().Add(24 * time.Hour),
+		SignatureAlgorithm: x509.ECDSAWithSHA384,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	d := describeCert(t, svc, importCert(t, svc,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})))
+
+	assert.Equal(t, "EC-secp384r1", aws.StringValue(d.KeyAlgorithm))
+	assert.Equal(t, "SHA384WITHECDSA", aws.StringValue(d.SignatureAlgorithm))
+	assert.Equal(t, "03:ed", aws.StringValue(d.Serial))
+	assert.Equal(t, "Probe Org", aws.StringValue(d.Issuer))
+	assert.Equal(t, []string{"cn.example.com", "a.example.com", "b.example.com"}, aws.StringValueSlice(d.SubjectAlternativeNames))
+	cert := wireJSON(t, &acm.DescribeCertificateOutput{Certificate: d})["Certificate"].(map[string]any)
+	assert.Equal(t, []any{map[string]any{"Name": "DIGITAL_SIGNATURE"}, map[string]any{"Name": "KEY_ENCIPHERMENT"}}, cert["KeyUsages"])
+	assert.Equal(t, []any{
+		map[string]any{"Name": "TLS_WEB_SERVER_AUTHENTICATION", "OID": "1.3.6.1.5.5.7.3.1"},
+		map[string]any{"Name": "TLS_WEB_CLIENT_AUTHENTICATION", "OID": "1.3.6.1.5.5.7.3.2"},
+	}, cert["ExtendedKeyUsages"])
 }

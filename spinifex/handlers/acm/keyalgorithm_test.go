@@ -78,8 +78,8 @@ func TestImportCertificate_RSAKeyAlgorithmIsHyphenated(t *testing.T) {
 	assert.Equal(t, "RSA-2048", raw.KeyAlgorithm)
 }
 
-// Records written before the spelling fix hold RSA_<bits>; they must read back
-// in the AWS spelling without a migration, and other values must pass through.
+// Records written before the spelling fix hold RSA_<bits> or EC_<Go curve>;
+// they must read back in the AWS spelling without a migration.
 func TestKeyAlgorithm_StoredUnderscoreSpellingReadsBackHyphenated(t *testing.T) {
 	cases := []struct {
 		stored, want string
@@ -87,7 +87,7 @@ func TestKeyAlgorithm_StoredUnderscoreSpellingReadsBackHyphenated(t *testing.T) 
 		{stored: "RSA_2048", want: "RSA-2048"},
 		{stored: "RSA_4096", want: "RSA-4096"},
 		{stored: "RSA-3072", want: "RSA-3072"},
-		{stored: "EC_P-256", want: "EC_P-256"},
+		{stored: "EC_P-256", want: "EC-prime256v1"},
 	}
 	svc := setupACMService(t)
 	for i, tc := range cases {

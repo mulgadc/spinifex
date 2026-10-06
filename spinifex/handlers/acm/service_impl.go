@@ -800,25 +800,37 @@ func leafDomain(leaf *x509.Certificate) string {
 	return ""
 }
 
-// keyAlgorithm maps the leaf public key to the KeyAlgorithm ACM returns: RSA-<bits>,
-// hyphenated as AWS returns it, unlike the RSA_2048 API enum. EC is EC_ plus Go's
-// curve name (EC_P-256), a spelling not yet checked against AWS.
+// ecCurveNames maps Go's curve names to the OpenSSL names ACM's KeyAlgorithm uses.
+var ecCurveNames = map[string]string{"P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1"}
+
+// keyAlgorithm maps the leaf public key to the KeyAlgorithm ACM returns:
+// RSA-<bits> or EC-<curve>, hyphenated unlike the RSA_2048 API enum.
 func keyAlgorithm(leaf *x509.Certificate) string {
 	switch pub := leaf.PublicKey.(type) {
 	case *rsa.PublicKey:
 		return fmt.Sprintf("RSA-%d", pub.N.BitLen())
 	case *ecdsa.PublicKey:
-		return "EC_" + pub.Curve.Params().Name
+		return ecKeyAlgorithm(pub.Curve.Params().Name)
 	default:
 		return "UNKNOWN"
 	}
 }
 
-// normaliseKeyAlgorithm rewrites the RSA_<bits> spelling stored by earlier
-// builds to the RSA-<bits> that keyAlgorithm now writes.
+func ecKeyAlgorithm(goCurve string) string {
+	if name, ok := ecCurveNames[goCurve]; ok {
+		return "EC-" + name
+	}
+	return "EC-" + goCurve
+}
+
+// normaliseKeyAlgorithm rewrites the RSA_<bits> and EC_<Go curve> spellings
+// stored by earlier builds to the ones keyAlgorithm now writes.
 func normaliseKeyAlgorithm(alg string) string {
 	if bits, ok := strings.CutPrefix(alg, "RSA_"); ok {
 		return "RSA-" + bits
+	}
+	if curve, ok := strings.CutPrefix(alg, "EC_"); ok {
+		return ecKeyAlgorithm(curve)
 	}
 	return alg
 }

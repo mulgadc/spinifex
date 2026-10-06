@@ -294,7 +294,11 @@ cleanup() {
         # address elsewhere in the log. HOSTS is empty if we never got as far as
         # the apply, which is why this is guarded rather than assumed.
         if [ "${#HOSTS[@]}" -gt 0 ]; then
-            log "ssh in with: ssh -i $SSH_PRIVATE_KEY ubuntu@${HOSTS[0]}"
+            # ~ rather than the expanded path, so the line is the same on every
+            # machine and reads as something a person would type.
+            local key="$SSH_PRIVATE_KEY"
+            case "$key" in "$HOME"/*) key="~${key#"$HOME"}" ;; esac
+            log "ssh in with: ssh -i $key ubuntu@${HOSTS[0]}"
             log "destroy it with: $0 --topology $TOPOLOGY --destroy-only"
         fi
         return

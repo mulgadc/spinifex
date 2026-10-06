@@ -453,7 +453,7 @@ The stages print as they finish, and all of these have to appear:
 [validate-vm-single] cluster membership
 [validate-vm-single] --skip-workload: stopping before the workbook
 [validate-vm-single] --keep: leaving the infrastructure up, no verdict recorded
-[validate-vm-single] ssh in with: ssh -i /home/you/.ssh/oci-spx ubuntu@150.230.13.131
+[validate-vm-single] ssh in with: ssh -i ~/.ssh/oci-spx ubuntu@150.230.13.131
 [validate-vm-single] destroy it with: ./validate-topology.sh --topology vm-single --destroy-only
 ```
 

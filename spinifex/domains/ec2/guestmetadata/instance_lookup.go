@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
@@ -80,7 +80,7 @@ func (l *localInstanceLookup) describe(ctx context.Context, accountID, instanceI
 			return nil, err
 		}
 	}
-	if v == nil || !handlers_ec2_instance.IsInstanceVisibleToCaller(accountID, v) {
+	if v == nil || !ec2instance.IsInstanceVisibleToCaller(accountID, v) {
 		return nil, nil // not present, or not visible to the caller
 	}
 	return instanceFactsFromVM(v), nil

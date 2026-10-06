@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
@@ -174,7 +174,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command e
 	// A missing or unresponsive socket under a running instance means the writes
 	// cannot be made current, so the caller must fail its snapshot rather than
 	// read a stale checkpoint.
-	if err = handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
+	if err = ec2snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
 		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}

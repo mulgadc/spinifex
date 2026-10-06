@@ -8,9 +8,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/nats-io/nats.go"
 )
 
@@ -89,7 +89,7 @@ func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *n
 		return output, errors.New(awserrors.ErrorVolumeInUse)
 	}
 
-	volumeService := handlers_ec2_volume.NewNATSVolumeService(natsConn)
+	volumeService := ec2volume.NewNATSVolumeService(natsConn)
 	result, err := volumeService.DeleteVolume(ctx, input, accountID)
 
 	if err != nil {

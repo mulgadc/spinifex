@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
@@ -34,7 +34,7 @@ func daemonWithFakeStateStore(t *testing.T, store *vmmock.StateStore) *Daemon {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.stateStore = store
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
 		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
 	)
@@ -90,7 +90,7 @@ func TestHandleEC2StartStoppedInstance_LoadError(t *testing.T) {
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-load-fail"})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: "i-load-fail"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test1", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -99,7 +99,7 @@ func TestHandleEC2StartStoppedInstance_StateStoreNil(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 	// d.stateStore intentionally left nil.
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-no-store"})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: "i-no-store"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test2", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -109,7 +109,7 @@ func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
 	store.Stopped["i-foreign"] = stoppedVMFixture("i-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-foreign"})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: "i-foreign"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test3", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 
@@ -126,7 +126,7 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test4", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"])
 }
@@ -165,7 +165,7 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally(t *testing
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = silentSub.Unsubscribe() })
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test5", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
 		"a forward timeout must fall back to a local start attempt, not a bare ServerInternal")
@@ -197,7 +197,7 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleSt
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = claimingSub.Unsubscribe() })
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test6", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"],
@@ -213,7 +213,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-load-fail"})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-load-fail"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test1", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -221,7 +221,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 func TestHandleEC2TerminateStoppedInstance_StateStoreNil(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-no-store"})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-no-store"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test2", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -235,7 +235,7 @@ func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testi
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test3", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 
@@ -256,7 +256,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test4", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 
 	var resp map[string]string
@@ -281,7 +281,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *t
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test5", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 
 	var resp map[string]string
@@ -297,7 +297,7 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 	store.Stopped["i-foreign-term"] = stoppedVMFixture("i-foreign-term", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-foreign-term"})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-foreign-term"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test6", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 

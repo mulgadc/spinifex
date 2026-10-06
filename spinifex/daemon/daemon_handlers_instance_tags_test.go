@@ -8,9 +8,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
@@ -30,10 +30,10 @@ func tagTestDaemon(t *testing.T, instanceID string, initial map[string]string) *
 func tagTestDaemonWithStopped(t *testing.T, instanceID string, initial map[string]string) (*Daemon, *vmmock.StateStore) {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
-	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), testTagsKV(t))
+	d.tagsService = ec2tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), testTagsKV(t))
 
 	stopped := vmmock.New()
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
 		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, stopped)
 

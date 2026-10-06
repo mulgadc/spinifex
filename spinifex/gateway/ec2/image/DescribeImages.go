@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/nats-io/nats.go"
 )
 
@@ -33,7 +33,7 @@ func DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, natsCon
 		return output, err
 	}
 
-	imageService := handlers_ec2_image.NewNATSImageService(natsConn, 0)
+	imageService := ec2image.NewNATSImageService(natsConn, 0)
 	result, err := imageService.DescribeImages(ctx, input, accountID)
 	if err != nil {
 		return output, err

@@ -38,7 +38,7 @@ type VPCService interface {
 // CentralTagStore keeps the central tag index in step with this package's
 // records, so DescribeTags agrees with a resource's own describe for as long as
 // the resource exists and says nothing about it afterwards. Implemented by
-// handlers/ec2/tags.TagsServiceImpl.
+// domains/ec2/tags.TagsServiceImpl.
 type CentralTagStore interface {
 	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
 	DeleteAllTags(ctx context.Context, accountID, resourceID string) error

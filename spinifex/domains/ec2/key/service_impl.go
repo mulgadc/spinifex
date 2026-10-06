@@ -51,7 +51,7 @@ type KeyServiceImpl struct {
 }
 
 // CentralTagStore keeps the central tag index in step with key-pair records, so
-// DescribeTags sees creation tags. Implemented by handlers/ec2/tags.TagsServiceImpl.
+// DescribeTags sees creation tags. Implemented by domains/ec2/tags.TagsServiceImpl.
 type CentralTagStore interface {
 	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
 	DeleteAllTags(ctx context.Context, accountID, resourceID string) error

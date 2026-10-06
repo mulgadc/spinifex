@@ -7,7 +7,7 @@ package viperblockd
 // tests that need a real viperblock engine but not real predastore. Success paths
 // that require opening a DETACHED engine against S3 (CreateVolume of a fresh
 // volume, GetVolume/ExpandVolume of an unmounted one) are out of scope here for
-// the same reason handlers/ec2/volume's unit tests stop at validation: nothing
+// the same reason domains/ec2/volume's unit tests stop at validation: nothing
 // past Backend.Init() can execute without a live backend, and this file must not
 // add a network dependency to a unit test.
 

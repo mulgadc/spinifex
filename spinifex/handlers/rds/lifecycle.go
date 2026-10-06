@@ -14,9 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -448,7 +448,7 @@ func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, att
 }
 
 func (c *natsInstanceCommander) StartStoppedInstance(ctx context.Context, instanceID string) error {
-	_, err := natsmsg.NATSRequest[handlers_ec2_instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
-		handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
+	_, err := natsmsg.NATSRequest[ec2instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
+		ec2instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
 	return err
 }

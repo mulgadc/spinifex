@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
@@ -147,7 +147,7 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 // NotFound payload — or no responder at all — means the instance is already
 // gone, which a retried teardown treats as idempotent success.
 func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, accountID string) error {
-	req, err := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
+	req, err := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
 	if err != nil {
 		return fmt.Errorf("marshal stopped-terminate request: %w", err)
 	}

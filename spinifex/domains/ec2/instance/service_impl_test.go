@@ -1,0 +1,5069 @@
+package instance
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// mgrWith returns a vm.Manager pre-populated with vms. Test fixture for
+// services that previously took a *vm.Instances; post-vm.Manager refactor we
+// build a Manager and Replace its set rather than inlining a map.
+func mgrWith(vms map[string]*vm.VM) *vm.Manager {
+	m := vm.NewManager()
+	if len(vms) > 0 {
+		m.Replace(vms)
+	}
+	return m
+}
+
+func TestRunInstance_Success(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+		"t3.small": {InstanceType: aws.String("t3.small")},
+	}
+
+	svc := &InstanceServiceImpl{
+		instanceTypes: instanceTypes,
+	}
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-0abcdef1234567890"),
+		InstanceType: aws.String("t3.micro"),
+		KeyName:      aws.String("my-key"),
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+
+	require.NoError(t, err)
+	require.NotNil(t, instance)
+	require.NotNil(t, ec2Instance)
+
+	// Verify VM struct
+	assert.Contains(t, instance.ID, "i-")
+	assert.Equal(t, vm.StateProvisioning, instance.Status)
+	assert.Equal(t, "t3.micro", instance.InstanceType)
+	assert.Equal(t, input, instance.RunInstancesInput)
+	assert.Equal(t, ec2Instance, instance.Instance)
+
+	// Verify EC2 metadata
+	assert.Equal(t, instance.ID, *ec2Instance.InstanceId)
+	assert.Equal(t, "t3.micro", *ec2Instance.InstanceType)
+	assert.Equal(t, "ami-0abcdef1234567890", *ec2Instance.ImageId)
+	assert.Equal(t, "my-key", *ec2Instance.KeyName)
+	assert.Equal(t, int64(0), *ec2Instance.State.Code)
+	assert.Equal(t, "pending", *ec2Instance.State.Name)
+	assert.NotNil(t, ec2Instance.LaunchTime)
+}
+
+// Architecture is projected onto the customer instance from the instance type at
+// launch, so it flows to DescribeInstances and the IMDS identity document. Guards
+// the platform-wide describe-instances change, not just IMDS.
+func TestRunInstance_ArchitecturePopulated(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {
+			InstanceType:  aws.String("t3.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}},
+		},
+		"t4g.micro": {
+			InstanceType:  aws.String("t4g.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}},
+		},
+	}
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	for typ, wantArch := range map[string]string{"t3.micro": "x86_64", "t4g.micro": "arm64"} {
+		_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+			ImageId:      aws.String("ami-0abcdef1234567890"),
+			InstanceType: aws.String(typ),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, ec2Instance.Architecture, "type=%s", typ)
+		assert.Equal(t, wantArch, *ec2Instance.Architecture, "type=%s", typ)
+	}
+}
+
+func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-0abcdef1234567890"),
+		InstanceType: aws.String("t3.micro"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ebsmetadata.RootDeviceName, aws.StringValue(ec2Instance.RootDeviceName))
+	assert.Equal(t, ec2.DeviceTypeEbs, aws.StringValue(ec2Instance.RootDeviceType))
+}
+
+func TestVolumeTagsFromSpec(t *testing.T) {
+	specs := []*ec2.TagSpecification{
+		{ResourceType: aws.String("instance"), Tags: []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("node")}}},
+		{ResourceType: aws.String("volume"), Tags: []*ec2.Tag{
+			{Key: aws.String("Name"), Value: aws.String("root")},
+			{Key: aws.String("env"), Value: aws.String("test")},
+			{Key: aws.String(""), Value: aws.String("dropped")},
+		}},
+	}
+
+	assert.Equal(t, map[string]string{"Name": "root", "env": "test"}, volumeTagsFromSpec(specs))
+	assert.Nil(t, volumeTagsFromSpec(nil))
+	assert.Nil(t, volumeTagsFromSpec([]*ec2.TagSpecification{specs[0]}))
+}
+
+func TestAppendRootEBSRequest_RecordsDeviceName(t *testing.T) {
+	instance := &vm.VM{}
+	appendRootEBSRequest(instance, "vol-1", ebsmetadata.RootDeviceName, true)
+
+	require.Len(t, instance.EBSRequests.Requests, 1)
+	req := instance.EBSRequests.Requests[0]
+	assert.Equal(t, "vol-1", req.Name)
+	assert.Equal(t, ebsmetadata.RootDeviceName, req.DeviceName)
+	assert.True(t, req.Boot)
+	assert.True(t, req.DeleteOnTermination)
+}
+
+func TestRunInstance_WithIamInstanceProfile(t *testing.T) {
+	const profileARN = "arn:aws:iam::111122223333:instance-profile/app-profile"
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:            aws.String("ami-012345"),
+		InstanceType:       aws.String("t3.micro"),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)},
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+
+	assert.Equal(t, profileARN, instance.IamInstanceProfileArn,
+		"vm.VM must record the canonical ARN supplied by the gateway")
+	assert.True(t, strings.HasPrefix(instance.IamInstanceProfileAssociationId, "iip-assoc-"),
+		"daemon must generate an AWS-style association ID at launch")
+	require.NotNil(t, ec2Instance.IamInstanceProfile)
+	assert.Equal(t, profileARN, aws.StringValue(ec2Instance.IamInstanceProfile.Arn))
+	// Id is deliberately left empty here — daemons have no IAM access, the
+	// gateway enriches Id from the resolved profile.
+	assert.Nil(t, ec2Instance.IamInstanceProfile.Id,
+		"daemon must not emit InstanceProfileID — that is the gateway's responsibility")
+}
+
+func TestRunInstance_AppliesInstanceTags(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("instance"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String("spinifex:eks-cluster"), Value: aws.String("eks-quickstart")},
+					{Key: aws.String("spinifex:eks-nodegroup"), Value: aws.String("default")},
+				},
+			},
+			// A non-instance spec must not leak onto the instance.
+			{
+				ResourceType: aws.String("volume"),
+				Tags:         []*ec2.Tag{{Key: aws.String("ignored"), Value: aws.String("vol")}},
+			},
+		},
+	}
+
+	_, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+
+	// Tags must surface on the instance metadata so DescribeInstances returns
+	// them and the node group can discover its workers by tag.
+	got := map[string]string{}
+	for _, tg := range ec2Instance.Tags {
+		got[aws.StringValue(tg.Key)] = aws.StringValue(tg.Value)
+	}
+	assert.Equal(t, "eks-quickstart", got["spinifex:eks-cluster"])
+	assert.Equal(t, "default", got["spinifex:eks-nodegroup"])
+	assert.NotContains(t, got, "ignored", "volume-scoped tags must not land on the instance")
+}
+
+func TestRunInstance_NoTagSpecifications(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+	}
+
+	_, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	assert.Empty(t, ec2Instance.Tags)
+}
+
+func TestRunInstance_IamInstanceProfileEmptyARNIgnored(t *testing.T) {
+	// AWS SDKs sometimes round-trip an IamInstanceProfile with both fields
+	// empty. Treat that as "no profile attached" rather than persisting a
+	// half-baked binding.
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:            aws.String("ami-012345"),
+		InstanceType:       aws.String("t3.micro"),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String("")},
+	}
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	assert.Empty(t, instance.IamInstanceProfileArn)
+	assert.Empty(t, instance.IamInstanceProfileAssociationId)
+	assert.Nil(t, ec2Instance.IamInstanceProfile)
+}
+
+func TestRunInstance_NoIamInstanceProfile(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
+	}
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+	}
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	assert.Empty(t, instance.IamInstanceProfileArn)
+	assert.Empty(t, instance.IamInstanceProfileAssociationId)
+	assert.Nil(t, ec2Instance.IamInstanceProfile)
+}
+
+func TestRunInstance_NoKeyName(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+	}
+
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+
+	require.NoError(t, err)
+	require.NotNil(t, instance)
+	assert.Nil(t, ec2Instance.KeyName)
+}
+
+func TestRunInstance_InvalidInstanceType(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+	}
+
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("nonexistent.type"),
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceType, err.Error())
+	assert.Nil(t, instance)
+	assert.Nil(t, ec2Instance)
+}
+
+func TestRunInstance_UniqueIDs(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+	}
+
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+	}
+
+	instance1, _, err1 := svc.RunInstance(input)
+	instance2, _, err2 := svc.RunInstance(input)
+
+	require.NoError(t, err1)
+	require.NoError(t, err2)
+	assert.NotEqual(t, instance1.ID, instance2.ID, "Each instance should have a unique ID")
+}
+
+func TestFloorVolumeSizeToAMI(t *testing.T) {
+	loader := &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+		"ami-rocky":   {VolumeSizeGiB: 10},
+		"ami-debian":  {VolumeSizeGiB: 3},
+		"ami-no-size": {VolumeSizeGiB: 0},
+	}}
+	const fourGiB = 4 * 1024 * 1024 * 1024
+	const tenGiB = 10 * 1024 * 1024 * 1024
+	const twentyGiB = 20 * 1024 * 1024 * 1024
+
+	t.Run("ami larger than requested rounds up", func(t *testing.T) {
+		assert.Equal(t, tenGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-rocky", fourGiB))
+	})
+	t.Run("ami smaller than requested keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-debian", fourGiB))
+	})
+	t.Run("requested larger than ami keeps requested", func(t *testing.T) {
+		assert.Equal(t, twentyGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-rocky", twentyGiB))
+	})
+	t.Run("missing VolumeSizeGiB keeps requested (legacy AMI)", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-no-size", fourGiB))
+	})
+	t.Run("unknown AMI keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "ami-unknown", fourGiB))
+	})
+	t.Run("non-ami image id keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), loader, "vol-123", fourGiB))
+	})
+	t.Run("nil loader keeps requested", func(t *testing.T) {
+		assert.Equal(t, fourGiB, floorVolumeSizeToAMI(context.Background(), nil, "ami-rocky", fourGiB))
+	})
+}
+
+func TestRunInstance_NoImageId(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+	}
+
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	input := &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+	require.NotNil(t, instance)
+	assert.Nil(t, ec2Instance.ImageId)
+	assert.Nil(t, ec2Instance.KeyName)
+}
+
+func TestParseVolumeParams_Defaults(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-0abcdef1234567890"),
+	}
+
+	p := parseVolumeParams(input)
+
+	assert.Equal(t, 4*1024*1024*1024, p.size, "default size should be 4GB")
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName, "default device should be the name the AMI declares")
+	assert.True(t, p.deleteOnTermination, "deleteOnTermination should default to true")
+	assert.Empty(t, p.volumeType)
+	assert.Zero(t, p.iops)
+	// AMI-based: imageId should be a generated vol-*, snapshotId should be the AMI
+	assert.True(t, strings.HasPrefix(p.imageId, "vol-"), "AMI launch should generate vol- ID")
+	assert.Equal(t, "ami-0abcdef1234567890", p.snapshotId)
+}
+
+func TestParseVolumeParams_CustomBlockDeviceMapping(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-test123"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/sda1"),
+				Ebs: &ec2.EbsBlockDevice{
+					VolumeSize:          aws.Int64(20),
+					VolumeType:          aws.String("gp3"),
+					Iops:                aws.Int64(3000),
+					DeleteOnTermination: aws.Bool(false),
+				},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+
+	assert.Equal(t, 20*1024*1024*1024, p.size, "size should be 20 GiB in bytes")
+	assert.Equal(t, "/dev/sda1", p.deviceName)
+	assert.Equal(t, "gp3", p.volumeType)
+	assert.Equal(t, 3000, p.iops)
+	assert.False(t, p.deleteOnTermination)
+}
+
+func TestParseVolumeParams_BlockDeviceMappingNoEbs(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-test"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/xvda"),
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+
+	assert.Equal(t, "/dev/xvda", p.deviceName)
+	assert.Equal(t, 4*1024*1024*1024, p.size, "size should stay at default without Ebs")
+	assert.True(t, p.deleteOnTermination)
+}
+
+func TestParseVolumeParams_NonAMIImageId(t *testing.T) {
+	rawImageId := "vol-existing-volume-id"
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String(rawImageId),
+	}
+
+	p := parseVolumeParams(input)
+
+	assert.Equal(t, rawImageId, p.imageId, "non-AMI imageId should be used directly")
+	assert.Empty(t, p.snapshotId, "non-AMI launch should have no snapshotId")
+}
+
+func TestParseVolumeParams_PartialEbs(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-partial"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				Ebs: &ec2.EbsBlockDevice{
+					VolumeSize: aws.Int64(8),
+				},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+
+	assert.Equal(t, 8*1024*1024*1024, p.size)
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName, "device should stay at default")
+	assert.Empty(t, p.volumeType, "volumeType should stay empty")
+	assert.Zero(t, p.iops, "iops should stay zero")
+	assert.True(t, p.deleteOnTermination, "deleteOnTermination should stay at default")
+}
+
+func TestRunInstance_WithTags(t *testing.T) {
+	instanceTypes := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {InstanceType: aws.String("t3.micro")},
+	}
+	svc := &InstanceServiceImpl{instanceTypes: instanceTypes}
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-012345"),
+		InstanceType: aws.String("t3.micro"),
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String("instance"),
+				Tags: []*ec2.Tag{
+					{Key: aws.String("Name"), Value: aws.String("test-vm")},
+					{Key: aws.String("env"), Value: aws.String("dev")},
+				},
+			},
+			{
+				ResourceType: aws.String("volume"),
+				Tags:         []*ec2.Tag{{Key: aws.String("scope"), Value: aws.String("volume-only")}},
+			},
+		},
+	}
+
+	instance, ec2Instance, err := svc.RunInstance(input)
+	require.NoError(t, err)
+
+	// DescribeInstances and tag filters read ec2Instance.Tags, not the echoed
+	// input, and only instance-scoped specs may land there.
+	got := map[string]string{}
+	for _, tag := range ec2Instance.Tags {
+		got[aws.StringValue(tag.Key)] = aws.StringValue(tag.Value)
+	}
+	assert.Equal(t, map[string]string{"Name": "test-vm", "env": "dev"}, got)
+	assert.Equal(t, ec2Instance.Tags, instance.Instance.Tags)
+}
+
+// Placement is projected onto the VM by PrepareRunInstances, not RunInstance,
+// so the assertion has to be driven through the entry point that reads it.
+func TestPrepareRunInstances_ProjectsPlacementGroup(t *testing.T) {
+	instanceTypes, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: instanceTypes,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc", PlatformDetails: "Linux/UNIX"},
+		}},
+		resourceMgr: &fakeResourceCapacityProvider{
+			instanceTypes: instanceTypes,
+			canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		},
+	}
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		Placement:    &ec2.Placement{GroupName: aws.String("my-pg")},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "my-pg", instances[0].PlacementGroupName)
+}
+
+func TestParseVolumeParams_MultipleBlockDeviceMappings(t *testing.T) {
+	// The root mapping is the one naming the AMI root device, not the first.
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-multi"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/sda1"),
+				Ebs: &ec2.EbsBlockDevice{
+					VolumeSize: aws.Int64(30),
+					VolumeType: aws.String("gp3"),
+				},
+			},
+			{
+				DeviceName: aws.String("/dev/sdb"),
+				Ebs: &ec2.EbsBlockDevice{
+					VolumeSize: aws.Int64(100),
+					VolumeType: aws.String("io1"),
+					Iops:       aws.Int64(5000),
+				},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 30*1024*1024*1024, p.size)
+	assert.Equal(t, "/dev/sda1", p.deviceName)
+	assert.Equal(t, "gp3", p.volumeType)
+}
+
+func TestParseVolumeParams_RootMappingSelectedByName(t *testing.T) {
+	// The data mapping is listed first, as the ec2-instance Terraform module
+	// emits it; the root must still be the one naming the AMI root device.
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-order"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/sdf"),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)},
+			},
+			{
+				DeviceName: aws.String(ebsmetadata.RootDeviceName),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8), VolumeType: aws.String("gp3")},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 8*1024*1024*1024, p.size)
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName)
+	assert.Equal(t, "gp3", p.volumeType)
+}
+
+func TestParseVolumeParams_SingleNonRootMappingStillLaunches(t *testing.T) {
+	// ECS and EKS both launch with one mapping named /dev/vda, which is not the
+	// AMI root device name. Position decides when nothing names the root.
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-vda"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/vda"),
+				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(20)},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 20*1024*1024*1024, p.size)
+	assert.Equal(t, "/dev/vda", p.deviceName)
+	assert.Empty(t, UnservedBlockDeviceMappings(input.BlockDeviceMappings))
+}
+
+func TestUnservedBlockDeviceMappings(t *testing.T) {
+	root := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String(ebsmetadata.RootDeviceName),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)},
+	}
+	data := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String("/dev/sdf"),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)},
+	}
+	ephemeral := &ec2.BlockDeviceMapping{
+		DeviceName:  aws.String("/dev/sdb"),
+		VirtualName: aws.String("ephemeral0"),
+	}
+	fromSnapshot := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String("/dev/sdg"),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4), SnapshotId: aws.String("snap-1")},
+	}
+	unsized := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String("/dev/sdh"),
+		Ebs:        &ec2.EbsBlockDevice{},
+	}
+
+	tests := []struct {
+		name     string
+		mappings []*ec2.BlockDeviceMapping
+		want     []string
+	}{
+		{name: "none", mappings: nil},
+		{name: "root only", mappings: []*ec2.BlockDeviceMapping{root}},
+		{name: "sized data after root", mappings: []*ec2.BlockDeviceMapping{root, data}},
+		{name: "sized data before root", mappings: []*ec2.BlockDeviceMapping{data, root}},
+		{name: "ephemeral ignored", mappings: []*ec2.BlockDeviceMapping{root, ephemeral}},
+		{name: "ephemeral only", mappings: []*ec2.BlockDeviceMapping{ephemeral}},
+		{name: "data naming a snapshot", mappings: []*ec2.BlockDeviceMapping{root, fromSnapshot}, want: []string{"/dev/sdg (names a snapshot)"}},
+		{name: "data naming no size", mappings: []*ec2.BlockDeviceMapping{root, unsized}, want: []string{"/dev/sdh (names no size)"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, UnservedBlockDeviceMappings(tt.mappings))
+		})
+	}
+}
+
+func TestParseVolumeParams_Io1WithIops(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-io1"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String("/dev/sda1"),
+				Ebs: &ec2.EbsBlockDevice{
+					VolumeSize: aws.Int64(100),
+					VolumeType: aws.String("io1"),
+					Iops:       aws.Int64(5000),
+				},
+			},
+		},
+	}
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 100*1024*1024*1024, p.size)
+	assert.Equal(t, "io1", p.volumeType)
+	assert.Equal(t, 5000, p.iops)
+}
+
+// --- Describe* coverage -----------------------------------------------------
+
+type fakeResourceCapacityProvider struct {
+	// mu guards the mutating fields below so concurrent-claim tests can
+	// call Allocate/Deallocate from multiple goroutines race-free.
+	mu             sync.Mutex
+	types          []*ec2.InstanceTypeInfo
+	supportedTypes []*ec2.InstanceTypeInfo
+	gotShowCap     bool
+	calls          int
+	supportedCalls int
+	instanceTypes  map[string]*ec2.InstanceTypeInfo
+	allocateErr    error
+	allocated      []*ec2.InstanceTypeInfo
+	deallocated    []*ec2.InstanceTypeInfo
+	canAllocFn     func(*ec2.InstanceTypeInfo, int) int
+
+	reservationAllocErr  error
+	reservationAllocated []*ec2.InstanceTypeInfo
+	reservationReleased  []*ec2.InstanceTypeInfo
+	reservationAvailFn   func(string, string, *ec2.InstanceTypeInfo) int
+
+	memPressure bool
+}
+
+func (f *fakeResourceCapacityProvider) HostUnderMemoryPressure() bool { return f.memPressure }
+
+func (f *fakeResourceCapacityProvider) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+	f.calls++
+	f.gotShowCap = showCapacity
+	return f.types
+}
+
+func (f *fakeResourceCapacityProvider) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeInfo {
+	f.supportedCalls++
+	if f.supportedTypes != nil {
+		return f.supportedTypes
+	}
+	return f.types
+}
+
+func (f *fakeResourceCapacityProvider) Allocate(it *ec2.InstanceTypeInfo) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.allocateErr != nil {
+		return f.allocateErr
+	}
+	f.allocated = append(f.allocated, it)
+	return nil
+}
+
+func (f *fakeResourceCapacityProvider) Deallocate(it *ec2.InstanceTypeInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deallocated = append(f.deallocated, it)
+}
+
+func (f *fakeResourceCapacityProvider) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {
+	if f.canAllocFn != nil {
+		return f.canAllocFn(it, count)
+	}
+	return count
+}
+
+func (f *fakeResourceCapacityProvider) AllocateFromReservation(_, _ string, it *ec2.InstanceTypeInfo) error {
+	if f.reservationAllocErr != nil {
+		return f.reservationAllocErr
+	}
+	f.reservationAllocated = append(f.reservationAllocated, it)
+	return nil
+}
+
+func (f *fakeResourceCapacityProvider) ReleaseToReservation(_ string, it *ec2.InstanceTypeInfo) {
+	f.reservationReleased = append(f.reservationReleased, it)
+}
+
+func (f *fakeResourceCapacityProvider) ReservationAvailable(reservationID, accountID string, it *ec2.InstanceTypeInfo) int {
+	if f.reservationAvailFn != nil {
+		return f.reservationAvailFn(reservationID, accountID, it)
+	}
+	return 0
+}
+
+func (f *fakeResourceCapacityProvider) InstanceTypes() map[string]*ec2.InstanceTypeInfo {
+	return f.instanceTypes
+}
+
+func TestDescribeInstanceTypes_NilResourceMgr(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeInstanceTypes_ReturnsSupportedByDefault(t *testing.T) {
+	prov := &fakeResourceCapacityProvider{
+		supportedTypes: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+			{InstanceType: aws.String("t3.small")},
+			{InstanceType: aws.String("m5.large")},
+		},
+		types: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+		},
+	}
+	svc := &InstanceServiceImpl{resourceMgr: prov}
+
+	out, err := svc.DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, "")
+	require.NoError(t, err)
+	require.Len(t, out.InstanceTypes, 3,
+		"no-filter DescribeInstanceTypes must return the supported set, not the capacity-gated set")
+	assert.Equal(t, 1, prov.supportedCalls, "supported-types path must be hit when capacity filter absent")
+	assert.Equal(t, 0, prov.calls, "capacity-gated path must not be hit when capacity filter absent")
+}
+
+func TestDescribeInstanceTypes_CapacityFilterHitsAvailable(t *testing.T) {
+	prov := &fakeResourceCapacityProvider{
+		types: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+			{InstanceType: aws.String("t3.micro")},
+		},
+		supportedTypes: []*ec2.InstanceTypeInfo{
+			{InstanceType: aws.String("t3.micro")},
+			{InstanceType: aws.String("m5.large")},
+		},
+	}
+	svc := &InstanceServiceImpl{resourceMgr: prov}
+
+	input := &ec2.DescribeInstanceTypesInput{
+		Filters: []*ec2.Filter{
+			{Name: aws.String("capacity"), Values: []*string{aws.String("true")}},
+		},
+	}
+	out, err := svc.DescribeInstanceTypes(context.Background(), input, "")
+	require.NoError(t, err)
+	require.Len(t, out.InstanceTypes, 2, "capacity=true must use the per-slot list")
+	assert.Equal(t, 1, prov.calls, "capacity-gated path must be hit when capacity=true")
+	assert.True(t, prov.gotShowCap, "capacity=true filter must reach the provider")
+	assert.Equal(t, 0, prov.supportedCalls, "supported-types path must not be hit when capacity=true")
+}
+
+func TestDescribeInstances_Empty(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations)
+}
+
+func TestDescribeInstances_OneVisibleInstance(t *testing.T) {
+	id := "i-aaa111"
+	resID := "r-1"
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:           id,
+		InstanceType: "t3.micro",
+		Status:       vm.StateRunning,
+		AccountID:    owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String(resID),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String(id), InstanceType: aws.String("t3.micro")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v}), config: &config.Config{}}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, resID, *out.Reservations[0].ReservationId)
+	require.Len(t, out.Reservations[0].Instances, 1)
+	assert.Equal(t, id, *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeInstances_AccountFilteringHidesOtherTenant(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-other",
+		AccountID: "999988887777",
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-other"),
+			OwnerId:       aws.String("999988887777"),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-other")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, "111122223333")
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations)
+}
+
+// EKS control-plane VMs are owned by the customer account (their ENI lives in
+// the customer VPC) but are platform-managed system instances, so they must be
+// hidden from the owning customer's DescribeInstances the same way LB VMs are.
+func TestDescribeInstances_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-ekscp",
+		AccountID: owner,
+		ManagedBy: tags.ManagedByEKS,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-ekscp"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-ekscp")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v})}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "managed system VM must not appear in customer listing")
+}
+
+// Root/operator callers still see managed system VMs.
+func TestDescribeInstances_RootSeesManagedSystemVM(t *testing.T) {
+	v := &vm.VM{
+		ID:        "i-lb",
+		AccountID: awsidentifiers.GlobalAccountID,
+		ManagedBy: tags.ManagedByELBv2,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-lb"),
+			OwnerId:       aws.String(awsidentifiers.GlobalAccountID),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-lb")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-lb", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+// A customer's own unmanaged instance (no ManagedBy) stays visible — confirms
+// the exclusion keys on ManagedBy, not on account scope. Future EKS worker
+// nodes (customer-owned, no ManagedBy tag) follow this path.
+func TestDescribeInstances_CustomerWorkloadStaysVisible(t *testing.T) {
+	owner := "111122223333"
+	v := &vm.VM{
+		ID:        "i-worker",
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-worker"),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-worker")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{v.ID: v}), config: &config.Config{}}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-worker", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeInstances_MalformedID(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	input := &ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String("not-an-id")},
+	}
+	_, err := svc.DescribeInstances(context.Background(), input, awsidentifiers.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
+}
+
+func TestDescribeInstances_FilterByInstanceID(t *testing.T) {
+	keep := &vm.VM{
+		ID: "i-keep",
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-keep"),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-keep")},
+	}
+	drop := &vm.VM{
+		ID: "i-drop",
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-drop"),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String("i-drop")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{
+		keep.ID: keep,
+		drop.ID: drop,
+	}), config: &config.Config{}}
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-keep")}}
+	out, err := svc.DescribeInstances(context.Background(), input, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-keep", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeInstances_ReservationGrouping(t *testing.T) {
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-shared")}
+	instances := map[string]*vm.VM{
+		"i-first": {
+			ID: "i-first", Reservation: reservation,
+			Instance: &ec2.Instance{InstanceId: aws.String("i-first")},
+		},
+		"i-second": {
+			ID: "i-second", Reservation: reservation,
+			Instance: &ec2.Instance{InstanceId: aws.String("i-second")},
+		},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(instances), config: &config.Config{}}
+
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
+	assert.Len(t, out.Reservations[0].Instances, 2)
+}
+
+// TestDescribeInstances_FilterExcludesOnlyInstance_ReturnsZeroReservations
+// checks a reservation whose one instance is filtered out by --filters does
+// not appear in the response at all, since AWS never returns an empty one.
+func TestDescribeInstances_FilterExcludesOnlyInstance_ReturnsZeroReservations(t *testing.T) {
+	lonely := &vm.VM{
+		ID:           "i-lonely",
+		InstanceType: "t3.micro",
+		Reservation:  &ec2.Reservation{ReservationId: aws.String("r-lonely")},
+		Instance:     &ec2.Instance{InstanceId: aws.String("i-lonely")},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{lonely.ID: lonely}), config: &config.Config{}}
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
+	}
+	out, err := svc.DescribeInstances(context.Background(), input, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
+}
+
+// TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservations
+// is the KV-path (stopped/terminated) counterpart of the live-path test above.
+func TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservations(t *testing.T) {
+	lonely := &vm.VM{
+		ID:           "i-lonely-stopped",
+		InstanceType: "t3.micro",
+		Reservation:  &ec2.Reservation{ReservationId: aws.String("r-lonely-stopped")},
+		Instance:     &ec2.Instance{InstanceId: aws.String("i-lonely-stopped")},
+	}
+	svc := &InstanceServiceImpl{config: &config.Config{}}
+	listFn := func() ([]*vm.VM, error) { return []*vm.VM{lonely}, nil }
+
+	input := &ec2.DescribeInstancesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
+	}
+	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances")
+	require.NoError(t, err)
+	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
+}
+
+func TestDescribeInstanceAttribute_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		Attribute: aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestDescribeInstanceAttribute_MissingAttribute(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-aaa"),
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
+	id := "i-attr1"
+	owner := awsidentifiers.GlobalAccountID
+	v := &vm.VM{
+		ID:           id,
+		InstanceType: "t3.large",
+		AccountID:    owner,
+		RunInstancesInput: &ec2.RunInstancesInput{
+			// base64("raw-user-data") — DescribeInstanceAttribute returns user-data base64-encoded.
+			UserData: aws.String("cmF3LXVzZXItZGF0YQ=="),
+		},
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	tests := []struct {
+		name       string
+		attribute  string
+		assertions func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput)
+	}{
+		{
+			name:      "instanceType",
+			attribute: ec2.InstanceAttributeNameInstanceType,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.InstanceType)
+				assert.Equal(t, "t3.large", *out.InstanceType.Value)
+			},
+		},
+		{
+			name:      "userData",
+			attribute: ec2.InstanceAttributeNameUserData,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.UserData)
+				assert.Equal(t, "cmF3LXVzZXItZGF0YQ==", *out.UserData.Value)
+			},
+		},
+		{
+			name:      "disableApiTermination",
+			attribute: ec2.InstanceAttributeNameDisableApiTermination,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.DisableApiTermination)
+				assert.False(t, *out.DisableApiTermination.Value)
+			},
+		},
+		{
+			name:      "ebsOptimized",
+			attribute: ec2.InstanceAttributeNameEbsOptimized,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.EbsOptimized)
+				assert.False(t, *out.EbsOptimized.Value)
+			},
+		},
+		{
+			name:      "enaSupport",
+			attribute: ec2.InstanceAttributeNameEnaSupport,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.EnaSupport)
+				assert.True(t, *out.EnaSupport.Value)
+			},
+		},
+		{
+			name:      "sourceDestCheck",
+			attribute: ec2.InstanceAttributeNameSourceDestCheck,
+			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
+				require.NotNil(t, out.SourceDestCheck)
+				assert.True(t, *out.SourceDestCheck.Value)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+				InstanceId: aws.String(id),
+				Attribute:  aws.String(tc.attribute),
+			}, owner)
+			require.NoError(t, err)
+			require.NotNil(t, out)
+			assert.Equal(t, id, *out.InstanceId)
+			tc.assertions(t, out)
+		})
+	}
+}
+
+func TestDescribeInstanceAttribute_NotRunning_NoStore(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{})}
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-missing"),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeInstanceAttribute_FoundInStoppedStore(t *testing.T) {
+	id := "i-stopped1"
+	owner := awsidentifiers.GlobalAccountID
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, InstanceType: "t3.medium", AccountID: owner},
+	}}
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: store,
+	}
+
+	out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, owner)
+	require.NoError(t, err)
+	assert.Equal(t, "t3.medium", *out.InstanceType.Value)
+}
+
+func TestDescribeInstanceAttribute_NotFound(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}},
+	}
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String("i-ghost"),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, awsidentifiers.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestDescribeInstanceAttribute_HiddenForOtherAccount(t *testing.T) {
+	id := "i-other-acct"
+	v := &vm.VM{ID: id, InstanceType: "t3.micro", AccountID: "999988887777"}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		Attribute:  aws.String(ec2.InstanceAttributeNameInstanceType),
+	}, "111122223333")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestDescribeInstanceAttribute_DisableApiTermination(t *testing.T) {
+	owner := awsidentifiers.GlobalAccountID
+
+	tests := []struct {
+		name     string
+		instance *vm.VM
+		want     bool
+	}{
+		{
+			name: "flag true on RunInstancesInput",
+			instance: &vm.VM{
+				ID: "i-prot", AccountID: owner,
+				RunInstancesInput: &ec2.RunInstancesInput{
+					DisableApiTermination: aws.Bool(true),
+				},
+			},
+			want: true,
+		},
+		{
+			name: "flag false on RunInstancesInput",
+			instance: &vm.VM{
+				ID: "i-noprot", AccountID: owner,
+				RunInstancesInput: &ec2.RunInstancesInput{
+					DisableApiTermination: aws.Bool(false),
+				},
+			},
+			want: false,
+		},
+		{
+			name: "RunInstancesInput.DisableApiTermination nil",
+			instance: &vm.VM{
+				ID: "i-nilflag", AccountID: owner,
+				RunInstancesInput: &ec2.RunInstancesInput{},
+			},
+			want: false,
+		},
+		{
+			name:     "RunInstancesInput nil (legacy)",
+			instance: &vm.VM{ID: "i-legacy", AccountID: owner},
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{tc.instance.ID: tc.instance})}
+			out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+				InstanceId: aws.String(tc.instance.ID),
+				Attribute:  aws.String(ec2.InstanceAttributeNameDisableApiTermination),
+			}, owner)
+			require.NoError(t, err)
+			require.NotNil(t, out.DisableApiTermination)
+			assert.Equal(t, tc.want, *out.DisableApiTermination.Value)
+		})
+	}
+}
+
+func TestDescribeStoppedInstances_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
+	owner := awsidentifiers.GlobalAccountID
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			"i-stop1": {
+				ID:        "i-stop1",
+				AccountID: owner,
+				Reservation: &ec2.Reservation{
+					ReservationId: aws.String("r-stop1"),
+					OwnerId:       aws.String(owner),
+				},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-stop1")},
+			},
+		},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-stop1", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeTerminatedInstances_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestDescribeTerminatedInstances_HappyPath(t *testing.T) {
+	owner := awsidentifiers.GlobalAccountID
+	store := &vmmock.StateStore{
+		Terminated: map[string]*vm.VM{
+			"i-term1": {
+				ID:        "i-term1",
+				AccountID: owner,
+				Reservation: &ec2.Reservation{
+					ReservationId: aws.String("r-term1"),
+					OwnerId:       aws.String(owner),
+				},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-term1")},
+			},
+		},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	out, err := svc.DescribeTerminatedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	assert.Equal(t, "i-term1", *out.Reservations[0].Instances[0].InstanceId)
+}
+
+func TestDescribeKVInstances_FilteringGroupingAndIsolation(t *testing.T) {
+	owner := "111122223333"
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-shared")}
+	first := &vm.VM{
+		ID: "i-first", AccountID: owner, Reservation: reservation,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-first")},
+	}
+	second := &vm.VM{
+		ID: "i-second", AccountID: owner, Reservation: reservation,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-second")},
+	}
+	other := &vm.VM{
+		ID: "i-other", AccountID: "999988887777",
+		Reservation: &ec2.Reservation{ReservationId: aws.String("r-other")},
+		Instance:    &ec2.Instance{InstanceId: aws.String("i-other")},
+	}
+	store := &vmmock.StateStore{
+		Stopped:    map[string]*vm.VM{first.ID: first, second.ID: second, other.ID: other},
+		Terminated: map[string]*vm.VM{first.ID: first, second.ID: second, other.ID: other},
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+
+	tests := []struct {
+		name string
+		call func(*ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error)
+	}{
+		{"stopped", func(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeStoppedInstances(context.Background(), input, owner)
+		}},
+		{"terminated", func(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeTerminatedInstances(context.Background(), input, owner)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := tt.call(&ec2.DescribeInstancesInput{})
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			assert.Equal(t, "r-shared", aws.StringValue(out.Reservations[0].ReservationId))
+			assert.Len(t, out.Reservations[0].Instances, 2)
+
+			out, err = tt.call(&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-second")}})
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			require.Len(t, out.Reservations[0].Instances, 1)
+			assert.Equal(t, "i-second", aws.StringValue(out.Reservations[0].Instances[0].InstanceId))
+		})
+	}
+}
+
+func TestIsInstanceVisible(t *testing.T) {
+	tests := []struct {
+		name   string
+		caller string
+		owner  string
+		want   bool
+	}{
+		{"empty owner, global caller", awsidentifiers.GlobalAccountID, "", true},
+		{"empty owner, non-global caller", "111122223333", "", false},
+		{"matching account", "111122223333", "111122223333", true},
+		{"different accounts", "111122223333", "999988887777", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsInstanceVisible(tc.caller, tc.owner))
+		})
+	}
+}
+
+func TestModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestModifyInstanceAttribute_SourceDestCheckTrueNoOp(t *testing.T) {
+	// SourceDestCheck=true succeeds without touching KV or requiring stopped state.
+	svc := &InstanceServiceImpl{}
+	out, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:      aws.String("i-sdc-001"),
+		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, "acc")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+}
+
+func TestModifyInstanceAttribute_SourceDestCheckFalseUnsupported(t *testing.T) {
+	// Disabling is unsupported: OVN port security always enforces the check.
+	svc := &InstanceServiceImpl{}
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:      aws.String("i-sdc-001"),
+		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnsupported, err.Error())
+}
+
+func TestModifyInstanceAttribute_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String("i-1"),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestModifyInstanceAttribute_InstanceNotFound(t *testing.T) {
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String("i-missing"),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestModifyInstanceAttribute_NotStopped(t *testing.T) {
+	id := "i-running"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestModifyInstanceAttribute_NotVisible(t *testing.T) {
+	id := "i-stopped"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestModifyInstanceAttribute_ChangeInstanceType(t *testing.T) {
+	id := "i-type"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {
+			ID:           id,
+			Status:       vm.StateStopped,
+			AccountID:    "acc",
+			InstanceType: "t3.micro",
+			Config:       vm.Config{InstanceType: "t3.micro"},
+			Instance: &ec2.Instance{
+				InstanceId:   aws.String(id),
+				InstanceType: aws.String("t3.micro"),
+			},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.NoError(t, err)
+
+	updated := store.Stopped[id]
+	require.NotNil(t, updated)
+	assert.Equal(t, "t3.medium", updated.InstanceType)
+	assert.Equal(t, "t3.medium", updated.Config.InstanceType)
+	assert.Equal(t, "t3.medium", *updated.Instance.InstanceType)
+}
+
+func TestModifyInstanceAttribute_ChangeInstanceType_EmptyValue(t *testing.T) {
+	id := "i-empty"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", Instance: &ec2.Instance{}},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceAttributeValue, err.Error())
+}
+
+func TestModifyInstanceAttribute_ChangeInstanceType_NilEmbeddedInstance(t *testing.T) {
+	id := "i-nil-inst"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestModifyInstanceAttribute_ChangeUserData(t *testing.T) {
+	id := "i-ud"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {
+			ID:        id,
+			Status:    vm.StateStopped,
+			AccountID: "acc",
+			RunInstancesInput: &ec2.RunInstancesInput{
+				UserData: aws.String("b2xk"),
+			},
+			Instance: &ec2.Instance{InstanceId: aws.String(id)},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	newContent := "#!/bin/bash"
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		UserData:   &ec2.BlobAttributeValue{Value: []byte(newContent)},
+	}, "acc")
+	require.NoError(t, err)
+
+	updated := store.Stopped[id]
+	require.NotNil(t, updated)
+	assert.Equal(t, "IyEvYmluL2Jhc2g=", *updated.RunInstancesInput.UserData)
+}
+
+// StateReason is observed state, so the API must not touch it. The node clears
+// it when it starts the instance; until then the reason for the stop stands.
+func TestModifyInstanceAttribute_LeavesStateReasonToTheNode(t *testing.T) {
+	id := "i-recovery"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {
+			ID:           id,
+			Status:       vm.StateStopped,
+			AccountID:    "acc",
+			InstanceType: "m7i.small",
+			Config:       vm.Config{InstanceType: "m7i.small"},
+			Instance: &ec2.Instance{
+				InstanceId:   aws.String(id),
+				InstanceType: aws.String("m7i.small"),
+				StateReason: &ec2.StateReason{
+					Code:    aws.String("Server.InsufficientInstanceCapacity"),
+					Message: aws.String("Instance type not available on any node"),
+				},
+			},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.micro")},
+	}, "acc")
+	require.NoError(t, err)
+
+	updated := store.Stopped[id]
+	require.NotNil(t, updated)
+	assert.Equal(t, "t3.micro", updated.InstanceType, "the type change itself must still apply")
+	require.NotNil(t, updated.Instance.StateReason, "the API must not clear observed state")
+	assert.Equal(t, "Server.InsufficientInstanceCapacity", *updated.Instance.StateReason.Code)
+}
+
+func TestModifyInstanceAttribute_DisableApiTermination_Running(t *testing.T) {
+	const owner = "acc"
+	tests := []struct {
+		name     string
+		initial  *ec2.RunInstancesInput
+		setTo    bool
+		wantFlag bool
+	}{
+		{name: "set true on empty input", initial: &ec2.RunInstancesInput{}, setTo: true, wantFlag: true},
+		{name: "set true on nil input (legacy)", initial: nil, setTo: true, wantFlag: true},
+		{name: "clear from true to false", initial: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)}, setTo: false, wantFlag: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-run"
+			mgr := mgrWith(map[string]*vm.VM{
+				id: {ID: id, AccountID: owner, Status: vm.StateRunning, RunInstancesInput: tc.initial},
+			})
+			svc := &InstanceServiceImpl{vmMgr: mgr}
+
+			_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+				InstanceId:            aws.String(id),
+				DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(tc.setTo)},
+			}, owner)
+			require.NoError(t, err)
+
+			got, _ := mgr.Get(id)
+			require.NotNil(t, got.RunInstancesInput)
+			require.NotNil(t, got.RunInstancesInput.DisableApiTermination)
+			assert.Equal(t, tc.wantFlag, *got.RunInstancesInput.DisableApiTermination)
+		})
+	}
+}
+
+func TestModifyInstanceAttribute_DisableApiTermination_Running_NotVisible(t *testing.T) {
+	id := "i-run-other"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, AccountID: "owner-acc", Status: vm.StateRunning},
+	})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String(id),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestModifyInstanceAttribute_DisableApiTermination_Stopped(t *testing.T) {
+	id := "i-stop-prot"
+	owner := "acc"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {
+			ID: id, Status: vm.StateStopped, AccountID: owner,
+			Instance: &ec2.Instance{InstanceId: aws.String(id)},
+		},
+	}}
+	svc := &InstanceServiceImpl{
+		vmMgr:        mgrWith(map[string]*vm.VM{}),
+		stoppedStore: store,
+	}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String(id),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+	}, owner)
+	require.NoError(t, err)
+
+	updated := store.Stopped[id]
+	require.NotNil(t, updated)
+	require.NotNil(t, updated.RunInstancesInput)
+	assert.True(t, *updated.RunInstancesInput.DisableApiTermination)
+}
+
+func TestModifyInstanceAttribute_WriteError(t *testing.T) {
+	id := "i-werr"
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			id: {
+				ID:           id,
+				Status:       vm.StateStopped,
+				AccountID:    "acc",
+				InstanceType: "t3.micro",
+				Config:       vm.Config{InstanceType: "t3.micro"},
+				Instance: &ec2.Instance{
+					InstanceId:   aws.String(id),
+					InstanceType: aws.String("t3.micro"),
+				},
+			},
+		},
+		UpdateStoppedErr: fmt.Errorf("kv write boom"),
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect covers a
+// ModifyInstanceAttribute racing a winning ClaimStoppedInstance (e.g.
+// StartStoppedInstance) that deletes the record between this call's Load and
+// its CAS write: the update must fail cleanly instead of resurrecting a
+// stale stopped entry.
+func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
+	id := "i-raced"
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			id: {
+				ID:           id,
+				Status:       vm.StateStopped,
+				AccountID:    "acc",
+				InstanceType: "t3.micro",
+				Config:       vm.Config{InstanceType: "t3.micro"},
+				Instance: &ec2.Instance{
+					InstanceId:   aws.String(id),
+					InstanceType: aws.String("t3.micro"),
+				},
+			},
+		},
+		ClaimAfterLoad: true,
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:   aws.String(id),
+		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
+	}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.Empty(t, store.Stopped, "the claimed record must not be resurrected")
+	assert.Equal(t, []string{id}, store.ClaimedStopped)
+}
+
+// --- TerminateStoppedInstance tests ---
+
+type fakeVolumeDeleter struct {
+	calls    []string
+	deleted  []string
+	detached []string
+	err      error
+}
+
+func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVolumeInput, _ string) (*ec2.DeleteVolumeOutput, error) {
+	id := aws.StringValue(input.VolumeId)
+	f.calls = append(f.calls, id)
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.deleted = append(f.deleted, id)
+	return &ec2.DeleteVolumeOutput{}, nil
+}
+
+// DeleteVolumeOnTerminate mirrors DeleteVolume's call/error bookkeeping; the
+// stopped-instance terminate path calls this instead of DeleteVolume.
+func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	f.calls = append(f.calls, volumeID)
+	if f.err != nil {
+		return f.err
+	}
+	f.deleted = append(f.deleted, volumeID)
+	return nil
+}
+
+// DetachVolumeOnTerminate mirrors DeleteVolumeOnTerminate's call/error
+// bookkeeping but records into detached instead of deleted; the non-DoT
+// Boot-volume branch calls this instead of deleting.
+func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+	f.calls = append(f.calls, volumeID)
+	if f.err != nil {
+		return f.err
+	}
+	f.detached = append(f.detached, volumeID)
+	return nil
+}
+
+type fakeENIDeleter struct {
+	calls  []string
+	forced []bool // force flag per DetachAndDeleteENI call
+	err    error
+}
+
+func (f *fakeENIDeleter) DeleteNetworkInterface(_ context.Context, input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
+	f.calls = append(f.calls, aws.StringValue(input.NetworkInterfaceId))
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &ec2.DeleteNetworkInterfaceOutput{}, nil
+}
+
+// DetachAndDeleteENI records into the same calls slice as the plain delete:
+// callers assert which ENIs were released, not which entry point did it.
+// forced records the force flag per call so the owner-teardown contract is
+// assertable.
+func (f *fakeENIDeleter) DetachAndDeleteENI(_ context.Context, _, eniID string, force bool) (bool, error) {
+	f.calls = append(f.calls, eniID)
+	f.forced = append(f.forced, force)
+	if f.err != nil {
+		return false, f.err
+	}
+	return true, nil
+}
+
+type fakePublicIPReleaser struct {
+	pool     string
+	ip       string
+	ownerENI string
+	released []string // every address released, in call order
+	err      error
+}
+
+func (f *fakePublicIPReleaser) ReleaseIP(_ context.Context, pool, ip, ownerENIID string) error {
+	f.pool = pool
+	f.ip = ip
+	f.ownerENI = ownerENIID
+	f.released = append(f.released, ip)
+	return f.err
+}
+
+// embeddedNATS spins up an in-process NATS server scoped to the test and
+// returns a connected client. Used for service tests that exercise the
+// ebs.delete path inside TerminateStoppedInstance.
+func embeddedNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	_, nc := testutil.StartTestNATS(t)
+	return nc
+}
+
+func TestTerminateStoppedInstance_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestTerminateStoppedInstance_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestTerminateStoppedInstance_LoadError(t *testing.T) {
+	store := &vmmock.StateStore{LoadStoppedErr: errors.New("kv down")}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestTerminateStoppedInstance_NotFound(t *testing.T) {
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestTerminateStoppedInstance_NotStopped(t *testing.T) {
+	id := "i-running"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestTerminateStoppedInstance_NotVisible(t *testing.T) {
+	id := "i-stopped"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
+	id := "i-prot"
+	v := &vm.VM{
+		ID: id, Status: vm.StateStopped, AccountID: "acc",
+		RunInstancesInput: &ec2.RunInstancesInput{
+			DisableApiTermination: aws.Bool(true),
+		},
+	}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-001", DeleteOnTermination: true},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
+
+	assert.Empty(t, vd.calls, "volumes must not be deleted when termination protected")
+	assert.Empty(t, store.WroteTerminated, "must not write to terminated bucket when protected")
+	assert.Empty(t, store.DeletedStopped, "must not remove from stopped bucket when protected")
+}
+
+func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
+	id := "i-term-001"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Equal(t, id, out.InstanceID)
+
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, vm.StateTerminated, store.WroteTerminated[id].Status)
+	assert.Contains(t, store.DeletedStopped, id)
+}
+
+func TestTerminateStoppedInstance_CentralTagsDeleted(t *testing.T) {
+	id := "i-term-tags"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	tw := &fakeTagWriter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, tw.deleteCalls)
+	assert.Equal(t, "acc", tw.accountID, "central delete must target the owner's namespace")
+	assert.Equal(t, id, tw.resourceID)
+}
+
+func TestTerminateStoppedInstance_CentralTagDeleteFailureIsBestEffort(t *testing.T) {
+	id := "i-term-tagerr"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc"},
+	}}
+	tw := &fakeTagWriter{err: errors.New("s3 down")}
+	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "terminate already succeeded; central delete failure must not surface")
+	assert.Equal(t, "terminated", out.Status)
+	assert.Contains(t, store.DeletedStopped, id)
+}
+
+func TestTerminateStoppedInstance_ProtectedSkipsCentralTagDelete(t *testing.T) {
+	id := "i-prot-tags"
+	tw := &fakeTagWriter{}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {
+			ID: id, Status: vm.StateStopped, AccountID: "acc",
+			RunInstancesInput: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)},
+		},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store, tagWriter: tw}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Zero(t, tw.deleteCalls, "central tags must survive a rejected terminate")
+}
+
+func TestTerminateStoppedInstance_WriteTerminatedError_Aborts(t *testing.T) {
+	id := "i-werr"
+	store := &vmmock.StateStore{
+		Stopped:            map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
+		WriteTerminatedErr: errors.New("kv write boom"),
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, store.DeletedStopped, "stopped delete must not run when terminated write fails")
+}
+
+func TestTerminateStoppedInstance_RetriesStoppedDelete(t *testing.T) {
+	id := "i-retry"
+	store := &vmmock.StateStore{
+		Stopped:         map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, AccountID: "acc"}},
+		DeleteFailFirst: true,
+	}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, 2, store.DeleteAttempts, "first delete fails, retry succeeds")
+	assert.Contains(t, store.DeletedStopped, id)
+}
+
+func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
+	id := "i-vol"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-user-001", DeleteOnTermination: true},
+		{Name: "vol-keep-001", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vol-user-001"}, vd.deleted, "only DeleteOnTermination=true volumes deleted")
+	assert.Equal(t, []string{"vol-keep-001"}, vd.detached, "terminate implies detach even for a volume that survives it")
+}
+
+// TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the
+// fix: TerminateStoppedInstance must stamp Teardown[vm.TeardownVolumes] on
+// success, mirroring the running-instance path's markTeardownResult
+// (vm/shutdown.go). Without this, daemon.leakedVolumeInstances() and
+// VolumeLeakReaper can never see a stopped-path leak because
+// TerminateStoppedInstance previously never touched Teardown at all.
+func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
+	id := "i-teardown-done"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"ADR-0003 §1 semantics: a successful volume delete must stamp Teardown[volumes]=done")
+	assert.Equal(t, []string{"vol-root-001"}, vd.deleted, "the still-attached root volume must actually be deleted")
+}
+
+// TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError locks
+// the "do not swallow" half of the fix: a DeleteVolumeOnTerminate failure must
+// surface as Teardown[vm.TeardownVolumes]=failed (picked up by
+// daemon.leakedVolumeInstances() / VolumeLeakReaper) rather than being merely
+// logged and forgotten.
+func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *testing.T) {
+	id := "i-teardown-failed"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-root-002", Boot: true, DeleteOnTermination: true},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{err: errors.New("delete forced failure")}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "terminate itself stays best-effort; the failure is tracked via Teardown, not returned")
+
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownFailed), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"a DeleteVolumeOnTerminate failure must be surfaced via Teardown, not silently swallowed")
+	assert.Empty(t, vd.deleted, "the forced failure must mean nothing was actually deleted")
+}
+
+// TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted locks the
+// second half of the terminate-implies-detach fix: a DeleteOnTermination=false
+// Boot volume is never cleared by Stop's Unmount (daemon/vm_adapters.go), so
+// without this it would strand attached to the now-gone instance forever.
+// Terminate must still detach it (AWS semantics: it survives as available,
+// it just isn't deleted).
+func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
+	id := "i-nondot-boot"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-root-nondot", Boot: true, DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-root-nondot"}, vd.detached, "the still-attached non-DoT boot volume must be detached")
+	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes])
+}
+
+// TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted covers the
+// non-Boot half. Stop's Unmount clears a data volume's attachment only when the
+// seal succeeded, so a volume whose seal failed is still in-use and pointing at
+// an instance that is about to stop existing. Skipping the detach here stranded
+// it with no owner left to release it.
+func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.T) {
+	id := "i-nondot-data"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-data-nondot", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-data-nondot"}, vd.detached,
+		"a data volume left attached by a failed seal must still be detached on terminate")
+	assert.Empty(t, vd.deleted, "a DeleteOnTermination=false volume must never be deleted")
+}
+
+// TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure pins the
+// idempotent half: a volume whose metadata doc is gone has already reached the
+// state the detach was asking for, so it must not stamp the teardown failed and
+// keep the instance record alive for the leak reaper.
+func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *testing.T) {
+	id := "i-nondot-gone"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-data-gone", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{err: errors.New(awserrors.ErrorInvalidVolumeNotFound)}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	require.NotNil(t, store.WroteTerminated[id])
+	assert.Equal(t, string(vm.TeardownDone), store.WroteTerminated[id].Teardown[vm.TeardownVolumes],
+		"a volume that is already gone is the detach's goal, not a teardown failure")
+}
+
+func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
+	id := "i-no-vd"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-user-001", DeleteOnTermination: true},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "missing VolumeDeleter must not abort termination")
+	require.NotNil(t, store.WroteTerminated[id])
+}
+
+func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
+	id := "i-int-vol"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-efi-001", EFI: true},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+
+	nc := embeddedNATS(t)
+	var ebsDeleted []string
+	sub, err := nc.Subscribe("ebs.delete", func(msg *nats.Msg) {
+		var req viperblocklegacyv1.EBSDeleteRequest
+		_ = json.Unmarshal(msg.Data, &req)
+		ebsDeleted = append(ebsDeleted, req.Volume)
+		_ = msg.Respond([]byte(`{"Success":true}`))
+	})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	svc := &InstanceServiceImpl{stoppedStore: store, natsConn: nc}
+
+	_, err = svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"vol-efi-001"}, ebsDeleted)
+}
+
+func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {
+	id := "i-pubip"
+	v := &vm.VM{
+		ID:           id,
+		Status:       vm.StateStopped,
+		AccountID:    "acc",
+		PublicIP:     "203.0.113.5",
+		PublicIPPool: "pool-a",
+		ENIId:        "eni-xyz",
+		Instance: &ec2.Instance{
+			InstanceId:       aws.String(id),
+			VpcId:            aws.String("vpc-1"),
+			PrivateIpAddress: aws.String("10.0.0.5"),
+		},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	pr := &fakePublicIPReleaser{}
+	svc := &InstanceServiceImpl{stoppedStore: store, ipReleaser: pr}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "pool-a", pr.pool)
+	assert.Equal(t, "203.0.113.5", pr.ip)
+}
+
+func TestTerminateStoppedInstance_ENIDeleted(t *testing.T) {
+	id := "i-eni"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-1234"}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{}
+	ec := &fakeENICreator{}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	// Detach must precede the delete so a stale in-use attachment can't strand
+	// the ENI record after the instance is gone.
+	assert.Equal(t, 1, ec.detachCalls, "ENI must be detached before delete")
+	assert.Equal(t, []string{"eni-1234"}, ed.calls)
+}
+
+func TestTerminateStoppedInstance_ENIDeleteNotFoundTolerated(t *testing.T) {
+	// A retried teardown after the ENI is already gone returns NotFound. The
+	// instance must still finalize to the terminated bucket, not error out.
+	id := "i-eni-gone"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-gone"}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{err: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Equal(t, []string{"eni-gone"}, ed.calls)
+}
+
+// TestTerminateStoppedInstance_PrimaryENIDetachFailureContinuesToDelete proves a
+// failed detach on the primary ENI does not skip the delete: best-effort
+// cleanup must still attempt to reclaim the ENI record.
+func TestTerminateStoppedInstance_PrimaryENIDetachFailureContinuesToDelete(t *testing.T) {
+	id := "i-eni-detach-fail"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-stuck"}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{}
+	ec := &fakeENICreator{detachErr: errors.New("detach unavailable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Equal(t, 1, ec.detachCalls)
+	assert.Equal(t, []string{"eni-stuck"}, ed.calls, "delete must still run after a failed detach")
+}
+
+// TestTerminateStoppedInstance_PrimaryENIDeleteUnexpectedError proves an
+// unrecognized delete failure (not NotFound) is logged rather than aborting
+// the terminate — the switch's default branch.
+func TestTerminateStoppedInstance_PrimaryENIDeleteUnexpectedError(t *testing.T) {
+	id := "i-eni-delete-fail"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", ENIId: "eni-broken"}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{err: errors.New("server unavailable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: &fakeENICreator{}}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err, "an unexpected ENI delete failure must not abort the stopped-instance terminate")
+	assert.Equal(t, "terminated", out.Status)
+}
+
+// --- TerminateStoppedInstance: releaseAttachedENIs (post-launch attach sweep) ---
+
+// TestTerminateStoppedInstance_ReleaseAttachedENIs_ListErrorLogsAndReturns covers
+// the enumeration failure branch: ListInstanceENIs erroring must not abort
+// terminate, and no detach/delete calls follow since nothing was enumerated.
+func TestTerminateStoppedInstance_ReleaseAttachedENIs_ListErrorLogsAndReturns(t *testing.T) {
+	id := "i-list-err"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	ed := &fakeENIDeleter{}
+	ec := &fakeENICreator{listENIsErr: errors.New("kv unreachable")}
+	svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+	out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", out.Status)
+	assert.Empty(t, ed.calls)
+}
+
+// TestTerminateStoppedInstance_ReleaseAttachedENIs covers the post-launch
+// attachment sweep: multiple ENIs, a detach failure that must not block the
+// rest of the sweep, a DeleteOnTermination=false skip, and a delete failure
+// that must not block the remaining ENIs.
+func TestTerminateStoppedInstance_ReleaseAttachedENIs(t *testing.T) {
+	tests := []struct {
+		name       string
+		records    []ENIInfo
+		detachErr  error
+		deleteErr  error
+		wantDelete []string
+	}{
+		{
+			name: "MultipleENIsHappyPath",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-a", DeleteOnTermination: true},
+				{NetworkInterfaceID: "eni-b", DeleteOnTermination: true},
+			},
+			wantDelete: []string{"eni-a", "eni-b"},
+		},
+		{
+			name: "DeleteOnTerminationFalseSkipsDelete",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-keep", DeleteOnTermination: false},
+			},
+			wantDelete: nil,
+		},
+		{
+			name: "DetachFailureStillDeletes",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-c", DeleteOnTermination: true},
+			},
+			detachErr:  errors.New("detach unavailable"),
+			wantDelete: []string{"eni-c"},
+		},
+		{
+			name: "DeleteFailureContinuesToNextENI",
+			records: []ENIInfo{
+				{NetworkInterfaceID: "eni-d", DeleteOnTermination: true},
+				{NetworkInterfaceID: "eni-e", DeleteOnTermination: true},
+			},
+			deleteErr:  errors.New("delete unavailable"),
+			wantDelete: []string{"eni-d", "eni-e"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := "i-sweep-" + tt.name
+			v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+			ed := &fakeENIDeleter{err: tt.deleteErr}
+			ec := &fakeENICreator{
+				detachErr:    tt.detachErr,
+				instanceENIs: map[string][]ENIInfo{id: tt.records},
+			}
+			svc := &InstanceServiceImpl{stoppedStore: store, eniDeleter: ed, eniCreator: ec}
+
+			out, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+			require.NoError(t, err)
+			assert.Equal(t, "terminated", out.Status)
+			assert.Equal(t, len(tt.records), ec.detachCalls, "every enumerated ENI must be detached regardless of outcome")
+			assert.Equal(t, tt.wantDelete, ed.calls)
+		})
+	}
+}
+
+// --- StartStoppedInstance tests ---
+
+type fakeGPUClaimer struct {
+	claimed     []string
+	claimCounts []int
+	released    []string
+	claimErr    error
+	attachments []gpu.GPUAttachment
+}
+
+func (f *fakeGPUClaimer) Claim(instanceID, _ string, count int) ([]gpu.GPUAttachment, error) {
+	f.claimed = append(f.claimed, instanceID)
+	f.claimCounts = append(f.claimCounts, count)
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	if f.attachments != nil {
+		return append([]gpu.GPUAttachment(nil), f.attachments...), nil
+	}
+	return make([]gpu.GPUAttachment, count), nil
+}
+
+func (f *fakeGPUClaimer) Release(instanceID string) error {
+	f.released = append(f.released, instanceID)
+	return nil
+}
+
+func TestStartStoppedInstance_MissingInstanceID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestStartStoppedInstance_NilStore(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_NilResourceMgr(t *testing.T) {
+	svc := &InstanceServiceImpl{stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}}}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_NilVMMgr(t *testing.T) {
+	svc := &InstanceServiceImpl{
+		stoppedStore: &vmmock.StateStore{Stopped: map[string]*vm.VM{}},
+		resourceMgr:  &fakeResourceCapacityProvider{},
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_LoadError(t *testing.T) {
+	store := &vmmock.StateStore{LoadStoppedErr: errors.New("kv down")}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-1"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestStartStoppedInstance_NotFound(t *testing.T) {
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestStartStoppedInstance_NotFoundButRunningLocally covers the local-race
+// taxonomy fix: when the shared KV has no stopped record for the id but this
+// node's vmMgr already shows it running (a winning claim landed here between
+// another caller's checks and this Load), the correct error is
+// IncorrectInstanceState, not InvalidInstanceID.NotFound — the instance is
+// mid-transition, not gone. A genuinely-absent instance (empty vmMgr) still
+// returns NotFound (TestStartStoppedInstance_NotFound).
+func TestStartStoppedInstance_NotFoundButRunningLocally(t *testing.T) {
+	id := "i-won-locally"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateRunning, AccountID: "acc"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+// TestStartStoppedInstance_LocalErrorRecordIsStarted is the failed-recovery
+// case: the shared KV never holds a StateError record, so the old membership
+// check read the dead local record as proof the instance was already running
+// and refused the only remedy the operator had. The record's state decides now,
+// and an error-state record is startable.
+func TestStartStoppedInstance_LocalErrorRecordIsStarted(t *testing.T) {
+	id := "i-recovery-failed"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	var transitions []vm.InstanceState
+	mgr.SetDeps(vm.Deps{
+		NodeID: "test-node",
+		// Mounting is a no-op so the launch reaches the manager's unwired
+		// resolver and fails deterministically without a qemu process.
+		VolumeMounter: raceVolumeMounter{},
+		TransitionState: func(v *vm.VM, to vm.InstanceState) error {
+			transitions = append(transitions, to)
+			v.Status = to
+			return nil
+		},
+	})
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateError, AccountID: "acc", InstanceType: "t3.micro"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	// The launch itself cannot succeed without a hypervisor behind it; what
+	// matters is that the start was attempted rather than refused as running.
+	if err != nil {
+		assert.NotEqual(t, awserrors.ErrorIncorrectInstanceState, err.Error(),
+			"an error-state record must not be reported as already running")
+	}
+	assert.Contains(t, transitions, vm.StatePending,
+		"the instance must be moved out of error state for the launch")
+}
+
+// TestStartStoppedInstance_LocalStoppedRecordIsRefused holds the other side of
+// the same check. A claim inserts the instance locally before it launches, so a
+// local stopped record with nothing in the store is a start already under way,
+// and starting it again would put two launches on one volume.
+func TestStartStoppedInstance_LocalStoppedRecordIsRefused(t *testing.T) {
+	id := "i-mid-claim"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: "t3.micro"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+// TestStartStoppedInstance_LocalTerminatedRecordIsNotFound keeps the third case
+// separate: a terminated record is gone, not busy and not startable.
+func TestStartStoppedInstance_LocalTerminatedRecordIsNotFound(t *testing.T) {
+	id := "i-gone"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateTerminated, AccountID: "acc"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestStartStoppedInstance_LocalRecordOfAnotherAccount holds the visibility
+// rule on the local path too: reading another account's record must answer the
+// same way an absent one does.
+func TestStartStoppedInstance_LocalRecordOfAnotherAccount(t *testing.T) {
+	id := "i-someone-elses"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{}}
+	mgr := vm.NewManager()
+	mgr.Insert(&vm.VM{ID: id, Status: vm.StateError, AccountID: "owner-acc"})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        mgr,
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestStartStoppedInstance_NotStopped(t *testing.T) {
+	id := "i-running"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateRunning, AccountID: "acc"},
+	}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestStartStoppedInstance_NotVisible(t *testing.T) {
+	id := "i-foreign"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "owner-acc", InstanceType: "t3.micro"},
+	}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  &fakeResourceCapacityProvider{},
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+
+	// Cross-tenant rejection must not delete from KV.
+	assert.Empty(t, store.DeletedStopped, "cross-tenant rejection must not delete stopped instance")
+}
+
+func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
+	id := "i-badtype"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: "z99.nope"},
+	}}
+	prov := &fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+	assert.Empty(t, prov.allocated, "no allocation should occur for unknown type")
+
+	// The claim removed the entry from KV before the instance-type check;
+	// the rollback must write it back so the instance is not lost.
+	assert.Contains(t, store.ClaimedStopped, id, "claim must run before the instance-type check")
+	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after a downstream failure")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
+}
+
+func TestStartStoppedInstance_AllocateFails(t *testing.T) {
+	id := "i-alloc-fail"
+	itype := "t3.micro"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+	}}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			itype: {InstanceType: aws.String(itype)},
+		},
+		allocateErr: errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        vm.NewManager(),
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+
+	// A failed Allocate must not leave the instance stranded — it was
+	// already claimed (removed from KV) by this point, so it must be
+	// restored.
+	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after Allocate failure")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
+}
+
+// GPU claim failure must roll back the resource allocation and remove the VM
+// from the manager's map — otherwise stale capacity stays consumed.
+func TestStartStoppedInstance_GPUClaimFailureRollsBack(t *testing.T) {
+	id := "i-gpu-fail"
+	itype := "g5.xlarge"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+	}}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{
+			itype: {InstanceType: aws.String(itype), GpuInfo: &ec2.GpuInfo{
+				Gpus: []*ec2.GpuDeviceInfo{{Name: aws.String("nvidia-a10g"), Count: aws.Int64(1)}},
+			}},
+		},
+	}
+	claimer := &fakeGPUClaimer{claimErr: errors.New("vfio bind failed")}
+	mgr := vm.NewManager()
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        mgr,
+		gpuClaimer:   claimer,
+	}
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+
+	require.Len(t, prov.allocated, 1, "allocator must have been called")
+	require.Len(t, prov.deallocated, 1, "GPU claim failure must trigger deallocate")
+	_, stillInMgr := mgr.Get(id)
+	assert.False(t, stillInMgr, "GPU claim failure must remove the VM from the manager map")
+	assert.Empty(t, store.DeletedStopped, "stopped-KV entry must remain on rollback")
+
+	// The atomic claim removed the entry from KV before Allocate/GPU-claim
+	// ran; the rollback must write it back so it is not lost.
+	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after GPU claim failure")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
+}
+
+// TestStartStoppedInstance_ClaimConflict proves a lost claim race is
+// reported as ErrorIncorrectInstanceState and never reaches Allocate/Insert.
+func TestStartStoppedInstance_ClaimConflict(t *testing.T) {
+	id := "i-claim-conflict"
+	itype := "t3.micro"
+	store := &vmmock.StateStore{
+		Stopped: map[string]*vm.VM{
+			id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+		},
+		ClaimStoppedErr: vm.ErrStoppedInstanceClaimed,
+	}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: {InstanceType: aws.String(itype)}},
+	}
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        vm.NewManager(),
+	}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.Empty(t, prov.allocated, "a lost claim race must never reach Allocate")
+}
+
+// raceVolumeMounter is a no-op vm.VolumeMounter that lets vmMgr.Run proceed
+// past the mount step in the concurrent-claim race test below, so Run
+// reaches vm.Manager's (deliberately unwired) InstanceTypeResolver check and
+// fails fast and deterministically without touching a real qemu process.
+type raceVolumeMounter struct{}
+
+func (raceVolumeMounter) Mount(context.Context, *vm.VM) error           { return nil }
+func (raceVolumeMounter) Unmount(context.Context, *vm.VM) error         { return nil }
+func (raceVolumeMounter) Abandon(context.Context, *vm.VM, string) error { return nil }
+func (raceVolumeMounter) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
+	return nil
+}
+func (raceVolumeMounter) UnmountOne(context.Context, string, viperblocklegacyv1.EBSRequest) error {
+	return nil
+}
+
+// TestStartStoppedInstance_ConcurrentClaimRace is the regression test for
+// the double-start bug this claim closes: two nodes (or a forwarded call
+// racing a local fallback) could both observe the same stopped instance as
+// claimable and both launch it onto the same EBS volume. It fires two
+// concurrent StartStoppedInstance calls at the same stopped instance id and
+// asserts the atomic claim lets exactly one of them proceed past it —
+// reaching resourceMgr.Allocate / vmMgr.Insert / vmMgr.Run — while the other
+// loses the race and never touches resourceMgr or vmMgr at all.
+//
+// The loser's error code depends on exactly when it lost: if it loses the
+// atomic ClaimStoppedInstance call itself, it gets ErrorIncorrectInstanceState;
+// if the winner's claim already completed before the loser's preliminary
+// (non-atomic, pre-claim) LoadStoppedInstance validation ran, the loser sees
+// the record as already gone and gets ErrorInvalidInstanceIDNotFound instead.
+// Both are safe, non-destructive outcomes — the property under test is that
+// exactly one caller ever reaches past the claim, not which of the two
+// equally-valid error codes the loser receives.
+//
+// The winner's vmMgr.Run is wired to fail fast (no InstanceTypeResolver) so
+// the test stays deterministic without exec'ing a real qemu process; that
+// failure also exercises restoreClaimedStoppedInstance, so this test doubles
+// as coverage that a downstream failure after a successful claim does not
+// lose the instance.
+func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	id := "i-race"
+	itype := "t3.micro"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+	}}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: {InstanceType: aws.String(itype)}},
+	}
+	mgr := vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}})
+	svc := &InstanceServiceImpl{
+		stoppedStore: store,
+		resourceMgr:  prov,
+		vmMgr:        mgr,
+	}
+
+	const n = 2
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	var conflicted, winnerFailed int
+	for _, err := range errs {
+		require.Error(t, err, "vmMgr.Run is wired to fail fast — no caller should succeed end-to-end")
+		switch err.Error() {
+		case awserrors.ErrorIncorrectInstanceState, awserrors.ErrorInvalidInstanceIDNotFound:
+			conflicted++
+		case awserrors.ErrorServerInternal:
+			winnerFailed++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	assert.Equal(t, 1, conflicted, "exactly one caller must lose the claim race")
+	assert.Equal(t, 1, winnerFailed, "exactly one caller must win the claim and proceed to vmMgr.Run")
+
+	assert.Len(t, prov.allocated, 1, "only the claim winner may reach resourceMgr.Allocate")
+	// Exactly one caller ever wins the atomic claim, regardless of whether
+	// the loser lost at the claim itself or earlier at the preliminary Load
+	// (see comment above) — it may not always attempt the claim at all.
+	assert.Len(t, store.ClaimedStopped, 1, "the atomic claim must succeed exactly once")
+	assert.GreaterOrEqual(t, store.ClaimAttempts, 1, "the winner must have attempted the claim")
+
+	require.NotNil(t, store.WroteStopped[id], "the winner's downstream Run failure must restore the instance to KV")
+	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
+
+	_, stillInMgr := mgr.Get(id)
+	assert.False(t, stillInMgr, "a failed Run must not leave the VM in the manager map")
+}
+
+// A restart reclaims the count the instance type advertises, which is what the
+// instance was admitted against. A record holding some other number — the only
+// source of one was the withdrawn launch override — does not move the count.
+func TestStartStoppedInstance_ReclaimsTheInstanceTypeGPUCount(t *testing.T) {
+	tests := []struct {
+		name      string
+		itype     string
+		recorded  int
+		wantClaim int
+	}{
+		{name: "multi-GPU type", itype: "g5.12xlarge", recorded: 4, wantClaim: 4},
+		{name: "record disagrees with the type", itype: "g5.2xlarge", recorded: 3, wantClaim: 1},
+		{name: "legacy record with no attachments", itype: "g5.12xlarge", recorded: 0, wantClaim: 4},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+			id := "i-multi-gpu"
+			attachments := make([]gpu.GPUAttachment, test.recorded)
+			for i := range attachments {
+				attachments[i] = gpu.GPUAttachment{PCIAddress: fmt.Sprintf("0000:0%d:00.0", i+1)}
+			}
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+				id: {
+					ID:             id,
+					Status:         vm.StateStopped,
+					AccountID:      "acc",
+					InstanceType:   test.itype,
+					GPUAttachments: attachments,
+				},
+			}}
+			instanceType := &ec2.InstanceTypeInfo{
+				InstanceType: aws.String(test.itype),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+					Count: aws.Int64(int64(instancetypes.GPUCountForType(test.itype))),
+				}}},
+			}
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: map[string]*ec2.InstanceTypeInfo{test.itype: instanceType},
+			}
+			claimer := &fakeGPUClaimer{}
+			mgr := vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}})
+			svc := &InstanceServiceImpl{
+				stoppedStore: store,
+				resourceMgr:  prov,
+				vmMgr:        mgr,
+				gpuClaimer:   claimer,
+			}
+
+			_, err := svc.StartStoppedInstance(
+				context.Background(),
+				&StartStoppedInstanceInput{InstanceID: id},
+				"acc",
+			)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+			assert.Equal(t, []int{test.wantClaim}, claimer.claimCounts)
+			assert.Equal(t, []string{id}, claimer.released)
+		})
+	}
+}
+
+// A GPU type that cannot be given its GPUs must not start. Admission gates on
+// the daemon's GPU manager, a different field wired at a different moment, so
+// neither a missing claimer nor a short claim is caught anywhere else — and
+// both would otherwise return a running, GPU-less instance.
+func TestStartStoppedInstance_RefusesWhenGPUsCannotBeGuaranteed(t *testing.T) {
+	tests := []struct {
+		name         string
+		claimer      GPUClaimer
+		wantReleased bool
+	}{
+		{name: "no claimer wired", claimer: nil},
+		{
+			name:         "claim returns fewer GPUs than the type requires",
+			claimer:      &fakeGPUClaimer{attachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}},
+			wantReleased: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+			const id, itype = "i-multi-gpu", "g5.12xlarge"
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+				id: {ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype},
+			}}
+			instanceType := &ec2.InstanceTypeInfo{
+				InstanceType: aws.String(itype),
+				GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+					Count: aws.Int64(int64(instancetypes.GPUCountForType(itype))),
+				}}},
+			}
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: map[string]*ec2.InstanceTypeInfo{itype: instanceType},
+			}
+			svc := &InstanceServiceImpl{
+				stoppedStore: store,
+				resourceMgr:  prov,
+				vmMgr:        vm.NewManagerWithDeps(vm.Deps{VolumeMounter: raceVolumeMounter{}}),
+				gpuClaimer:   test.claimer,
+			}
+
+			_, err := svc.StartStoppedInstance(
+				context.Background(),
+				&StartStoppedInstanceInput{InstanceID: id},
+				"acc",
+			)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error(),
+				"a GPU that cannot be claimed is a capacity refusal, not a launch")
+
+			if test.wantReleased {
+				claimer, ok := test.claimer.(*fakeGPUClaimer)
+				require.True(t, ok)
+				assert.Equal(t, []string{id}, claimer.released,
+					"the partial claim must not be left holding pool entries")
+			}
+		})
+	}
+}
+
+// --- PrepareRunInstances / ec2.cmd dispatch tests ---------------------------
+
+type fakeAMILoader struct {
+	byID       map[string]ebsmetadata.AMI
+	err        error
+	sourceByID map[string]string
+	sourceErr  error
+}
+
+func (f *fakeAMILoader) GetAMIConfig(_ context.Context, id string) (ebsmetadata.AMI, error) {
+	if f.err != nil {
+		return ebsmetadata.AMI{}, f.err
+	}
+	if meta, ok := f.byID[id]; ok {
+		return meta, nil
+	}
+	return ebsmetadata.AMI{}, errors.New("not found")
+}
+
+// GetAMISourceVolumeID defaults to the bundled system AMI convention, where the
+// snapshot's source volume is named after the AMI itself.
+func (f *fakeAMILoader) GetAMISourceVolumeID(_ context.Context, id string) (string, error) {
+	if f.sourceErr != nil {
+		return "", f.sourceErr
+	}
+	if volumeID, ok := f.sourceByID[id]; ok {
+		return volumeID, nil
+	}
+	if _, ok := f.byID[id]; !ok {
+		return "", errors.New("not found")
+	}
+	return id, nil
+}
+
+type fakeKeyValidator struct {
+	err error
+}
+
+func (f *fakeKeyValidator) ValidateKeyPairExists(_ context.Context, _ string, _ string) error {
+	return f.err
+}
+
+func defaultPrepareInstanceTypes() (map[string]*ec2.InstanceTypeInfo, *ec2.InstanceTypeInfo) {
+	it := &ec2.InstanceTypeInfo{InstanceType: aws.String("t3.micro")}
+	return map[string]*ec2.InstanceTypeInfo{"t3.micro": it}, it
+}
+
+func TestPrepareRunInstances_MissingAccountID(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{InstanceType: aws.String("t3.micro")}, "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestPrepareRunInstances_MissingInstanceType(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestPrepareRunInstances_InvalidInstanceType(t *testing.T) {
+	svc := &InstanceServiceImpl{instanceTypes: map[string]*ec2.InstanceTypeInfo{}}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("unknown.type"),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceType, err.Error())
+}
+
+func TestPrepareRunInstances_MissingImageID(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{instanceTypes: types}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+func TestPrepareRunInstances_NilAMILoader(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{instanceTypes: types}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestPrepareRunInstances_AMINotFound(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader:     &fakeAMILoader{err: errors.New("missing")},
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-missing"),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+}
+
+func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-other": {ImageOwnerAlias: "999988887777"},
+		}},
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-other"),
+	}, "111122223333", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+}
+
+func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		keyValidator: &fakeKeyValidator{err: errors.New(awserrors.ErrorInvalidKeyPairNotFound)},
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		KeyName:      aws.String("nope"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+}
+
+// A store that cannot be read says nothing about whether the key is there, and
+// answering NotFound sends the caller after a key that exists.
+func TestPrepareRunInstances_KeyPairUnreadableIsNotNotFound(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		keyValidator: &fakeKeyValidator{err: errors.New("dial tcp: connection refused")},
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		KeyName:      aws.String("real-key"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestPrepareRunInstances_InsufficientCapacity(t *testing.T) {
+	types, it := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(*ec2.InstanceTypeInfo, int) int { return 0 },
+	}
+	_ = it
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(5),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+// ElasticInferenceAccelerators is a real EC2 parameter for Elastic Inference,
+// whose types are eia1.*/eia2.*. It carries no Spinifex meaning: the GPU count
+// comes from the instance type, so Type=gpu,Count=3 neither succeeds as an
+// override nor gates capacity.
+func TestPrepareRunInstances_ElasticInferenceAcceleratorIsNotAGPUOverride(t *testing.T) {
+	instanceType := &ec2.InstanceTypeInfo{
+		InstanceType: aws.String("g5.2xlarge"),
+		GpuInfo: &ec2.GpuInfo{Gpus: []*ec2.GpuDeviceInfo{{
+			Count: aws.Int64(1),
+		}}},
+	}
+	types := map[string]*ec2.InstanceTypeInfo{"g5.2xlarge": instanceType}
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+		gpuClaimer:  &fakeGPUClaimer{},
+	}
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("g5.2xlarge"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+		ElasticInferenceAccelerators: []*ec2.ElasticInferenceAccelerator{{
+			Type: aws.String("gpu"), Count: aws.Int64(3),
+		}},
+	}, "acc", "")
+	require.NoError(t, err)
+	assert.Len(t, instances, 2)
+	assert.Equal(t, 1, instancetypes.GPUCountForType("g5.2xlarge"),
+		"the count must stay a lookup on the type name")
+}
+
+func TestPrepareRunInstances_HappyPathNoENI(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.NotNil(t, reservation)
+	require.Len(t, instances, 2)
+	require.Len(t, reservation.Instances, 2)
+	assert.Equal(t, "acc", *reservation.OwnerId)
+	for _, inst := range instances {
+		assert.Equal(t, "acc", inst.AccountID)
+		assert.Equal(t, "t3.micro", inst.InstanceType)
+	}
+}
+
+// An instance profile passed at launch is persisted on every prepared VM and
+// echoed on the ec2.Instance so the in-VM IMDS endpoint resolves a role and
+// serves its credentials (mirrors the RunInstance singular path).
+func TestPrepareRunInstances_PersistsIamInstanceProfile(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	const profileARN = "arn:aws:iam::000000000000:instance-profile/spinifex-eks-server"
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType:       aws.String("t3.micro"),
+		ImageId:            aws.String("ami-1"),
+		MinCount:           aws.Int64(2),
+		MaxCount:           aws.Int64(2),
+		IamInstanceProfile: &ec2.IamInstanceProfileSpecification{Arn: aws.String(profileARN)},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 2)
+	for _, inst := range instances {
+		assert.Equal(t, profileARN, inst.IamInstanceProfileArn)
+		assert.NotEmpty(t, inst.IamInstanceProfileAssociationId)
+		require.NotNil(t, inst.Instance.IamInstanceProfile)
+		assert.Equal(t, profileARN, aws.StringValue(inst.Instance.IamInstanceProfile.Arn))
+	}
+}
+
+// A targeted launch consumes slots from the reservation (not the general pool)
+// and stamps the reservation id onto every prepared VM so terminate can restore.
+func TestPrepareRunInstances_ConsumesReservation(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 3 },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "cr-123")
+	require.NoError(t, err)
+	require.Len(t, instances, 2)
+	assert.Len(t, prov.reservationAllocated, 2, "slots consumed from the reservation")
+	assert.Empty(t, prov.allocated, "targeted launch must not touch general capacity")
+	for _, inst := range instances {
+		assert.Equal(t, "cr-123", inst.CapacityReservationId, "instance stamped with reservation id")
+	}
+}
+
+// A targeted launch is capped at the reservation's free slots and never spills
+// onto general capacity: MaxCount past Available yields exactly Available.
+func TestPrepareRunInstances_ReservationCapsNoSpill(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 2 },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(5),
+	}, "acc", "cr-123")
+	require.NoError(t, err)
+	assert.Len(t, instances, 2, "launch capped at the 2 available reservation slots")
+	assert.Empty(t, prov.allocated, "no general-pool allocation for a targeted launch")
+}
+
+// When the reservation has fewer free slots than MinCount the launch is rejected
+// with ReservationCapacityExceeded and nothing is allocated.
+func TestPrepareRunInstances_ReservationExceeded(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 1 },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "cr-123")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorReservationCapacityExceeded, err.Error())
+	assert.Empty(t, prov.reservationAllocated, "nothing allocated when below MinCount")
+}
+
+// Invariant guardrail: a mid-launch failure on the reservation path must return
+// every consumed slot to the reservation (reservationReleased == reservationAllocated)
+// and never leak one onto the general pool (Deallocate untouched). Each per-instance
+// ENI create fails, exercising a rollback site inside the launch loop.
+func TestPrepareRunInstances_ReservationRollbackNoGeneralPoolLeak(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes:      types,
+		reservationAvailFn: func(_, _ string, _ *ec2.InstanceTypeInfo) int { return 2 },
+	}
+	eni := &fakeENICreator{createErr: errors.New("eni create failed")} // fails every call
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+		eniCreator:  eni,
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "cr-123")
+	require.Error(t, err)
+	assert.Len(t, prov.reservationAllocated, 2, "both slots allocated from the reservation")
+	assert.Len(t, prov.reservationReleased, 2, "both reservation slots restored on rollback")
+	assert.Empty(t, prov.deallocated, "no reservation-bound slot may leak to the general pool")
+}
+
+// TestPrepareRunInstances_AmiLaunchIndexContiguous pins that ami-launch-index is
+// assigned per successful launch (0..n-1) so it flows to DescribeInstances and the
+// IMDS identity document. Survivors of a mid-loop failure stay contiguous (no gap).
+func TestPrepareRunInstances_AmiLaunchIndexContiguous(t *testing.T) {
+	t.Run("count_3_no_eni", func(t *testing.T) {
+		types, _ := defaultPrepareInstanceTypes()
+		prov := &fakeResourceCapacityProvider{
+			instanceTypes: types,
+			canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		}
+		svc := &InstanceServiceImpl{
+			config:        &config.Config{},
+			instanceTypes: types,
+			amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+				"ami-1": {ImageOwnerAlias: "acc"},
+			}},
+			resourceMgr: prov,
+		}
+		reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+			InstanceType: aws.String("t3.micro"),
+			ImageId:      aws.String("ami-1"),
+			MinCount:     aws.Int64(3),
+			MaxCount:     aws.Int64(3),
+		}, "acc", "")
+		require.NoError(t, err)
+		require.Len(t, instances, 3)
+		require.Len(t, reservation.Instances, 3)
+		for i, inst := range reservation.Instances {
+			assert.Equal(t, int64(i), aws.Int64Value(inst.AmiLaunchIndex))
+		}
+	})
+
+	t.Run("mid_loop_failure_stays_contiguous", func(t *testing.T) {
+		// Second of three ENI creates fails, so the second instance never
+		// appends; the third fills index 1 (not 2), leaving no gap.
+		eni := &fakeENICreator{
+			defaultSubnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+			createOut: &ec2.CreateNetworkInterfaceOutput{
+				NetworkInterface: &ec2.NetworkInterface{
+					NetworkInterfaceId: aws.String("eni-1"),
+					MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+					PrivateIpAddress:   aws.String("10.0.0.10"),
+					VpcId:              aws.String("vpc-1"),
+				},
+			},
+			createErr:       errors.New("eni create failed"),
+			createErrOnCall: 2,
+		}
+		svc, _ := prepareSvcWithENI(t, eni, nil)
+
+		reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+			InstanceType: aws.String("t3.micro"),
+			ImageId:      aws.String("ami-1"),
+			SubnetId:     aws.String("subnet-1"),
+			MinCount:     aws.Int64(2),
+			MaxCount:     aws.Int64(3),
+		}, "acc", "")
+		require.NoError(t, err)
+		require.Len(t, instances, 2)
+		require.Len(t, reservation.Instances, 2)
+		assert.Equal(t, int64(0), aws.Int64Value(reservation.Instances[0].AmiLaunchIndex))
+		assert.Equal(t, int64(1), aws.Int64Value(reservation.Instances[1].AmiLaunchIndex))
+	})
+}
+
+// TestPrepareRunInstances_BootModePropagated pins that the AMI's BootMode
+// flows onto every prepared VM, so the launch path picks UEFI vs BIOS without
+// a second AMI lookup. Empty AMI BootMode (legacy) flows through as empty.
+func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
+	tests := []struct {
+		name         string
+		amiBootMode  string
+		wantBootMode string
+	}{
+		{"legacy empty", "", ""},
+		{"bios", "bios", "bios"},
+		{"uefi", "uefi", "uefi"},
+		{"uefi-preferred", "uefi-preferred", "uefi-preferred"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			types, _ := defaultPrepareInstanceTypes()
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: types,
+				canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+			}
+			svc := &InstanceServiceImpl{
+				config:        &config.Config{},
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+					"ami-1": {ImageOwnerAlias: "acc", BootMode: tc.amiBootMode},
+				}},
+				resourceMgr: prov,
+			}
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+			require.NoError(t, err)
+			require.Len(t, instances, 1)
+			assert.Equal(t, tc.wantBootMode, instances[0].BootMode)
+		})
+	}
+}
+
+func TestStartInstance_NotStopped(t *testing.T) {
+	id := "i-running"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestStopOrTerminateInstance_TerminateIdempotent(t *testing.T) {
+	id := "i-shutting"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateShuttingDown}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{
+		ID:         id,
+		Attributes: ec2v1.EC2CommandAttributes{TerminateInstance: true},
+	})
+	require.NoError(t, err)
+}
+
+func TestStopOrTerminateInstance_InvalidTransition(t *testing.T) {
+	id := "i-stopped"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{
+		ID:         id,
+		Attributes: ec2v1.EC2CommandAttributes{StopInstance: true},
+	})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
+	// DisableApiTermination must block Terminate but never Stop.
+	tests := []struct {
+		name    string
+		attrs   ec2v1.EC2CommandAttributes
+		wantErr string
+	}{
+		{name: "terminate blocked", attrs: ec2v1.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
+		{name: "stop allowed", attrs: ec2v1.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-prot"
+			mgr := mgrWith(map[string]*vm.VM{
+				id: {
+					ID: id, Status: vm.StateRunning,
+					RunInstancesInput: &ec2.RunInstancesInput{DisableApiTermination: aws.Bool(true)},
+				},
+			})
+			v, _ := mgr.Get(id)
+			svc := &InstanceServiceImpl{vmMgr: mgr}
+
+			err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id, Attributes: tc.attrs})
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tc.wantErr, err.Error())
+			assert.Equal(t, vm.StateRunning, v.Status, "VM state must not change when blocked")
+		})
+	}
+}
+
+type fakeENICreator struct {
+	defaultSubnet   *SubnetInfo
+	subnet          *SubnetInfo
+	getENIByID      map[string]*ENIInfo
+	getENIErr       error
+	createOut       *ec2.CreateNetworkInterfaceOutput
+	createOuts      []*ec2.CreateNetworkInterfaceOutput // per-call outputs; overrides createOut when set
+	createInputs    []*ec2.CreateNetworkInterfaceInput  // every input CreateNetworkInterface received, in call order
+	createCalls     int
+	createErr       error
+	createErrOnCall int // 1-based call index to fail; 0 fails every call when createErr is set
+	attachErr       error
+	attachErrOnCall int // 1-based call index to fail; 0 fails every call when attachErr is set
+	attachCalls     int
+	updateCalls     int
+	clearCalls      int // updateCalls where publicIP is ""
+	detachCalls     int
+	detached        []string
+	detachErr       error                // returned by every DetachENI call when set
+	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
+	listENIsErr     error
+	eniHasEIP       bool  // what ENIHasEIP reports for every ENI
+	eniHasEIPErr    error // when set, ENIHasEIP fails instead
+}
+
+func (f *fakeENICreator) ENIHasEIP(_ context.Context, _, _ string) (bool, error) {
+	return f.eniHasEIP, f.eniHasEIPErr
+}
+
+func (f *fakeENICreator) GetDefaultSubnet(_ context.Context, _ string) (*SubnetInfo, error) {
+	if f.defaultSubnet == nil {
+		return nil, errors.New("no default")
+	}
+	return f.defaultSubnet, nil
+}
+
+func (f *fakeENICreator) GetSubnet(_ context.Context, _, _ string) (*SubnetInfo, error) {
+	if f.subnet == nil {
+		return nil, errors.New("no subnet")
+	}
+	return f.subnet, nil
+}
+
+func (f *fakeENICreator) GetENI(_ context.Context, _, eniID string) (*ENIInfo, error) {
+	if f.getENIErr != nil {
+		return nil, f.getENIErr
+	}
+	if f.getENIByID == nil {
+		return nil, errors.New("no ENI configured")
+	}
+	info, ok := f.getENIByID[eniID]
+	if !ok {
+		return nil, errors.New("eni not found")
+	}
+	return info, nil
+}
+
+func (f *fakeENICreator) CreateNetworkInterface(_ context.Context, input *ec2.CreateNetworkInterfaceInput, _ string) (*ec2.CreateNetworkInterfaceOutput, error) {
+	f.createCalls++
+	f.createInputs = append(f.createInputs, input)
+	if f.createErr != nil && (f.createErrOnCall == 0 || f.createErrOnCall == f.createCalls) {
+		return nil, f.createErr
+	}
+	if len(f.createOuts) > 0 {
+		return f.createOuts[min(f.createCalls, len(f.createOuts))-1], nil
+	}
+	return f.createOut, nil
+}
+
+func (f *fakeENICreator) AttachENI(_ context.Context, _, _, _ string, _ int64) (string, error) {
+	f.attachCalls++
+	if f.attachErr != nil && (f.attachErrOnCall == 0 || f.attachErrOnCall == f.attachCalls) {
+		return "", f.attachErr
+	}
+	return "attached", nil
+}
+
+func (f *fakeENICreator) DetachENI(_ context.Context, _, eniID string) error {
+	f.detachCalls++
+	f.detached = append(f.detached, eniID)
+	return f.detachErr
+}
+
+func (f *fakeENICreator) UpdateENIPublicIP(_ context.Context, _, _, publicIP, _ string) error {
+	f.updateCalls++
+	if publicIP == "" {
+		f.clearCalls++
+	}
+	return nil
+}
+
+func (f *fakeENICreator) ListInstanceENIs(_ context.Context, _, instanceID string) ([]ENIInfo, error) {
+	if f.listENIsErr != nil {
+		return nil, f.listENIsErr
+	}
+	return f.instanceENIs[instanceID], nil
+}
+
+type fakeIPAllocator struct {
+	publicIP  string
+	publicIPs []string // per-call addresses; overrides publicIP when set
+	calls     int
+	poolName  string
+	err       error
+}
+
+func (f *fakeIPAllocator) AllocateIP(_ context.Context, _, _, _, _, _, _ string) (string, string, error) {
+	f.calls++
+	if f.err != nil {
+		return "", "", f.err
+	}
+	if len(f.publicIPs) > 0 {
+		return f.publicIPs[min(f.calls, len(f.publicIPs))-1], f.poolName, nil
+	}
+	return f.publicIP, f.poolName, nil
+}
+
+// prepareSvcWithENI returns a service wired with allocator + AMI + ENI/IP deps
+// suitable for happy-path PrepareRunInstances tests.
+func prepareSvcWithENI(t *testing.T, eni *fakeENICreator, ipam *fakeIPAllocator) (*InstanceServiceImpl, *fakeResourceCapacityProvider) {
+	t.Helper()
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{Region: "us-east-1", AZ: "us-east-1a"},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+		eniCreator:  eni,
+		ipAllocator: ipam,
+		natsConn:    embeddedNATS(t),
+	}
+	return svc, prov
+}
+
+func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
+	eni := &fakeENICreator{
+		defaultSubnet: &SubnetInfo{SubnetID: "subnet-default", VpcID: "vpc-1"},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.10"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-1", instances[0].ENIId)
+	assert.Equal(t, 1, eni.attachCalls)
+}
+
+// TestPrepareRunInstances_ForwardsPrivateIpAddress verifies a pinned
+// RunInstancesInput.PrivateIpAddress reaches CreateNetworkInterfaceInput,
+// where the IPAM claim path (eni.go) actually enforces it.
+func TestPrepareRunInstances_ForwardsPrivateIpAddress(t *testing.T) {
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.50"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType:     aws.String("t3.micro"),
+		ImageId:          aws.String("ami-1"),
+		SubnetId:         aws.String("subnet-1"),
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+		PrivateIpAddress: aws.String("10.0.0.50"),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	require.Len(t, eni.createInputs, 1)
+	require.NotNil(t, eni.createInputs[0].PrivateIpAddress)
+	assert.Equal(t, "10.0.0.50", *eni.createInputs[0].PrivateIpAddress)
+}
+
+// TestPrepareRunInstances_ForwardsPrivateIpAddressFromNetworkInterface
+// verifies the NetworkInterfaces[0].PrivateIpAddresses primary entry is
+// lifted to the top level and forwarded the same way as the direct field.
+func TestPrepareRunInstances_ForwardsPrivateIpAddressFromNetworkInterface(t *testing.T) {
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.60"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+			{
+				PrivateIpAddresses: []*ec2.PrivateIpAddressSpecification{
+					{Primary: aws.Bool(true), PrivateIpAddress: aws.String("10.0.0.60")},
+				},
+			},
+		},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	require.Len(t, eni.createInputs, 1)
+	require.NotNil(t, eni.createInputs[0].PrivateIpAddress)
+	assert.Equal(t, "10.0.0.60", *eni.createInputs[0].PrivateIpAddress)
+}
+
+// TestPrepareRunInstances_PinnedPrivateIPFailurePropagatesCode verifies a
+// rejected pinned address (out of range / already in use) surfaces its AWS
+// error code rather than a generic failure.
+func TestPrepareRunInstances_PinnedPrivateIPFailurePropagatesCode(t *testing.T) {
+	cause := errors.New(awserrors.ErrorInvalidIPAddressInUse)
+	eni := &fakeENICreator{createErr: cause}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType:     aws.String("t3.micro"),
+		ImageId:          aws.String("ami-1"),
+		SubnetId:         aws.String("subnet-1"),
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+		PrivateIpAddress: aws.String("10.0.0.50"),
+	}, "acc", "")
+
+	require.EqualError(t, err, awserrors.ErrorInvalidIPAddressInUse)
+	require.Len(t, prov.deallocated, 1)
+}
+
+func TestPrepareRunInstances_PublicIPAutoAssigned(t *testing.T) {
+	cases := []struct {
+		name        string
+		mapOnLaunch bool
+		nicOverride *bool
+		wantPublic  bool
+	}{
+		{name: "subnet_true_no_override", mapOnLaunch: true, nicOverride: nil, wantPublic: true},
+		{name: "subnet_false_override_true", mapOnLaunch: false, nicOverride: aws.Bool(true), wantPublic: true},
+		{name: "subnet_true_override_false", mapOnLaunch: true, nicOverride: aws.Bool(false), wantPublic: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eni := &fakeENICreator{
+				subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: tc.mapOnLaunch},
+				createOut: &ec2.CreateNetworkInterfaceOutput{
+					NetworkInterface: &ec2.NetworkInterface{
+						NetworkInterfaceId: aws.String("eni-2"),
+						MacAddress:         aws.String("aa:bb:cc:dd:ee:00"),
+						PrivateIpAddress:   aws.String("10.0.0.20"),
+						VpcId:              aws.String("vpc-1"),
+					},
+				},
+			}
+			ipam := &fakeIPAllocator{publicIP: "203.0.113.5", poolName: "pool-a"}
+			svc, _ := prepareSvcWithENI(t, eni, ipam)
+
+			// vpc.add-nat is now request-reply: the helper waits for vpcd to
+			// ack before the launch proceeds. The happy path needs a success
+			// responder.
+			sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+				_ = msg.Respond([]byte(`{"success":true}`))
+			})
+			require.NoError(t, err)
+			defer func() { _ = sub.Unsubscribe() }()
+
+			input := &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				SubnetId:     aws.String("subnet-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}
+			if tc.nicOverride != nil {
+				input.NetworkInterfaces = []*ec2.InstanceNetworkInterfaceSpecification{
+					{AssociatePublicIpAddress: tc.nicOverride},
+				}
+			}
+
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), input, "acc", "")
+			require.NoError(t, err)
+			require.Len(t, instances, 1)
+			if tc.wantPublic {
+				assert.Equal(t, "203.0.113.5", instances[0].PublicIP)
+				assert.Equal(t, "pool-a", instances[0].PublicIPPool)
+				assert.Equal(t, 1, eni.updateCalls)
+			} else {
+				assert.Empty(t, instances[0].PublicIP)
+				assert.Empty(t, instances[0].PublicIPPool)
+				assert.Equal(t, 0, eni.updateCalls)
+			}
+		})
+	}
+}
+
+// TestPrepareRunInstances_PublicIPWithoutAllocator covers a node whose external
+// IPAM never initialised. A nil *ExternalIPAM in the interface reads as non-nil,
+// so the launch used to deref a nil receiver and take the daemon down with the
+// ENI already persisted; both wirings must now fail closed and unwind the ENI.
+func TestPrepareRunInstances_PublicIPWithoutAllocator(t *testing.T) {
+	cases := []struct {
+		name string
+		ipam PublicIPAllocator
+	}{
+		{name: "typed_nil_external_ipam", ipam: (*ec2vpc.ExternalIPAM)(nil)},
+		{name: "no_allocator_wired", ipam: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eni := &fakeENICreator{
+				subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+				createOut: &ec2.CreateNetworkInterfaceOutput{
+					NetworkInterface: &ec2.NetworkInterface{
+						NetworkInterfaceId: aws.String("eni-no-ipam"),
+						MacAddress:         aws.String("aa:bb:cc:dd:ee:11"),
+						PrivateIpAddress:   aws.String("10.0.0.40"),
+						VpcId:              aws.String("vpc-1"),
+					},
+				},
+			}
+			deleter := &fakeENIDeleter{}
+			svc, prov := prepareSvcWithENI(t, eni, nil)
+			svc.eniDeleter = deleter
+			svc.SetRunInstancesDeps(svc.amiLoader, nil, eni, tc.ipam)
+
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				SubnetId:     aws.String("subnet-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+
+			require.Error(t, err, "a public-IP launch with no allocator must fail, not boot an instance with no public address")
+			assert.Equal(t, awserrors.ErrorInsufficientAddressCapacity, err.Error())
+			assert.Empty(t, instances)
+			assert.Equal(t, []string{"eni-no-ipam"}, deleter.calls,
+				"the auto-created ENI must be deleted, otherwise it strands and blocks security group deletion")
+			assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+			assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
+			assert.Len(t, prov.deallocated, 1, "capacity must be returned when the launch aborts")
+		})
+	}
+}
+
+// TestPrepareRunInstances_NATFailureRollsBackPublicIP verifies that a vpc.add-nat
+// failure drops the instance, clears the ENI public IP, releases the IPAM
+// lease, and deallocates capacity.
+func TestPrepareRunInstances_NATFailureRollsBackPublicIP(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-nat-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.30"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	ipam := &fakeIPAllocator{publicIP: "203.0.113.7", poolName: "pool-a"}
+	releaser := &fakePublicIPReleaser{}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, ipam)
+	svc.ipReleaser = releaser
+	svc.eniDeleter = deleter
+
+	// Stand up a vpcd-shaped responder that NACKs every add-nat — simulates
+	// vpcd online but unable to commit the OVN rule (northd lag, port
+	// missing, etc.).
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	// Record vpc.delete-nat to assert the rollback neutralises any
+	// half-committed rule from a waitForFlowsHV timeout.
+	deleteNATCh := make(chan natWirePayload, 1)
+	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
+		var p natWirePayload
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+
+	// MinCount=1 with a single launch attempt that NAT-failed must drop
+	// below minimum and return ServerInternal — the wrapped natErr is not
+	// an AWS-known code, so the lookup misses and the wire fallback kicks
+	// in. The critical invariant is that no instance with the unreachable
+	// IP is surfaced.
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances, "instance with failed NAT must not be returned")
+
+	// IPAM lease released back to the pool.
+	assert.Equal(t, "pool-a", releaser.pool, "IPAM ReleaseIP must be called with the originally allocated pool")
+	assert.Equal(t, "203.0.113.7", releaser.ip, "IPAM ReleaseIP must be called with the originally allocated IP")
+
+	// ENI record cleared: 2 update calls total (set + clear), 1 clear.
+	assert.Equal(t, 2, eni.updateCalls, "ENI public IP should be set once, then cleared on rollback")
+	assert.Equal(t, 1, eni.clearCalls, "ENI rollback should call UpdateENIPublicIP with empty publicIP")
+
+	// ENI itself must go; otherwise the dropped instance leaks an eniKV record
+	// (vmMgr.Insert never runs, so terminateCleanup never fires) and the subnet
+	// exhausts private IPs under vpcd brown-out. Detach and delete travel
+	// together under one read — a separate detach lets a lagging replica serve
+	// the delete a pre-detach record and reject it as in-use.
+	assert.Equal(t, []string{"eni-nat-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+	assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+	assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
+
+	// Capacity deallocated so subsequent launches can use the slot.
+	require.Len(t, prov.deallocated, 1, "NAT failure must trigger Deallocate")
+
+	// vpc.delete-nat must be published so vpcd reaps any rule it committed
+	// after the AddNAT timeout — otherwise the orphan rule outlives the
+	// IPAM allocation and routes traffic for the next tenant that grabs
+	// the released IP.
+	select {
+	case got := <-deleteNATCh:
+		assert.Equal(t, "vpc-1", got.VpcId)
+		assert.Equal(t, "203.0.113.7", got.ExternalIP)
+		assert.Equal(t, "10.0.0.30", got.LogicalIP)
+		assert.Equal(t, "port-eni-nat-fail", got.PortName)
+	case <-time.After(time.Second):
+		t.Fatal("rollback must publish vpc.delete-nat to neutralise a half-committed rule")
+	}
+}
+
+// TestPrepareRunInstances_PartialLaunchReleasesSucceededInstances covers the
+// batch that falls short of MinCount: the instances that *succeeded* are
+// abandoned too, so their ENIs, NAT rules and external addresses have to go
+// back. Leaving them is what wedged an account in TERMINATING, since an
+// orphaned ENI pins its subnet and VPC undeletable.
+func TestPrepareRunInstances_PartialLaunchReleasesSucceededInstances(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+		createOuts: []*ec2.CreateNetworkInterfaceOutput{
+			{NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-ok"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:01"),
+				PrivateIpAddress:   aws.String("10.0.0.51"),
+				VpcId:              aws.String("vpc-1"),
+			}},
+			{NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:02"),
+				PrivateIpAddress:   aws.String("10.0.0.52"),
+				VpcId:              aws.String("vpc-1"),
+			}},
+		},
+	}
+	ipam := &fakeIPAllocator{publicIPs: []string{"203.0.113.20", "203.0.113.21"}, poolName: "wan"}
+	releaser := &fakePublicIPReleaser{}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, ipam)
+	svc.ipReleaser = releaser
+	svc.eniDeleter = deleter
+
+	// vpcd acks the first instance's rule and times out on the second, which
+	// is the production shape: one instance fully built, the batch short.
+	var addNATCalls atomic.Int32
+	sub, err := svc.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
+		if addNATCalls.Add(1) == 1 {
+			_ = msg.Respond([]byte(`{"success":true}`))
+			return
+		}
+		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	deleteNATCh := make(chan natWirePayload, 2)
+	delSub, err := svc.natsConn.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"success":true}`))
+		var p natWirePayload
+		_ = json.Unmarshal(msg.Data, &p)
+		select {
+		case deleteNATCh <- p:
+		default:
+		}
+	})
+	require.NoError(t, err)
+	defer func() { _ = delSub.Unsubscribe() }()
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances)
+
+	// Both interfaces gone: eni-fail by the in-loop NAT rollback, eni-ok by
+	// the MinCount rollback that used to release nothing but capacity.
+	assert.ElementsMatch(t, []string{"eni-ok", "eni-fail"}, deleter.calls,
+		"the succeeded instance's ENI must be deleted alongside the failed one")
+	assert.Equal(t, []bool{true, true}, deleter.forced,
+		"each teardown must force past the in-use guard — the launch owns both interfaces")
+	assert.Zero(t, eni.detachCalls,
+		"detach must travel with the delete under one read, not as a separate call a replica can race")
+	assert.ElementsMatch(t, []string{"203.0.113.20", "203.0.113.21"}, releaser.released,
+		"both external addresses must return to the pool")
+	assert.Len(t, prov.deallocated, 2, "both capacity slots must be returned")
+
+	// The succeeded instance's NAT rule was committed, so it must be
+	// withdrawn — otherwise it routes traffic for the next tenant that
+	// takes the released address.
+	var deletedNATIPs []string
+	for range 2 {
+		select {
+		case got := <-deleteNATCh:
+			deletedNATIPs = append(deletedNATIPs, got.ExternalIP)
+		case <-time.After(time.Second):
+			t.Fatal("rollback must publish vpc.delete-nat for every address it releases")
+		}
+	}
+	assert.ElementsMatch(t, []string{"203.0.113.20", "203.0.113.21"}, deletedNATIPs)
+}
+
+// TestPrepareRunInstances_PartialLaunchKeepsCallerSuppliedENI checks the EKS
+// launcher's path: an ENI created outside the launch is detached when the batch
+// is abandoned, never deleted, matching DeleteOnTermination=false.
+func TestPrepareRunInstances_PartialLaunchKeepsCallerSuppliedENI(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+		getENIByID: map[string]*ENIInfo{
+			"eni-customer": {
+				NetworkInterfaceID: "eni-customer",
+				SubnetID:           "subnet-1",
+				VpcID:              "vpc-1",
+				PrivateIpAddress:   "10.0.0.60",
+				MacAddress:         "aa:bb:cc:dd:ee:03",
+				Status:             "available",
+			},
+		},
+		// The second attach fails, dropping the batch below MinCount.
+		attachErr:       errors.New("attach failed"),
+		attachErrOnCall: 2,
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(2),
+		MaxCount:     aws.Int64(2),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+			{NetworkInterfaceId: aws.String("eni-customer")},
+		},
+	}, "acc", "")
+
+	require.Error(t, err)
+	assert.Empty(t, instances)
+	assert.Equal(t, []string{"eni-customer"}, eni.detached, "an abandoned launch must release its attachment")
+	assert.Empty(t, deleter.calls, "an ENI the launch did not create must survive the rollback")
+	assert.Len(t, prov.deallocated, 2, "both capacity slots must be returned")
+}
+
+// TestPrepareRunInstances_SuccessRollsBackNothing guards the other direction:
+// a batch that meets MinCount must not touch the interfaces it just built.
+func TestPrepareRunInstances_SuccessRollsBackNothing(t *testing.T) {
+	eni := &fakeENICreator{
+		subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1"},
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-live"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:04"),
+				PrivateIpAddress:   aws.String("10.0.0.70"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(2),
+	}, "acc", "")
+
+	require.NoError(t, err)
+	require.Len(t, instances, 2)
+	assert.Empty(t, eni.detached, "a launch that met MinCount must not detach anything")
+	assert.Empty(t, deleter.calls, "a launch that met MinCount must not delete anything")
+	assert.Empty(t, prov.deallocated, "a launch that met MinCount must keep its capacity")
+}
+
+// TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch verifies that a
+// failed public-IP allocation aborts the launch — detaches and deletes the ENI,
+// deallocates capacity — and reports the allocator's real cause. Reporting every
+// cause as InsufficientAddressCapacity is what made an upstream DHCP fault look
+// like an exhausted pool on every environment that hit it.
+func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
+	tests := []struct {
+		name     string
+		allocErr error
+		wantCode string
+	}{
+		{
+			// Shape mirrors StaticPoolAllocator's own exhaustion error.
+			name:     "an exhausted pool still surfaces the capacity code",
+			allocErr: fmt.Errorf("pool wan exhausted: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity)),
+			wantCode: awserrors.ErrorInsufficientAddressCapacity,
+		},
+		{
+			name:     "a DHCP timeout is not dressed up as exhausted capacity",
+			allocErr: errors.New("dhcp pool allocate: acquire after 4 attempts: unable to receive an offer"),
+			wantCode: awserrors.ErrorServerInternal,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eni := &fakeENICreator{
+				subnet: &SubnetInfo{SubnetID: "subnet-1", VpcID: "vpc-1", MapPublicIpOnLaunch: true},
+				createOut: &ec2.CreateNetworkInterfaceOutput{
+					NetworkInterface: &ec2.NetworkInterface{
+						NetworkInterfaceId: aws.String("eni-pubip-fail"),
+						MacAddress:         aws.String("aa:bb:cc:dd:ee:02"),
+						PrivateIpAddress:   aws.String("10.0.0.50"),
+						VpcId:              aws.String("vpc-1"),
+					},
+				},
+			}
+			ipam := &fakeIPAllocator{err: tt.allocErr}
+			deleter := &fakeENIDeleter{}
+			svc, prov := prepareSvcWithENI(t, eni, ipam)
+			svc.eniDeleter = deleter
+
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				SubnetId:     aws.String("subnet-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+
+			require.Error(t, err)
+			assert.Equal(t, tt.wantCode, err.Error(),
+				"the code must be resolved from the allocator's cause, not asserted by the caller")
+			assert.Empty(t, instances, "instance with no public IP must not be returned")
+
+			// The ENI is attached with a primary IP, so the rollback must clear
+			// the attachment and the record together under one read — in-use
+			// ENIs reject deletion, and a separate detach lets a lagging
+			// replica serve the delete a pre-detach record.
+			assert.Equal(t, []string{"eni-pubip-fail"}, deleter.calls, "rollback must delete the auto-created ENI")
+			assert.Equal(t, []bool{true}, deleter.forced, "the launch owns the ENI, so its teardown must force past the in-use guard")
+			assert.Zero(t, eni.detachCalls, "the detach belongs inside the atomic delete, not as a separate read")
+			assert.Equal(t, 0, eni.updateCalls, "no public IP was allocated, so the ENI must never be updated with one")
+
+			require.Len(t, prov.deallocated, 1, "public-IP allocation failure must trigger Deallocate")
+		})
+	}
+}
+
+// natWirePayload mirrors utils.natEvent for test-side decoding.
+type natWirePayload struct {
+	VpcId      string `json:"vpc_id"`
+	ExternalIP string `json:"external_ip"`
+	LogicalIP  string `json:"logical_ip"`
+	PortName   string `json:"port_name"`
+	MAC        string `json:"mac"`
+}
+
+func TestPrepareRunInstances_ENICreateFailureDeallocates(t *testing.T) {
+	eni := &fakeENICreator{createErr: errors.New("boom")}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.Error(t, err)
+	// MinCount not satisfied → InsufficientInstanceCapacity (no known
+	// AWS code for raw ENI failure).
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	require.Len(t, prov.deallocated, 1, "ENI failure must trigger deallocate")
+}
+
+func TestPrepareRunInstances_WrappedENICreateErrorPreservesCode(t *testing.T) {
+	cause := errors.New(awserrors.ErrorInvalidSubnetIDNotFound)
+	eni := &fakeENICreator{createErr: fmt.Errorf("create primary ENI: %w", cause)}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-missing"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+
+	require.EqualError(t, err, awserrors.ErrorInvalidSubnetIDNotFound)
+	require.Len(t, prov.deallocated, 1)
+}
+
+// TestPrepareRunInstances_ENIAttachFailureRollsBack verifies that an AttachENI
+// failure deletes the auto-created ENI, deallocates capacity, and drops the
+// instance from the reservation.
+func TestPrepareRunInstances_ENIAttachFailureRollsBack(t *testing.T) {
+	eni := &fakeENICreator{
+		attachErr: errors.New("vpc attach refused"),
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-attach-fail"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:01"),
+				PrivateIpAddress:   aws.String("10.0.0.40"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	deleter := &fakeENIDeleter{}
+	svc, prov := prepareSvcWithENI(t, eni, nil)
+	svc.eniDeleter = deleter
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, instances, "instance with failed AttachENI must not be returned")
+
+	assert.Equal(t, 1, eni.attachCalls, "AttachENI must be attempted exactly once")
+	assert.Equal(t, []string{"eni-attach-fail"}, deleter.calls, "auto-created ENI must be deleted on attach failure")
+	require.Len(t, prov.deallocated, 1, "AttachENI failure must trigger Deallocate")
+}
+
+func TestPrepareRunInstances_NetworkInterfaceLifted(t *testing.T) {
+	// Terraform-style: subnet+SG come via NetworkInterfaces[0], not top-level.
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-3"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:11"),
+				PrivateIpAddress:   aws.String("10.0.0.30"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{
+			{
+				SubnetId: aws.String("subnet-tf"),
+				Groups:   []*string{aws.String("sg-1")},
+			},
+		},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-3", instances[0].ENIId)
+}
+
+func TestPrepareRunInstances_PlacementGroup(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		Placement:    &ec2.Placement{GroupName: aws.String("pg-1")},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "pg-1", instances[0].PlacementGroupName)
+}
+
+func TestPrepareRunInstances_AllocateFailsMidLoop(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		allocateErr:   errors.New("oom"),
+	}
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc"},
+		}},
+		resourceMgr: prov,
+	}
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(3),
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+func TestStartInstance_AllocateFails(t *testing.T) {
+	id := "i-2"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, InstanceType: "t3.micro"},
+	})
+	v, _ := mgr.Get(id)
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		allocateErr:   errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+// TestStartInstance_ErrorStateStartable verifies a StateError instance passes
+// the startability guard and reaches resource allocation.
+func TestStartInstance_ErrorStateStartable(t *testing.T) {
+	id := "i-err"
+	mgr := mgrWith(map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateError, InstanceType: "t3.micro"},
+	})
+	v, _ := mgr.Get(id)
+	types, _ := defaultPrepareInstanceTypes()
+	prov := &fakeResourceCapacityProvider{
+		instanceTypes: types,
+		allocateErr:   errors.New("no capacity"),
+	}
+	svc := &InstanceServiceImpl{vmMgr: mgr, resourceMgr: prov}
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+func TestRebootInstance_NotFound(t *testing.T) {
+	id := "i-missing"
+	mgr := mgrWith(nil)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.RebootInstance(context.Background(), &vm.VM{ID: id}, ec2v1.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestRebootInstance_QMPFailureIsNotTheCallersToHear covers the async contract
+// EC2 documents: the answer reports admission, so a reset that fails afterwards
+// cannot be returned and must not hold the reply up either. The guest is left
+// running and the heartbeat is what notices it never came back.
+func TestRebootInstance_QMPFailureIsNotTheCallersToHear(t *testing.T) {
+	id := "i-qmp-failure"
+	instance := &vm.VM{ID: id, Status: vm.StateRunning}
+	mgr := mgrWith(map[string]*vm.VM{id: instance})
+	t.Cleanup(mgr.WaitForBackgroundWork)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	require.NoError(t, svc.RebootInstance(context.Background(), instance, ec2v1.EC2InstanceCommand{ID: id}))
+	assert.Equal(t, vm.StateRunning, mgr.Status(instance))
+}
+
+// TestRebootInstance_NotRunning asserts the second of the two failures that can
+// still be reported, so a reboot of a stopped guest is refused rather than
+// accepted and quietly dropped.
+func TestRebootInstance_NotRunning(t *testing.T) {
+	id := "i-stopped"
+	instance := &vm.VM{ID: id, Status: vm.StateStopped}
+	mgr := mgrWith(map[string]*vm.VM{id: instance})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	err := svc.RebootInstance(context.Background(), instance, ec2v1.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+}
+
+// TestStartInstance_NotFound verifies that a missing instance returns
+// InvalidInstanceID.NotFound rather than a generic internal error.
+func TestStartInstance_NotFound(t *testing.T) {
+	id := "i-missing"
+	mgr := mgrWith(nil)
+	svc := &InstanceServiceImpl{
+		vmMgr:       mgr,
+		resourceMgr: &fakeResourceCapacityProvider{},
+	}
+	instance := &vm.VM{ID: id, Status: vm.StateStopped, InstanceType: "unknown"}
+	err := svc.StartInstance(context.Background(), instance, ec2v1.EC2InstanceCommand{ID: id})
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+// TestRunInstances_PrepareError covers the InstanceService-level RunInstances
+// (sync convenience method) error propagation when PrepareRunInstances rejects.
+func TestRunInstances_PrepareError(t *testing.T) {
+	svc := &InstanceServiceImpl{}
+	_, err := svc.RunInstances(context.Background(), &ec2.RunInstancesInput{}, "acc")
+	require.Error(t, err)
+}
+
+// --- DescribeInstanceStatus ---
+
+func instanceStatusService(t *testing.T, az string, vms map[string]*vm.VM) *InstanceServiceImpl {
+	t.Helper()
+	return &InstanceServiceImpl{
+		config: &config.Config{AZ: az},
+		vmMgr:  mgrWith(vms),
+	}
+}
+
+func runningVM(id, owner string) *vm.VM {
+	return &vm.VM{
+		ID:        id,
+		Status:    vm.StateRunning,
+		AccountID: owner,
+		Reservation: &ec2.Reservation{
+			ReservationId: aws.String("r-" + id),
+			OwnerId:       aws.String(owner),
+		},
+		Instance: &ec2.Instance{InstanceId: aws.String(id)},
+	}
+}
+
+func TestDescribeInstanceStatus_Empty(t *testing.T) {
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_RunningInstance(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-aaa", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	assert.Equal(t, "i-aaa", *s.InstanceId)
+	assert.Equal(t, "az-a", *s.AvailabilityZone)
+	assert.Equal(t, "running", *s.InstanceState.Name)
+	assert.Equal(t, int64(16), *s.InstanceState.Code)
+	assert.Equal(t, "ok", *s.InstanceStatus.Status)
+	assert.Equal(t, "ok", *s.SystemStatus.Status)
+	require.Len(t, s.InstanceStatus.Details, 1)
+	assert.Equal(t, "passed", *s.InstanceStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_AccountFilteringHidesOtherTenant(t *testing.T) {
+	v := runningVM("i-other", "999988887777")
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, "111122223333")
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_StoppedExcludedByDefault(t *testing.T) {
+	owner := "111122223333"
+	stopped := runningVM("i-stop", owner)
+	stopped.Status = vm.StateStopped
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{stopped.ID: stopped})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_IncludeAllSurfacesPending(t *testing.T) {
+	owner := "111122223333"
+	pend := runningVM("i-pend", owner)
+	pend.Status = vm.StatePending
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{pend.ID: pend})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "pending", *out.InstanceStatuses[0].InstanceState.Name)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].SystemStatus.Status)
+}
+
+// StateError has no AWS enum, so the status path must project it through
+// vm.EC2APIState onto stopped rather than surfacing the internal "error" name.
+func TestBuildInstanceStatus_ErrorStateProjectsToStopped(t *testing.T) {
+	owner := "111122223333"
+	errored := runningVM("i-err", owner)
+	errored.Status = vm.StateError
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{errored.ID: errored})
+
+	is := buildInstanceStatus(errored, false, svc.config.AZ)
+	require.NotNil(t, is.InstanceState)
+	assert.Equal(t, "stopped", *is.InstanceState.Name)
+	assert.Equal(t, int64(80), *is.InstanceState.Code)
+}
+
+// Every internal state must map onto a valid AWS InstanceStateName here, the
+// same guarantee vm.EC2APIState gives the DescribeInstances projection.
+func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {
+	owner := "111122223333"
+	valid := map[string]bool{
+		"pending": true, "running": true, "shutting-down": true,
+		"terminated": true, "stopping": true, "stopped": true,
+	}
+	for _, state := range []vm.InstanceState{
+		vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping,
+		vm.StateStopped, vm.StateShuttingDown, vm.StateTerminated, vm.StateError,
+	} {
+		v := runningVM("i-"+string(state), owner)
+		v.Status = state
+		svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+		is := buildInstanceStatus(v, false, svc.config.AZ)
+		require.NotNil(t, is.InstanceState)
+		assert.True(t, valid[*is.InstanceState.Name],
+			"buildInstanceStatus(%s) surfaced non-AWS name %q", state, *is.InstanceState.Name)
+	}
+}
+
+// A guest werror=stop has paused on a backend I/O error is unreachable, and the
+// cause is ours rather than the guest's. Before this it reported ok/passed on
+// both checks, because QMP stays perfectly responsive while the guest is held —
+// so the one state a customer most needs to see was the one that looked fine.
+func TestBuildInstanceStatus_IOErrorPauseIsImpaired(t *testing.T) {
+	owner := "111122223333"
+	paused := runningVM("i-io", owner)
+	paused.Health.IOErrorResumes = 1
+	paused.Health.IOErrorSince = time.Now().Add(-45 * time.Second)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{paused.ID: paused})
+
+	is := buildInstanceStatus(paused, false, svc.config.AZ)
+	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
+	assert.Equal(t, "failed", *is.InstanceStatus.Details[0].Status)
+	assert.Equal(t, "impaired", *is.SystemStatus.Status,
+		"a backend I/O error is an infrastructure fault, so the system check must fail too")
+	require.NotNil(t, is.InstanceStatus.Details[0].ImpairedSince)
+	assert.Equal(t, paused.Health.IOErrorSince, *is.InstanceStatus.Details[0].ImpairedSince,
+		"impairedSince must be when the guest first paused, not when it was escalated")
+}
+
+// The counter is cleared by the first poll that sees the guest running, so
+// clearing it must take the instance back to ok on both checks. An impairment
+// that outlives the fault is as misleading as one that never appears.
+func TestBuildInstanceStatus_ResumedGuestClearsImpairment(t *testing.T) {
+	owner := "111122223333"
+	resumed := runningVM("i-io-ok", owner)
+	resumed.Instance.LaunchTime = aws.Time(time.Now().Add(-time.Hour))
+	resumed.Health.IOErrorResumes = 0
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{resumed.ID: resumed})
+
+	is := buildInstanceStatus(resumed, false, svc.config.AZ)
+	assert.Equal(t, "ok", *is.InstanceStatus.Status)
+	assert.Equal(t, "ok", *is.SystemStatus.Status)
+	assert.Nil(t, is.InstanceStatus.Details[0].ImpairedSince)
+}
+
+// A guest that pauses inside the launch grace window is impaired, not
+// initializing: the grace period exists to hide a guest that has not booted
+// yet, and one held on a failed write is not that.
+func TestBuildInstanceStatus_IOErrorBeatsLaunchGrace(t *testing.T) {
+	owner := "111122223333"
+	fresh := runningVM("i-io-new", owner)
+	fresh.Instance.LaunchTime = aws.Time(time.Now().Add(-10 * time.Second))
+	fresh.Health.IOErrorResumes = 2
+	fresh.Health.IOErrorSince = time.Now().Add(-5 * time.Second)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{fresh.ID: fresh})
+
+	is := buildInstanceStatus(fresh, false, svc.config.AZ)
+	assert.Equal(t, "impaired", *is.InstanceStatus.Status)
+}
+
+func TestDescribeInstanceStatus_IncludeAllSurfacesStopped(t *testing.T) {
+	owner := "111122223333"
+	stopped := runningVM("i-stop", owner)
+	stopped.Status = vm.StateStopped
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{stopped.ID: stopped})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "stopped", *out.InstanceStatuses[0].InstanceState.Name)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "not-applicable", *out.InstanceStatuses[0].SystemStatus.Status)
+}
+
+func TestDescribeInstanceStatus_TerminatedNeverReturned(t *testing.T) {
+	owner := "111122223333"
+	term := runningVM("i-term", owner)
+	term.Status = vm.StateTerminated
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{term.ID: term})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_ErrorStateNeverReturned(t *testing.T) {
+	owner := "111122223333"
+	errVM := runningVM("i-err", owner)
+	errVM.Status = vm.StateError
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{errVM.ID: errVM})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+	}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_InstanceIDFilter(t *testing.T) {
+	owner := "111122223333"
+	keep := runningVM("i-keep", owner)
+	drop := runningVM("i-drop", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{keep.ID: keep, drop.ID: drop})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		InstanceIds: []*string{aws.String("i-keep")},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-keep", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{})
+	_, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		InstanceIds: []*string{aws.String("not-an-id")},
+	}, awsidentifiers.GlobalAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDMalformed, err.Error())
+}
+
+func TestDescribeInstanceStatus_UnknownFilter(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-aaa", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	_, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("event.code"),
+			Values: []*string{aws.String("system-reboot")},
+		}},
+	}, owner)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	assert.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Contains(t, message, "event.code")
+}
+
+func TestDescribeInstanceStatus_StateNameFilter(t *testing.T) {
+	owner := "111122223333"
+	run := runningVM("i-run", owner)
+	stop := runningVM("i-stop", owner)
+	stop.Status = vm.StateStopped
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{run.ID: run, stop.ID: stop})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		IncludeAllInstances: aws.Bool(true),
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("instance-state-name"),
+			Values: []*string{aws.String("running")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-run", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_AvailabilityZoneFilter(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-aaa", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("availability-zone"),
+			Values: []*string{aws.String("az-a")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	out, err = svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("availability-zone"),
+			Values: []*string{aws.String("az-b")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses)
+}
+
+func TestDescribeInstanceStatus_TagFilter(t *testing.T) {
+	owner := "111122223333"
+	tagged := runningVM("i-tag", owner)
+	tagged.Instance.Tags = []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("foo")}}
+	plain := runningVM("i-plain", owner)
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{tagged.ID: tagged, plain.ID: plain})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{
+		Filters: []*ec2.Filter{{
+			Name:   aws.String("tag:Name"),
+			Values: []*string{aws.String("foo")},
+		}},
+	}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-tag", *out.InstanceStatuses[0].InstanceId)
+}
+
+func TestDescribeInstanceStatus_QMPUnresponsiveImpaired(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-imp", owner)
+	since := time.Now().Add(-90 * time.Second)
+	v.Health.QMPConsecutiveFailures = vm.QMPMaxConsecutiveFailures
+	v.Health.ImpairedSince = since
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	assert.Equal(t, "running", *s.InstanceState.Name)
+	assert.Equal(t, "impaired", *s.InstanceStatus.Status)
+	require.Len(t, s.InstanceStatus.Details, 1)
+	assert.Equal(t, "failed", *s.InstanceStatus.Details[0].Status)
+	require.NotNil(t, s.InstanceStatus.Details[0].ImpairedSince)
+	assert.WithinDuration(t, since, *s.InstanceStatus.Details[0].ImpairedSince, time.Second)
+	// SystemStatus is host-level: the node is still reachable.
+	assert.Equal(t, "ok", *s.SystemStatus.Status)
+}
+
+func TestDescribeInstanceStatus_BelowThresholdStaysOK(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-ok", owner)
+	v.Health.QMPConsecutiveFailures = vm.QMPMaxConsecutiveFailures - 1
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "ok", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "passed", *out.InstanceStatuses[0].InstanceStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_RecentLaunchInitializing(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-new", owner)
+	now := time.Now()
+	v.Instance.LaunchTime = &now
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "initializing", *out.InstanceStatuses[0].InstanceStatus.Status)
+	assert.Equal(t, "initializing", *out.InstanceStatuses[0].InstanceStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_PastGraceOK(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-old", owner)
+	old := time.Now().Add(-5 * time.Minute)
+	v.Instance.LaunchTime = &old
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "ok", *out.InstanceStatuses[0].InstanceStatus.Status)
+}
+
+func TestDescribeInstanceStatus_MemoryPressureSystemImpaired(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-press", owner)
+	svc := &InstanceServiceImpl{
+		config:      &config.Config{AZ: "az-a"},
+		vmMgr:       mgrWith(map[string]*vm.VM{v.ID: v}),
+		resourceMgr: &fakeResourceCapacityProvider{memPressure: true},
+	}
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	// Instance itself is healthy; only the host system status is impaired.
+	assert.Equal(t, "ok", *s.InstanceStatus.Status)
+	assert.Equal(t, "impaired", *s.SystemStatus.Status)
+	assert.Equal(t, "failed", *s.SystemStatus.Details[0].Status)
+}
+
+func TestDescribeInstanceStatus_NoPressureSystemOK(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-fine", owner)
+	svc := &InstanceServiceImpl{
+		config:      &config.Config{AZ: "az-a"},
+		vmMgr:       mgrWith(map[string]*vm.VM{v.ID: v}),
+		resourceMgr: &fakeResourceCapacityProvider{memPressure: false},
+	}
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "ok", *out.InstanceStatuses[0].SystemStatus.Status)
+}
+
+// A guest the cloud underneath is not delivering a public address to is running
+// and answering on nothing. Reporting that as healthy is the one outcome worse
+// than reporting it as down, and it is a system fault rather than a guest one:
+// the instance passes every check it can be asked about itself.
+func TestDescribeInstanceStatus_AnAddressTheCloudWillNotDeliverIsSystemImpaired(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-dark", owner)
+	started := time.Now().Add(-90 * time.Second)
+	v.Health.AddressUnreachableSince = started
+	v.Health.AddressUnreachableReason = "OCI does not deliver 10.200.0.7 to this VNIC"
+	svc := &InstanceServiceImpl{
+		config:      &config.Config{AZ: "az-a"},
+		vmMgr:       mgrWith(map[string]*vm.VM{v.ID: v}),
+		resourceMgr: &fakeResourceCapacityProvider{},
+	}
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+
+	s := out.InstanceStatuses[0]
+	assert.Equal(t, "ok", *s.InstanceStatus.Status, "the guest is fine; the path to it is not")
+	assert.Equal(t, "impaired", *s.SystemStatus.Status)
+	assert.Equal(t, "failed", *s.SystemStatus.Details[0].Status)
+	require.NotNil(t, s.SystemStatus.Details[0].ImpairedSince,
+		"an operator needs to know how long it has been dark, not just that it is")
+	assert.WithinDuration(t, started, *s.SystemStatus.Details[0].ImpairedSince, time.Second)
+}
+
+// TestInstanceArchitecture pins the safe-extraction contract: malformed
+// InstanceTypeInfo returns "" rather than panicking, and the firmware probe
+// surfaces "" as a clear error on the launch path.
+func TestInstanceArchitecture(t *testing.T) {
+	tests := []struct {
+		name string
+		it   *ec2.InstanceTypeInfo
+		want string
+	}{
+		{"nil", nil, ""},
+		{"nil processor info", &ec2.InstanceTypeInfo{}, ""},
+		{"empty supported archs", &ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{}}, ""},
+		{
+			"x86_64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}}},
+			"x86_64",
+		},
+		{
+			"arm64",
+			&ec2.InstanceTypeInfo{ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}}},
+			"arm64",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, instanceArchitecture(tc.it))
+		})
+	}
+}
+
+func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-pre": {
+				NetworkInterfaceID: "eni-pre",
+				SubnetID:           "subnet-pre",
+				VpcID:              "vpc-pre",
+				PrivateIpAddress:   "10.0.5.42",
+				MacAddress:         "aa:bb:cc:dd:ee:01",
+				Status:             "available",
+				SecurityGroupIDs:   []string{"sg-pre"},
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-pre"),
+			DeviceIndex:        aws.Int64(0),
+		}},
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "eni-pre", instances[0].ENIId)
+	assert.Equal(t, "aa:bb:cc:dd:ee:01", instances[0].ENIMac)
+	assert.Equal(t, 1, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+}
+
+func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-busy": {
+				NetworkInterfaceID: "eni-busy",
+				Status:             "in-use",
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-busy"),
+		}},
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceInUse, err.Error())
+	assert.Equal(t, 0, eni.attachCalls, "in-use ENI must not be attached")
+	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+}
+
+func TestPrepareRunInstances_PreCreatedENILookupErrorSurfaced(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-ghost"),
+		}},
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, err.Error())
+	assert.Equal(t, 0, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls)
+}
+
+func TestPrepareRunInstances_PreCreatedENIAttachErrorSurfaced(t *testing.T) {
+	eni := &fakeENICreator{
+		getENIByID: map[string]*ENIInfo{
+			"eni-pre": {
+				NetworkInterfaceID: "eni-pre",
+				Status:             "available",
+				PrivateIpAddress:   "10.0.5.42",
+				MacAddress:         "aa:bb:cc:dd:ee:01",
+				SubnetID:           "subnet-pre",
+				VpcID:              "vpc-pre",
+			},
+		},
+		attachErr: errors.New(awserrors.ErrorServerInternal),
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterfaceSpecification{{
+			NetworkInterfaceId: aws.String("eni-pre"),
+		}},
+	}, "acc", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, 1, eni.attachCalls)
+	assert.Equal(t, 0, eni.createCalls)
+}
+
+// TestDescribeInstanceAttribute_UserDataUnsetCarriesNoValue pins the shape AWS
+// returns for an instance launched without user data: the attribute is present
+// and its Value is absent. The Terraform provider reads user_data only when
+// Value is non-nil, so an empty string makes it record the hash of "" and
+// propose a change on every plan.
+func TestDescribeInstanceAttribute_UserDataUnsetCarriesNoValue(t *testing.T) {
+	const id = "i-userdata-unset"
+	const owner = "000000000000"
+
+	for _, tc := range []struct {
+		name  string
+		input *ec2.RunInstancesInput
+	}{
+		{name: "no RunInstancesInput", input: nil},
+		{name: "nil UserData", input: &ec2.RunInstancesInput{}},
+		{name: "empty UserData", input: &ec2.RunInstancesInput{UserData: aws.String("")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &vm.VM{ID: id, AccountID: owner, RunInstancesInput: tc.input}
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v})}
+
+			out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+				InstanceId: aws.String(id),
+				Attribute:  aws.String(ec2.InstanceAttributeNameUserData),
+			}, owner)
+			require.NoError(t, err)
+			require.NotNil(t, out.UserData, "AWS returns the attribute itself even when it holds nothing")
+			assert.Nil(t, out.UserData.Value, "an instance with no user data carries no Value, not an empty one")
+		})
+	}
+}

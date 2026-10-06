@@ -73,7 +73,7 @@ func (d *Daemon) buildBedrockServiceDeps() ochre.ServiceDeps {
 
 // daemonGPUSnapshotter adapts *gpu.Manager to domains/ochre's Snapshot-only
 // capacity-check surface, keeping the gpu package out of that handler package
-// the same way daemonGPUClaimer keeps it out of handlers_ec2_instance.
+// the same way daemonGPUClaimer keeps it out of ec2instance.
 //
 // It holds the daemon rather than the manager because applyGPUConfig swaps
 // d.gpuManager on a passthrough toggle. Capturing the pointer here would leave

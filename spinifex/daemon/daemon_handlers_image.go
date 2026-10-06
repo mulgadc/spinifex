@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/admin"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -162,7 +162,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 		return outcomeError
 	}
 
-	params := handlers_ec2_image.CreateImageParams{
+	params := ec2image.CreateImageParams{
 		Input:         input,
 		RootVolumeID:  rootVolumeID,
 		SourceImageID: sourceImageID,

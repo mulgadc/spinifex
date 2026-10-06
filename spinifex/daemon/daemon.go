@@ -46,13 +46,18 @@ import (
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -66,11 +71,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -143,19 +143,19 @@ type Daemon struct {
 	config            *config.Config
 	natsConn          *nats.Conn
 	resourceMgr       *ResourceManager
-	instanceService   *handlers_ec2_instance.InstanceServiceImpl
+	instanceService   *ec2instance.InstanceServiceImpl
 	dnsWriter         *dns.Writer
 	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
 	dnsInternalDomain string
 	keyService        *ec2key.KeyServiceImpl
-	imageService      *handlers_ec2_image.ImageServiceImpl
-	volumeService     *handlers_ec2_volume.VolumeServiceImpl
+	imageService      *ec2image.ImageServiceImpl
+	volumeService     *ec2volume.VolumeServiceImpl
 	// ebsProvider is the sole EBS backend, set once during startup.
 	ebsProvider           ebsprovider.EBSProvider
 	accountService        *ec2account.AccountSettingsServiceImpl
-	snapshotService       *handlers_ec2_snapshot.SnapshotServiceImpl
-	tagsService           *handlers_ec2_tags.TagsServiceImpl
+	snapshotService       *ec2snapshot.SnapshotServiceImpl
+	tagsService           *ec2tags.TagsServiceImpl
 	eigwService           *ec2eigw.EgressOnlyIGWServiceImpl
 	igwService            *ec2igw.IGWServiceImpl
 	placementGroupService *ec2placementgroup.PlacementGroupServiceImpl
@@ -1756,20 +1756,20 @@ func (d *Daemon) startCluster() error {
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
+	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
 	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
 	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
 	d.keyService = ec2key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
+	d.imageService = ec2image.NewImageServiceImpl(d.config, d.natsConn)
 
 	type snapResult struct {
-		svc *handlers_ec2_snapshot.SnapshotServiceImpl
+		svc *ec2snapshot.SnapshotServiceImpl
 		kv  jetstream.KeyValue
 	}
 	snap, err := initServiceWithRetry("snapshot service", func() (snapResult, error) {
-		svc, kv, err := handlers_ec2_snapshot.NewSnapshotServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+		svc, kv, err := ec2snapshot.NewSnapshotServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 		return snapResult{svc, kv}, err
 	})
 	if err != nil {
@@ -1777,7 +1777,7 @@ func (d *Daemon) startCluster() error {
 	}
 	d.snapshotService = snap.svc
 
-	d.volumeService = handlers_ec2_volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
+	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
 	if err := d.configureEBSProvider(); err != nil {
 		return fmt.Errorf("configure EBS provider: %w", err)
 	}
@@ -1786,12 +1786,12 @@ func (d *Daemon) startCluster() error {
 		if jsErr != nil {
 			return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 		}
-		return handlers_ec2_tags.GetOrCreateTagsBucket(d.ctx, tagsJS)
+		return ec2tags.GetOrCreateTagsBucket(d.ctx, tagsJS)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
-	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config, tagsKV)
+	d.tagsService = ec2tags.NewTagsServiceImpl(d.config, tagsKV)
 	// Key pairs keep their creation tags in their own metadata; project them so
 	// describe-tags sees them, and clear them when the key pair is deleted.
 	d.keyService.SetCentralTagStore(d.tagsService)
@@ -1939,8 +1939,8 @@ func (d *Daemon) startCluster() error {
 	// the concrete value over only once init succeeded — otherwise the service's
 	// own nil checks pass and the allocate path derefs a nil receiver.
 	var (
-		ipAllocator handlers_ec2_instance.PublicIPAllocator
-		ipReleaser  handlers_ec2_instance.PublicIPReleaser
+		ipAllocator ec2instance.PublicIPAllocator
+		ipReleaser  ec2instance.PublicIPReleaser
 	)
 	if d.externalIPAM != nil {
 		ipAllocator = d.externalIPAM
@@ -3218,9 +3218,9 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.updateInstanceSubscriptions()
 }
 
-var _ handlers_ec2_instance.InstanceTypeAllocator = (*ResourceManager)(nil)
+var _ ec2instance.InstanceTypeAllocator = (*ResourceManager)(nil)
 
-// Allocate, Deallocate, CanAllocate satisfy handlers_ec2_instance.InstanceTypeAllocator.
+// Allocate, Deallocate, CanAllocate satisfy ec2instance.InstanceTypeAllocator.
 func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
 func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }
 func (rm *ResourceManager) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {

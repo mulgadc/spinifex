@@ -780,7 +780,7 @@ func probeVolumeOwner(nc *nats.Conn, volumeID string) volumeOwnership {
 }
 
 // deleteObjectPrefix deletes every object under prefix in bucket, paginating
-// through ListObjectsV2. Mirrors handlers/ec2/volume's deleteS3Prefix so
+// through ListObjectsV2. Mirrors domains/ec2/volume's deleteS3Prefix so
 // DeleteVolume and DeleteSnapshot get the same idempotent-when-absent
 // behaviour without a second copy of the pagination loop.
 func deleteObjectPrefix(ctx context.Context, store objectstore.ObjectStore, bucket, prefix string) error {

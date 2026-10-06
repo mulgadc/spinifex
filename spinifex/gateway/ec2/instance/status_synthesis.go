@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
@@ -67,7 +67,7 @@ func (s StatusSynthesis) synthesize(ctx context.Context, input *ec2.DescribeInst
 
 	// The fan-out already reported a malformed request through its own error
 	// path. Adding nothing here avoids answering a request the node rejected.
-	selection, err := handlers_ec2_instance.ParseStatusSelection(input, accountID)
+	selection, err := ec2instance.ParseStatusSelection(input, accountID)
 	if err != nil {
 		return nil
 	}
@@ -97,7 +97,7 @@ func (s StatusSynthesis) synthesize(ctx context.Context, input *ec2.DescribeInst
 
 		// SystemImpaired is node-local memory pressure only an answering node
 		// can report. A silent node's is unknowable, so it is not fabricated.
-		status := selection.StatusFor(v, handlers_ec2_instance.StatusOptions{AZ: v.AZ})
+		status := selection.StatusFor(v, ec2instance.StatusOptions{AZ: v.AZ})
 		if status == nil {
 			continue
 		}

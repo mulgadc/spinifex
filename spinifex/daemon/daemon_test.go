@@ -38,17 +38,17 @@ import (
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
@@ -131,8 +131,8 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// jsManager is nil here; pass a nil literal to keep the StoppedInstanceStore
 	// interface itself nil (rather than a typed-nil pointer) so the service can
 	// short-circuit cleanly when no KV is available.
-	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(cfg, daemon.resourceMgr.instanceTypes, nc, objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr, nil)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nc)
+	daemon.instanceService = ec2instance.NewInstanceServiceImpl(cfg, daemon.resourceMgr.instanceTypes, nc, objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr, nil)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nc)
 
 	// Wire the minimum vm.Deps that handler tests rely on. Lifecycle (Run/Start/
 	// Stop/Terminate) tests still set up their own deps; this gives the
@@ -1571,7 +1571,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
 	})
 	require.NoError(t, err)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
 
 	volumeID := "vol-root-attached"
@@ -1684,7 +1684,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 // TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown proves the
 // go-forward self-heal: a stopped-terminate that stamped
 // Teardown[volumes]=failed on a transient error (deleteInstanceVolumes,
-// handlers/ec2/instance/service_impl.go) is retried by
+// domains/ec2/instance/service_impl.go) is retried by
 // TerminatedTeardownReaper.Sweep (vm/teardown_reaper.go) through the real
 // instanceCleanerAdapter, which stage 1 rerouted through
 // DeleteVolumeOnTerminate. The retry clears the stale attachment, the delete
@@ -1706,7 +1706,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
 	})
 	require.NoError(t, err)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
 
 	volumeID := "vol-root-self-heal"
@@ -4508,10 +4508,10 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 	cases := []fieldCase{
 		{name: "natsConn", set: func(d *Daemon) { d.natsConn = &nats.Conn{} }, wantMsg: "natsConn"},
 		{name: "jsManager", set: func(d *Daemon) { d.jsManager = &JetStreamManager{} }, wantMsg: "jsManager"},
-		{name: "instanceService", set: func(d *Daemon) { d.instanceService = &handlers_ec2_instance.InstanceServiceImpl{} }, wantMsg: "instanceService"},
-		{name: "imageService", set: func(d *Daemon) { d.imageService = &handlers_ec2_image.ImageServiceImpl{} }, wantMsg: "imageService"},
-		{name: "snapshotService", set: func(d *Daemon) { d.snapshotService = &handlers_ec2_snapshot.SnapshotServiceImpl{} }, wantMsg: "snapshotService"},
-		{name: "volumeService", set: func(d *Daemon) { d.volumeService = &handlers_ec2_volume.VolumeServiceImpl{} }, wantMsg: "volumeService"},
+		{name: "instanceService", set: func(d *Daemon) { d.instanceService = &ec2instance.InstanceServiceImpl{} }, wantMsg: "instanceService"},
+		{name: "imageService", set: func(d *Daemon) { d.imageService = &ec2image.ImageServiceImpl{} }, wantMsg: "imageService"},
+		{name: "snapshotService", set: func(d *Daemon) { d.snapshotService = &ec2snapshot.SnapshotServiceImpl{} }, wantMsg: "snapshotService"},
+		{name: "volumeService", set: func(d *Daemon) { d.volumeService = &ec2volume.VolumeServiceImpl{} }, wantMsg: "volumeService"},
 		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &ec2eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
 		{name: "igwService", set: func(d *Daemon) { d.igwService = &ec2igw.IGWServiceImpl{} }, wantMsg: "igwService"},
 		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &ec2placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
@@ -4562,10 +4562,10 @@ func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 		config:          cfg,
 		natsConn:        nc,
 		jsManager:       jsManager,
-		instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
-		imageService:    handlers_ec2_image.NewImageServiceImplWithStore(store, cfg.Predastore.Bucket),
-		snapshotService: handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc),
-		volumeService:   handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, store, nc),
+		instanceService: &ec2instance.InstanceServiceImpl{},
+		imageService:    ec2image.NewImageServiceImplWithStore(store, cfg.Predastore.Bucket),
+		snapshotService: ec2snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc),
+		volumeService:   ec2volume.NewVolumeServiceImplWithStore(cfg, store, nc),
 	}
 }
 

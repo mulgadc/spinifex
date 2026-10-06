@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/nats-io/nats.go"
 )
 
@@ -47,7 +47,7 @@ func CreateTags(ctx context.Context, input *ec2.CreateTagsInput, natsConn *nats.
 		return output, err
 	}
 
-	svc := handlers_ec2_tags.NewNATSTagsService(natsConn)
+	svc := ec2tags.NewNATSTagsService(natsConn)
 	result, err := svc.CreateTags(ctx, input, accountID)
 	if err != nil {
 		return output, err

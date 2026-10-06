@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -37,7 +38,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -540,7 +540,7 @@ func launchService(config *config.ClusterConfig) error {
 	instanceCache := instancecache.New(js, instancecache.Config{
 		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
 		Prefix:            daemon.InstanceRecordPrefix,
-		VisibleToCaller:   handlers_ec2_instance.IsInstanceVisibleToCaller,
+		VisibleToCaller:   ec2instance.IsInstanceVisibleToCaller,
 		FallbackAccountID: awsidentifiers.GlobalAccountID,
 	})
 	go instanceCache.Run(janitorCtx)

@@ -18,7 +18,7 @@ import (
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
@@ -35,7 +35,7 @@ const testPredastoreBucket = "integration-test-bucket"
 // DaemonLite is a minimal in-process stand-in for a live spinifex daemon. It
 // subscribes the REAL key/tags/route-table/VPC-subnet-SG/IGW service
 // implementations — the same production code a live daemon runs — to the
-// NATS subjects the gateway's handlers_ec2_*.NewNATS*Service clients call,
+// NATS subjects the gateway's ec2*.NewNATS*Service clients call,
 // so a test exercises genuine daemon-side business logic instead of a
 // StubSubject canned reply.
 //
@@ -47,7 +47,7 @@ const testPredastoreBucket = "integration-test-bucket"
 // intentionally avoids.
 type DaemonLite struct {
 	Key             *ec2key.KeyServiceImpl
-	Tags            *handlers_ec2_tags.TagsServiceImpl
+	Tags            *ec2tags.TagsServiceImpl
 	VPC             *ec2vpc.VPCServiceImpl
 	RouteTable      *ec2routetable.RouteTableServiceImpl
 	IGW             *ec2igw.IGWServiceImpl
@@ -113,9 +113,9 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 
 	tagsJS, err := jetstream.New(nc)
 	require.NoError(t, err, "jetstream handle for the tag store")
-	tagsKV, err := handlers_ec2_tags.GetOrCreateTagsBucket(t.Context(), tagsJS)
+	tagsKV, err := ec2tags.GetOrCreateTagsBucket(t.Context(), tagsJS)
 	require.NoError(t, err, "tag store bucket")
-	tagsSvc := handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
+	tagsSvc := ec2tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
 
 	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct VPC service")

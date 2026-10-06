@@ -12,10 +12,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
@@ -78,7 +78,7 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 	// A volume the launch creates beyond the root is empty and sized by the
 	// request, so a mapping asking for anything else is refused by name rather
 	// than served as something it did not ask for.
-	if unserved := handlers_ec2_instance.UnservedBlockDeviceMappings(input.BlockDeviceMappings); len(unserved) > 0 {
+	if unserved := ec2instance.UnservedBlockDeviceMappings(input.BlockDeviceMappings); len(unserved) > 0 {
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "BlockDeviceMappings: cannot create %s", strings.Join(unserved, ", "))
 	}
 

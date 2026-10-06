@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -45,14 +45,14 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 			missingRecord = true
 			return
 		}
-		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		newTags = ec2instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 	})
 	if missingRecord {
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
 	accountID := natsmsg.AccountIDFromMsg(msg)
-	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
+	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, ec2instance.TagsToMap(newTags)); err != nil {
 		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
@@ -62,7 +62,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		if v.Instance == nil {
 			return false
 		}
-		v.Instance.Tags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		v.Instance.Tags = ec2instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 		return true
 	})
 	if err != nil {
@@ -231,7 +231,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 			continue
 		}
 		if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID,
-			handlers_ec2_instance.TagsToMap(instance.Instance.Tags)); err != nil {
+			ec2instance.TagsToMap(instance.Instance.Tags)); err != nil {
 			slog.Error("handleEC2RunInstances: launch tag central store write failed",
 				"instanceId", instance.ID, "err", err)
 		}

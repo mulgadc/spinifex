@@ -4,49 +4,49 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 )
 
 // daemonENICreator adapts the daemon's VPCServiceImpl to the
-// handlers_ec2_instance.ENICreator interface so RunInstances can stay free of
+// ec2instance.ENICreator interface so RunInstances can stay free of
 // the wider VPC service surface. Returned subnet records are translated to
-// handlers_ec2_instance.SubnetInfo to avoid a cyclic instance↔vpc import.
+// ec2instance.SubnetInfo to avoid a cyclic instance↔vpc import.
 type daemonENICreator struct {
 	d *Daemon
 }
 
-var _ handlers_ec2_instance.ENICreator = (*daemonENICreator)(nil)
+var _ ec2instance.ENICreator = (*daemonENICreator)(nil)
 
-func (a *daemonENICreator) GetDefaultSubnet(_ context.Context, accountID string) (*handlers_ec2_instance.SubnetInfo, error) {
+func (a *daemonENICreator) GetDefaultSubnet(_ context.Context, accountID string) (*ec2instance.SubnetInfo, error) {
 	rec, err := a.d.vpcService.GetDefaultSubnet(accountID)
 	if err != nil {
 		return nil, err
 	}
-	return &handlers_ec2_instance.SubnetInfo{
+	return &ec2instance.SubnetInfo{
 		SubnetID:            rec.SubnetId,
 		VpcID:               rec.VpcId,
 		MapPublicIpOnLaunch: rec.MapPublicIpOnLaunch,
 	}, nil
 }
 
-func (a *daemonENICreator) GetSubnet(_ context.Context, accountID, subnetID string) (*handlers_ec2_instance.SubnetInfo, error) {
+func (a *daemonENICreator) GetSubnet(_ context.Context, accountID, subnetID string) (*ec2instance.SubnetInfo, error) {
 	rec, err := a.d.vpcService.GetSubnet(accountID, subnetID)
 	if err != nil {
 		return nil, err
 	}
-	return &handlers_ec2_instance.SubnetInfo{
+	return &ec2instance.SubnetInfo{
 		SubnetID:            rec.SubnetId,
 		VpcID:               rec.VpcId,
 		MapPublicIpOnLaunch: rec.MapPublicIpOnLaunch,
 	}, nil
 }
 
-func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*handlers_ec2_instance.ENIInfo, error) {
+func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*ec2instance.ENIInfo, error) {
 	rec, err := a.d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
 		return nil, err
 	}
-	return &handlers_ec2_instance.ENIInfo{
+	return &ec2instance.ENIInfo{
 		NetworkInterfaceID: rec.NetworkInterfaceId,
 		SubnetID:           rec.SubnetId,
 		VpcID:              rec.VpcId,
@@ -81,14 +81,14 @@ func (a *daemonENICreator) ENIHasEIP(ctx context.Context, accountID, eniID strin
 	return a.d.vpcService.ENIHasEIP(ctx, accountID, eniID)
 }
 
-func (a *daemonENICreator) ListInstanceENIs(_ context.Context, accountID, instanceID string) ([]handlers_ec2_instance.ENIInfo, error) {
+func (a *daemonENICreator) ListInstanceENIs(_ context.Context, accountID, instanceID string) ([]ec2instance.ENIInfo, error) {
 	records, err := a.d.vpcService.ListInstanceENIs(accountID, instanceID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]handlers_ec2_instance.ENIInfo, 0, len(records))
+	out := make([]ec2instance.ENIInfo, 0, len(records))
 	for _, rec := range records {
-		out = append(out, handlers_ec2_instance.ENIInfo{
+		out = append(out, ec2instance.ENIInfo{
 			NetworkInterfaceID: rec.NetworkInterfaceId,
 			SubnetID:           rec.SubnetId,
 			VpcID:              rec.VpcId,

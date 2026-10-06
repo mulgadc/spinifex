@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,7 +122,7 @@ func TestTerminateWorkerInstances_StoppedFallbackToEC2Terminate(t *testing.T) {
 
 	gotID := make(chan string, 1)
 	sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
-		var req handlers_ec2_instance.TerminateStoppedInstanceInput
+		var req ec2instance.TerminateStoppedInstanceInput
 		_ = json.Unmarshal(msg.Data, &req)
 		gotID <- req.InstanceID
 		_ = msg.Respond([]byte(`{"status":"terminated"}`))

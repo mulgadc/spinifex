@@ -20,7 +20,7 @@ import (
 // ec2.CreateVolume through the real gateway and a real VolumeServiceImpl,
 // which constructs viperblock.New and calls Backend.Init()/SaveState()
 // against an actual predastore daemon rather than an unreachable host. The
-// previous unit-test equivalent (handlers/ec2/volume's
+// previous unit-test equivalent (domains/ec2/volume's
 // TestCreateVolume_PassesValidation) could only assert the returned error
 // wasn't a validation error, because nothing past validation could execute
 // without a live backend. Here CreateVolume is expected to fully succeed,

@@ -28,17 +28,17 @@ import (
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -60,7 +60,7 @@ func testTagsKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	kv, err := handlers_ec2_tags.GetOrCreateTagsBucket(t.Context(), js)
+	kv, err := ec2tags.GetOrCreateTagsBucket(t.Context(), js)
 	require.NoError(t, err)
 	return kv
 }
@@ -82,10 +82,10 @@ func createFullTestDaemonWithStore(t *testing.T, natsURL string) (*Daemon, *obje
 	cfg := daemon.config
 
 	daemon.keyService = ec2key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
-	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, cfg.Predastore.Bucket)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, memStore, daemon.natsConn)
-	daemon.snapshotService = handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, memStore, daemon.natsConn)
-	daemon.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore, testTagsKV(t))
+	daemon.imageService = ec2image.NewImageServiceImplWithStore(memStore, cfg.Predastore.Bucket)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(cfg, memStore, daemon.natsConn)
+	daemon.snapshotService = ec2snapshot.NewSnapshotServiceImplWithStore(cfg, memStore, daemon.natsConn)
+	daemon.tagsService = ec2tags.NewTagsServiceImplWithStore(cfg, memStore, testTagsKV(t))
 	wireTestEBSProvider(daemon, memStore)
 	initAccountServiceForTest(t, daemon)
 
@@ -144,7 +144,7 @@ func createFullTestDaemonWithJetStream(t *testing.T, natsURL string) *Daemon {
 
 	// Re-bind the instance service so describe-stopped/terminated handlers see
 	// the KV that was just initialised.
-	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	daemon.instanceService = ec2instance.NewInstanceServiceImpl(
 		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
 		objectstore.NewMemoryObjectStore(),
 		daemon.vmMgr, daemon.resourceMgr, daemon.jsManager,
@@ -551,7 +551,7 @@ func TestHandleEC2RunInstances_ServiceErrorPropagated(t *testing.T) {
 	// The resourceMgr still has instance types, so the daemon-level check passes,
 	// but RunInstance() will fail with ErrorInvalidInstanceType.
 	emptyTypes := map[string]*ec2.InstanceTypeInfo{}
-	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	daemon.instanceService = ec2instance.NewInstanceServiceImpl(
 		daemon.config, emptyTypes, daemon.natsConn,
 		objectstore.NewMemoryObjectStore(),
 		daemon.vmMgr, daemon.resourceMgr, nil,
@@ -591,7 +591,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 
 	memStore := objectstore.NewMemoryObjectStore()
 	bucket := daemon.config.Predastore.Bucket
-	daemon.imageService = handlers_ec2_image.NewImageServiceImplWithStore(memStore, bucket)
+	daemon.imageService = ec2image.NewImageServiceImplWithStore(memStore, bucket)
 	daemon.keyService = ec2key.NewKeyServiceImplWithStore(memStore, bucket)
 	seedTestAMI(t, memStore, bucket, "ami-sgprop")
 	daemon.instanceService.SetRunInstancesDeps(daemon.imageService, daemon.keyService, &daemonENICreator{d: daemon}, nil)
@@ -1380,7 +1380,7 @@ func TestHandleEC2DescribeStoppedInstances_WithFilter(t *testing.T) {
 // --- handleEC2TerminateStoppedInstance wrapper smoke test ---
 //
 // Detailed logic coverage lives in
-// handlers/ec2/instance/service_impl_test.go (TestTerminateStoppedInstance_*).
+// domains/ec2/instance/service_impl_test.go (TestTerminateStoppedInstance_*).
 // The wrapper smoke case is TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV
 // further below; it confirms the NATS → handleNATSRequest → service round-trip
 // stays intact end-to-end against real JetStream KV.
@@ -1550,7 +1550,7 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 // --- handleEC2ModifyInstanceAttribute wrapper smoke test ---
 //
 // Detailed logic coverage lives in
-// handlers/ec2/instance/service_impl_test.go (TestModifyInstanceAttribute_*).
+// domains/ec2/instance/service_impl_test.go (TestModifyInstanceAttribute_*).
 // This case keeps one end-to-end NATS → handleNATSRequest → service round-trip
 // to confirm the daemon wiring stays intact.
 
@@ -2007,7 +2007,7 @@ func TestDelegateHandlers_RoundTrip(t *testing.T) {
 
 	// DeleteTags' no-owner path falls back to the shared stopped store; give
 	// the service an empty one so an absent instance resolves to NotFound.
-	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	daemon.instanceService = ec2instance.NewInstanceServiceImpl(
 		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
 		objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr,
 		vmmock.New())
@@ -3483,7 +3483,7 @@ func TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	reqData, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: stoppedVM.ID})
+	reqData, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: stoppedVM.ID})
 	reply, err := natsRequest(daemon.natsConn, "ec2.terminate", reqData, 30*time.Second)
 	require.NoError(t, err)
 	assert.Contains(t, string(reply.Data), "terminated")

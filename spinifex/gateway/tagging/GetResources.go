@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	rgt "github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/nats-io/nats.go"
 )
@@ -93,7 +93,7 @@ func (l *natsLister) listELBv2(ctx context.Context, typeFilters map[string]bool)
 }
 
 func (l *natsLister) listEC2(ctx context.Context, typeFilters map[string]bool) ([]*rgt.ResourceTagMapping, error) {
-	svc := handlers_ec2_tags.NewNATSTagsService(l.natsConn)
+	svc := ec2tags.NewNATSTagsService(l.natsConn)
 	tagsOut, err := svc.DescribeTags(ctx, &ec2.DescribeTagsInput{}, l.accountID)
 	if err != nil {
 		return nil, err

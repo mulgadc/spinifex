@@ -1,7 +1,7 @@
 // Package mock provides a single shared in-memory fake for vm.StateStore,
 // reused by every package that stands up a stopped/terminated instance
 // store in its tests. It also structurally satisfies the narrower
-// handlers/ec2/instance.StoppedInstanceStore (see mock_test.go for the
+// domains/ec2/instance.StoppedInstanceStore (see mock_test.go for the
 // compile-time check, kept out of this file to avoid importing that
 // package from here).
 package mock

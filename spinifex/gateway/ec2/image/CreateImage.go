@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	"github.com/nats-io/nats.go"
 )
 
@@ -40,7 +40,7 @@ func CreateImage(ctx context.Context, input *ec2.CreateImageInput, natsConn *nat
 		return output, err
 	}
 
-	svc := handlers_ec2_image.NewNATSImageService(natsConn, expectedNodes)
+	svc := ec2image.NewNATSImageService(natsConn, expectedNodes)
 	result, err := svc.CreateImage(ctx, input, accountID)
 	if err != nil {
 		return output, err

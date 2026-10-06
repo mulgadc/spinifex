@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/nats-io/nats.go"
 )
 
@@ -34,7 +34,7 @@ func DescribeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusIn
 		return output, err
 	}
 
-	volumeService := handlers_ec2_volume.NewNATSVolumeService(natsConn)
+	volumeService := ec2volume.NewNATSVolumeService(natsConn)
 	result, err := volumeService.DescribeVolumeStatus(ctx, input, accountID)
 	if err != nil {
 		return output, err

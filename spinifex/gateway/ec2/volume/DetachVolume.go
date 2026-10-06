@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
 	"github.com/nats-io/nats.go"
 )
 
@@ -49,7 +49,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 	if input.InstanceId != nil && *input.InstanceId != "" {
 		instanceID = *input.InstanceId
 	} else {
-		volSvc := handlers_ec2_volume.NewNATSVolumeService(natsConn)
+		volSvc := ec2volume.NewNATSVolumeService(natsConn)
 		descOutput, err := volSvc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 			VolumeIds: []*string{&volumeID},
 		}, accountID)

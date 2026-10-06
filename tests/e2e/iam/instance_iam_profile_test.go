@@ -43,7 +43,7 @@ const (
 // is already asserted by tests/integration's TestIAMRolesAndProfiles. The
 // association lifecycle itself (Associate/AlreadyAssociated/Replace/
 // Disassociate/DeleteInstanceProfile-while-bound) is implemented in
-// InstanceServiceImpl (handlers/ec2/instance/service_impl.go) against a real
+// InstanceServiceImpl (domains/ec2/instance/service_impl.go) against a real
 // *vm.VM's mutable IamInstanceProfileArn/AssociationId fields — daemon-side
 // state a live guest actually carries. A static stub could only stand in for
 // it by modelling the whole instance lifecycle, which is why this stays live

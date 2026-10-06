@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
 	"github.com/nats-io/nats.go"
 )
 
@@ -34,7 +34,7 @@ func DescribeSnapshots(ctx context.Context, input *ec2.DescribeSnapshotsInput, n
 		return output, err
 	}
 
-	svc := handlers_ec2_snapshot.NewNATSSnapshotService(natsConn)
+	svc := ec2snapshot.NewNATSSnapshotService(natsConn)
 	result, err := svc.DescribeSnapshots(ctx, input, accountID)
 	if err != nil {
 		return output, err

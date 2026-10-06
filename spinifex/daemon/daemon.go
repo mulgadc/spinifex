@@ -45,6 +45,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -69,7 +70,6 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/network/external"
 	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
@@ -173,9 +173,9 @@ type Daemon struct {
 	bedrockReaper         *ochre.Reaper
 	acmService            *acmdomain.ACMServiceImpl
 	acmRenewalWorker      *acmdomain.Worker
-	ochreVectorService    handlers_ochrevector.VectorService
-	ochreAppliance        *handlers_ochrevector.Appliance
-	ochreBackupService    *handlers_ochrevector.BackupService
+	ochreVectorService    ochrevector.VectorService
+	ochreAppliance        *ochrevector.Appliance
+	ochreBackupService    *ochrevector.BackupService
 	ecrMetaService        *handlers_ecr.MetaServiceImpl
 	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
 	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl

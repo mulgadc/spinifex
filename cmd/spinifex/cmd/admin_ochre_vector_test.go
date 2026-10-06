@@ -10,36 +10,36 @@ import (
 	"strings"
 	"testing"
 
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/stretchr/testify/require"
 )
 
 // fakeVectorService serves scripted responses so the CLI's testable cores
 // can be exercised without a daemon or a live NATS connection.
 type fakeVectorService struct {
-	createIndex    handlers_ochrevector.CreateIndexResponse
+	createIndex    ochrevector.CreateIndexResponse
 	createIndexErr error
 	deleteIndexErr error
-	list           []handlers_ochrevector.Record
+	list           []ochrevector.Record
 	listErr        error
-	ingest         handlers_ochrevector.IngestResponse
+	ingest         ochrevector.IngestResponse
 	ingestErr      error
-	describeJob    handlers_ochrevector.JobRecord
+	describeJob    ochrevector.JobRecord
 	describeErr    error
-	query          []handlers_ochrevector.QueryResult
+	query          []ochrevector.QueryResult
 	queryErr       error
-	listJobs       []handlers_ochrevector.JobRecord
+	listJobs       []ochrevector.JobRecord
 	listJobsErr    error
-	stopJob        handlers_ochrevector.JobRecord
+	stopJob        ochrevector.JobRecord
 	stopJobErr     error
 
-	createIndexInputs []*handlers_ochrevector.CreateIndexRequest
-	deleteIndexInputs []*handlers_ochrevector.DeleteIndexRequest
-	ingestInputs      []*handlers_ochrevector.IngestRequest
-	queryInputs       []*handlers_ochrevector.QueryRequest
+	createIndexInputs []*ochrevector.CreateIndexRequest
+	deleteIndexInputs []*ochrevector.DeleteIndexRequest
+	ingestInputs      []*ochrevector.IngestRequest
+	queryInputs       []*ochrevector.QueryRequest
 }
 
-func (f *fakeVectorService) CreateIndex(_ context.Context, in *handlers_ochrevector.CreateIndexRequest, _ string) (*handlers_ochrevector.CreateIndexResponse, error) {
+func (f *fakeVectorService) CreateIndex(_ context.Context, in *ochrevector.CreateIndexRequest, _ string) (*ochrevector.CreateIndexResponse, error) {
 	f.createIndexInputs = append(f.createIndexInputs, in)
 	if f.createIndexErr != nil {
 		return nil, f.createIndexErr
@@ -51,22 +51,22 @@ func (f *fakeVectorService) CreateIndex(_ context.Context, in *handlers_ochrevec
 	return &out, nil
 }
 
-func (f *fakeVectorService) DeleteIndex(_ context.Context, in *handlers_ochrevector.DeleteIndexRequest, _ string) (*handlers_ochrevector.DeleteIndexResponse, error) {
+func (f *fakeVectorService) DeleteIndex(_ context.Context, in *ochrevector.DeleteIndexRequest, _ string) (*ochrevector.DeleteIndexResponse, error) {
 	f.deleteIndexInputs = append(f.deleteIndexInputs, in)
 	if f.deleteIndexErr != nil {
 		return nil, f.deleteIndexErr
 	}
-	return &handlers_ochrevector.DeleteIndexResponse{}, nil
+	return &ochrevector.DeleteIndexResponse{}, nil
 }
 
-func (f *fakeVectorService) ListIndexes(_ context.Context, _ *handlers_ochrevector.ListIndexesRequest, _ string) (*handlers_ochrevector.ListIndexesResponse, error) {
+func (f *fakeVectorService) ListIndexes(_ context.Context, _ *ochrevector.ListIndexesRequest, _ string) (*ochrevector.ListIndexesResponse, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return &handlers_ochrevector.ListIndexesResponse{Indexes: f.list}, nil
+	return &ochrevector.ListIndexesResponse{Indexes: f.list}, nil
 }
 
-func (f *fakeVectorService) Ingest(_ context.Context, in *handlers_ochrevector.IngestRequest, _ string) (*handlers_ochrevector.IngestResponse, error) {
+func (f *fakeVectorService) Ingest(_ context.Context, in *ochrevector.IngestRequest, _ string) (*ochrevector.IngestResponse, error) {
 	f.ingestInputs = append(f.ingestInputs, in)
 	if f.ingestErr != nil {
 		return nil, f.ingestErr
@@ -74,29 +74,29 @@ func (f *fakeVectorService) Ingest(_ context.Context, in *handlers_ochrevector.I
 	return &f.ingest, nil
 }
 
-func (f *fakeVectorService) DescribeJob(_ context.Context, _ *handlers_ochrevector.DescribeJobRequest, _ string) (*handlers_ochrevector.DescribeJobResponse, error) {
+func (f *fakeVectorService) DescribeJob(_ context.Context, _ *ochrevector.DescribeJobRequest, _ string) (*ochrevector.DescribeJobResponse, error) {
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}
-	return &handlers_ochrevector.DescribeJobResponse{Job: f.describeJob}, nil
+	return &ochrevector.DescribeJobResponse{Job: f.describeJob}, nil
 }
 
-func (f *fakeVectorService) Query(_ context.Context, in *handlers_ochrevector.QueryRequest, _ string) (*handlers_ochrevector.QueryResponse, error) {
+func (f *fakeVectorService) Query(_ context.Context, in *ochrevector.QueryRequest, _ string) (*ochrevector.QueryResponse, error) {
 	f.queryInputs = append(f.queryInputs, in)
 	if f.queryErr != nil {
 		return nil, f.queryErr
 	}
-	return &handlers_ochrevector.QueryResponse{Results: f.query}, nil
+	return &ochrevector.QueryResponse{Results: f.query}, nil
 }
 
-func (f *fakeVectorService) ListJobs(_ context.Context, _ *handlers_ochrevector.ListJobsRequest, _ string) (*handlers_ochrevector.ListJobsResponse, error) {
+func (f *fakeVectorService) ListJobs(_ context.Context, _ *ochrevector.ListJobsRequest, _ string) (*ochrevector.ListJobsResponse, error) {
 	if f.listJobsErr != nil {
 		return nil, f.listJobsErr
 	}
-	return &handlers_ochrevector.ListJobsResponse{Jobs: f.listJobs}, nil
+	return &ochrevector.ListJobsResponse{Jobs: f.listJobs}, nil
 }
 
-func (f *fakeVectorService) StopJob(_ context.Context, req *handlers_ochrevector.StopJobRequest, _ string) (*handlers_ochrevector.StopJobResponse, error) {
+func (f *fakeVectorService) StopJob(_ context.Context, req *ochrevector.StopJobRequest, _ string) (*ochrevector.StopJobResponse, error) {
 	if f.stopJobErr != nil {
 		return nil, f.stopJobErr
 	}
@@ -104,16 +104,16 @@ func (f *fakeVectorService) StopJob(_ context.Context, req *handlers_ochrevector
 	if job.ID == "" {
 		job.ID = req.JobID
 	}
-	return &handlers_ochrevector.StopJobResponse{Job: job}, nil
+	return &ochrevector.StopJobResponse{Job: job}, nil
 }
 
-var _ handlers_ochrevector.VectorService = (*fakeVectorService)(nil)
+var _ ochrevector.VectorService = (*fakeVectorService)(nil)
 
 const testIndexID = "idx-0123456789abcdef0"
 
 func TestRunIndexCreate_MintsIDAndPrintsRecord(t *testing.T) {
-	svc := &fakeVectorService{createIndex: handlers_ochrevector.CreateIndexResponse{
-		Index: handlers_ochrevector.Record{Name: "kb1", State: handlers_ochrevector.StateReady, Dimension: 768, EmbeddingModel: "nomic-embed-text-v1.5"},
+	svc := &fakeVectorService{createIndex: ochrevector.CreateIndexResponse{
+		Index: ochrevector.Record{Name: "kb1", State: ochrevector.StateReady, Dimension: 768, EmbeddingModel: "nomic-embed-text-v1.5"},
 	}}
 
 	msg, err := runIndexCreate(context.Background(), svc, "kb1", 768, "nomic-embed-text-v1.5")
@@ -154,8 +154,8 @@ func TestListIndexesOutput_NoIndexes(t *testing.T) {
 }
 
 func TestListIndexesOutput_ListsIndexes(t *testing.T) {
-	svc := &fakeVectorService{list: []handlers_ochrevector.Record{
-		{ID: testIndexID, Name: "kb1", State: handlers_ochrevector.StateReady, Dimension: 768, EmbeddingModel: "nomic-embed-text-v1.5"},
+	svc := &fakeVectorService{list: []ochrevector.Record{
+		{ID: testIndexID, Name: "kb1", State: ochrevector.StateReady, Dimension: 768, EmbeddingModel: "nomic-embed-text-v1.5"},
 	}}
 	msg, err := listIndexesOutput(context.Background(), svc)
 	require.NoError(t, err)
@@ -170,8 +170,8 @@ func TestListIndexesOutput_ErrorSurfaces(t *testing.T) {
 }
 
 func TestRunIngest_NoModelFlagSentByCLI(t *testing.T) {
-	svc := &fakeVectorService{ingest: handlers_ochrevector.IngestResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-abc", IndexID: testIndexID, State: handlers_ochrevector.JobStatePending},
+	svc := &fakeVectorService{ingest: ochrevector.IngestResponse{
+		Job: ochrevector.JobRecord{ID: "job-abc", IndexID: testIndexID, State: ochrevector.JobStatePending},
 	}}
 
 	msg, err := runIngest(context.Background(), svc, testIndexID, "docs", "kb/", 100, 10, map[string]string{"team": "eng"})
@@ -198,8 +198,8 @@ func TestRunIngest_ErrorSurfaces(t *testing.T) {
 }
 
 func TestRunJobDescribe_PrintsRecord(t *testing.T) {
-	svc := &fakeVectorService{describeJob: handlers_ochrevector.JobRecord{
-		ID: "job-abc", IndexID: testIndexID, State: handlers_ochrevector.JobStateReady, DocumentsDone: 3, DocumentsTotal: 3,
+	svc := &fakeVectorService{describeJob: ochrevector.JobRecord{
+		ID: "job-abc", IndexID: testIndexID, State: ochrevector.JobStateReady, DocumentsDone: 3, DocumentsTotal: 3,
 	}}
 	out, err := runJobDescribe(context.Background(), svc, "job-abc")
 	require.NoError(t, err)
@@ -215,7 +215,7 @@ func TestRunJobDescribe_ErrorSurfaces(t *testing.T) {
 
 func TestRunQuery_TableTruncatesLongChunk(t *testing.T) {
 	longChunk := strings.Repeat("x", cliChunkPreviewChars+50)
-	svc := &fakeVectorService{query: []handlers_ochrevector.QueryResult{
+	svc := &fakeVectorService{query: []ochrevector.QueryResult{
 		{Chunk: longChunk, SourceKey: "docs/a.txt", SourceOffset: 0, Score: 0.9},
 	}}
 
@@ -232,7 +232,7 @@ func TestRunQuery_TableTruncatesLongChunk(t *testing.T) {
 
 func TestRunQuery_JSONFlagPrintsFullChunk(t *testing.T) {
 	longChunk := strings.Repeat("x", cliChunkPreviewChars+50)
-	svc := &fakeVectorService{query: []handlers_ochrevector.QueryResult{
+	svc := &fakeVectorService{query: []ochrevector.QueryResult{
 		{Chunk: longChunk, SourceKey: "docs/a.txt", Score: 0.9},
 	}}
 
@@ -255,7 +255,7 @@ func TestRunQuery_FilterFlagReachesRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, svc.queryInputs, 1)
 	require.NotNil(t, svc.queryInputs[0].Filter)
-	require.Equal(t, handlers_ochrevector.FilterEquals, svc.queryInputs[0].Filter.Op)
+	require.Equal(t, ochrevector.FilterEquals, svc.queryInputs[0].Filter.Op)
 	require.Equal(t, "category", svc.queryInputs[0].Filter.Key)
 }
 
@@ -272,11 +272,11 @@ func TestRunQuery_ErrorSurfaces(t *testing.T) {
 
 // withVectorService swaps vectorServiceFn for one returning svc, so a Run
 // wrapper's real connect/validate/exit control flow runs without a daemon.
-func withVectorService(t *testing.T, svc handlers_ochrevector.VectorService, connErr error) {
+func withVectorService(t *testing.T, svc ochrevector.VectorService, connErr error) {
 	t.Helper()
 	orig := vectorServiceFn
 	t.Cleanup(func() { vectorServiceFn = orig })
-	vectorServiceFn = func() (handlers_ochrevector.VectorService, func(), error) {
+	vectorServiceFn = func() (ochrevector.VectorService, func(), error) {
 		if connErr != nil {
 			return nil, nil, connErr
 		}
@@ -285,8 +285,8 @@ func withVectorService(t *testing.T, svc handlers_ochrevector.VectorService, con
 }
 
 func TestRunOchreVectorIndexCreate_PrintsRecord(t *testing.T) {
-	withVectorService(t, &fakeVectorService{createIndex: handlers_ochrevector.CreateIndexResponse{
-		Index: handlers_ochrevector.Record{ID: testIndexID, State: handlers_ochrevector.StateReady},
+	withVectorService(t, &fakeVectorService{createIndex: ochrevector.CreateIndexResponse{
+		Index: ochrevector.Record{ID: testIndexID, State: ochrevector.StateReady},
 	}}, nil)
 
 	cmd := *ochreVectorIndexCreateCmd
@@ -326,8 +326,8 @@ func TestRunOchreVectorIndexDelete_ReportsDeletion(t *testing.T) {
 }
 
 func TestRunOchreVectorIndexList_PrintsTable(t *testing.T) {
-	withVectorService(t, &fakeVectorService{list: []handlers_ochrevector.Record{
-		{ID: testIndexID, Name: "kb1", State: handlers_ochrevector.StateReady},
+	withVectorService(t, &fakeVectorService{list: []ochrevector.Record{
+		{ID: testIndexID, Name: "kb1", State: ochrevector.StateReady},
 	}}, nil)
 
 	var out string
@@ -339,8 +339,8 @@ func TestRunOchreVectorIndexList_PrintsTable(t *testing.T) {
 }
 
 func TestRunOchreVectorIngest_PrintsJobID(t *testing.T) {
-	withVectorService(t, &fakeVectorService{ingest: handlers_ochrevector.IngestResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-abc", IndexID: testIndexID, State: handlers_ochrevector.JobStatePending},
+	withVectorService(t, &fakeVectorService{ingest: ochrevector.IngestResponse{
+		Job: ochrevector.JobRecord{ID: "job-abc", IndexID: testIndexID, State: ochrevector.JobStatePending},
 	}}, nil)
 
 	cmd := *ochreVectorIngestCmd
@@ -356,8 +356,8 @@ func TestRunOchreVectorIngest_PrintsJobID(t *testing.T) {
 }
 
 func TestRunOchreVectorJobDescribe_PrintsRecord(t *testing.T) {
-	withVectorService(t, &fakeVectorService{describeJob: handlers_ochrevector.JobRecord{
-		ID: "job-abc", IndexID: testIndexID, State: handlers_ochrevector.JobStateReady,
+	withVectorService(t, &fakeVectorService{describeJob: ochrevector.JobRecord{
+		ID: "job-abc", IndexID: testIndexID, State: ochrevector.JobStateReady,
 	}}, nil)
 
 	var out string
@@ -369,7 +369,7 @@ func TestRunOchreVectorJobDescribe_PrintsRecord(t *testing.T) {
 }
 
 func TestRunOchreVectorQuery_PrintsTable(t *testing.T) {
-	withVectorService(t, &fakeVectorService{query: []handlers_ochrevector.QueryResult{
+	withVectorService(t, &fakeVectorService{query: []ochrevector.QueryResult{
 		{Chunk: "hello world", SourceKey: "docs/a.txt", Score: 0.9},
 	}}, nil)
 
@@ -399,9 +399,9 @@ func TestRunOchreVectorQuery_ConnectFailureExits1(t *testing.T) {
 const testBackupAccountID = "123456789012"
 
 func TestRunBackupAccount_PrintsObjectKeyAndSize(t *testing.T) {
-	backup := func(_ context.Context, accountID string) (*handlers_ochrevector.BackupAccountResponse, error) {
+	backup := func(_ context.Context, accountID string) (*ochrevector.BackupAccountResponse, error) {
 		require.Equal(t, testBackupAccountID, accountID)
-		return &handlers_ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 4096}, nil
+		return &ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 4096}, nil
 	}
 
 	msg, err := runBackupAccount(context.Background(), testBackupAccountID, backup)
@@ -411,7 +411,7 @@ func TestRunBackupAccount_PrintsObjectKeyAndSize(t *testing.T) {
 }
 
 func TestRunBackupAccount_ErrorSurfaces(t *testing.T) {
-	backup := func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error) {
+	backup := func(context.Context, string) (*ochrevector.BackupAccountResponse, error) {
 		return nil, errors.New("ochrevector: appliance not available")
 	}
 
@@ -445,7 +445,7 @@ func TestRunRestoreAccount_ErrorSurfaces(t *testing.T) {
 // withBackupAccount swaps backupAccountFn for one that never dials NATS, so
 // the Run wrapper's flag/exit control flow is exercised without a live
 // daemon, mirroring withApplianceTeardown.
-func withBackupAccount(t *testing.T, fn func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error)) {
+func withBackupAccount(t *testing.T, fn func(context.Context, string) (*ochrevector.BackupAccountResponse, error)) {
 	t.Helper()
 	orig := backupAccountFn
 	t.Cleanup(func() { backupAccountFn = orig })
@@ -461,8 +461,8 @@ func withRestoreAccount(t *testing.T, fn func(context.Context, string, string) e
 }
 
 func TestRunOchreVectorBackup_PrintsSuccess(t *testing.T) {
-	withBackupAccount(t, func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error) {
-		return &handlers_ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 1024}, nil
+	withBackupAccount(t, func(context.Context, string) (*ochrevector.BackupAccountResponse, error) {
+		return &ochrevector.BackupAccountResponse{ObjectKey: testBackupAccountID + "/backup.sql.gz", SizeBytes: 1024}, nil
 	})
 
 	cmd := *ochreVectorBackupCmd
@@ -477,7 +477,7 @@ func TestRunOchreVectorBackup_PrintsSuccess(t *testing.T) {
 }
 
 func TestRunOchreVectorBackup_ErrorExits1(t *testing.T) {
-	withBackupAccount(t, func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error) {
+	withBackupAccount(t, func(context.Context, string) (*ochrevector.BackupAccountResponse, error) {
 		return nil, errors.New("ochrevector: appliance not available")
 	})
 

@@ -11,9 +11,9 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/mulgadc/spinifex/spinifex/network/host"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
@@ -66,8 +66,8 @@ func (d *Daemon) startOchreVector() {
 		return
 	}
 
-	launcher := handlers_ochrevector.NewRDSApplianceLauncher(d.natsConn, ochreApplianceLaunchTimeout)
-	appliance, err := handlers_ochrevector.NewAppliance(js, masterKey, launcher)
+	launcher := ochrevector.NewRDSApplianceLauncher(d.natsConn, ochreApplianceLaunchTimeout)
+	appliance, err := ochrevector.NewAppliance(js, masterKey, launcher)
 	if err != nil {
 		slog.Warn("Ochre vector store disabled: appliance construction failed", "err", err)
 		return
@@ -75,7 +75,7 @@ func (d *Daemon) startOchreVector() {
 	// Give the daemon a routed presence in the appliance's system-VPC subnet
 	// before Connect dials it: a tag-filtered ENI describe resolves the real
 	// dial IP and subnet, never the unroutable vanity endpoint hostname.
-	appliance.WithHostPort(handlers_ochrevector.HostPortDeps{
+	appliance.WithHostPort(ochrevector.HostPortDeps{
 		VPC:      d.vpcService,
 		HostPort: host.NewOVSPlumber(),
 		NodeID:   d.node,
@@ -88,10 +88,10 @@ func (d *Daemon) startOchreVector() {
 	// reconstructed; kb/ds are gateway-owned metadata this daemon never reads
 	// or writes itself -- they exist here solely so Teardown can purge them
 	// alongside registry/jobs.
-	registry := handlers_ochrevector.NewRegistry(js)
-	jobs := handlers_ochrevector.NewJobStore(js)
+	registry := ochrevector.NewRegistry(js)
+	jobs := ochrevector.NewJobStore(js)
 	appliance.WithStores(registry, jobs)
-	appliance.WithKBStores(handlers_ochrevector.NewKBStore(js), handlers_ochrevector.NewDataSourceStore(js))
+	appliance.WithKBStores(ochrevector.NewKBStore(js), ochrevector.NewDataSourceStore(js))
 
 	// Publish the appliance and register the operator teardown subject BEFORE
 	// Connect: recovering a broken singleton is teardown's whole purpose, so it
@@ -101,7 +101,7 @@ func (d *Daemon) startOchreVector() {
 	d.ochreAppliance = appliance
 	d.mu.Unlock()
 	if err := d.registerNatsSubs([]natsSub{
-		{handlers_ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.node, d.handleOchreApplianceTeardown), "spinifex-workers"},
+		{ochrevector.SubjectTeardownAppliance, handleNATSRequest(d.node, d.handleOchreApplianceTeardown), "spinifex-workers"},
 	}); err != nil {
 		slog.Error("Ochre vector store: failed to register appliance teardown subject", "err", err)
 	}
@@ -122,7 +122,7 @@ func (d *Daemon) startOchreVector() {
 
 	// RerankModel unset leaves reranker nil: Query degrades to plain KNN
 	// rather than resolving a default rerank model nobody asked for.
-	var reranker handlers_ochrevector.Reranker
+	var reranker ochrevector.Reranker
 	if cfg.RerankModel != "" {
 		reranker = gateway_bedrock.NewReranker(endpointResolver, cfg.RerankModel)
 	}
@@ -132,10 +132,10 @@ func (d *Daemon) startOchreVector() {
 
 	// registry and jobs were already built above (and attached to appliance
 	// via WithStores) before Connect was attempted; reused here, not rebuilt.
-	service := handlers_ochrevector.NewService(registry, backend)
-	ingest := handlers_ochrevector.NewIngestService(jobs, registry, backend, store, embedder)
+	service := ochrevector.NewService(registry, backend)
+	ingest := ochrevector.NewIngestService(jobs, registry, backend, store, embedder)
 
-	vectorService := handlers_ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder, reranker)
+	vectorService := ochrevector.NewVectorService(service, ingest, jobs, registry, backend, embedder, reranker)
 
 	// A shutdown that lands in the gap between Connect succeeding above and
 	// this check does not leave anything to unwind: nothing has been
@@ -154,28 +154,28 @@ func (d *Daemon) startOchreVector() {
 	// table-driven mechanism subscribeAll itself uses, so a queue-group
 	// registration here is indistinguishable from one made at boot.
 	subs := []natsSub{
-		{handlers_ochrevector.SubjectCreateIndex, handleNATSRequest(d.node, vectorService.CreateIndex), "spinifex-workers"},
-		{handlers_ochrevector.SubjectDeleteIndex, handleNATSRequest(d.node, vectorService.DeleteIndex), "spinifex-workers"},
-		{handlers_ochrevector.SubjectListIndexes, handleNATSRequest(d.node, vectorService.ListIndexes), "spinifex-workers"},
-		{handlers_ochrevector.SubjectIngest, handleNATSRequest(d.node, vectorService.Ingest), "spinifex-workers"},
-		{handlers_ochrevector.SubjectDescribeJob, handleNATSRequest(d.node, vectorService.DescribeJob), "spinifex-workers"},
-		{handlers_ochrevector.SubjectQuery, handleNATSRequest(d.node, vectorService.Query), "spinifex-workers"},
-		{handlers_ochrevector.SubjectListJobs, handleNATSRequest(d.node, vectorService.ListJobs), "spinifex-workers"},
-		{handlers_ochrevector.SubjectStopJob, handleNATSRequest(d.node, vectorService.StopJob), "spinifex-workers"},
+		{ochrevector.SubjectCreateIndex, handleNATSRequest(d.node, vectorService.CreateIndex), "spinifex-workers"},
+		{ochrevector.SubjectDeleteIndex, handleNATSRequest(d.node, vectorService.DeleteIndex), "spinifex-workers"},
+		{ochrevector.SubjectListIndexes, handleNATSRequest(d.node, vectorService.ListIndexes), "spinifex-workers"},
+		{ochrevector.SubjectIngest, handleNATSRequest(d.node, vectorService.Ingest), "spinifex-workers"},
+		{ochrevector.SubjectDescribeJob, handleNATSRequest(d.node, vectorService.DescribeJob), "spinifex-workers"},
+		{ochrevector.SubjectQuery, handleNATSRequest(d.node, vectorService.Query), "spinifex-workers"},
+		{ochrevector.SubjectListJobs, handleNATSRequest(d.node, vectorService.ListJobs), "spinifex-workers"},
+		{ochrevector.SubjectStopJob, handleNATSRequest(d.node, vectorService.StopJob), "spinifex-workers"},
 	}
 
 	// backup/restore need RegrantAccount alongside EnsureAccount, which is
 	// not part of VectorBackend itself; every real backend (pgxBackend)
 	// implements it, so this only ever skips registration for a future
 	// VectorBackend that does not.
-	if granter, ok := backend.(handlers_ochrevector.AccountGranter); ok {
-		backupSvc := handlers_ochrevector.NewBackupService(appliance, granter, store, handlers_ochrevector.ExecPgDumper{})
+	if granter, ok := backend.(ochrevector.AccountGranter); ok {
+		backupSvc := ochrevector.NewBackupService(appliance, granter, store, ochrevector.ExecPgDumper{})
 		d.mu.Lock()
 		d.ochreBackupService = backupSvc
 		d.mu.Unlock()
 		subs = append(subs,
-			natsSub{handlers_ochrevector.SubjectBackupAccount, handleNATSRequest(d.node, backupSvc.Backup), "spinifex-workers"},
-			natsSub{handlers_ochrevector.SubjectRestoreAccount, handleNATSRequest(d.node, backupSvc.Restore), "spinifex-workers"},
+			natsSub{ochrevector.SubjectBackupAccount, handleNATSRequest(d.node, backupSvc.Backup), "spinifex-workers"},
+			natsSub{ochrevector.SubjectRestoreAccount, handleNATSRequest(d.node, backupSvc.Restore), "spinifex-workers"},
 		)
 	} else {
 		slog.Warn("Ochre vector store: backend does not support account backup/restore; subjects not registered")
@@ -208,7 +208,7 @@ func (d *Daemon) startOchreVector() {
 // EnsureAccount/CreateIndex call and no ingest job for it. Best-effort: a
 // failure on one record is logged and the pass continues to the rest rather
 // than failing the appliance connect that already succeeded.
-func (d *Daemon) reconcileOchreIndexes(ctx context.Context, registry *handlers_ochrevector.Registry, backend handlers_ochrevector.VectorBackend, ingest *handlers_ochrevector.IngestService) {
+func (d *Daemon) reconcileOchreIndexes(ctx context.Context, registry *ochrevector.Registry, backend ochrevector.VectorBackend, ingest *ochrevector.IngestService) {
 	recs, err := registry.ListAll(ctx)
 	if err != nil {
 		slog.Warn("Ochre vector store: reconcile indexes: list registry failed", "err", err)
@@ -229,7 +229,7 @@ func (d *Daemon) reconcileOchreIndexes(ctx context.Context, registry *handlers_o
 				"account", rec.AccountID, "index", rec.ID, "err", err)
 			continue
 		}
-		spec := handlers_ochrevector.IndexSpec{ID: rec.ID, Dimension: rec.Dimension}
+		spec := ochrevector.IndexSpec{ID: rec.ID, Dimension: rec.Dimension}
 		if err := backend.CreateIndex(ctx, rec.AccountID, spec); err != nil {
 			slog.Warn("Ochre vector store: reconcile indexes: create index failed",
 				"account", rec.AccountID, "index", rec.ID, "err", err)
@@ -253,7 +253,7 @@ const ochreIngestSweepInterval = 15 * time.Second
 // runOchreIngestScheduler drives the ingestion sweep on a timer until the
 // daemon context is cancelled. An initial sweep keeps submit latency low; the
 // ticker then re-drives PENDING and crash-abandoned RUNNING jobs.
-func (d *Daemon) runOchreIngestScheduler(ingest *handlers_ochrevector.IngestService) {
+func (d *Daemon) runOchreIngestScheduler(ingest *ochrevector.IngestService) {
 	if err := ingest.Sweep(d.ctx); err != nil {
 		slog.Warn("Ochre vector store: initial ingest sweep", "err", err)
 	}
@@ -278,7 +278,7 @@ func (d *Daemon) runOchreIngestScheduler(ingest *handlers_ochrevector.IngestServ
 // an earlier call) has nothing to act on, which is reported as an error
 // rather than silently accepted -- an operator asking to tear down expects
 // one to have existed.
-func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, req *handlers_ochrevector.TeardownApplianceRequest, _ string) (*handlers_ochrevector.TeardownApplianceResponse, error) {
+func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, req *ochrevector.TeardownApplianceRequest, _ string) (*ochrevector.TeardownApplianceResponse, error) {
 	d.mu.Lock()
 	appliance := d.ochreAppliance
 	d.mu.Unlock()
@@ -297,13 +297,13 @@ func (d *Daemon) handleOchreApplianceTeardown(ctx context.Context, req *handlers
 	d.ochreBackupService = nil
 	d.mu.Unlock()
 
-	return &handlers_ochrevector.TeardownApplianceResponse{}, nil
+	return &ochrevector.TeardownApplianceResponse{}, nil
 }
 
 // connectOchreAppliance drives Ensure-then-Connect until it succeeds or the
 // daemon shuts down, so a torn-down-then-readopted appliance heals on its own
 // rather than disabling the feature permanently after a few early failures.
-func (d *Daemon) connectOchreAppliance(appliance *handlers_ochrevector.Appliance) (handlers_ochrevector.VectorBackend, error) {
+func (d *Daemon) connectOchreAppliance(appliance *ochrevector.Appliance) (ochrevector.VectorBackend, error) {
 	return retryUntilContext(d.ctx, ochreStartupInitialBackoff, ochreStartupMaxBackoff,
 		func(attempt int, backoff time.Duration, err error) {
 			if attempt <= ochreStartupLogAttempts || attempt%ochreStartupLogEvery == 0 {
@@ -311,7 +311,7 @@ func (d *Daemon) connectOchreAppliance(appliance *handlers_ochrevector.Appliance
 					"attempt", attempt, "backoff_ms", otelsetup.Millis(backoff), "err", err)
 			}
 		},
-		func() (handlers_ochrevector.VectorBackend, error) {
+		func() (ochrevector.VectorBackend, error) {
 			return d.ensureAndConnectOchreApplianceOnce(appliance)
 		})
 }
@@ -349,7 +349,7 @@ func retryUntilContext[T any](ctx context.Context, initialBackoff, maxBackoff ti
 // attempt, bounding Ensure by ochreApplianceLaunchTimeout the same way the
 // original one-shot call did; Connect is bounded by d.ctx alone, since it
 // does its own network dial rather than a long poll loop.
-func (d *Daemon) ensureAndConnectOchreApplianceOnce(appliance *handlers_ochrevector.Appliance) (handlers_ochrevector.VectorBackend, error) {
+func (d *Daemon) ensureAndConnectOchreApplianceOnce(appliance *ochrevector.Appliance) (ochrevector.VectorBackend, error) {
 	ensureCtx, cancel := context.WithTimeout(d.ctx, ochreApplianceLaunchTimeout)
 	defer cancel()
 	if _, err := appliance.Ensure(ensureCtx); err != nil {

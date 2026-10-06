@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/spf13/cobra"
 )
 
@@ -61,8 +61,8 @@ var applianceTeardownFn = func(ctx context.Context, purgeMetadata bool) error {
 		return err
 	}
 	defer nc.Close()
-	_, err = natsmsg.NATSRequest[handlers_ochrevector.TeardownApplianceResponse](ctx, nc,
-		handlers_ochrevector.SubjectTeardownAppliance, &handlers_ochrevector.TeardownApplianceRequest{PurgeMetadata: purgeMetadata},
+	_, err = natsmsg.NATSRequest[ochrevector.TeardownApplianceResponse](ctx, nc,
+		ochrevector.SubjectTeardownAppliance, &ochrevector.TeardownApplianceRequest{PurgeMetadata: purgeMetadata},
 		applianceTeardownTimeout, awsidentifiers.GlobalAccountID)
 	return err
 }

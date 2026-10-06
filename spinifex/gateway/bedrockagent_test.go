@@ -18,8 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagent"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,55 +31,55 @@ const bedrockAgentTestAccount = "111111111111"
 // mapping logic can be exercised without a daemon or a live NATS connection,
 // mirroring cmd/spinifex/cmd's fakeVectorService for this package.
 type fakeBedrockAgentVectorService struct {
-	createIndexReq *handlers_ochrevector.CreateIndexRequest
+	createIndexReq *ochrevector.CreateIndexRequest
 	createIndexErr error
 
 	deletedIndexIDs []string
 	deleteIndexErr  error
 
-	ingestReq  *handlers_ochrevector.IngestRequest
-	ingestResp handlers_ochrevector.IngestResponse
+	ingestReq  *ochrevector.IngestRequest
+	ingestResp ochrevector.IngestResponse
 	ingestErr  error
 
-	describeJobResp handlers_ochrevector.DescribeJobResponse
+	describeJobResp ochrevector.DescribeJobResponse
 	describeJobErr  error
 
-	listJobsResp handlers_ochrevector.ListJobsResponse
+	listJobsResp ochrevector.ListJobsResponse
 	listJobsErr  error
 
-	queryReq  *handlers_ochrevector.QueryRequest
-	queryResp handlers_ochrevector.QueryResponse
+	queryReq  *ochrevector.QueryRequest
+	queryResp ochrevector.QueryResponse
 	queryErr  error
 
-	stopJobReq  *handlers_ochrevector.StopJobRequest
-	stopJobResp handlers_ochrevector.StopJobResponse
+	stopJobReq  *ochrevector.StopJobRequest
+	stopJobResp ochrevector.StopJobResponse
 	stopJobErr  error
 }
 
-func (f *fakeBedrockAgentVectorService) CreateIndex(_ context.Context, req *handlers_ochrevector.CreateIndexRequest, _ string) (*handlers_ochrevector.CreateIndexResponse, error) {
+func (f *fakeBedrockAgentVectorService) CreateIndex(_ context.Context, req *ochrevector.CreateIndexRequest, _ string) (*ochrevector.CreateIndexResponse, error) {
 	f.createIndexReq = req
 	if f.createIndexErr != nil {
 		return nil, f.createIndexErr
 	}
-	return &handlers_ochrevector.CreateIndexResponse{Index: handlers_ochrevector.Record{
+	return &ochrevector.CreateIndexResponse{Index: ochrevector.Record{
 		ID: req.IndexID, Name: req.Name, Dimension: req.Dimension,
-		EmbeddingModel: req.EmbeddingModel, State: handlers_ochrevector.StateReady,
+		EmbeddingModel: req.EmbeddingModel, State: ochrevector.StateReady,
 	}}, nil
 }
 
-func (f *fakeBedrockAgentVectorService) DeleteIndex(_ context.Context, req *handlers_ochrevector.DeleteIndexRequest, _ string) (*handlers_ochrevector.DeleteIndexResponse, error) {
+func (f *fakeBedrockAgentVectorService) DeleteIndex(_ context.Context, req *ochrevector.DeleteIndexRequest, _ string) (*ochrevector.DeleteIndexResponse, error) {
 	f.deletedIndexIDs = append(f.deletedIndexIDs, req.IndexID)
 	if f.deleteIndexErr != nil {
 		return nil, f.deleteIndexErr
 	}
-	return &handlers_ochrevector.DeleteIndexResponse{}, nil
+	return &ochrevector.DeleteIndexResponse{}, nil
 }
 
-func (f *fakeBedrockAgentVectorService) ListIndexes(_ context.Context, _ *handlers_ochrevector.ListIndexesRequest, _ string) (*handlers_ochrevector.ListIndexesResponse, error) {
-	return &handlers_ochrevector.ListIndexesResponse{}, nil
+func (f *fakeBedrockAgentVectorService) ListIndexes(_ context.Context, _ *ochrevector.ListIndexesRequest, _ string) (*ochrevector.ListIndexesResponse, error) {
+	return &ochrevector.ListIndexesResponse{}, nil
 }
 
-func (f *fakeBedrockAgentVectorService) Ingest(_ context.Context, req *handlers_ochrevector.IngestRequest, _ string) (*handlers_ochrevector.IngestResponse, error) {
+func (f *fakeBedrockAgentVectorService) Ingest(_ context.Context, req *ochrevector.IngestRequest, _ string) (*ochrevector.IngestResponse, error) {
 	f.ingestReq = req
 	if f.ingestErr != nil {
 		return nil, f.ingestErr
@@ -88,7 +88,7 @@ func (f *fakeBedrockAgentVectorService) Ingest(_ context.Context, req *handlers_
 	return &resp, nil
 }
 
-func (f *fakeBedrockAgentVectorService) DescribeJob(_ context.Context, _ *handlers_ochrevector.DescribeJobRequest, _ string) (*handlers_ochrevector.DescribeJobResponse, error) {
+func (f *fakeBedrockAgentVectorService) DescribeJob(_ context.Context, _ *ochrevector.DescribeJobRequest, _ string) (*ochrevector.DescribeJobResponse, error) {
 	if f.describeJobErr != nil {
 		return nil, f.describeJobErr
 	}
@@ -96,7 +96,7 @@ func (f *fakeBedrockAgentVectorService) DescribeJob(_ context.Context, _ *handle
 	return &resp, nil
 }
 
-func (f *fakeBedrockAgentVectorService) ListJobs(_ context.Context, _ *handlers_ochrevector.ListJobsRequest, _ string) (*handlers_ochrevector.ListJobsResponse, error) {
+func (f *fakeBedrockAgentVectorService) ListJobs(_ context.Context, _ *ochrevector.ListJobsRequest, _ string) (*ochrevector.ListJobsResponse, error) {
 	if f.listJobsErr != nil {
 		return nil, f.listJobsErr
 	}
@@ -104,7 +104,7 @@ func (f *fakeBedrockAgentVectorService) ListJobs(_ context.Context, _ *handlers_
 	return &resp, nil
 }
 
-func (f *fakeBedrockAgentVectorService) Query(_ context.Context, req *handlers_ochrevector.QueryRequest, _ string) (*handlers_ochrevector.QueryResponse, error) {
+func (f *fakeBedrockAgentVectorService) Query(_ context.Context, req *ochrevector.QueryRequest, _ string) (*ochrevector.QueryResponse, error) {
 	f.queryReq = req
 	if f.queryErr != nil {
 		return nil, f.queryErr
@@ -113,7 +113,7 @@ func (f *fakeBedrockAgentVectorService) Query(_ context.Context, req *handlers_o
 	return &resp, nil
 }
 
-func (f *fakeBedrockAgentVectorService) StopJob(_ context.Context, req *handlers_ochrevector.StopJobRequest, _ string) (*handlers_ochrevector.StopJobResponse, error) {
+func (f *fakeBedrockAgentVectorService) StopJob(_ context.Context, req *ochrevector.StopJobRequest, _ string) (*ochrevector.StopJobResponse, error) {
 	f.stopJobReq = req
 	if f.stopJobErr != nil {
 		return nil, f.stopJobErr
@@ -122,12 +122,12 @@ func (f *fakeBedrockAgentVectorService) StopJob(_ context.Context, req *handlers
 	return &resp, nil
 }
 
-var _ handlers_ochrevector.VectorService = (*fakeBedrockAgentVectorService)(nil)
+var _ ochrevector.VectorService = (*fakeBedrockAgentVectorService)(nil)
 
-func newBedrockAgentTestStores(t *testing.T) (*handlers_ochrevector.KBStore, *handlers_ochrevector.DataSourceStore) {
+func newBedrockAgentTestStores(t *testing.T) (*ochrevector.KBStore, *ochrevector.DataSourceStore) {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
-	return handlers_ochrevector.NewKBStore(js), handlers_ochrevector.NewDataSourceStore(js)
+	return ochrevector.NewKBStore(js), ochrevector.NewDataSourceStore(js)
 }
 
 func TestEmbeddingModelIDFromARN(t *testing.T) {
@@ -150,10 +150,10 @@ func TestBucketNameFromS3ARN_And_FormatS3BucketARN_RoundTrip(t *testing.T) {
 
 func TestKBStatusToAWS(t *testing.T) {
 	cases := []struct{ status, want string }{
-		{handlers_ochrevector.StateReady, bedrockagent.KnowledgeBaseStatusActive},
-		{handlers_ochrevector.StateCreating, bedrockagent.KnowledgeBaseStatusCreating},
-		{handlers_ochrevector.StateDeleting, bedrockagent.KnowledgeBaseStatusDeleting},
-		{handlers_ochrevector.StateStale, bedrockagent.KnowledgeBaseStatusFailed},
+		{ochrevector.StateReady, bedrockagent.KnowledgeBaseStatusActive},
+		{ochrevector.StateCreating, bedrockagent.KnowledgeBaseStatusCreating},
+		{ochrevector.StateDeleting, bedrockagent.KnowledgeBaseStatusDeleting},
+		{ochrevector.StateStale, bedrockagent.KnowledgeBaseStatusFailed},
 		{"unknown", bedrockagent.KnowledgeBaseStatusFailed},
 	}
 	for _, tc := range cases {
@@ -162,17 +162,17 @@ func TestKBStatusToAWS(t *testing.T) {
 }
 
 func TestDataSourceStatusToAWS(t *testing.T) {
-	assert.Equal(t, bedrockagent.DataSourceStatusDeleting, dataSourceStatusToAWS(handlers_ochrevector.StateDeleting))
-	assert.Equal(t, bedrockagent.DataSourceStatusAvailable, dataSourceStatusToAWS(handlers_ochrevector.StateReady))
+	assert.Equal(t, bedrockagent.DataSourceStatusDeleting, dataSourceStatusToAWS(ochrevector.StateDeleting))
+	assert.Equal(t, bedrockagent.DataSourceStatusAvailable, dataSourceStatusToAWS(ochrevector.StateReady))
 }
 
 func TestJobStateToAWS(t *testing.T) {
 	cases := []struct{ state, want string }{
-		{handlers_ochrevector.JobStatePending, bedrockagent.IngestionJobStatusStarting},
-		{handlers_ochrevector.JobStateRunning, bedrockagent.IngestionJobStatusInProgress},
-		{handlers_ochrevector.JobStateReady, bedrockagent.IngestionJobStatusComplete},
-		{handlers_ochrevector.JobStateFailed, bedrockagent.IngestionJobStatusFailed},
-		{handlers_ochrevector.JobStateStopped, ingestionJobStatusStopped},
+		{ochrevector.JobStatePending, bedrockagent.IngestionJobStatusStarting},
+		{ochrevector.JobStateRunning, bedrockagent.IngestionJobStatusInProgress},
+		{ochrevector.JobStateReady, bedrockagent.IngestionJobStatusComplete},
+		{ochrevector.JobStateFailed, bedrockagent.IngestionJobStatusFailed},
+		{ochrevector.JobStateStopped, ingestionJobStatusStopped},
 	}
 	for _, tc := range cases {
 		assert.Equal(t, tc.want, jobStateToAWS(tc.state))
@@ -181,9 +181,9 @@ func TestJobStateToAWS(t *testing.T) {
 
 func TestTranslateVectorErr(t *testing.T) {
 	assert.NoError(t, translateVectorErr(nil))
-	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrIndexNotFound), awserrors.ErrorResourceNotFoundException))
-	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrJobNotFound), awserrors.ErrorResourceNotFoundException))
-	assert.True(t, awserrors.IsErrorCode(translateVectorErr(handlers_ochrevector.ErrIndexExists), awserrors.ErrorConflictException))
+	assert.True(t, awserrors.IsErrorCode(translateVectorErr(ochrevector.ErrIndexNotFound), awserrors.ErrorResourceNotFoundException))
+	assert.True(t, awserrors.IsErrorCode(translateVectorErr(ochrevector.ErrJobNotFound), awserrors.ErrorResourceNotFoundException))
+	assert.True(t, awserrors.IsErrorCode(translateVectorErr(ochrevector.ErrIndexExists), awserrors.ErrorConflictException))
 }
 
 // TestTranslateVectorErr_BackendDownMapsToServiceUnavailable proves a
@@ -278,7 +278,7 @@ func TestCreateKnowledgeBase_RollbackFailureIsLoggedNotSwallowed(t *testing.T) {
 	// A KBStore with no JetStream client makes kb.Create fail deterministically
 	// (independent of the randomly generated knowledge base id), so the
 	// rollback path is reached without needing to force a real id collision.
-	kb := handlers_ochrevector.NewKBStore(nil)
+	kb := ochrevector.NewKBStore(nil)
 	vector := &fakeBedrockAgentVectorService{deleteIndexErr: errors.New("rollback backend unavailable")}
 
 	_, err := CreateKnowledgeBase(context.Background(), bedrockAgentTestAccount, "us-east-1", kb, vector, validCreateKBInput())
@@ -301,9 +301,9 @@ func TestDeleteKnowledgeBase_CascadesDataSourcesAndDeletesBoundIndex(t *testing.
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
 
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: handlers_ochrevector.StateReady}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-2", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: ochrevector.StateReady}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-2", KnowledgeBaseID: "kb-1"}))
 
 	vector := &fakeBedrockAgentVectorService{}
 	_, err := DeleteKnowledgeBase(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String("kb-1")})
@@ -338,9 +338,9 @@ func TestDeleteKnowledgeBase_UnknownIDReturnsNotFound(t *testing.T) {
 func TestDeleteKnowledgeBase_TreatsMissingIndexAsAlreadyDeleted(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-gone", Status: handlers_ochrevector.StateReady}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-gone", Status: ochrevector.StateReady}))
 
-	vector := &fakeBedrockAgentVectorService{deleteIndexErr: handlers_ochrevector.ErrIndexNotFound}
+	vector := &fakeBedrockAgentVectorService{deleteIndexErr: ochrevector.ErrIndexNotFound}
 	_, err := DeleteKnowledgeBase(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String("kb-1")})
 	require.NoError(t, err)
 
@@ -356,7 +356,7 @@ func TestDeleteKnowledgeBase_TreatsMissingIndexAsAlreadyDeleted(t *testing.T) {
 func TestDeleteKnowledgeBase_GenuineIndexDeleteErrorStillAborts(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: handlers_ochrevector.StateReady}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: ochrevector.StateReady}))
 
 	vector := &fakeBedrockAgentVectorService{deleteIndexErr: errors.New("backend unavailable")}
 	_, err := DeleteKnowledgeBase(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String("kb-1")})
@@ -386,8 +386,8 @@ func createDataSourceInput(chunking *bedrockagent.VectorIngestionConfiguration) 
 func TestCreateDataSource_ChunkingUnitConversion(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{
-		ID: "kb-1", IndexID: "idx-1", Status: handlers_ochrevector.StateReady,
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{
+		ID: "kb-1", IndexID: "idx-1", Status: ochrevector.StateReady,
 		EmbeddingModel: "titan", Dimension: 1024,
 	}))
 
@@ -423,7 +423,7 @@ func TestCreateDataSource_ChunkingUnitConversion(t *testing.T) {
 func TestCreateDataSource_OmittedChunkingLeavesZeroValues(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: handlers_ochrevector.StateReady}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: ochrevector.StateReady}))
 
 	out, err := CreateDataSource(ctx, bedrockAgentTestAccount, "us-east-1", kb, ds, createDataSourceInput(nil))
 	require.NoError(t, err)
@@ -438,7 +438,7 @@ func TestCreateDataSource_OmittedChunkingLeavesZeroValues(t *testing.T) {
 func TestCreateDataSource_RejectsNonS3Type(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
 
 	input := createDataSourceInput(nil)
 	input.DataSourceConfiguration.Type = aws.String("WEB")
@@ -459,14 +459,14 @@ func TestCreateDataSource_UnknownKnowledgeBaseIsNotFound(t *testing.T) {
 func TestStartIngestionJob_BuildsIngestRequestFromDataSourceAgainstBoundIndex(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: handlers_ochrevector.StateReady}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1", Status: ochrevector.StateReady}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{
 		ID: "ds-1", KnowledgeBaseID: "kb-1",
-		Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"},
+		Source: ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"},
 	}))
 
-	vector := &fakeBedrockAgentVectorService{ingestResp: handlers_ochrevector.IngestResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStatePending},
+	vector := &fakeBedrockAgentVectorService{ingestResp: ochrevector.IngestResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: ochrevector.JobStatePending},
 	}}
 	out, err := StartIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.StartIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"),
@@ -484,14 +484,14 @@ func TestStartIngestionJob_BuildsIngestRequestFromDataSourceAgainstBoundIndex(t 
 func TestGetIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{
 		ID: "ds-1", KnowledgeBaseID: "kb-1",
-		Source: handlers_ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"},
+		Source: ochrevector.SourceSpec{Bucket: "b1", Prefix: "p1"},
 	}))
 
-	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", DataSourceID: "ds-1"},
+	vector := &fakeBedrockAgentVectorService{describeJobResp: ochrevector.DescribeJobResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", DataSourceID: "ds-1"},
 	}}
 	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
@@ -510,14 +510,14 @@ func TestGetIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
 func TestGetIngestionJob_RejectsWrongDataSource(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-a", KnowledgeBaseID: "kb-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-b", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-a", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-b", KnowledgeBaseID: "kb-1"}))
 
 	// job-1 really belongs to ds-a (its exact DataSourceID), but the request
 	// below addresses it through ds-b's path.
-	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-a"},
+	vector := &fakeBedrockAgentVectorService{describeJobResp: ochrevector.DescribeJobResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-a"},
 	}}
 	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-b"), IngestionJobId: aws.String("job-1"),
@@ -540,11 +540,11 @@ func TestGetIngestionJob_RejectsWrongDataSource(t *testing.T) {
 func TestGetIngestionJob_RejectsEmptyDataSourceID(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
 
-	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: ""},
+	vector := &fakeBedrockAgentVectorService{describeJobResp: ochrevector.DescribeJobResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: ""},
 	}}
 	_, err := GetIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &bedrockagent.GetIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),
@@ -556,12 +556,12 @@ func TestGetIngestionJob_RejectsEmptyDataSourceID(t *testing.T) {
 func TestListIngestionJobs_FiltersToBoundIndexAndExactDataSourceID(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
 
 	now := time.Now().UTC()
-	vector := &fakeBedrockAgentVectorService{listJobsResp: handlers_ochrevector.ListJobsResponse{Jobs: []handlers_ochrevector.JobRecord{
-		{ID: "job-match", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStateReady, CreatedAt: now, UpdatedAt: now},
+	vector := &fakeBedrockAgentVectorService{listJobsResp: ochrevector.ListJobsResponse{Jobs: []ochrevector.JobRecord{
+		{ID: "job-match", IndexID: "idx-1", DataSourceID: "ds-1", State: ochrevector.JobStateReady, CreatedAt: now, UpdatedAt: now},
 		{ID: "job-wrong-index", IndexID: "idx-2", DataSourceID: "ds-1", CreatedAt: now, UpdatedAt: now},
 		{ID: "job-wrong-datasource", IndexID: "idx-1", DataSourceID: "ds-other", CreatedAt: now, UpdatedAt: now},
 		{ID: "job-no-datasource", IndexID: "idx-1", DataSourceID: "", CreatedAt: now, UpdatedAt: now},
@@ -582,15 +582,15 @@ func TestListIngestionJobs_FiltersToBoundIndexAndExactDataSourceID(t *testing.T)
 func TestStopIngestionJob_CancelsBoundJobAndReturnsStoppedStatus(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
 
 	vector := &fakeBedrockAgentVectorService{
-		describeJobResp: handlers_ochrevector.DescribeJobResponse{
-			Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStateRunning},
+		describeJobResp: ochrevector.DescribeJobResponse{
+			Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: ochrevector.JobStateRunning},
 		},
-		stopJobResp: handlers_ochrevector.StopJobResponse{
-			Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: handlers_ochrevector.JobStateStopped},
+		stopJobResp: ochrevector.StopJobResponse{
+			Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-1", DataSourceID: "ds-1", State: ochrevector.JobStateStopped},
 		},
 	}
 	out, err := StopIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &StopIngestionJobInput{
@@ -609,11 +609,11 @@ func TestStopIngestionJob_CancelsBoundJobAndReturnsStoppedStatus(t *testing.T) {
 func TestStopIngestionJob_RejectsJobFromForeignIndex(t *testing.T) {
 	kb, ds := newBedrockAgentTestStores(t)
 	ctx := context.Background()
-	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
-	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, handlers_ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
+	require.NoError(t, kb.Create(ctx, bedrockAgentTestAccount, ochrevector.KBRecord{ID: "kb-1", IndexID: "idx-1"}))
+	require.NoError(t, ds.Create(ctx, bedrockAgentTestAccount, ochrevector.DataSourceRecord{ID: "ds-1", KnowledgeBaseID: "kb-1"}))
 
-	vector := &fakeBedrockAgentVectorService{describeJobResp: handlers_ochrevector.DescribeJobResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", DataSourceID: "ds-1"},
+	vector := &fakeBedrockAgentVectorService{describeJobResp: ochrevector.DescribeJobResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", IndexID: "idx-other", DataSourceID: "ds-1"},
 	}}
 	_, err := StopIngestionJob(ctx, bedrockAgentTestAccount, kb, ds, vector, &StopIngestionJobInput{
 		KnowledgeBaseId: aws.String("kb-1"), DataSourceId: aws.String("ds-1"), IngestionJobId: aws.String("job-1"),

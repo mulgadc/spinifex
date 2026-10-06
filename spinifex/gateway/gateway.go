@@ -32,6 +32,7 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -40,7 +41,6 @@ import (
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -234,14 +234,14 @@ type GatewayConfig struct {
 	// not the daemon-owned vector engine). Nil for either fails
 	// BedrockAgent_Request with ServerInternal rather than panicking, the same
 	// as an unconfigured gw.NATSConn does for every other service.
-	BedrockAgentKB          *handlers_ochrevector.KBStore
-	BedrockAgentDataSources *handlers_ochrevector.DataSourceStore
+	BedrockAgentKB          *ochrevector.KBStore
+	BedrockAgentDataSources *ochrevector.DataSourceStore
 	// BedrockAgentVector forwards CreateIndex/DeleteIndex/Ingest/DescribeJob/
 	// ListJobs calls to .9's daemon-side VectorService over NATS
-	// (handlers_ochrevector.NewNATSVectorService). It is the interface, not
+	// (ochrevector.NewNATSVectorService). It is the interface, not
 	// the concrete client, so a test can inject a fake without a live NATS
 	// connection.
-	BedrockAgentVector handlers_ochrevector.VectorService
+	BedrockAgentVector ochrevector.VectorService
 }
 
 var supportedServices = map[string]bool{

@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagentruntime"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,19 +24,19 @@ func TestWireFilter_ToFilter_Leaves(t *testing.T) {
 	cases := []struct {
 		name   string
 		filter wireFilter
-		wantOp handlers_ochrevector.FilterOp
+		wantOp ochrevector.FilterOp
 		wantK  string
 		wantV  any
 	}{
-		{"equals", wireFilter{Equals: &wireFilterAttr{Key: "genre", Value: "fiction"}}, handlers_ochrevector.FilterEquals, "genre", "fiction"},
-		{"notEquals", wireFilter{NotEquals: &wireFilterAttr{Key: "genre", Value: "fiction"}}, handlers_ochrevector.FilterNotEquals, "genre", "fiction"},
-		{"greaterThan", wireFilter{GreaterThan: &wireFilterAttr{Key: "year", Value: 2000.0}}, handlers_ochrevector.FilterGreaterThan, "year", 2000.0},
-		{"greaterThanOrEquals", wireFilter{GreaterThanOrEquals: &wireFilterAttr{Key: "year", Value: 2000.0}}, handlers_ochrevector.FilterGreaterThanOrEqual, "year", 2000.0},
-		{"lessThan", wireFilter{LessThan: &wireFilterAttr{Key: "year", Value: 2000.0}}, handlers_ochrevector.FilterLessThan, "year", 2000.0},
-		{"lessThanOrEquals", wireFilter{LessThanOrEquals: &wireFilterAttr{Key: "year", Value: 2000.0}}, handlers_ochrevector.FilterLessThanOrEqual, "year", 2000.0},
-		{"startsWith", wireFilter{StartsWith: &wireFilterAttr{Key: "title", Value: "The "}}, handlers_ochrevector.FilterStartsWith, "title", "The "},
-		{"stringContains", wireFilter{StringContains: &wireFilterAttr{Key: "title", Value: "dragon"}}, handlers_ochrevector.FilterStringContains, "title", "dragon"},
-		{"listContains", wireFilter{ListContains: &wireFilterAttr{Key: "tags", Value: "scifi"}}, handlers_ochrevector.FilterListContains, "tags", "scifi"},
+		{"equals", wireFilter{Equals: &wireFilterAttr{Key: "genre", Value: "fiction"}}, ochrevector.FilterEquals, "genre", "fiction"},
+		{"notEquals", wireFilter{NotEquals: &wireFilterAttr{Key: "genre", Value: "fiction"}}, ochrevector.FilterNotEquals, "genre", "fiction"},
+		{"greaterThan", wireFilter{GreaterThan: &wireFilterAttr{Key: "year", Value: 2000.0}}, ochrevector.FilterGreaterThan, "year", 2000.0},
+		{"greaterThanOrEquals", wireFilter{GreaterThanOrEquals: &wireFilterAttr{Key: "year", Value: 2000.0}}, ochrevector.FilterGreaterThanOrEqual, "year", 2000.0},
+		{"lessThan", wireFilter{LessThan: &wireFilterAttr{Key: "year", Value: 2000.0}}, ochrevector.FilterLessThan, "year", 2000.0},
+		{"lessThanOrEquals", wireFilter{LessThanOrEquals: &wireFilterAttr{Key: "year", Value: 2000.0}}, ochrevector.FilterLessThanOrEqual, "year", 2000.0},
+		{"startsWith", wireFilter{StartsWith: &wireFilterAttr{Key: "title", Value: "The "}}, ochrevector.FilterStartsWith, "title", "The "},
+		{"stringContains", wireFilter{StringContains: &wireFilterAttr{Key: "title", Value: "dragon"}}, ochrevector.FilterStringContains, "title", "dragon"},
+		{"listContains", wireFilter{ListContains: &wireFilterAttr{Key: "tags", Value: "scifi"}}, ochrevector.FilterListContains, "tags", "scifi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,13 +54,13 @@ func TestWireFilter_ToFilter_InNotIn(t *testing.T) {
 	f := wireFilter{In: &wireFilterAttr{Key: "genre", Value: []any{"fiction", "scifi"}}}
 	got, err := f.toFilter()
 	require.NoError(t, err)
-	assert.Equal(t, handlers_ochrevector.FilterIn, got.Op)
+	assert.Equal(t, ochrevector.FilterIn, got.Op)
 	assert.Equal(t, []string{"fiction", "scifi"}, got.Value)
 
 	f = wireFilter{NotIn: &wireFilterAttr{Key: "genre", Value: []any{"horror"}}}
 	got, err = f.toFilter()
 	require.NoError(t, err)
-	assert.Equal(t, handlers_ochrevector.FilterNotIn, got.Op)
+	assert.Equal(t, ochrevector.FilterNotIn, got.Op)
 	assert.Equal(t, []string{"horror"}, got.Value)
 }
 
@@ -77,10 +77,10 @@ func TestWireFilter_ToFilter_AndOrAll(t *testing.T) {
 	}}
 	got, err := f.toFilter()
 	require.NoError(t, err)
-	assert.Equal(t, handlers_ochrevector.FilterAndAll, got.Op)
+	assert.Equal(t, ochrevector.FilterAndAll, got.Op)
 	require.Len(t, got.Children, 2)
-	assert.Equal(t, handlers_ochrevector.FilterEquals, got.Children[0].Op)
-	assert.Equal(t, handlers_ochrevector.FilterGreaterThan, got.Children[1].Op)
+	assert.Equal(t, ochrevector.FilterEquals, got.Children[0].Op)
+	assert.Equal(t, ochrevector.FilterGreaterThan, got.Children[1].Op)
 
 	f = wireFilter{OrAll: []wireFilter{
 		{Equals: &wireFilterAttr{Key: "genre", Value: "fiction"}},
@@ -88,7 +88,7 @@ func TestWireFilter_ToFilter_AndOrAll(t *testing.T) {
 	}}
 	got, err = f.toFilter()
 	require.NoError(t, err)
-	assert.Equal(t, handlers_ochrevector.FilterOrAll, got.Op)
+	assert.Equal(t, ochrevector.FilterOrAll, got.Op)
 	require.Len(t, got.Children, 2)
 }
 
@@ -103,7 +103,7 @@ func TestWireFilter_ToFilter_NestedCombinator(t *testing.T) {
 	got, err := f.toFilter()
 	require.NoError(t, err)
 	require.Len(t, got.Children, 2)
-	assert.Equal(t, handlers_ochrevector.FilterOrAll, got.Children[1].Op)
+	assert.Equal(t, ochrevector.FilterOrAll, got.Children[1].Op)
 	require.Len(t, got.Children[1].Children, 2)
 }
 
@@ -139,7 +139,7 @@ func TestDecodeRetrieveFilter(t *testing.T) {
 	f, err := decodeRetrieveFilter(body)
 	require.NoError(t, err)
 	require.NotNil(t, f)
-	assert.Equal(t, handlers_ochrevector.FilterEquals, f.Op)
+	assert.Equal(t, ochrevector.FilterEquals, f.Op)
 	assert.Equal(t, "genre", f.Key)
 }
 
@@ -175,7 +175,7 @@ func TestDecodeRetrieveAndGenerateFilter(t *testing.T) {
 	f, err := decodeRetrieveAndGenerateFilter(body)
 	require.NoError(t, err)
 	require.NotNil(t, f)
-	assert.Equal(t, handlers_ochrevector.FilterAndAll, f.Op)
+	assert.Equal(t, ochrevector.FilterAndAll, f.Op)
 	require.Len(t, f.Children, 2)
 }
 
@@ -203,7 +203,7 @@ func TestConverseOutputText(t *testing.T) {
 }
 
 func TestQueryResultToRetrievalResult(t *testing.T) {
-	r := handlers_ochrevector.QueryResult{Chunk: "some text", SourceKey: "docs/a.txt", Score: 0.87}
+	r := ochrevector.QueryResult{Chunk: "some text", SourceKey: "docs/a.txt", Score: 0.87}
 	got := queryResultToRetrievalResult(r)
 	assert.Equal(t, "some text", *got.Content.Text)
 	assert.Equal(t, bedrockagentruntime.RetrievalResultLocationTypeS3, *got.Location.Type)
@@ -211,10 +211,10 @@ func TestQueryResultToRetrievalResult(t *testing.T) {
 	assert.InDelta(t, 0.87, *got.Score, 0.0001)
 }
 
-func newTestKBRecord(t *testing.T, kb *handlers_ochrevector.KBStore, accountID, kbID, indexID string) {
+func newTestKBRecord(t *testing.T, kb *ochrevector.KBStore, accountID, kbID, indexID string) {
 	t.Helper()
-	require.NoError(t, kb.Create(context.Background(), accountID, handlers_ochrevector.KBRecord{
-		ID: kbID, Name: "docs", Status: handlers_ochrevector.StateReady,
+	require.NoError(t, kb.Create(context.Background(), accountID, ochrevector.KBRecord{
+		ID: kbID, Name: "docs", Status: ochrevector.StateReady,
 		EmbeddingModel: "amazon.titan-embed-text-v2:0", Dimension: 1024, IndexID: indexID,
 	}))
 }
@@ -223,8 +223,8 @@ func TestRetrieve_MapsRequestAndResponse(t *testing.T) {
 	kb, _ := newBedrockAgentTestStores(t)
 	newTestKBRecord(t, kb, bedrockAgentTestAccount, "kb-1", "idx-1")
 
-	vector := &fakeBedrockAgentVectorService{queryResp: handlers_ochrevector.QueryResponse{
-		Results: []handlers_ochrevector.QueryResult{
+	vector := &fakeBedrockAgentVectorService{queryResp: ochrevector.QueryResponse{
+		Results: []ochrevector.QueryResult{
 			{Chunk: "chunk a", SourceKey: "docs/a.txt", Score: 0.9},
 			{Chunk: "chunk b", SourceKey: "docs/b.txt", Score: 0.5},
 		},
@@ -254,7 +254,7 @@ func TestRetrieve_MapsRequestAndResponse(t *testing.T) {
 	assert.Equal(t, "dragons", vector.queryReq.Text)
 	assert.Equal(t, 2, vector.queryReq.K)
 	require.NotNil(t, vector.queryReq.Filter)
-	assert.Equal(t, handlers_ochrevector.FilterEquals, vector.queryReq.Filter.Op)
+	assert.Equal(t, ochrevector.FilterEquals, vector.queryReq.Filter.Op)
 }
 
 func TestRetrieve_UnknownKnowledgeBase(t *testing.T) {
@@ -310,8 +310,8 @@ func TestRetrieveAndGenerate_HappyPath(t *testing.T) {
 	kb, _ := newBedrockAgentTestStores(t)
 	newTestKBRecord(t, kb, bedrockAgentTestAccount, "kb-1", "idx-1")
 
-	vector := &fakeBedrockAgentVectorService{queryResp: handlers_ochrevector.QueryResponse{
-		Results: []handlers_ochrevector.QueryResult{{Chunk: "the dragon lives in a cave", SourceKey: "docs/a.txt", Score: 0.9}},
+	vector := &fakeBedrockAgentVectorService{queryResp: ochrevector.QueryResponse{
+		Results: []ochrevector.QueryResult{{Chunk: "the dragon lives in a cave", SourceKey: "docs/a.txt", Score: 0.9}},
 	}}
 	fc := &fakeConverse{resp: fakeConverseOutput("The dragon lives in a cave.")}
 
@@ -366,8 +366,8 @@ func TestRetrieveAndGenerate_EchoesCallerSessionID(t *testing.T) {
 func TestRetrieveAndGenerate_UsesCustomPromptTemplate(t *testing.T) {
 	kb, _ := newBedrockAgentTestStores(t)
 	newTestKBRecord(t, kb, bedrockAgentTestAccount, "kb-1", "idx-1")
-	vector := &fakeBedrockAgentVectorService{queryResp: handlers_ochrevector.QueryResponse{
-		Results: []handlers_ochrevector.QueryResult{{Chunk: "ctx chunk", SourceKey: "k", Score: 0.5}},
+	vector := &fakeBedrockAgentVectorService{queryResp: ochrevector.QueryResponse{
+		Results: []ochrevector.QueryResult{{Chunk: "ctx chunk", SourceKey: "k", Score: 0.5}},
 	}}
 	fc := &fakeConverse{resp: fakeConverseOutput("answer")}
 

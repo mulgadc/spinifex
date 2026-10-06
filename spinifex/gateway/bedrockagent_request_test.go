@@ -16,8 +16,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/bedrockagent"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,13 +26,13 @@ import (
 // gateway-owned KB/DataSource stores over a real (embedded) JetStream and an
 // allow-everything IAMService, so the policy gate passes on a real evaluation
 // rather than a bypass, mirroring newBedrockRequestGateway.
-func newBedrockAgentRequestGateway(t *testing.T, vector handlers_ochrevector.VectorService) *GatewayConfig {
+func newBedrockAgentRequestGateway(t *testing.T, vector ochrevector.VectorService) *GatewayConfig {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 	return &GatewayConfig{
 		IAMService:              allowAllIAMService(),
-		BedrockAgentKB:          handlers_ochrevector.NewKBStore(js),
-		BedrockAgentDataSources: handlers_ochrevector.NewDataSourceStore(js),
+		BedrockAgentKB:          ochrevector.NewKBStore(js),
+		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
 		BedrockAgentVector:      vector,
 	}
 }
@@ -256,8 +256,8 @@ func TestBedrockAgentRequest_DeleteKnowledgeBase(t *testing.T) {
 }
 
 func TestBedrockAgentRequest_StartAndListAndGetIngestionJob(t *testing.T) {
-	vector := &fakeBedrockAgentVectorService{ingestResp: handlers_ochrevector.IngestResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", State: handlers_ochrevector.JobStatePending},
+	vector := &fakeBedrockAgentVectorService{ingestResp: ochrevector.IngestResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", State: ochrevector.JobStatePending},
 	}}
 	gw := newBedrockAgentRequestGateway(t, vector)
 	kbID := createTestKnowledgeBase(t, gw)
@@ -275,8 +275,8 @@ func TestBedrockAgentRequest_StartAndListAndGetIngestionJob(t *testing.T) {
 	require.NoError(t, err)
 	vector.ingestResp.Job.IndexID = kbRec.IndexID
 	vector.ingestResp.Job.DataSourceID = dsRec.ID
-	vector.describeJobResp = handlers_ochrevector.DescribeJobResponse{Job: vector.ingestResp.Job}
-	vector.listJobsResp = handlers_ochrevector.ListJobsResponse{Jobs: []handlers_ochrevector.JobRecord{vector.ingestResp.Job}}
+	vector.describeJobResp = ochrevector.DescribeJobResponse{Job: vector.ingestResp.Job}
+	vector.listJobsResp = ochrevector.ListJobsResponse{Jobs: []ochrevector.JobRecord{vector.ingestResp.Job}}
 
 	startReq := bedrockAgentRequestWithAccount(http.MethodPut, "/knowledgebases/"+kbID+"/datasources/"+dsID+"/ingestionjobs/", "")
 	w := httptest.NewRecorder()
@@ -309,8 +309,8 @@ func TestBedrockAgentRequest_StartAndListAndGetIngestionJob(t *testing.T) {
 // ErrInvalidAction for it) and round-trips a STOPPED job through the full
 // HTTP dispatch path.
 func TestBedrockAgentRequest_StopIngestionJob(t *testing.T) {
-	vector := &fakeBedrockAgentVectorService{ingestResp: handlers_ochrevector.IngestResponse{
-		Job: handlers_ochrevector.JobRecord{ID: "job-1", State: handlers_ochrevector.JobStatePending},
+	vector := &fakeBedrockAgentVectorService{ingestResp: ochrevector.IngestResponse{
+		Job: ochrevector.JobRecord{ID: "job-1", State: ochrevector.JobStatePending},
 	}}
 	gw := newBedrockAgentRequestGateway(t, vector)
 	kbID := createTestKnowledgeBase(t, gw)
@@ -322,10 +322,10 @@ func TestBedrockAgentRequest_StopIngestionJob(t *testing.T) {
 	require.NoError(t, err)
 	vector.ingestResp.Job.IndexID = kbRec.IndexID
 	vector.ingestResp.Job.DataSourceID = dsRec.ID
-	vector.describeJobResp = handlers_ochrevector.DescribeJobResponse{Job: vector.ingestResp.Job}
+	vector.describeJobResp = ochrevector.DescribeJobResponse{Job: vector.ingestResp.Job}
 	stopped := vector.ingestResp.Job
-	stopped.State = handlers_ochrevector.JobStateStopped
-	vector.stopJobResp = handlers_ochrevector.StopJobResponse{Job: stopped}
+	stopped.State = ochrevector.JobStateStopped
+	vector.stopJobResp = ochrevector.StopJobResponse{Job: stopped}
 
 	startReq := bedrockAgentRequestWithAccount(http.MethodPut, "/knowledgebases/"+kbID+"/datasources/"+dsID+"/ingestionjobs/", "")
 	w := httptest.NewRecorder()

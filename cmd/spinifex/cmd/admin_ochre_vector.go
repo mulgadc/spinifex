@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -165,12 +165,12 @@ func init() {
 // vectorServiceFn indirects the NATS-backed client so the Run functions'
 // connect/exit control flow can be tested without a live daemon, mirroring
 // endpointServiceFn.
-var vectorServiceFn = func() (handlers_ochrevector.VectorService, func(), error) {
+var vectorServiceFn = func() (ochrevector.VectorService, func(), error) {
 	_, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, nil, err
 	}
-	return handlers_ochrevector.NewNATSVectorService(nc), nc.Close, nil
+	return ochrevector.NewNATSVectorService(nc), nc.Close, nil
 }
 
 // vectorBackupRestoreTimeout bounds the backup/restore NATS round trip: it
@@ -184,14 +184,14 @@ const vectorBackupRestoreTimeout = 10 * time.Minute
 // target account is named in the request payload, not derived from the
 // caller's own header identity, since the operator CLI always connects as
 // the global account but must be able to target any tenant's schema.
-var backupAccountFn = func(ctx context.Context, accountID string) (*handlers_ochrevector.BackupAccountResponse, error) {
+var backupAccountFn = func(ctx context.Context, accountID string) (*ochrevector.BackupAccountResponse, error) {
 	_, nc, err := loadConfigAndConnectFn()
 	if err != nil {
 		return nil, err
 	}
 	defer nc.Close()
-	return natsmsg.NATSRequest[handlers_ochrevector.BackupAccountResponse](ctx, nc,
-		handlers_ochrevector.SubjectBackupAccount, &handlers_ochrevector.BackupAccountRequest{AccountID: accountID},
+	return natsmsg.NATSRequest[ochrevector.BackupAccountResponse](ctx, nc,
+		ochrevector.SubjectBackupAccount, &ochrevector.BackupAccountRequest{AccountID: accountID},
 		vectorBackupRestoreTimeout, awsidentifiers.GlobalAccountID)
 }
 
@@ -203,14 +203,14 @@ var restoreAccountFn = func(ctx context.Context, accountID, objectKey string) er
 		return err
 	}
 	defer nc.Close()
-	_, err = natsmsg.NATSRequest[handlers_ochrevector.RestoreAccountResponse](ctx, nc,
-		handlers_ochrevector.SubjectRestoreAccount, &handlers_ochrevector.RestoreAccountRequest{AccountID: accountID, ObjectKey: objectKey},
+	_, err = natsmsg.NATSRequest[ochrevector.RestoreAccountResponse](ctx, nc,
+		ochrevector.SubjectRestoreAccount, &ochrevector.RestoreAccountRequest{AccountID: accountID, ObjectKey: objectKey},
 		vectorBackupRestoreTimeout, awsidentifiers.GlobalAccountID)
 	return err
 }
 
 // runBackupAccount is the testable core of 'ochre vector backup'.
-func runBackupAccount(ctx context.Context, accountID string, backup func(context.Context, string) (*handlers_ochrevector.BackupAccountResponse, error)) (string, error) {
+func runBackupAccount(ctx context.Context, accountID string, backup func(context.Context, string) (*ochrevector.BackupAccountResponse, error)) (string, error) {
 	out, err := backup(ctx, accountID)
 	if err != nil {
 		return "", err
@@ -227,7 +227,7 @@ func runRestoreAccount(ctx context.Context, accountID, objectKey string, restore
 }
 
 // formatIndexRecord renders one index record as aligned key/value lines.
-func formatIndexRecord(rec handlers_ochrevector.Record) string {
+func formatIndexRecord(rec ochrevector.Record) string {
 	rows := [][2]string{
 		{"Index ID", rec.ID},
 		{"Name", rec.Name},
@@ -246,7 +246,7 @@ func formatIndexRecord(rec handlers_ochrevector.Record) string {
 }
 
 // formatJobRecord renders one ingestion job record as aligned key/value lines.
-func formatJobRecord(job handlers_ochrevector.JobRecord) string {
+func formatJobRecord(job ochrevector.JobRecord) string {
 	rows := [][2]string{
 		{"Job ID", job.ID},
 		{"Index ID", job.IndexID},
@@ -285,7 +285,7 @@ func truncateForTable(s string, maxRunes int) string {
 
 // formatQueryResults renders 'ochre vector query' output: a truncated table
 // by default, or the full response as indented JSON when asJSON is set.
-func formatQueryResults(results []handlers_ochrevector.QueryResult, asJSON bool) (string, error) {
+func formatQueryResults(results []ochrevector.QueryResult, asJSON bool) (string, error) {
 	if asJSON {
 		data, err := json.MarshalIndent(results, "", "  ")
 		if err != nil {
@@ -311,11 +311,11 @@ func formatQueryResults(results []handlers_ochrevector.QueryResult, asJSON bool)
 // parseFilterFlag decodes --filter's JSON-encoded Filter AST. An empty raw
 // string is not an error: it means no filter, matching QueryRequest.Filter's
 // nil-is-unfiltered contract.
-func parseFilterFlag(raw string) (*handlers_ochrevector.Filter, error) {
+func parseFilterFlag(raw string) (*ochrevector.Filter, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	var f handlers_ochrevector.Filter
+	var f ochrevector.Filter
 	if err := json.Unmarshal([]byte(raw), &f); err != nil {
 		return nil, fmt.Errorf("decode --filter: %w", err)
 	}
@@ -325,8 +325,8 @@ func parseFilterFlag(raw string) (*handlers_ochrevector.Filter, error) {
 // runIndexCreate is the testable core of 'ochre vector index create': it
 // mints a fresh index ID (indexes are named, not caller-numbered) and
 // creates it. Returns the message to print.
-func runIndexCreate(ctx context.Context, svc handlers_ochrevector.VectorService, name string, dimension int, model string) (string, error) {
-	out, err := svc.CreateIndex(ctx, &handlers_ochrevector.CreateIndexRequest{
+func runIndexCreate(ctx context.Context, svc ochrevector.VectorService, name string, dimension int, model string) (string, error) {
+	out, err := svc.CreateIndex(ctx, &ochrevector.CreateIndexRequest{
 		IndexID:        awsidentifiers.GenerateResourceID("idx"),
 		Name:           name,
 		Dimension:      dimension,
@@ -339,8 +339,8 @@ func runIndexCreate(ctx context.Context, svc handlers_ochrevector.VectorService,
 }
 
 // runIndexDelete is the testable core of 'ochre vector index delete'.
-func runIndexDelete(ctx context.Context, svc handlers_ochrevector.VectorService, indexID string) (string, error) {
-	if _, err := svc.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: indexID}, awsidentifiers.GlobalAccountID); err != nil {
+func runIndexDelete(ctx context.Context, svc ochrevector.VectorService, indexID string) (string, error) {
+	if _, err := svc.DeleteIndex(ctx, &ochrevector.DeleteIndexRequest{IndexID: indexID}, awsidentifiers.GlobalAccountID); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("✅ Index %s deleted.", indexID), nil
@@ -348,8 +348,8 @@ func runIndexDelete(ctx context.Context, svc handlers_ochrevector.VectorService,
 
 // listIndexesOutput renders 'ochre vector index list'. Split from its Run
 // function so it is testable against a fake service with no NATS connection.
-func listIndexesOutput(ctx context.Context, svc handlers_ochrevector.VectorService) (string, error) {
-	out, err := svc.ListIndexes(ctx, &handlers_ochrevector.ListIndexesRequest{}, awsidentifiers.GlobalAccountID)
+func listIndexesOutput(ctx context.Context, svc ochrevector.VectorService) (string, error) {
+	out, err := svc.ListIndexes(ctx, &ochrevector.ListIndexesRequest{}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -365,11 +365,11 @@ func listIndexesOutput(ctx context.Context, svc handlers_ochrevector.VectorServi
 
 // runIngest is the testable core of 'ochre vector ingest'. The daemon stamps
 // the index's own embedding model/dimension onto the source spec server-side
-// (see handlers_ochrevector.vectorService.Ingest), so none is sent here.
-func runIngest(ctx context.Context, svc handlers_ochrevector.VectorService, indexID, bucket, prefix string, chunkSize, chunkOverlap int, meta map[string]string) (string, error) {
-	out, err := svc.Ingest(ctx, &handlers_ochrevector.IngestRequest{
+// (see ochrevector.vectorService.Ingest), so none is sent here.
+func runIngest(ctx context.Context, svc ochrevector.VectorService, indexID, bucket, prefix string, chunkSize, chunkOverlap int, meta map[string]string) (string, error) {
+	out, err := svc.Ingest(ctx, &ochrevector.IngestRequest{
 		IndexID: indexID,
-		Source: handlers_ochrevector.SourceSpec{
+		Source: ochrevector.SourceSpec{
 			Bucket:       bucket,
 			Prefix:       prefix,
 			ChunkSize:    chunkSize,
@@ -384,8 +384,8 @@ func runIngest(ctx context.Context, svc handlers_ochrevector.VectorService, inde
 }
 
 // runJobDescribe is the testable core of 'ochre vector job describe'.
-func runJobDescribe(ctx context.Context, svc handlers_ochrevector.VectorService, jobID string) (string, error) {
-	out, err := svc.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, awsidentifiers.GlobalAccountID)
+func runJobDescribe(ctx context.Context, svc ochrevector.VectorService, jobID string) (string, error) {
+	out, err := svc.DescribeJob(ctx, &ochrevector.DescribeJobRequest{JobID: jobID}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
@@ -393,12 +393,12 @@ func runJobDescribe(ctx context.Context, svc handlers_ochrevector.VectorService,
 }
 
 // runQuery is the testable core of 'ochre vector query'.
-func runQuery(ctx context.Context, svc handlers_ochrevector.VectorService, indexID, text string, k int, filterJSON string, asJSON bool) (string, error) {
+func runQuery(ctx context.Context, svc ochrevector.VectorService, indexID, text string, k int, filterJSON string, asJSON bool) (string, error) {
 	filter, err := parseFilterFlag(filterJSON)
 	if err != nil {
 		return "", err
 	}
-	out, err := svc.Query(ctx, &handlers_ochrevector.QueryRequest{IndexID: indexID, Text: text, K: k, Filter: filter}, awsidentifiers.GlobalAccountID)
+	out, err := svc.Query(ctx, &ochrevector.QueryRequest{IndexID: indexID, Text: text, K: k, Filter: filter}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}

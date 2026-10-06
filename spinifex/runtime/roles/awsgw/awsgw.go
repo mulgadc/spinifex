@@ -29,6 +29,7 @@ import (
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -37,7 +38,6 @@ import (
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
@@ -405,9 +405,9 @@ func launchService(config *config.ClusterConfig) error {
 	// bedrock stores above are, rather than a second NATS hop through the
 	// daemon. bedrockAgentVector forwards CreateIndex/Ingest/DescribeJob/
 	// ListJobs/etc to .9's daemon-side VectorService over NATS.
-	bedrockAgentKB := handlers_ochrevector.NewKBStore(js)
-	bedrockAgentDataSources := handlers_ochrevector.NewDataSourceStore(js)
-	bedrockAgentVector := handlers_ochrevector.NewNATSVectorService(natsConn)
+	bedrockAgentKB := ochrevector.NewKBStore(js)
+	bedrockAgentDataSources := ochrevector.NewDataSourceStore(js)
+	bedrockAgentVector := ochrevector.NewNATSVectorService(natsConn)
 
 	// Bedrock invocation records: every Converse/InvokeModel call (streaming
 	// or not) is published to the invocation stream, then fanned out by

@@ -59,7 +59,7 @@ services:
       - spinifex/domains/acm
       - spinifex/handlers/iam
       - spinifex/handlers/rds
-      - spinifex/handlers/ochrevector
+      - spinifex/domains/ochre/vector
     subscribes:
       # EC2 instance lifecycle.
       - "ec2.RunInstances"
@@ -136,7 +136,7 @@ services:
       # {account}.{db-instance}, so the subject is built at runtime and only the
       # prefix is declarable.
       - "rds.bus.*"
-      # Ochre vector store tenant surface (handlers/ochrevector/api.go),
+      # Ochre vector store tenant surface (domains/ochre/vector/api.go),
       # gated behind config.OchreVectorConfig.Enabled (default off).
       - "ochre.vector.createIndex"
       - "ochre.vector.deleteIndex"

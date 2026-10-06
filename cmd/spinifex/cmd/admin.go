@@ -2994,7 +2994,6 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 			endpointHost = h
 		}
 	}
-	endpointURL := "https://" + net.JoinHostPort(endpointHost, "9999")
 
 	credPath := filepath.Join(homeDir, ".aws", "credentials")
 	configPath := filepath.Join(homeDir, ".aws", "config")
@@ -3009,12 +3008,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	if region == "" {
 		region = "ap-southeast-2"
 	}
-	if err := admin.UpdateAWSINIFile(configPath, "profile "+profileName, map[string]string{
-		"region":       region,
-		"endpoint_url": endpointURL,
-		"ca_bundle":    certPath,
-		"output":       "json",
-	}); err != nil {
+	if err := admin.WriteAWSProfileConfig(configPath, profileName, region, certPath, endpointHost); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not update AWS config: %v\n", err)
 	}
 

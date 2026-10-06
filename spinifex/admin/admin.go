@@ -517,33 +517,111 @@ func SetServiceOwnership() error {
 	return ownershipErr
 }
 
+// awsINIOptions keeps AWS nested settings (an empty key followed by indented
+// lines) intact across a rewrite; without it they are flattened into the
+// enclosing section and lost.
+var awsINIOptions = ini.LoadOptions{AllowNestedValues: true}
+
 // UpdateAWSINIFile updates or creates an AWS INI file section with the given key-value pairs.
 func UpdateAWSINIFile(path, section string, values map[string]string) error {
-	var cfg *ini.File
-	var err error
-
-	if FileExists(path) {
-		cfg, err = ini.Load(path)
-		if err != nil {
-			return fmt.Errorf("failed to load INI file: %w", err)
-		}
-	} else {
-		cfg = ini.Empty()
-	}
-
-	sec, err := cfg.NewSection(section)
+	cfg, err := loadAWSINIFile(path)
 	if err != nil {
-		// Section already exists, get it.
-		sec, err = cfg.GetSection(section)
-		if err != nil {
-			return fmt.Errorf("failed to get section: %w", err)
-		}
+		return err
 	}
-
+	sec, err := awsINISection(cfg, section)
+	if err != nil {
+		return err
+	}
 	for key, value := range values {
 		sec.Key(key).SetValue(value)
 	}
+	return saveAWSINIFile(cfg, path)
+}
 
+// WriteAWSProfileConfig points an AWS CLI profile at this cluster. One profile
+// endpoint_url cannot send S3 to the predastore gate and everything else to the
+// gateway, so S3 goes in the profile's services section, which takes precedence.
+func WriteAWSProfileConfig(path, profileName, region, certPath, endpointHost string) error {
+	cfg, err := loadAWSINIFile(path)
+	if err != nil {
+		return err
+	}
+	profileSection := profileName
+	if profileName != "default" {
+		profileSection = "profile " + profileName
+	}
+	profile, err := awsINISection(cfg, profileSection)
+	if err != nil {
+		return err
+	}
+	for key, value := range map[string]string{
+		"region":       region,
+		"endpoint_url": "https://" + net.JoinHostPort(endpointHost, "9999"),
+		"ca_bundle":    certPath,
+		"output":       "json",
+		"services":     profileName,
+	} {
+		profile.Key(key).SetValue(value)
+	}
+	services, err := awsINISection(cfg, "services "+profileName)
+	if err != nil {
+		return err
+	}
+	s3Endpoint := "https://" + net.JoinHostPort(endpointHost, strconv.Itoa(predastoreGatePort))
+	if err := setNestedAWSSetting(services, "s3", "endpoint_url", s3Endpoint); err != nil {
+		return err
+	}
+	return saveAWSINIFile(cfg, path)
+}
+
+// setNestedAWSSetting sets name inside the nested block under key, keeping any
+// other settings an operator nested there.
+func setNestedAWSSetting(sec *ini.Section, key, name, value string) error {
+	var lines []string
+	if sec.HasKey(key) {
+		for _, line := range sec.Key(key).NestedValues() {
+			if setting, _, _ := strings.Cut(line, "="); strings.TrimSpace(setting) != name {
+				lines = append(lines, line)
+			}
+		}
+		sec.DeleteKey(key)
+	}
+	nested, err := sec.NewKey(key, "")
+	if err != nil {
+		return fmt.Errorf("failed to create key %s: %w", key, err)
+	}
+	for _, line := range append(lines, name+" = "+value) {
+		if err := nested.AddNestedValue(line); err != nil {
+			return fmt.Errorf("failed to set %s.%s: %w", key, name, err)
+		}
+	}
+	return nil
+}
+
+func loadAWSINIFile(path string) (*ini.File, error) {
+	if !FileExists(path) {
+		return ini.Empty(awsINIOptions), nil
+	}
+	cfg, err := ini.LoadSources(awsINIOptions, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load INI file: %w", err)
+	}
+	return cfg, nil
+}
+
+func awsINISection(cfg *ini.File, name string) (*ini.Section, error) {
+	sec, err := cfg.NewSection(name)
+	if err != nil {
+		// Section already exists, get it.
+		sec, err = cfg.GetSection(name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get section: %w", err)
+		}
+	}
+	return sec, nil
+}
+
+func saveAWSINIFile(cfg *ini.File, path string) error {
 	// Write atomically: ini.SaveTo uses os.Create (world-readable); render to a
 	// sibling temp file (0600) and rename to avoid briefly exposing secrets.
 	dir := filepath.Dir(path)
@@ -947,22 +1025,12 @@ func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) 
 		}
 	}
 
-	configSection := profileName
-	if profileName != "default" {
-		configSection = "profile " + profileName
-	}
-
 	endpointHost := bindIP
 	if endpointHost == "" || endpointHost == "0.0.0.0" {
 		endpointHost = "localhost"
 	}
 
-	if err := UpdateAWSINIFile(configPath, configSection, map[string]string{
-		"region":       region,
-		"endpoint_url": "https://" + net.JoinHostPort(endpointHost, "9999"),
-		"ca_bundle":    certPath,
-		"output":       "json",
-	}); err != nil {
+	if err := WriteAWSProfileConfig(configPath, profileName, region, certPath, endpointHost); err != nil {
 		return err
 	}
 

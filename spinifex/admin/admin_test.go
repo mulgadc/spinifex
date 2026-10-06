@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -234,6 +235,79 @@ func TestUpdateAWSINIFile_AddNewSection(t *testing.T) {
 	assert.Contains(t, content, "spinifex-val")
 }
 
+// --- WriteAWSProfileConfig ---
+
+// resolveProfileEndpoint resolves sdkID's endpoint through the Go SDK's own
+// shared-config loader, the way a client does: the service's entry in the
+// profile's services section, else the profile-wide endpoint_url.
+func resolveProfileEndpoint(t *testing.T, configPath, profile, sdkID string) string {
+	t.Helper()
+	shared, err := awsconfig.LoadSharedConfigProfile(t.Context(), profile, func(o *awsconfig.LoadSharedConfigOptions) {
+		o.ConfigFiles = []string{configPath}
+		o.CredentialsFiles = []string{}
+	})
+	require.NoError(t, err)
+	endpoint, found, err := shared.GetServiceBaseEndpoint(t.Context(), sdkID)
+	require.NoError(t, err)
+	if found {
+		return endpoint
+	}
+	return shared.BaseEndpoint
+}
+
+func TestWriteAWSProfileConfig_SendsS3ToPredastoreAndTheRestToTheGateway(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	require.NoError(t, WriteAWSProfileConfig(path, "spinifex", "ap-southeast-2", "/ca.pem", "10.11.12.1"))
+
+	assert.Equal(t, "https://10.11.12.1:8443", resolveProfileEndpoint(t, path, "spinifex", "S3"))
+	assert.Equal(t, "https://10.11.12.1:9999", resolveProfileEndpoint(t, path, "spinifex", "EC2"))
+	assert.Equal(t, "https://10.11.12.1:9999", resolveProfileEndpoint(t, path, "spinifex", "STS"))
+}
+
+// A rewrite must not flatten nested settings an operator added, which is how a
+// hand-written s3 block used to be lost on every re-init.
+func TestWriteAWSProfileConfig_KeepsNestedSettingsAcrossARewrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	require.NoError(t, os.WriteFile(path, []byte(`[profile spinifex]
+s3 =
+  max_concurrent_requests = 20
+services = spinifex
+
+[services spinifex]
+s3 =
+  addressing_style = path
+  endpoint_url = https://stale:8443
+`), 0600))
+
+	require.NoError(t, WriteAWSProfileConfig(path, "spinifex", "ap-southeast-2", "/ca.pem", "localhost"))
+	require.NoError(t, WriteAWSProfileConfig(path, "spinifex", "ap-southeast-2", "/ca.pem", "localhost"))
+
+	assert.Equal(t, "https://localhost:8443", resolveProfileEndpoint(t, path, "spinifex", "S3"))
+	shared, err := awsconfig.LoadSharedConfigProfile(t.Context(), "spinifex", func(o *awsconfig.LoadSharedConfigOptions) {
+		o.ConfigFiles = []string{path}
+		o.CredentialsFiles = []string{}
+	})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"addressing_style": "path", "endpoint_url": "https://localhost:8443"},
+		shared.Services.ServiceValues["s3"])
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "max_concurrent_requests = 20")
+	assert.NotContains(t, string(data), "stale")
+}
+
+// Account profiles each get their own services section, so a tenant profile
+// resolves S3 the same way as the operator's without sharing its section.
+func TestWriteAWSProfileConfig_ProfilesDoNotShareAServicesSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config")
+	require.NoError(t, WriteAWSProfileConfig(path, "spinifex", "ap-southeast-2", "/ca.pem", "localhost"))
+	require.NoError(t, WriteAWSProfileConfig(path, "spinifex-acme", "ap-southeast-2", "/ca.pem", "10.0.0.5"))
+
+	assert.Equal(t, "https://localhost:8443", resolveProfileEndpoint(t, path, "spinifex", "S3"))
+	assert.Equal(t, "https://10.0.0.5:8443", resolveProfileEndpoint(t, path, "spinifex-acme", "S3"))
+}
+
 // --- SetupAWSCredentials ---
 
 func TestSetupAWSCredentials_CreatesFiles(t *testing.T) {
@@ -279,9 +353,9 @@ func TestSetupAWSCredentials_UsesBindIP(t *testing.T) {
 	err := SetupAWSCredentials("AKIATEST123", "secret123", "us-east-1", "/ca.pem", "10.11.12.1")
 	require.NoError(t, err)
 
-	configData, _ := os.ReadFile(filepath.Join(dir, ".aws", "config"))
-	assert.Contains(t, string(configData), "https://10.11.12.1:9999")
-	assert.NotContains(t, string(configData), "localhost")
+	configPath := filepath.Join(dir, ".aws", "config")
+	assert.Equal(t, "https://10.11.12.1:9999", resolveProfileEndpoint(t, configPath, "spinifex", "EC2"))
+	assert.Equal(t, "https://10.11.12.1:8443", resolveProfileEndpoint(t, configPath, "spinifex", "S3"))
 }
 
 func TestSetupAWSCredentials_FallsBackToLocalhostForWildcard(t *testing.T) {

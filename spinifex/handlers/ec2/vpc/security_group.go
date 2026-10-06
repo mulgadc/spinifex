@@ -26,11 +26,6 @@ import (
 // sgIDRegex must stay in lockstep with utils.GenerateResourceID("sg").
 var sgIDRegex = regexp.MustCompile(`^sg-[0-9a-f]{17}$`)
 
-// SGRuleIDRegex must stay in lockstep with utils.GenerateResourceID("sgr").
-// Exported so the EC2 gateway can validate SecurityGroupRuleIds without
-// re-implementing the format check.
-var SGRuleIDRegex = regexp.MustCompile(`^sgr-[0-9a-f]{17}$`)
-
 // allProtocols is the IpProtocol value naming every protocol, which is also
 // the port value AWS reports for such a rule.
 const allProtocols = "-1"
@@ -45,11 +40,13 @@ var canonicalIPProtocols = []string{"tcp", "udp", "icmp", "-1"}
 var numericIPProtocols = map[string]string{"1": "icmp", "6": "tcp", "17": "udp"}
 
 // normalizeIPProtocol canonicalises an AWS IpProtocol value the way AWS does,
-// returning "tcp" for both "tcp" and "6". An empty value means all protocols.
+// returning "tcp" for both "tcp" and "6". An empty value is rejected as AWS
+// rejects it: reading it as all protocols would open every port.
 func normalizeIPProtocol(proto string) (string, error) {
 	proto = strings.ToLower(strings.TrimSpace(proto))
 	if proto == "" {
-		return "-1", nil
+		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Invalid value 'null' for protocol. VPC security group rules must specify protocols explicitly.")
 	}
 	if name, ok := numericIPProtocols[proto]; ok {
 		return name, nil
@@ -57,7 +54,18 @@ func normalizeIPProtocol(proto string) (string, error) {
 	if slices.Contains(canonicalIPProtocols, proto) {
 		return proto, nil
 	}
-	return "", fmt.Errorf("invalid IpProtocol %q: supported values are tcp, udp, icmp, -1 (or 6, 17, 1)", proto)
+	return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"invalid IpProtocol %q: supported values are tcp, udp, icmp, -1 (or 6, 17, 1)", proto)
+}
+
+// requireSGRulePorts rejects a tcp or udp rule missing either port, which would
+// otherwise be stored as port 0.
+func requireSGRulePorts(proto string, fromPort, toPort *int64) error {
+	if (proto == "tcp" || proto == "udp") && (fromPort == nil || toPort == nil) {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Invalid value for portRange. Must specify both from and to ports with TCP/UDP.")
+	}
+	return nil
 }
 
 // validateSGRulePorts rejects a tcp or udp rule whose FromPort exceeds its ToPort.
@@ -887,7 +895,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 
 	for _, id := range input.SecurityGroupRuleIds {
 		if !emitted[*id] {
-			return nil, sgRuleNotFoundError(*id)
+			return nil, sgRuleIDLookupError(*id)
 		}
 	}
 
@@ -1242,6 +1250,9 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
 		slog.WarnContext(ctx, "RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
+		if _, ok := awserrors.ResolveErrorCode(err); ok {
+			return nil, err
+		}
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	idRules, err := resolveRuleIDsToRemove(record.IngressRules, input.SecurityGroupRuleIds)
@@ -1309,6 +1320,9 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
 		slog.WarnContext(ctx, "RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
+		if _, ok := awserrors.ResolveErrorCode(err); ok {
+			return nil, err
+		}
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	idRules, err := resolveRuleIDsToRemove(record.EgressRules, input.SecurityGroupRuleIds)
@@ -1488,14 +1502,11 @@ func applySGRuleDescriptions(rules []SGRule, descriptions []*ec2.SecurityGroupRu
 			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 		}
 		id := *d.SecurityGroupRuleId
-		if !SGRuleIDRegex.MatchString(id) {
-			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
-		}
 		// A rule on the other side, in another group or in another account is
 		// absent from this record and so is not-found, never a silent no-op.
 		i, ok := byID[id]
 		if !ok {
-			return nil, sgRuleNotFoundError(id)
+			return nil, sgRuleIDLookupError(id)
 		}
 		if d.Description != nil {
 			out[i].Description = *d.Description
@@ -1769,21 +1780,16 @@ func sgRuleRequestToSGRule(req *ec2.SecurityGroupRuleRequest) (SGRule, error) {
 		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "No value specified for securityGroupRule.")
 	}
 
-	if strings.TrimSpace(aws.StringValue(req.IpProtocol)) == "" {
-		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"Invalid value 'null' for protocol. VPC security group rules must specify protocols explicitly.")
-	}
-	proto, err := normalizeIPProtocol(*req.IpProtocol)
+	proto, err := normalizeIPProtocol(aws.StringValue(req.IpProtocol))
 	if err != nil {
-		return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s", err)
+		return SGRule{}, err
 	}
 
 	r := SGRule{IpProtocol: proto, Description: aws.StringValue(req.Description)}
 	switch proto {
 	case "tcp", "udp":
-		if req.FromPort == nil || req.ToPort == nil {
-			return SGRule{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"Invalid value for portRange. Must specify both from and to ports with TCP/UDP.")
+		if err := requireSGRulePorts(proto, req.FromPort, req.ToPort); err != nil {
+			return SGRule{}, err
 		}
 		r.FromPort, r.ToPort = *req.FromPort, *req.ToPort
 		if err := validateSGRulePorts(proto, r.FromPort, r.ToPort); err != nil {
@@ -1850,8 +1856,8 @@ func sgRuleSourceField(r SGRule) string {
 const sgRuleIDMaxSuffix = 17
 
 // SGRuleIDIsMalformed reports whether AWS rejects id as malformed: it lacks the
-// lowercase "sgr-" prefix or has too long a suffix. Looser than SGRuleIDRegex,
-// because AWS answers NotFound for a short or non-hex suffix such as sgr-xyz.
+// lowercase "sgr-" prefix or has too long a suffix. AWS answers NotFound, not
+// Malformed, for a short or non-hex suffix such as sgr-xyz.
 func SGRuleIDIsMalformed(id string) bool {
 	suffix, ok := strings.CutPrefix(id, "sgr-")
 	return !ok || len(suffix) > sgRuleIDMaxSuffix
@@ -1863,10 +1869,6 @@ func sgRuleIDLookupError(id string) error {
 	if SGRuleIDIsMalformed(id) {
 		return awserrors.Errorf(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, "Invalid id: %q", id)
 	}
-	return sgRuleNotFoundError(id)
-}
-
-func sgRuleNotFoundError(id string) error {
 	return awserrors.IDNotFound(awserrors.ErrorInvalidSecurityGroupRuleIdNotFound, "security group rule", id)
 }
 
@@ -1923,9 +1925,17 @@ func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRu
 			toPort = *perm.ToPort
 		}
 		if mode == sgParseAuthorize {
+			if err := requireSGRulePorts(proto, perm.FromPort, perm.ToPort); err != nil {
+				return nil, err
+			}
 			if err := validateSGRulePorts(proto, fromPort, toPort); err != nil {
 				return nil, err
 			}
+		}
+		// AWS ignores the ports of an all-protocol rule. Storing 0/0, as the
+		// default egress rule is, keeps new rules uniform with it.
+		if proto == allProtocols {
+			fromPort, toPort = 0, 0
 		}
 
 		appended := false
@@ -2003,6 +2013,10 @@ func sgRulesToIpPermissions(rules []SGRule, accountID string) []*ec2.IpPermissio
 	grouped := make(map[permKey]*ec2.IpPermission)
 	for _, rule := range rules {
 		key := permKey{IpProtocol: rule.IpProtocol, FromPort: rule.FromPort, ToPort: rule.ToPort}
+		// An all-protocol rule stored with -1/-1 is the same permission as 0/0.
+		if rule.IpProtocol == allProtocols {
+			key.FromPort, key.ToPort = 0, 0
+		}
 		perm, exists := grouped[key]
 		if !exists {
 			perm = &ec2.IpPermission{IpProtocol: aws.String(rule.IpProtocol)}
@@ -2127,12 +2141,9 @@ func resolveRuleIDsToRemove(existing []SGRule, ruleIDs []*string) ([]SGRule, err
 		if idp == nil || *idp == "" {
 			continue
 		}
-		if !SGRuleIDRegex.MatchString(*idp) {
-			return nil, errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
-		}
 		r, ok := byID[*idp]
 		if !ok {
-			return nil, sgRuleNotFoundError(*idp)
+			return nil, sgRuleIDLookupError(*idp)
 		}
 		out = append(out, r)
 	}

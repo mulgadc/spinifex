@@ -210,6 +210,8 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 
 	certArn := aws.StringValue(input.CertificateArn)
 	var inUseBy []string
+	now := time.Now().UTC()
+	createdAt := now
 	reimport := certArn != ""
 	if certArn == "" {
 		certArn = s.mintCertificateArn(accountID)
@@ -229,6 +231,7 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		// Carry the InUseBy index forward — new material under the same ARN
 		// must not silently drop the load balancers that reference it.
 		inUseBy = existing.InUseBy
+		createdAt = importedCreatedAt(existing)
 	}
 
 	rec := &CertRecord{
@@ -238,14 +241,15 @@ func (s *ACMServiceImpl) ImportCertificate(ctx context.Context, input *acm.Impor
 		CertificateChain: string(input.CertificateChain),
 		PrivateKey:       string(input.PrivateKey),
 		DomainName:       leafDomain(leaf),
-		SubjectAltNames:  leaf.DNSNames,
-		Serial:           leaf.SerialNumber.Text(16),
+		SubjectAltNames:  importedSANs(leaf),
+		Serial:           formatSerial(leaf.SerialNumber),
 		Subject:          leaf.Subject.String(),
-		Issuer:           leaf.Issuer.String(),
+		Issuer:           issuerName(leaf),
 		KeyAlgorithm:     keyAlgorithm(leaf),
 		NotBefore:        leaf.NotBefore,
 		NotAfter:         leaf.NotAfter,
-		ImportedAt:       time.Now().UTC(),
+		CreatedAt:        createdAt,
+		ImportedAt:       now,
 		Tags:             tagsToMap(input.Tags),
 		InUseBy:          inUseBy,
 		Type:             certTypeImported,
@@ -365,9 +369,9 @@ func (s *ACMServiceImpl) issuePrivateCALeaf(ctx context.Context, rec *CertRecord
 	rec.Certificate = certPEM
 	rec.CertificateChain = chainPEM
 	rec.PrivateKey = keyPEM
-	rec.Serial = leaf.SerialNumber.Text(16)
+	rec.Serial = formatSerial(leaf.SerialNumber)
 	rec.Subject = leaf.Subject.String()
-	rec.Issuer = leaf.Issuer.String()
+	rec.Issuer = issuerName(leaf)
 	rec.KeyAlgorithm = keyAlgorithm(leaf)
 	rec.NotBefore = leaf.NotBefore
 	rec.NotAfter = leaf.NotAfter
@@ -515,17 +519,20 @@ func (s *ACMServiceImpl) ListCertificates(ctx context.Context, input *acm.ListCe
 	}
 	summaries := make([]*acm.CertificateSummary, 0, len(recs))
 	for _, rec := range recs {
-		summaries = append(summaries, &acm.CertificateSummary{
-			CertificateArn: aws.String(rec.CertificateArn),
-			DomainName:     aws.String(rec.DomainName),
-			Status:         aws.String(certStatusOrDefault(rec)),
-			Type:           aws.String(certTypeOrDefault(rec)),
-			KeyAlgorithm:   aws.String(rec.KeyAlgorithm),
-			NotBefore:      timePtr(rec.NotBefore),
-			NotAfter:       timePtr(rec.NotAfter),
-			ImportedAt:     timePtr(rec.ImportedAt),
-			InUse:          aws.Bool(len(rec.InUseBy) > 0),
-		})
+		sum := &acm.CertificateSummary{
+			CertificateArn:     aws.String(rec.CertificateArn),
+			DomainName:         aws.String(rec.DomainName),
+			Status:             aws.String(certStatusOrDefault(rec)),
+			Type:               aws.String(certTypeOrDefault(rec)),
+			KeyAlgorithm:       aws.String(rec.KeyAlgorithm),
+			NotBefore:          timePtr(rec.NotBefore),
+			NotAfter:           timePtr(rec.NotAfter),
+			ImportedAt:         timePtr(rec.ImportedAt),
+			InUse:              aws.Bool(len(rec.InUseBy) > 0),
+			RenewalEligibility: aws.String(renewalEligibilityOrDefault(rec)),
+		}
+		applyLeafSummary(sum, rec, parseStoredLeaf(rec))
+		summaries = append(summaries, sum)
 	}
 	return &acm.ListCertificatesOutput{CertificateSummaryList: summaries}, nil
 }
@@ -617,6 +624,7 @@ func recordToDetail(rec *CertRecord) *acm.CertificateDetail {
 		}
 		detail.RenewalSummary = summary
 	}
+	applyLeafDetail(detail, rec, parseStoredLeaf(rec))
 	return detail
 }
 

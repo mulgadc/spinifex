@@ -696,6 +696,24 @@ fi
 # workbooks, so a workbook that passes on a hypervisor and fails on OCI is a
 # difference in OCI and not in the test. It owns its own per-workbook assertions
 # and destroys each one it builds.
+# The suite used to run with stdout redirected to a file, so a run wedged inside a
+# workbook printed nothing at all until it finished. Streamed now, and each of the
+# driver's own RUN/PASS/FAIL lines is stamped with elapsed seconds and the workbook.
+stream_workbooks() {
+    local start=$SECONDS line current="(starting)"
+    while IFS= read -r line; do
+        case "$line" in
+            '=== RUN'*)
+                current="${line##*RUN   }"
+                printf '[validate-%s] %5ds workbook START %s\n' "$TOPOLOGY" "$((SECONDS - start))" "$current" ;;
+            '--- PASS'*|'--- FAIL'*|'--- SKIP'*)
+                printf '[validate-%s] %5ds workbook %s\n' "$TOPOLOGY" "$((SECONDS - start))" "$line" ;;
+            *)
+                printf '%s\n' "$line" ;;
+        esac
+    done
+}
+
 log "running the published workbooks"
 DRIVER="$REPO_ROOT/tests/e2e/run-tofu-examples-e2e.sh"
 [ -r "$DRIVER" ] || die "no workbook driver at $DRIVER"
@@ -770,7 +788,7 @@ if ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
     -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ExitOnForwardFailure=yes -R "$PUBLIC_PROXY_PORT" "ubuntu@${HOSTS[0]}" \
     "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
-    > "$STATE_DIR/workbooks.log" 2>&1; then
+    2>&1 | tee "$STATE_DIR/workbooks.log" | stream_workbooks; then
     record_workbooks "$STATE_DIR/workbooks.log"
     passed="$(grep -c '^--- PASS' "$STATE_DIR/workbooks.log" || true)"
     ran="$(grep -c '^=== RUN' "$STATE_DIR/workbooks.log" || true)"

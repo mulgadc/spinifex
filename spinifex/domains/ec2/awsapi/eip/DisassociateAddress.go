@@ -1,4 +1,4 @@
-package gateway_ec2_eip
+package eip
 
 import (
 	"context"

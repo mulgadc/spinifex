@@ -7,9 +7,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
@@ -59,7 +59,7 @@ func (s *Service) EnforceEIPs(ctx context.Context, natsConn *nats.Conn, accountI
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_ec2_eip.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{}, natsConn, accountID)
+	out, err := ec2eipapi.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}

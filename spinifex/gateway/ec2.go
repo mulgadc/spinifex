@@ -16,6 +16,7 @@ import (
 	ec2accountapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/account"
 	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
 	ec2eigwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eigw"
+	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
@@ -25,7 +26,6 @@ import (
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
-	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
@@ -610,22 +610,22 @@ var ec2Actions = map[string]ec2Action{
 		if err := gw.Quota.EnforceEIPs(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err
 		}
-		return gateway_ec2_eip.AllocateAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.AllocateAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ReleaseAddress": ec2Handler(func(ctx context.Context, input *ec2.ReleaseAddressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.ReleaseAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.ReleaseAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AssociateAddress": ec2Handler(func(ctx context.Context, input *ec2.AssociateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.AssociateAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.AssociateAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisassociateAddress": ec2Handler(func(ctx context.Context, input *ec2.DisassociateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.DisassociateAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.DisassociateAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAddresses": ec2Handler(func(ctx context.Context, input *ec2.DescribeAddressesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.DescribeAddresses(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.DescribeAddresses(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAddressesAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeAddressesAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.DescribeAddressesAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.DescribeAddressesAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateNatGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNatGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateNatGatewayOutput, error) {
 		return gateway_ec2_natgw.CreateNatGateway(ctx, input, gw.NATSConn, accountID)

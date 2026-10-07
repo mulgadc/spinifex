@@ -11,12 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
@@ -224,7 +224,7 @@ func (r *addressReaper) Kind() string { return "address" }
 func (r *addressReaper) Stage() Stage { return StageNetwork }
 
 func (r *addressReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_eip.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{}, r.nc, accountID)
+	out, err := ec2eipapi.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -251,13 +251,13 @@ func (r *addressReaper) Delete(ctx context.Context, accountID string, resource R
 		return err
 	}
 	if associationID != "" {
-		if _, err := gateway_ec2_eip.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
+		if _, err := ec2eipapi.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
 			AssociationId: aws.String(associationID),
 		}, r.nc, accountID); err != nil && !isAlreadyGone(err) && !isNotAssociated(err) {
 			return err
 		}
 	}
-	_, err = gateway_ec2_eip.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
+	_, err = ec2eipapi.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
 		AllocationId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
@@ -267,7 +267,7 @@ func (r *addressReaper) Delete(ctx context.Context, accountID string, resource R
 // from the listing, because a delete may also be driven from an id an operator
 // supplied. An empty answer means unattached, which is not an error.
 func (r *addressReaper) associationID(ctx context.Context, accountID, allocationID string) (string, error) {
-	out, err := gateway_ec2_eip.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
+	out, err := ec2eipapi.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{
 		AllocationIds: []*string{aws.String(allocationID)},
 	}, r.nc, accountID)
 	if err != nil {

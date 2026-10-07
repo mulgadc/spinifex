@@ -1,4 +1,4 @@
-package gateway_ec2_eip
+package eip
 
 import (
 	"context"
@@ -10,16 +10,16 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// AllocateAddress handles the EC2 AllocateAddress API call.
-func AllocateAddress(ctx context.Context, input *ec2.AllocateAddressInput, natsConn *nats.Conn, accountID string) (ec2.AllocateAddressOutput, error) {
-	var output ec2.AllocateAddressOutput
+// DescribeAddresses handles the EC2 DescribeAddresses API call.
+func DescribeAddresses(ctx context.Context, input *ec2.DescribeAddressesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeAddressesOutput, error) {
+	var output ec2.DescribeAddressesOutput
 
 	if input == nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	svc := ec2eip.NewNATSEIPService(natsConn)
-	result, err := svc.AllocateAddress(ctx, input, accountID)
+	result, err := svc.DescribeAddresses(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

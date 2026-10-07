@@ -156,6 +156,10 @@ jobs:
           OCI_PRINCIPAL_PRIVATE_KEY: ${{ secrets.OCI_PRINCIPAL_PRIVATE_KEY }}
           OCI_PRINCIPAL_COMPARTMENT_OCID: ${{ secrets.OCI_PRINCIPAL_COMPARTMENT_OCID }}
           OCI_PRINCIPAL_REGION: ${{ vars.OCI_PRINCIPAL_REGION }}
+          # Service limits are per tenancy, so the shape the other topologies use
+          # can have zero quota in this one. Ours has no E6 cores at all, and the
+          # apply then fails before anything about the principal is exercised.
+          OCI_PRINCIPAL_SHAPE: ${{ vars.OCI_PRINCIPAL_SHAPE }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
           OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
           # Through the environment, never interpolated into the script below: a

@@ -60,7 +60,11 @@ topo_defaults() {
         vm-single) TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1 ;;
         vm-multi)  TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=3 ;;
         vm-single-principal)
-            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1
+            # Its own tenancy carries its own service limits, so the shape every
+            # other topology uses can have zero quota there and fail the apply
+            # before a single thing about the principal has been proved.
+            TOPO_DEFAULT_SHAPE="${OCI_PRINCIPAL_SHAPE:-VM.Standard.E6.Flex}"
+            TOPO_DEFAULT_NODES=1
             TOPO_FORCE_PRINCIPAL=1 ;;
         *) return 1 ;;
     esac

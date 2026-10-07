@@ -62,6 +62,11 @@
 #                     rather than costing a provision to fail. Running it in the
 #                     run's own tenancy is still available by pointing all six
 #                     there, which says so explicitly instead of by default.
+#   OCI_PRINCIPAL_SHAPE     Compute shape for vm-single-principal. Its tenancy
+#                     carries its own service limits, so the shape the other
+#                     topologies use can have zero quota there and fail the apply
+#                     before anything about the principal is exercised. Default
+#                     VM.Standard.E6.Flex, as the others.
 #   OCI_ARTIFACT_DIR  Where logs and the verdict land. Default ./.e2e-oci-<stamp>.
 #   OCI_KEEP_ON_FAIL  1 to leave a failed topology up for inspection. Off by
 #                     default: an OCI bare-metal host left overnight is expensive.

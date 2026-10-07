@@ -25,15 +25,13 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
 	meta := handlers_ecr.NewMemoryMetaStore()
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
-	return &GatewayConfig{
-		ECRRegistry:         reg,
-		ECRRegistryActions:  awsapi.NewRegistryActionService(reg, reg, reg, reg),
-		ECRLifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg),
-		Region:              ecrTestRegion,
-		InternalSuffix:      ecrTestSuffix,
-		DisableLogging:      true,
-		IAMService:          allowAllIAMService(),
-	}
+	return withECR(&GatewayConfig{
+		ECRRegistry:    reg,
+		Region:         ecrTestRegion,
+		InternalSuffix: ecrTestSuffix,
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
+	}, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
@@ -64,7 +62,7 @@ func imageReq(t *testing.T, action, body string) *http.Request {
 func callImage(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	w := httptest.NewRecorder()
-	return w, gw.ECR_Request(w, imageReq(t, action, body))
+	return w, gw.serveECR(w, imageReq(t, action, body))
 }
 
 func TestListImages_TaggedUntaggedFilter(t *testing.T) {
@@ -240,13 +238,13 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repositoryName":"team/app"}`))
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListImages")
-	err = gw.ECR_Request(w, req)
+	err = gw.serveECR(w, req)
 	require.Error(t, err)
 	assert.Equal(t, "InternalError", err.Error())
 
 	// A missing registry-action composition -> ServerInternal.
 	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err = bare.ECR_Request(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
+	err = bare.serveECR(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())
 }

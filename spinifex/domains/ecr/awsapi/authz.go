@@ -37,7 +37,7 @@ const (
 	sourceTagARN
 )
 
-// Every action ECR_Request serves, with the resources AWS evaluates it against.
+// Every action the ECR dispatcher serves, with the resources AWS evaluates it against.
 // Exhaustive by contract: a completeness test compares this table with the
 // dispatch table in both directions, so an action cannot be added with a silent
 // account-wide grant.

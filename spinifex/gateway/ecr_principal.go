@@ -3,7 +3,6 @@ package gateway
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -27,29 +26,6 @@ import (
 // principalContext the SigV4 middleware builds, so ECR requests are
 // authorized by the identical policy-evaluation path as every other AWS
 // action.
-
-// ecrAuthorizationPrincipal converts the fresh SigV4 identity context into
-// the canonical principal a GetAuthorizationToken response signs. It stays in
-// gateway because the ECR domain must not know gateway context keys or IAM/STS
-// ARN construction rules.
-func ecrAuthorizationPrincipal(r *http.Request, accountID string) (ecrauth.Principal, error) {
-	ctx := r.Context()
-	accessKey, _ := ctx.Value(ctxAccessKey).(string)
-	identity, _ := ctx.Value(ctxIdentity).(string)
-	principalType, _ := ctx.Value(ctxPrincipalType).(string)
-	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-
-	callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
-	if err != nil {
-		return ecrauth.Principal{}, err
-	}
-	return ecrauth.Principal{
-		AccountID:   accountID,
-		ARN:         callerARN,
-		Type:        principalType,
-		AccessKeyID: accessKey,
-	}, nil
-}
 
 // ecrPrincipalError classifies a principal-rehydration failure so the HTTP
 // layer can fail closed with the right status: an invalid/revoked/mismatched

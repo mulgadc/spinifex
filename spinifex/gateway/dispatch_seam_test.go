@@ -1,7 +1,6 @@
 // Tests for the generic gateway consuming the dispatch registration seam
-// with fake services registered only here. No production service registers
-// yet, so these are the only tests exercising the registered-dispatch path
-// end to end.
+// with fake services registered only here, independent of any production
+// registration.
 
 package gateway
 
@@ -419,7 +418,7 @@ func TestValidateServices(t *testing.T) {
 	t.Run("claiming a legacy name fails", func(t *testing.T) {
 		b := dispatch.NewBuilder()
 		require.NoError(t, b.Register(dispatch.Registration{
-			Service:   "ecr",
+			Service:   "acm",
 			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
 			Errors:    dispatch.ErrorEnvelopeJSON,
 			Inventory: dispatch.Inventory{Registered: []string{fakeAction}},

@@ -125,8 +125,7 @@ func resolveSignupMaxAccounts(cfg signupConfig) int {
 }
 
 // wireServiceRegistry builds gw.Services from regs and validates it against
-// the legacy dispatch table before the gateway ever serves a request. regs is
-// empty in production: no service registers through the seam yet.
+// the legacy dispatch table before the gateway ever serves a request.
 func wireServiceRegistry(gw *gateway.GatewayConfig, regs ...dispatch.Registration) error {
 	b := dispatch.NewBuilder()
 	for _, reg := range regs {
@@ -478,10 +477,6 @@ func launchService(config *config.ClusterConfig) error {
 		Version:                 version,
 		Commit:                  commit,
 		ECRRegistry:             ecrRegistry,
-		ECRRegistryActions:      awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
-		ECRLifecyclePreview:     awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
-		ECRRepositoryActions:    awsapi.NewRepositoryActionService(ecrMeta, ecrEndpoint),
-		ECRTokenAction:          awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
 		ECRTokenIssuer:          ecrIssuer,
 		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
 		BedrockCredentials:      bedrockCredentials,
@@ -500,9 +495,14 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAgentVector:      bedrockAgentVector,
 	}
 
-	// No service registers through the seam yet; wireServiceRegistry only
-	// proves the registry is wired and cannot overlap the legacy table.
-	if err := wireServiceRegistry(&gw); err != nil {
+	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
+		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
+		LifecyclePreview:   awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
+		Repository:         awsapi.NewRepositoryActionService(ecrMeta, ecrEndpoint),
+		AuthorizationToken: awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
+		NATS:               natsConn,
+	})
+	if err := wireServiceRegistry(&gw, ecrControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

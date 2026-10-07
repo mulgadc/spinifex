@@ -6,10 +6,13 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -381,8 +384,9 @@ func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
 // validation code outside EC2: the default must not be EC2's Reserved Instance
 // or resource-ID wording, whichever envelope the service uses.
 func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	for svc := range supportedServices {
+	gw := withECR(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, awsapi.Deps{})
+	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName)
+	for _, svc := range services {
 		if svc == "ec2" {
 			continue
 		}

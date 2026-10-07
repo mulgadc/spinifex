@@ -9,7 +9,7 @@ import (
 )
 
 func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
-	inventory := AWSOperationInventory()
+	inventory := AWSOperationInventory(ecrRegistrationInventory())
 
 	require.Contains(t, inventory["ec2"].Registered, "DescribeInstances")
 	require.NotContains(t, inventory["ec2"].Stubbed, "DescribeInstances")
@@ -19,7 +19,7 @@ func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 	require.Contains(t, inventory["ecs"].Stubbed, "UpdateCluster")
 
 	// These operations are NotImplemented in the relay table but intercepted
-	// by ECR_Request's transitional adapter or composed capability inventory.
+	// by a composed capability the ECR registration declares.
 	require.Contains(t, inventory["ecr"].Registered, "GetAuthorizationToken")
 	require.NotContains(t, inventory["ecr"].Stubbed, "GetAuthorizationToken")
 	require.NotContains(t, inventory["ecr"].Stubbed, "DescribeRepositories")
@@ -37,7 +37,7 @@ func TestAWSOperationInventoryClassifiesDispatchers(t *testing.T) {
 }
 
 func TestAWSOperationInventoryMeasuresEKSAgainstTheModel(t *testing.T) {
-	inventory := AWSOperationInventory()
+	inventory := AWSOperationInventory(ecrRegistrationInventory())
 
 	eks, err := awsmodel.CompareOperations(awsmodel.EKS, awsmodel.DispatchInventory{
 		Registered:  inventory["eks"].Registered,
@@ -67,7 +67,7 @@ func TestEKSActionNamesAreSortedAndDistinct(t *testing.T) {
 }
 
 func TestAWSOperationInventoryStatusesAreDisjointSubsets(t *testing.T) {
-	for service, inventory := range AWSOperationInventory() {
+	for service, inventory := range AWSOperationInventory(ecrRegistrationInventory()) {
 		t.Run(service, func(t *testing.T) {
 			registered := stringSet(inventory.Registered)
 			for _, action := range inventory.Stubbed {

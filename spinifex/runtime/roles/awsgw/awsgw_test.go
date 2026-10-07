@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
@@ -13,20 +14,28 @@ import (
 )
 
 // wireServiceRegistry is the exact call launchService makes to wire
-// gw.Services before serving a request. An empty call (production's shape)
-// must wire a non-nil, overlap-free registry; a registration claiming a
-// legacy name must fail it, so the role refuses to start.
+// gw.Services before serving a request. Production's ECR registration must
+// wire an overlap-free registry serving ecr; a duplicate or a registration
+// claiming a legacy name must fail it, so the role refuses to start.
 func TestWireServiceRegistry(t *testing.T) {
-	t.Run("empty registry wires non-nil Services and passes", func(t *testing.T) {
+	t.Run("ECR registration wires and passes the overlap guard", func(t *testing.T) {
 		gw := &gateway.GatewayConfig{}
-		require.NoError(t, wireServiceRegistry(gw))
-		assert.NotNil(t, gw.Services)
+		require.NoError(t, wireServiceRegistry(gw, awsapi.NewRegistration(awsapi.Deps{})))
+		require.NotNil(t, gw.Services)
+		_, ok := gw.Services.Lookup("ecr")
+		assert.True(t, ok)
+	})
+
+	t.Run("a duplicate ECR registration fails startup", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		reg := awsapi.NewRegistration(awsapi.Deps{})
+		require.Error(t, wireServiceRegistry(gw, reg, reg))
 	})
 
 	t.Run("a registration claiming a legacy name fails startup", func(t *testing.T) {
 		gw := &gateway.GatewayConfig{}
 		err := wireServiceRegistry(gw, dispatch.Registration{
-			Service:   "ecr",
+			Service:   "acm",
 			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
 			Errors:    dispatch.ErrorEnvelopeJSON,
 			Inventory: dispatch.Inventory{Registered: []string{"Whatever"}},

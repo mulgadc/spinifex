@@ -150,11 +150,11 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 		},
 	}
 
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
-	}
+	}, awsapi.Deps{})
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -2673,7 +2673,7 @@ func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
 // envelope by exactly the path it did before the fallback was added — a
 // regression guard proving the fallback widened nothing for served scopes.
 func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true}
+	gw := withECR(&GatewayConfig{DisableLogging: true}, awsapi.Deps{})
 
 	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
@@ -2744,7 +2744,7 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 			},
 		},
 	}
-	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}
+	gw := withECR(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}, awsapi.Deps{})
 
 	var gotAction, gotThrottleKey string
 	r := chi.NewRouter()

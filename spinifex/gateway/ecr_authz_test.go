@@ -1,4 +1,4 @@
-//test:in-package — drives ECR_Request through the gateway's unexported test
+//test:in-package — drives ECR dispatch through the gateway's unexported test
 // helpers (setupECRRequest, policyMockIAMService) and auth context keys.
 
 package gateway
@@ -21,7 +21,7 @@ import (
 // a permitted request fails there rather than on authorization.
 func dispatchECR(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
-	return gw.ECR_Request(httptest.NewRecorder(), setupECRRequest(awsapi.TargetPrefix+"."+action, body))
+	return gw.serveECR(httptest.NewRecorder(), setupECRRequest(awsapi.TargetPrefix+"."+action, body))
 }
 
 func assertECRPermitted(t *testing.T, err error) {
@@ -146,7 +146,7 @@ func TestECRRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListRepositories")
 	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecr")))
 
-	err := gw.ECR_Request(httptest.NewRecorder(), req)
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

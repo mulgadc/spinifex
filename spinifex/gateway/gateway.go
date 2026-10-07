@@ -32,7 +32,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
-	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -164,20 +163,6 @@ type GatewayConfig struct {
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
 	ECRRegistry *ecrregistry.Registry
-	// ECRRegistryActions serves registry-backed AWS JSON image actions. It is
-	// composed from the OCI registry at startup; nil is a composition fault for
-	// those actions rather than a fallback to the generic NotImplemented table.
-	ECRRegistryActions *awsapi.RegistryActionService
-	// ECRLifecyclePreview serves the lifecycle-preview pair. Its distinct
-	// policy-store and image-catalog composition prevents the OCI registry from
-	// becoming a broad ECR control-plane service.
-	ECRLifecyclePreview *awsapi.LifecyclePreviewActionService
-	// ECRRepositoryActions serves repository metadata actions from the composed
-	// metadata store and advertised endpoint profile.
-	ECRRepositoryActions *awsapi.RepositoryActionService
-	// ECRTokenAction serves GetAuthorizationToken after gateway has constructed
-	// a canonical IAM/STS principal from the authenticated request context.
-	ECRTokenAction *awsapi.AuthorizationTokenActionService
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).
@@ -276,9 +261,8 @@ func (gw *GatewayConfig) ValidateServices() error {
 }
 
 // registeredActorFunc returns the lazy Actor resolver a registered
-// dispatcher's Invocation carries. It reads the same context values and
-// shared buildCallerARN helper ecrAuthorizationPrincipal uses, so nothing is
-// computed until a dispatcher calls it.
+// dispatcher's Invocation carries. It reads the SigV4 identity context through
+// the shared buildCallerARN helper, so nothing is computed until called.
 func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
 	return func() (dispatch.Actor, error) {
 		ctx := r.Context()
@@ -308,7 +292,6 @@ var supportedServices = map[string]bool{
 	"elasticloadbalancing":  true,
 	"eks":                   true,
 	"ecs":                   true,
-	"ecr":                   true,
 	"acm":                   true,
 	"rds":                   true,
 	"tagging":               true,
@@ -443,7 +426,7 @@ const eksJSONContentType = "application/x-amz-json-1.1"
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "ecr", "acm", "ecs", "tagging",
+	case "eks", "acm", "ecs", "tagging",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
@@ -554,16 +537,7 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if entry, ok := gw.registered(svc); ok {
-		inv := dispatch.Invocation{
-			Request:   r,
-			AccountID: mustCtxString(r, ctxAccountID),
-			Region:    gw.Region,
-			Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
-				return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
-			},
-			Actor: gw.registeredActorFunc(r),
-		}
-		err = entry.Dispatch(w, inv)
+		err = gw.dispatchRegistered(entry, w, r)
 	} else {
 		// Legacy dispatch path for every service not yet registered through
 		// the seam. This switch must only shrink as services register.
@@ -588,8 +562,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.BedrockAgentRuntime_Request(w, r)
 		case "ecs":
 			err = gw.ECS_Request(w, r)
-		case "ecr":
-			err = gw.ECR_Request(w, r)
 		case "acm":
 			err = gw.ACM_Request(w, r)
 		case "rds":
@@ -609,6 +581,21 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Info("Service request completed", "service", svc, "action", action)
 	}
+}
+
+// dispatchRegistered hands the authenticated request to a registered service
+// with the caller's account, the gateway Region and ingress-owned
+// authorization and actor capabilities.
+func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
+	return entry.Dispatch(w, dispatch.Invocation{
+		Request:   r,
+		AccountID: mustCtxString(r, ctxAccountID),
+		Region:    gw.Region,
+		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
+			return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
+		},
+		Actor: gw.registeredActorFunc(r),
+	})
 }
 
 func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {

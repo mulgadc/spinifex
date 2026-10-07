@@ -54,13 +54,12 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	for _, r := range repos {
 		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
 	}
-	return &GatewayConfig{
+	return withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
-		ECRRepositoryActions: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
-			Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
-		}),
-	}
+	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
+		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+	})})
 }
 
 func describeReposRequest(t *testing.T, gw *GatewayConfig, body string) *httptest.ResponseRecorder {
@@ -68,7 +67,7 @@ func describeReposRequest(t *testing.T, gw *GatewayConfig, body string) *httptes
 	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", body)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 	return w
 }
 
@@ -151,7 +150,7 @@ func TestDescribeRepositories_MissingNamedRepo(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
 	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"repositoryNames":["team/ghost"]}`)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.ECR_Request(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", err.Error())
 }
@@ -160,7 +159,7 @@ func TestDescribeRepositories_CrossAccountDenied(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
 	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"registryId":"999999999999"}`)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.ECR_Request(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "AccessDenied", err.Error())
 }
@@ -170,6 +169,6 @@ func TestECRRequest_DescribeRepositoriesDispatched(t *testing.T) {
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DescribeRepositories", "{}")
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 	assert.Equal(t, http.StatusOK, w.Code)
 }

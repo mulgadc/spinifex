@@ -36,11 +36,13 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -160,9 +162,15 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 
 	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
 
+	// ECR's control plane registers with only its NATS relay; the composed
+	// capabilities the awsgw role supplies are not wired here.
+	services := awsdispatch.NewBuilder()
+	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{NATS: nc})))
+
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nc,
+		Services:       services.Build(),
 		ExpectedNodes:  1,
 		Region:         testRegion,
 		AZ:             testAZ,

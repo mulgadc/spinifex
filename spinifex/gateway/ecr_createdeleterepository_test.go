@@ -30,13 +30,12 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDelete, svc.RepoDelete)
 	serveECRMeta(t, nc, handlers_ecr.SubjectManifestPut, svc.ManifestPut)
 	serveECRMeta(t, nc, handlers_ecr.SubjectManifestList, svc.ManifestList)
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
-		ECRRepositoryActions: awsapi.NewRepositoryActionService(handlers_ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
-			Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
-		}),
-	}
+	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(handlers_ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+	})})
 	return gw, nc
 }
 
@@ -45,7 +44,7 @@ func ecrRepositoryRequest(t *testing.T, gw *GatewayConfig, action, body string) 
 	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	return w, gw.ECR_Request(w, req.WithContext(ctx))
+	return w, gw.serveECR(w, req.WithContext(ctx))
 }
 
 func createRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
@@ -191,7 +190,7 @@ func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 
 	req := noAccountRequest(`{"repositoryName":"team/app"}`)
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".CreateRepository")
-	err := gw.ECR_Request(httptest.NewRecorder(), req)
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "InternalError", err.Error())
 
@@ -205,7 +204,7 @@ func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
 
 	req := noAccountRequest(`{"repositoryName":"team/app"}`)
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".DeleteRepository")
-	err := gw.ECR_Request(httptest.NewRecorder(), req)
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "InternalError", err.Error())
 
@@ -270,13 +269,13 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 	create := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.CreateRepository", `{"repositoryName":"team/app"}`)
 	create = create.WithContext(context.WithValue(create.Context(), ctxAccountID, ecrTestAccount))
 	wc := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(wc, create))
+	require.NoError(t, gw.serveECR(wc, create))
 	assert.Equal(t, http.StatusOK, wc.Code)
 
 	del := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DeleteRepository", `{"repositoryName":"team/app"}`)
 	del = del.WithContext(context.WithValue(del.Context(), ctxAccountID, ecrTestAccount))
 	wd := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(wd, del))
+	require.NoError(t, gw.serveECR(wd, del))
 	assert.Equal(t, http.StatusOK, wd.Code)
 }
 

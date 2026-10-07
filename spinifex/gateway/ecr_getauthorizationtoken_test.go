@@ -17,12 +17,11 @@ import (
 func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
-		ECRTokenAction: awsapi.NewAuthorizationTokenActionService(iss, endpoint),
-		IAMService:     allowAllIAMService(),
-	}
+		IAMService: allowAllIAMService(),
+	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
@@ -32,7 +31,7 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
 	w := httptest.NewRecorder()
 
-	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 	require.Equal(t, http.StatusOK, w.Code)
 
 	var out struct {
@@ -65,12 +64,11 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix, RegistryPort: "9999"}
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, RegistryPort: "9999",
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
-		ECRTokenAction: awsapi.NewAuthorizationTokenActionService(iss, endpoint),
-		IAMService:     allowAllIAMService(),
-	}
+		IAMService: allowAllIAMService(),
+	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
@@ -79,7 +77,7 @@ func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 
 	var out struct {
 		AuthorizationData []struct {
@@ -92,14 +90,13 @@ func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {
 }
 
 func TestGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		DisableLogging: true,
 		IAMService:     allowAllIAMService(),
-		ECRTokenAction: awsapi.NewAuthorizationTokenActionService(nil, awsapi.RepositoryEndpoint{}),
-	}
+	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(nil, awsapi.RepositoryEndpoint{})})
 	req := setupECRRequest(awsapi.TargetPrefix+".GetAuthorizationToken", "{}")
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.ECR_Request(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "NotImplemented", err.Error())
 }
@@ -107,23 +104,22 @@ func TestGetAuthorizationToken_NoIssuerNotImplemented(t *testing.T) {
 func TestGetAuthorizationToken_MissingComposition(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := setupECRRequest(awsapi.TargetPrefix+".GetAuthorizationToken", "{}")
-	err := gw.ECR_Request(httptest.NewRecorder(), req)
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())
 }
 
 func TestECRRequest_GetAuthorizationTokenDispatched(t *testing.T) {
 	iss, verify := newECRAuth(t)
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
-		ECRTokenAction: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
-			Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
-		}),
 		IAMService: allowAllIAMService(),
-	}
+	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
+		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+	})})
 	w := httptest.NewRecorder()
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.GetAuthorizationToken", "{}")
-	require.NoError(t, gw.ECR_Request(w, req))
+	require.NoError(t, gw.serveECR(w, req))
 	assert.Equal(t, http.StatusOK, w.Code)
 }

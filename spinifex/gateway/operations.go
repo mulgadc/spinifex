@@ -4,9 +4,9 @@ import (
 	"maps"
 	"slices"
 
-	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
 // ServiceOperationInventory describes the authoritative dispatch state for an
@@ -19,26 +19,16 @@ type ServiceOperationInventory struct {
 }
 
 // AWSOperationInventory returns a fresh, stable snapshot of the gateway's
-// operation dispatch tables. S3 is intentionally absent: Spinifex does not
-// dispatch S3 operations and delegates that REST surface to Predastore.
-func AWSOperationInventory() map[string]ServiceOperationInventory {
-	ecrComposed := union(
-		union(awsapi.RegistryActionNames(), awsapi.LifecyclePreviewActionNames()),
-		union(awsapi.RepositoryActionNames(), awsapi.AuthorizationTokenActionNames()),
-	)
-	ecrRegistered := union(mapKeys(awsapi.Actions), ecrComposed)
-	ecrStubbed := without(awsapi.StubbedActionNames(), ecrComposed)
-	return map[string]ServiceOperationInventory{
+// legacy dispatch tables merged with registered, the declared inventory of each
+// registered service. S3 is intentionally absent: Spinifex does not dispatch S3
+// operations and delegates that REST surface to Predastore.
+func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]ServiceOperationInventory {
+	inventory := map[string]ServiceOperationInventory{
 		"acm": {
 			Registered: mapKeys(acmActions),
 		},
 		"ec2": {
 			Registered: mapKeys(ec2Actions),
-		},
-		"ecr": {
-			Registered:  ecrRegistered,
-			Stubbed:     ecrStubbed,
-			Unsupported: awsapi.UnsupportedActionNames(),
 		},
 		"ecs": {
 			Registered: mapKeys(gateway_ecs.Actions),
@@ -61,20 +51,16 @@ func AWSOperationInventory() map[string]ServiceOperationInventory {
 			Registered: mapKeys(stsActions),
 		},
 	}
+	for name, inv := range registered {
+		inventory[name] = ServiceOperationInventory{
+			Registered:  slices.Clone(inv.Registered),
+			Stubbed:     slices.Clone(inv.Stubbed),
+			Unsupported: slices.Clone(inv.Unsupported),
+		}
+	}
+	return inventory
 }
 
 func mapKeys[V any](values map[string]V) []string {
 	return slices.Sorted(maps.Keys(values))
-}
-
-func without(values, excluded []string) []string {
-	return slices.DeleteFunc(slices.Clone(values), func(value string) bool {
-		return slices.Contains(excluded, value)
-	})
-}
-
-func union(left, right []string) []string {
-	merged := slices.Concat(left, right)
-	slices.Sort(merged)
-	return slices.Compact(merged)
 }

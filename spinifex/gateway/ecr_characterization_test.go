@@ -72,6 +72,8 @@ func ecrPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 		},
 	}
 
+	withECR(gw, awsapi.Deps{})
+
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)
@@ -169,9 +171,9 @@ func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	gw, app := ecrPipelineApp(t, allowAllECRDocs())
 	gw.ECRTokenIssuer, gw.ECRTokenVerifier = iss, verify
-	gw.ECRTokenAction = awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
+	withECR(gw, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
-	})
+	})})
 
 	target := awsapi.TargetPrefix + ".GetAuthorizationToken"
 	resp := doRequest(app, signECRRequest(t, target, []byte("{}")))
@@ -182,9 +184,10 @@ func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
 
 // --- Target parsing today --------------------------------------------------
 
-// TestECRActionFromTarget_FormsAndTelemetryAgree pins how ecrActionFromTarget
-// (dispatch) and resolveNonQueryAction (telemetry/throttle) each resolve the
-// X-Amz-Target header today. A refactor that lets them diverge breaks this.
+// TestECRActionFromTarget_FormsAndTelemetryAgree pins how the ECR
+// registration's resolver (dispatch and telemetry/throttle) and the legacy
+// resolveNonQueryAction each resolve the X-Amz-Target header today. A refactor
+// that lets them diverge breaks this.
 func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -196,12 +199,14 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 		{"bare action", "ListRepositories", "ListRepositories"},
 		{"trailing dot", awsapi.TargetPrefix + ".", ""},
 	}
+	ecrEntry, ok := withECR(&GatewayConfig{}, awsapi.Deps{}).registered(awsapi.ServiceName)
+	require.True(t, ok)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.wantAction, ecrActionFromTarget(tc.target))
-
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", tc.target)
+			assert.Equal(t, tc.wantAction, ecrEntry.ResolveAction(req))
+
 			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req, "ecr"),
 				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
@@ -213,7 +218,7 @@ func TestECRActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 // bare action name today.
 func TestECRRequest_UnrelatedPrefixDispatchesByBareAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err := gw.ECR_Request(httptest.NewRecorder(), setupECRRequest("a.b.ListRepositories", "{}"))
+	err := gw.serveECR(httptest.NewRecorder(), setupECRRequest("a.b.ListRepositories", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
 }
@@ -223,7 +228,7 @@ func TestECRRequest_UnrelatedPrefixDispatchesByBareAction(t *testing.T) {
 // fails as an unrecognised ECR action, not as a cross-service error.
 func TestECRRequest_ECSPrefixedNonECRActionIsInvalidAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err := gw.ECR_Request(httptest.NewRecorder(),
+	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerServiceV20141113.ListClusters", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
@@ -233,7 +238,7 @@ func TestECRRequest_ECSPrefixedNonECRActionIsInvalidAction(t *testing.T) {
 // resolves to an empty action, the same as an absent target.
 func TestECRRequest_TrailingDotIsMissingAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err := gw.ECR_Request(httptest.NewRecorder(),
+	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest(awsapi.TargetPrefix+".", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
@@ -260,7 +265,7 @@ func TestECRInventory_StubbedSetIsPinned(t *testing.T) {
 // that nothing intercepts ahead of the handler table, i.e. what the HTTP
 // pipeline actually answers 501 for today.
 func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
-	reachableStubs := AWSOperationInventory()["ecr"].Stubbed
+	reachableStubs := AWSOperationInventory(ecrRegistrationInventory())["ecr"].Stubbed
 	want := []string{
 		"ListRepositories", "BatchCheckLayerAvailability", "GetDownloadUrlForLayer",
 		"InitiateLayerUpload", "UploadLayerPart", "CompleteLayerUpload", "GetRegistryPolicy",
@@ -271,7 +276,7 @@ func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	for _, action := range reachableStubs {
 		t.Run(action, func(t *testing.T) {
-			err := gw.ECR_Request(httptest.NewRecorder(),
+			err := gw.serveECR(httptest.NewRecorder(),
 				setupECRRequest(awsapi.TargetPrefix+"."+action, "{}"))
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
@@ -286,7 +291,7 @@ func TestECRInventory_ScanningActionsReturnOperationNotSupported(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	for _, action := range awsapi.UnsupportedActionNames() {
 		t.Run(action, func(t *testing.T) {
-			err := gw.ECR_Request(httptest.NewRecorder(),
+			err := gw.serveECR(httptest.NewRecorder(),
 				setupECRRequest(awsapi.TargetPrefix+"."+action, "{}"))
 			require.Error(t, err)
 			code, _, ok := awserrors.ResolveErrorDetail(err)
@@ -353,7 +358,7 @@ func (s *recordingRepoStore) DeleteRepo(context.Context, string, string) error {
 }
 
 // TestECRPipeline_AuthzGateBlocksComposedAction pins that the policy gate in
-// ECR_Request runs, and denies, before a composed capability (here
+// ECR dispatch runs, and denies, before a composed capability (here
 // RepositoryActionService backing CreateRepository) is ever invoked.
 func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 	scopedDocs := []handlers_iam.PolicyDocument{{
@@ -368,9 +373,9 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 	}}
 	gw, app := ecrPipelineApp(t, scopedDocs)
 	store := &recordingRepoStore{}
-	gw.ECRRepositoryActions = awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
+	withECR(gw, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
-	})
+	})})
 
 	target := awsapi.TargetPrefix + ".CreateRepository"
 	resp := doRequest(app, signECRRequest(t, target, []byte(`{"repositoryName":"team/app"}`)))
@@ -388,12 +393,11 @@ func TestECRPipeline_AuthzGateBlocksComposedAction(t *testing.T) {
 func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 	iss, verify := newECRAuth(t)
 	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
 		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
-		ECRTokenAction: awsapi.NewAuthorizationTokenActionService(iss, endpoint),
-		IAMService:     allowAllIAMService(),
-	}
+		IAMService: allowAllIAMService(),
+	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"registryIds":["999999999999"]}`))
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
@@ -402,7 +406,7 @@ func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 	ctx = context.WithValue(ctx, ctxAccessKey, "AKIAGETAUTHTOKENTEST1")
 	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 	require.Equal(t, http.StatusOK, w.Code)
 
 	var out struct {
@@ -428,7 +432,7 @@ func TestGetAuthorizationToken_IgnoresRequestSuppliedIdentity(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 	for _, action := range []string{"ListRepositories", "CreateRepository"} {
 		t.Run(action, func(t *testing.T) {
-			gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+			gw := withECR(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, awsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+"."+action)
@@ -510,7 +514,7 @@ func TestECRPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // Pins the ECR inventory so a refactor that drops or adds an action, including
 // by changing which capability intercepts it, fails here.
 func TestECRInventory_RegisteredStubbedUnsupportedArePinned(t *testing.T) {
-	ecr := AWSOperationInventory()["ecr"]
+	ecr := AWSOperationInventory(ecrRegistrationInventory())["ecr"]
 
 	wantRegistered := []string{
 		"GetAuthorizationToken", "CreateRepository", "DeleteRepository", "DescribeRepositories",

@@ -7,7 +7,9 @@ import (
 
 	"github.com/mulgadc/predastore/s3api"
 	"github.com/mulgadc/spinifex/internal/awsmodel"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )
@@ -43,10 +45,14 @@ func fail(err error) {
 }
 
 func compareAll() ([]awsmodel.OperationCoverage, error) {
-	dispatch := gateway.AWSOperationInventory()
+	// Registered services contribute their declared inventory, which needs no
+	// live dependencies; nothing here serves a request.
+	inventories := gateway.AWSOperationInventory(map[string]dispatch.Inventory{
+		awsapi.ServiceName: awsapi.OperationInventory(),
+	})
 	coverages := make([]awsmodel.OperationCoverage, 0, len(awsmodel.Services()))
 	for _, service := range awsmodel.Services() {
-		inventory, ok := dispatch[string(service)]
+		inventory, ok := inventories[string(service)]
 		var modelInventory awsmodel.DispatchInventory
 		switch {
 		case ok:

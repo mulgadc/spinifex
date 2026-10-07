@@ -50,7 +50,7 @@ Request routing (`spinifex/gateway/gateway.go`):
 1. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
 2. **Throttling**: Per-account+action token bucket rejects bursts post-auth
 3. **Service Detection**: Extracts service name from the Authorization header
-4. **Action Dispatch**: Routes to service-specific handler
+4. **Action Dispatch**: Routes to service-specific handler. A service registered through the ingress dispatch registry (`ingress/aws/dispatch`, wired by `runtime/roles/awsgw`) is dispatched by its registration; currently that is ECR's control plane, registered from `domains/ecr/awsapi`. Every other service uses the legacy switch:
 
 ```go
 switch svc {
@@ -68,8 +68,6 @@ case "eks":
     err = gw.EKS_Request(w, r)
 case "ecs":
     err = gw.ECS_Request(w, r)
-case "ecr":
-    err = gw.ECR_Request(w, r)
 case "acm":
     err = gw.ACM_Request(w, r)
 case "tagging":

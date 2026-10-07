@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -215,8 +214,7 @@ func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 	assert.Equal(t, gateway_eks.JSONContentType, w.Header().Get("Content-Type"))
 	assert.True(t, strings.HasPrefix(w.Body.String(), "{"), "expected JSON body, got %q", w.Body.String())
 
-	var env gateway_eks.EKSJSONError
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	env := decodeJSONError(t, w.Result())
 	assert.Equal(t, "NotImplementedException", env.Type)
 	// SDKs resolve the modelled exception type from this header, not the body.
 	assert.Equal(t, env.Type, w.Header().Get("X-Amzn-Errortype"))

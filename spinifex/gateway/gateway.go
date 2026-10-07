@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -38,12 +37,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -302,35 +301,6 @@ var supportedServices = map[string]bool{
 	"bedrock-agent-runtime": true,
 }
 
-// EC2ErrorResponse is the EC2 query-API error envelope.
-// aws-sdk-go v1's ec2query handler rejects the IAM-style <ErrorResponse> envelope
-// with SerializationError, so EC2 errors must use <Response><Errors>...</Errors></Response>.
-type EC2ErrorResponse struct {
-	XMLName   xml.Name  `xml:"Response"`
-	Errors    EC2Errors `xml:"Errors"`
-	RequestID string    `xml:"RequestID"`
-}
-
-type EC2Errors struct {
-	Error ErrorDetail `xml:"Error"`
-}
-
-type ErrorDetail struct {
-	Code    string `xml:"Code"`
-	Message string `xml:"Message"`
-}
-
-// S3ErrorResponse is the S3 REST error envelope: a flat <Error> document rather
-// than the query-API wrapper. SDKs look for a top-level <Error><Code> on an S3
-// response and report an empty code for anything else.
-type S3ErrorResponse struct {
-	XMLName   xml.Name `xml:"Error"`
-	Code      string   `xml:"Code"`
-	Message   string   `xml:"Message"`
-	Resource  string   `xml:"Resource,omitempty"`
-	RequestID string   `xml:"RequestId"`
-}
-
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	var logLevel slog.Level
 
@@ -418,9 +388,6 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	}
 }
 
-// eksJSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect.
-const eksJSONContentType = "application/x-amz-json-1.1"
-
 // jsonErrorService reports whether svc returns AWS JSON 1.1 errors rather than
 // XML. One source of truth so every error emitter agrees with ErrorHandler; an
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
@@ -445,17 +412,6 @@ func (gw *GatewayConfig) jsonErrorService(svc string) bool {
 	return jsonErrorService(svc)
 }
 
-// requestSignalsJSONProtocol reads r's own headers for the AWS JSON-1.x
-// tells, for a scope jsonErrorService has no entry for because the gateway
-// does not serve it. A JSON-1.1 action always carries X-Amz-Target, and a
-// JSON-protocol client always sends an application/x-amz-json-* content type.
-func requestSignalsJSONProtocol(r *http.Request) bool {
-	if r.Header.Get("X-Amz-Target") != "" {
-		return true
-	}
-	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-amz-json")
-}
-
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points
 // operators at /local/status rather than leaving the AWS CLI hanging on timeouts.
 const clusterUnavailableMsg = "cluster unavailable: NATS disconnected — check daemon /local/status"
@@ -467,9 +423,9 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if gw.jsonErrorService(svc) {
-		body := gateway_eks.GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(awserrors.ErrorServiceUnavailable))
+		body := envelope.JSONBody(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(awserrors.ErrorServiceUnavailable))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write JSON cluster-unavailable response", "err", err)
@@ -479,7 +435,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 
 	xmlBody := xmlErrorBody(svc, awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID, r.URL.Path)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(http.StatusServiceUnavailable)
 	if _, err := w.Write(xmlBody); err != nil {
 		slog.Error("Failed to write cluster-unavailable response", "err", err)
@@ -499,9 +455,9 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if gw.jsonErrorService(svc) {
-		body := gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message)
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
+		body := envelope.JSONBody(errorCode, errorMsg.Message)
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write JSON throttle error response", "err", err)
@@ -511,7 +467,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 	xmlErr := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
 	if _, err := w.Write(xmlErr); err != nil {
 		slog.Error("Failed to write throttle error response", "err", err)
@@ -973,10 +929,10 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
 	// query/XML services fall through.
 	if gw.jsonErrorService(svc) {
-		body := gateway_eks.GenerateEKSErrorResponse(code, errorMsg.Message)
+		body := envelope.JSONBody(code, errorMsg.Message)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(code))
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(code))
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write EKS error response", "err", err)
@@ -988,7 +944,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	slog.Debug("Generated error response", "error", err, "code", code, "xml", string(xmlError), "requestId", requestId)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
 	if _, err := w.Write(xmlError); err != nil {
 		slog.Error("Failed to write error response", "err", err)
@@ -1031,86 +987,6 @@ func ParseAWSQueryArgs(query string) (map[string]string, error) {
 	return params, nil
 }
 
-func GenerateEC2ErrorResponse(code, message, requestID string) (output []byte) {
-	errorXml := EC2ErrorResponse{
-		Errors: EC2Errors{
-			Error: ErrorDetail{
-				Code:    code,
-				Message: message,
-			},
-		},
-		RequestID: requestID,
-	}
-
-	output, err := xml.MarshalIndent(errorXml, "", "  ")
-
-	if err != nil {
-		slog.Error("Failed to build XML", "error", err)
-		return []byte(xml.Header + `<Response><Errors><Error><Code>InternalError</Code><Message>Internal error</Message></Error></Errors><RequestID>` + requestID + `</RequestID></Response>`)
-	}
-
-	// Add XML header
-	output = append([]byte(xml.Header), output...)
-
-	return output
-}
-
-// IAMErrorResponse is the IAM/STS error XML envelope.
-type IAMErrorResponse struct {
-	XMLName   xml.Name       `xml:"ErrorResponse"`
-	Error     IAMErrorDetail `xml:"Error"`
-	RequestID string         `xml:"RequestId"`
-}
-
-type IAMErrorDetail struct {
-	Type    string `xml:"Type"`
-	Code    string `xml:"Code"`
-	Message string `xml:"Message"`
-}
-
-// GenerateIAMErrorResponse builds the generic REST-XML/AWS-query ErrorResponse
-// envelope. Originally IAM/STS-specific, it is also xmlErrorBody's default for
-// every scope with no dedicated shape, including ones the gateway does not serve.
-func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
-	errorXml := IAMErrorResponse{
-		Error: IAMErrorDetail{
-			Type:    "Sender",
-			Code:    code,
-			Message: message,
-		},
-		RequestID: requestID,
-	}
-
-	output, err := xml.MarshalIndent(errorXml, "", "  ")
-	if err != nil {
-		slog.Error("Failed to build IAM error XML", "error", err)
-		return []byte(xml.Header + "<ErrorResponse><Error><Type>Sender</Type><Code>InternalError</Code><Message>Internal error</Message></Error><RequestId>" + requestID + "</RequestId></ErrorResponse>")
-	}
-
-	output = append([]byte(xml.Header), output...)
-	return output
-}
-
-// GenerateS3ErrorResponse builds the flat S3 REST error document. resource is
-// the request path and is omitted when empty.
-func GenerateS3ErrorResponse(code, message, requestID, resource string) (output []byte) {
-	errorXml := S3ErrorResponse{
-		Code:      code,
-		Message:   message,
-		Resource:  resource,
-		RequestID: requestID,
-	}
-
-	output, err := xml.MarshalIndent(errorXml, "", "  ")
-	if err != nil {
-		slog.Error("Failed to build S3 error XML", "error", err)
-		return []byte(xml.Header + "<Error><Code>InternalError</Code><Message>Internal error</Message><RequestId>" + requestID + "</RequestId></Error>")
-	}
-
-	output = append([]byte(xml.Header), output...)
-	return output
-}
-
 // xmlErrorBody renders an error in the XML envelope svc's clients expect. The
 // one place the service-to-envelope mapping lives, so a service cannot be
 // added to some emitters and missed by others. JSON services never reach
@@ -1118,18 +994,18 @@ func GenerateS3ErrorResponse(code, message, requestID, resource string) (output 
 func xmlErrorBody(svc, code, message, requestID, resource string) []byte {
 	switch svc {
 	case "s3":
-		return GenerateS3ErrorResponse(code, message, requestID, resource)
+		return envelope.S3Body(code, message, requestID, resource)
 	case "ec2", "spinifex", "":
 		// Both speak the Action-parameter query protocol, and their clients
 		// parse the EC2 <Response><Errors> shape, not the generic ErrorResponse.
 		// Empty means the signature never parsed, so no service is known yet;
 		// keep EC2's shape there rather than changing a path this is not about.
-		return GenerateEC2ErrorResponse(code, message, requestID)
+		return envelope.EC2Body(code, message, requestID)
 	default:
 		// iam, sts, elasticloadbalancing, rds, and any unenumerated or
 		// unserved scope: the generic REST-XML ErrorResponse envelope, never
 		// EC2's shape, which a REST-XML client cannot deserialize.
-		return GenerateIAMErrorResponse(code, message, requestID)
+		return envelope.IAMBody(code, message, requestID)
 	}
 }
 

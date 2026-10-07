@@ -22,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -315,10 +316,10 @@ func TestDispatchSeam_DispatcherErrorRendersInDeclaredEnvelope(t *testing.T) {
 		_, app := dispatchSeamApp(t, allowAllECRDocs(), fakeJSONRegistration(capt))
 		resp := doRequest(app, signDispatchRequest(t, fakeJSONService, []byte("{}")))
 
-		assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
-		assert.Equal(t, jsonErrorType(awserrors.ErrorInternalError), resp.Header.Get("X-Amzn-Errortype"))
+		assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
+		assert.Equal(t, envelope.JSONErrorType(awserrors.ErrorInternalError), resp.Header.Get("X-Amzn-Errortype"))
 		body := decodeJSONError(t, resp)
-		assert.Equal(t, jsonErrorType(awserrors.ErrorInternalError), body.Type)
+		assert.Equal(t, envelope.JSONErrorType(awserrors.ErrorInternalError), body.Type)
 	})
 
 	t.Run("XML envelope service", func(t *testing.T) {
@@ -350,7 +351,7 @@ func TestDispatchSeam_NATSDownGetsSame503AsLegacy(t *testing.T) {
 	resp := w.Result()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	body := decodeJSONError(t, resp)
 	assert.Equal(t, "ServiceUnavailableException", body.Type)
 }

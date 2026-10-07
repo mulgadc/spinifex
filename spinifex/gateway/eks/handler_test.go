@@ -12,31 +12,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGenerateEKSErrorResponse_ShapesExceptionSuffix(t *testing.T) {
-	body := GenerateEKSErrorResponse("ResourceNotFound", "Cluster does not exist")
-	var env EKSJSONError
-	require.NoError(t, json.Unmarshal(body, &env))
-	assert.Equal(t, "ResourceNotFoundException", env.Type)
-	assert.Equal(t, "Cluster does not exist", env.Message)
-}
-
-// Codes that already carry the "Exception" suffix (e.g.
-// awserrors.ErrorEKSResourceNotFound = "ResourceNotFoundException") must not be
-// doubled into ResourceNotFoundExceptionException, which SDK clients reject.
-func TestGenerateEKSErrorResponse_DoesNotDoubleExceptionSuffix(t *testing.T) {
-	body := GenerateEKSErrorResponse("ResourceNotFoundException", "Cluster does not exist")
-	var env EKSJSONError
-	require.NoError(t, json.Unmarshal(body, &env))
-	assert.Equal(t, eks.ErrCodeResourceNotFoundException, env.Type)
-}
-
 func TestWriteJSONError_SetsContentTypeAndStatus(t *testing.T) {
 	w := httptest.NewRecorder()
 	WriteJSONError(w, "NotImplemented", "Operation not implemented", http.StatusNotImplemented)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
 	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
 
-	var env EKSJSONError
+	var env struct {
+		Type    string `json:"__type"`
+		Message string `json:"message"`
+	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
 	assert.Equal(t, "NotImplementedException", env.Type)
 	assert.Equal(t, "Operation not implemented", env.Message)

@@ -15,10 +15,10 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
@@ -526,17 +526,17 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	// the SDK chokes deserializing our XML into its shape. An unserved scope is
 	// absent from jsonErrorService by definition, so its protocol is read off
 	// the request itself instead.
-	if gw.jsonErrorService(svc) || requestSignalsJSONProtocol(r) {
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
+	if gw.jsonErrorService(svc) || envelope.RequestSignalsJSONProtocol(r) {
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
-		_, _ = w.Write(gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message))
+		_, _ = w.Write(envelope.JSONBody(errorCode, errorMsg.Message))
 		return
 	}
 
 	xmlError := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
 	_, _ = w.Write(xmlError)
 }

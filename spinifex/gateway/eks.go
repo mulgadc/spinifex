@@ -8,23 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 )
-
-// jsonErrorType derives the X-Amzn-Errortype header value for code, mirroring
-// gateway_eks.GenerateEKSErrorResponse's own "Exception" suffixing so the header and the
-// body's __type always agree.
-func jsonErrorType(code string) string {
-	if strings.HasSuffix(code, "Exception") {
-		return code
-	}
-	return code + "Exception"
-}
 
 // eksRoute maps one HTTP method + chi path pattern to an AWS action and handler.
 type eksRoute = rest.Route[eksRouteHandler]

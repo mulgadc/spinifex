@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -127,7 +128,7 @@ func TestECRPipeline_MissingTarget_400MissingActionException(t *testing.T) {
 	resp := doRequest(app, signECRRequest(t, "", []byte("{}")))
 
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "MissingActionException", resp.Header.Get("X-Amzn-Errortype"))
 	body := decodeJSONError(t, resp)
 	assert.Equal(t, "MissingActionException", body.Type)
@@ -141,7 +142,7 @@ func TestECRPipeline_UnknownAction_400InvalidActionException(t *testing.T) {
 	resp := doRequest(app, signECRRequest(t, target, []byte("{}")))
 
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
 	body := decodeJSONError(t, resp)
 	assert.Equal(t, "InvalidActionException", body.Type)
@@ -156,7 +157,7 @@ func TestECRPipeline_StubbedAction_501NotImplementedException(t *testing.T) {
 	resp := doRequest(app, signECRRequest(t, target, []byte("{}")))
 
 	require.Equal(t, http.StatusNotImplemented, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "NotImplementedException", resp.Header.Get("X-Amzn-Errortype"))
 	body := decodeJSONError(t, resp)
 	assert.Equal(t, "NotImplementedException", body.Type)
@@ -318,7 +319,7 @@ func TestECRPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 	resp := doRequest(handler, req)
 
 	require.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	body := decodeJSONError(t, resp)
 	assert.Equal(t, "RequestEntityTooLargeException", body.Type)
 }
@@ -444,7 +445,7 @@ func TestRequest_ClusterUnavailableNilConn_ECR(t *testing.T) {
 			resp := w.Result()
 
 			assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-			assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+			assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 			body := decodeJSONError(t, resp)
 			assert.Equal(t, "ServiceUnavailableException", body.Type)
 		})

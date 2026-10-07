@@ -10,6 +10,7 @@ import (
 	"fmt"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"net/http"
@@ -2621,7 +2622,7 @@ func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
 
 	body, err := io.ReadAll(resp.Body)
@@ -2642,7 +2643,7 @@ func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) 
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
 
 	body, err := io.ReadAll(resp.Body)
@@ -2685,7 +2686,7 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 			gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
 
 			resp := w.Result()
-			assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+			assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 			assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 		})
 	}

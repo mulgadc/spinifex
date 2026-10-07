@@ -1,4 +1,4 @@
-package gateway_ec2_vpc
+package vpc
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package gateway_ec2_vpc
+package vpc
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func ValidateModifySubnetAttributeInput(input *ec2.ModifySubnetAttributeInput) error {
+func ValidateCreateNetworkInterfaceInput(input *ec2.CreateNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -20,16 +20,16 @@ func ValidateModifySubnetAttributeInput(input *ec2.ModifySubnetAttributeInput) e
 	return nil
 }
 
-// ModifySubnetAttribute handles the EC2 ModifySubnetAttribute API call.
-func ModifySubnetAttribute(ctx context.Context, input *ec2.ModifySubnetAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifySubnetAttributeOutput, error) {
-	var output ec2.ModifySubnetAttributeOutput
+// CreateNetworkInterface handles the EC2 CreateNetworkInterface API call.
+func CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, natsConn *nats.Conn, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
+	var output ec2.CreateNetworkInterfaceOutput
 
-	if err := ValidateModifySubnetAttributeInput(input); err != nil {
+	if err := ValidateCreateNetworkInterfaceInput(input); err != nil {
 		return output, err
 	}
 
 	svc := ec2vpc.NewNATSVPCService(natsConn)
-	result, err := svc.ModifySubnetAttribute(ctx, input, accountID)
+	result, err := svc.CreateNetworkInterface(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

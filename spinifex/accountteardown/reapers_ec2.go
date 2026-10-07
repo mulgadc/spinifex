@@ -14,6 +14,7 @@ import (
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
+	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
@@ -22,7 +23,6 @@ import (
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
-	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
 	"github.com/nats-io/nats.go"
 )
 
@@ -295,7 +295,7 @@ func (r *networkInterfaceReaper) Kind() string { return "network-interface" }
 func (r *networkInterfaceReaper) Stage() Stage { return StageNetwork }
 
 func (r *networkInterfaceReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_vpc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{}, r.nc, accountID)
+	out, err := ec2vpcapi.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -324,14 +324,14 @@ func (r *networkInterfaceReaper) Delete(ctx context.Context, accountID string, r
 		return err
 	}
 	if attachmentID != "" {
-		if _, err := gateway_ec2_vpc.DetachNetworkInterface(ctx, &ec2.DetachNetworkInterfaceInput{
+		if _, err := ec2vpcapi.DetachNetworkInterface(ctx, &ec2.DetachNetworkInterfaceInput{
 			AttachmentId: aws.String(attachmentID),
 			Force:        aws.Bool(force),
 		}, r.nc, accountID); err != nil && !isAlreadyGone(err) {
 			return err
 		}
 	}
-	_, err = gateway_ec2_vpc.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+	_, err = ec2vpcapi.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
@@ -340,7 +340,7 @@ func (r *networkInterfaceReaper) Delete(ctx context.Context, accountID string, r
 // attachmentID reports the interface's current attachment, or empty when it is
 // unattached. Unattached is the ordinary case here and is not an error.
 func (r *networkInterfaceReaper) attachmentID(ctx context.Context, accountID, interfaceID string) (string, error) {
-	out, err := gateway_ec2_vpc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+	out, err := ec2vpcapi.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String(interfaceID)},
 	}, r.nc, accountID)
 	if err != nil {
@@ -471,7 +471,7 @@ func (r *subnetReaper) Kind() string { return "subnet" }
 func (r *subnetReaper) Stage() Stage { return StageNetwork }
 
 func (r *subnetReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_vpc.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{}, r.nc, accountID)
+	out, err := ec2vpcapi.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +491,7 @@ func (r *subnetReaper) List(ctx context.Context, accountID string) ([]Resource, 
 }
 
 func (r *subnetReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_vpc.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{
+	_, err := ec2vpcapi.DeleteSubnet(ctx, &ec2.DeleteSubnetInput{
 		SubnetId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
@@ -505,7 +505,7 @@ func (r *securityGroupReaper) Stage() Stage { return StageNetwork }
 // List skips the default group of each VPC: it is created and destroyed with
 // the VPC and cannot be deleted on its own.
 func (r *securityGroupReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_vpc.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{}, r.nc, accountID)
+	out, err := ec2vpcapi.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +524,7 @@ func (r *securityGroupReaper) List(ctx context.Context, accountID string) ([]Res
 }
 
 func (r *securityGroupReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_vpc.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
+	_, err := ec2vpcapi.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
@@ -536,7 +536,7 @@ func (r *vpcReaper) Kind() string { return "vpc" }
 func (r *vpcReaper) Stage() Stage { return StageNetwork }
 
 func (r *vpcReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, r.nc, accountID)
+	out, err := ec2vpcapi.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -556,7 +556,7 @@ func (r *vpcReaper) List(ctx context.Context, accountID string) ([]Resource, err
 }
 
 func (r *vpcReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_vpc.DeleteVpc(ctx, &ec2.DeleteVpcInput{
+	_, err := ec2vpcapi.DeleteVpc(ctx, &ec2.DeleteVpcInput{
 		VpcId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

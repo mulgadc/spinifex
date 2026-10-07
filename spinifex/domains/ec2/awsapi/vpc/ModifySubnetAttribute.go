@@ -1,4 +1,4 @@
-package gateway_ec2_vpc
+package vpc
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func ValidateDeleteSubnetInput(input *ec2.DeleteSubnetInput) error {
+func ValidateModifySubnetAttributeInput(input *ec2.ModifySubnetAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -20,16 +20,16 @@ func ValidateDeleteSubnetInput(input *ec2.DeleteSubnetInput) error {
 	return nil
 }
 
-// DeleteSubnet handles the EC2 DeleteSubnet API call.
-func DeleteSubnet(ctx context.Context, input *ec2.DeleteSubnetInput, natsConn *nats.Conn, accountID string) (ec2.DeleteSubnetOutput, error) {
-	var output ec2.DeleteSubnetOutput
+// ModifySubnetAttribute handles the EC2 ModifySubnetAttribute API call.
+func ModifySubnetAttribute(ctx context.Context, input *ec2.ModifySubnetAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifySubnetAttributeOutput, error) {
+	var output ec2.ModifySubnetAttributeOutput
 
-	if err := ValidateDeleteSubnetInput(input); err != nil {
+	if err := ValidateModifySubnetAttributeInput(input); err != nil {
 		return output, err
 	}
 
 	svc := ec2vpc.NewNATSVPCService(natsConn)
-	result, err := svc.DeleteSubnet(ctx, input, accountID)
+	result, err := svc.ModifySubnetAttribute(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

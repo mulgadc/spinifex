@@ -1,4 +1,4 @@
-package gateway_ec2_vpc_test
+package vpc_test
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,19 +25,19 @@ func modifyUpdate(ruleID string) *ec2.SecurityGroupRuleUpdate {
 }
 
 func TestModifySecurityGroupRules_NilInput(t *testing.T) {
-	_, err := gateway_ec2_vpc.ModifySecurityGroupRules(context.Background(), nil, nil, testAccountID)
+	_, err := ec2vpcapi.ModifySecurityGroupRules(context.Background(), nil, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestModifySecurityGroupRules_MissingGroupId(t *testing.T) {
-	_, err := gateway_ec2_vpc.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
+	_, err := ec2vpcapi.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
 		SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{modifyUpdate("sgr-0123456789abcdef0")},
 	}, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestModifySecurityGroupRules_EmptyUpdateList(t *testing.T) {
-	_, err := gateway_ec2_vpc.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
+	_, err := ec2vpcapi.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
 		GroupId: aws.String("sg-0123456789abcdef0"),
 	}, nil, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
@@ -45,7 +45,7 @@ func TestModifySecurityGroupRules_EmptyUpdateList(t *testing.T) {
 
 func TestModifySecurityGroupRules_MalformedRuleID(t *testing.T) {
 	for _, bad := range []string{"foo", "SGR-0123456789abcdef0", "sgr-0123456789abcdef01", "sg-0123456789abcdef0", ""} {
-		_, err := gateway_ec2_vpc.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
+		_, err := ec2vpcapi.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
 			GroupId:            aws.String("sg-0123456789abcdef0"),
 			SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{modifyUpdate(bad)},
 		}, nil, testAccountID)
@@ -57,7 +57,7 @@ func TestModifySecurityGroupRules_MalformedRuleID(t *testing.T) {
 // rather than be rejected here as malformed.
 func TestModifySecurityGroupRules_WellFormedRuleIDPassesValidation(t *testing.T) {
 	for _, id := range []string{"sgr-0123456789abcdef0", "sgr-xyz", "sgr-"} {
-		_, err := gateway_ec2_vpc.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
+		_, err := ec2vpcapi.ModifySecurityGroupRules(context.Background(), &ec2.ModifySecurityGroupRulesInput{
 			GroupId:            aws.String("sg-0123456789abcdef0"),
 			SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{modifyUpdate(id)},
 		}, nil, testAccountID)

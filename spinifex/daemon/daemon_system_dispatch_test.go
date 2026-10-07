@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
+	"github.com/mulgadc/spinifex/spinifex/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -545,4 +548,160 @@ func msgWithConn(nc *nats.Conn, msg *nats.Msg) *nats.Msg {
 	sub, _ := nc.Subscribe("_test.unused.subject."+msg.Reply, func(*nats.Msg) {})
 	msg.Sub = sub
 	return msg
+}
+
+// syncReply returns a message whose reply lands on a synchronous inbox, so a
+// handler called directly can be asserted on without a responder goroutine.
+func syncReply(t *testing.T, nc *nats.Conn, subject string, data []byte) (*nats.Msg, *nats.Subscription) {
+	t.Helper()
+	inbox := nats.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	return &nats.Msg{Subject: subject, Reply: inbox, Sub: sub, Data: data}, sub
+}
+
+func nextEnvelopeError(t *testing.T, sub *nats.Subscription) string {
+	t.Helper()
+	reply, err := sub.NextMsg(2 * time.Second)
+	require.NoError(t, err)
+	var env struct {
+		Error string `json:"error,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(reply.Data, &env))
+	return env.Error
+}
+
+func TestServeSystemLaunchInstance_UnknownType(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	rm, err := NewResourceManager(nil, nil, nil)
+	require.NoError(t, err)
+
+	d := &Daemon{natsConn: nc, resourceMgr: rm, natsSubscriptions: make(map[string]*nats.Subscription)}
+	msg, sub := syncReply(t, nc, "system.LaunchInstance.zz9.none", []byte(`{"instance_type":"zz9.none"}`))
+
+	assert.Equal(t, outcomeError, d.serveSystemLaunchInstance(msg))
+	assert.Contains(t, nextEnvelopeError(t, sub), "unknown instance type: zz9.none")
+	assert.Empty(t, d.natsSubscriptions, "a failed launch must not subscribe a terminate subject")
+}
+
+func TestLaunchSystemInstanceOnNode_Failures(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	rm, err := NewResourceManager(nil, nil, nil)
+	require.NoError(t, err)
+	d := &Daemon{natsConn: nc, node: "node-a", resourceMgr: rm}
+
+	t.Run("local target validates the type", func(t *testing.T) {
+		_, err := d.LaunchSystemInstanceOnNode("node-a", &handlers_elbv2.SystemInstanceInput{InstanceType: "zz9.none"})
+		assert.ErrorContains(t, err, "unknown instance type")
+	})
+
+	t.Run("remote without a type", func(t *testing.T) {
+		_, err := d.LaunchSystemInstanceOnNode("node-b", &handlers_elbv2.SystemInstanceInput{})
+		assert.ErrorContains(t, err, "missing InstanceType")
+		_, err = d.LaunchSystemInstanceOnNode("node-b", nil)
+		assert.ErrorContains(t, err, "missing InstanceType")
+	})
+
+	t.Run("remote node not listening", func(t *testing.T) {
+		_, err := d.LaunchSystemInstanceOnNode("node-gone", &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.p1"})
+		assert.ErrorIs(t, err, nats.ErrNoResponders)
+	})
+
+	replies := map[string]string{
+		"undecodable reply": "not json",
+		"empty envelope":    "{}",
+	}
+	wantErr := map[string]string{
+		"undecodable reply": "decode launch reply",
+		"empty envelope":    "missing output payload",
+	}
+	for name, body := range replies {
+		t.Run(name, func(t *testing.T) {
+			node := "node-" + strings.ReplaceAll(name, " ", "-")
+			sub, err := nc.Subscribe("system.LaunchInstance.sys.p1."+node, func(msg *nats.Msg) {
+				_ = msg.Respond([]byte(body))
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+			_, err = d.LaunchSystemInstanceOnNode(node, &handlers_elbv2.SystemInstanceInput{InstanceType: "sys.p1"})
+			assert.ErrorContains(t, err, wantErr[name])
+		})
+	}
+}
+
+func TestTerminateSystemInstanceRemote_TransportFailures(t *testing.T) {
+	t.Run("closed connection is not reported as already gone", func(t *testing.T) {
+		nc, err := nats.Connect(sharedNATSURL)
+		require.NoError(t, err)
+		nc.Close()
+
+		err = (&Daemon{natsConn: nc}).terminateSystemInstanceRemote("i-closed")
+		require.ErrorContains(t, err, "route terminate i-closed")
+		assert.NotErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+	})
+
+	t.Run("undecodable reply", func(t *testing.T) {
+		nc, err := nats.Connect(sharedNATSURL)
+		require.NoError(t, err)
+		t.Cleanup(nc.Close)
+		sub, err := nc.Subscribe("system.TerminateInstance.i-garbled", func(msg *nats.Msg) {
+			_ = msg.Respond([]byte("garbled"))
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+		err = (&Daemon{natsConn: nc}).terminateSystemInstanceRemote("i-garbled")
+		assert.ErrorContains(t, err, "decode routed terminate reply i-garbled")
+	})
+}
+
+func TestSubscribeSystemTerminate_ConnFailures(t *testing.T) {
+	d := &Daemon{natsSubscriptions: make(map[string]*nats.Subscription)}
+	require.NoError(t, d.subscribeSystemTerminateLocked("i-nil"), "nil natsConn must short-circuit")
+
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	nc.Close()
+	d.natsConn = nc
+	require.ErrorContains(t, d.subscribeSystemTerminate("i-closed"), "subscribe system.TerminateInstance.i-closed")
+	assert.Empty(t, d.natsSubscriptions)
+}
+
+func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	t.Run("unknown instance", func(t *testing.T) {
+		d := &Daemon{natsConn: nc, vmMgr: vm.NewManager(), natsSubscriptions: make(map[string]*nats.Subscription)}
+		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-unknown", nil)
+		d.serveSystemTerminateInstance(msg)
+		assert.Contains(t, nextEnvelopeError(t, sub), sysinstance.ErrSystemInstanceNotFound.Error())
+	})
+
+	// No VM manager makes the terminate nil-deref; the dispatch goroutine must
+	// recover and still answer.
+	t.Run("panic is recovered", func(t *testing.T) {
+		d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription)}
+		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-panic", nil)
+		d.handleSystemTerminateInstance(msg)
+		assert.Equal(t, awserrors.ErrorServerInternal, nextEnvelopeError(t, sub))
+		d.systemDispatchWg.Wait()
+	})
+}
+
+// A requester that stopped waiting leaves nothing to reply to; the responders
+// log and return rather than fail the handler.
+func TestSystemDispatchResponders_NoReplySubject(t *testing.T) {
+	msg := noReplyMsg("system.LaunchInstance.sys.p1", nil)
+	respondWithSystemLaunchOutput(msg, &handlers_elbv2.SystemInstanceOutput{InstanceID: "i-1"})
+	respondWithSystemLaunchError(msg, "boom")
+	respondWithSystemTerminateOK(msg)
+	respondWithSystemTerminateError(msg, "boom")
 }

@@ -163,3 +163,17 @@ func TestResolveVMGPU_UnknownPCI_ReturnsNil(t *testing.T) {
 func TestResolveVMGPU_EmptyAttachment_ReturnsNil(t *testing.T) {
 	assert.Nil(t, resolveVMGPU(gpu.GPUAttachment{}, nil, nil))
 }
+
+// A partly resolved set is reported short rather than padded or dropped.
+func TestResolveVMGPUs_SkipsUnresolvedAttachments(t *testing.T) {
+	dev := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028}
+	byPCI := map[string]gpu.PoolEntry{"0000:01:00.0": {Device: dev, InstanceID: "i-abc"}}
+
+	got := resolveVMGPUs("i-abc", []gpu.GPUAttachment{
+		{PCIAddress: "0000:01:00.0"},
+		{PCIAddress: "0000:99:00.0"},
+	}, nil, byPCI)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "NVIDIA A10", got[0].Model)
+}

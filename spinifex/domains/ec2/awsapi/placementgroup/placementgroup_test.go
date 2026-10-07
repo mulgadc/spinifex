@@ -1,4 +1,4 @@
-package gateway_ec2_placementgroup
+package placementgroup
 
 import (
 	"context"

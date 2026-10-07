@@ -17,6 +17,7 @@ import (
 	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
+	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -27,7 +28,6 @@ import (
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_natgw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/natgw"
-	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
@@ -434,13 +434,13 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_eigw.DescribeEgressOnlyInternetGateways(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreatePlacementGroup": ec2Handler(func(ctx context.Context, input *ec2.CreatePlacementGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_placementgroup.CreatePlacementGroup(ctx, input, gw.NATSConn, accountID)
+		return ec2placementgroupapi.CreatePlacementGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeletePlacementGroup": ec2Handler(func(ctx context.Context, input *ec2.DeletePlacementGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_placementgroup.DeletePlacementGroup(ctx, input, gw.NATSConn, accountID)
+		return ec2placementgroupapi.DeletePlacementGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribePlacementGroups": ec2Handler(func(ctx context.Context, input *ec2.DescribePlacementGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_placementgroup.DescribePlacementGroups(ctx, input, gw.NATSConn, accountID)
+		return ec2placementgroupapi.DescribePlacementGroups(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateCapacityReservation": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateCapacityReservationInput, gw *GatewayConfig, accountID string) (ec2.CreateCapacityReservationOutput, error) {
 		return ec2capacityreservationapi.CreateCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)

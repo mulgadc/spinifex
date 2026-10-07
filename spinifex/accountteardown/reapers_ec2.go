@@ -13,12 +13,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
+	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
@@ -596,7 +596,7 @@ func (r *placementGroupReaper) Kind() string { return "placement-group" }
 func (r *placementGroupReaper) Stage() Stage { return StagePlatform }
 
 func (r *placementGroupReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_placementgroup.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{}, r.nc, accountID)
+	out, err := ec2placementgroupapi.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -612,7 +612,7 @@ func (r *placementGroupReaper) List(ctx context.Context, accountID string) ([]Re
 }
 
 func (r *placementGroupReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_placementgroup.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{
+	_, err := ec2placementgroupapi.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{
 		GroupName: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

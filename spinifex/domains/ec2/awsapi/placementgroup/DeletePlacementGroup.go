@@ -1,4 +1,4 @@
-package gateway_ec2_placementgroup
+package placementgroup
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) error {
+func ValidateDeletePlacementGroupInput(input *ec2.DeletePlacementGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -20,16 +20,16 @@ func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) err
 	return nil
 }
 
-// CreatePlacementGroup handles the EC2 CreatePlacementGroup API call.
-func CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.CreatePlacementGroupOutput, error) {
-	var output ec2.CreatePlacementGroupOutput
+// DeletePlacementGroup handles the EC2 DeletePlacementGroup API call.
+func DeletePlacementGroup(ctx context.Context, input *ec2.DeletePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.DeletePlacementGroupOutput, error) {
+	var output ec2.DeletePlacementGroupOutput
 
-	if err := ValidateCreatePlacementGroupInput(input); err != nil {
+	if err := ValidateDeletePlacementGroupInput(input); err != nil {
 		return output, err
 	}
 
 	svc := ec2placementgroup.NewNATSPlacementGroupService(natsConn)
-	result, err := svc.CreatePlacementGroup(ctx, input, accountID)
+	result, err := svc.DeletePlacementGroup(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

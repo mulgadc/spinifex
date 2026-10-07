@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"bufio"
@@ -17,17 +17,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-// version is the agent build version, reported in the register message.
-// Overridable via -ldflags "-X main.version=...".
-var version = "dev"
-
 // Agent wires the ecs-agent's runtime seams: a gateway control-plane client, a
 // container runtime, and an ECR resolver. It registers the host as a container
 // instance at boot, heartbeats (re-registers) while alive, polls the gateway for
 // task assignments, and runs them through containerd, reporting state back over
 // the gateway. It never connects to NATS — the bus stays host-internal.
 type Agent struct {
-	cfg      config
+	cfg      Config
 	id       identity
 	cp       controlPlane
 	resolver ctrruntime.Resolver
@@ -62,7 +58,7 @@ type Agent struct {
 // with fakes; New builds the production seams and delegates here. rt may be nil
 // when containerd is unavailable; the assign path then reports the task STOPPED
 // rather than crashing, and the watch loop keeps dialling for it.
-func newAgent(cfg config, id identity, cp controlPlane, rt ctrruntime.Runtime, resolver ctrruntime.Resolver) *Agent {
+func newAgent(cfg Config, id identity, cp controlPlane, rt ctrruntime.Runtime, resolver ctrruntime.Resolver) *Agent {
 	gate := newRuntimeGate(rt)
 	a := &Agent{
 		cfg:      cfg,
@@ -87,7 +83,7 @@ func newAgent(cfg config, id identity, cp controlPlane, rt ctrruntime.Runtime, r
 // registration and heartbeat still run so the instance is visible while the
 // runtime recovers. The ECR gateway client is built lazily on first image pull
 // (not here), so a missing or malformed gateway CA does not stop registration.
-func New(cfg config) (*Agent, error) {
+func New(cfg Config) (*Agent, error) {
 	imdsClient := &http.Client{Timeout: 5 * time.Second}
 
 	meta, err := fetchInstanceMetadata(imdsClient, cfg.IMDSBase)
@@ -103,7 +99,7 @@ func New(cfg config) (*Agent, error) {
 		InstanceType: meta.InstanceType,
 		Hostname:     host,
 		Capacity:     detectCapacity(discoverNvidiaGPUs(execCommandRunner)),
-		AgentVersion: version,
+		AgentVersion: cfg.AgentVersion,
 	}
 
 	creds := credentials.NewIMDSProvider(imdsClient, cfg.IMDSBase)

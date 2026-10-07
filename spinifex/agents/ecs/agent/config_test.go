@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"os"
@@ -14,7 +14,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 		"ECS_CONTAINERD_SOCKET", "ECS_HEARTBEAT_INTERVAL", "ECS_POLL_INTERVAL"} {
 		t.Setenv(k, "")
 	}
-	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	cfg := LoadConfig(filepath.Join(t.TempDir(), "absent.env"))
 	if cfg.GatewayCA != defaultGatewayCA {
 		t.Errorf("GatewayCA = %q, want default", cfg.GatewayCA)
 	}
@@ -45,7 +45,7 @@ func TestLoadConfig_FileThenEnvOverride(t *testing.T) {
 	t.Setenv("ECS_GATEWAY_URL", "https://gw.env")
 	t.Setenv("ECS_ACCESS_KEY", "AKIAENV")
 
-	cfg := loadConfig(envFile)
+	cfg := LoadConfig(envFile)
 	if cfg.GatewayURL != "https://gw.env" {
 		t.Errorf("GatewayURL = %q, want env override", cfg.GatewayURL)
 	}
@@ -62,12 +62,12 @@ func TestLoadConfig_FileThenEnvOverride(t *testing.T) {
 
 func TestLoadConfig_HeartbeatOverride(t *testing.T) {
 	t.Setenv("ECS_HEARTBEAT_INTERVAL", "5s")
-	if cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env")); cfg.Heartbeat != 5*time.Second {
+	if cfg := LoadConfig(filepath.Join(t.TempDir(), "absent.env")); cfg.Heartbeat != 5*time.Second {
 		t.Errorf("Heartbeat = %v, want 5s", cfg.Heartbeat)
 	}
 	// Garbage value falls back to the default, not zero.
 	t.Setenv("ECS_HEARTBEAT_INTERVAL", "not-a-duration")
-	if cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env")); cfg.Heartbeat != defaultHeartbeat {
+	if cfg := LoadConfig(filepath.Join(t.TempDir(), "absent.env")); cfg.Heartbeat != defaultHeartbeat {
 		t.Errorf("Heartbeat = %v, want default on bad value", cfg.Heartbeat)
 	}
 }

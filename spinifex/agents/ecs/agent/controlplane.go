@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -47,7 +47,7 @@ const pollTimeout = 30 * time.Second
 
 // newGatewayControlPlane builds the SigV4 client signing with the instance-role
 // credentials from IMDS (fetched per call so rotation is transparent) + pinned CA.
-func newGatewayControlPlane(cfg config, creds credentials.CredentialsProvider) (*gatewayControlPlane, error) {
+func newGatewayControlPlane(cfg Config, creds credentials.CredentialsProvider) (*gatewayControlPlane, error) {
 	client, err := ecsgw.New(cfg.GatewayURL, cfg.GatewayCA, credentialsFunc(creds), cfg.Region, pollTimeout)
 	if err != nil {
 		return nil, err

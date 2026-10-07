@@ -1,6 +1,6 @@
 //test:in-package — package main cannot be imported by an external test package.
 
-package main
+package agent
 
 import (
 	"context"

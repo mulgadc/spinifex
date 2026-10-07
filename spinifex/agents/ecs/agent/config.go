@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"strconv"
@@ -7,8 +7,11 @@ import (
 	"github.com/mulgadc/spinifex/internal/guestenv"
 )
 
+// DefaultEnvFile is the cloud-init env file the ECS AMI seeds with the
+// agent's static configuration.
+const DefaultEnvFile = "/etc/spinifex-ecs/agent.env"
+
 const (
-	defaultEnvFile          = "/etc/spinifex-ecs/agent.env"
 	defaultGatewayCA        = "/etc/spinifex-ecs/gateway-ca.pem"
 	defaultIMDSBase         = "http://169.254.169.254/latest"
 	defaultContainerdSocket = "/run/containerd/containerd.sock"
@@ -16,13 +19,13 @@ const (
 	defaultPollInterval     = 5 * time.Second
 )
 
-// config holds the static settings the agent reads at boot. Cluster identity
+// Config holds the static settings the agent reads at boot. Cluster identity
 // (account ID, instance ID) is discovered at runtime from IMDS, not configured;
 // only the cluster *name* the instance was launched into is static. AccessKey /
 // SecretKey are legacy seeded creds, optional now that the agent SigV4-signs
 // gateway calls with instance-role credentials from IMDS; the agent never holds
 // a NATS token.
-type config struct {
+type Config struct {
 	GatewayURL       string
 	GatewayCA        string
 	Region           string
@@ -36,13 +39,16 @@ type config struct {
 	RuntimeRetry     time.Duration
 	CredEndpointIP   string
 	CredEndpointPort int
+	// AgentVersion is the binary's build version, reported in the register
+	// message; the binary sets it, not the env file.
+	AgentVersion string
 }
 
-// loadConfig reads the cloud-init env file then lets real env vars override.
-func loadConfig(envFile string) config {
+// LoadConfig reads the cloud-init env file then lets real env vars override.
+func LoadConfig(envFile string) Config {
 	get := guestenv.Load(envFile).Get
 
-	cfg := config{
+	cfg := Config{
 		GatewayURL:       get("ECS_GATEWAY_URL"),
 		GatewayCA:        get("ECS_GATEWAY_CA"),
 		Region:           get("ECS_REGION"),

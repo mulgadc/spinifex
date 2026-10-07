@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -440,7 +440,7 @@ const (
 	labelTaskID        = "mulga.ecs.taskID"
 	labelContainerName = "mulga.ecs.containerName"
 	labelClusterName   = "mulga.ecs.clusterName"
-	labelCredID        = "mulga.ecs.credID"
+	labelCredID        = "mulga.ecs.credID" //nolint:gosec // G101: label key name, not a credential value.
 	labelTaskRoleARN   = "mulga.ecs.taskRoleArn"
 	labelENIMac        = "mulga.ecs.eniMac"
 	// labelStopTimeout carries a container's stopTimeout (seconds) so stopTask

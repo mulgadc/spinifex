@@ -1,13 +1,6 @@
-// ecs-agent runs inside a Spinifex ECS container instance (a guest VM booted from
-// the ECS-AMI, with containerd baked in). It registers the host with the ECS
-// scheduler through the AWS gateway over TLS+SigV4 (never NATS), heartbeats by
-// re-registering, polls the gateway for task assignments, runs them through
-// containerd, and reports state back over the gateway.
-//
-// Static config (gateway URL, CA, region, cluster, seeded IAM creds, containerd
-// socket) is read from the cloud-init env file /etc/spinifex-ecs/agent.env
-// (KEY=value); real env vars override it. Host identity (account, instance, AZ)
-// comes from IMDS at boot.
+// Command ecs-agent runs inside a Spinifex ECS container instance; the
+// implementation is in agents/ecs/agent. This binary owns process lifecycle:
+// signal handling, startup and run failure logging, and the exit code.
 package main
 
 import (
@@ -18,12 +11,19 @@ import (
 	"syscall"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
+
+	ecsagent "github.com/mulgadc/spinifex/spinifex/agents/ecs/agent"
 )
 
-func main() {
-	cfg := loadConfig(defaultEnvFile)
+// version is the agent build version, reported in the register message.
+// Overridable via -ldflags "-X main.version=...".
+var version = "dev"
 
-	agent, err := New(cfg)
+func main() {
+	cfg := ecsagent.LoadConfig(ecsagent.DefaultEnvFile)
+	cfg.AgentVersion = version
+
+	agent, err := ecsagent.New(cfg)
 	if err != nil {
 		slog.Error("ecs-agent: startup failed", "err", err)
 		os.Exit(1)

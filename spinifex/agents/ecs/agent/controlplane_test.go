@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func (fixedCredsProvider) Retrieve(context.Context) (credentials.Credentials, er
 
 func newTestGatewayControlPlane(t *testing.T, srv *httptest.Server) *gatewayControlPlane {
 	t.Helper()
-	cp, err := newGatewayControlPlane(config{GatewayURL: srv.URL, Region: "us-east-1"}, fixedCredsProvider{})
+	cp, err := newGatewayControlPlane(Config{GatewayURL: srv.URL, Region: "us-east-1"}, fixedCredsProvider{})
 	if err != nil {
 		t.Fatalf("newGatewayControlPlane: %v", err)
 	}

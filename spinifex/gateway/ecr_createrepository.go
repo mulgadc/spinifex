@@ -136,7 +136,7 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 	case handlers_ecr.EncryptionTypeAES256:
 		return cfg.EncryptionType, nil
 	case handlers_ecr.EncryptionTypeKMS:
-		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		return "", awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
 			"encryptionType KMS is not supported: no customer-managed key is used, and repositories are already encrypted at rest under a server-managed AES-256 key")
 	default:
 		return "", gateway_ecrapi.EnumValueError("encryptionConfiguration.encryptionType", cfg.EncryptionType,
@@ -145,7 +145,7 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 }
 
 // normalizeTagMutability validates the requested mutability, defaulting an empty
-// value to MUTABLE. An unknown value is rejected with InvalidParameterValue.
+// value to MUTABLE. An unknown value is rejected with InvalidParameterException.
 func normalizeTagMutability(v string) (string, error) {
 	switch v {
 	case "":

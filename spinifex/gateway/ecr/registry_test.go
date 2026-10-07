@@ -460,6 +460,13 @@ func TestDispatch_InvalidRepoName(t *testing.T) {
 	assertCode(t, w, "NAME_INVALID")
 }
 
+func TestDispatch_RepeatedSeparatorRepoName(t *testing.T) {
+	reg := newTestRegistry()
+	dg := pushBlob(t, reg, "team/a__b--c", []byte("layer"))
+	w := do(reg, http.MethodHead, "/v2/team/a__b--c/blobs/"+dg, nil, nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestDispatch_UnknownPath(t *testing.T) {
 	reg := newTestRegistry()
 	w := do(reg, http.MethodGet, "/v2/team/app/frobnicate", nil, nil)

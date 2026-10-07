@@ -49,7 +49,7 @@ func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, 
 
 // PutLifecyclePolicy validates and stores the lifecycle-policy document for a
 // repository. The document is parsed by the evaluation engine; a malformed or
-// unsupported rule is rejected with InvalidParameterValue.
+// unsupported rule is rejected with InvalidParameterException.
 func PutLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
 	req, store, err := resolveLifecycleRepo(ctx, nc, accountID, body)
 	if err != nil {

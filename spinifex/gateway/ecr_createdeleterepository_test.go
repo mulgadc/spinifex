@@ -110,7 +110,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 
 	_, err = createRepo(t, gw, `{"repositoryName":"team/badtag","tags":[{"Key":"","Value":"x"}]}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestCreateRepository_EncryptionAndScanningConfiguration(t *testing.T) {
@@ -135,12 +135,12 @@ func TestCreateRepository_EncryptionAndScanningConfiguration(t *testing.T) {
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
-	assert.Equal(t, "InvalidParameterValue", code)
+	assert.Equal(t, "InvalidParameterException", code)
 	assert.NotEmpty(t, message)
 
 	_, err = createRepo(t, gw, `{"repositoryName":"team/bad","encryptionConfiguration":{"encryptionType":"bogus"}}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestCreateRepository_Errors(t *testing.T) {
@@ -152,8 +152,8 @@ func TestCreateRepository_Errors(t *testing.T) {
 		name, body, expect string
 	}{
 		{"already exists", `{"repositoryName":"team/app"}`, "RepositoryAlreadyExistsException"},
-		{"invalid name", `{"repositoryName":"Team/App"}`, "InvalidParameterValue"},
-		{"empty name", `{}`, "InvalidParameterValue"},
+		{"invalid name", `{"repositoryName":"Team/App"}`, "InvalidParameterException"},
+		{"empty name", `{}`, "InvalidParameterException"},
 		{"cross-account", `{"repositoryName":"team/x","registryId":"999999999999"}`, "AccessDenied"},
 	}
 	for _, tc := range cases {
@@ -172,7 +172,7 @@ func TestCreateRepository_BadNameCarriesAWSMessage(t *testing.T) {
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
 	assert.Equal(t, `Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must satisfy regular expression '[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*''`, message)
 }
 
@@ -191,7 +191,7 @@ func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 
 	_, err = createRepo(t, gw, `{`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
@@ -203,7 +203,7 @@ func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
 
 	_, err = deleteRepo(t, gw, `{`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDeleteRepository_Happy(t *testing.T) {

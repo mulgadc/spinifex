@@ -44,7 +44,7 @@ func TestCreateRepository_InvalidMutability(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 	_, err := createRepo(t, gw, `{"repositoryName":"team/app","imageTagMutability":"SOMETIMES"}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestPutImageTagMutability_Happy(t *testing.T) {
@@ -82,9 +82,9 @@ func TestPutImageTagMutability_Errors(t *testing.T) {
 	cases := []struct {
 		name, body, expect string
 	}{
-		{"missing value", `{"repositoryName":"team/app"}`, "InvalidParameterValue"},
-		{"invalid value", `{"repositoryName":"team/app","imageTagMutability":"NOPE"}`, "InvalidParameterValue"},
-		{"invalid name", `{"repositoryName":"Team/App","imageTagMutability":"IMMUTABLE"}`, "InvalidParameterValue"},
+		{"missing value", `{"repositoryName":"team/app"}`, "InvalidParameterException"},
+		{"invalid value", `{"repositoryName":"team/app","imageTagMutability":"NOPE"}`, "InvalidParameterException"},
+		{"invalid name", `{"repositoryName":"Team/App","imageTagMutability":"IMMUTABLE"}`, "InvalidParameterException"},
 		{"cross-account", `{"repositoryName":"team/app","registryId":"999999999999","imageTagMutability":"IMMUTABLE"}`, "AccessDenied"},
 		{"not found", `{"repositoryName":"team/ghost","imageTagMutability":"IMMUTABLE"}`, "RepositoryNotFoundException"},
 	}
@@ -106,7 +106,7 @@ func TestPutImageTagMutability_NoAccountAndMalformed(t *testing.T) {
 
 	_, err = putTagMutability(t, gw, `{`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestECRRequest_PutImageTagMutabilityDispatched(t *testing.T) {

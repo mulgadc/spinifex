@@ -72,9 +72,9 @@ func TestLifecyclePolicy_Errors(t *testing.T) {
 		expect string
 	}{
 		{"put missing repo", PutLifecyclePolicy, `{"repositoryName":"team/ghost","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorRepositoryNotFound},
-		{"put invalid json", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorInvalidParameterValue},
-		{"put bad rule", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":"{\"rules\":[{\"rulePriority\":1,\"selection\":{\"tagStatus\":\"tagged\",\"countType\":\"imageCountMoreThan\",\"countNumber\":1},\"action\":{\"type\":\"expire\"}}]}"}`, awserrors.ErrorInvalidParameterValue},
-		{"put empty name", PutLifecyclePolicy, `{"lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorInvalidParameterValue},
+		{"put invalid json", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
+		{"put bad rule", PutLifecyclePolicy, `{"repositoryName":"team/app","lifecyclePolicyText":"{\"rules\":[{\"rulePriority\":1,\"selection\":{\"tagStatus\":\"tagged\",\"countType\":\"imageCountMoreThan\",\"countNumber\":1},\"action\":{\"type\":\"expire\"}}]}"}`, awserrors.ErrorECRInvalidParameter},
+		{"put empty name", PutLifecyclePolicy, `{"lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorECRInvalidParameter},
 		{"put cross-account", PutLifecyclePolicy, `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":` + strconvQuote(validLifecyclePolicy) + `}`, awserrors.ErrorAccessDenied},
 		{"get no policy", GetLifecyclePolicy, `{"repositoryName":"team/app"}`, awserrors.ErrorLifecyclePolicyNotFound},
 		{"delete no policy", DeleteLifecyclePolicy, `{"repositoryName":"team/app"}`, awserrors.ErrorLifecyclePolicyNotFound},

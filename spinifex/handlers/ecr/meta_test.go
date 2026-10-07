@@ -33,11 +33,11 @@ func TestRepoMeta_EncryptionTypeOrDefault(t *testing.T) {
 }
 
 func TestValidateRepoName(t *testing.T) {
-	valid := []string{"ab", "team/app", "a/b/c", "my-repo.name_1", "x0/y1/z2"}
+	valid := []string{"ab", "team/app", "a/b/c", "my-repo.name_1", "x0/y1/z2", "a__b", "a--b", "a---b", "a/b__c"}
 	for _, n := range valid {
 		assert.NoError(t, ValidateRepoName(n), "expected %q valid", n)
 	}
-	invalid := []string{"A", "Team/App", "a", "/leading", "trailing/", "a//b", strings.Repeat("a", 257)}
+	invalid := []string{"A", "Team/App", "a", "/leading", "trailing/", "a//b", strings.Repeat("a", 257), "a___b", "a_-b", "_a", "a_", "a..b", "Bad_Name!"}
 	for _, n := range invalid {
 		assert.Error(t, ValidateRepoName(n), "expected %q invalid", n)
 	}

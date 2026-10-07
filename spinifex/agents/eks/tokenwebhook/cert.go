@@ -1,4 +1,4 @@
-package main
+package tokenwebhook
 
 import (
 	"crypto/ecdsa"
@@ -45,7 +45,7 @@ func ensureServingCert(certPath, keyPath string) (tls.Certificate, []byte, error
 	if err != nil {
 		return tls.Certificate{}, nil, err
 	}
-	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil { //nolint:gosec // G306: public certificate; the private key is written 0600 below.
 		return tls.Certificate{}, nil, fmt.Errorf("write cert %s: %w", certPath, err)
 	}
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {

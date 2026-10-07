@@ -340,8 +340,9 @@ func (gw *GatewayConfig) handleBatchDeleteImage(w http.ResponseWriter, r *http.R
 		return gateway_ecrapi.MaxItemsError("imageIds", maxImageBatch)
 	}
 
-	var deleted []*ecr.ImageIdentifier
-	var failures []*ecr.ImageFailure
+	// AWS always emits both arrays, empty or not; the SDK builder drops nil slices.
+	deleted := []*ecr.ImageIdentifier{}
+	failures := []*ecr.ImageFailure{}
 	for _, id := range req.ImageIds {
 		if id.ImageDigest == "" && id.ImageTag == "" {
 			failures = append(failures, imageFailure(id, ecr.ImageFailureCodeMissingDigestAndTag, "no digest or tag specified"))

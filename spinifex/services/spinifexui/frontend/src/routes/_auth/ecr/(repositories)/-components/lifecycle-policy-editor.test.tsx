@@ -16,6 +16,22 @@ import { LifecyclePolicyEditor } from "./lifecycle-policy-editor"
 
 const REPO = "team/app"
 const POLICY = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":14},"action":{"type":"expire"}}]}`
+const POLICY_PRETTY = `{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "selection": {
+        "tagStatus": "untagged",
+        "countType": "sinceImagePushed",
+        "countUnit": "days",
+        "countNumber": 14
+      },
+      "action": {
+        "type": "expire"
+      }
+    }
+  ]
+}`
 
 function seed(policyText: string | null) {
   const qc = createTestQueryClient()
@@ -33,6 +49,22 @@ describe("LifecyclePolicyEditor", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled()
   })
 
+  it("pretty-prints the stored compact policy into the editor", () => {
+    renderWithClient(
+      <LifecyclePolicyEditor repositoryName={REPO} />,
+      seed(POLICY),
+    )
+    expect(screen.getByRole("textbox")).toHaveValue(POLICY_PRETTY)
+  })
+
+  it("seeds the raw text when the stored policy is not valid JSON", () => {
+    renderWithClient(
+      <LifecyclePolicyEditor repositoryName={REPO} />,
+      seed("{not json"),
+    )
+    expect(screen.getByRole("textbox")).toHaveValue("{not json")
+  })
+
   it("saves the edited policy document", async () => {
     send.mockResolvedValue({})
     renderWithClient(
@@ -40,8 +72,6 @@ describe("LifecyclePolicyEditor", () => {
       seed(POLICY),
     )
     const textarea = screen.getByRole("textbox")
-    expect(textarea).toHaveValue(POLICY)
-
     fireEvent.change(textarea, { target: { value: `${POLICY} ` } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => {

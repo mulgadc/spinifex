@@ -29,7 +29,7 @@ const bedrockAgentTestAccount = "111111111111"
 
 // fakeBedrockAgentVectorService serves scripted responses so bedrockagent.go's
 // mapping logic can be exercised without a daemon or a live NATS connection,
-// mirroring cmd/spinifex/cmd's fakeVectorService for this package.
+// mirroring operator/cli's fakeVectorService for this package.
 type fakeBedrockAgentVectorService struct {
 	createIndexReq *ochrevector.CreateIndexRequest
 	createIndexErr error

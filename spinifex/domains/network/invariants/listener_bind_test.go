@@ -93,9 +93,12 @@ func listenerBindScanFiles(t *testing.T, root string) []string {
 		filepath.Join(root, "scripts", "install-node.sh"),
 		filepath.Join(root, "scripts", "setup.sh"),
 	}
-	tomls, err := filepath.Glob(filepath.Join(root, "cmd", "spinifex", "cmd", "templates", "*.toml"))
+	tomls, err := filepath.Glob(filepath.Join(root, "spinifex", "operator", "cli", "templates", "*.toml"))
 	if err != nil {
 		t.Fatalf("glob templates: %v", err)
+	}
+	if len(tomls) == 0 {
+		t.Fatal("listener bind scan found no config templates")
 	}
 	sort.Strings(tomls)
 	files = append(files, tomls...)

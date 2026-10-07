@@ -59,7 +59,7 @@ build-ui:
 # GO commands
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT  ?= $(shell git rev-parse --short HEAD)
-LDFLAGS := -s -w -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=$(VERSION) -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Commit=$(COMMIT)
+LDFLAGS := -s -w -X github.com/mulgadc/spinifex/spinifex/operator/cli.Version=$(VERSION) -X github.com/mulgadc/spinifex/spinifex/operator/cli.Commit=$(COMMIT)
 
 go_build:
 	@echo -e "\n....Building $(GO_PROJECT_NAME)"

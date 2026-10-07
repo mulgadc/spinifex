@@ -4,11 +4,11 @@ Single source of truth for the current schema version of every config file Spini
 
 | Target | Current version | Canonical template |
 |---|---|---|
-| `nats.conf` | `3` | `cmd/spinifex/cmd/templates/nats.conf` |
-| `awsgw.toml` | `3` | `cmd/spinifex/cmd/templates/awsgw.toml` |
-| `spinifex.toml` | `4` | `cmd/spinifex/cmd/templates/spinifex.toml` |
-| `predastore.toml` | `1` | `cmd/spinifex/cmd/templates/predastore.toml` |
-| `predastore-multinode.toml` | `1` | `cmd/spinifex/cmd/templates/predastore-multinode.toml` |
+| `nats.conf` | `3` | `spinifex/operator/cli/templates/nats.conf` |
+| `awsgw.toml` | `3` | `spinifex/operator/cli/templates/awsgw.toml` |
+| `spinifex.toml` | `4` | `spinifex/operator/cli/templates/spinifex.toml` |
+| `predastore.toml` | `1` | `spinifex/operator/cli/templates/predastore.toml` |
+| `predastore-multinode.toml` | `1` | `spinifex/operator/cli/templates/predastore-multinode.toml` |
 
 ## How versions are stamped
 

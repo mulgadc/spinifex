@@ -2,9 +2,9 @@ package main
 
 import (
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
-	"github.com/mulgadc/spinifex/cmd/spinifex/cmd"
+	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 )
 
 func main() {
-	cmd.Execute()
+	cli.Execute()
 }

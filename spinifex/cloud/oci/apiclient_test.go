@@ -272,7 +272,7 @@ func TestListReservedPublicIPsFiltersToReservedRegionalAndPages(t *testing.T) {
 	c, seen := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		page++
 		if page == 1 {
-			w.Header().Set("opc-next-page", "p2")
+			w.Header().Set("Opc-Next-Page", "p2")
 			_, _ = w.Write([]byte(`[{"id":"q1","ipAddress":"203.0.113.1","lifecycleState":"AVAILABLE","lifetime":"RESERVED","timeCreated":"2026-10-01T00:00:00.000Z"}]`))
 			return
 		}

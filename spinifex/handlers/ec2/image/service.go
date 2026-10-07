@@ -1,3 +1,6 @@
+// Package handlers_ec2_image implements the EC2 AMI actions: the ImageService
+// contract, its daemon-side implementation over the object store and its NATS
+// client.
 package handlers_ec2_image
 
 import (

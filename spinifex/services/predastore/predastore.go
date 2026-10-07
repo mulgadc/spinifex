@@ -1,3 +1,4 @@
+// Package predastore runs one predastore S3 storage host as a Spinifex service.
 package predastore
 
 import (

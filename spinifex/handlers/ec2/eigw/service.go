@@ -1,3 +1,6 @@
+// Package handlers_ec2_eigw implements the EC2 egress-only internet gateway
+// actions: the EgressOnlyIGWService contract, its daemon-side JetStream KV
+// implementation and its NATS client.
 package handlers_ec2_eigw
 
 import (

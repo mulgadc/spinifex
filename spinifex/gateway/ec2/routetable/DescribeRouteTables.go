@@ -1,3 +1,5 @@
+// Package gateway_ec2_routetable implements the EC2 route table actions: it
+// validates each request and forwards it to the route table service over NATS.
 package gateway_ec2_routetable
 
 import (

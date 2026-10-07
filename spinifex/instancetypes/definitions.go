@@ -1,3 +1,6 @@
+// Package instancetypes generates the EC2 instance types a node offers from its
+// CPU and GPUs and answers per-type questions such as vCPUs, memory, GPU
+// count and ENI limits.
 package instancetypes
 
 import (

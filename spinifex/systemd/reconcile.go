@@ -4,6 +4,8 @@
 //
 //go:generate go run generate.go
 
+// Package systemd installs the embedded Spinifex systemd units and reconciles
+// them against the copies already on the host.
 package systemd
 
 import (

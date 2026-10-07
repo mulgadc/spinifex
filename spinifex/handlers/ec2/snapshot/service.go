@@ -1,3 +1,6 @@
+// Package handlers_ec2_snapshot implements the EC2 EBS snapshot actions: the
+// SnapshotService contract, its daemon-side implementation over the object
+// store and JetStream KV, and its NATS client.
 package handlers_ec2_snapshot
 
 import (

@@ -1,3 +1,6 @@
+// Package handlers_ec2_spotinstance implements the EC2 Spot Instance Request
+// actions: the SpotInstanceService contract, its daemon-side JetStream KV
+// implementation and its NATS client.
 package handlers_ec2_spotinstance
 
 import (

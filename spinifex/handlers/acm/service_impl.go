@@ -1,3 +1,6 @@
+// Package handlers_acm is the daemon-side ACM service: certificate records in
+// JetStream KV with sealed private keys, issuance from the tenant private CA,
+// and the worker that renews those certificates before they expire.
 package handlers_acm
 
 import (

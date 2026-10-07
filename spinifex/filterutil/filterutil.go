@@ -1,3 +1,5 @@
+// Package filterutil parses and evaluates EC2 Describe* filters, including
+// tag filters and wildcard matching.
 package filterutil
 
 import (

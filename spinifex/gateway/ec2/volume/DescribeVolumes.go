@@ -1,3 +1,5 @@
+// Package gateway_ec2_volume implements the EC2 EBS volume actions: it
+// validates each request and forwards it to the volume service over NATS.
 package gateway_ec2_volume
 
 import (

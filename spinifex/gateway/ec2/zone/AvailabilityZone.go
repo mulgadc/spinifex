@@ -1,3 +1,6 @@
+// Package gateway_ec2_zone implements DescribeAvailabilityZones and
+// DescribeRegions, answered from the node's configured region and zone with
+// AWS's filter rules.
 package gateway_ec2_zone
 
 import (

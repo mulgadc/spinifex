@@ -1,3 +1,5 @@
+// Package nats runs the embedded NATS server Spinifex components talk over,
+// including the JetStream store reserve that keeps a full disk recoverable.
 package nats
 
 import (

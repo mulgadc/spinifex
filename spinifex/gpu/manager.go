@@ -1,3 +1,5 @@
+// Package gpu discovers host GPUs, binds them to vfio-pci, manages NVIDIA MIG
+// partitions and tracks which instance holds each device for passthrough.
 package gpu
 
 import (

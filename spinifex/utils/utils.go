@@ -1,3 +1,5 @@
+// Package utils holds shared helpers for Spinifex services: resource IDs, AWS
+// response encoding, NATS and account plumbing, images and process control.
 package utils
 
 import (

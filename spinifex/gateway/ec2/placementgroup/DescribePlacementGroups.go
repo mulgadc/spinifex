@@ -1,3 +1,6 @@
+// Package gateway_ec2_placementgroup implements the EC2 placement group
+// actions: it validates each request and forwards it to the placement group
+// service over NATS.
 package gateway_ec2_placementgroup
 
 import (

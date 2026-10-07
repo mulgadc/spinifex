@@ -1,3 +1,5 @@
+// Package ebsfake provides an in-memory EBS provider for tests that also
+// deletes a volume's objects from the store, as viperblockd does.
 package ebsfake
 
 import (

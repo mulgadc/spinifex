@@ -1,3 +1,6 @@
+// Package handlers_ec2_placementgroup implements the EC2 placement group
+// actions: the PlacementGroupService contract, its daemon-side JetStream KV
+// implementation and its NATS client.
 package handlers_ec2_placementgroup
 
 import (

@@ -1,3 +1,5 @@
+// Package awsgw runs the AWS gateway service: the TLS, SigV4-authenticated
+// endpoint that routes AWS API calls to the service handlers over NATS.
 package awsgw
 
 import (

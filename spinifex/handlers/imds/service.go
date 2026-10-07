@@ -1,3 +1,6 @@
+// Package handlers_imds is the EC2 Instance Metadata Service that vpcd serves
+// at 169.254.169.254: one responder per local instance tap, IMDSv2 tokens,
+// instance-role credentials minted through STS, and the guest DNS forwarder.
 package handlers_imds
 
 import (

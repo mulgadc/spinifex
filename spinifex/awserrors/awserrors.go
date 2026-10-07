@@ -1,3 +1,6 @@
+// Package awserrors defines the AWS error codes Spinifex returns, their HTTP
+// status and default message, and helpers to attach a code to an error and
+// resolve it again at the API boundary.
 package awserrors
 
 import (

@@ -1,3 +1,4 @@
+// Package spinifex runs the per-node Spinifex daemon as a Spinifex service.
 package spinifex
 
 import (

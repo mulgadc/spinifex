@@ -1,3 +1,6 @@
+// Package gateway_sts implements the STS actions: it validates each request
+// and delegates it to the STS service, which owns trust-policy checks and
+// credential issuance.
 package gateway_sts
 
 import (

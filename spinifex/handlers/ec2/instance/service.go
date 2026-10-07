@@ -1,3 +1,6 @@
+// Package handlers_ec2_instance implements the EC2 instance actions: the
+// InstanceService contract, its daemon-side implementation that launches and
+// describes instances on this node, and its NATS client.
 package handlers_ec2_instance
 
 import (

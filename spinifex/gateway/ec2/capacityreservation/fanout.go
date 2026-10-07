@@ -1,3 +1,6 @@
+// Package gateway_ec2_capacityreservation implements the EC2 capacity
+// reservation actions: Create pins a reservation to a node chosen from a census
+// of free capacity, and Describe and Cancel fan out to every node.
 package gateway_ec2_capacityreservation
 
 import (

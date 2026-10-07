@@ -1,3 +1,5 @@
+// Package awsec2query decodes AWS EC2 Query-protocol request parameters into
+// aws-sdk-go input structs.
 package awsec2query
 
 import (

@@ -1,3 +1,5 @@
+// Package viperblockd runs the EBS volume service: it serves viperblock volumes
+// through nbdkit and answers the ebs.* NATS topics.
 package viperblockd
 
 import (

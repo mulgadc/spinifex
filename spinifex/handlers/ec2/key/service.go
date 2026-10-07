@@ -1,3 +1,6 @@
+// Package handlers_ec2_key implements the EC2 key pair actions: the KeyService
+// contract, its daemon-side implementation over the object store, and the NATS
+// client and IMDS lookup that serve a key's public material.
 package handlers_ec2_key
 
 import (

@@ -1,3 +1,6 @@
+// Package handlers_ec2_launchtemplate implements the EC2 launch template
+// actions: the LaunchTemplateService contract, its daemon-side JetStream KV
+// implementation with immutable versions, and its NATS client.
 package handlers_ec2_launchtemplate
 
 import (

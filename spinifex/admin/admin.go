@@ -1,3 +1,6 @@
+// Package admin holds the node administration helpers behind spx admin: config
+// and certificate generation, credential bootstrap, image import and host
+// network discovery.
 package admin
 
 import (

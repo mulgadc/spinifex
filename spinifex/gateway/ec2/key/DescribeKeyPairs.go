@@ -1,3 +1,5 @@
+// Package gateway_ec2_key implements the EC2 key pair actions: it validates
+// each request and forwards it to the key pair service over NATS.
 package gateway_ec2_key
 
 import (

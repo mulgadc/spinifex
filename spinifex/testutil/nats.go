@@ -1,3 +1,5 @@
+// Package testutil provides test helpers shared across Spinifex packages:
+// embedded NATS and JetStream servers, stub responders and span recorders.
 package testutil
 
 import (

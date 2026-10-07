@@ -1,3 +1,6 @@
+// Package handlers_ec2_volume implements the EC2 EBS volume actions: the
+// VolumeService contract, its daemon-side implementation over the object store
+// and JetStream KV, its NATS client, and the reaper for leaked volumes.
 package handlers_ec2_volume
 
 import (

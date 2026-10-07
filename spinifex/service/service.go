@@ -1,3 +1,5 @@
+// Package service maps a service name to the Spinifex component the CLI
+// launches for it.
 package service
 
 import (

@@ -1,3 +1,5 @@
+// Package nbd launches nbdkit processes that serve viperblock volumes as NBD
+// exports.
 package nbd
 
 import (

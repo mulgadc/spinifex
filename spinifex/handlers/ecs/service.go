@@ -1,3 +1,6 @@
+// Package handlers_ecs is the ECS control plane: the ECSService contract, its
+// daemon-side JetStream KV implementation and NATS client, and the leader-elected
+// scheduler that converges services and drains silent container instances.
 package handlers_ecs
 
 import (

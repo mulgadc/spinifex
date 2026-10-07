@@ -1,3 +1,5 @@
+// Package gateway_ec2_tags implements the EC2 tagging actions: it validates
+// each request and forwards it to the tag service over NATS.
 package gateway_ec2_tags
 
 import (

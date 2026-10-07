@@ -1,3 +1,6 @@
+// Package handlers_ec2_igw implements the EC2 internet gateway actions: the
+// IGWService contract, its daemon-side JetStream KV implementation and its NATS
+// client.
 package handlers_ec2_igw
 
 import (

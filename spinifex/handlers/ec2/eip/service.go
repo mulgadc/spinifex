@@ -1,3 +1,6 @@
+// Package handlers_ec2_eip implements the EC2 Elastic IP actions: the
+// EIPService contract, its daemon-side JetStream KV implementation that draws
+// addresses from the external IPAM pools, and its NATS client.
 package handlers_ec2_eip
 
 import (

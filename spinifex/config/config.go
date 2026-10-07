@@ -1,3 +1,5 @@
+// Package config defines spinifex.toml, the cluster and per-node configuration
+// every Spinifex service is started from, and loads it via LoadConfig.
 package config
 
 import (

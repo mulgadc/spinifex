@@ -1,3 +1,6 @@
+// Package gateway_ec2_eigw implements the EC2 egress-only internet gateway
+// actions: it validates each request and forwards it to the EIGW service over
+// NATS.
 package gateway_ec2_eigw
 
 import (

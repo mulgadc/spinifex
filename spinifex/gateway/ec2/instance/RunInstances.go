@@ -1,3 +1,6 @@
+// Package gateway_ec2_instance implements the EC2 instance actions: it places
+// launches on nodes, fans lifecycle and Describe calls out across the cluster,
+// and authorizes the IAM instance profiles attached to instances.
 package gateway_ec2_instance
 
 import (

@@ -1,3 +1,6 @@
+// Package handlers_ec2_natgw implements the EC2 NAT gateway actions: the
+// NatGatewayService contract, its daemon-side JetStream KV implementation and
+// its NATS client.
 package handlers_ec2_natgw
 
 import (

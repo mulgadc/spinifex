@@ -1,3 +1,5 @@
+// Package handlers_ec2_tags implements the EC2 tagging actions: the TagsService
+// contract, its daemon-side JetStream KV implementation and its NATS client.
 package handlers_ec2_tags
 
 import (

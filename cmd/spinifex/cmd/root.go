@@ -1,3 +1,5 @@
+// Package cmd defines the spx command-line interface: the cobra commands that
+// install, configure, start and administer a Spinifex node and its cluster.
 package cmd
 
 import (

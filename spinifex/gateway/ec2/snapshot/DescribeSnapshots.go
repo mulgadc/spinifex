@@ -1,3 +1,5 @@
+// Package gateway_ec2_snapshot implements the EC2 EBS snapshot actions: it
+// validates each request and forwards it to the snapshot service over NATS.
 package gateway_ec2_snapshot
 
 import (

@@ -1,3 +1,6 @@
+// Package gateway_ec2_vpc implements the EC2 VPC, subnet, security group and
+// network interface actions: it validates each request and forwards it to the
+// VPC service over NATS.
 package gateway_ec2_vpc
 
 import (

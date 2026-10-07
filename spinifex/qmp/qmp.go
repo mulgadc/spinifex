@@ -1,3 +1,5 @@
+// Package qmp is a client for the QEMU Machine Protocol and the typed responses
+// of the QMP commands Spinifex issues.
 package qmp
 
 import (

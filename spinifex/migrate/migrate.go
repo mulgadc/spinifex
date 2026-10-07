@@ -1,3 +1,5 @@
+// Package migrate runs versioned migrations over NATS KV buckets, on-disk
+// config files and object-store data, recording each target's schema version.
 package migrate
 
 import (

@@ -1,3 +1,5 @@
+// Package gateway_ec2_image implements the EC2 AMI actions: it validates each
+// request and forwards it to the image service over NATS.
 package gateway_ec2_image
 
 import (

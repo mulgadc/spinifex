@@ -1,3 +1,5 @@
+// Package gateway_ec2_natgw implements the EC2 NAT gateway actions: it
+// validates each request and forwards it to the NAT gateway service over NATS.
 package gateway_ec2_natgw
 
 import (

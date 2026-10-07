@@ -1,3 +1,6 @@
+// Package handlers_ec2_routetable implements the EC2 route table actions: the
+// RouteTableService contract, its daemon-side JetStream KV implementation and
+// its NATS client.
 package handlers_ec2_routetable
 
 import (

@@ -145,7 +145,6 @@ linters:
     staticcheck:
       checks:
         - all
-        - -ST1000 # package comment
         - -ST1003 # naming conventions (Id→ID etc.) — too noisy to retrofit
         - -ST1012 # error var naming — errname covers this + error type suffixes
         - -ST1013 # HTTP status constants — usestdlibvars is broader

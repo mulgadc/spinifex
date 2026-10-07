@@ -1,3 +1,6 @@
+// Package daemon is the per-node Spinifex daemon: it wires the AWS service
+// handlers to their NATS topics and owns this node's VMs, volumes, ENIs and
+// the reconcilers that keep them converged.
 package daemon
 
 import (

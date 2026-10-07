@@ -1,3 +1,6 @@
+// Package vm manages the QEMU virtual machines on a node: their lifecycle,
+// devices, volumes and ENIs, plus the crash recovery and reapers that clean
+// up after them.
 package vm
 
 import (

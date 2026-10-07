@@ -1,3 +1,6 @@
+// Package handlers_iam implements IAM: users, groups, roles, policies, access
+// keys, instance profiles and OIDC providers, persisted in JetStream KV with
+// secrets sealed under the deployment master key.
 package handlers_iam
 
 import (

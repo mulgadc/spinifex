@@ -1,4 +1,4 @@
-package gateway_ec2_capacityreservation
+package capacityreservation
 
 import (
 	"context"

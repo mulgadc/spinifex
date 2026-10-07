@@ -14,11 +14,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2accountapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/account"
+	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
-	gateway_ec2_capacityreservation "github.com/mulgadc/spinifex/spinifex/gateway/ec2/capacityreservation"
 	gateway_ec2_eigw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eigw"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
@@ -443,13 +443,13 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_placementgroup.DescribePlacementGroups(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateCapacityReservation": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateCapacityReservationInput, gw *GatewayConfig, accountID string) (ec2.CreateCapacityReservationOutput, error) {
-		return gateway_ec2_capacityreservation.CreateCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return ec2capacityreservationapi.CreateCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"DescribeCapacityReservations": ec2Handler(func(ctx context.Context, input *ec2.DescribeCapacityReservationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_capacityreservation.DescribeCapacityReservations(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return ec2capacityreservationapi.DescribeCapacityReservations(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CancelCapacityReservation": ec2Handler(func(ctx context.Context, input *ec2.CancelCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_capacityreservation.CancelCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return ec2capacityreservationapi.CancelCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CreateLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.CreateLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_launchtemplate.CreateLaunchTemplate(ctx, input, gw.NATSConn, accountID)

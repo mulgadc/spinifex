@@ -1,7 +1,7 @@
 //test:in-package — the fidelity test reads ec2Scopes and each scope's
 // unexported params to prove they name a parameter the handler parses.
 
-package gateway_ec2
+package awsapi
 
 import (
 	"reflect"

@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	ec2accountapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/account"
 	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
 	ec2eigwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eigw"
@@ -32,7 +33,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
@@ -707,7 +707,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 		}
 	}
 
-	resources, err := gateway_ec2.ResourceARNs(action, gw.Region, accountID, input)
+	resources, err := ec2awsapi.ResourceARNs(action, gw.Region, accountID, input)
 	if err != nil {
 		return err
 	}

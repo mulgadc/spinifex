@@ -1,7 +1,7 @@
-// Package gateway_ec2 resolves the resource ARNs an EC2 request authorizes
+// Package awsapi resolves the resource ARNs an EC2 request authorizes
 // against. Without it every EC2 action is evaluated against the literal "*", so
 // a resource-scoped Deny never fires and a resource-scoped Allow never grants.
-package gateway_ec2
+package awsapi
 
 import (
 	"errors"

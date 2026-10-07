@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
+	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 )
 
 // TestRuntimeGate_DialsUntilTheSocketAnswers is the boot case the agent used to

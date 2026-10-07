@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
 	"github.com/mulgadc/spinifex/internal/ecrauth"
 	"github.com/mulgadc/spinifex/internal/stsauth"
+	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 )
 
 const (

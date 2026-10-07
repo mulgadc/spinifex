@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
+	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
@@ -353,7 +353,7 @@ func containerStopTimeout(labels map[string]string) time.Duration {
 }
 
 // toRuntimeSystemControls maps the assign's sysctl pairs to the runtime
-// package's own type, keeping cmd/ecs-agent/runtime decoupled from the ecs
+// package's own type, keeping agents/ecs/runtime decoupled from the ecs
 // handlers' bus package.
 func toRuntimeSystemControls(in []bus.SystemControl) []ctrruntime.SystemControl {
 	if len(in) == 0 {

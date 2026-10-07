@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
+	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 

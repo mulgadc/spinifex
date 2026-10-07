@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	ctrruntime "github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
+	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 )
 
 func TestAgent_RunRegistersThenStopsOnContext(t *testing.T) {

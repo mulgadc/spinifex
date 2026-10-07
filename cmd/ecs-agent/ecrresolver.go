@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
-	"github.com/mulgadc/spinifex/cmd/ecs-agent/runtime"
 	"github.com/mulgadc/spinifex/internal/ecrauth"
+	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
+	"github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 )
 
 // ecrResolver implements runtime.Resolver by minting an ECR authorization token

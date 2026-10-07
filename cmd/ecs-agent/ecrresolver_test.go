@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
+	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 )
 
 // stubCreds is a credentials.CredentialsProvider returning fixed creds or error.

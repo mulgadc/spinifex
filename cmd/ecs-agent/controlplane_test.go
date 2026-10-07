@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
+	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 )
 

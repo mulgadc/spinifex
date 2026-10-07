@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 
-	"github.com/mulgadc/spinifex/cmd/ecs-agent/credentials"
 	"github.com/mulgadc/spinifex/internal/ecsgw"
+	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )

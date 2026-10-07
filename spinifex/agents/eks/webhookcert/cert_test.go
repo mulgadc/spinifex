@@ -1,4 +1,4 @@
-package main
+package webhookcert
 
 import (
 	"crypto/x509"

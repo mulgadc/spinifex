@@ -273,6 +273,8 @@ The count that later gates read is the number of addresses the `hosts_file` outp
 
 **The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
 
+**A clean teardown can still leave public IPs behind, and they count against the tenancy.** The addresses Spinifex allocates for guests are created by the running node, so they are in no Terraform state and `destroy` neither sees nor removes them. The node's own reconcile collects detached ones every ten minutes, which is exactly the sweep a destroy takes away. Twenty accumulated in `spxbm` over four runs and exhausted the tenancy's 50 reserved-public-IP limit, at which point every later launch in every compartment failed. [Check for leftover public IPs afterwards](../../../docs/oci-integration/README.md#check-for-leftover-public-ips-afterwards) has the query and the rule for reading it.
+
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 
 ## Common Commands

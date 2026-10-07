@@ -406,7 +406,20 @@ assert_no_tfvars_override() {
 assert_no_tfvars_override
 
 if [ "$DRY_RUN" = 1 ]; then
-    tf plan -no-color "${tf_vars[@]}" | tail -30
+    # Whole plan to a file, summary to the terminal. A dry run is here to catch a
+    # plan aimed at the wrong compartment, and `tail` dropped the resource count
+    # and every compartment and shape line along with it, leaving only the outputs
+    # block -- so the one check it exists for could not be made from its output.
+    mkdir -p "$STATE_DIR"
+    tf plan -no-color "${tf_vars[@]}" > "$STATE_DIR/plan.txt" 2>&1 \
+        || { tail -30 "$STATE_DIR/plan.txt"; die "plan failed; see $STATE_DIR/plan.txt"; }
+    grep -E '^Plan: |^(No changes)' "$STATE_DIR/plan.txt" || true
+    printf 'compartment and shape as planned:\n'
+    # Terraform aligns the = to the widest key in each block, so the same value
+    # appears several times at several indents unless the spacing is normalised.
+    grep -hoE '(compartment_id|shape|availability_domain) += +"[^"]*"' "$STATE_DIR/plan.txt" \
+        | sed -E 's/ +=/ =/' | sort -u | sed 's/^/  /'
+    log "full plan in $STATE_DIR/plan.txt"
     plan="install Spinifex on $NODES node(s), form the cluster"
     [ "$SKIP_POOL" = 1 ] && plan="$plan, configure no external pool"
     if [ "$SKIP_WORKLOAD" = 1 ]; then

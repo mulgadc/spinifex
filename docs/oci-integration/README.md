@@ -646,6 +646,40 @@ The four are `oracle-10.1-x86_64`, `oracle-10.1-arm64`, `oracle-9.8-x86_64` and 
 
 It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
 
+### Check for leftover public IPs afterwards
+
+**Terraform does not own the addresses Spinifex allocates, so a destroy can leave them behind.**
+A reserved public IP and the private IP under it are created by the running node when a guest asks for an address, not by this configuration.
+They are in no Terraform state, so `--destroy-only` cannot see them and does not try.
+
+Each one bills, and each holds one of the tenancy's 50 reserved-public-IP slots.
+A tenancy at that ceiling refuses every later launch with `AddressLimitExceeded`, on every deployment in it and not only the one that leaked.
+
+A running node collects its own: the allocator reconciles every ten minutes and deletes detached addresses carrying the `spinifex-` prefix that no binding claims.
+Destroying the node is what defeats that, because the sweep goes away with the host that ran it.
+So list them after a teardown:
+
+```bash
+oci network public-ip list --compartment-id "$COMPARTMENT_OCID" --scope REGION --lifetime RESERVED --all \
+    --query 'data[?starts_with("display-name", `spinifex-`)].{ip:"ip-address",name:"display-name",attached:"private-ip-id",created:"time-created"}' \
+    --output table
+```
+
+**A row with a non-empty `attached` is not garbage.**
+It is bound to a VNIC, which means either a guest is receiving traffic on it or another deployment in the same compartment holds it.
+Only rows with an empty `attached` are candidates, and then one at a time:
+
+```bash
+oci network public-ip delete --public-ip-id <ocid> --force
+```
+
+Use the limits API rather than a count to judge the headroom, because the two disagree and only one of them is what the service enforces:
+
+```bash
+oci limits resource-availability get --service-name vcn \
+    --limit-name reserved-public-ip-count --compartment-id "$TENANCY_OCID"
+```
+
 ## Troubleshooting
 
 The deploy stops at the first failure and names the log it wrote, all under `.validate-<topology>/`. Add `--keep-on-fail` to leave a failed deployment up so you can log in and look. **It keeps billing** until you run `--destroy-only`.

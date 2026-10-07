@@ -146,6 +146,16 @@ jobs:
           # the allocator gate then fails rather than passing a node that cannot
           # authenticate.
           OCI_CREDENTIAL_HOOK: ${{ inputs.auth == 'api_key' && vars.OCI_CREDENTIAL_HOOK || '' }}
+          # vm-single-principal builds in its own tenancy. The dynamic group it needs
+          # is a tenancy-root resource, and the shared test tenancy grants us only
+          # compartment rights, so that topology can never pass there however correct
+          # the code is. Unset skips it rather than spending a provision to fail.
+          OCI_PRINCIPAL_TENANCY_OCID: ${{ secrets.OCI_PRINCIPAL_TENANCY_OCID }}
+          OCI_PRINCIPAL_USER_OCID: ${{ secrets.OCI_PRINCIPAL_USER_OCID }}
+          OCI_PRINCIPAL_FINGERPRINT: ${{ secrets.OCI_PRINCIPAL_FINGERPRINT }}
+          OCI_PRINCIPAL_PRIVATE_KEY: ${{ secrets.OCI_PRINCIPAL_PRIVATE_KEY }}
+          OCI_PRINCIPAL_COMPARTMENT_OCID: ${{ secrets.OCI_PRINCIPAL_COMPARTMENT_OCID }}
+          OCI_PRINCIPAL_REGION: ${{ vars.OCI_PRINCIPAL_REGION }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci
           OCI_KEEP_ON_FAIL: ${{ inputs.keep_on_fail && '1' || '0' }}
           # Through the environment, never interpolated into the script below: a
@@ -234,6 +244,15 @@ jobs:
           OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
           OCI_REGION: ${{ vars.OCI_REGION || 'ap-sydney-1' }}
           TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          # The sweep destroys by state file, so it needs whichever tenancy each
+          # topology built in. Without these a leftover principal deployment is
+          # swept against a tenancy that never held it and reported clean.
+          OCI_PRINCIPAL_TENANCY_OCID: ${{ secrets.OCI_PRINCIPAL_TENANCY_OCID }}
+          OCI_PRINCIPAL_USER_OCID: ${{ secrets.OCI_PRINCIPAL_USER_OCID }}
+          OCI_PRINCIPAL_FINGERPRINT: ${{ secrets.OCI_PRINCIPAL_FINGERPRINT }}
+          OCI_PRINCIPAL_PRIVATE_KEY: ${{ secrets.OCI_PRINCIPAL_PRIVATE_KEY }}
+          OCI_PRINCIPAL_COMPARTMENT_OCID: ${{ secrets.OCI_PRINCIPAL_COMPARTMENT_OCID }}
+          OCI_PRINCIPAL_REGION: ${{ vars.OCI_PRINCIPAL_REGION }}
           OCI_ARTIFACT_DIR: ${{ runner.temp }}/e2e-oci-sweep
         run: ./e2e-oci.sh --sweep-only
 

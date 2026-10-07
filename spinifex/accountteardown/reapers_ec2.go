@@ -16,11 +16,11 @@ import (
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
+	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	"github.com/nats-io/nats.go"
@@ -415,7 +415,7 @@ func (r *routeTableReaper) Stage() Stage { return StageNetwork }
 // List skips main route tables. A VPC's main table is deleted with the VPC and
 // cannot be deleted on its own, so listing it would guarantee a stuck report.
 func (r *routeTableReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_routetable.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{}, r.nc, accountID)
+	out, err := ec2routetableapi.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -453,13 +453,13 @@ func (r *routeTableReaper) Delete(ctx context.Context, accountID string, resourc
 		if association == "" {
 			continue
 		}
-		if _, err := gateway_ec2_routetable.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
+		if _, err := ec2routetableapi.DisassociateRouteTable(ctx, &ec2.DisassociateRouteTableInput{
 			AssociationId: aws.String(association),
 		}, r.nc, accountID); err != nil && !isAlreadyGone(err) {
 			return err
 		}
 	}
-	_, err := gateway_ec2_routetable.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
+	_, err := ec2routetableapi.DeleteRouteTable(ctx, &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

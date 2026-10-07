@@ -1,4 +1,4 @@
-package gateway_ec2_routetable
+package routetable
 
 import (
 	"context"

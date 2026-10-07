@@ -22,6 +22,7 @@ import (
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2natgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/natgw"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
+	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -30,7 +31,6 @@ import (
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
@@ -526,31 +526,31 @@ var ec2Actions = map[string]ec2Action{
 		return ec2vpcapi.ModifySubnetAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateRouteTable": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateRouteTableInput, gw *GatewayConfig, accountID string) (ec2.CreateRouteTableOutput, error) {
-		return gateway_ec2_routetable.CreateRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.CreateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteRouteTable": ec2Handler(func(ctx context.Context, input *ec2.DeleteRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DeleteRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DeleteRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRouteTables": ec2Handler(func(ctx context.Context, input *ec2.DescribeRouteTablesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DescribeRouteTables(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DescribeRouteTables(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateRoute": ec2Handler(func(ctx context.Context, input *ec2.CreateRouteInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.CreateRoute(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.CreateRoute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteRoute": ec2Handler(func(ctx context.Context, input *ec2.DeleteRouteInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DeleteRoute(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DeleteRoute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ReplaceRoute": ec2Handler(func(ctx context.Context, input *ec2.ReplaceRouteInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.ReplaceRoute(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.ReplaceRoute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AssociateRouteTable": ec2Handler(func(ctx context.Context, input *ec2.AssociateRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.AssociateRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.AssociateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisassociateRouteTable": ec2Handler(func(ctx context.Context, input *ec2.DisassociateRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DisassociateRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DisassociateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ReplaceRouteTableAssociation": ec2Handler(func(ctx context.Context, input *ec2.ReplaceRouteTableAssociationInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.ReplaceRouteTableAssociation(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.ReplaceRouteTableAssociation(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateNetworkInterface": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, gw *GatewayConfig, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
 		return ec2vpcapi.CreateNetworkInterface(ctx, input, gw.NATSConn, accountID)

@@ -1,4 +1,4 @@
-package gateway_ec2_routetable
+package routetable
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func ValidateCreateRouteInput(input *ec2.CreateRouteInput) error {
+func ValidateDeleteRouteInput(input *ec2.DeleteRouteInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -23,13 +23,13 @@ func ValidateCreateRouteInput(input *ec2.CreateRouteInput) error {
 	return nil
 }
 
-func CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, natsConn *nats.Conn, accountID string) (ec2.CreateRouteOutput, error) {
-	var output ec2.CreateRouteOutput
-	if err := ValidateCreateRouteInput(input); err != nil {
+func DeleteRoute(ctx context.Context, input *ec2.DeleteRouteInput, natsConn *nats.Conn, accountID string) (ec2.DeleteRouteOutput, error) {
+	var output ec2.DeleteRouteOutput
+	if err := ValidateDeleteRouteInput(input); err != nil {
 		return output, err
 	}
 	svc := ec2routetable.NewNATSRouteTableService(natsConn)
-	result, err := svc.CreateRoute(ctx, input, accountID)
+	result, err := svc.DeleteRoute(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

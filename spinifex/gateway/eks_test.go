@@ -59,7 +59,7 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+"_"+tc.path, func(t *testing.T) {
-			action, params, handler, ok := eksRouter.lookup(tc.method, tc.path)
+			action, params, handler, ok := eksRouter.Lookup(tc.method, tc.path)
 			require.True(t, ok, "expected route to match for %s %s", tc.method, tc.path)
 			require.NotNil(t, handler)
 			assert.Equal(t, tc.wantAction, action)
@@ -87,7 +87,7 @@ func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+"_"+tc.wantAction, func(t *testing.T) {
-			action, params, handler, ok := eksRouter.lookup(tc.method, tc.path)
+			action, params, handler, ok := eksRouter.Lookup(tc.method, tc.path)
 			require.True(t, ok, "encoded ARN path should match: %s %s", tc.method, tc.path)
 			require.NotNil(t, handler)
 			assert.Equal(t, tc.wantAction, action)
@@ -107,7 +107,7 @@ func TestLookupEKSAction_DisassociateEncodedARNs(t *testing.T) {
 		policyEscaped    = "arn%3Aaws%3Aeks%3A%3Aaws%3Acluster-access-policy%2FAmazonEKSViewPolicy"
 	)
 	path := "/clusters/alpha/access-entries/" + principalEscaped + "/access-policies/" + policyEscaped
-	action, params, handler, ok := eksRouter.lookup("DELETE", path)
+	action, params, handler, ok := eksRouter.Lookup("DELETE", path)
 	require.True(t, ok, "encoded disassociate path should match: %s", path)
 	require.NotNil(t, handler)
 	assert.Equal(t, "DisassociateAccessPolicy", action)
@@ -159,8 +159,8 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 		"ListTagsForResource":                false,
 	}
 	for _, route := range eksRoutes {
-		if _, ok := expected[route.action]; ok {
-			expected[route.action] = true
+		if _, ok := expected[route.Action]; ok {
+			expected[route.Action] = true
 		}
 	}
 	for action, seen := range expected {
@@ -170,10 +170,10 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 }
 
 func TestLookupEKSAction_UnknownReturnsFalse(t *testing.T) {
-	_, _, _, ok := eksRouter.lookup("PATCH", "/clusters/alpha")
+	_, _, _, ok := eksRouter.Lookup("PATCH", "/clusters/alpha")
 	assert.False(t, ok)
 
-	_, _, _, ok = eksRouter.lookup("GET", "/clusters/alpha/wat")
+	_, _, _, ok = eksRouter.Lookup("GET", "/clusters/alpha/wat")
 	assert.False(t, ok)
 }
 
@@ -237,7 +237,7 @@ func errAWS(code string) error        { return &awsCodeError{code: code} }
 func TestLookupEKSAction_UpdateReadsRefuseAsNotImplemented(t *testing.T) {
 	for _, path := range []string{"/clusters/alpha/updates", "/clusters/alpha/updates/upd1"} {
 		t.Run(path, func(t *testing.T) {
-			_, params, handler, ok := eksRouter.lookup(http.MethodGet, path)
+			_, params, handler, ok := eksRouter.Lookup(http.MethodGet, path)
 			require.True(t, ok)
 			out, err := handler(context.Background(), nil, "000000000001", "", params, nil)
 			assert.Nil(t, out)
@@ -251,6 +251,6 @@ func TestLookupEKSAction_UpdateReadsRefuseAsNotImplemented(t *testing.T) {
 // reachable at it on AWS, so keeping it registered would serve a path no caller
 // sends and hide the one they do.
 func TestLookupEKSAction_ClusterUpdateVersionIsNotAtTheNodegroupPath(t *testing.T) {
-	_, _, _, ok := eksRouter.lookup(http.MethodPost, "/clusters/alpha/update-version")
+	_, _, _, ok := eksRouter.Lookup(http.MethodPost, "/clusters/alpha/update-version")
 	assert.False(t, ok)
 }

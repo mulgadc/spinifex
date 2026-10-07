@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -27,7 +28,7 @@ type converseFn func(ctx context.Context, accountID, modelID string, input *bedr
 
 // bedrockAgentRuntimeRoute maps one HTTP method + chi path pattern to an AWS
 // action and handler, mirroring bedrockAgentRoute.
-type bedrockAgentRuntimeRoute = restRoute[bedrockAgentRuntimeRouteHandler]
+type bedrockAgentRuntimeRoute = rest.Route[bedrockAgentRuntimeRouteHandler]
 
 // bedrockAgentRuntimeRouteHandler invokes a per-action bedrock-agent-runtime
 // (data-plane) gateway function. params holds the path params,
@@ -43,8 +44,8 @@ type bedrockAgentRuntimeRouteHandler func(ctx context.Context, accountID string,
 // verified against the vendored aws-sdk-go bedrockagentruntime request
 // definitions (opRetrieve/opRetrieveAndGenerate).
 var bedrockAgentRuntimeRoutes = []bedrockAgentRuntimeRoute{
-	{"POST", "/knowledgebases/{knowledgeBaseId}/retrieve", "Retrieve",
-		func(ctx context.Context, acct string, p []string, b []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, _ converseFn) (any, error) {
+	{Method: "POST", Pattern: "/knowledgebases/{knowledgeBaseId}/retrieve", Action: "Retrieve",
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, _ converseFn) (any, error) {
 			input := new(bedrockagentruntime.RetrieveInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -54,8 +55,8 @@ var bedrockAgentRuntimeRoutes = []bedrockAgentRuntimeRoute{
 			input.KnowledgeBaseId = aws.String(p[0])
 			return Retrieve(ctx, acct, kb, vector, b, input)
 		}},
-	{"POST", "/retrieveAndGenerate", "RetrieveAndGenerate",
-		func(ctx context.Context, acct string, _ []string, b []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn) (any, error) {
+	{Method: "POST", Pattern: "/retrieveAndGenerate", Action: "RetrieveAndGenerate",
+		Handler: func(ctx context.Context, acct string, _ []string, b []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn) (any, error) {
 			input := new(bedrockagentruntime.RetrieveAndGenerateInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -67,7 +68,7 @@ var bedrockAgentRuntimeRoutes = []bedrockAgentRuntimeRoute{
 }
 
 // bedrockAgentRuntimeRouter matches an escaped request path against bedrockAgentRuntimeRoutes.
-var bedrockAgentRuntimeRouter = newRESTRouter("bedrock-agent-runtime", bedrockAgentRuntimeRoutes)
+var bedrockAgentRuntimeRouter = rest.NewRouter("bedrock-agent-runtime", bedrockAgentRuntimeRoutes)
 
 // BedrockAgentRuntime_Request dispatches bedrock-agent-runtime (data-plane)
 // REST-JSON requests: resolves method+path to an action, reads the body,
@@ -76,7 +77,7 @@ var bedrockAgentRuntimeRouter = newRESTRouter("bedrock-agent-runtime", bedrockAg
 // is on bedrock-runtime (it ends up calling gateway_bedrock.Converse
 // in-process); Retrieve never reaches a model, so it is not metered.
 func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *http.Request) error {
-	action, params, handler, ok := bedrockAgentRuntimeRouter.lookup(r.Method, r.URL.EscapedPath())
+	action, params, handler, ok := bedrockAgentRuntimeRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-agent-runtime: no route for request", "method", r.Method, "path", r.URL.Path)
 		return errors.New(awserrors.ErrorInvalidAction)

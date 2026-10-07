@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
@@ -2765,6 +2766,8 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 		{"JSON-1.1 X-Amz-Target", http.MethodPost, "/", "tagging",
 			"ResourceGroupsTaggingAPI_20170126.GetResources", "GetResources"},
 		{"path-routed EKS", http.MethodGet, "/clusters", "eks", "", "ListClusters"},
+		{"JSON-1.1 X-Amz-Target ECR", http.MethodPost, "/", "ecr",
+			awsapi.TargetPrefix + ".ListRepositories", "ListRepositories"},
 	}
 
 	for _, tc := range testCases {

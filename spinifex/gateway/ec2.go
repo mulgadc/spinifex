@@ -25,6 +25,7 @@ import (
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
+	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -34,7 +35,6 @@ import (
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
-	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
@@ -336,34 +336,34 @@ var ec2Actions = map[string]ec2Action{
 		return ec2zoneapi.DescribeAvailabilityZones(input, gw.Region, gw.AZ)
 	}),
 	"DescribeVolumes": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DescribeVolumes(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DescribeVolumes(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyVolume": ec2Handler(func(ctx context.Context, input *ec2.ModifyVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceVolumeModify(ctx, gw.NATSConn, accountID, aws.StringValue(input.VolumeId), int(aws.Int64Value(input.Size))); err != nil {
 			return nil, err
 		}
-		return gateway_ec2_volume.ModifyVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.ModifyVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateVolume": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (ec2.Volume, error) {
 		if err := gw.Quota.EnforceVolumeCreate(ctx, gw.NATSConn, accountID, int(aws.Int64Value(input.Size))); err != nil {
 			return ec2.Volume{}, err
 		}
-		return gateway_ec2_volume.CreateVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.CreateVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteVolume": ec2Handler(func(ctx context.Context, input *ec2.DeleteVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2volumeapi.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"AttachVolume": ec2Handler(func(ctx context.Context, input *ec2.AttachVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.AttachVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.AttachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeVolumeStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumeStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DescribeVolumeStatus(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DescribeVolumeStatus(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeVolumesModifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesModificationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DescribeVolumesModifications(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DescribeVolumesModifications(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DetachVolume": ec2Handler(func(ctx context.Context, input *ec2.DetachVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DetachVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DetachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAccountAttributes": ec2Handler(func(ctx context.Context, input *ec2.DescribeAccountAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return ec2accountapi.DescribeAccountAttributes(input, func() (string, error) {

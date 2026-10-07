@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
+	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	"github.com/nats-io/nats.go"
 )
 
@@ -19,7 +19,7 @@ func (s *Service) EnforceVolumeCreate(ctx context.Context, natsConn *nats.Conn, 
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := gateway_ec2_volume.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, natsConn, accountID)
+	out, err := ec2volumeapi.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, natsConn, accountID)
 	if err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func (s *Service) EnforceVolumeModify(ctx context.Context, natsConn *nats.Conn, 
 // sweep and, when volumeID is non-empty, also returns that volume's current size
 // (0 if absent). One pass serves both the create and modify checks.
 func (s *Service) volumeUsage(ctx context.Context, natsConn *nats.Conn, accountID, volumeID string) (total, target int, err error) {
-	out, err := gateway_ec2_volume.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, natsConn, accountID)
+	out, err := ec2volumeapi.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, natsConn, accountID)
 	if err != nil {
 		return 0, 0, err
 	}

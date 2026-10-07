@@ -19,10 +19,10 @@ import (
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
+	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	"github.com/nats-io/nats.go"
 )
 
@@ -117,7 +117,7 @@ func (r *volumeReaper) Kind() string { return "volume" }
 func (r *volumeReaper) Stage() Stage { return StageStorage }
 
 func (r *volumeReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_volume.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, r.nc, accountID)
+	out, err := ec2volumeapi.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func (r *volumeReaper) List(ctx context.Context, accountID string) ([]Resource, 
 }
 
 func (r *volumeReaper) Delete(ctx context.Context, accountID string, resource Resource, force bool) error {
-	_, err := gateway_ec2_volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+	_, err := ec2volumeapi.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(resource.ID),
 	}, r.nc, r.expectedNodes, accountID)
 	if isAlreadyGone(err) {
@@ -707,7 +707,7 @@ func forceDeleteVolume(ctx context.Context, nc *nats.Conn, expectedNodes int, ac
 		return fmt.Errorf("force detach %s: %w", volumeID, err)
 	}
 
-	_, err = gateway_ec2_volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+	_, err = ec2volumeapi.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
 	}, nc, expectedNodes, accountID)
 	return ignoreAlreadyGone(err)

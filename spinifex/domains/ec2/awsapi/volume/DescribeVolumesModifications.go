@@ -1,4 +1,4 @@
-package gateway_ec2_volume
+package volume
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func ValidateDescribeVolumeStatusInput(input *ec2.DescribeVolumeStatusInput) error {
+func ValidateDescribeVolumesModificationsInput(input *ec2.DescribeVolumesModificationsInput) error {
 	if input == nil {
 		return nil
 	}
@@ -25,17 +25,17 @@ func ValidateDescribeVolumeStatusInput(input *ec2.DescribeVolumeStatusInput) err
 	return nil
 }
 
-// DescribeVolumeStatus handles the DescribeVolumeStatus API call.
-func DescribeVolumeStatus(ctx context.Context, input *ec2.DescribeVolumeStatusInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumeStatusOutput, error) {
-	var output ec2.DescribeVolumeStatusOutput
+// DescribeVolumesModifications handles the DescribeVolumesModifications API call.
+func DescribeVolumesModifications(ctx context.Context, input *ec2.DescribeVolumesModificationsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumesModificationsOutput, error) {
+	var output ec2.DescribeVolumesModificationsOutput
 
-	err := ValidateDescribeVolumeStatusInput(input)
+	err := ValidateDescribeVolumesModificationsInput(input)
 	if err != nil {
 		return output, err
 	}
 
 	volumeService := ec2volume.NewNATSVolumeService(natsConn)
-	result, err := volumeService.DescribeVolumeStatus(ctx, input, accountID)
+	result, err := volumeService.DescribeVolumesModifications(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

@@ -1,4 +1,4 @@
-package gateway_ec2_volume
+package volume
 
 import (
 	"testing"

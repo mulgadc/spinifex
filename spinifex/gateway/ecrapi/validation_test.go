@@ -21,7 +21,7 @@ func requireInvalidParameter(t *testing.T, err error, wantMessage string) {
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
 	assert.Equal(t, wantMessage, message)
 }
 

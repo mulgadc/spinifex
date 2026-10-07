@@ -81,7 +81,7 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 	// Malformed override policy.
 	_, err = callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/app", "not-json"))
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 
 	// Cross-account.
 	_, err = callImage(t, gw, (*GatewayConfig).handleStartLifecyclePolicyPreview, `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":`+strconvQuotePreview(previewExpireOldest)+`}`)

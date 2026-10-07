@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +33,14 @@ func TestECRControlPlane(t *testing.T) {
 
 	_, err := c.CreateRepository(&ecr.CreateRepositoryInput{RepositoryName: aws.String(repo)})
 	require.NoError(t, err, "create-repository")
+
+	t.Run("an invalid name is refused with InvalidParameterException", func(t *testing.T) {
+		_, err := c.CreateRepository(&ecr.CreateRepositoryInput{RepositoryName: aws.String("Bad_Name!")})
+		var aerr awserr.Error
+		require.ErrorAs(t, err, &aerr)
+		assert.Equal(t, ecr.ErrCodeInvalidParameterException, aerr.Code())
+		assert.Equal(t, `Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must satisfy regular expression '[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*''`, aerr.Message())
+	})
 
 	t.Run("DescribeRepositories lists the new repo", func(t *testing.T) {
 		out, err := c.DescribeRepositories(&ecr.DescribeRepositoriesInput{

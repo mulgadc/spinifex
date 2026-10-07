@@ -147,7 +147,7 @@ func TestBatchGetImage_CapExceeded(t *testing.T) {
 	body := `{"repositoryName":"team/app","imageIds":[` + strings.Join(ids, ",") + `]}`
 	_, err := callImage(t, gw, (*GatewayConfig).handleBatchGetImage, body)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestPutImage_HappyAndMissingManifest(t *testing.T) {
@@ -175,10 +175,10 @@ func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
 	assert.Len(t, list.ImageIds, 1)
 
-	// Missing manifest -> InvalidParameterValue.
+	// Missing manifest -> InvalidParameterException.
 	_, err = callImage(t, gw, (*GatewayConfig).handlePutImage, `{"repositoryName":"team/app","imageTag":"v2"}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 // TestPutImage_RepoNotCreated asserts the JSON PutImage path rejects an uncreated

@@ -10,7 +10,7 @@ import (
 
 // ErrInvalidLifecyclePolicy is returned when a lifecycle-policy document is
 // malformed or violates the supported rule schema. The gateway maps it to
-// InvalidParameterValue.
+// InvalidParameterException.
 var ErrInvalidLifecyclePolicy = errors.New("ecr: invalid lifecycle policy")
 
 // Lifecycle tag-status selectors and count types (AWS lifecycle-policy schema).

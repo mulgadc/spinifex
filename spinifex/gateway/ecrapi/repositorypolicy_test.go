@@ -105,8 +105,8 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 		expect string
 	}{
 		{"set missing repo", SetRepositoryPolicy, `{"repositoryName":"team/ghost","policyText":"{}"}`, awserrors.ErrorRepositoryNotFound},
-		{"set invalid json policy", SetRepositoryPolicy, `{"repositoryName":"team/app","policyText":"not-json"}`, awserrors.ErrorInvalidParameterValue},
-		{"set empty name", SetRepositoryPolicy, `{"policyText":"{}"}`, awserrors.ErrorInvalidParameterValue},
+		{"set invalid json policy", SetRepositoryPolicy, `{"repositoryName":"team/app","policyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
+		{"set empty name", SetRepositoryPolicy, `{"policyText":"{}"}`, awserrors.ErrorECRInvalidParameter},
 		{"set cross-account", SetRepositoryPolicy, `{"repositoryName":"team/app","registryId":"999999999999","policyText":"{}"}`, awserrors.ErrorAccessDenied},
 		{"get no policy", GetRepositoryPolicy, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryPolicyNotFound},
 		{"delete no policy", DeleteRepositoryPolicy, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryPolicyNotFound},

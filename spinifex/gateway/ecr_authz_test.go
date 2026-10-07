@@ -66,7 +66,7 @@ func TestECRRequest_FieldSpelledTwoWaysIsRejected(t *testing.T) {
 		err := dispatchECR(t, gw, "BatchCheckLayerAvailability",
 			`{"repositoryName":"dev","RepositoryName":"prod"}`)
 		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
+		assert.Equal(t, awserrors.ErrorECRInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 	}
 }
 

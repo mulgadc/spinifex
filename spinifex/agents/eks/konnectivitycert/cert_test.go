@@ -1,4 +1,4 @@
-package main
+package konnectivitycert
 
 import (
 	"crypto/ecdsa"

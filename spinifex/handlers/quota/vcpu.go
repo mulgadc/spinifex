@@ -6,10 +6,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -166,7 +166,7 @@ type InstanceTypeResolver func(accountID, instanceID string) (instanceType strin
 // per call so a config change is reflected without a restart.
 func NATSInstanceTypeResolver(natsConn *nats.Conn, expectedNodes func() int) InstanceTypeResolver {
 	return func(accountID, instanceID string) (string, bool, error) {
-		reservations, complete, err := gateway_ec2_instance.DescribeInstancesForReconcile(
+		reservations, complete, err := ec2instanceapi.DescribeInstancesForReconcile(
 			context.Background(), &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
 			natsConn, expectedNodes(), accountID)
 		if err != nil {

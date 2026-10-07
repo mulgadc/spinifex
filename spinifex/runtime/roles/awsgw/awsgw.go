@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
@@ -37,7 +38,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
@@ -547,7 +547,7 @@ func launchService(config *config.ClusterConfig) error {
 
 	// Without this a node that stops answering takes its instances out of
 	// DescribeInstanceStatus entirely, so a dead host reads as no host.
-	gw.InstanceStatus = gateway_ec2_instance.StatusSynthesis{
+	gw.InstanceStatus = ec2instanceapi.StatusSynthesis{
 		Records: instanceCache,
 		Liveness: instancecache.NewLiveness(js, kvstore.Config{
 			Name: daemon.ClusterStateBucket, History: 1,

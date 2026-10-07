@@ -15,7 +15,7 @@ import (
 // this package instead of each StartGateway call booting (and tearing down)
 // its own, for two reasons:
 //
-//  1. spinifex/gateway/ec2/instance's ClientTokenStore is a process-wide
+//  1. spinifex/domains/ec2/awsapi/instance's ClientTokenStore is a process-wide
 //     sync.Once singleton bound to whichever *nats.Conn first initialises it.
 //     In production a gateway holds one long-lived connection for its whole
 //     life, so the singleton is correct there. But this test binary runs

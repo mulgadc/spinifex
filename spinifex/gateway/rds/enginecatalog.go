@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 )
@@ -145,7 +145,7 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 // timed-out gather as an empty list with no error, so asking for the six would
 // collapse both onto the same answer.
 func clusterRunnableTypes(ctx context.Context, nc *nats.Conn, env Env) (func(string) bool, error) {
-	out, err := gateway_ec2_instance.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{},
+	out, err := ec2instanceapi.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{},
 		nc, env.ExpectedNodes, nil, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "RDS: instance-type capability probe failed", "err", err)

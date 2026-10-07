@@ -49,7 +49,7 @@ const (
 // it by modelling the whole instance lifecycle, which is why this stays live
 // rather than moving down. The pure gateway-side half of that same code path
 // (profile resolution, PassRole enforcement, ID enrichment, NATS error
-// mapping in gateway/ec2/instance/IamInstanceProfileAssociation.go) is
+// mapping in domains/ec2/awsapi/instance/IamInstanceProfileAssociation.go) is
 // already exhaustively unit-tested in
 // IamInstanceProfileAssociation_test.go, and RunInstances' iam:PassRole gate
 // specifically is covered by tests/integration's

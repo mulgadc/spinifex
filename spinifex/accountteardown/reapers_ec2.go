@@ -14,6 +14,7 @@ import (
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
@@ -22,7 +23,6 @@ import (
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -77,7 +77,7 @@ func (r *instanceReaper) Stage() Stage { return StageCompute }
 func (r *instanceReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
 	// Checked: a partial answer here would read as "no instances left" and let
 	// storage deletion start while a guest still holds a volume.
-	out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{}, r.nc, r.expectedNodes, nil, accountID)
+	out, err := ec2instanceapi.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{}, r.nc, r.expectedNodes, nil, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (r *instanceReaper) List(ctx context.Context, accountID string) ([]Resource
 }
 
 func (r *instanceReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_instance.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+	_, err := ec2instanceapi.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: []*string{aws.String(resource.ID)},
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

@@ -85,10 +85,10 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 
 ```go
 "RunInstances": ec2Handler(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return gateway_ec2_instance.RunInstances(input, gw.NATSConn, accountID)
+    return ec2instanceapi.RunInstances(input, gw.NATSConn, accountID)
 }),
 "DescribeInstances": ec2Handler(func(input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return gateway_ec2_instance.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+    return ec2instanceapi.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
 }),
 // ... + volumes, snapshots, VPCs, subnets, route tables, IGWs, NAT gateways,
 // security groups, network interfaces, elastic IPs, placement groups, key pairs,
@@ -201,7 +201,7 @@ type ResourceManager struct {
 
 ### Multi-Node Aggregation
 
-For operations that need data from all nodes (like `DescribeInstances`), the gateway uses inbox-based fan-out (`spinifex/gateway/ec2/instance/DescribeInstances.go`):
+For operations that need data from all nodes (like `DescribeInstances`), the gateway uses inbox-based fan-out (`spinifex/domains/ec2/awsapi/instance/DescribeInstances.go`):
 
 ```go
 func DescribeInstances(...) {

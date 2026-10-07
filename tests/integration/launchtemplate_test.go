@@ -22,7 +22,7 @@ import (
 // StartLaunchTemplateDaemonLite — real KV-backed logic, not a static stub),
 // and RunInstances with only a LaunchTemplateSpecification resolves the
 // template's ImageId/InstanceType and forwards them to the per-node launch —
-// gateway/ec2/instance/RunInstances.go's expandLaunchTemplate, which calls
+// domains/ec2/awsapi/instance/RunInstances.go's expandLaunchTemplate, which calls
 // ec2launchtemplate.ExpandRunInstances over NATS before validation,
 // routing, or placement ever see the request. That resolution is complete
 // before the daemon-facing NATS hop, so a real guest is not needed to prove it

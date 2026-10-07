@@ -19,7 +19,7 @@ import (
 var clientTokenRun atomic.Int64
 
 // TestRunInstances_ClientTokenIdempotency proves ClientToken dedup
-// (gateway/ec2/instance/RunInstances.go's ClientTokenStore wrapping) runs for
+// (domains/ec2/awsapi/instance/RunInstances.go's ClientTokenStore wrapping) runs for
 // real through the full gateway: a replayed token must not reach the daemon a
 // second time, and a different token must launch again.
 //

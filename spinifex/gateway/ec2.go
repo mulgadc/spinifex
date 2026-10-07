@@ -20,6 +20,7 @@ import (
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2natgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/natgw"
@@ -33,7 +34,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
@@ -182,11 +182,11 @@ func (gw *GatewayConfig) advertisedEndpoint() string {
 
 var ec2Actions = map[string]ec2Action{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
+		out, err := ec2instanceapi.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
 		if err != nil {
 			return out, err
 		}
-		gateway_ec2_instance.EnrichInstanceProfileIDs(out, gw.IAMService, accountID)
+		ec2instanceapi.EnrichInstanceProfileIDs(out, gw.IAMService, accountID)
 		return out, nil
 	}),
 	"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
@@ -196,7 +196,7 @@ var ec2Actions = map[string]ec2Action{
 		launchQuotaCheck := func() error {
 			return gw.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
 		}
-		reservation, err := gateway_ec2_instance.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
+		reservation, err := ec2instanceapi.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
 		if err != nil {
 			return nil, err
 		}
@@ -211,52 +211,52 @@ var ec2Actions = map[string]ec2Action{
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
-		return gateway_ec2_instance.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
+		return ec2instanceapi.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
 	}),
 	"DisassociateIamInstanceProfile": ec2Handler(func(ctx context.Context, input *ec2.DisassociateIamInstanceProfileInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DisassociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2instanceapi.DisassociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
-		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
+		return ec2instanceapi.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
 	}),
 	"DescribeIamInstanceProfileAssociations": ec2Handler(func(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeIamInstanceProfileAssociations(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2instanceapi.DescribeIamInstanceProfileAssociations(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"StartInstances": ec2Handler(func(ctx context.Context, input *ec2.StartInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.StartInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.StartInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"StopInstances": ec2Handler(func(ctx context.Context, input *ec2.StopInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.StopInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.StopInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RebootInstances": ec2Handler(func(ctx context.Context, input *ec2.RebootInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.RebootInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.RebootInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"MonitorInstances": ec2Handler(func(ctx context.Context, input *ec2.MonitorInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.MonitorInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.MonitorInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"UnmonitorInstances": ec2Handler(func(ctx context.Context, input *ec2.UnmonitorInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.UnmonitorInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.UnmonitorInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"TerminateInstances": ec2Handler(func(ctx context.Context, input *ec2.TerminateInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.TerminateInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.TerminateInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceTypes": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, accountID)
+		return ec2instanceapi.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, accountID)
 	}),
 	"DescribeInstanceTypeOfferings": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceTypeOfferings(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID, gw.Region, gw.AZ)
+		return ec2instanceapi.DescribeInstanceTypeOfferings(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID, gw.Region, gw.AZ)
 	}),
 	"DescribeInstanceStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ, gw.InstanceStatus)
+		return ec2instanceapi.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ, gw.InstanceStatus)
 	}),
 	"GetConsoleOutput": ec2Handler(func(ctx context.Context, input *ec2.GetConsoleOutputInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetPasswordData": ec2Handler(func(ctx context.Context, input *ec2.GetPasswordDataInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.GetPasswordData(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.GetPasswordData(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		var delta int
@@ -268,7 +268,7 @@ var ec2Actions = map[string]ec2Action{
 			}
 			delta = d
 		}
-		out, err := gateway_ec2_instance.ModifyInstanceAttribute(ctx, input, gw.NATSConn, accountID)
+		out, err := ec2instanceapi.ModifyInstanceAttribute(ctx, input, gw.NATSConn, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -280,13 +280,13 @@ var ec2Actions = map[string]ec2Action{
 		return out, nil
 	}),
 	"DescribeInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceAttribute(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2instanceapi.DescribeInstanceAttribute(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"ModifyInstanceMetadataOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.ModifyInstanceMetadataOptions(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.ModifyInstanceMetadataOptions(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceCreditSpecifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceCreditSpecificationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceCreditSpecifications(input)
+		return ec2instanceapi.DescribeInstanceCreditSpecifications(input)
 	}),
 	"CreateKeyPair": ec2Handler(func(ctx context.Context, input *ec2.CreateKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
 		return ec2keyapi.CreateKeyPair(ctx, input, gw.NATSConn, accountID)
@@ -702,7 +702,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 	// Launch templates supply effective RunInstances resources. Resolve them
 	// before authorization, and dispatch the same expanded input afterwards.
 	if runInput, ok := input.(*ec2.RunInstancesInput); ok && action == "RunInstances" {
-		if err := gateway_ec2_instance.ExpandLaunchTemplate(r.Context(), gw.NATSConn, runInput, accountID); err != nil {
+		if err := ec2instanceapi.ExpandLaunchTemplate(r.Context(), gw.NATSConn, runInput, accountID); err != nil {
 			return err
 		}
 	}

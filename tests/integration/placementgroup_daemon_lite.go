@@ -16,7 +16,7 @@ import (
 // code a live daemon runs — to every ec2.*PlacementGroup*/ec2.Reserve*/
 // ec2.Finalize*/ec2.Release* subject the gateway's NATSPlacementGroupService
 // client calls (domains/ec2/awsapi/placementgroup/*.go and RunInstances.go's spread/
-// cluster routing in gateway/ec2/instance/placement.go). Unlike a StubSubject
+// cluster routing in domains/ec2/awsapi/instance/placement.go). Unlike a StubSubject
 // canned reply, this exercises the real KV-backed CAS reservation logic, so a
 // test that checks placement-group strategy routing actually proves the
 // gateway drove a genuine reserve/finalize round trip rather than merely

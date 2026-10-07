@@ -11,7 +11,7 @@ import (
 
 // TestRunInstances_MalformedAMIIDRejected asserts that an ImageId lacking the
 // "ami-" prefix is rejected by ValidateRunInstancesInput
-// (gateway/ec2/instance/RunInstances.go) before any NATS hop. No StubSubject
+// (domains/ec2/awsapi/instance/RunInstances.go) before any NATS hop. No StubSubject
 // is registered for spinifex.node.status or any per-node launch subject: if
 // the gateway ever dispatched this request instead of rejecting it up front,
 // the call would hang on natsmsg.Gather's timeout rather than fail fast, making

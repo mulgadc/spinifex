@@ -8,9 +8,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -74,7 +74,7 @@ func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *n
 	// both instance buckets queried, so a node that owns the attachment cannot be
 	// silently missing from the survey. Refuse rather than delete against a
 	// partial view of the cluster.
-	reservations, complete, err := gateway_ec2_instance.DescribeInstancesForReconcile(ctx, &ec2.DescribeInstancesInput{}, natsConn, expectedNodes, accountID)
+	reservations, complete, err := ec2instanceapi.DescribeInstancesForReconcile(ctx, &ec2.DescribeInstancesInput{}, natsConn, expectedNodes, accountID)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteVolume: in-use precheck fan-out failed", "volumeId", volumeID, "err", err)
 		return output, errors.New(awserrors.ErrorServerInternal)

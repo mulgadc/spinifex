@@ -520,6 +520,7 @@ var (
 	ErrorLayersNotFound           = "LayersNotFoundException"
 	ErrorReferencedImagesNotFound = "ReferencedImagesNotFoundException"
 	ErrorTooManyTags              = "TooManyTagsException"
+	ErrorInvalidTagParameter      = "InvalidTagParameterException"
 	ErrorOperationNotSupported    = "OperationNotSupportedException"
 
 	// ELBv2-specific error codes.
@@ -1286,6 +1287,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorImageDigestDoesNotMatch:  {HTTPCode: 400, Message: "The specified image digest does not match the digest of the supplied image manifest."},
 	ErrorLayersNotFound:           {HTTPCode: 400, Message: "The specified layers could not be found, or the specified layer is not valid for this repository."},
 	ErrorReferencedImagesNotFound: {HTTPCode: 400, Message: "The manifest list is referencing an image that does not exist."},
+	ErrorInvalidTagParameter:      {HTTPCode: 400, Message: "Tag parameters are invalid"},
 	ErrorTooManyTags:              {HTTPCode: 400, Message: "The list of tags on the repository is over the limit. The maximum number of tags that can be applied to a repository is 50."},
 	ErrorOperationNotSupported:    {HTTPCode: 400, Message: "The specified operation is not supported in this registry."},
 

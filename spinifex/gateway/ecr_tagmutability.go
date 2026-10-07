@@ -53,8 +53,7 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 	case "":
 		return gateway_ecrapi.RequiredParameterError("imageTagMutability")
 	default:
-		return gateway_ecrapi.EnumValueError("imageTagMutability", req.ImageTagMutability,
-			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
+		return gateway_ecrapi.EnumValueError("imageTagMutability", gateway_ecrapi.ImageTagMutabilityValues...)
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)

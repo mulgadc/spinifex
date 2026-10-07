@@ -59,7 +59,7 @@ func SetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, b
 		return nil, err
 	}
 	if req.PolicyText == "" {
-		return nil, RequiredParameterError("policyText")
+		return nil, ConstraintError("PolicyText", "Cannot be null")
 	}
 	if !json.Valid([]byte(req.PolicyText)) {
 		return nil, ConstraintError("policyText", "Invalid repository policy provided")

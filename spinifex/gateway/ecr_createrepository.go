@@ -139,8 +139,8 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 		return "", awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
 			"encryptionType KMS is not supported: no customer-managed key is used, and repositories are already encrypted at rest under a server-managed AES-256 key")
 	default:
-		return "", gateway_ecrapi.EnumValueError("encryptionConfiguration.encryptionType", cfg.EncryptionType,
-			handlers_ecr.EncryptionTypeAES256, handlers_ecr.EncryptionTypeKMS)
+		return "", gateway_ecrapi.EnumValueError("encryptionConfiguration.encryptionType",
+			handlers_ecr.EncryptionTypeAES256, "KMS_DSSE", handlers_ecr.EncryptionTypeKMS)
 	}
 }
 
@@ -153,7 +153,6 @@ func normalizeTagMutability(v string) (string, error) {
 	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
 		return v, nil
 	default:
-		return "", gateway_ecrapi.EnumValueError("imageTagMutability", v,
-			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
+		return "", gateway_ecrapi.EnumValueError("imageTagMutability", gateway_ecrapi.ImageTagMutabilityValues...)
 	}
 }

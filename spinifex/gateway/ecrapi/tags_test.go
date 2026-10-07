@@ -130,8 +130,12 @@ func TestTagResource_Errors(t *testing.T) {
 	t.Run("malformed arn", func(t *testing.T) {
 		_, err := TagResource(context.Background(), nc, policyTestAccount,
 			[]byte(`{"resourceArn":"not-an-arn","tags":[{"Key":"env","Value":"prod"}]}`))
-		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorECRInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+		requireTagError(t, err, awserrors.ErrorECRInvalidParameter, "Invalid parameter at 'resourceArn' failed to satisfy constraint: 'Invalid ARN'")
+	})
+
+	t.Run("missing arn", func(t *testing.T) {
+		_, err := TagResource(context.Background(), nc, policyTestAccount, []byte(`{"tags":[{"Key":"env","Value":"prod"}]}`))
+		requireTagError(t, err, awserrors.ErrorECRInvalidParameter, "Invalid parameter at 'resourceArn' failed to satisfy constraint: 'Invalid ARN'")
 	})
 
 	t.Run("repo not found", func(t *testing.T) {
@@ -144,9 +148,18 @@ func TestTagResource_Errors(t *testing.T) {
 	t.Run("empty key rejected", func(t *testing.T) {
 		_, err := TagResource(context.Background(), nc, policyTestAccount,
 			[]byte(`{"resourceArn":"`+tagResourceARN("team/app")+`","tags":[{"Key":"","Value":"prod"}]}`))
-		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorECRInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+		requireTagError(t, err, awserrors.ErrorInvalidTagParameter, "Tag parameters are invalid")
 	})
+}
+
+// requireTagError asserts err resolves to AWS's code and message.
+func requireTagError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, message)
 }
 
 func TestUntagResource_Errors(t *testing.T) {

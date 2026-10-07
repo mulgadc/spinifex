@@ -37,7 +37,7 @@ type listTagsForResourceRequest struct {
 // and the NATS-backed MetaStore for a follow-on read-modify-write.
 func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceArn string) (string, handlers_ecr.RepoMeta, *handlers_ecr.NATSMetaStore, error) {
 	if resourceArn == "" {
-		return "", handlers_ecr.RepoMeta{}, nil, RequiredParameterError("resourceArn")
+		return "", handlers_ecr.RepoMeta{}, nil, invalidResourceARNError()
 	}
 	name, err := RepositoryNameFromResourceARN(resourceArn)
 	if err != nil {

@@ -110,7 +110,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 
 	_, err = createRepo(t, gw, `{"repositoryName":"team/badtag","tags":[{"Key":"","Value":"x"}]}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidTagParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestCreateRepository_EncryptionAndScanningConfiguration(t *testing.T) {

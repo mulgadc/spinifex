@@ -124,6 +124,18 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 	}
 }
 
+// AWS names the member PolicyText, capitalised, when SetRepositoryPolicy omits it.
+func TestSetRepositoryPolicy_MissingPolicyTextMessage(t *testing.T) {
+	nc := newPolicyTestConn(t)
+	seedRepo(t, nc, "team/app")
+	_, err := SetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
+	assert.Equal(t, "Invalid parameter at 'PolicyText' failed to satisfy constraint: 'Cannot be null'", message)
+}
+
 // strconvQuote JSON-quotes a string for inline test bodies.
 func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)

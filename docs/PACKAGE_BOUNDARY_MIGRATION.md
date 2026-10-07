@@ -385,6 +385,34 @@ These residuals were recorded by individual slices and must be resolved once the
 - Instance adapter consumers outside EC2: `gateway/rds/enginecatalog.go`, `daemon/eks_cp_control.go`, `daemon/rds_deps.go` and `handlers/quota/vcpu.go` call `domains/ec2/awsapi/instance` directly; each needs an EC2 capability rather than the AWS action adapter.
 - Merge-time follow-up in the umbrella repository: the `Makefile` `invariants-check` target, the `docs-pr.yml` clause cross-check, `.claude/hooks/architecture-traps.sh` and a `check-invariants.sh` comment hard-code `spinifex/spinifex/network/invariants`. They must change with the pointer bump that brings in this branch, or the docs-pr cross-check silently skips. Live specs and proposals citing `spinifex/network/` will report unresolved citations until updated.
 
+## ADR-0004 source inventory and first-resource ranking
+
+The per-file inventories for ECS, EKS and RDS are in `docs/package-boundary/adr-0004-inventory-{ecs,eks,rds}.md`.
+Each classifies every production file as resource owner, cross-resource orchestration, AWS protocol adapter, guest/controller wire contract, or temporary residue, and maps actions, durable records, identity and scope, lifecycle paths, NATS subjects and boundary-crossing imports.
+They were produced by reading the code at `6c50349bd` and are not verified against a live system.
+
+Observed gaps common to all three: no resource carries a desired generation, all resources of a service share one per-account KV bucket, and deletes remove records before dependent cleanup is confirmed.
+
+First-resource ranking:
+
+1. RDS DB subnet group: about 340 lines with its own `db-subnet-groups/{name}` keys, synchronous AWS semantics, and no quota, expected-node, IAM, Bluebottle or agent dependency.
+   It has a real deletion graph, because delete refuses while an instance references the group, so it exercises a consumer-owned capability in both directions: an instance-owned "instances referencing this group" query for delete, and a subnet-group-owned placement query for instance create.
+2. ECS task definition: own keys and good tests, but `RegisterTaskDefinition` allocates revisions non-atomically and the gateway adapter carries the `iam:PassRole` checks, so it sits closer to a blocked boundary.
+3. EKS access entry: own keys, but entries are read during token review, which places it next to EKS identity.
+
+Blocked dependencies recorded, not designed around:
+
+- RDS instance: quota admission, the duplicated expected-node fan-out (`gateway/rds/enginecatalog.go`, `daemon/rds_deps.go`), IAM ensurer and Bluebottle master key.
+- RDS `DescribeOrderableDBInstanceOptions`: the EC2 instance-type-availability projection.
+- ECS task, service and capacity: `iam:PassRole` in the gateway adapter, IAM `ecsInstanceRole`, and EC2/ELBv2/EIP adapters called as internal APIs.
+- EKS nodegroup and cluster: IAM role and instance-profile creation, Bluebottle `auth`, the NATS CA, and EKS identity (token review, OIDC).
+- Guest agents: `agents/ecs`, `agents/rds` and `agents/eks/tokenwebhook` import the service implementation packages, which ADR-0004 S5 forbids; they need wire contracts.
+
+Findings to resolve before extraction:
+
+- The branch is 59 commits behind `dev`, including `ModifyDBSubnetGroup` (#1152) and the EKS stub unregistration (#1172), so the subnet-group inventory must be redone after `dev` is merged in.
+- `ClusterMeta.ControlPlaneTemplate` (`handlers/eks/service_impl.go`) clears credentials but keeps `OIDCPrivateKeyPEM` and the k3s `JoinToken`, so both persist in the cluster KV record, which the gateway also reads; whether that record is encrypted at rest is unconfirmed.
+
 ## Recording rule
 
 For every later slice, add the old and new path, source commit, focused

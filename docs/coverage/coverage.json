@@ -1983,6 +1983,7 @@
           "DeleteRepository",
           "DeleteRepositoryPolicy",
           "DescribeImages",
+          "DescribeRegistry",
           "DescribeRepositories",
           "GetAuthorizationToken",
           "GetLifecyclePolicy",
@@ -2002,7 +2003,6 @@
         "stubbed": [
           "BatchCheckLayerAvailability",
           "CompleteLayerUpload",
-          "DescribeRegistry",
           "GetDownloadUrlForLayer",
           "GetRegistryPolicy",
           "InitiateLayerUpload",

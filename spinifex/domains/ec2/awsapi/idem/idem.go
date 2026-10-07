@@ -1,7 +1,7 @@
-// Package gateway_ec2_idem holds the client-token plumbing shared by the EC2
+// Package idem holds the client-token plumbing shared by the EC2
 // gateway: the KV bucket every EC2 action's token records live in, and the
 // extraction of a token and parameter hash from an SDK input struct.
-package gateway_ec2_idem
+package idem
 
 import (
 	"reflect"

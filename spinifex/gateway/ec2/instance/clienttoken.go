@@ -8,9 +8,9 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -48,7 +48,7 @@ func getClientTokenStore(ctx context.Context, nc *nats.Conn) (*ClientTokenStore,
 // namespaces its keys by action, but RunInstances predates that: re-keying live
 // records would make a retry re-launch instead of replay.
 func newClientTokenStore(ctx context.Context, js jetstream.JetStream) (*ClientTokenStore, error) {
-	return idempotency.OpenStore[ec2.Reservation](ctx, js, gateway_ec2_idem.KVBucket, gateway_ec2_idem.TTL)
+	return idempotency.OpenStore[ec2.Reservation](ctx, js, ec2idemapi.KVBucket, ec2idemapi.TTL)
 }
 
 // clientTokenParamHash hashes the request excluding ClientToken, so the same

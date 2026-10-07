@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -27,7 +27,7 @@ func (gw *GatewayConfig) ec2ClientTokenBucket(ctx context.Context) (jetstream.Ke
 		// bucket for every later request. Deadline-free, so the open falls back
 		// to the JetStream API's own timeout.
 		gw.ec2TokenKV, gw.ec2TokenErr = idempotency.OpenBucket(
-			context.WithoutCancel(ctx), js, gateway_ec2_idem.KVBucket, gateway_ec2_idem.TTL)
+			context.WithoutCancel(ctx), js, ec2idemapi.KVBucket, ec2idemapi.TTL)
 	})
 	return gw.ec2TokenKV, gw.ec2TokenErr
 }
@@ -69,7 +69,7 @@ func runEC2Idempotent[In, Out any](
 	var zero Out
 	// Hashed before the handler runs, so a handler that mutates its input cannot
 	// change what a retry of the same token hashes to.
-	token, paramHash, ok := gateway_ec2_idem.TokenAndParams(input)
+	token, paramHash, ok := ec2idemapi.TokenAndParams(input)
 	if !ok {
 		return work()
 	}

@@ -1,11 +1,11 @@
-package gateway_ec2_idem_test
+package idem_test
 
 import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	gateway_ec2_idem "github.com/mulgadc/spinifex/spinifex/gateway/ec2/idem"
+	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestTokenAndParams_ReadsEveryConvertedInput(t *testing.T) {
 		"CreateCapacityReservation":       &ec2.CreateCapacityReservationInput{ClientToken: aws.String("tok")},
 	}
 	for action, input := range inputs {
-		token, hash, ok := gateway_ec2_idem.TokenAndParams(input)
+		token, hash, ok := ec2idemapi.TokenAndParams(input)
 		require.True(t, ok, "%s must expose its ClientToken", action)
 		assert.Equal(t, "tok", token, action)
 		assert.NotEmpty(t, hash, action)
@@ -43,7 +43,7 @@ func TestTokenAndParams_NoTokenOptsOut(t *testing.T) {
 		"not a struct":  aws.String("tok"),
 	}
 	for name, input := range cases {
-		_, _, ok := gateway_ec2_idem.TokenAndParams(input)
+		_, _, ok := ec2idemapi.TokenAndParams(input)
 		assert.False(t, ok, name)
 	}
 }
@@ -56,11 +56,11 @@ func TestTokenAndParams_HashIgnoresTheToken(t *testing.T) {
 	sameParams := &ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: aws.String("b")}
 	changed := &ec2.CreateVolumeInput{Size: aws.Int64(16), ClientToken: aws.String("a")}
 
-	_, firstHash, ok := gateway_ec2_idem.TokenAndParams(first)
+	_, firstHash, ok := ec2idemapi.TokenAndParams(first)
 	require.True(t, ok)
-	_, sameHash, ok := gateway_ec2_idem.TokenAndParams(sameParams)
+	_, sameHash, ok := ec2idemapi.TokenAndParams(sameParams)
 	require.True(t, ok)
-	_, changedHash, ok := gateway_ec2_idem.TokenAndParams(changed)
+	_, changedHash, ok := ec2idemapi.TokenAndParams(changed)
 	require.True(t, ok)
 
 	assert.Equal(t, firstHash, sameHash, "the token must not feed the hash")
@@ -73,7 +73,7 @@ func TestTokenAndParams_LeavesTheInputIntact(t *testing.T) {
 	t.Parallel()
 	input := &ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: aws.String("tok")}
 
-	_, _, ok := gateway_ec2_idem.TokenAndParams(input)
+	_, _, ok := ec2idemapi.TokenAndParams(input)
 	require.True(t, ok)
 
 	require.NotNil(t, input.ClientToken)

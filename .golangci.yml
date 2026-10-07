@@ -1,5 +1,8 @@
 version: "2"
 
+run:
+  allow-serial-runners: true
+
 issues:
   max-same-issues: 10
 

@@ -562,7 +562,10 @@ aws_access_key_id     = XXXX
 aws_secret_access_key = XXXX
 ```
 
-![https://raw.githubusercontent.com/mulgadc/spinifex/refs/heads/main/.github/assets/spinifex-ui.jpg](https://raw.githubusercontent.com/mulgadc/spinifex/refs/heads/main/.github/assets/spinifex-ui.jpg)
+<p align="center">
+  <img src="../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
+</p>
+
 
 **Congratulations! Spinifex is installed.**
 

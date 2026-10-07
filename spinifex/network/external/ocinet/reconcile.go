@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/kvstore"
@@ -20,7 +21,15 @@ type ReconcileResult struct {
 	Stale []string
 	// Skipped is the private IPs left alone because they are not ours.
 	Skipped int
+	// Orphaned is the OCIDs of detached reserved public IPs deleted because
+	// nothing references them and no VNIC could have reported them.
+	Orphaned []string
 }
+
+// orphanGrace is how long a detached reserved public IP must have existed
+// before a reconcile will collect it. CreatePublicIP returns before the address
+// is attached, so anything younger may be another node's allocation in flight.
+const orphanGrace = 30 * time.Minute
 
 // Reconcile squares our record against OCI, in both directions. It is required
 // on startup rather than optional: Allocate creates OCI objects before writing
@@ -35,6 +44,9 @@ type ReconcileResult struct {
 //   - A binding naming objects OCI no longer has is a stale record from an
 //     interrupted Release, or from someone deleting the address in the console.
 //     Drop it, so the address is not reported to a customer as theirs.
+//   - A reserved public IP attached to nothing is on no VNIC, so neither
+//     direction above can see it, and it holds a quota slot until deleted.
+//     Collect it once it is old enough to not be an allocation in flight.
 //
 // **It never touches an object without DisplayNamePrefix.** The reference host
 // carries operator-created secondary addresses on the same VNIC, and a
@@ -53,6 +65,7 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 	// the leak this pass exists to find is precisely an OCI object created
 	// before its binding was written.
 	rec, err := a.store.Get(ctx, a.cfg.Pool.Name)
+	recorded := err == nil
 	if err != nil && !errors.Is(err, kvstore.ErrNotFound) {
 		return res, fmt.Errorf("ocinet reconcile: read bindings: %w", err)
 	}
@@ -149,5 +162,71 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 		res.Stale = stale
 	}
 
+	if err := a.collectOrphanedPublicIPs(ctx, rec, recorded, &res); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// collectOrphanedPublicIPs deletes reserved public IPs that nothing can reach.
+//
+// Four conditions have to hold together, and each one rules out a class of
+// address that must survive:
+//
+//   - Our display-name prefix, so an operator's own reserved address is never
+//     a candidate.
+//   - No private IP, so no guest anywhere is receiving traffic on it.
+//   - Named by no binding in the pool record, because an allocated but
+//     unassociated Elastic IP is detached too and is the customer's to keep.
+//   - Older than orphanGrace, because a detached address is also what a
+//     CreatePublicIP on another node looks like until it finishes attaching.
+//
+// The binding test is only as good as the record, so a pool with no record at
+// all is not swept. That is a pool which has never allocated and has nothing to
+// collect, or a store that cannot be read — and those are indistinguishable
+// from here, while one of them means every held address looks like an orphan.
+func (a *PoolAllocator) collectOrphanedPublicIPs(ctx context.Context, rec Record, recorded bool, res *ReconcileResult) error {
+	if !recorded {
+		slog.DebugContext(ctx, "ocinet reconcile skipped the orphan sweep: no binding record to judge against",
+			"pool", a.cfg.Pool.Name)
+		return nil
+	}
+
+	reserved, err := a.client.ListReservedPublicIPs(ctx, a.cfg.CompartmentID)
+	if err != nil {
+		// A credential without `read public-ips` in the compartment can still
+		// allocate, so refusing the whole pass here would take a working node
+		// down over a cleanup it cannot perform.
+		slog.WarnContext(ctx, "ocinet reconcile could not list reserved public ips; orphans will accumulate",
+			"pool", a.cfg.Pool.Name, "compartment", a.cfg.CompartmentID, "error", err)
+		return nil
+	}
+
+	bound := make(map[string]struct{}, len(rec.Bindings))
+	for _, b := range rec.Bindings {
+		bound[b.PublicIPID] = struct{}{}
+	}
+
+	cutoff := a.now().Add(-orphanGrace)
+	for _, p := range reserved {
+		if !strings.HasPrefix(p.DisplayName, DisplayNamePrefix) || p.PrivateIPID != "" {
+			continue
+		}
+		if _, ok := bound[p.ID]; ok {
+			continue
+		}
+		// A zero TimeCreated means the age is unknown, and an unknown age is
+		// not evidence of an orphan.
+		if p.TimeCreated.IsZero() || p.TimeCreated.After(cutoff) {
+			continue
+		}
+		if err := a.client.DeletePublicIP(ctx, p.ID); err != nil && !errors.Is(err, oci.ErrNotFound) {
+			return fmt.Errorf("ocinet reconcile: collect orphaned public ip %s: %w", p.ID, err)
+		}
+		slog.WarnContext(ctx, "ocinet reconcile collected an orphaned reserved public ip",
+			"pool", a.cfg.Pool.Name, "public_ip_id", p.ID, "public_ip", p.Address.String(),
+			"display_name", p.DisplayName, "created", p.TimeCreated)
+		res.Orphaned = append(res.Orphaned, p.ID)
+	}
+	return nil
 }

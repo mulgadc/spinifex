@@ -1501,11 +1501,13 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 			continue
 		}
 		slog.Info("OCI allocator ready", "pool", p.Name,
-			"collected", len(res.Collected), "stale_bindings", len(res.Stale), "skipped", res.Skipped)
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale),
+			"orphaned_public_ips", len(res.Orphaned), "skipped", res.Skipped)
 		d.ociAllocators = append(d.ociAllocators, ociPool{name: p.Name, alloc: alloc})
 	}
 	if len(d.ociAllocators) > 0 {
 		go d.runOCIAffinityLoop()
+		go d.runOCIReconcileLoop()
 	}
 	return nil
 }
@@ -1550,6 +1552,11 @@ type ociPool struct {
 // guest has finished coming up.
 const ociAffinityInterval = 15 * time.Second
 
+// ociReconcileInterval is how often leaked OCI objects are collected. Slower
+// than the affinity pass by three orders of magnitude: a leak costs money and
+// quota, not reachability, and the pass lists a whole compartment.
+const ociReconcileInterval = 10 * time.Minute
+
 // runOCIAffinityLoop keeps OCI's idea of where an address lives in step with
 // where its guest actually runs. Every node runs its own, like the host EIP
 // loop and for the same reason: the question is about this host's guests, and a
@@ -1565,6 +1572,36 @@ func (d *Daemon) runOCIAffinityLoop() {
 		case <-ticker.C:
 		}
 		d.ClaimOCIAddresses(d.ctx)
+	}
+}
+
+// runOCIReconcileLoop repeats the startup reconcile for as long as the node
+// runs. An address is leaked by a release that half-failed or a guest that went
+// away, both of which happen long after start, and the startup pass alone left
+// those to accumulate against the tenancy's reserved-address quota until a
+// launch failed.
+func (d *Daemon) runOCIReconcileLoop() {
+	ticker := time.NewTicker(ociReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, p := range d.ociAllocators {
+			res, err := p.alloc.Reconcile(d.ctx)
+			if err != nil {
+				slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
+					"pool", p.name, "err", err)
+				continue
+			}
+			if len(res.Collected) > 0 || len(res.Stale) > 0 || len(res.Orphaned) > 0 {
+				slog.Info("OCI allocator reconcile collected leaks", "pool", p.name,
+					"collected", len(res.Collected), "stale_bindings", len(res.Stale),
+					"orphaned_public_ips", len(res.Orphaned))
+			}
+		}
 	}
 }
 

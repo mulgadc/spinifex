@@ -26,6 +26,14 @@
 #                     principal. Default 1, and it needs the tenancy's dynamic
 #                     group to exist. The vm-single-principal topology ignores it
 #                     and always authenticates that way, which is its purpose.
+#
+#                     A tenancy where setup-identity.sh cannot run has no such
+#                     group, and then no principal run can pass: the node forms,
+#                     authenticates, and is refused every allocation. That now
+#                     fails at the allocator gate within a minute of the daemon
+#                     starting rather than an hour later inside a workbook, but
+#                     it still costs a full provision, so drop the topology from
+#                     OCI_TOPOLOGIES until the group exists.
 #   OCI_NO_EXTERNAL_POOL    1 to form with no allocator at all, for a tenancy whose
 #                     dynamic group does not exist yet. The allocator and every
 #                     workbook are then recorded SKIPPED, never PASS, so a green
@@ -37,6 +45,23 @@
 #                     before the pool, as "hook <ssh-key> <host>...". An API-key
 #                     deployment installs its credential here; instance principal
 #                     needs none, so it is skipped unless the pool is key-based.
+#   OCI_PRINCIPAL_TENANCY_OCID, OCI_PRINCIPAL_USER_OCID,
+#   OCI_PRINCIPAL_FINGERPRINT, OCI_PRINCIPAL_PRIVATE_KEY, OCI_PRINCIPAL_REGION,
+#   OCI_PRINCIPAL_COMPARTMENT_OCID
+#                     The credential vm-single-principal builds with, replacing the
+#                     run's own for that one topology. The dynamic group is a
+#                     tenancy-root resource, so a tenancy that will not let
+#                     setup-identity.sh create one refuses every allocation however
+#                     correct the code is, and the principal route has to be proved
+#                     in a tenancy we administer while the rest of the run stays
+#                     where it is.
+#
+#                     All six or none. A partial set builds one tenancy's instances
+#                     against another's compartment, which is refused rather than
+#                     reported; with none set the topology is recorded SKIPPED
+#                     rather than costing a provision to fail. Running it in the
+#                     run's own tenancy is still available by pointing all six
+#                     there, which says so explicitly instead of by default.
 #   OCI_ARTIFACT_DIR  Where logs and the verdict land. Default ./.e2e-oci-<stamp>.
 #   OCI_KEEP_ON_FAIL  1 to leave a failed topology up for inspection. Off by
 #                     default: an OCI bare-metal host left overnight is expensive.
@@ -118,6 +143,59 @@ mkdir -p "$ARTIFACT_DIR"
 VERDICT="$ARTIFACT_DIR/verdict.txt"
 : > "$VERDICT"
 
+# vm-single-principal is the one topology that cannot run wherever the others do.
+# It needs the tenancy's dynamic group, and creating that is a tenancy-root write,
+# so the tenancy a shared test account gives us can never pass it. These let it
+# build somewhere else without moving the rest of the run.
+PRINCIPAL_CRED_VARS="TENANCY_OCID USER_OCID FINGERPRINT PRIVATE_KEY REGION COMPARTMENT_OCID"
+
+# principal_cred_state is none, all or partial. Partial is the one worth a stop:
+# one tenancy's OCIDs with another's compartment builds in a compartment nobody
+# chose, and the apply reports success doing it.
+principal_cred_state() {
+    local name var have=0 miss=0
+    for name in $PRINCIPAL_CRED_VARS; do
+        var="OCI_PRINCIPAL_$name"
+        if [ -n "${!var:-}" ]; then
+            have=$((have + 1))
+        else
+            miss=$((miss + 1))
+        fi
+    done
+    if [ "$have" = 0 ]; then
+        printf 'none\n'
+    elif [ "$miss" = 0 ]; then
+        printf 'all\n'
+    else
+        printf 'partial\n'
+    fi
+}
+
+# Into an array rather than a rendered string, because the private key is a
+# multi-line PEM and any line-based plumbing silently truncates it to its header.
+PRINCIPAL_ENV=()
+build_principal_env() {
+    local name var
+    PRINCIPAL_ENV=()
+    for name in $PRINCIPAL_CRED_VARS; do
+        var="OCI_PRINCIPAL_$name"
+        case "$name" in
+            COMPARTMENT_OCID) PRINCIPAL_ENV+=("TF_VAR_compartment_ocid=${!var}") ;;
+            *) PRINCIPAL_ENV+=("OCI_$name=${!var}") ;;
+        esac
+    done
+}
+
+# Here rather than at the topology, because the build runs first and takes minutes,
+# and a credential that cannot work is knowable before any of it. The loop checks
+# again, since it is what reads the variables.
+case " $TOPOLOGIES " in
+    *" vm-single-principal "*)
+        [ "$(principal_cred_state)" != partial ] \
+            || die "the OCI_PRINCIPAL_* credential is incomplete: set all of $PRINCIPAL_CRED_VARS or none of them"
+        ;;
+esac
+
 # The run page is the evidence, and its readers are not us: someone assessing
 # whether Spinifex works on their cloud should get the answer without opening a
 # log or knowing what this harness is. Markdown on stdout as well as to the step
@@ -154,6 +232,12 @@ summary() {
         printf 'Allocator authenticated as the instance principal.\n\n'
     else
         printf 'Allocator authenticated with an API key, except `vm-single-principal` which authenticates as the instance.\n\n'
+    fi
+    # Said in the summary because the row is otherwise read as a result about the
+    # same tenancy as every row above it, which is the one thing it is not.
+    if [ "$(principal_cred_state)" = all ]; then
+        printf '`vm-single-principal` built in its own tenancy in `%s`, from the `OCI_PRINCIPAL_*` credential.\n\n' \
+            "$OCI_PRINCIPAL_REGION"
     fi
 
     local topology results workbooks gate status detail name secs
@@ -206,6 +290,7 @@ publish_summary() {
 # destroy what one of these runs created.
 sweep() {
     local found=0 dir topology
+    local sweep_env=(env)
     for dir in "$STATE_ROOT"/.validate-*; do
         [ -s "$dir/terraform.tfstate" ] || continue
         python3 -c '
@@ -217,8 +302,16 @@ sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
         # The child reads OCI_STATE_ROOT from the environment, so it looks in the
         # same place this loop found the state rather than beside its own script.
         found=1
+        # The same credential the topology built with, or the destroy authenticates
+        # against a tenancy that never held these resources and reports a clean
+        # sweep over a deployment that is still billing.
+        sweep_env=(env)
+        if [ "$topology" = vm-single-principal ] && [ "$(principal_cred_state)" = all ]; then
+            build_principal_env
+            sweep_env=(env "${PRINCIPAL_ENV[@]}")
+        fi
         log "sweep: $topology still holds resources, destroying"
-        if "$HERE/validate-topology.sh" --topology "$topology" --destroy-only \
+        if "${sweep_env[@]}" "$HERE/validate-topology.sh" --topology "$topology" --destroy-only \
             >> "$ARTIFACT_DIR/sweep.log" 2>&1; then
             log "sweep: $topology destroyed"
         else
@@ -277,6 +370,25 @@ fi
 
 RUN_RC=0
 for topology in $TOPOLOGIES; do
+    # The credential swap happens here and nowhere else, so everything downstream
+    # of the one validate call is unaware the topology built somewhere different.
+    # Always a bare `env` otherwise, because an empty array is an unbound variable
+    # under set -u on the bash 3.2 operators run this with.
+    run_env=(env)
+    if [ "$topology" = vm-single-principal ]; then
+        case "$(principal_cred_state)" in
+            none)
+                log "$topology: SKIPPED -- no OCI_PRINCIPAL_* credential, and the run's own tenancy cannot hold the dynamic group this topology needs"
+                echo "$topology: SKIPPED (no principal credential)" >> "$VERDICT"
+                continue
+                ;;
+            partial)
+                die "the OCI_PRINCIPAL_* credential is incomplete: set all of $PRINCIPAL_CRED_VARS or none of them"
+                ;;
+        esac
+        build_principal_env
+        run_env=(env "${PRINCIPAL_ENV[@]}")
+    fi
     args=(--topology "$topology" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
     [ "$DRY_RUN" = 1 ] && args+=(--dry-run)
     # Two separate choices. --no-external-pool is the one that forms without any
@@ -293,7 +405,14 @@ for topology in $TOPOLOGIES; do
     elif [ "${OCI_INSTANCE_PRINCIPAL:-1}" = 1 ]; then
         args+=(--instance-principal)
     fi
-    [ -n "$DISTRO_TARBALL" ] && args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
+    # Not under --dry-run, where the build was skipped and naming the tarball it
+    # would have produced fails the readable check, so every topology reported FAIL
+    # and the flag operators are told to run first could never pass. Still
+    # unconditional in a real run, so a build that produced nothing stays loud
+    # rather than quietly installing a release instead.
+    if [ -n "$DISTRO_TARBALL" ] && [ "$DRY_RUN" != 1 ]; then
+        args+=(--distro "$DISTRO_TARBALL" --setup-sh "$ARTIFACT_DIR/setup.sh")
+    fi
     if [ "$SOURCE" = release ]; then
         if [ -n "$INSTALL_VERSION" ]; then
             args+=(--version "$INSTALL_VERSION")
@@ -310,7 +429,7 @@ for topology in $TOPOLOGIES; do
     tname="TestOCITopology_${topology//-/_}"
     start=$SECONDS
     echo "=== RUN   $tname"
-    if "$HERE/validate-topology.sh" "${args[@]}" 2>&1 | tee "$ARTIFACT_DIR/$topology.log"; then
+    if "${run_env[@]}" "$HERE/validate-topology.sh" "${args[@]}" 2>&1 | tee "$ARTIFACT_DIR/$topology.log"; then
         printf -- '--- PASS: %s (%d.00s)\n' "$tname" "$((SECONDS - start))"
         echo "$topology: PASS" >> "$VERDICT"
     else

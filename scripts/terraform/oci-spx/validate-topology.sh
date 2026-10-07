@@ -6,6 +6,10 @@
 #
 # Every run is build-prove-destroy. A topology that cannot be torn down is half
 # proved, so the teardown decides the verdict and runs even on failure.
+#
+# MUST MAINTAIN BASH 3.X COMPATABILITY. Operators run this on macOS, which ships
+# bash 3.2: no declare -A, no mapfile, and under set -u an empty "${arr[@]}" is an
+# unbound variable, so guard every such expansion with ${#arr[@]}.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -223,10 +227,13 @@ tf() {
 # terraform output takes -state but not -var, so the two sets are kept apart. They
 # were one set once, and the -var made output fail into the default state file.
 tf_state=(-state "$STATE_DIR/terraform.tfstate")
-tf_vars=(
-    "${tf_principal_var[@]}"
-    "${tf_state[@]}"
-)
+tf_vars=("${tf_state[@]}")
+# Expanded only when it holds something. bash before 4.4, which is what macOS
+# ships, calls "${arr[@]}" on an empty array an unbound variable under set -u, and
+# tf_principal_var is empty on every run that did not pass --instance-principal.
+if [ "${#tf_principal_var[@]}" -gt 0 ]; then
+    tf_vars=("${tf_principal_var[@]}" "${tf_vars[@]}")
+fi
 
 ssh_node() {
     local host="$1"
@@ -244,6 +251,9 @@ ssh_node() {
 # tail for context -- unbounded, a multi-hour suite's journal dwarfs the artifact.
 capture_journals() {
     local host
+    # A failure before the apply leaves no hosts, and on bash before 4.4 iterating
+    # the empty array is an unbound-variable error rather than zero passes.
+    [ "${#HOSTS[@]}" -gt 0 ] || return 0
     for host in "${HOSTS[@]}"; do
         ssh_node "$host" '
             echo "=== spinifex, warning and above ==="
@@ -378,8 +388,38 @@ for res in state.get("resources", []):
     [ -n "$stray" ] && log "NOTE: the hand-driven state in $HERE still holds: $stray"
 fi
 
+# Terraform ranks a *.auto.tfvars file above TF_VAR_*, so a leftover one wins
+# silently over an operator targeting a different tenancy by environment. The
+# guide tells every operator to write one, which is what makes this likely.
+assert_no_tfvars_override() {
+    local f want got
+    want="${TF_VAR_compartment_ocid:-}"
+    [ -n "$want" ] || return 0
+    for f in "$HERE"/*.auto.tfvars "$HERE"/terraform.tfvars; do
+        [ -f "$f" ] || continue
+        got=$(sed -n 's/^[[:space:]]*compartment_ocid[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | tail -1)
+        [ -n "$got" ] || continue
+        [ "$got" = "$want" ] && continue
+        die "${f##*/} sets compartment_ocid=$got, which Terraform ranks above the TF_VAR_compartment_ocid=$want this run was given, so it would build in a compartment nobody chose. Remove that file or make it agree."
+    done
+}
+assert_no_tfvars_override
+
 if [ "$DRY_RUN" = 1 ]; then
-    tf plan -no-color "${tf_vars[@]}" | tail -30
+    # Whole plan to a file, summary to the terminal. A dry run is here to catch a
+    # plan aimed at the wrong compartment, and `tail` dropped the resource count
+    # and every compartment and shape line along with it, leaving only the outputs
+    # block -- so the one check it exists for could not be made from its output.
+    mkdir -p "$STATE_DIR"
+    tf plan -no-color "${tf_vars[@]}" > "$STATE_DIR/plan.txt" 2>&1 \
+        || { tail -30 "$STATE_DIR/plan.txt"; die "plan failed; see $STATE_DIR/plan.txt"; }
+    grep -E '^Plan: |^(No changes)' "$STATE_DIR/plan.txt" || true
+    printf 'compartment and shape as planned:\n'
+    # Terraform aligns the = to the widest key in each block, so the same value
+    # appears several times at several indents unless the spacing is normalised.
+    grep -hoE '(compartment_id|shape|availability_domain) += +"[^"]*"' "$STATE_DIR/plan.txt" \
+        | sed -E 's/ +=/ =/' | sort -u | sed 's/^/  /'
+    log "full plan in $STATE_DIR/plan.txt"
     plan="install Spinifex on $NODES node(s), form the cluster"
     [ "$SKIP_POOL" = 1 ] && plan="$plan, configure no external pool"
     if [ "$SKIP_WORKLOAD" = 1 ]; then
@@ -623,9 +663,16 @@ allocator_diagnostics() {
     ' 2>&1
 }
 
-# resolved the external VNIC is the line that proves the credential works, the
-# compartment is right and br-wan's MAC matched a real VNIC. A node missing it
-# accepts allocate-address and then fails it.
+# credential authorised to allocate is the line that proves the credential is
+# accepted, in the right compartment, and holds every permission an allocation
+# needs. A node missing it accepts allocate-address and then fails it.
+#
+# "resolved the external VNIC" is not enough and was what this used to wait for.
+# That line comes from the metadata service and needs no IAM policy at all, so a
+# node with an unauthorised credential passed here and failed hours later inside
+# a workbook, reported as capacity.
+ALLOCATOR_READY='ocinet credential authorised to allocate'
+ALLOCATOR_DENIED='ocinet credential cannot allocate an external address'
 if [ "$SKIP_POOL" = 1 ]; then
     log "--no-external-pool: no allocator to check"
     record "oci allocator" SKIPPED "no external pool configured"
@@ -637,9 +684,15 @@ else
             # spinifex-daemon, not spinifex-vpcd: the allocator is built in the
             # daemon, and vpcd only consumes the addresses it hands out. Gating on
             # vpcd's journal failed a node whose allocator was working.
-            if ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -q 'resolved the external VNIC'" 2>/dev/null; then
+            if ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -q '$ALLOCATOR_READY'" 2>/dev/null; then
                 found=1
                 break
+            fi
+            # A refusal is final, so waiting out the remaining five minutes only
+            # delays a verdict the node has already reached.
+            if denial=$(ssh_node "$host" "sudo journalctl -u spinifex-daemon --since -10min --no-pager | grep -m1 '$ALLOCATOR_DENIED'" 2>/dev/null) && [ -n "$denial" ]; then
+                allocator_diagnostics "$host" > "$STATE_DIR/allocator-$host.log" 2>&1 || true
+                die "$host refused its own OCI credential: ${denial#*$ALLOCATOR_DENIED}. Diagnostics: $STATE_DIR/allocator-$host.log"
             fi
             sleep 10
         done
@@ -649,7 +702,7 @@ else
             # not load, a bridge MAC matching no VNIC, and a pool vpcd never read --
             # and they are indistinguishable from the missing log line alone.
             allocator_diagnostics "$host" > "$STATE_DIR/allocator-$host.log" 2>&1 || true
-            die "$host never logged 'resolved the external VNIC'; the OCI allocator is not up, so no guest can get a public address. Diagnostics: $STATE_DIR/allocator-$host.log"
+            die "$host never logged '$ALLOCATOR_READY'; the OCI allocator is not up, so no guest can get a public address. Diagnostics: $STATE_DIR/allocator-$host.log"
         fi
         log "$host allocator ready"
     done
@@ -686,6 +739,24 @@ fi
 # workbooks, so a workbook that passes on a hypervisor and fails on OCI is a
 # difference in OCI and not in the test. It owns its own per-workbook assertions
 # and destroys each one it builds.
+# The suite used to run with stdout redirected to a file, so a run wedged inside a
+# workbook printed nothing at all until it finished. Streamed now, and each of the
+# driver's own RUN/PASS/FAIL lines is stamped with elapsed seconds and the workbook.
+stream_workbooks() {
+    local start=$SECONDS line current="(starting)"
+    while IFS= read -r line; do
+        case "$line" in
+            '=== RUN'*)
+                current="${line##*RUN   }"
+                printf '[validate-%s] %5ds workbook START %s\n' "$TOPOLOGY" "$((SECONDS - start))" "$current" ;;
+            '--- PASS'*|'--- FAIL'*|'--- SKIP'*)
+                printf '[validate-%s] %5ds workbook %s\n' "$TOPOLOGY" "$((SECONDS - start))" "$line" ;;
+            *)
+                printf '%s\n' "$line" ;;
+        esac
+    done
+}
+
 log "running the published workbooks"
 DRIVER="$REPO_ROOT/tests/e2e/run-tofu-examples-e2e.sh"
 [ -r "$DRIVER" ] || die "no workbook driver at $DRIVER"
@@ -760,7 +831,7 @@ if ssh -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
     -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ExitOnForwardFailure=yes -R "$PUBLIC_PROXY_PORT" "ubuntu@${HOSTS[0]}" \
     "chmod +x ~/run-tofu-examples-e2e.sh; $workbook_env ~/run-tofu-examples-e2e.sh" \
-    > "$STATE_DIR/workbooks.log" 2>&1; then
+    2>&1 | tee "$STATE_DIR/workbooks.log" | stream_workbooks; then
     record_workbooks "$STATE_DIR/workbooks.log"
     passed="$(grep -c '^--- PASS' "$STATE_DIR/workbooks.log" || true)"
     ran="$(grep -c '^=== RUN' "$STATE_DIR/workbooks.log" || true)"

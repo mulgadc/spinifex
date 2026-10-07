@@ -48,7 +48,7 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 		compartmentID = inst.CompartmentID
 	}
 
-	return New(client, NewKVStore(js), Config{
+	alloc, err := New(client, NewKVStore(js), Config{
 		Pool:          pool,
 		VNICID:        vnicID,
 		CompartmentID: compartmentID,
@@ -65,6 +65,15 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 				GatewayPortLocal(ctx, topology.GatewayChassisRedirectPort(vpcID))
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Before this, resolving the VNIC was the last thing logged, and that comes
+	// from the metadata service and needs no IAM policy at all. So an
+	// unauthorised node looked ready and refused the first launch instead.
+	reportAuthorisation(ctx, alloc, pool)
+	return alloc, nil
 }
 
 // newClient authenticates the way the pool asks. Instance principal takes the

@@ -71,6 +71,12 @@ ubuntu-26.04-x86_64     | ubuntu | 26.04   | x86_64 | uefi
 spx admin images import --name ubuntu-26.04-x86_64
 ```
 
+Verify the import and note the AMI ID:
+
+```bash
+AMI_ID=$(aws ec2 describe-images --query 'Images[0].ImageId' --output text)
+```
+
 ### Option B: Import a local image file
 
 ```bash
@@ -95,12 +101,12 @@ for img in spinifex-rds-postgres spinifex-rds-mariadb spinifex-ecs-node spinifex
 done
 ```
 
-| Image | Serves | Contents |
-| --- | --- | --- |
-| `spinifex-rds-postgres` | RDS, `--engine postgres` | Alpine 3.24.1 + PostgreSQL 18 + `rds-init` |
-| `spinifex-rds-mariadb` | RDS, `--engine mariadb` | Alpine 3.24.1 + MariaDB 11.8 + `rds-init` |
-| `spinifex-ecs-node` | ECS container instances | Alpine 3.21.7 + containerd + ecs-agent |
-| `spinifex-eks-node` | EKS control plane and nodegroups | Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook |
+| Image                   | Serves                           | Contents                                        |
+| ----------------------- | -------------------------------- | ----------------------------------------------- |
+| `spinifex-rds-postgres` | RDS, `--engine postgres`         | Alpine 3.24.1 + PostgreSQL 18 + `rds-init`      |
+| `spinifex-rds-mariadb`  | RDS, `--engine mariadb`          | Alpine 3.24.1 + MariaDB 11.8 + `rds-init`       |
+| `spinifex-ecs-node`     | ECS container instances          | Alpine 3.21.7 + containerd + ecs-agent          |
+| `spinifex-eks-node`     | EKS control plane and nodegroups | Alpine 3.21.7 + K3s v1.32.5 + eks-token-webhook |
 
 All four boot **BIOS**, unlike the distro images, which boot UEFI. That is a property of how they are built and nothing you need to pass.
 
@@ -168,7 +174,7 @@ aws ec2 attach-internet-gateway \
 
 ### Create a Subnet
 
-Create the subnet your instances will launch into. The routing and public-IP steps below are what make it a *public* subnet.
+Create the subnet your instances will launch into. The routing and public-IP steps below are what make it a _public_ subnet.
 
 ```bash
 SUBNET_ID=$(aws ec2 create-subnet \
@@ -349,17 +355,17 @@ https://YOUR_NODE_IP:3000
 
 On first load, your browser will show a TLS warning — Spinifex generates a self-signed certificate at install time. This is expected.
 
-1. Accept the warning to reach the login page (exact wording varies by browser — e.g. Chrome: *Advanced → Proceed to ...*, Firefox: *Advanced → Accept the Risk and Continue*).
+1. Accept the warning to reach the login page (exact wording varies by browser — e.g. Chrome: _Advanced → Proceed to ..._, Firefox: _Advanced → Accept the Risk and Continue_).
 2. On the login page, click **Download Certificate** and save `spinifex-ca.pem` to your machine.
 3. Install the certificate as a **trusted root** on your workstation, following the steps for your platform below.
 4. Restart your browser and reload `https://YOUR_NODE_IP:3000`. The padlock should now show a valid certificate.
 
 Step 3, by platform:
 
-- **macOS:** open `spinifex-ca.pem` in Keychain Access → *System* keychain → set *Trust* to **Always Trust**.
+- **macOS:** open `spinifex-ca.pem` in Keychain Access → _System_ keychain → set _Trust_ to **Always Trust**.
 - **Linux:** `sudo cp spinifex-ca.pem /usr/local/share/ca-certificates/spinifex-ca.crt && sudo update-ca-certificates`
-- **Windows:** double-click the file → *Install Certificate* → *Local Machine* → *Trusted Root Certification Authorities*.
-- **Browser-only (Firefox):** *Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import* and tick *Trust this CA to identify websites*.
+- **Windows:** double-click the file → _Install Certificate_ → _Local Machine_ → _Trusted Root Certification Authorities_.
+- **Browser-only (Firefox):** _Settings → Privacy & Security → Certificates → View Certificates → Authorities → Import_ and tick _Trust this CA to identify websites_.
 
 > **Why this is required:** the UI logs in by reading your AWS credentials through a trusted TLS channel. Browsers refuse to send credentials over an untrusted connection, so the certificate must be installed as trusted — temporary "Proceed anyway" exceptions won't work for login.
 

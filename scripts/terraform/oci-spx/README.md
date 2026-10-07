@@ -57,7 +57,7 @@ python3 scripts/oci_env.py --ssh-public-key-path <path_to_public_ssh_key> -- ter
 | `terraform.tfvars.example` | Example non-secret Terraform inputs. Copy it to untracked `terraform.auto.tfvars` for local overrides. |
 | `terraform.tfstate` | Terraform state; generated locally unless a remote backend is configured. Do not commit it. |
 
-The helper defaults to OCI profile `apacanzset03child03`. If it is absent and `apacanzset03child3` is locally configured, the helper explicitly falls back to that profile. Override either setting when needed:
+The helper reads the `DEFAULT` profile, which is what `oci setup config` writes. Set `OCI_CLI_PROFILE` or pass `--profile` to read a different one; a named profile the config does not hold is an error rather than a fallback, so a deployment cannot land in a tenancy nobody chose.
 
 ```bash
 python3 scripts/oci_env.py --profile my-profile --region ap-sydney-1 -- terraform plan
@@ -228,9 +228,11 @@ Create them once per tenancy, then every deployment and rebuild afterwards uses 
 
 `setup-identity.sh` targets only those two resources and keeps them in `.identity/terraform.tfstate`, separate from every topology's state. That separation is load-bearing: `validate-topology.sh` destroys its own state at the end of each run, so holding tenancy resources there would let a nightly teardown delete the tenancy's policy.
 
-**`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `resolved the external VNIC` in each node's `spinifex-vpcd` journal.
+**`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `ocinet credential authorised to allocate` in each node's `spinifex-daemon` journal.
 
-The policy grants three verbs in one compartment — `use vnics`, `manage private-ips`, `manage public-ips` — which is exactly what allocating an external address does and nothing more.
+The policy grants four verbs in one compartment: `use vnics`, `manage private-ips`, `manage public-ips` and `use subnets`.
+That is exactly what allocating an external address does and nothing more.
+`use subnets` looks unrelated and is not: `CreatePrivateIp` is checked against `SUBNET_ATTACH` and `CreatePrivateIp` is how an address is registered, so a policy without it authorises nothing and every allocation returns a 404.
 
 **An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit.
 
@@ -270,6 +272,8 @@ Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/exter
 The count that later gates read is the number of addresses the `hosts_file` output names, not the number asked for, and the run logs the shape and count it built. A tfvars that changes either is reported rather than silently diverging from the topology's name.
 
 **The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
+
+**A clean teardown can still leave public IPs behind, and they count against the tenancy.** The addresses Spinifex allocates for guests are created by the running node, so they are in no Terraform state and `destroy` neither sees nor removes them. The node's own reconcile collects detached ones every ten minutes, which is exactly the sweep a destroy takes away. Twenty accumulated in `spxbm` over four runs and exhausted the tenancy's 50 reserved-public-IP limit, at which point every later launch in every compartment failed. [Check for leftover public IPs afterwards](../../../docs/oci-integration/README.md#check-for-leftover-public-ips-afterwards) has the query and the rule for reading it.
 
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 

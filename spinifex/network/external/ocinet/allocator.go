@@ -48,6 +48,12 @@ const DisplayNamePrefix = "spinifex-"
 // an Elastic IP from an auto-assigned address without importing handlers.
 const purposeEIP = "eip"
 
+// The two OCI objects Allocate creates, each with its own tenancy limit.
+const (
+	objectPrivateIP = "private-ip"
+	objectPublicIP  = "public-ip"
+)
+
 // assignSchedule is the poll ladder for an address to reach ASSIGNED. OCI
 // assignment is asynchronous: CreatePublicIp returns ASSIGNING and the address
 // is not reachable until it settles. Shaped like the DHCP manager's DORA ladder
@@ -121,6 +127,9 @@ type Config struct {
 	Budget   time.Duration
 	// Sleep is the delay function, so tests do not wait.
 	Sleep func(context.Context, time.Duration) error
+	// Now is the clock the orphan grace period is measured against, so a test
+	// can age an address without waiting for it.
+	Now func() time.Time
 }
 
 // Store persists bindings. Implemented over JetStream KV in store.go; the
@@ -147,6 +156,7 @@ type PoolAllocator struct {
 	schedule     []time.Duration
 	budget       time.Duration
 	sleep        func(context.Context, time.Duration) error
+	now          func() time.Time
 	localPorts   func(context.Context) (map[string]struct{}, error)
 	localGateway func(context.Context, string) (bool, error)
 }
@@ -177,6 +187,7 @@ func New(client oci.Client, store Store, cfg Config) (*PoolAllocator, error) {
 		schedule:     cfg.Schedule,
 		budget:       cfg.Budget,
 		sleep:        cfg.Sleep,
+		now:          cfg.Now,
 		localPorts:   cfg.LocalPorts,
 		localGateway: cfg.LocalGateway,
 	}
@@ -188,6 +199,9 @@ func New(client oci.Client, store Store, cfg Config) (*PoolAllocator, error) {
 	}
 	if a.sleep == nil {
 		a.sleep = sleepCtx
+	}
+	if a.now == nil {
+		a.now = time.Now
 	}
 	return a, nil
 }
@@ -211,7 +225,7 @@ func (a *PoolAllocator) Allocate(ctx context.Context, req external.AllocateReque
 	name := displayName(req)
 	priv, err := a.client.AssignPrivateIP(ctx, a.cfg.VNICID, netip.Addr{}, name)
 	if err != nil {
-		return netip.Addr{}, capacityErr(fmt.Errorf("ocinet: assign private ip: %w", err), err)
+		return netip.Addr{}, capacityErr(objectPrivateIP, fmt.Errorf("ocinet: assign private ip: %w", err), err)
 	}
 
 	pub, err := a.client.CreatePublicIP(ctx, a.cfg.CompartmentID, priv.ID, name)
@@ -219,7 +233,7 @@ func (a *PoolAllocator) Allocate(ctx context.Context, req external.AllocateReque
 		// Give the private IP back rather than leaving it for Reconcile: we are
 		// still here and we know exactly what we just made.
 		a.undoPrivate(ctx, priv.ID)
-		return netip.Addr{}, capacityErr(fmt.Errorf("ocinet: create public ip: %w", err), err)
+		return netip.Addr{}, capacityErr(objectPublicIP, fmt.Errorf("ocinet: create public ip: %w", err), err)
 	}
 
 	pub, err = a.waitAssigned(ctx, pub)
@@ -448,14 +462,21 @@ func (a *PoolAllocator) undoPublic(ctx context.Context, publicIPID string) {
 	}
 }
 
-// capacityErr maps an OCI quota refusal onto the AWS error that means the same
-// thing, so a customer who has hit the 64-per-VNIC or 50-per-region ceiling is
-// told they are out of addresses rather than shown an Oracle error code.
-func capacityErr(wrapped, raw error) error {
-	if errors.Is(raw, oci.ErrLimitExceeded) {
-		return fmt.Errorf("%w: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity), wrapped)
+// capacityErr maps an OCI quota refusal onto the AWS error for the same limit.
+// The two ceilings are different failures and a single capacity code hides
+// which one was hit, which is the difference between waiting and releasing.
+func capacityErr(object string, wrapped, raw error) error {
+	if !errors.Is(raw, oci.ErrLimitExceeded) {
+		return wrapped
 	}
-	return wrapped
+	code := awserrors.ErrorInsufficientAddressCapacity
+	switch object {
+	case objectPublicIP:
+		code = awserrors.ErrorAddressLimitExceeded
+	case objectPrivateIP:
+		code = awserrors.ErrorPrivateIpAddressLimitExceeded
+	}
+	return fmt.Errorf("%w: %w", errors.New(code), wrapped)
 }
 
 // displayName marks the object as ours and carries the AWS identity, so the OCI

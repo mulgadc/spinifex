@@ -262,6 +262,17 @@ test-cover:
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
 
+# Refresh the README coverage badge. Measured as awesome-go documents
+# (-coverpkg=./... over ./...), with cmd/ entrypoints left out of the total.
+coverage-badge:
+	@echo -e "\n....Measuring whole-module coverage for the README badge...."
+	LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 600s -covermode=atomic -coverpkg=./... -coverprofile=coverage-badge.out ./...
+	@grep -v '/cmd/' coverage-badge.out > coverage-badge-nocmd.out
+	@pct=$$(go tool cover -func=coverage-badge-nocmd.out | tail -1 | awk '{print $$NF}' | tr -d '%'); \
+	color=$$(awk -v p="$$pct" 'BEGIN { print (p >= 80) ? "brightgreen" : (p >= 70) ? "yellow" : "red" }'); \
+	sed -i -E "s|badge/coverage-[0-9.]+%25-[a-z]+|badge/coverage-$${pct}%25-$${color}|" README.md; \
+	echo "Coverage $${pct}% ($${color}); README badge updated"
+
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
@@ -464,7 +475,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover coverage-badge test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

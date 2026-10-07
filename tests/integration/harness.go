@@ -74,6 +74,10 @@ const (
 	// GatewayConfig.InternalSuffix (unset here; the in-process harness talks to
 	// the gateway's httptest address directly rather than a registry hostname).
 	testECRAudience = "ecr.integration-test"
+
+	// testECRServicesDomain completes the AWS-shaped registry host ECR
+	// responses advertise; no test resolves it.
+	testECRServicesDomain = "integration.test"
 )
 
 // Gateway is a running in-process instance of the real AWS gateway router,
@@ -162,10 +166,20 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 
 	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
 
-	// ECR's control plane registers with only its NATS relay; the composed
-	// capabilities the awsgw role supplies are not wired here.
+	// ECR's control plane is composed as the awsgw role composes it, sharing
+	// the OCI registry, meta store and token issuer the /v2 data plane uses.
+	ecrMeta := handlers_ecr.NewNATSMetaStore(nc)
+	ecrRegistry := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), ecrMeta, awsidentifiers.GlobalAccountID)
+	ecrIssuer := ecrauth.NewIssuer(signingKey, testECRAudience)
+	ecrEndpoint := awsapi.RepositoryEndpoint{Region: testRegion, ServicesDomain: testECRServicesDomain}
 	services := awsdispatch.NewBuilder()
-	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{
+		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
+		LifecyclePreview:   awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
+		Repository:         awsapi.NewRepositoryActionService(ecrMeta, ecrEndpoint),
+		AuthorizationToken: awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
+		NATS:               nc,
+	})))
 
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
@@ -181,8 +195,8 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		// repositories must additionally call StartECRDaemonLite to subscribe a
 		// real MetaServiceImpl or every ECR request will time out with no
 		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), awsidentifiers.GlobalAccountID),
-		ECRTokenIssuer:   ecrauth.NewIssuer(signingKey, testECRAudience),
+		ECRRegistry:      ecrRegistry,
+		ECRTokenIssuer:   ecrIssuer,
 		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
 		// Ochre model access is deny-by-default, so without a grant store every
 		// bedrock route refuses. Tests sign as the system account, which the

@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -283,4 +284,75 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 	completed, err := daemon.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, adminAccount)
 	require.NoError(t, err)
 	assert.Len(t, completed.InternetGateways, 1)
+}
+
+// Without persistence the VPC service reports no default VPC and no error; the
+// handlers must say so rather than reply with an empty ID.
+func TestDefaultVPCHandlers_NoPersistence(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{}
+
+	msg, sub := syncReply(t, d.natsConn, "ec2.test.EnsureDefaultVpc.nopersist", []byte(`{"account_id":"000000000771"}`))
+	assert.Equal(t, outcomeError, d.handleEnsureDefaultVpc(msg))
+	reply, err := sub.NextMsg(2 * time.Second)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"error":"default VPC has no ID"}`, string(reply.Data))
+
+	assert.Equal(t, outcomeSuccess, d.handleAccountCreated(noReplyMsg("account.created", []byte(`{"account_id":"000000000771"}`))),
+		"with no gateway service there is no infrastructure to build")
+}
+
+func TestDefaultVPCHandlers_UnreadableClaim(t *testing.T) {
+	d, nc := createDefaultVPCTestDaemon(t)
+	const account = "000000000772"
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	defaults, err := js.KeyValue(t.Context(), handlers_ec2_vpc.KVBucketDefaultVPCs)
+	require.NoError(t, err)
+	_, err = defaults.Put(t.Context(), account, []byte("{"))
+	require.NoError(t, err)
+
+	assert.Equal(t, outcomeError, d.handleAccountCreated(noReplyMsg("account.created", []byte(`{"account_id":"`+account+`"}`))))
+
+	msg, sub := syncReply(t, nc, "ec2.test.EnsureDefaultVpc.unreadable", []byte(`{"account_id":"`+account+`"}`))
+	assert.Equal(t, outcomeError, d.handleEnsureDefaultVpc(msg))
+	reply, err := sub.NextMsg(2 * time.Second)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"error":"could not create default VPC"}`, string(reply.Data))
+
+	// A requester that has gone away still gets the work done.
+	assert.Equal(t, outcomeError, d.handleEnsureDefaultVpc(noReplyMsg("ec2.EnsureDefaultVpc", []byte(`{"account_id":"`+account+`"}`))))
+}
+
+func TestEnsureDefaultVPCInfrastructure_Partial(t *testing.T) {
+	d, _ := createDefaultVPCTestDaemon(t)
+
+	t.Run("account without a default VPC", func(t *testing.T) {
+		const account = "000000000773"
+		d.ensureDefaultVPCInfrastructureFor(t.Context(), account)
+		igws, err := d.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, account)
+		require.NoError(t, err)
+		assert.Empty(t, igws.InternetGateways)
+	})
+
+	t.Run("route waits for a gateway", func(t *testing.T) {
+		const account = "000000000775"
+		info, err := d.vpcService.EnsureDefaultVPC(account)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+
+		d.ensureDefaultIGWRoute(t.Context(), account, info.VpcId)
+
+		out, err := d.routeTableService.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{
+			Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: []*string{aws.String(info.VpcId)}}},
+		}, account)
+		require.NoError(t, err)
+		require.NotEmpty(t, out.RouteTables)
+		for _, rtb := range out.RouteTables {
+			for _, r := range rtb.Routes {
+				assert.NotEqual(t, "0.0.0.0/0", aws.StringValue(r.DestinationCidrBlock),
+					"a default route with no gateway would black-hole egress")
+			}
+		}
+	})
 }

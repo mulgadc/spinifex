@@ -32,6 +32,8 @@ func ValidateResetImageAttributeInput(input *ec2.ResetImageAttributeInput) error
 	return nil
 }
 
+// ResetImageAttribute implements the EC2 ResetImageAttribute action for the description
+// attribute, forwarding to the NATS image service scoped to accountID.
 func ResetImageAttribute(ctx context.Context, input *ec2.ResetImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ResetImageAttributeOutput, error) {
 	var output ec2.ResetImageAttributeOutput
 

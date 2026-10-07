@@ -14,6 +14,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateStopInstancesInput rejects a nil input with InvalidParameterValue and an empty
+// InstanceIds list with MissingParameter.
 func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

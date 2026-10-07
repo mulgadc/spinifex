@@ -10,6 +10,7 @@ import (
 )
 
 func TestCreateCluster_EndpointDNSNameUsesOwnerAccount(t *testing.T) {
+	t.Parallel()
 	fixture := newEKSServiceFixture(t)
 	fixture.svc.baseDomain = "spx3.net"
 
@@ -24,6 +25,7 @@ func TestCreateCluster_EndpointDNSNameUsesOwnerAccount(t *testing.T) {
 }
 
 func TestDesiredDNSChanges_IncludesEndpointReadyCreatingClusters(t *testing.T) {
+	t.Parallel()
 	fixture := newEKSServiceFixture(t)
 	fixture.svc.baseDomain = "spx3.net"
 
@@ -52,6 +54,7 @@ func TestDesiredDNSChanges_IncludesEndpointReadyCreatingClusters(t *testing.T) {
 }
 
 func TestDesiredDNSChanges_MetadataReadFailureIsNotAuthoritative(t *testing.T) {
+	t.Parallel()
 	fixture := newEKSServiceFixture(t)
 	fixture.svc.baseDomain = "spx3.net"
 
@@ -73,6 +76,7 @@ func TestDesiredDNSChanges_MetadataReadFailureIsNotAuthoritative(t *testing.T) {
 }
 
 func TestDesiredDNSChanges_EnumerationFailureIsNotAuthoritative(t *testing.T) {
+	t.Parallel()
 	fixture := newEKSServiceFixture(t)
 	fixture.svc.baseDomain = "spx3.net"
 

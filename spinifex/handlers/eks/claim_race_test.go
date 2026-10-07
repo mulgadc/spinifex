@@ -33,6 +33,7 @@ func classifyCreateErrs(t *testing.T, errs []error) (ok, inUse int) {
 // asserted structurally here and enforced under -race (a double-claim would
 // race the launcher fakes the winner mutates).
 func TestCreateCluster_ConcurrentSameNameSingleOwner(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	const n = 2
@@ -61,6 +62,7 @@ func TestCreateCluster_ConcurrentSameNameSingleOwner(t *testing.T) {
 // caller CAS-flips FAILED→CREATING and proceeds, the other loses the CAS and is
 // rejected ResourceInUse. No double purge/relaunch.
 func TestCreateCluster_ConcurrentReclaimSingleOwner(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	meta := sampleClusterMeta("race")
@@ -94,6 +96,7 @@ func TestCreateCluster_ConcurrentReclaimSingleOwner(t *testing.T) {
 // exactly one launch (the loser returns at the record claim before
 // launchWorkers).
 func TestCreateNodegroup_ConcurrentSameNameSingleOwner(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 

@@ -1,3 +1,5 @@
+// Package eip implements the EC2 Elastic IP actions: it validates
+// each request and forwards it to the EIP service over NATS.
 package eip
 
 import (

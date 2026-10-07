@@ -46,8 +46,8 @@ func TestPutImage_ValidatesRequestAndMapsStoreErrors(t *testing.T) {
 		code   string
 	}{
 		{"missing writer", nil, `{"repositoryName":"team/app","imageManifest":"{}"}`, awserrors.ErrorServerInternal},
-		{"malformed", &fakeManifestWriter{}, `{`, awserrors.ErrorInvalidParameterValue},
-		{"missing manifest", &fakeManifestWriter{}, `{"repositoryName":"team/app"}`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", &fakeManifestWriter{}, `{`, awserrors.ErrorECRInvalidParameter},
+		{"missing manifest", &fakeManifestWriter{}, `{"repositoryName":"team/app"}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", &fakeManifestWriter{}, `{"repositoryName":"team/app","registryId":"999999999999","imageManifest":"{}"}`, awserrors.ErrorAccessDenied},
 		{"digest mismatch", &fakeManifestWriter{err: &ecrregistry.ManifestStoreError{Code: "DIGEST_INVALID"}}, `{"repositoryName":"team/app","imageManifest":"{}"}`, awserrors.ErrorImageDigestDoesNotMatch},
 		{"backend failure", &fakeManifestWriter{err: errors.New("unavailable")}, `{"repositoryName":"team/app","imageManifest":"{}"}`, awserrors.ErrorServerInternal},

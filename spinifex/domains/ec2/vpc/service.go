@@ -1,3 +1,6 @@
+// Package vpc implements the EC2 VPC, subnet, network interface
+// and security group actions: the VPCService contract, its daemon-side
+// JetStream KV implementation with the internal and external IPAM, and its NATS client.
 package vpc
 
 import (

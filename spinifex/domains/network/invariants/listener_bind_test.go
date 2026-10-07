@@ -37,6 +37,7 @@ import (
 // call. It was found by hand on a live node; this is what would have caught
 // it at review time.
 func TestListenerBindSitesMatchInventory(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	table, err := listenerinventory.Parse(string(networkconnections.README()))
 	if err != nil {
@@ -241,6 +242,7 @@ func checkBindSite(table *listenerinventory.Table, s bindSite, root string) stri
 // port absent from the inventory must still be rejected, not silently
 // waved through.
 func TestCheckBindSite_RejectsUndocumentedPort(t *testing.T) {
+	t.Parallel()
 	const doc = `# doc
 
 ## 1. Inbound Listeners

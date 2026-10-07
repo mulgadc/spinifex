@@ -67,7 +67,7 @@ func CreateRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 	}
 
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err == nil {
-		return nil, errors.New(awserrors.ErrorRepositoryAlreadyExists)
+		return nil, RepositoryAlreadyExistsError(accountID, req.RepositoryName)
 	} else if !errors.Is(err, handlers_ecr.ErrNotFound) {
 		slog.ErrorContext(ctx, "ECR CreateRepository: get repository failed", "repository", req.RepositoryName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -119,16 +119,17 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 	case handlers_ecr.EncryptionTypeAES256:
 		return cfg.EncryptionType, nil
 	case handlers_ecr.EncryptionTypeKMS:
-		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		return "", awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
 			"encryptionType KMS is not supported: no customer-managed key is used, and repositories are already encrypted at rest under a server-managed AES-256 key")
 	default:
-		return "", EnumValueError("encryptionConfiguration.encryptionType", cfg.EncryptionType,
-			handlers_ecr.EncryptionTypeAES256, handlers_ecr.EncryptionTypeKMS)
+		return "", EnumValueError("encryptionConfiguration.encryptionType",
+			handlers_ecr.EncryptionTypeAES256, "KMS_DSSE", handlers_ecr.EncryptionTypeKMS)
 	}
 }
 
 // normalizeTagMutability validates the create-time mutability, defaulting an
-// empty value to MUTABLE.
+// empty value to MUTABLE. An unknown value is rejected with
+// InvalidParameterException.
 func normalizeTagMutability(value string) (string, error) {
 	switch value {
 	case "":
@@ -136,7 +137,6 @@ func normalizeTagMutability(value string) (string, error) {
 	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
 		return value, nil
 	default:
-		return "", EnumValueError("imageTagMutability", value,
-			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
+		return "", EnumValueError("imageTagMutability", ImageTagMutabilityValues...)
 	}
 }

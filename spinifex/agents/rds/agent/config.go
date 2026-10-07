@@ -81,7 +81,7 @@ type Config struct {
 	AgentVersion string
 }
 
-// Reads the cloud-init env file, then lets real env vars override.
+// LoadConfig reads the cloud-init env file, then lets real env vars override.
 func LoadConfig(envFile string) Config {
 	get := guestenv.Load(envFile).Get
 

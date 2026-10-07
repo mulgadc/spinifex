@@ -96,16 +96,14 @@ describe("DBSubnetGroupDetailPage", () => {
     )
   })
 
-  // ModifyDBSubnetGroup is not implemented, so the absence of an edit path
-  // needs stating rather than leaving the user looking for one.
-  it("explains that membership is fixed at create", () => {
+  // The console has no edit path, so the CLI route needs stating rather than
+  // leaving the user looking for one.
+  it("points membership changes at the CLI", () => {
     renderWithClient(
       <DBSubnetGroupDetailPage dbSubnetGroupName="orders-subnets" />,
       seed(GROUP),
     )
-    expect(
-      screen.getByText(/ModifyDBSubnetGroup is not implemented/),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/modify-db-subnet-group/)).toBeInTheDocument()
   })
 
   it("reports a group that does not exist", () => {

@@ -96,13 +96,16 @@ func TestTryAcquire_AdoptsOwnKeyAfterRestart(t *testing.T) {
 // itself mid-pass and both act at once.
 func TestRenew_KeySurvivesBeyondTTL(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	a := newTestLease(t, nc, "node-a", nil)
+	// Three renewals per TTL, and above the 100ms floor NATS puts on a bucket TTL.
+	short := func(c *kvlease.Config) { c.TTL, c.Renew = 300*time.Millisecond, 100*time.Millisecond }
+	a := newTestLease(t, nc, "node-a", short)
 	require.True(t, a.TryAcquire(t.Context()))
 	defer a.Release(t.Context())
 
-	time.Sleep(2500 * time.Millisecond)
+	// Well past the TTL: an unrenewed key would have expired by now.
+	time.Sleep(750 * time.Millisecond)
 
-	b := newTestLease(t, nc, "node-b", nil)
+	b := newTestLease(t, nc, "node-b", short)
 	assert.False(t, b.TryAcquire(t.Context()), "lease expired mid-pass: a peer can now act concurrently")
 	assert.True(t, a.Held())
 }

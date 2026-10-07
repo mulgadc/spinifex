@@ -15,6 +15,7 @@ import (
 // bucket that is not an EKS account bucket must not be watched, or every write
 // anywhere in the cluster would wake the DNS reconcile.
 func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -39,6 +40,7 @@ func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
 }
 
 func TestAccountWatchBuckets_NoAccountsIsNotAnError(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	buckets, err := handlers_eks.AccountWatchBuckets(t.Context(), nc)
@@ -49,6 +51,7 @@ func TestAccountWatchBuckets_NoAccountsIsNotAnError(t *testing.T) {
 // TestAccountWatchBuckets_BucketsAreWatchable closes the loop: the handles are
 // not merely named, they open against the live server.
 func TestAccountWatchBuckets_BucketsAreWatchable(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	_, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
@@ -68,6 +71,7 @@ func TestAccountWatchBuckets_BucketsAreWatchable(t *testing.T) {
 // the underlying stream-names listing fail, and that failure must surface
 // rather than come back as an empty, and therefore prunable, set.
 func TestAccountWatchBuckets_EnumerationErrorPropagates(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

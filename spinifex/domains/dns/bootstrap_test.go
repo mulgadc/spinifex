@@ -69,18 +69,25 @@ secret_key = "READONLY"
 
 // flakyS3 refuses the first failUntil requests (simulating predastore not yet
 // listening) then behaves like fakeS3, to exercise the bootstrap retry loop.
-func flakyS3(t *testing.T, bucket string, failUntil int) (endpoint string, objects map[string]string) {
+// sdkRetried reports whether the SDK itself ever resent a request.
+func flakyS3(t *testing.T, bucket string, failUntil int) (endpoint string, objects map[string]string, sdkRetried func() bool) {
 	t.Helper()
 	var mu sync.Mutex
 	objects = map[string]string{}
 	var calls int
+	var retried bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
+		if !strings.HasPrefix(r.Header.Get("Amz-Sdk-Request"), "attempt=1;") {
+			retried = true
+		}
+		// 501 rather than 503: the SDK retries 5xx-unavailable itself with
+		// seconds of jitter, which would hide the bootstrap loop under test.
 		if calls <= failUntil {
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "unavailable", http.StatusNotImplemented)
 			return
 		}
 		key := strings.TrimPrefix(r.URL.Path, "/"+bucket+"/")
@@ -100,7 +107,11 @@ func flakyS3(t *testing.T, bucket string, failUntil int) (endpoint string, objec
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv.URL, objects
+	return srv.URL, objects, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return retried
+	}
 }
 
 // assertZoneNameservers verifies the exact apex NS and glue topology rendered
@@ -182,7 +193,7 @@ func TestBootstrapBaseZoneRetries(t *testing.T) {
 	t.Cleanup(func() { bootstrapRetryDelay = prev })
 
 	// Fail the first two S3 requests, then succeed — the retry must seed.
-	endpoint, objects := flakyS3(t, "northstar", 2)
+	endpoint, objects, sdkRetried := flakyS3(t, "northstar", 2)
 	tomlBody := fmt.Sprintf(`listen = "0.0.0.0:5300"
 default_domain = "spx3.net"
 [s3]
@@ -208,6 +219,7 @@ secret_key = "READONLY"
 
 	require.NoError(t, BootstrapBaseZone(configPath, cluster))
 	require.Contains(t, objects, "spx3.net.toml")
+	assert.False(t, sdkRetried(), "failures must be retried by the bootstrap loop, not the SDK")
 }
 
 // TestBootstrapBaseZoneSeedsTheServiceEndpointSuffix covers the third zone:

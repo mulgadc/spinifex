@@ -18,9 +18,9 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
-// A benchmark that mislabels which [ebs] provider produced its numbers is
-// worse than no benchmark, so DetectEBSProvider reads the value off the
-// cluster itself rather than trusting an operator-supplied flag by default.
+// DetectEBSProvider returns the cluster's [ebs] provider and where it was read.
+// It reads the cluster itself, not an operator flag, since a benchmark that
+// mislabels which provider produced its numbers is worse than no benchmark.
 //
 // Single-node mode: the test binary runs on the same host as the config
 // (mirrors harness's own detectPoolMode), so the file is read locally.

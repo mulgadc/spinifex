@@ -32,6 +32,8 @@ func attributeOp[I, O any](input *I, validate func(*I) error, call func(*I) (*O,
 	return *result, nil
 }
 
+// ValidateModifyTargetGroupAttributesInput rejects a nil input with InvalidParameterValue and a
+// missing TargetGroupArn or empty Attributes with MissingParameter.
 func ValidateModifyTargetGroupAttributesInput(input *elbv2.ModifyTargetGroupAttributesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -45,6 +47,8 @@ func ValidateModifyTargetGroupAttributesInput(input *elbv2.ModifyTargetGroupAttr
 	return nil
 }
 
+// ValidateDescribeTargetGroupAttributesInput rejects a nil input with InvalidParameterValue and a
+// missing TargetGroupArn with MissingParameter.
 func ValidateDescribeTargetGroupAttributesInput(input *elbv2.DescribeTargetGroupAttributesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -52,6 +56,8 @@ func ValidateDescribeTargetGroupAttributesInput(input *elbv2.DescribeTargetGroup
 	return validateAttrArn(input.TargetGroupArn)
 }
 
+// ValidateModifyLoadBalancerAttributesInput rejects a nil input with InvalidParameterValue and a
+// missing LoadBalancerArn or empty Attributes with MissingParameter.
 func ValidateModifyLoadBalancerAttributesInput(input *elbv2.ModifyLoadBalancerAttributesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -65,6 +71,8 @@ func ValidateModifyLoadBalancerAttributesInput(input *elbv2.ModifyLoadBalancerAt
 	return nil
 }
 
+// ValidateDescribeLoadBalancerAttributesInput rejects a nil input with InvalidParameterValue and
+// a missing LoadBalancerArn with MissingParameter.
 func ValidateDescribeLoadBalancerAttributesInput(input *elbv2.DescribeLoadBalancerAttributesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -72,6 +80,8 @@ func ValidateDescribeLoadBalancerAttributesInput(input *elbv2.DescribeLoadBalanc
 	return validateAttrArn(input.LoadBalancerArn)
 }
 
+// ModifyTargetGroupAttributes implements the ELBv2 ModifyTargetGroupAttributes action, validating
+// the input and forwarding it to the NATS ELBv2 service.
 func ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateModifyTargetGroupAttributesInput,
@@ -80,6 +90,8 @@ func ModifyTargetGroupAttributes(ctx context.Context, input *elbv2.ModifyTargetG
 		})
 }
 
+// DescribeTargetGroupAttributes implements the ELBv2 DescribeTargetGroupAttributes action,
+// validating the input and forwarding it to the NATS ELBv2 service.
 func DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTargetGroupAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeTargetGroupAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateDescribeTargetGroupAttributesInput,
@@ -88,6 +100,8 @@ func DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTar
 		})
 }
 
+// ModifyLoadBalancerAttributes implements the ELBv2 ModifyLoadBalancerAttributes action,
+// validating the input and forwarding it to the NATS ELBv2 service.
 func ModifyLoadBalancerAttributes(ctx context.Context, input *elbv2.ModifyLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyLoadBalancerAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateModifyLoadBalancerAttributesInput,
@@ -96,6 +110,8 @@ func ModifyLoadBalancerAttributes(ctx context.Context, input *elbv2.ModifyLoadBa
 		})
 }
 
+// DescribeLoadBalancerAttributes implements the ELBv2 DescribeLoadBalancerAttributes action,
+// validating the input and forwarding it to the NATS ELBv2 service.
 func DescribeLoadBalancerAttributes(ctx context.Context, input *elbv2.DescribeLoadBalancerAttributesInput, natsConn *nats.Conn, accountID string) (elbv2.DescribeLoadBalancerAttributesOutput, error) {
 	svc := handlers_elbv2.NewNATSELBv2Service(natsConn)
 	return attributeOp(input, ValidateDescribeLoadBalancerAttributesInput,

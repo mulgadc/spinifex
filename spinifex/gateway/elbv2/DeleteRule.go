@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteRuleInput rejects a nil input with InvalidParameterValue and a missing RuleArn
+// with MissingParameter.
 func ValidateDeleteRuleInput(input *elbv2.DeleteRuleInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

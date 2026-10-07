@@ -300,6 +300,10 @@ func TestProviderHandlers_DeleteVolume_AbsentIsIdempotent(t *testing.T) {
 // like from here, and reading it as unmounted deletes a volume a guest may
 // still be writing to.
 func TestProviderHandlers_DeleteVolume_UnansweredOwnerProbeRefuses(t *testing.T) {
+	prevProbe := ownerProbeTimeout
+	ownerProbeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { ownerProbeTimeout = prevProbe })
+
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
 	nc := startProviderSubjects(t, cfg, natsURL)

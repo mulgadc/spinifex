@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -38,7 +37,7 @@ type listTagsForResourceRequest struct {
 // and the NATS-backed MetaStore for a follow-on read-modify-write.
 func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceArn string) (string, handlers_ecr.RepoMeta, *handlers_ecr.NATSMetaStore, error) {
 	if resourceArn == "" {
-		return "", handlers_ecr.RepoMeta{}, nil, RequiredParameterError("resourceArn")
+		return "", handlers_ecr.RepoMeta{}, nil, invalidResourceARNError()
 	}
 	name, err := RepositoryNameFromResourceARN(resourceArn)
 	if err != nil {
@@ -48,7 +47,7 @@ func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceAr
 	meta, err := store.GetRepo(ctx, accountID, name)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return "", handlers_ecr.RepoMeta{}, nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return "", handlers_ecr.RepoMeta{}, nil, RepositoryNotFoundError(accountID, name)
 		}
 		return "", handlers_ecr.RepoMeta{}, nil, err
 	}

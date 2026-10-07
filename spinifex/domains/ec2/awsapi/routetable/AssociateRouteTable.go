@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateAssociateRouteTableInput requires RouteTableId and a SubnetId or GatewayId
+// (MissingParameter). Gateway edge associations are rejected with Unsupported.
 func ValidateAssociateRouteTableInput(input *ec2.AssociateRouteTableInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -29,6 +31,8 @@ func ValidateAssociateRouteTableInput(input *ec2.AssociateRouteTableInput) error
 	return nil
 }
 
+// AssociateRouteTable implements the EC2 AssociateRouteTable action, associating a route table
+// with a subnet via the NATS route table service.
 func AssociateRouteTable(ctx context.Context, input *ec2.AssociateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.AssociateRouteTableOutput, error) {
 	var output ec2.AssociateRouteTableOutput
 	if err := ValidateAssociateRouteTableInput(input); err != nil {

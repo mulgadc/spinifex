@@ -1,7 +1,9 @@
 package handlers_iam
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
@@ -460,10 +462,10 @@ func TestCreatePolicy_EmptyPathRefusedBeforeDocument(t *testing.T) {
 
 func TestValidatePolicyDocument_TooLarge(t *testing.T) {
 	t.Parallel()
-	largeDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + strings.Repeat("a", maxPolicyDocumentSize) + `"}]}`
+	largeDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + strings.Repeat("a", maxPolicyDocumentLength) + `"}]}`
 	_, err := ValidatePolicyDocument(largeDoc)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds maximum size")
+	assert.Contains(t, err.Error(), "exceeds maximum length")
 }
 
 // ============================================================================
@@ -1145,7 +1147,7 @@ func TestCreatePolicy_InvalidVersion(t *testing.T) {
 
 	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
 		PolicyName:     aws.String("BadVersion"),
-		PolicyDocument: aws.String(`{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+		PolicyDocument: aws.String(`{"Version":"2010-01-01","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
@@ -2243,7 +2245,7 @@ func TestValidatePolicyDocument_BadJSON(t *testing.T) {
 
 func TestValidatePolicyDocument_WrongVersion(t *testing.T) {
 	t.Parallel()
-	_, err := ValidatePolicyDocument(`{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`)
+	_, err := ValidatePolicyDocument(`{"Version":"2010-01-01","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported policy version")
 }
@@ -2314,6 +2316,25 @@ func TestValidatePolicyDocument_DateOperators(t *testing.T) {
 		`{"DateLessThanEquals":{"aws:EpochTime":["1790856000","2026-10-01T22:00+10:00"]}}`,
 		`{"DateGreaterThanEqualsIfExists":{"aws:CurrentTime":"2026-10-01T12:00:00.5Z"}}`,
 		`{"Null":{"aws:CurrentTime":"false"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
+// Numeric values take an integer or decimal, with an optional sign and exponent,
+// as a string or a JSON number, on s3:max-keys and aws:EpochTime.
+func TestValidatePolicyDocument_NumericOperators(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"NumericLessThanEquals":{"s3:max-keys":"10"}}`,
+		`{"NumericGreaterThan":{"s3:max-keys":100}}`,
+		`{"NumericEquals":{"s3:max-keys":["+10","1e1","10.0"]}}`,
+		`{"NumericNotEquals":{"s3:max-keys":".5"}}`,
+		`{"NumericLessThan":{"aws:EpochTime":1790856000}}`,
+		`{"NumericGreaterThanEqualsIfExists":{"s3:max-keys":"-1.5e2"}}`,
+		`{"Null":{"s3:max-keys":"true"}}`,
 	} {
 		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
 		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
@@ -2443,6 +2464,14 @@ func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
 		{"DateEquals variable", `{"DateEquals":{"aws:CurrentTime":"${aws:CurrentTime}"}}`, "not an ISO 8601 date or epoch seconds"},
 		{"DateLessThanIfExists empty", `{"DateLessThanIfExists":{"aws:EpochTime":""}}`, "not an ISO 8601 date or epoch seconds"},
 		{"DateGreaterThan on a string key", `{"DateGreaterThan":{"aws:username":"2026"}}`, "is not supported in this release"},
+		{"NumericLessThan prose", `{"NumericLessThan":{"s3:max-keys":"ten"}}`, "is not a number"},
+		{"NumericEquals hex", `{"NumericEquals":{"s3:max-keys":"0x0A"}}`, "is not a number"},
+		{"NumericEquals padded", `{"NumericEquals":{"s3:max-keys":" 10"}}`, "is not a number"},
+		{"NumericEquals variable", `{"NumericEquals":{"aws:EpochTime":"${aws:EpochTime}"}}`, "is not a number"},
+		{"NumericGreaterThanIfExists empty", `{"NumericGreaterThanIfExists":{"s3:max-keys":""}}`, "is not a number"},
+		{"NumericLessThan scale overflow", `{"NumericLessThan":{"s3:max-keys":"1e2147483648"}}`, "is not a number"},
+		{"NumericLessThan on a date key", `{"NumericLessThan":{"aws:CurrentTime":"10"}}`, "is not supported in this release"},
+		{"NumericLessThan on MFA age", `{"NumericLessThan":{"aws:MultiFactorAuthAge":"3600"}}`, "is not supported in this release"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2477,7 +2506,7 @@ func TestValidateConditionValues_ArnOperators(t *testing.T) {
 		iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike,
 	} {
 		for _, tt := range tests {
-			err := validateConditionValues(0, op, key, ConditionValue{tt.value})
+			err := validateConditionValues(0, op, key, ConditionValue{tt.value}, true)
 			if tt.wantErr == "" {
 				assert.NoError(t, err, "%s %s", op, tt.name)
 				continue
@@ -2711,21 +2740,6 @@ func TestInputValidation_PathLength(t *testing.T) {
 		Path:     aws.String(path513),
 	})
 	assert.Error(t, err, "513-char path should be rejected")
-}
-
-func TestInputValidation_PolicyDocumentSize(t *testing.T) {
-	t.Parallel()
-	// 6144 bytes — should pass
-	filler6144 := strings.Repeat("a", 6144-len(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::`)-len(`"}]}`))
-	doc6144 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"arn:aws:s3:::` + filler6144 + `"}]}`
-	assert.Len(t, doc6144, 6144)
-	_, err := ValidatePolicyDocument(doc6144)
-	assert.NoError(t, err, "6144-byte policy document should be valid")
-
-	// 6145 bytes — should fail
-	doc6145 := doc6144 + " "
-	_, err = ValidatePolicyDocument(doc6145)
-	assert.Error(t, err, "6145-byte policy document should be rejected")
 }
 
 func TestValidatePolicyDocument_OverlappingDenyAllow(t *testing.T) {
@@ -3003,4 +3017,79 @@ func TestAttachUserPolicy_CustomerManagedMustExist(t *testing.T) {
 		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/DoesNotExist"),
 	})
 	require.Error(t, err)
+}
+
+// recordingRevoker records each revocation and whether the principal record was
+// already gone when it ran, which is the ordering a racing mint relies on.
+type recordingRevoker struct {
+	svc *IAMServiceImpl
+	err error
+
+	calls []revocation
+}
+
+type revocation struct {
+	accountID, name, id string
+	recordGone          bool
+}
+
+var _ SessionRevoker = (*recordingRevoker)(nil)
+
+func (r *recordingRevoker) RevokeUserSessions(_ context.Context, accountID, userName, userID string) (int, error) {
+	_, err := r.svc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(userName)})
+	r.calls = append(r.calls, revocation{accountID, userName, userID, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity)})
+	return 0, r.err
+}
+
+func (r *recordingRevoker) RevokeRoleSessions(_ context.Context, accountID, roleARN, roleID string) (int, error) {
+	name := roleARN[strings.LastIndex(roleARN, "/")+1:]
+	_, err := r.svc.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(name)})
+	r.calls = append(r.calls, revocation{accountID, roleARN, roleID, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity)})
+	return 0, r.err
+}
+
+func TestDeleteUser_RevokesSessionsOnceRecordIsGone(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	user := createTestUser(t, svc, "leaver")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("leaver")})
+	require.NoError(t, err)
+
+	require.Len(t, revoker.calls, 1)
+	assert.Equal(t, revocation{testAccountID, "leaver", aws.StringValue(user.UserId), true}, revoker.calls[0])
+}
+
+func TestDeleteUser_ConflictDoesNotRevoke(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	createTestUser(t, svc, "keyholder")
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{UserName: aws.String("keyholder")})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("keyholder")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+	assert.Empty(t, revoker.calls, "a user that survives the delete keeps its sessions")
+}
+
+// The user is already gone when revocation fails, so failing the call would
+// report a delete that happened as one that did not; the janitor retries.
+func TestDeleteUser_RevocationFailureKeepsDelete(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc, err: errors.New("jetstream unavailable")}
+	svc.SetSessionRevoker(revoker)
+	createTestUser(t, svc, "leaver")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("leaver")})
+	require.NoError(t, err)
+	require.Len(t, revoker.calls, 1)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("leaver")})
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
 }

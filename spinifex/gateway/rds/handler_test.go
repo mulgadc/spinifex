@@ -47,6 +47,7 @@ var v1Actions = []string{
 
 	"CreateDBSubnetGroup",
 	"DescribeDBSubnetGroups",
+	"ModifyDBSubnetGroup",
 	"DeleteDBSubnetGroup",
 
 	"CreateDBParameterGroup",
@@ -148,7 +149,7 @@ var liveActions = []string{
 	"RebootDBInstance", "StartDBInstance", "StopDBInstance", "DeleteDBInstance",
 	"DescribeEvents",
 	"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource",
-	"CreateDBSubnetGroup", "DescribeDBSubnetGroups", "DeleteDBSubnetGroup",
+	"CreateDBSubnetGroup", "DescribeDBSubnetGroups", "ModifyDBSubnetGroup", "DeleteDBSubnetGroup",
 	"CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup",
 	"DescribeDBParameters", "DeleteDBParameterGroup",
 	"CreateDBSnapshot", "DescribeDBSnapshots", "DeleteDBSnapshot",
@@ -196,6 +197,7 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		}})
 	respondWith(t, nc, handlers_rds.SubjectCreateDBSubnetGroup, &rds.CreateDBSubnetGroupOutput{})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBSubnetGroups, &rds.DescribeDBSubnetGroupsOutput{})
+	respondWith(t, nc, handlers_rds.SubjectModifyDBSubnetGroup, &rds.ModifyDBSubnetGroupOutput{})
 	respondWith(t, nc, handlers_rds.SubjectDeleteDBSubnetGroup, &rds.DeleteDBSubnetGroupOutput{})
 	respondWith(t, nc, handlers_rds.SubjectCreateDBParameterGroup, &rds.CreateDBParameterGroupOutput{})
 	respondWith(t, nc, handlers_rds.SubjectDescribeDBParameterGroups, &rds.DescribeDBParameterGroupsOutput{})

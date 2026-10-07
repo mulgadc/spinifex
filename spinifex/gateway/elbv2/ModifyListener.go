@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateModifyListenerInput rejects a nil input with InvalidParameterValue and a missing
+// ListenerArn with MissingParameter.
 func ValidateModifyListenerInput(input *elbv2.ModifyListenerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

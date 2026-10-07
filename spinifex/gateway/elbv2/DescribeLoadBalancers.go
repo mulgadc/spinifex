@@ -1,3 +1,6 @@
+// Package gateway_elbv2 implements the ELBv2 actions: it validates each
+// request, resolves the resource ARNs it authorizes against, and forwards it to
+// the ELBv2 service over NATS.
 package gateway_elbv2
 
 import (

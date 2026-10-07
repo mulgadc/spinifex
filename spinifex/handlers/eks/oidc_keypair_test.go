@@ -25,6 +25,7 @@ var testMasterKey = func() []byte {
 }()
 
 func TestGenerateClusterOIDCKeypair_PersistsJWKSAndEncryptedPrivateKey(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, jwksBytes, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
@@ -46,6 +47,7 @@ func TestGenerateClusterOIDCKeypair_PersistsJWKSAndEncryptedPrivateKey(t *testin
 // key's public part — kube-apiserver's --service-account-key-file requires a
 // public key and crash-loops on a private-key PEM.
 func TestPublicKeyPEMFromPrivate_RoundTrips(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	privPEM, _, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
 	require.NoError(t, err)
@@ -68,6 +70,7 @@ func TestPublicKeyPEMFromPrivate_RoundTrips(t *testing.T) {
 }
 
 func TestPublicKeyPEMFromPrivate_RejectsGarbage(t *testing.T) {
+	t.Parallel()
 	_, err := PublicKeyPEMFromPrivate("not a pem")
 	require.Error(t, err)
 
@@ -78,6 +81,7 @@ func TestPublicKeyPEMFromPrivate_RejectsGarbage(t *testing.T) {
 // The generator returns the plaintext private-key PEM directly so CreateCluster
 // avoids a second KV read + decrypt; it must match the key persisted in KV.
 func TestGenerateClusterOIDCKeypair_ReturnsPrivateKeyPEMMatchingStored(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	privPEM, _, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
@@ -97,6 +101,7 @@ func TestGenerateClusterOIDCKeypair_ReturnsPrivateKeyPEMMatchingStored(t *testin
 }
 
 func TestGenerateClusterOIDCKeypair_JWKSShapeIsRFC7517EC_P256(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, jwksBytes, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
@@ -122,6 +127,7 @@ func TestGenerateClusterOIDCKeypair_JWKSShapeIsRFC7517EC_P256(t *testing.T) {
 }
 
 func TestGenerateClusterOIDCKeypair_TwoCallsProduceDistinctKeys(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, a, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
@@ -132,6 +138,7 @@ func TestGenerateClusterOIDCKeypair_TwoCallsProduceDistinctKeys(t *testing.T) {
 }
 
 func TestGenerateClusterOIDCKeypair_EmptyArgsRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, _, err := GenerateClusterOIDCKeypair(t.Context(), kv, "", testMasterKey)
@@ -141,6 +148,7 @@ func TestGenerateClusterOIDCKeypair_EmptyArgsRejected(t *testing.T) {
 }
 
 func TestLoadClusterOIDCPrivateKey_RoundTripMatchesJWKSPublic(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
 	_, jwksBytes, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
@@ -167,6 +175,7 @@ func TestLoadClusterOIDCPrivateKey_RoundTripMatchesJWKSPublic(t *testing.T) {
 }
 
 func TestLoadClusterOIDCPrivateKey_WrongMasterKeyFails(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	_, _, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
 	require.NoError(t, err)
@@ -178,12 +187,14 @@ func TestLoadClusterOIDCPrivateKey_WrongMasterKeyFails(t *testing.T) {
 }
 
 func TestLoadClusterOIDCPrivateKey_MissingReturnsErrClusterNotFound(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	_, err := LoadClusterOIDCPrivateKey(t.Context(), kv, "ghost", testMasterKey)
 	require.ErrorIs(t, err, ErrClusterNotFound)
 }
 
 func TestZeroizeClusterOIDCKey_DeletesKeyAndLeavesSiblingsIntact(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	_, _, err := GenerateClusterOIDCKeypair(t.Context(), kv, "alpha", testMasterKey)
 	require.NoError(t, err)
@@ -199,16 +210,19 @@ func TestZeroizeClusterOIDCKey_DeletesKeyAndLeavesSiblingsIntact(t *testing.T) {
 }
 
 func TestZeroizeClusterOIDCKey_MissingIsNoop(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.NoError(t, ZeroizeClusterOIDCKey(t.Context(), kv, "ghost"))
 }
 
 func TestZeroizeClusterOIDCKey_EmptyNameRejected(t *testing.T) {
+	t.Parallel()
 	kv := newClusterStateTestKV(t)
 	require.Error(t, ZeroizeClusterOIDCKey(t.Context(), kv, ""))
 }
 
 func TestMarshalJWKS_DeterministicForSameKey(t *testing.T) {
+	t.Parallel()
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
@@ -224,6 +238,7 @@ func TestMarshalJWKS_DeterministicForSameKey(t *testing.T) {
 // verifiers reject, so the fixture below pins a key with a short X coordinate to
 // keep the intermittent case deterministic.
 func TestMarshalJWKS_LeftPadsCoordinateWithLeadingZeroByte(t *testing.T) {
+	t.Parallel()
 	d, err := hex.DecodeString("aa5dcdd192d84607aaf45a4ba2fcc794c8bddb0cff0908c2cb204b3553c4d60f")
 	require.NoError(t, err)
 	priv, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), d)
@@ -245,6 +260,7 @@ func TestMarshalJWKS_LeftPadsCoordinateWithLeadingZeroByte(t *testing.T) {
 }
 
 func TestMarshalJWKS_RejectsNonP256Curve(t *testing.T) {
+	t.Parallel()
 	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	require.NoError(t, err)
 	_, err = marshalJWKS(&priv.PublicKey)

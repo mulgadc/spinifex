@@ -49,8 +49,8 @@ func TestListImages_ValidatesRequestAndCatalogFailure(t *testing.T) {
 		code    string
 	}{
 		{"missing catalog", nil, `{"repositoryName":"team/app"}`, awserrors.ErrorServerInternal},
-		{"malformed", fakeImageCatalog{}, `{`, awserrors.ErrorInvalidParameterValue},
-		{"missing repository name", fakeImageCatalog{}, `{}`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", fakeImageCatalog{}, `{`, awserrors.ErrorECRInvalidParameter},
+		{"missing repository name", fakeImageCatalog{}, `{}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", fakeImageCatalog{}, `{"repositoryName":"team/app","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
 		{"repository missing", fakeImageCatalog{err: handlers_ecr.ErrNotFound}, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryNotFound},
 		{"backend failure", fakeImageCatalog{err: errors.New("unavailable")}, `{"repositoryName":"team/app"}`, awserrors.ErrorServerInternal},

@@ -1098,7 +1098,6 @@ func TestValidateSGRule_Protocol(t *testing.T) {
 func TestNormalizeIPProtocol(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":     "-1",
 		"-1":   "-1",
 		"tcp":  "tcp",
 		"TCP":  "tcp",
@@ -1114,8 +1113,9 @@ func TestNormalizeIPProtocol(t *testing.T) {
 		assert.Equal(t, want, got, "protocol %q", in)
 	}
 
-	// 58/icmpv6 is rejected with the rest: the ACL builder is IPv4-only.
-	for _, in := range []string{"58", "icmpv6", "47", "50", "0", "256", "banana", "tcp; drop"} {
+	// 58/icmpv6 is rejected with the rest: the ACL builder is IPv4-only. An
+	// empty protocol is rejected rather than read as all protocols.
+	for _, in := range []string{"", "58", "icmpv6", "47", "50", "0", "256", "banana", "tcp; drop"} {
 		_, err := normalizeIPProtocol(in)
 		assert.Error(t, err, "protocol %q", in)
 	}

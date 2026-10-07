@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateSetRulePrioritiesInput rejects a nil input with InvalidParameterValue and an empty
+// RulePriorities list with MissingParameter.
 func ValidateSetRulePrioritiesInput(input *elbv2.SetRulePrioritiesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

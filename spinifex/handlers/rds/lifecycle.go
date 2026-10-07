@@ -35,13 +35,13 @@ type instanceCommander interface {
 	StartStoppedInstance(ctx context.Context, instanceID string) error
 }
 
-// No node subscribes ec2.cmd.{instanceID} for this VM, so its power state can
-// only be changed through the stopped-instance path.
+// ErrInstanceNotOnNode means no node subscribes ec2.cmd.{instanceID} for this VM,
+// so its power state can only be changed through the stopped-instance path.
 var ErrInstanceNotOnNode = errors.New("rds: no node is holding this DB VM")
 
-// The owning node refused the command because the VM is not in a state for it.
-// A stop gets this when something else is already stopping the VM, which is
-// where the stop was going, so only the fleet view settles it.
+// ErrInstanceStateRefused means the owning node refused the command for the VM's
+// current state. A stop gets this when something else is already stopping the VM,
+// which is where the stop was going, so only the fleet view settles it.
 var ErrInstanceStateRefused = errors.New("rds: the DB VM is not in a state for this command")
 
 // How long a VM stop, start or reboot may take before the command is treated as
@@ -51,9 +51,9 @@ const instanceCommandTimeout = 90 * time.Second
 // How often the fleet is re-read while a stop is settling.
 const vmStopPollInterval = 500 * time.Millisecond
 
-// Reboots the engine, applying any static parameters stored pending-reboot.
-// ForceFailover is rejected outright: there is no standby to fail over
-// to, and silently ignoring it would report a failover that never happened.
+// RebootDBInstance reboots the engine, applying any static parameters stored pending-reboot.
+// ForceFailover is rejected outright: there is no standby to fail over to, and silently ignoring it
+// would report a failover that never happened.
 func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInstanceInput, accountID string) (*rds.RebootDBInstanceOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -97,9 +97,8 @@ func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInsta
 	return &rds.RebootDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
 }
 
-// Stops the engine and then the VM. The data volume, the customer ENI and its
-// IP, and the DNS record are all retained, so a start comes back on the same
-// datadir at the same address.
+// StopDBInstance stops the engine and then the VM. The data volume, the customer ENI and its IP, and
+// the DNS record are all retained, so a start comes back on the same datadir at the same address.
 func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceInput, accountID string) (*rds.StopDBInstanceOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -133,8 +132,8 @@ func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceI
 	return &rds.StopDBInstanceOutput{DBInstance: s.projectDBInstance(stopped)}, nil
 }
 
-// Brings a stopped instance back on its retained data volume and customer ENI.
-// The engine replays WAL when the graceful stop did not complete.
+// StartDBInstance brings a stopped instance back on its retained data volume and customer ENI. The
+// engine replays WAL when the graceful stop did not complete.
 func (s *Service) StartDBInstance(ctx context.Context, input *rds.StartDBInstanceInput, accountID string) (*rds.StartDBInstanceOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -411,6 +410,8 @@ type natsInstanceCommander struct {
 
 var _ instanceCommander = (*natsInstanceCommander)(nil)
 
+// NewNATSInstanceCommander returns an instanceCommander that sends power commands over the VM's
+// per-instance ec2.cmd subject, so they reach whichever node runs it.
 func NewNATSInstanceCommander(nc *nats.Conn) instanceCommander {
 	return &natsInstanceCommander{nc: nc, timeout: instanceCommandTimeout}
 }

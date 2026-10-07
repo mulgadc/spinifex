@@ -63,21 +63,17 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 	invalid := awserrors.ErrorInvalidParameterValue
 	// Nodegroup mutators gate on orchestration deps, which the shim service
 	// lacks → ServiceUnavailable. The read paths reach input validation and an
-	// empty body fails with InvalidParameterValue. UpdateNodegroupVersion stays
-	// NotImplemented (v1 doesn't do AMI upgrades).
+	// empty body fails with InvalidParameterValue.
 	unavailable := awserrors.ErrorServiceUnavailable
 	cases := []struct {
 		subject  string
 		handler  nats.MsgHandler
 		wantCode string
 	}{
-		{"eks.UpdateClusterConfig", asMsgHandler(handleNATSRequest(d.node, d.eksService.UpdateClusterConfig)), notImpl},
-		{"eks.UpdateClusterVersion", asMsgHandler(handleNATSRequest(d.node, d.eksService.UpdateClusterVersion)), notImpl},
 		{"eks.CreateNodegroup", asMsgHandler(handleNATSRequest(d.node, d.eksService.CreateNodegroup)), unavailable},
 		{"eks.DescribeNodegroup", asMsgHandler(handleNATSRequest(d.node, d.eksService.DescribeNodegroup)), invalid},
 		{"eks.ListNodegroups", asMsgHandler(handleNATSRequest(d.node, d.eksService.ListNodegroups)), invalid},
 		{"eks.UpdateNodegroupConfig", asMsgHandler(handleNATSRequest(d.node, d.eksService.UpdateNodegroupConfig)), unavailable},
-		{"eks.UpdateNodegroupVersion", asMsgHandler(handleNATSRequest(d.node, d.eksService.UpdateNodegroupVersion)), notImpl},
 		{"eks.DeleteNodegroup", asMsgHandler(handleNATSRequest(d.node, d.eksService.DeleteNodegroup)), unavailable},
 		{"eks.CreateAccessEntry", asMsgHandler(handleNATSRequest(d.node, d.eksService.CreateAccessEntry)), invalid},
 		{"eks.DescribeAccessEntry", asMsgHandler(handleNATSRequest(d.node, d.eksService.DescribeAccessEntry)), invalid},
@@ -97,15 +93,11 @@ func TestDaemonHandleEKS_AllHandlersDispatchToService(t *testing.T) {
 		{"eks.DeleteAddon", asMsgHandler(handleNATSRequest(d.node, d.eksService.DeleteAddon)), invalid},
 		{"eks.DescribeAddon", asMsgHandler(handleNATSRequest(d.node, d.eksService.DescribeAddon)), invalid},
 		{"eks.UpdateAddon", asMsgHandler(handleNATSRequest(d.node, d.eksService.UpdateAddon)), invalid},
-		{"eks.AssociateIdentityProviderConfig", asMsgHandler(handleNATSRequest(d.node, d.eksService.AssociateIdentityProviderConfig)), notImpl},
-		{"eks.DescribeIdentityProviderConfig", asMsgHandler(handleNATSRequest(d.node, d.eksService.DescribeIdentityProviderConfig)), notImpl},
-		{"eks.ListIdentityProviderConfigs", asMsgHandler(handleNATSRequest(d.node, d.eksService.ListIdentityProviderConfigs)), notImpl},
-		{"eks.DisassociateIdentityProviderConfig", asMsgHandler(handleNATSRequest(d.node, d.eksService.DisassociateIdentityProviderConfig)), notImpl},
 		{"eks.TagResource", asMsgHandler(handleNATSRequest(d.node, d.eksService.TagResource)), notImpl},
 		{"eks.UntagResource", asMsgHandler(handleNATSRequest(d.node, d.eksService.UntagResource)), notImpl},
 		{"eks.ListTagsForResource", asMsgHandler(handleNATSRequest(d.node, d.eksService.ListTagsForResource)), notImpl},
 	}
-	require.Len(t, cases, 30, "expected exactly one handler per non-lifecycle AWS EKS action")
+	require.Len(t, cases, 23, "expected exactly one handler per non-lifecycle AWS EKS action")
 
 	for _, c := range cases {
 		t.Run(c.subject, func(t *testing.T) {

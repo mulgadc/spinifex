@@ -18,6 +18,7 @@ import (
 //	 the naming contract table. No layer above or below L2 constructs OVN
 //	 object names independently."
 func TestS4_OVNNamesL2Owned(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S4: "All OVN NB DB object names are constructed ` +
 		`exclusively by L2 using the naming contract table. No layer above ` +
 		`or below L2 constructs OVN object names independently."`

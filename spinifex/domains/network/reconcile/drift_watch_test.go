@@ -43,6 +43,15 @@ func bucketNames(t *testing.T, js jetstream.JetStream) []string {
 	return names
 }
 
+// shrinkDriftDebounce shortens how long the loop waits for writes to settle.
+// Call it before startDriftLoop so the loop is joined before it is restored.
+func shrinkDriftDebounce(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := driftDebounce
+	driftDebounce = d
+	t.Cleanup(func() { driftDebounce = old })
+}
+
 // waitForWatch writes probe keys until one of them wakes a pass, and returns the
 // call count once it has. Watchers attach asynchronously and are UpdatesOnly, so
 // a single write racing startup is lost for good; retrying is what makes a test
@@ -56,7 +65,9 @@ func waitForWatch(t *testing.T, rec *stubReconciler, kv jetstream.KeyValue, pref
 		if _, err := kv.Put(t.Context(), prefix+strconv.Itoa(i), []byte(`{}`)); err != nil {
 			t.Fatalf("probe write %d: %v", i, err)
 		}
-		if got := waitForCalls(t, rec, before+1, 250*time.Millisecond); got > before {
+		// Outlasting the debounce lets a probe that was seen wake its pass before
+		// another probe is written.
+		if got := waitForCalls(t, rec, before+1, 5*driftDebounce); got > before {
 			return got
 		}
 	}
@@ -82,13 +93,14 @@ func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 	// The interval is long so a pass can only have come from the watch, and the
 	// floor is short so the write is not merely deferred behind it.
 	shrinkDriftTiming(t, time.Minute, time.Millisecond)
+	shrinkDriftDebounce(t, 20*time.Millisecond)
 
 	rec := &stubReconciler{outcomes: []error{nil}}
 	startDriftLoop(t, rec, nc, nil)
 
 	// After the startup seed the loop is armed at DriftInterval alone, so the
 	// watch has to be what brings the pass forward.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if got := rec.callCount(); got != 0 {
 		t.Fatalf("reconcile ran %d times before any write, want 0", got)
 	}
@@ -102,7 +114,10 @@ func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv := createIntentBucket(t, js, ec2vpc.KVBucketENIs)
-	shrinkDriftTiming(t, time.Minute, 2*time.Second)
+	// The floor outlasts a probe window plus the debounce, so a late probe's
+	// pass is coalesced with the burst rather than counted as a second one.
+	shrinkDriftTiming(t, time.Minute, 300*time.Millisecond)
+	shrinkDriftDebounce(t, 20*time.Millisecond)
 
 	rec := &stubReconciler{outcomes: []error{nil}}
 	startDriftLoop(t, rec, nc, nil)
@@ -121,7 +136,7 @@ func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {
 	}
 	// The burst is long spent, so a further pass here could only come from the
 	// loop tracking writes rather than coalescing them.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	if got := rec.callCount() - base; got != 1 {
 		t.Errorf("reconcile ran %d times for one burst of 20 writes, want 1", got)
 	}

@@ -1,3 +1,6 @@
+// Package awserrors defines the AWS error codes Spinifex returns, their HTTP
+// status and default message, and helpers to attach a code to an error and
+// resolve it again at the API boundary.
 package awserrors
 
 import (
@@ -8,6 +11,8 @@ import (
 	"time"
 )
 
+// ErrorMessage is the HTTP status and default message returned for an AWS
+// error code, as resolved by LookupErrorMessage.
 type ErrorMessage struct {
 	HTTPCode int
 	Message  string
@@ -388,6 +393,9 @@ var (
 	// real ECS both use the restJson1 wire code "InvalidParameterException",
 	// so this gives EKS call sites their own name for the same registered code.
 	ErrorEKSInvalidParameter = ErrorECSInvalidParameter
+	// ErrorECRInvalidParameter aliases ErrorECSInvalidParameter: every ECR
+	// operation declares the AWS JSON 1.1 wire code "InvalidParameterException".
+	ErrorECRInvalidParameter = ErrorECSInvalidParameter
 	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
 	// DeleteCertificate and real EKS's CreateCluster both legitimately use the
 	// wire code "ResourceInUseException", so this is a distinct, self-documenting
@@ -517,6 +525,7 @@ var (
 	ErrorLayersNotFound           = "LayersNotFoundException"
 	ErrorReferencedImagesNotFound = "ReferencedImagesNotFoundException"
 	ErrorTooManyTags              = "TooManyTagsException"
+	ErrorInvalidTagParameter      = "InvalidTagParameterException"
 	ErrorOperationNotSupported    = "OperationNotSupportedException"
 
 	// ELBv2-specific error codes.
@@ -1216,7 +1225,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorUnfulfillableCapacity:                                 {HTTPCode: 400, Message: "At this time there isn't enough spare capacity to fulfill your request for Spot Instances. You can wait a few minutes to see whether capacity becomes available for your request. Alternatively, create a more flexible request. For example, include additional instance types, include additional Availability Zones, or use the capacity-optimized allocation strategy."},
 	ErrorUnknownParameter:                                      {HTTPCode: 404, Message: "An unknown or unrecognized parameter was supplied. Requests that could cause this error include supplying a misspelled parameter or a parameter that is not supported for the specified API version."},
 	ErrorUnknownPrincipalTypeUnsupported:                       {HTTPCode: 400, Message: "The principal type is not supported."},
-	ErrorUnknownVolumeType:                                     {HTTPCode: 400, Message: "The specified volume type is unsupported. The supported volume types are gp2, io1, st1, sc1, and standard."},
+	ErrorUnknownVolumeType:                                     {HTTPCode: 400, Message: "Unsupported volume type for volume creation."},
 	ErrorUnsupported:                                           {HTTPCode: 400, Message: "The specified request is unsupported. For example, you might be trying to launch an instance in an Availability Zone that currently has constraints on that instance type. The returned message provides details of the unsupported request."},
 	ErrorUnsupportedException:                                  {HTTPCode: 400, Message: "Capacity Reservations are not supported for this Region."},
 	ErrorUnsupportedHibernationConfiguration:                   {HTTPCode: 400, Message: "The instance could not be launched because one or more parameter values do not meet the prerequisites for enabling hibernation. For more information, see Hibernation Prerequisites. Alternatively, the instance could not be hibernated because it is not enabled for hibernation."},
@@ -1283,6 +1292,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorImageDigestDoesNotMatch:  {HTTPCode: 400, Message: "The specified image digest does not match the digest of the supplied image manifest."},
 	ErrorLayersNotFound:           {HTTPCode: 400, Message: "The specified layers could not be found, or the specified layer is not valid for this repository."},
 	ErrorReferencedImagesNotFound: {HTTPCode: 400, Message: "The manifest list is referencing an image that does not exist."},
+	ErrorInvalidTagParameter:      {HTTPCode: 400, Message: "Tag parameters are invalid"},
 	ErrorTooManyTags:              {HTTPCode: 400, Message: "The list of tags on the repository is over the limit. The maximum number of tags that can be applied to a repository is 50."},
 	ErrorOperationNotSupported:    {HTTPCode: 400, Message: "The specified operation is not supported in this registry."},
 

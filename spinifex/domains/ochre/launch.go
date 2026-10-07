@@ -58,6 +58,8 @@ type volumeAttacher interface {
 	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error)
 }
 
+// LaunchDeps bundles the EC2, VPC, AMI, volume and weights services a serving-VM launch drives, plus
+// the daemon's own system-VPC port plumbing.
 type LaunchDeps struct {
 	Config    *config.Config
 	SystemVPC systemvpc.Deps
@@ -107,6 +109,8 @@ type LaunchMemberOutput struct {
 	Family          string
 }
 
+// LaunchOutput reports the serving VM a launch produced: its instance, ENI and private IP, each
+// member's port and weights volume, and an Unwind for a caller that fails after it returned.
 type LaunchOutput struct {
 	InstanceID string
 	ENIID      string

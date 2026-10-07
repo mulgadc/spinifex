@@ -88,10 +88,13 @@ func TestRepositoryPolicy_Lifecycle(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, policy, *del.PolicyText)
 
-	// Policy gone after delete.
+	// Policy gone after delete; AWS names the repository and registry.
 	_, err = GetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, awserrors.ValidErrorCodeFromError(err))
+	code, message, found := awserrors.ResolveErrorDetail(err)
+	require.True(t, found)
+	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, code)
+	assert.Equal(t, "Repository policy does not exist for the repository with name 'team/app' in the registry with id '"+policyTestAccount+"'", message)
 }
 
 func TestRepositoryPolicy_Errors(t *testing.T) {
@@ -105,8 +108,8 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 		expect string
 	}{
 		{"set missing repo", SetRepositoryPolicy, `{"repositoryName":"team/ghost","policyText":"{}"}`, awserrors.ErrorRepositoryNotFound},
-		{"set invalid json policy", SetRepositoryPolicy, `{"repositoryName":"team/app","policyText":"not-json"}`, awserrors.ErrorInvalidParameterValue},
-		{"set empty name", SetRepositoryPolicy, `{"policyText":"{}"}`, awserrors.ErrorInvalidParameterValue},
+		{"set invalid json policy", SetRepositoryPolicy, `{"repositoryName":"team/app","policyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
+		{"set empty name", SetRepositoryPolicy, `{"policyText":"{}"}`, awserrors.ErrorECRInvalidParameter},
 		{"set cross-account", SetRepositoryPolicy, `{"repositoryName":"team/app","registryId":"999999999999","policyText":"{}"}`, awserrors.ErrorAccessDenied},
 		{"get no policy", GetRepositoryPolicy, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryPolicyNotFound},
 		{"delete no policy", DeleteRepositoryPolicy, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryPolicyNotFound},
@@ -119,6 +122,18 @@ func TestRepositoryPolicy_Errors(t *testing.T) {
 			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
+}
+
+// AWS names the member PolicyText, capitalised, when SetRepositoryPolicy omits it.
+func TestSetRepositoryPolicy_MissingPolicyTextMessage(t *testing.T) {
+	nc := newPolicyTestConn(t)
+	seedRepo(t, nc, "team/app")
+	_, err := SetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
+	assert.Equal(t, "Invalid parameter at 'PolicyText' failed to satisfy constraint: 'Cannot be null'", message)
 }
 
 // strconvQuote JSON-quotes a string for inline test bodies.

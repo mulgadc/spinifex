@@ -41,7 +41,7 @@ func DeleteRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "ECR DeleteRepository: get repository failed", "repository", req.RepositoryName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -60,13 +60,16 @@ func DeleteRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 
 	if err := store.DeleteRepo(ctx, accountID, req.RepositoryName); err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "ECR DeleteRepository: delete repository failed", "repository", req.RepositoryName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	return &ecr.DeleteRepositoryOutput{
-		Repository: endpoint.RepositoryFromMeta(accountID, req.RepositoryName, meta),
-	}, nil
+	// AWS's DeleteRepository omits the encryption and scanning configurations
+	// that every other repository response carries.
+	repo := endpoint.RepositoryFromMeta(accountID, req.RepositoryName, meta)
+	repo.EncryptionConfiguration = nil
+	repo.ImageScanningConfiguration = nil
+	return &ecr.DeleteRepositoryOutput{Repository: repo}, nil
 }

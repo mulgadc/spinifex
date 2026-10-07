@@ -66,10 +66,10 @@ func (p *modifyPlan) empty() bool {
 	return !p.disruptive() && !p.immediate()
 }
 
-// Changes a live DB instance. The non-disruptive settings land immediately; a
-// storage grow, a class change or a parameter-group change is applied now when
-// ApplyImmediately is set and otherwise recorded in PendingModifiedValues for
-// the maintenance window to drain through applyPendingModifications.
+// ModifyDBInstance changes a live DB instance. The non-disruptive settings land immediately; a storage
+// grow, a class change or a parameter-group change is applied now when ApplyImmediately is set and
+// otherwise recorded in PendingModifiedValues for the maintenance window to drain through
+// applyPendingModifications.
 //
 // The endpoint survives every path: the data volume, the customer ENI and its
 // address, and the DNS A-record are untouched by a grow and by a class change.

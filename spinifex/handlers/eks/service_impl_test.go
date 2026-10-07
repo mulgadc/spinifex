@@ -29,9 +29,9 @@ func setupTestService(t *testing.T) *EKSServiceImpl {
 // are absent so CreateCluster/DeleteCluster short-circuit to ServiceUnavailable
 // (the missing deps are logged at ERROR), DescribeCluster hits an empty
 // per-account bucket and surfaces ResourceNotFoundException, and ListClusters
-// returns an empty list. The UpdateClusterConfig + UpdateClusterVersion paths
-// stay NotImplemented.
+// returns an empty list.
 func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateCluster(context.Background(), &eks.CreateClusterInput{Name: aws.String("c1")}, testAccountID, "")
@@ -45,12 +45,6 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	require.NotNil(t, out)
 	require.Empty(t, out.Clusters)
 
-	_, err = svc.UpdateClusterConfig(context.Background(), &eks.UpdateClusterConfigInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.UpdateClusterVersion(context.Background(), &eks.UpdateClusterVersionInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
 	_, err = svc.DeleteCluster(context.Background(), &eks.DeleteClusterInput{Name: aws.String("c1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 }
@@ -60,6 +54,7 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 // launch workers with no instance profile, which leaves IMDS roleless and blocks
 // ALB creation. The gate reports IAM even though MasterKey is present.
 func TestMissingOrchestrationDeps_NilIAMRejectsNodegroup(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.IAM = nil
 
@@ -74,6 +69,7 @@ func TestMissingOrchestrationDeps_NilIAMRejectsNodegroup(t *testing.T) {
 // rejects every CreateCluster/CreateNodegroup with missing=[IAM] forever even
 // though the IAM service is fully available via the provider.
 func TestMissingOrchestrationDeps_IAMProviderSatisfiesGate(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.IAM = nil
 	f.svc.deps.IAMProvider = func() handlers_iam.SystemInstanceRoleEnsurer { return newFakeEnsurer() }
@@ -86,6 +82,7 @@ func TestMissingOrchestrationDeps_IAMProviderSatisfiesGate(t *testing.T) {
 // all. The refusal must name accessConfig.authenticationMode so a Terraform
 // caller sees why, not a bare code.
 func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
+	t.Parallel()
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeConfigMap),
@@ -100,6 +97,7 @@ func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
 // A junk authentication mode must be rejected the same way as CONFIG_MAP, and
 // must also name the parameter rather than surfacing a bare code.
 func TestValidateCreateClusterInput_RejectsJunkAuthMode(t *testing.T) {
+	t.Parallel()
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String("NOT_A_REAL_MODE"),
@@ -115,6 +113,7 @@ func TestValidateCreateClusterInput_RejectsJunkAuthMode(t *testing.T) {
 // module default. Its ConfigMap side grants nothing on Spinifex, exactly as it
 // would on real AWS with an empty aws-auth ConfigMap, so it must be accepted.
 func TestValidateCreateClusterInput_AcceptsAPIAndConfigMapAuthMode(t *testing.T) {
+	t.Parallel()
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeApiAndConfigMap),
@@ -123,6 +122,7 @@ func TestValidateCreateClusterInput_AcceptsAPIAndConfigMapAuthMode(t *testing.T)
 }
 
 func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
+	t.Parallel()
 	in := createInput("alpha")
 	in.AccessConfig = &eks.CreateAccessConfigRequest{
 		AuthenticationMode: aws.String(eks.AuthenticationModeApi),
@@ -133,6 +133,7 @@ func TestValidateCreateClusterInput_AcceptsAPIAuthMode(t *testing.T) {
 // An unset accessConfig (or an unset authenticationMode within it) must stay
 // valid — it defaults to API, exactly as an explicit "API" does.
 func TestValidateCreateClusterInput_AcceptsUnsetAuthMode(t *testing.T) {
+	t.Parallel()
 	in := createInput("alpha")
 	require.NoError(t, validateCreateClusterInput(in, testAccountID))
 
@@ -143,6 +144,7 @@ func TestValidateCreateClusterInput_AcceptsUnsetAuthMode(t *testing.T) {
 // A create request with no subnets is malformed and must be rejected before any
 // orchestration work (InvalidParameterValue → 400).
 func TestValidateCreateClusterInput_RejectsMissingSubnetIds(t *testing.T) {
+	t.Parallel()
 	in := createInput("alpha")
 	in.ResourcesVpcConfig = &eks.VpcConfigRequest{}
 	require.EqualError(t, validateCreateClusterInput(in, testAccountID), awserrors.ErrorInvalidParameterValue)
@@ -154,6 +156,7 @@ func TestValidateCreateClusterInput_RejectsMissingSubnetIds(t *testing.T) {
 // DescribeCluster on an absent cluster must reach the KV lookup (full deps
 // wired, unlike the shim short-circuit) and surface ResourceNotFoundException.
 func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("ghost")}, testAccountID)
@@ -165,6 +168,7 @@ func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
 // read) and return idempotent success (Common Resource Lifecycle Contract #1),
 // not a teardown of nothing — so a tofu destroy retry converges.
 func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("ghost"), testAccountID)
@@ -178,6 +182,7 @@ func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
 // leave recoverable key material behind. Force VM terminate to fail and assert
 // the key is already gone while the meta survives.
 func TestDeleteCluster_ZeroizesOIDCKeyBeforeTeardown(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
@@ -194,9 +199,9 @@ func TestDeleteCluster_ZeroizesOIDCKeyBeforeTeardown(t *testing.T) {
 
 // In shim mode (orchestration deps absent) the mutating nodegroup methods
 // short-circuit to ServiceUnavailable, the read methods reach an empty
-// per-account bucket and surface ResourceNotFoundException, and
-// UpdateNodegroupVersion stays NotImplemented (v1 doesn't do AMI upgrades).
+// per-account bucket and surface ResourceNotFoundException.
 func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateNodegroup(context.Background(), &eks.CreateNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
@@ -210,9 +215,6 @@ func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 
 	_, err = svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
-
-	_, err = svc.UpdateNodegroupVersion(context.Background(), &eks.UpdateNodegroupVersionInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
 
 	_, err = svc.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
@@ -231,6 +233,7 @@ func seedTestCluster(t *testing.T, svc *EKSServiceImpl, cluster string) {
 const testPrincipalARN = "arn:aws:iam::111122223333:role/dev"
 
 func TestAccessEntry_UnknownClusterIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
 		ClusterName: aws.String("missing"), PrincipalArn: aws.String(testPrincipalARN),
@@ -239,6 +242,7 @@ func TestAccessEntry_UnknownClusterIsNotFound(t *testing.T) {
 }
 
 func TestAccessEntry_CreateDescribeListDelete(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 
@@ -282,6 +286,7 @@ func TestAccessEntry_CreateDescribeListDelete(t *testing.T) {
 }
 
 func TestAccessEntry_RejectsNodeType(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
@@ -291,6 +296,7 @@ func TestAccessEntry_RejectsNodeType(t *testing.T) {
 }
 
 func TestAccessEntry_DescribeDeleteMissingIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	_, err := svc.DescribeAccessEntry(context.Background(), &eks.DescribeAccessEntryInput{
@@ -304,6 +310,7 @@ func TestAccessEntry_DescribeDeleteMissingIsNotFound(t *testing.T) {
 }
 
 func TestAccessPolicy_AssociateListDisassociate(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
@@ -346,6 +353,7 @@ func TestAccessPolicy_AssociateListDisassociate(t *testing.T) {
 }
 
 func TestAccessPolicy_AssociateRejectsUnsupportedPolicyAndScope(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
@@ -374,6 +382,7 @@ func TestAccessPolicy_AssociateRejectsUnsupportedPolicyAndScope(t *testing.T) {
 // time with a message naming accessScope.type, not read back as a durable
 // grant that never actually authorizes anything.
 func TestAccessPolicy_AssociateRejectsNamespaceScope(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
@@ -397,6 +406,7 @@ func TestAccessPolicy_AssociateRejectsNamespaceScope(t *testing.T) {
 // DisassociateAccessPolicy already removes the association from the record;
 // this confirms the projection built on top of it reflects the removal too.
 func TestAccessPolicy_DisassociateRemovesProjectedGroup(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
@@ -431,6 +441,7 @@ func TestAccessPolicy_DisassociateRemovesProjectedGroup(t *testing.T) {
 }
 
 func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	out, err := svc.ListAccessPolicies(context.Background(), &eks.ListAccessPoliciesInput{}, testAccountID)
 	require.NoError(t, err)
@@ -442,23 +453,8 @@ func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
 	}
 }
 
-func TestEKSServiceImpl_OIDCMethodsReturnNotImplemented(t *testing.T) {
-	svc := setupTestService(t)
-
-	_, err := svc.AssociateIdentityProviderConfig(context.Background(), &eks.AssociateIdentityProviderConfigInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DescribeIdentityProviderConfig(context.Background(), &eks.DescribeIdentityProviderConfigInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.ListIdentityProviderConfigs(context.Background(), &eks.ListIdentityProviderConfigsInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-
-	_, err = svc.DisassociateIdentityProviderConfig(context.Background(), &eks.DisassociateIdentityProviderConfigInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorNotImplemented)
-}
-
 func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -501,6 +497,7 @@ func TestEKSServiceImpl_ClusterTagRoundTrip(t *testing.T) {
 }
 
 func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
@@ -548,6 +545,7 @@ func TestEKSServiceImpl_NodegroupTagRoundTrip(t *testing.T) {
 }
 
 func TestEKSServiceImpl_NodegroupTagMissingNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/absent/abc123"
 
@@ -568,6 +566,7 @@ func TestEKSServiceImpl_NodegroupTagMissingNotFound(t *testing.T) {
 }
 
 func TestEKSServiceImpl_TagsUnsupportedARNNotImplemented(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	const fpARN = "arn:aws:eks:us-east-1:111122223333:fargateprofile/c1/fp1/abc123"
 
@@ -583,6 +582,7 @@ func TestEKSServiceImpl_TagsUnsupportedARNNotImplemented(t *testing.T) {
 
 // The cluster role must be a role in the caller's own account.
 func TestValidateCreateClusterInput_RejectsRoleOutsideCallerAccount(t *testing.T) {
+	t.Parallel()
 	for _, roleARN := range []string{
 		"arn:aws:iam::999999999999:role/eks-cluster",
 		"arn:aws:iam::" + testAccountID + ":user/eks-cluster",

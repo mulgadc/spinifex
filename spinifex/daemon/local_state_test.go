@@ -136,3 +136,37 @@ func TestReadLocalState_NilVMSMapInitialized(t *testing.T) {
 	require.NotNil(t, state)
 	assert.NotNil(t, state.VMS)
 }
+
+func TestWriteLocalState_Failures(t *testing.T) {
+	t.Run("parent is a file", func(t *testing.T) {
+		parent := filepath.Join(t.TempDir(), "file")
+		require.NoError(t, os.WriteFile(parent, nil, 0o600))
+
+		err := writeLocalState(filepath.Join(parent, "instance-state.json"), map[string]*vm.VM{})
+		assert.ErrorContains(t, err, "mkdir")
+	})
+
+	t.Run("tmp path is a directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "instance-state.json")
+		require.NoError(t, os.Mkdir(path+".tmp", 0o750))
+
+		assert.ErrorContains(t, writeLocalState(path, map[string]*vm.VM{}), "open tmp")
+		_, err := os.Stat(path)
+		assert.ErrorIs(t, err, os.ErrNotExist)
+	})
+
+	t.Run("destination is a non-empty directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "instance-state.json")
+		require.NoError(t, os.MkdirAll(filepath.Join(path, "occupied"), 0o750))
+
+		assert.ErrorContains(t, writeLocalState(path, map[string]*vm.VM{}), "rename")
+		_, err := os.Stat(path + ".tmp")
+		assert.ErrorIs(t, err, os.ErrNotExist, "a failed rename must not leave the tmp file behind")
+	})
+}
+
+func TestReadLocalState_Unreadable(t *testing.T) {
+	state, err := ReadLocalState(t.TempDir())
+	assert.ErrorContains(t, err, "read local state")
+	assert.Nil(t, state, "an unreadable file is not a fresh install")
+}

@@ -16,6 +16,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// Manifest is the parsed service-interfaces.yaml: every service's NATS
+// surface, the fixtures that start them, and the suites that cover them.
 type Manifest struct {
 	Version  int                `yaml:"version"`
 	Services map[string]Service `yaml:"services"`
@@ -23,6 +25,8 @@ type Manifest struct {
 	Suites   map[string]Suite   `yaml:"suites"`
 }
 
+// Service is one manifest service: its source paths and the NATS subjects it
+// subscribes to, publishes and depends on. CoversNoSuite bars any suite citing it.
 type Service struct {
 	Path            string   `yaml:"path"`
 	AdditionalPaths []string `yaml:"additional_paths,omitempty"`
@@ -32,15 +36,19 @@ type Service struct {
 	CoversNoSuite   bool     `yaml:"covers_no_suite,omitempty"`
 }
 
+// Fixture names the services one E2E fixture brings up.
 type Fixture struct {
 	Services []string `yaml:"services"`
 }
 
+// Suite is one E2E suite: its path and the services it covers.
 type Suite struct {
 	Path   string   `yaml:"path"`
 	Covers []string `yaml:"covers"`
 }
 
+// Load reads and strictly decodes the manifest at path, rejecting unknown
+// fields. It does not validate; call Validate for that.
 func Load(path string) (*Manifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

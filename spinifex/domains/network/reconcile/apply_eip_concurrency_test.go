@@ -119,6 +119,9 @@ func ovnWithGuestLSPs(t *testing.T, lspNames ...string) *mock.Client {
 // The assertion is wall time, so it holds whatever order the intent map yields.
 func TestApplyEIPs_HealthyPortDoesNotWaitForDeadOnes(t *testing.T) {
 	withFastGuestPortBounds(t)
+	// The assertion is that the live port is probed inside one deadline, so the
+	// deadline is kept wide of goroutine start-up; withFastGuestPortBounds restores it.
+	guestPortDatapathTimeout = 100 * time.Millisecond
 
 	const live = "port-eni-live"
 	dead := []string{"port-eni-dead1", "port-eni-dead2", "port-eni-dead3"}

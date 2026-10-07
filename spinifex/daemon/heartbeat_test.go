@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -158,4 +161,50 @@ func TestHeartbeatIntervalMatchesLivenessCopy(t *testing.T) {
 			"the gateway's staleness threshold is derived from its copy, so the two must move together",
 			heartbeatInterval, instancecache.HeartbeatInterval)
 	}
+}
+
+func heartbeatDaemon(t *testing.T, node string) *Daemon {
+	t.Helper()
+	rm, err := NewResourceManager(nil, nil, nil)
+	require.NoError(t, err)
+	return &Daemon{
+		node:          node,
+		clusterConfig: &config.ClusterConfig{Epoch: 7},
+		config:        &config.Config{Services: []string{"daemon"}},
+		resourceMgr:   rm,
+		vmMgr:         vm.NewManager(),
+	}
+}
+
+func TestStartHeartbeat_PublishesImmediately(t *testing.T) {
+	jsm, _ := newFaultInjectedJSM(t)
+	d := heartbeatDaemon(t, "hb-start-node")
+	d.jsManager = jsm
+	ctx, cancel := context.WithCancel(t.Context())
+	d.ctx = ctx
+	defer cancel()
+
+	d.startHeartbeat()
+
+	var got *Heartbeat
+	require.Eventually(t, func() bool {
+		h, err := jsm.ReadHeartbeat("hb-start-node")
+		got = h
+		return err == nil
+	}, 2*time.Second, time.Millisecond, "the first heartbeat must not wait for the ticker")
+	assert.Equal(t, uint64(7), got.Epoch)
+	assert.Equal(t, []string{"daemon"}, got.Services)
+}
+
+func TestPublishHeartbeat_WriteFailure(t *testing.T) {
+	jsm, f := newFaultInjectedJSM(t)
+	d := heartbeatDaemon(t, "hb-fail-node")
+	d.jsManager = jsm
+
+	f.setFail("Put", true)
+	d.publishHeartbeat()
+	f.setFail("Put", false)
+
+	_, err := jsm.ReadHeartbeat("hb-fail-node")
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }

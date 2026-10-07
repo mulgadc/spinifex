@@ -31,20 +31,20 @@ const (
 	rdsSystemVPCRolePrefix = "rds"
 )
 
-// Seeds both the owner tag and the deterministic address hash, so it must stay
-// stable across releases.
+// SystemVPCName returns the region's RDS system VPC name. It seeds both the owner tag and the
+// deterministic address hash, so it must stay stable across releases.
 func SystemVPCName(region string) string {
 	return "rds-system-" + region
 }
 
-// One group per region, shared by every DB VM's system ENI. The name is the
-// lookup key, so it must stay stable across releases too.
+// SystemSecurityGroupName returns the name of the region's one RDS system security group, shared by
+// every DB VM's system ENI. The name is the lookup key, so it must stay stable across releases too.
 func SystemSecurityGroupName(region string) string {
 	return "rds-system-" + region
 }
 
-// cfg supplies the operator-overridable address space and subnet count; a nil
-// or unset cfg falls back to the defaults.
+// SystemVPCSpec builds the region's RDS system VPC spec. cfg supplies the operator-overridable address
+// space and subnet count; a nil or unset cfg falls back to the defaults.
 func SystemVPCSpec(cfg *config.RDSConfig, region string) systemvpc.Spec {
 	supernet := config.RDSDefaultSystemVPCSupernet
 	privateSubnets := 1
@@ -70,11 +70,9 @@ func SystemVPCSpec(cfg *config.RDSConfig, region string) systemvpc.Spec {
 	}
 }
 
-// Idempotent. The private subnet the DB VMs sit in routes 0.0.0.0/0 to the
-// VPC's NAT gateway, which is the agent's egress to the gateway wherever no
-// management bridge exists. On a formed deployment one always does, and the
-// agent reaches the gateway over it instead — so this path carries almost no
-// required traffic.
+// EnsureSystemVPC idempotently creates or finds the region's RDS system VPC. The private subnet the DB
+// VMs sit in routes 0.0.0.0/0 to the VPC's NAT gateway, the agent's egress wherever no management
+// bridge exists; on a formed deployment one always does, so this path carries almost no required traffic.
 func EnsureSystemVPC(ctx context.Context, deps systemvpc.Deps, cfg *config.RDSConfig, accountID, region string) (*systemvpc.Refs, error) {
 	if region == "" {
 		return nil, errors.New("rds: EnsureSystemVPC empty region")
@@ -89,8 +87,8 @@ func EnsureSystemVPC(ctx context.Context, deps systemvpc.Deps, cfg *config.RDSCo
 	return refs, nil
 }
 
-// The security group every DB VM's system ENI carries, found by name or created.
-// Idempotent, and shared across the region: nothing deletes it per instance.
+// EnsureSystemSecurityGroup returns the security group every DB VM's system ENI carries, found by name
+// or created. Idempotent, and shared across the region: nothing deletes it per instance.
 //
 // No ingress rules are authorized, and none are needed. Nothing in the platform
 // connects to a DB VM's system ENI — the agent long-polls outbound, the control

@@ -57,7 +57,7 @@ build-ui:
 	cd spinifex/runtime/roles/spinifexui/frontend && pnpm build
 
 # GO commands
-VERSION ?= $(shell git describe --tags --always --dirty)
+VERSION ?= $(shell git describe --tags --always --dirty --exclude '*-dev')
 COMMIT  ?= $(shell git rev-parse --short HEAD)
 LDFLAGS := -s -w -X github.com/mulgadc/spinifex/spinifex/operator/cli.Version=$(VERSION) -X github.com/mulgadc/spinifex/spinifex/operator/cli.Commit=$(COMMIT)
 
@@ -167,7 +167,7 @@ preflight:
 # reason: between them they install the software, wire OVN, erase the state and
 # remove the install, so a shellcheck warning in one is an outage or a wrong
 # deletion, not a style note.
-NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/node-reset.sh scripts/uninstall-spx.sh
+NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh
 
 test-build-scripts:
 	@echo -e "\n....Running build/scripts/**/*_test.sh...."
@@ -261,6 +261,17 @@ test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
+
+# Refresh the README coverage badge. Measured as awesome-go documents
+# (-coverpkg=./... over ./...), with cmd/ entrypoints left out of the total.
+coverage-badge:
+	@echo -e "\n....Measuring whole-module coverage for the README badge...."
+	LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 600s -covermode=atomic -coverpkg=./... -coverprofile=coverage-badge.out ./...
+	@grep -v '/cmd/' coverage-badge.out > coverage-badge-nocmd.out
+	@pct=$$(go tool cover -func=coverage-badge-nocmd.out | tail -1 | awk '{print $$NF}' | tr -d '%'); \
+	color=$$(awk -v p="$$pct" 'BEGIN { print (p >= 80) ? "brightgreen" : (p >= 70) ? "yellow" : "red" }'); \
+	sed -i -E "s|badge/coverage-[0-9.]+%25-[a-z]+|badge/coverage-$${pct}%25-$${color}|" README.md; \
+	echo "Coverage $${pct}% ($${color}); README badge updated"
 
 # Run unit tests with race detector
 test-race:
@@ -464,7 +475,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
+.PHONY: test-package-check build build-ui build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image install-microvm go_build preflight test test-cover coverage-badge test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle manifest-check manifest-lint manifest-lint-update \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

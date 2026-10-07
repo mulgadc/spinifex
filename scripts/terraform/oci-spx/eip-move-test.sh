@@ -17,7 +17,7 @@ set -euo pipefail
 
 KEY=${KEY:-$HOME/.ssh/oci-poc.pem}
 OCI_BIN=${OCI_BIN:-$HOME/bin/oci}
-OCI_PROFILE=${OCI_PROFILE:-apacanzset03child03}
+OCI_PROFILE=${OCI_PROFILE:-DEFAULT}
 SUBNET=${SUBNET:-ocid1.subnet.oc1.ap-sydney-1.aaaaaaaaimrhjgsqgrfg7bnka2d3nbx2n5ss7kurcwneon22rkclqf3ypfqa}
 
 # Public address -> node name. The control plane is reached through node01.

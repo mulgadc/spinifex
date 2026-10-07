@@ -116,6 +116,33 @@ func TestUpdateRole(t *testing.T) {
 	}
 }
 
+func TestUpdateRoleDescription(t *testing.T) {
+	svc := &stubIAMService{}
+	tests := []struct {
+		name    string
+		input   *iam.UpdateRoleDescriptionInput
+		wantErr string
+	}{
+		{"nil RoleName", &iam.UpdateRoleDescriptionInput{Description: aws.String("d")}, awserrors.ErrorMissingParameter},
+		{"empty RoleName", &iam.UpdateRoleDescriptionInput{RoleName: aws.String(""), Description: aws.String("d")}, awserrors.ErrorMissingParameter},
+		{"nil Description", &iam.UpdateRoleDescriptionInput{RoleName: aws.String("r")}, awserrors.ErrorMissingParameter},
+		{"empty Description", &iam.UpdateRoleDescriptionInput{RoleName: aws.String("r"), Description: aws.String("")}, ""},
+		{"valid", &iam.UpdateRoleDescriptionInput{RoleName: aws.String("r"), Description: aws.String("d")}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := UpdateRoleDescription(testAccountID, tc.input, svc)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, out.Role)
+			}
+		})
+	}
+}
+
 func TestUpdateAssumeRolePolicy(t *testing.T) {
 	svc := &stubIAMService{}
 	tests := []struct {

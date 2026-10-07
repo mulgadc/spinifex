@@ -428,15 +428,13 @@ func eksUncased() map[string]string {
 		"UntagResource": sameHelper("ListTagsForResource"),
 	}
 	for _, action := range []string{
-		"AssociateAccessPolicy", "AssociateIdentityProviderConfig", "CreateAccessEntry", "CreateAddon",
-		"CreateCluster", "CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster",
-		"DeleteNodegroup", "DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions",
-		"DescribeCluster", "DescribeIdentityProviderConfig", "DescribeNodegroup", "DescribeUpdate",
-		"DisassociateAccessPolicy", "DisassociateIdentityProviderConfig", "GetRecoveryDirective",
+		"AssociateAccessPolicy", "CreateAccessEntry", "CreateAddon", "CreateCluster",
+		"CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster", "DeleteNodegroup",
+		"DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions", "DescribeCluster",
+		"DescribeNodegroup", "DisassociateAccessPolicy", "GetRecoveryDirective",
 		"ListAccessEntries", "ListAccessPolicies", "ListAddons", "ListAssociatedAccessPolicies",
-		"ListClusters", "ListIdentityProviderConfigs", "ListInternalAddons", "ListNodegroups",
-		"ListUpdates", "PublishInternal", "UpdateAccessEntry", "UpdateAddon", "UpdateClusterConfig",
-		"UpdateClusterVersion", "UpdateNodegroupConfig", "UpdateNodegroupVersion", "WebhookTokenReview",
+		"ListClusters", "ListInternalAddons", "ListNodegroups", "PublishInternal",
+		"UpdateAccessEntry", "UpdateAddon", "UpdateNodegroupConfig", "WebhookTokenReview",
 	} {
 		uncased[action] = byName
 	}
@@ -495,7 +493,7 @@ func iamUncased() map[string]string {
 	}
 	for _, action := range []string{
 		"ListUsers", "ListPolicies", "ListRoles", "ListInstanceProfiles",
-		"ListOpenIDConnectProviders", "ListGroups", "GetAccountSummary",
+		"ListOpenIDConnectProviders", "ListGroups", "GetAccountSummary", "ListAccountAliases",
 	} {
 		uncased[action] = accountLevel
 	}
@@ -518,7 +516,7 @@ func iamUncased() map[string]string {
 		"PutGroupPolicy", "PutRolePolicy", "PutUserPolicy", "RemoveRoleFromInstanceProfile",
 		"RemoveUserFromGroup", "TagInstanceProfile", "TagRole", "TagUser",
 		"UntagInstanceProfile", "UntagRole", "UntagUser", "UpdateAccessKey",
-		"UpdateAssumeRolePolicy", "UpdateRole",
+		"UpdateAssumeRolePolicy", "UpdateRole", "UpdateRoleDescription",
 	} {
 		uncased[action] = byName
 	}

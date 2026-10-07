@@ -20,8 +20,8 @@ var dbInstanceClasses = map[string]string{
 	"db.m5.xlarge": "m5.xlarge",
 }
 
-// An unknown class is rejected here at validation rather than surfacing as a
-// launch failure after the volume and ENI exist.
+// InstanceTypeForClass maps a db.* instance class to the EC2 instance type backing it. An unknown class
+// is rejected here at validation rather than surfacing as a launch failure after the volume and ENI exist.
 func InstanceTypeForClass(class string) (string, error) {
 	instanceType, ok := dbInstanceClasses[class]
 	if !ok {
@@ -33,13 +33,14 @@ func InstanceTypeForClass(class string) (string, error) {
 	return instanceType, nil
 }
 
+// SupportedInstanceClasses returns every db.* instance class this platform offers, sorted alphabetically.
 func SupportedInstanceClasses() []string {
 	return slices.Sorted(maps.Keys(dbInstanceClasses))
 }
 
-// The supported class with the least memory. Deliberately computed from the
-// footprints rather than taken as the first name SupportedInstanceClasses
-// reports: that list is sorted alphabetically, so its head is db.m5.large.
+// SmallestInstanceClass returns the supported class with the least memory. Deliberately computed from
+// the footprints rather than taken as the first name SupportedInstanceClasses reports: that list is
+// sorted alphabetically, so its head is db.m5.large.
 func SmallestInstanceClass() string {
 	smallest, least := "", int64(0)
 	for _, class := range SupportedInstanceClasses() {

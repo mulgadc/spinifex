@@ -10,17 +10,19 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// validateSGRuleDescriptions checks the sgr-<17 hex> shape before the request
-// crosses NATS so a malformed ID never reaches the handler.
+// validateSGRuleDescriptions rejects a rule ID AWS calls malformed before the
+// request crosses NATS; whether a well-formed ID exists is the handler's to answer.
 func validateSGRuleDescriptions(descriptions []*ec2.SecurityGroupRuleDescription) error {
 	for _, d := range descriptions {
-		if d == nil || d.SecurityGroupRuleId == nil || !ec2vpc.SGRuleIDRegex.MatchString(*d.SecurityGroupRuleId) {
+		if d == nil || d.SecurityGroupRuleId == nil || ec2vpc.SGRuleIDIsMalformed(*d.SecurityGroupRuleId) {
 			return errors.New(awserrors.ErrorInvalidSecurityGroupRuleIdMalformed)
 		}
 	}
 	return nil
 }
 
+// UpdateSecurityGroupRuleDescriptionsIngress implements the EC2 action of the same name,
+// requiring GroupId and validating each rule description before calling the NATS VPC service.
 func UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsIngressInput, natsConn *nats.Conn, accountID string) (ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput, error) {
 	var output ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput
 	if input == nil {
@@ -40,6 +42,8 @@ func UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.
 	return *result, nil
 }
 
+// UpdateSecurityGroupRuleDescriptionsEgress implements the EC2 action of the same name, requiring
+// GroupId and validating each rule description before calling the NATS VPC service.
 func UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, natsConn *nats.Conn, accountID string) (ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error) {
 	var output ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput
 	if input == nil {

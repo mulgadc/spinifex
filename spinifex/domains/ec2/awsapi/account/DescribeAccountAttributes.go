@@ -1,3 +1,6 @@
+// Package account implements the EC2 account-level actions: it
+// answers DescribeAccountAttributes itself and forwards the EBS-encryption and
+// serial-console defaults to the account settings service over NATS.
 package account
 
 import (

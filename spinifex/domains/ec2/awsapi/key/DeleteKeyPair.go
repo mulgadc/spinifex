@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteKeyPairInput returns MissingParameter for a nil input or when neither KeyName nor
+// KeyPairId is set.
 func ValidateDeleteKeyPairInput(input *ec2.DeleteKeyPairInput) (err error) {
 	if input == nil {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -24,6 +26,8 @@ func ValidateDeleteKeyPairInput(input *ec2.DeleteKeyPairInput) (err error) {
 	return err
 }
 
+// DeleteKeyPair implements the EC2 DeleteKeyPair action, deleting the key pair named by KeyName
+// or KeyPairId in accountID via the NATS key service.
 func DeleteKeyPair(ctx context.Context, input *ec2.DeleteKeyPairInput, natsConn *nats.Conn, accountID string) (output ec2.DeleteKeyPairOutput, err error) {
 	err = ValidateDeleteKeyPairInput(input)
 

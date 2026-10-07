@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDescribeVolumeStatusInput accepts a nil input and rejects any VolumeIds entry without
+// the vol- prefix with InvalidVolumeID.Malformed.
 func ValidateDescribeVolumeStatusInput(input *ec2.DescribeVolumeStatusInput) error {
 	if input == nil {
 		return nil

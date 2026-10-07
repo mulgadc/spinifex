@@ -63,8 +63,8 @@ func TestPutImageScanningConfiguration_Errors(t *testing.T) {
 		name, body, expect string
 	}{
 		{"missing repo", `{"repositoryName":"team/ghost"}`, awserrors.ErrorRepositoryNotFound},
-		{"empty name", `{}`, awserrors.ErrorInvalidParameterValue},
-		{"invalid name", `{"repositoryName":"Team/App"}`, awserrors.ErrorInvalidParameterValue},
+		{"empty name", `{}`, awserrors.ErrorECRInvalidParameter},
+		{"invalid name", `{"repositoryName":"Team/App"}`, awserrors.ErrorECRInvalidParameter},
 		{"cross-account", `{"repositoryName":"team/app","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
 	}
 	for _, tc := range cases {

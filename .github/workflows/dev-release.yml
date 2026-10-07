@@ -1,0 +1,188 @@
+name: Dev Prerelease
+
+# Publishes the dev channel that install.mulgadc.com already serves. setup.sh has
+# understood INSTALL_SPINIFEX_CHANNEL=dev since it was written and the install
+# Worker resolves that channel to the newest GitHub prerelease, but nothing has
+# ever produced one -- so /download/dev/amd64 returned 404. This is the producer.
+#
+# A separate workflow rather than conditionals in release.yml, because a dev build
+# is a different artifact and not a release with flags off: amd64 only, no ISO, no
+# AMI refresh, no bare-metal gate, and nothing that touches a self-hosted runner.
+on:
+  push:
+    branches: [dev]
+    # Nothing here changes the binary, and a prerelease per docs commit would
+    # churn the channel our contacts are installing from.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Supersede rather than queue: on a run of merges to dev only the newest commit is
+# worth publishing, and the older build would land after it and become the channel.
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+jobs:
+  prerelease:
+    runs-on: ubuntu-26.04
+    steps:
+      # Full history and tags, because the tag name is git describe and a shallow
+      # clone has no tag to describe against.
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7
+        with:
+          path: spinifex
+          fetch-depth: 0
+
+      # dev, not each repository's default branch, which is what release.yml takes.
+      # A dev build of spinifex against main of the others is a pairing nobody runs.
+      - name: Checkout Predastore
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/predastore
+          ref: dev
+          path: predastore
+
+      - name: Checkout Viperblock
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/viperblock
+          ref: dev
+          path: viperblock
+
+      - name: Checkout Northstar
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/northstar
+          ref: dev
+          path: northstar
+
+      - name: Checkout Bluebottle
+        uses: actions/checkout@v7
+        with:
+          repository: mulgadc/bluebottle
+          ref: dev
+          path: bluebottle
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: spinifex/go.mod
+
+      # The tag carries the describe string so the commit is recoverable from the
+      # version alone, and the -dev suffix is what release.yml's own convention
+      # already treats as a prerelease. VERSION must equal the tag: the install
+      # Worker derives the asset name from the tag it resolves.
+      - name: Resolve the version
+        id: version
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          # Describing against a dev tag would nest it, growing the name every release.
+          TAG="$(git describe --tags --always --exclude '*-dev')-dev"
+          case "$TAG" in
+              v*) ;;
+              *) echo "::error::git describe gave '$TAG', which is not a v-prefixed version"; exit 1 ;;
+          esac
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::notice::$TAG already published; nothing to do"
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Publishing $TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build microVM artifacts (lb-agent + kernel + initramfs)
+        if: steps.version.outputs.exists != 'true'
+        run: cd spinifex && make build-microvm-image
+
+      - name: Build amd64 Tarball
+        if: steps.version.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.tag }}
+        run: cd spinifex && make distro-amd64 VERSION="$VERSION"
+
+      # --prerelease on create, never a later promote step. release.yml sets it in
+      # a job that runs after its verification gates, which leaves a window where
+      # the release is not flagged; GitHub's releases/latest excludes prereleases
+      # only, so in that window a dev build is what every customer curl installs.
+      - name: Publish the prerelease
+        if: steps.version.outputs.exists != 'true'
+        working-directory: spinifex
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A file, not an inline string: the notes are Markdown, and leading
+          # whitespace from indenting a shell literal turns them into code blocks.
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Automated dev-channel build of \`$GITHUB_SHA\`.
+
+          **Not a release.** amd64 only, no ISO and no system images, and it has not been through the release verification gates. Install it with:
+
+          \`\`\`
+          curl -sfL https://install.mulgadc.com | sudo bash -s -- --channel dev
+          \`\`\`
+          EOF
+          sed -i 's/^          //' "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "dist/spinifex-$TAG-linux-amd64.tar.gz" \
+              "dist/spinifex-$TAG-linux-amd64.tar.gz.sha256" \
+              "scripts/setup.sh"
+
+      # The assertion that matters. A prerelease must never become the latest
+      # release, because latest is what an unqualified curl | bash installs -- so
+      # this checks the published state rather than trusting the flag we passed.
+      - name: Assert the stable channel is untouched
+        if: steps.version.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+          if [ "$latest" = "$TAG" ]; then
+              echo "::error::$TAG became the latest release: every customer curl | bash would install it"
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease
+              exit 1
+          fi
+          echo "latest is still $latest"
+          dev="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=20" --jq 'map(select(.prerelease))[0].tag_name')"
+          [ "$dev" = "$TAG" ] || { echo "::error::the dev channel resolves to $dev, not $TAG"; exit 1; }
+
+      # Kept rather than unbounded: the Worker reads the first page of releases to
+      # resolve the channel, so enough prereleases would eventually push the real
+      # ones off it, and each build carries two assets.
+      #
+      # Twenty, not five. A pinned dev tag is how an external evaluator installs a
+      # specific build, and five is about a week of them -- short enough that the tag
+      # someone was given stops resolving while they are still using it.
+      - name: Prune old dev prereleases
+        if: steps.version.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq 'map(select(.prerelease and (.tag_name | endswith("-dev")))) | .[20:] | .[].tag_name' \
+              > stale.txt
+          while read -r tag; do
+              [ -n "$tag" ] || continue
+              echo "deleting $tag"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          done < stale.txt

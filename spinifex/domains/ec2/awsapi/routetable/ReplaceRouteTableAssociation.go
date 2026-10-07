@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateReplaceRouteTableAssociationInput rejects a nil input with InvalidParameterValue and a
+// missing AssociationId or RouteTableId with MissingParameter.
 func ValidateReplaceRouteTableAssociationInput(input *ec2.ReplaceRouteTableAssociationInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -23,6 +25,8 @@ func ValidateReplaceRouteTableAssociationInput(input *ec2.ReplaceRouteTableAssoc
 	return nil
 }
 
+// ReplaceRouteTableAssociation implements the EC2 ReplaceRouteTableAssociation action, moving an
+// existing association to a different route table via the NATS route table service.
 func ReplaceRouteTableAssociation(ctx context.Context, input *ec2.ReplaceRouteTableAssociationInput, natsConn *nats.Conn, accountID string) (ec2.ReplaceRouteTableAssociationOutput, error) {
 	var output ec2.ReplaceRouteTableAssociationOutput
 	if err := ValidateReplaceRouteTableAssociationInput(input); err != nil {

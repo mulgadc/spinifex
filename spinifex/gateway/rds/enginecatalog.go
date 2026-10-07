@@ -38,9 +38,9 @@ var (
 	}
 )
 
-// The engine catalog is static, so this reads it with no I/O at all: Engine is a
-// filter here rather than a required parameter, and an unknown one is an empty
-// list rather than the rejection create-db-instance gives it.
+// DescribeDBEngineVersions reads the static engine catalog with no I/O: Engine is a filter here
+// rather than a required parameter, and an unknown one is an empty list rather than the rejection
+// create-db-instance gives it.
 func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVersionsInput, _ *nats.Conn, _ Caller) (any, error) {
 	filter := handlers_rds.EngineVersionFilter{}
 	filter.Engine.AddParam(aws.StringValue(input.Engine))
@@ -75,8 +75,8 @@ func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVe
 	return &rds.DescribeDBEngineVersionsOutput{DBEngineVersions: versions, Marker: marker}, nil
 }
 
-// Engine is required, so an absent one is MissingParameter and an unknown one is
-// the InvalidParameterValue LookupEngine already words. Everything else narrows.
+// DescribeOrderableDBInstanceOptions requires Engine, so an absent one is MissingParameter and an
+// unknown one is the InvalidParameterValue LookupEngine already words. Everything else narrows.
 func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.DescribeOrderableDBInstanceOptionsInput, nc *nats.Conn, _ Caller, env Env) (any, error) {
 	if aws.StringValue(input.AvailabilityZoneGroup) != "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,

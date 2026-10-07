@@ -47,25 +47,9 @@ func TestGatewayWrappers_Cluster(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out4)
 
-	out5, err := UpdateClusterConfig(context.Background(), nc, acct, "alpha", []byte(`{}`))
+	out5, err := DeleteCluster(context.Background(), nc, acct, "alpha")
 	require.NoError(t, err)
 	assert.NotNil(t, out5)
-
-	out6, err := UpdateClusterConfig(context.Background(), nc, acct, "alpha", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out6)
-
-	out7, err := UpdateClusterVersion(context.Background(), nc, acct, "alpha", []byte(`{"version":"1.30"}`))
-	require.NoError(t, err)
-	assert.NotNil(t, out7)
-
-	out8, err := UpdateClusterVersion(context.Background(), nc, acct, "alpha", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out8)
-
-	out9, err := DeleteCluster(context.Background(), nc, acct, "alpha")
-	require.NoError(t, err)
-	assert.NotNil(t, out9)
 }
 
 func TestGatewayWrappers_Cluster_BadJSON(t *testing.T) {
@@ -73,10 +57,6 @@ func TestGatewayWrappers_Cluster_BadJSON(t *testing.T) {
 	stubEKSResponder(t, nc)
 
 	_, err := CreateCluster(context.Background(), nc, acct, "", []byte(`{not-json`))
-	require.Error(t, err)
-	_, err = UpdateClusterConfig(context.Background(), nc, acct, "alpha", []byte(`{not-json`))
-	require.Error(t, err)
-	_, err = UpdateClusterVersion(context.Background(), nc, acct, "alpha", []byte(`{not-json`))
 	require.Error(t, err)
 }
 
@@ -108,17 +88,9 @@ func TestGatewayWrappers_Nodegroup(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out6)
 
-	out7, err := UpdateNodegroupVersion(context.Background(), nc, acct, "alpha", "ng1", []byte(`{}`))
+	out7, err := DeleteNodegroup(context.Background(), nc, acct, "alpha", "ng1")
 	require.NoError(t, err)
 	assert.NotNil(t, out7)
-
-	out8, err := UpdateNodegroupVersion(context.Background(), nc, acct, "alpha", "ng1", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out8)
-
-	out9, err := DeleteNodegroup(context.Background(), nc, acct, "alpha", "ng1")
-	require.NoError(t, err)
-	assert.NotNil(t, out9)
 }
 
 func TestGatewayWrappers_Nodegroup_BadJSON(t *testing.T) {
@@ -128,8 +100,6 @@ func TestGatewayWrappers_Nodegroup_BadJSON(t *testing.T) {
 	_, err := CreateNodegroup(context.Background(), nc, acct, "alpha", []byte(`{nope`))
 	require.Error(t, err)
 	_, err = UpdateNodegroupConfig(context.Background(), nc, acct, "alpha", "ng1", []byte(`{nope`))
-	require.Error(t, err)
-	_, err = UpdateNodegroupVersion(context.Background(), nc, acct, "alpha", "ng1", []byte(`{nope`))
 	require.Error(t, err)
 }
 
@@ -242,51 +212,6 @@ func TestGatewayWrappers_Addons_BadJSON(t *testing.T) {
 	_, err := CreateAddon(context.Background(), nc, acct, "alpha", []byte(`{x`))
 	require.Error(t, err)
 	_, err = UpdateAddon(context.Background(), nc, acct, "alpha", "vpc-cni", []byte(`{x`))
-	require.Error(t, err)
-}
-
-func TestGatewayWrappers_OIDC(t *testing.T) {
-	_, nc := testutil.StartTestNATS(t)
-	stubEKSResponder(t, nc)
-
-	out1, err := AssociateIdentityProviderConfig(context.Background(), nc, acct, "alpha", []byte(`{}`))
-	require.NoError(t, err)
-	assert.NotNil(t, out1)
-
-	out2, err := AssociateIdentityProviderConfig(context.Background(), nc, acct, "alpha", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out2)
-
-	out3, err := DescribeIdentityProviderConfig(context.Background(), nc, acct, "alpha", []byte(`{}`))
-	require.NoError(t, err)
-	assert.NotNil(t, out3)
-
-	out4, err := DescribeIdentityProviderConfig(context.Background(), nc, acct, "alpha", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out4)
-
-	out5, err := ListIdentityProviderConfigs(context.Background(), nc, acct, "alpha")
-	require.NoError(t, err)
-	assert.NotNil(t, out5)
-
-	out6, err := DisassociateIdentityProviderConfig(context.Background(), nc, acct, "alpha", []byte(`{}`))
-	require.NoError(t, err)
-	assert.NotNil(t, out6)
-
-	out7, err := DisassociateIdentityProviderConfig(context.Background(), nc, acct, "alpha", nil)
-	require.NoError(t, err)
-	assert.NotNil(t, out7)
-}
-
-func TestGatewayWrappers_OIDC_BadJSON(t *testing.T) {
-	_, nc := testutil.StartTestNATS(t)
-	stubEKSResponder(t, nc)
-
-	_, err := AssociateIdentityProviderConfig(context.Background(), nc, acct, "alpha", []byte(`{x`))
-	require.Error(t, err)
-	_, err = DescribeIdentityProviderConfig(context.Background(), nc, acct, "alpha", []byte(`{x`))
-	require.Error(t, err)
-	_, err = DisassociateIdentityProviderConfig(context.Background(), nc, acct, "alpha", []byte(`{x`))
 	require.Error(t, err)
 }
 

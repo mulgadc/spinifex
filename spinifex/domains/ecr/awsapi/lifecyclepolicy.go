@@ -1,9 +1,11 @@
 package awsapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -19,6 +21,20 @@ type lifecyclePolicyRequest struct {
 	RepositoryName      string `json:"repositoryName"`
 	RegistryID          string `json:"registryId"`
 	LifecyclePolicyText string `json:"lifecyclePolicyText"`
+}
+
+// neverEvaluated is the lastEvaluatedAt AWS reports for a lifecycle policy
+// that has not been evaluated; the sweeper records no evaluation time.
+var neverEvaluated = time.Unix(0, 0).UTC()
+
+// compactPolicyText strips the whitespace between JSON tokens, keeping key
+// order, as AWS does; text that is not JSON is returned unchanged.
+func compactPolicyText(text []byte) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, text); err != nil {
+		return string(text)
+	}
+	return buf.String()
 }
 
 // resolveLifecycleRepo parses + validates the request, enforces the registryId
@@ -40,7 +56,7 @@ func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, 
 	store := handlers_ecr.NewNATSMetaStore(nc)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return req, nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return req, nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return req, nil, err
 	}
@@ -49,7 +65,7 @@ func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, 
 
 // PutLifecyclePolicy validates and stores the lifecycle-policy document for a
 // repository. The document is parsed by the evaluation engine; a malformed or
-// unsupported rule is rejected with InvalidParameterValue.
+// unsupported rule is rejected with InvalidParameterException.
 func PutLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
 	req, store, err := resolveLifecycleRepo(ctx, nc, accountID, body)
 	if err != nil {
@@ -58,13 +74,14 @@ func PutLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, bo
 	if _, err := handlers_ecr.ParseLifecyclePolicy([]byte(req.LifecyclePolicyText)); err != nil {
 		return nil, InvalidLifecyclePolicyError()
 	}
-	if err := store.PutLifecyclePolicy(ctx, accountID, req.RepositoryName, []byte(req.LifecyclePolicyText)); err != nil {
+	policy := compactPolicyText([]byte(req.LifecyclePolicyText))
+	if err := store.PutLifecyclePolicy(ctx, accountID, req.RepositoryName, []byte(policy)); err != nil {
 		return nil, err
 	}
 	return &ecr.PutLifecyclePolicyOutput{
 		RegistryId:          aws.String(accountID),
 		RepositoryName:      aws.String(req.RepositoryName),
-		LifecyclePolicyText: aws.String(req.LifecyclePolicyText),
+		LifecyclePolicyText: aws.String(policy),
 	}, nil
 }
 
@@ -78,14 +95,15 @@ func GetLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, bo
 	policy, err := store.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorLifecyclePolicyNotFound)
+			return nil, LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
 	}
 	return &ecr.GetLifecyclePolicyOutput{
 		RegistryId:          aws.String(accountID),
 		RepositoryName:      aws.String(req.RepositoryName),
-		LifecyclePolicyText: aws.String(string(policy)),
+		LifecyclePolicyText: aws.String(compactPolicyText(policy)),
+		LastEvaluatedAt:     aws.Time(neverEvaluated),
 	}, nil
 }
 
@@ -99,13 +117,14 @@ func DeleteLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string,
 	policy, err := store.DeleteLifecyclePolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorLifecyclePolicyNotFound)
+			return nil, LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
 	}
 	return &ecr.DeleteLifecyclePolicyOutput{
 		RegistryId:          aws.String(accountID),
 		RepositoryName:      aws.String(req.RepositoryName),
-		LifecyclePolicyText: aws.String(string(policy)),
+		LifecyclePolicyText: aws.String(compactPolicyText(policy)),
+		LastEvaluatedAt:     aws.Time(neverEvaluated),
 	}, nil
 }

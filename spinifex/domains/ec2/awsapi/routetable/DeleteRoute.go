@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteRouteInput rejects a nil input with InvalidParameterValue and a missing
+// RouteTableId or DestinationCidrBlock with MissingParameter.
 func ValidateDeleteRouteInput(input *ec2.DeleteRouteInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -23,6 +25,8 @@ func ValidateDeleteRouteInput(input *ec2.DeleteRouteInput) error {
 	return nil
 }
 
+// DeleteRoute implements the EC2 DeleteRoute action, removing the route for DestinationCidrBlock
+// from a route table via the NATS route table service.
 func DeleteRoute(ctx context.Context, input *ec2.DeleteRouteInput, natsConn *nats.Conn, accountID string) (ec2.DeleteRouteOutput, error) {
 	var output ec2.DeleteRouteOutput
 	if err := ValidateDeleteRouteInput(input); err != nil {

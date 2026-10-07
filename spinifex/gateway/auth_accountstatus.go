@@ -64,7 +64,7 @@ func (c *accountStatusCache) forget(accountID string) {
 //
 // This is the only enforcement point for account status on the AWS surface:
 // until it existed, suspending an account blocked ECR and nothing else.
-func (gw *GatewayConfig) checkAccountActive(accountID, clientIP string) string {
+func (gw *GatewayConfig) checkAccountActive(accountID string, src authSource) string {
 	if accountID == "" {
 		return ""
 	}
@@ -88,7 +88,7 @@ func (gw *GatewayConfig) checkAccountActive(accountID, clientIP string) string {
 
 	if account.Status != handlers_iam.AccountStatusActive {
 		slog.Warn("Auth failure: account is not active",
-			"accountID", accountID, "status", account.Status, "sourceIP", clientIP)
+			"accountID", accountID, "status", account.Status, "sourceIP", src.logIP)
 		return awserrors.ErrorAccessDenied
 	}
 

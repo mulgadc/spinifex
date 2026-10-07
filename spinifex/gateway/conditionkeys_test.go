@@ -109,19 +109,19 @@ func TestRequestConditionKeys_OmitsUnresolvableUserID(t *testing.T) {
 	assert.NotContains(t, keys, iampolicy.KeyUserID)
 }
 
-// principalUserID resolves the ID once per request, at the point the principal
+// principalUser resolves the ID once per request, at the point the principal
 // is resolved. A user with no record and a session minted before the ID was
 // recorded both yield an omitted key, not a failed request.
 func TestPrincipalUserID_ResolvesAndOmits(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 
-	userID, err := gw.principalUserID(principalContext{
+	userID, _, err := gw.principalUser(principalContext{
 		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "AIDAALICE", userID)
 
-	userID, err = gw.principalUserID(principalContext{
+	userID, _, err = gw.principalUser(principalContext{
 		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
 		assumedRoleID: "AROASHAREDOPS:session",
 	})
@@ -130,7 +130,7 @@ func TestPrincipalUserID_ResolvesAndOmits(t *testing.T) {
 
 	// Root's aws:userid is the account ID, matching what GetCallerIdentity
 	// reports for the same principal.
-	userID, err = gw.principalUserID(principalContext{
+	userID, _, err = gw.principalUser(principalContext{
 		identity: "root", accountID: "000000000000", principalType: principalTypeUser,
 	})
 	require.NoError(t, err)
@@ -141,7 +141,7 @@ func TestPrincipalUserID_ResolvesAndOmits(t *testing.T) {
 			return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 		},
 	}}
-	userID, err = missing.principalUserID(principalContext{
+	userID, _, err = missing.principalUser(principalContext{
 		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
 	})
 	require.NoError(t, err, "a deleted user omits the key rather than failing the request")
@@ -153,14 +153,14 @@ func TestPrincipalUserID_ResolvesAndOmits(t *testing.T) {
 			return &iam.GetUserOutput{User: &iam.User{UserName: aws.String("alice")}}, nil
 		},
 	}}
-	userID, err = legacy.principalUserID(principalContext{
+	userID, _, err = legacy.principalUser(principalContext{
 		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
 	})
 	require.NoError(t, err)
 	assert.Empty(t, userID)
 
 	// A session minted before assumed_role_id was recorded takes the same arm.
-	userID, err = gw.principalUserID(principalContext{
+	userID, _, err = gw.principalUser(principalContext{
 		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
 	})
 	require.NoError(t, err)
@@ -176,13 +176,47 @@ func TestPrincipalUserID_DependencyFaultFailsClosed(t *testing.T) {
 		},
 	}}
 
-	userID, err := faulty.principalUserID(principalContext{
+	userID, userARN, err := faulty.principalUser(principalContext{
 		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
 	})
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 	assert.Empty(t, userID)
+	assert.Empty(t, userARN)
+}
+
+// An IAM user's ARN comes from its record, path included, in the same read as
+// its ID. Root and role sessions carry no user ARN.
+func TestPrincipalUser_ResolvesStoredUserARN(t *testing.T) {
+	const pathed = "arn:aws:iam::000000000001:user/eng/alice"
+	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{
+		getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+			return &iam.GetUserOutput{User: &iam.User{
+				UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
+			}}, nil
+		},
+	}}
+
+	userID, userARN, err := gw.principalUser(principalContext{
+		identity: "alice", accountID: "000000000001", principalType: principalTypeUser,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "AIDAALICE", userID)
+	assert.Equal(t, pathed, userARN)
+
+	_, userARN, err = gw.principalUser(principalContext{
+		identity: "root", accountID: "000000000000", principalType: principalTypeUser,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, userARN)
+
+	_, userARN, err = gw.principalUser(principalContext{
+		identity: "session", accountID: "000000000001", principalType: principalTypeAssumedRole,
+		assumedRoleID: "AROASHAREDOPS:session",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, userARN)
 }
 
 // RoleSessionName is chosen by the caller of AssumeRole, so aws:username must

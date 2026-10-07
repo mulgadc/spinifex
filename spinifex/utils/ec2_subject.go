@@ -1,3 +1,5 @@
+// Package utils holds the helpers still shared across Spinifex services: the
+// default-VPC subject, the Viperblock master key loader and vpcd events.
 package utils
 
 // SubjectEnsureDefaultVpc is the request/reply subject on which the daemon

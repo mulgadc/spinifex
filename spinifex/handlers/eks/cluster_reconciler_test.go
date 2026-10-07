@@ -70,6 +70,7 @@ func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOpti
 }
 
 func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	leaderKV, err := InitLeaderBucket(t.Context(), js)
@@ -90,6 +91,7 @@ func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newReconcilerHarness(t, "")
 
 	release, ok := r.AcquireLease(t.Context())
@@ -104,6 +106,7 @@ func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
 }
 
 func TestClusterReconciler_AcquireLeaseSecondHolderLoses(t *testing.T) {
+	t.Parallel()
 	r1, leaderKV, acctKV := newReconcilerHarness(t, "")
 
 	release, ok := r1.AcquireLease(t.Context())
@@ -145,6 +148,7 @@ func seedBootstrapState(t *testing.T, kv jetstream.KeyValue) {
 }
 
 func TestClusterReconciler_CreatingTransitionsToActiveOnReadyAndHealthz(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusOK}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -183,6 +187,7 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnReadyAndHealthz(t *testi
 }
 
 func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusOK}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -212,6 +217,7 @@ func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
 }
 
 func TestClusterReconciler_CreatingStaysWhenJWKSUnverified(t *testing.T) {
+	t.Parallel()
 	// Regression for the ACTIVE-on-pre-seeded-JWKS race: every artifact is
 	// present INCLUDING the controller-pre-seeded OIDCJWKSKey, but the VM's
 	// JWKS cross-check has not passed (no verified-marker). The cluster must
@@ -250,6 +256,7 @@ func TestClusterReconciler_CreatingStaysWhenJWKSUnverified(t *testing.T) {
 }
 
 func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{err: errors.New("connection refused")}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -274,6 +281,7 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 }
 
 func TestClusterReconciler_CreatingTimesOutToFailed(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{err: errors.New("connection refused")}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -306,6 +314,7 @@ func TestClusterReconciler_CreatingTimesOutToFailed(t *testing.T) {
 }
 
 func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{err: errors.New("connection refused")}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -330,6 +339,7 @@ func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
 }
 
 func TestClusterReconciler_DeletingExitsLoop(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusOK}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -351,6 +361,7 @@ func TestClusterReconciler_DeletingExitsLoop(t *testing.T) {
 }
 
 func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusOK}
 	r, leaderKV, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -385,6 +396,7 @@ func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
 }
 
 func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusOK}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -412,6 +424,7 @@ func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
 }
 
 func TestClusterReconciler_ActiveHealthRecoversClearsIssue(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusServiceUnavailable}
 	r, _, acctKV := newReconcilerHarness(t,
 		"https://nlb.example/healthz",
@@ -441,6 +454,7 @@ func TestClusterReconciler_ActiveHealthRecoversClearsIssue(t *testing.T) {
 }
 
 func TestClusterReconciler_ProbeHealthzEmptyURLNoop(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{}
 	r, _, _ := newReconcilerHarness(t,
 		"",

@@ -77,6 +77,8 @@ var _ PriceResolver = (*PriceStore)(nil)
 
 // NewPriceStore constructs a PriceStore over the cluster's JetStream client,
 
+// NewPriceStore returns a PriceStore over the bedrock-prices KV bucket. The bucket is opened
+// lazily; with a nil js, lookups fail with an error instead of panicking.
 func NewPriceStore(js jetstream.JetStream) *PriceStore {
 	return &PriceStore{store: kvstore.New[Price](js, kvstore.Config{
 		Name:    bedrockPricesBucket,

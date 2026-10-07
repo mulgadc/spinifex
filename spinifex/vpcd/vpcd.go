@@ -1,3 +1,5 @@
+// Package vpcd runs the VPC daemon, which translates VPC events from NATS into
+// OVN topology, security groups, NAT, EIPs and DHCP on this node.
 package vpcd
 
 import (

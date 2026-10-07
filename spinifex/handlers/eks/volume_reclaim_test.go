@@ -35,6 +35,7 @@ func tagVol(id string, tags map[string]string) *ec2.Volume {
 }
 
 func TestReclaimCSIVolumes_ReportsOwnedVolumes(t *testing.T) {
+	t.Parallel()
 	fake := &fakeCSIVolumeReclaimer{out: &ec2.DescribeVolumesOutput{Volumes: []*ec2.Volume{
 		tagVol("vol-owned1", map[string]string{
 			"kubernetes.io/cluster/test-cluster":      "owned",
@@ -50,6 +51,7 @@ func TestReclaimCSIVolumes_ReportsOwnedVolumes(t *testing.T) {
 }
 
 func TestReclaimCSIVolumes_IgnoresUnrelatedVolumes(t *testing.T) {
+	t.Parallel()
 	fake := &fakeCSIVolumeReclaimer{out: &ec2.DescribeVolumesOutput{Volumes: []*ec2.Volume{
 		tagVol("vol-other-cluster", map[string]string{
 			"kubernetes.io/cluster/some-other-cluster": "owned",
@@ -66,6 +68,7 @@ func TestReclaimCSIVolumes_IgnoresUnrelatedVolumes(t *testing.T) {
 }
 
 func TestReclaimCSIVolumes_NilDepsIsNoop(t *testing.T) {
+	t.Parallel()
 	svc := &EKSServiceImpl{deps: EKSServiceDeps{}}
 
 	n, err := svc.reclaimCSIVolumes(context.Background(), "acct1", "test-cluster")
@@ -74,6 +77,7 @@ func TestReclaimCSIVolumes_NilDepsIsNoop(t *testing.T) {
 }
 
 func TestReclaimCSIVolumes_DescribeErrorSurfaces(t *testing.T) {
+	t.Parallel()
 	fake := &fakeCSIVolumeReclaimer{err: errors.New("describe volumes: boom")}
 	svc := &EKSServiceImpl{deps: EKSServiceDeps{Volume: fake}}
 

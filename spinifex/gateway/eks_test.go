@@ -23,16 +23,11 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 		{"GET", "/clusters", "ListClusters", nil},
 		{"GET", "/clusters/alpha", "DescribeCluster", []string{"alpha"}},
 		{"DELETE", "/clusters/alpha", "DeleteCluster", []string{"alpha"}},
-		{"POST", "/clusters/alpha/update-config", "UpdateClusterConfig", []string{"alpha"}},
-		{"POST", "/clusters/alpha/updates", "UpdateClusterVersion", []string{"alpha"}},
-		{"GET", "/clusters/alpha/updates", "ListUpdates", []string{"alpha"}},
-		{"GET", "/clusters/alpha/updates/upd1", "DescribeUpdate", []string{"alpha", "upd1"}},
 		{"POST", "/clusters/alpha/node-groups", "CreateNodegroup", []string{"alpha"}},
 		{"GET", "/clusters/alpha/node-groups", "ListNodegroups", []string{"alpha"}},
 		{"GET", "/clusters/alpha/node-groups/ng1", "DescribeNodegroup", []string{"alpha", "ng1"}},
 		{"DELETE", "/clusters/alpha/node-groups/ng1", "DeleteNodegroup", []string{"alpha", "ng1"}},
 		{"POST", "/clusters/alpha/node-groups/ng1/update-config", "UpdateNodegroupConfig", []string{"alpha", "ng1"}},
-		{"POST", "/clusters/alpha/node-groups/ng1/update-version", "UpdateNodegroupVersion", []string{"alpha", "ng1"}},
 		{"POST", "/clusters/alpha/access-entries", "CreateAccessEntry", []string{"alpha"}},
 		{"GET", "/clusters/alpha/access-entries", "ListAccessEntries", []string{"alpha"}},
 		{"GET", "/clusters/alpha/access-entries/arn-user", "DescribeAccessEntry", []string{"alpha", "arn-user"}},
@@ -48,10 +43,6 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 		{"GET", "/clusters/alpha/addons/vpc-cni", "DescribeAddon", []string{"alpha", "vpc-cni"}},
 		{"DELETE", "/clusters/alpha/addons/vpc-cni", "DeleteAddon", []string{"alpha", "vpc-cni"}},
 		{"POST", "/clusters/alpha/addons/vpc-cni/update", "UpdateAddon", []string{"alpha", "vpc-cni"}},
-		{"POST", "/clusters/alpha/identity-provider-configs/associate", "AssociateIdentityProviderConfig", []string{"alpha"}},
-		{"POST", "/clusters/alpha/identity-provider-configs/describe", "DescribeIdentityProviderConfig", []string{"alpha"}},
-		{"POST", "/clusters/alpha/identity-provider-configs/disassociate", "DisassociateIdentityProviderConfig", []string{"alpha"}},
-		{"GET", "/clusters/alpha/identity-provider-configs", "ListIdentityProviderConfigs", []string{"alpha"}},
 		{"POST", "/tags/arn-cluster", "TagResource", []string{"arn-cluster"}},
 		{"DELETE", "/tags/arn-cluster", "UntagResource", []string{"arn-cluster"}},
 		{"GET", "/tags/arn-cluster", "ListTagsForResource", []string{"arn-cluster"}},
@@ -117,45 +108,36 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 	expected := map[string]bool{
 		"CreateCluster": false,
 		// Internal control-plane broker routes, not AWS-SDK EKS actions.
-		"PublishInternal":                    false,
-		"WebhookTokenReview":                 false,
-		"ListInternalAddons":                 false,
-		"GetRecoveryDirective":               false,
-		"DescribeCluster":                    false,
-		"ListClusters":                       false,
-		"UpdateClusterConfig":                false,
-		"UpdateClusterVersion":               false,
-		"ListUpdates":                        false,
-		"DescribeUpdate":                     false,
-		"DeleteCluster":                      false,
-		"CreateNodegroup":                    false,
-		"DescribeNodegroup":                  false,
-		"ListNodegroups":                     false,
-		"UpdateNodegroupConfig":              false,
-		"UpdateNodegroupVersion":             false,
-		"DeleteNodegroup":                    false,
-		"CreateAccessEntry":                  false,
-		"DescribeAccessEntry":                false,
-		"ListAccessEntries":                  false,
-		"UpdateAccessEntry":                  false,
-		"DeleteAccessEntry":                  false,
-		"AssociateAccessPolicy":              false,
-		"DisassociateAccessPolicy":           false,
-		"ListAssociatedAccessPolicies":       false,
-		"ListAccessPolicies":                 false,
-		"ListAddons":                         false,
-		"DescribeAddonVersions":              false,
-		"CreateAddon":                        false,
-		"DeleteAddon":                        false,
-		"DescribeAddon":                      false,
-		"UpdateAddon":                        false,
-		"AssociateIdentityProviderConfig":    false,
-		"DescribeIdentityProviderConfig":     false,
-		"ListIdentityProviderConfigs":        false,
-		"DisassociateIdentityProviderConfig": false,
-		"TagResource":                        false,
-		"UntagResource":                      false,
-		"ListTagsForResource":                false,
+		"PublishInternal":              false,
+		"WebhookTokenReview":           false,
+		"ListInternalAddons":           false,
+		"GetRecoveryDirective":         false,
+		"DescribeCluster":              false,
+		"ListClusters":                 false,
+		"DeleteCluster":                false,
+		"CreateNodegroup":              false,
+		"DescribeNodegroup":            false,
+		"ListNodegroups":               false,
+		"UpdateNodegroupConfig":        false,
+		"DeleteNodegroup":              false,
+		"CreateAccessEntry":            false,
+		"DescribeAccessEntry":          false,
+		"ListAccessEntries":            false,
+		"UpdateAccessEntry":            false,
+		"DeleteAccessEntry":            false,
+		"AssociateAccessPolicy":        false,
+		"DisassociateAccessPolicy":     false,
+		"ListAssociatedAccessPolicies": false,
+		"ListAccessPolicies":           false,
+		"ListAddons":                   false,
+		"DescribeAddonVersions":        false,
+		"CreateAddon":                  false,
+		"DeleteAddon":                  false,
+		"DescribeAddon":                false,
+		"UpdateAddon":                  false,
+		"TagResource":                  false,
+		"UntagResource":                false,
+		"ListTagsForResource":          false,
 	}
 	for _, route := range eksRoutes {
 		if _, ok := expected[route.Action]; ok {
@@ -228,27 +210,3 @@ type awsCodeError struct{ code string }
 
 func (e *awsCodeError) Error() string { return e.code }
 func errAWS(code string) error        { return &awsCodeError{code: code} }
-
-// The update surface is absent, and the honest answer for an action that exists
-// and is not served is NotImplemented. Unregistered, these two answered
-// InvalidAction, which tells the caller they typed something that does not exist.
-func TestLookupEKSAction_UpdateReadsRefuseAsNotImplemented(t *testing.T) {
-	for _, path := range []string{"/clusters/alpha/updates", "/clusters/alpha/updates/upd1"} {
-		t.Run(path, func(t *testing.T) {
-			_, params, handler, ok := eksRouter.Lookup(http.MethodGet, path)
-			require.True(t, ok)
-			out, err := handler(context.Background(), nil, "000000000001", "", params, nil)
-			assert.Nil(t, out)
-			require.Error(t, err)
-			assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())
-		})
-	}
-}
-
-// update-version is the nodegroup pattern. The cluster action has never been
-// reachable at it on AWS, so keeping it registered would serve a path no caller
-// sends and hide the one they do.
-func TestLookupEKSAction_ClusterUpdateVersionIsNotAtTheNodegroupPath(t *testing.T) {
-	_, _, _, ok := eksRouter.Lookup(http.MethodPost, "/clusters/alpha/update-version")
-	assert.False(t, ok)
-}

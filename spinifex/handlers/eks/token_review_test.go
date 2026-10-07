@@ -44,6 +44,7 @@ func okVerify(_ string) (*TokenVerifyResponse, error) {
 }
 
 func TestAuthenticate_GrantsWhenEntryExists(t *testing.T) {
+	t.Parallel()
 	lookup := func(arn string) (*AccessEntryRecord, error) {
 		assert.Equal(t, testARN, arn)
 		return &AccessEntryRecord{
@@ -61,6 +62,7 @@ func TestAuthenticate_GrantsWhenEntryExists(t *testing.T) {
 }
 
 func TestAuthenticate_DeniesMalformedToken(t *testing.T) {
+	t.Parallel()
 	called := false
 	verify := func(string) (*TokenVerifyResponse, error) { called = true; return nil, nil }
 	lookup := func(string) (*AccessEntryRecord, error) { return nil, nil }
@@ -72,6 +74,7 @@ func TestAuthenticate_DeniesMalformedToken(t *testing.T) {
 }
 
 func TestAuthenticate_DeniesWhenVerifyFails(t *testing.T) {
+	t.Parallel()
 	verify := func(string) (*TokenVerifyResponse, error) {
 		return nil, errors.New("signature mismatch")
 	}
@@ -85,6 +88,7 @@ func TestAuthenticate_DeniesWhenVerifyFails(t *testing.T) {
 }
 
 func TestAuthenticate_DeniesWhenNoAccessEntry(t *testing.T) {
+	t.Parallel()
 	lookup := func(string) (*AccessEntryRecord, error) {
 		return nil, ErrAccessEntryNotFound
 	}
@@ -95,6 +99,7 @@ func TestAuthenticate_DeniesWhenNoAccessEntry(t *testing.T) {
 }
 
 func TestAuthenticate_FallsBackUIDToARN(t *testing.T) {
+	t.Parallel()
 	verify := func(string) (*TokenVerifyResponse, error) {
 		return &TokenVerifyResponse{ARN: testARN}, nil // no UserID
 	}
@@ -130,6 +135,7 @@ func TestEffectiveGroups_EachPolicyProducesItsGroup(t *testing.T) {
 }
 
 func TestEffectiveGroups_TwoAssociationsProduceBothGroups(t *testing.T) {
+	t.Parallel()
 	rec := &AccessEntryRecord{
 		AssociatedPolicies: []AssociatedAccessPolicy{
 			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
@@ -142,6 +148,7 @@ func TestEffectiveGroups_TwoAssociationsProduceBothGroups(t *testing.T) {
 // A creator seeded system:masters directly (CreateCluster bootstrap) who is
 // also associated to AmazonEKSClusterAdminPolicy must not see the group twice.
 func TestEffectiveGroups_DedupesSeededAndAssociatedClusterAdmin(t *testing.T) {
+	t.Parallel()
 	rec := &AccessEntryRecord{
 		KubernetesGroups: []string{"system:masters"},
 		AssociatedPolicies: []AssociatedAccessPolicy{
@@ -154,6 +161,7 @@ func TestEffectiveGroups_DedupesSeededAndAssociatedClusterAdmin(t *testing.T) {
 // Records written before namespace scope was rejected at association time may
 // still carry one; it must not silently widen to a cluster-scope grant.
 func TestEffectiveGroups_NamespaceScopeContributesNothing(t *testing.T) {
+	t.Parallel()
 	rec := &AccessEntryRecord{
 		AssociatedPolicies: []AssociatedAccessPolicy{
 			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeNamespace, Namespaces: []string{"team-a"}}},
@@ -163,6 +171,7 @@ func TestEffectiveGroups_NamespaceScopeContributesNothing(t *testing.T) {
 }
 
 func TestEffectiveGroups_UnrecognizedPolicyDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	rec := &AccessEntryRecord{
 		AssociatedPolicies: []AssociatedAccessPolicy{
 			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/MadeUpPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
@@ -175,6 +184,7 @@ func TestEffectiveGroups_UnrecognizedPolicyDoesNotPanic(t *testing.T) {
 // End-to-end through Authenticate: an associated policy's group must reach the
 // TokenReview result, not just the internal helper.
 func TestAuthenticate_ProjectsAssociatedPolicyGroup(t *testing.T) {
+	t.Parallel()
 	lookup := func(arn string) (*AccessEntryRecord, error) {
 		return &AccessEntryRecord{
 			KubernetesUsername: testARN,
@@ -191,6 +201,7 @@ func TestAuthenticate_ProjectsAssociatedPolicyGroup(t *testing.T) {
 }
 
 func TestResolveTokenReview_NilConn(t *testing.T) {
+	t.Parallel()
 	_, err := ResolveTokenReview(context.Background(), nil, "111122223333", "alpha", "tok", time.Second)
 	require.Error(t, err)
 }
@@ -198,12 +209,14 @@ func TestResolveTokenReview_NilConn(t *testing.T) {
 // A genuine infra fault (account bucket never created) is an error, not a
 // silent Authenticated=false — the webhook turns it into a retryable 5xx.
 func TestResolveTokenReview_MissingBucketErrors(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	_, err := ResolveTokenReview(context.Background(), nc, "111122223333", "alpha", validToken("https://sts/?x=1"), time.Second)
 	require.Error(t, err)
 }
 
 func TestResolveTokenReview_AuthenticatesViaVerifyAndKV(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv := seedAccountBucket(t, js, "111122223333")
@@ -239,6 +252,7 @@ func TestResolveTokenReview_AuthenticatesViaVerifyAndKV(t *testing.T) {
 // A valid IAM principal with no AccessEntry resolves to Authenticated=false
 // (a clean 401), not an error.
 func TestResolveTokenReview_NoAccessEntryDenies(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	seedAccountBucket(t, js, "111122223333")

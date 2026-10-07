@@ -108,3 +108,84 @@ func TestTagOps_CrossAccountHidden(t *testing.T) {
 	}, "000000000002")
 	assert.Equal(t, awserrors.ErrorResourceNotFound, err.Error())
 }
+
+func listTagMap(t *testing.T, svc *ACMServiceImpl, arn string) map[string]string {
+	t.Helper()
+	out, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{
+		CertificateArn: aws.String(arn),
+	}, testAccountID)
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, tg := range out.Tags {
+		got[aws.StringValue(tg.Key)] = aws.StringValue(tg.Value)
+	}
+	return got
+}
+
+// AWS answers a re-import carrying Tags with ValidationException and leaves
+// the stored certificate, material and tags alike, untouched.
+func TestImportCertificate_ReimportWithTagsRejected(t *testing.T) {
+	svc := setupACMService(t)
+	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
+
+	c2, k2 := genCert(t, "rotated.example.com", "rotated.example.com")
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c2,
+		PrivateKey:     k2,
+		CertificateArn: aws.String(arn),
+		Tags:           []*acm.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+	}, testAccountID)
+	require.Error(t, err)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorValidationException, code)
+	assert.Equal(t, "Tagging is not permitted on re-import.", message)
+	assert.Equal(t, 400, awserrors.ErrorLookup[code].HTTPCode)
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "tags.example.com", aws.StringValue(desc.Certificate.DomainName), "a refused re-import must not replace the material")
+	assert.Equal(t, map[string]string{"Name": "ingress"}, listTagMap(t, svc, arn))
+}
+
+// A re-import without Tags keeps the tags already on the certificate rather
+// than clearing them, as InUseBy is kept.
+func TestImportCertificate_ReimportKeepsStoredTags(t *testing.T) {
+	svc := setupACMService(t)
+	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
+	_, err := svc.AddTagsToCertificate(context.Background(), &acm.AddTagsToCertificateInput{
+		CertificateArn: aws.String(arn),
+		Tags:           []*acm.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	c2, k2 := genCert(t, "rotated.example.com", "rotated.example.com")
+	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c2,
+		PrivateKey:     k2,
+		CertificateArn: aws.String(arn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, arn, aws.StringValue(out.CertificateArn))
+
+	desc, err := svc.DescribeCertificate(context.Background(), &acm.DescribeCertificateInput{CertificateArn: aws.String(arn)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "rotated.example.com", aws.StringValue(desc.Certificate.DomainName), "material must be replaced")
+	assert.Equal(t, map[string]string{"Name": "ingress", "env": "dev"}, listTagMap(t, svc, arn))
+}
+
+// AWS resolves the ARN before refusing the tags, so an unknown ARN with tags is
+// a ResourceNotFoundException, not the tagging ValidationException.
+func TestImportCertificate_ReimportWithTagsUnknownArnIsNotFound(t *testing.T) {
+	svc := setupACMService(t)
+	c, k := genCert(t, "x.example.com", "x.example.com")
+	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:    c,
+		PrivateKey:     k,
+		CertificateArn: aws.String(svc.mintCertificateArn(testAccountID)),
+		Tags:           []*acm.Tag{{Key: aws.String("a"), Value: aws.String("b")}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorResourceNotFound, err.Error())
+}

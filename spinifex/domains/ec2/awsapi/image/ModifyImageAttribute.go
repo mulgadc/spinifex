@@ -72,6 +72,8 @@ func ValidateModifyImageAttributeInput(input *ec2.ModifyImageAttributeInput) err
 	return nil
 }
 
+// ModifyImageAttribute implements the EC2 ModifyImageAttribute action. Only the description
+// attribute is supported; the normalized input is forwarded to the NATS image service.
 func ModifyImageAttribute(ctx context.Context, input *ec2.ModifyImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.ModifyImageAttributeOutput, error) {
 	var output ec2.ModifyImageAttributeOutput
 

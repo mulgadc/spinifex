@@ -20,12 +20,12 @@ const (
 	servingCertLifetime       = 90 * 24 * time.Hour
 )
 
-// Injected so tests mint from a throwaway CA, and so the file-backed
-// implementation stays the only thing needing read access to ca.key.
+// CALoader returns the cluster CA keypair. Injected so tests mint from a throwaway CA, and so the
+// file-backed implementation stays the only thing needing read access to ca.key.
 type CALoader func() (*x509.Certificate, *rsa.PrivateKey, error)
 
-// DNSName is empty on deployments without northstar, where the endpoint is the
-// bare ENI IP — which is why the IP SAN is the required one.
+// ServingCertRequest names the SANs of a DB serving cert. DNSName is empty on deployments without
+// northstar, where the endpoint is the bare ENI IP — which is why the IP SAN is the required one.
 type ServingCertRequest struct {
 	DBInstanceIdentifier string
 	PrivateIP            string
@@ -35,14 +35,15 @@ type ServingCertRequest struct {
 	KeyBits int
 }
 
-// PEM-encoded, in memory only.
+// ServingCert is a minted serving cert and its key, PEM-encoded, in memory only.
 type ServingCert struct {
 	CertificatePEM string
 	PrivateKeyPEM  string
 }
 
-// Unlike admin.GenerateSignedCert this writes no files and adds no SANs of its
-// own, which would name the host rather than the database.
+// MintServingCert signs a serving cert for a DB instance with the given CA. Unlike
+// admin.GenerateSignedCert it writes no files and adds no SANs of its own, which would name the host
+// rather than the database.
 func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req ServingCertRequest) (*ServingCert, error) {
 	if caCert == nil || caKey == nil {
 		return nil, errors.New("rds serving cert: nil CA keypair")
@@ -100,7 +101,8 @@ func MintServingCert(caCert *x509.Certificate, caKey *rsa.PrivateKey, req Servin
 	}, nil
 }
 
-// Used to hand the agent the cluster CA it should trust alongside its own cert.
+// EncodeCertPEM PEM-encodes cert, or returns "" for nil. Used to hand the agent the cluster CA it
+// should trust alongside its own cert.
 func EncodeCertPEM(cert *x509.Certificate) string {
 	if cert == nil {
 		return ""

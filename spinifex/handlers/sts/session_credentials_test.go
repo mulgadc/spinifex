@@ -3,12 +3,15 @@ package handlers_sts
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -191,14 +194,22 @@ func putCredWithExpiry(t *testing.T, svc *STSServiceImpl, akid string, expiresAt
 
 func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
 	svc, _ := newTestSetup(t)
+	// The fixture's role must exist, or the sweep reaps its unexpired records as orphans.
+	role := createRoleInAccount(t, svc, awsidentifiers.GlobalAccountID, "app-role", trustPolicyAllowingWildcard())
+	put := func(akid string, expiresAt time.Time) {
+		cred := newTestSessionCredential(akid)
+		cred.RoleID = aws.StringValue(role.RoleId)
+		cred.ExpiresAt = expiresAt
+		require.NoError(t, putSessionCredential(t.Context(), svc.sessions, cred))
+	}
 	now := time.Now().UTC()
 
-	putCredWithExpiry(t, svc, "ASIALIVE000000000001", now.Add(time.Hour))                       // live
-	putCredWithExpiry(t, svc, "ASIAJUSTEXPIRED00002", now.Add(-30*time.Minute))                 // expired, within grace
-	putCredWithExpiry(t, svc, "ASIAPASTGRACE0000003", now.Add(-janitorGracePeriod-time.Minute)) // past grace
-	putCredWithExpiry(t, svc, "ASIAANCIENT000000004", now.Add(-24*time.Hour))                   // long past grace
+	put("ASIALIVE000000000001", now.Add(time.Hour))                       // live
+	put("ASIAJUSTEXPIRED00002", now.Add(-30*time.Minute))                 // expired, within grace
+	put("ASIAPASTGRACE0000003", now.Add(-janitorGracePeriod-time.Minute)) // past grace
+	put("ASIAANCIENT000000004", now.Add(-24*time.Hour))                   // long past grace
 
-	deleted := svc.sweepExpired(t.Context(), now)
+	deleted := svc.sweep(t.Context(), now)
 	assert.Equal(t, 2, deleted)
 
 	// Live and within-grace must still exist; past-grace must be gone.
@@ -215,13 +226,13 @@ func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
 
 func TestSweepExpired_EmptyBucketIsNoop(t *testing.T) {
 	svc, _ := newTestSetup(t)
-	assert.Equal(t, 0, svc.sweepExpired(t.Context(), time.Now().UTC()))
+	assert.Equal(t, 0, svc.sweep(t.Context(), time.Now().UTC()))
 }
 
 func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
 	// A single unmarshalable record must not stall the sweep — neighbouring
 	// expired records still need to be cleaned up. Asserts the per-key error
-	// path in sweepExpired is log-and-continue, not abort.
+	// path in sweep is log-and-continue, not abort.
 	svc, _ := newTestSetup(t)
 	now := time.Now().UTC()
 
@@ -229,7 +240,7 @@ func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
 	require.NoError(t, err)
 	putCredWithExpiry(t, svc, "ASIAEXPIRED000000002", now.Add(-24*time.Hour))
 
-	deleted := svc.sweepExpired(t.Context(), now)
+	deleted := svc.sweep(t.Context(), now)
 	assert.Equal(t, 1, deleted)
 
 	_, err = sessionsKV(t, svc).Get(t.Context(), "ASIAEXPIRED000000002")
@@ -245,7 +256,7 @@ func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
 	// iterator must skip it (it's not a SessionCredential and unmarshal
 	// would fail every sweep).
 	svc, _ := newTestSetup(t)
-	assert.Equal(t, 0, svc.sweepExpired(t.Context(), time.Now().UTC()))
+	assert.Equal(t, 0, svc.sweep(t.Context(), time.Now().UTC()))
 
 	_, err := sessionsKV(t, svc).Get(t.Context(), kvutil.VersionKey)
 	require.NoError(t, err, "version key must survive the sweep")
@@ -267,4 +278,128 @@ func TestRunJanitor_StopsOnContextCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("RunJanitor did not return after context cancel")
 	}
+}
+
+// ----- Revocation at deletion --------------------------------------------
+
+// wireRevoker installs svc as its IAM service's session revoker, as awsgw does.
+func wireRevoker(t *testing.T, svc *STSServiceImpl) {
+	t.Helper()
+	iamSvc, ok := svc.iamSvc.(*handlers_iam.IAMServiceImpl)
+	require.True(t, ok)
+	iamSvc.SetSessionRevoker(svc)
+}
+
+func putSession(t *testing.T, svc *STSServiceImpl, cred *SessionCredential) string {
+	t.Helper()
+	cred.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	require.NoError(t, putSessionCredential(t.Context(), svc.sessions, cred))
+	return cred.AccessKeyID
+}
+
+func assertSessionsGone(t *testing.T, svc *STSServiceImpl, akids ...string) {
+	t.Helper()
+	for _, akid := range akids {
+		cred, err := svc.LookupSessionCredential(akid)
+		require.NoError(t, err)
+		assert.Nil(t, cred, "session %s must be revoked", akid)
+	}
+}
+
+func assertSessionsKept(t *testing.T, svc *STSServiceImpl, akids ...string) {
+	t.Helper()
+	for _, akid := range akids {
+		cred, err := svc.LookupSessionCredential(akid)
+		require.NoError(t, err)
+		assert.NotNil(t, cred, "session %s must survive", akid)
+	}
+}
+
+// Deleting a user removes its session records at deletion time and nothing
+// else: a role session the user assumed belongs to the role, as on AWS, and a
+// role session that merely shares the user's name is not the user's.
+func TestDeleteUser_RevokesOnlyTheUsersSessions(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	wireRevoker(t, svc)
+	seedUser(t, svc, testCallerAccountID, testCallerUserName)
+	seedUser(t, svc, testCallerAccountID, "bob")
+	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
+
+	first := mintUserSession(t, svc, testCallerAccountID, testCallerUserName).AccessKeyID
+	second := mintUserSession(t, svc, testCallerAccountID, testCallerUserName).AccessKeyID
+	legacy := putSession(t, svc, &SessionCredential{
+		AccessKeyID: "ASIALEGACYUSER000001", AccountID: testCallerAccountID,
+		PrincipalType: principalTypeUser, SessionName: testCallerUserName,
+	})
+	bob := mintUserSession(t, svc, testCallerAccountID, "bob").AccessKeyID
+	assumed := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), testCallerUserName).AccessKeyID
+	otherAccount := putSession(t, svc, &SessionCredential{
+		AccessKeyID: "ASIAOTHERACCOUNT0001", AccountID: testCrossAccountID,
+		PrincipalType: principalTypeUser, SessionName: testCallerUserName, UserID: "AIDAOTHERACCOUNT0001",
+	})
+
+	deleteUser(t, svc, testCallerAccountID, testCallerUserName)
+
+	assertSessionsGone(t, svc, first, second, legacy)
+	assertSessionsKept(t, svc, bob, assumed, otherAccount)
+}
+
+func TestDeleteRole_RevokesOnlyTheRolesSessions(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	wireRevoker(t, svc)
+	seedUser(t, svc, testCallerAccountID, testCallerUserName)
+	app := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
+	other := createRoleInAccount(t, svc, testCallerAccountID, "other", trustPolicyAllowingUser(testCallerARN()))
+
+	first := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(app.Arn), "session-1").AccessKeyID
+	second := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(app.Arn), "session-2").AccessKeyID
+	legacy := putSession(t, svc, &SessionCredential{
+		AccessKeyID: "ASIALEGACYROLE000001", AccountID: testCallerAccountID,
+		SessionName: "session-1", UnderlyingRoleARN: aws.StringValue(app.Arn),
+	})
+	otherRole := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(other.Arn), "session-1").AccessKeyID
+	user := mintUserSession(t, svc, testCallerAccountID, testCallerUserName).AccessKeyID
+
+	deleteRole(t, svc, testCallerAccountID, "app")
+
+	assertSessionsGone(t, svc, first, second, legacy)
+	assertSessionsKept(t, svc, otherRole, user)
+}
+
+// ----- The janitor reaps what revocation missed --------------------------
+
+// With no revoker wired, deletion leaves the records behind, which is the state
+// a failed revocation or a mint racing the delete produces. The sweep must reap
+// them well before they expire, and leave a live principal's sessions alone.
+func TestSweep_ReapsSessionsOfDeletedPrincipals(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	seedUser(t, svc, testCallerAccountID, testCallerUserName)
+	seedUser(t, svc, testCallerAccountID, "bob")
+	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
+
+	orphanUser := mintUserSession(t, svc, testCallerAccountID, "bob").AccessKeyID
+	orphanRole := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), "session-1").AccessKeyID
+	live := mintUserSession(t, svc, testCallerAccountID, testCallerUserName).AccessKeyID
+
+	deleteUser(t, svc, testCallerAccountID, "bob")
+	deleteRole(t, svc, testCallerAccountID, "app")
+	assertSessionsKept(t, svc, orphanUser, orphanRole)
+
+	assert.Equal(t, 2, svc.sweep(t.Context(), time.Now().UTC()))
+	assertSessionsGone(t, svc, orphanUser, orphanRole)
+	assertSessionsKept(t, svc, live)
+}
+
+// An IAM outage is not evidence the principal is gone; reaping on it would
+// revoke every live session in the cluster.
+func TestSweep_KeepsSessionsWhenVerificationFaults(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	akid := putSession(t, svc, &SessionCredential{
+		AccessKeyID: "ASIAFAULTUSER0000001", AccountID: testCallerAccountID,
+		PrincipalType: principalTypeUser, SessionName: testCallerUserName, UserID: "AIDAEXAMPLEAAAAAAAAA",
+	})
+	svc.iamSvc = faultingIAMService{err: errors.New("jetstream unavailable")}
+
+	assert.Equal(t, 0, svc.sweep(t.Context(), time.Now().UTC()))
+	assertSessionsKept(t, svc, akid)
 }

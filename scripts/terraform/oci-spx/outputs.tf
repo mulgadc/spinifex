@@ -8,6 +8,13 @@ output "security_list_ocids" { value = { public = oci_core_security_list.public.
 output "compute_ocids" { value = [for instance in oci_core_instance.mulgadc : instance.id] }
 output "data_volume_ocids" { value = [for volume in oci_core_volume.mulgadc_data : volume.id] }
 
+# Read back rather than assumed: both can come from a tfvars file, so this is the
+# only place that knows what was actually built. The deploy driver skips the
+# credential handoff on instance_principal, so a wrong guess leaves a node with no
+# credential at all.
+output "compute_shape" { value = var.compute_shape }
+output "instance_principal" { value = var.instance_principal }
+
 # What the Spinifex deploy path consumes. The primary VNIC is the host plane, so
 # these are the addresses update-nodes.sh and install-node.sh connect to.
 output "nodes" {

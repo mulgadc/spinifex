@@ -1,3 +1,5 @@
+// Package image implements the EC2 AMI actions: it validates each
+// request and forwards it to the image service over NATS.
 package image
 
 import (
@@ -11,6 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDescribeImagesInput accepts a nil input and rejects any ImageIds entry without the ami-
+// prefix with InvalidAMIID.Malformed.
 func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 	if input == nil {
 		return nil
@@ -27,6 +31,8 @@ func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
 	return err
 }
 
+// DescribeImages implements the EC2 DescribeImages action, returning the AMIs visible to
+// accountID from the NATS image service.
 func DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, natsConn *nats.Conn, accountID string) (output ec2.DescribeImagesOutput, err error) {
 	err = ValidateDescribeImagesInput(input)
 	if err != nil {

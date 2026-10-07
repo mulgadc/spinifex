@@ -215,6 +215,18 @@ func (s *IAMServiceImpl) DeleteRole(accountID string, input *iam.DeleteRoleInput
 	}
 
 	slog.Info("IAM role deleted", "accountID", accountID, "roleName", roleName)
+
+	// Same ordering and failure handling as DeleteUser.
+	if s.sessionRevoker != nil {
+		revoked, err := s.sessionRevoker.RevokeRoleSessions(ctx, accountID, role.ARN, role.RoleID)
+		if err != nil {
+			slog.Error("Revoking deleted role's sessions failed; janitor will reap them",
+				"accountID", accountID, "roleName", roleName, "revoked", revoked, "err", err)
+		} else if revoked > 0 {
+			slog.Info("Deleted role's sessions revoked",
+				"accountID", accountID, "roleName", roleName, "revoked", revoked)
+		}
+	}
 	return &iam.DeleteRoleOutput{}, nil
 }
 
@@ -264,6 +276,34 @@ func (s *IAMServiceImpl) UpdateRole(accountID string, input *iam.UpdateRoleInput
 
 	slog.Info("IAM role updated", "accountID", accountID, "roleName", roleName)
 	return &iam.UpdateRoleOutput{}, nil
+}
+
+// UpdateRoleDescription is the older single-field form of UpdateRole; unlike
+// UpdateRole it returns the updated role.
+func (s *IAMServiceImpl) UpdateRoleDescription(accountID string, input *iam.UpdateRoleDescriptionInput) (*iam.UpdateRoleDescriptionOutput, error) {
+	ctx := context.Background()
+	roleName := *input.RoleName
+	if err := validateDescription(input.Description); err != nil {
+		return nil, err
+	}
+
+	role, err := s.getRole(ctx, accountID, roleName)
+	if err != nil {
+		return nil, err
+	}
+
+	role.Description = *input.Description
+
+	data, err := json.Marshal(role)
+	if err != nil {
+		return nil, fmt.Errorf("marshal role: %w", err)
+	}
+	if _, err := s.rolesBucket.Put(ctx, accountID+"."+roleName, data); err != nil {
+		return nil, fmt.Errorf("update role description: %w", err)
+	}
+
+	slog.Info("IAM role description updated", "accountID", accountID, "roleName", roleName)
+	return &iam.UpdateRoleDescriptionOutput{Role: gotRoleToSDK(role)}, nil
 }
 
 func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error) {
@@ -353,7 +393,10 @@ func (s *IAMServiceImpl) ListAttachedRolePolicies(accountID string, input *iam.L
 		return nil, err
 	}
 
-	attached := s.attachedPolicies(ctx, accountID, role.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	attached, err := s.attachedPolicies(ctx, accountID, role.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	if err != nil {
+		return nil, err
+	}
 
 	return &iam.ListAttachedRolePoliciesOutput{
 		AttachedPolicies: attached,
@@ -372,6 +415,9 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
 		return nil, err
 	}
+	if err := checkPolicyDocumentLength(policyDoc); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q on role %q: %w", policyName, roleName, err)
@@ -387,6 +433,9 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 		changed = role.InlinePolicies[policyName] != policyDoc
 		if !changed {
 			return false, nil
+		}
+		if err := checkInlinePolicySize("role", roleName, rolePolicySizeQuota, role.InlinePolicies, policyName, policyDoc); err != nil {
+			return false, err
 		}
 		role.InlinePolicies[policyName] = policyDoc
 		return true, nil

@@ -66,7 +66,7 @@ Under the hood it keeps things minimal: a VPC with two public subnets, an IAM ro
 
 - The cluster's security groups are **auto-managed** — `vpc_config.security_group_ids` is ignored. To reach a NodePort, this workbook looks the worker SG up by its deterministic name (`eks-cluster-<name>-nodegroup-sg`) and adds a single ingress rule.
 - The worker AMI is always Spinifex's `eks-node` image; `ami_type` is recorded but does **not** select the image.
-- `authentication_mode` must be `"API"` (the `API_AND_CONFIG_MAP` mode is rejected).
+- `authentication_mode` can be `"API"` or `"API_AND_CONFIG_MAP"`, and bare `"CONFIG_MAP"` is rejected. Access is granted through access entries, as there is no `aws-auth` ConfigMap path.
 - The workers need outbound internet (here via the IGW) to pull the demo container image.
 
 **Prerequisites:**

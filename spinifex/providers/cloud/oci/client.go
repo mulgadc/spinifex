@@ -33,6 +33,11 @@ type Client interface {
 	GetPrivateIP(ctx context.Context, privateIPID string) (PrivateIP, error)
 	ListPrivateIPs(ctx context.Context, vnicID string) ([]PrivateIP, error)
 
+	// GetSubnet reads one subnet. The allocator calls it at startup to prove
+	// its credential holds a subnet permission, since AssignPrivateIP needs
+	// SUBNET_ATTACH from the same verb and is otherwise refused as a 404.
+	GetSubnet(ctx context.Context, subnetID string) (Subnet, error)
+
 	// CreatePublicIP creates a RESERVED public IP in compartmentID and, when
 	// privateIPID is non-empty, attaches it in the same call.
 	CreatePublicIP(ctx context.Context, compartmentID, privateIPID, displayName string) (PublicIP, error)
@@ -45,6 +50,10 @@ type Client interface {
 	// GetPublicIPByPrivateIPID returns the public IP attached to a private IP,
 	// or ErrNotFound when it has none.
 	GetPublicIPByPrivateIPID(ctx context.Context, privateIPID string) (PublicIP, error)
+	// ListReservedPublicIPs lists every reserved regional public IP in the
+	// compartment. A detached one is on no VNIC, so this is the only call that
+	// can see an address nothing references but the tenancy quota still counts.
+	ListReservedPublicIPs(ctx context.Context, compartmentID string) ([]PublicIP, error)
 }
 
 // apiClient is the real implementation over the OCI Go SDK.
@@ -56,9 +65,8 @@ var _ Client = (*apiClient)(nil)
 
 // NewInstancePrincipalClient authenticates as the instance itself, using the
 // certificate the metadata service serves at /opc/v2/identity/cert.pem. No key
-// material on disk and nothing to rotate, which is why this is the only
-// constructor offered for the daemon path — a node that can reach its own
-// metadata service is already proving it is the instance it claims to be.
+// material on disk and nothing to rotate; the cost is a dynamic group and an IAM
+// policy, which only a tenancy admin can write. Selected by oci_auth.
 func NewInstancePrincipalClient() (Client, error) {
 	provider, err := auth.InstancePrincipalConfigurationProvider()
 	if err != nil {
@@ -83,11 +91,8 @@ const DefaultConfigProfile = "DEFAULT"
 // NewConfigFileClient authenticates from an API-key config file — the same
 // ~/.oci/config the oci CLI uses.
 //
-// This is the v1 path, deliberately in preference to instance principal. It
-// needs no dynamic group and no IAM policy written by a tenancy admin, and it
-// never reads the instance metadata service, which matters because Spinifex's
-// own per-instance IMDS endpoints claim 169.254.169.254 on the host and take
-// the cloud's own metadata service with it.
+// The default, because it needs nothing from a tenancy admin. It costs a private
+// key on every node, which NewInstancePrincipalClient avoids.
 func NewConfigFileClient(path, profile string) (Client, error) {
 	if path == "" {
 		path = DefaultConfigFile
@@ -192,6 +197,45 @@ func (c *apiClient) ListPrivateIPs(ctx context.Context, vnicID string) ([]Privat
 	}
 }
 
+func (c *apiClient) ListReservedPublicIPs(ctx context.Context, compartmentID string) ([]PublicIP, error) {
+	var out []PublicIP
+	var page *string
+	for {
+		resp, err := c.net.ListPublicIps(ctx, core.ListPublicIpsRequest{
+			CompartmentId: &compartmentID,
+			Scope:         core.ListPublicIpsScopeRegion,
+			Lifetime:      core.ListPublicIpsLifetimeReserved,
+			Page:          page,
+		})
+		if err != nil {
+			return nil, wrap("ListReservedPublicIPs", err)
+		}
+		for _, item := range resp.Items {
+			ip, err := toPublicIP(item)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, ip)
+		}
+		if resp.OpcNextPage == nil {
+			return out, nil
+		}
+		page = resp.OpcNextPage
+	}
+}
+
+func (c *apiClient) GetSubnet(ctx context.Context, subnetID string) (Subnet, error) {
+	resp, err := c.net.GetSubnet(ctx, core.GetSubnetRequest{SubnetId: &subnetID})
+	if err != nil {
+		return Subnet{}, wrap("GetSubnet", err)
+	}
+	out := Subnet{ID: subnetID}
+	if resp.CidrBlock != nil {
+		out.CIDRBlock = *resp.CidrBlock
+	}
+	return out, nil
+}
+
 func (c *apiClient) CreatePublicIP(ctx context.Context, compartmentID, privateIPID, displayName string) (PublicIP, error) {
 	details := core.CreatePublicIpDetails{
 		CompartmentId: &compartmentID,
@@ -284,6 +328,9 @@ func toPublicIP(p core.PublicIp) (PublicIP, error) {
 		DisplayName:    deref(p.DisplayName),
 		Lifetime:       string(p.Lifetime),
 		LifecycleState: string(p.LifecycleState),
+	}
+	if p.TimeCreated != nil {
+		out.TimeCreated = p.TimeCreated.Time
 	}
 	if s := deref(p.IpAddress); s != "" {
 		addr, err := netip.ParseAddr(s)

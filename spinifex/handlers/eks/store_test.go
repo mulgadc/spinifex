@@ -11,6 +11,7 @@ import (
 const testAccountID = "111122223333"
 
 func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -33,6 +34,7 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 // path (replicas <= 0 -> 1) is exercisable end-to-end here; multi-node
 // replica counts are exercised live (see the associated bug doc).
 func TestGetOrCreateAccountBucket_ReplicasClamped(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -48,6 +50,7 @@ func TestGetOrCreateAccountBucket_ReplicasClamped(t *testing.T) {
 }
 
 func TestInitLeaderBucket_Idempotent(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -65,6 +68,7 @@ func TestInitLeaderBucket_Idempotent(t *testing.T) {
 // TestInitLeaderBucket_ReplicasClamped confirms the leader bucket is created
 // with the requested replica count, clamped to a minimum of 1.
 func TestInitLeaderBucket_ReplicasClamped(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -103,10 +107,12 @@ func TestKeyPaths_MatchQ2Spec(t *testing.T) {
 }
 
 func TestAccountBucketName(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "eks-account-111122223333", AccountBucketName(testAccountID))
 }
 
 func TestNewStore_NilConn(t *testing.T) {
+	t.Parallel()
 	_, err := NewStore(nil)
 	require.Error(t, err)
 }

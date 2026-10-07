@@ -25,8 +25,8 @@ const (
 // the same value crosses NATS as JSON and leaves the gateway as Query-protocol
 // XML. Optional fields are pointers so a nil renders as an absent element.
 
-// InstanceID and DBInstanceIdentifier are set by the gateway from the caller's
-// resolved identity, never from the agent's request body.
+// RegisterDBInstanceInput is the agent's registration request. InstanceID and DBInstanceIdentifier
+// are set by the gateway from the caller's resolved identity, never from the agent's request body.
 type RegisterDBInstanceInput struct {
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
 	InstanceID           string `json:"instanceId"`
@@ -34,15 +34,15 @@ type RegisterDBInstanceInput struct {
 	EngineVersion        string `json:"engineVersion,omitempty"`
 }
 
-// The heartbeat cadence is handed back on registration so the interval stays
+// RegisterDBInstanceOutput hands the heartbeat cadence back on registration so the interval stays
 // control-plane-owned.
 type RegisterDBInstanceOutput struct {
 	DBInstanceIdentifier     string `json:"dbInstanceIdentifier" locationName:"DBInstanceIdentifier"`
 	HeartbeatIntervalSeconds int64  `json:"heartbeatIntervalSeconds" locationName:"HeartbeatIntervalSeconds"`
 }
 
-// The periodic beat folds liveness into the state report rather than using a
-// separate heartbeat call, so a healthy instance costs one round trip per tick.
+// SubmitDBStateChangeInput is the agent's periodic beat. It folds liveness into the state report rather
+// than using a separate heartbeat call, so a healthy instance costs one round trip per tick.
 type SubmitDBStateChangeInput struct {
 	DBInstanceIdentifier string       `json:"dbInstanceIdentifier"`
 	InstanceID           string       `json:"instanceId"`
@@ -51,22 +51,24 @@ type SubmitDBStateChangeInput struct {
 	Message              string       `json:"message,omitempty"`
 }
 
-// Persisted reports whether the beat reached KV; diagnostic only, the agent
-// behaves the same either way.
+// SubmitDBStateChangeOutput acknowledges a beat. Persisted reports whether the beat reached KV;
+// diagnostic only, the agent behaves the same either way.
 type SubmitDBStateChangeOutput struct {
 	Acknowledged             bool  `json:"acknowledged" locationName:"Acknowledged"`
 	Persisted                bool  `json:"persisted" locationName:"Persisted"`
 	HeartbeatIntervalSeconds int64 `json:"heartbeatIntervalSeconds" locationName:"HeartbeatIntervalSeconds"`
 }
 
+// GetDBBootstrapConfigInput asks for boot material on behalf of the VM at VMGeneration; the gateway
+// fills the identity fields from the caller's resolved credentials.
 type GetDBBootstrapConfigInput struct {
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
 	InstanceID           string `json:"instanceId"`
 	VMGeneration         int64  `json:"vmGeneration"`
 }
 
-// Everything rds-init needs to bootstrap or attach. The serving cert and key
-// are minted per call and never persisted.
+// GetDBBootstrapConfigOutput is everything rds-init needs to bootstrap or attach. The serving cert and
+// key are minted per call and never persisted.
 type GetDBBootstrapConfigOutput struct {
 	Mode                 string  `json:"mode" locationName:"Mode"`
 	DBInstanceIdentifier string  `json:"dbInstanceIdentifier" locationName:"DBInstanceIdentifier"`
@@ -107,10 +109,9 @@ type GetDBBootstrapConfigOutput struct {
 	CACertificate      string `json:"caCertificate,omitempty" locationName:"CACertificate"`
 }
 
-// Reports that PostgreSQL durably applied the staged master password, which is
-// the only thing that destroys the ciphertext. Distinct from SubmitDBStateChange
-// because a heartbeat is best-effort while this must be retried until confirmed
-// and denied on an identity mismatch.
+// AcknowledgeDBBootstrapInput reports that PostgreSQL durably applied the staged master password, the
+// only thing that destroys the ciphertext. Distinct from SubmitDBStateChange because a heartbeat is
+// best-effort while this must be retried until confirmed and denied on an identity mismatch.
 //
 // DBInstanceIdentifier and InstanceID are set by the gateway from the caller's
 // resolved identity; the rest is the guest's own assertion, checked here.
@@ -122,15 +123,15 @@ type AcknowledgeDBBootstrapInput struct {
 	DataVolumeID         string `json:"dataVolumeId,omitempty"`
 }
 
-// Minimal by design: the agent needs only success to decide it may remove its
-// completion receipt.
+// AcknowledgeDBBootstrapOutput is minimal by design: the agent needs only success to decide it may
+// remove its completion receipt.
 type AcknowledgeDBBootstrapOutput struct {
 	Acknowledged   bool       `json:"acknowledged" locationName:"Acknowledged"`
 	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty" locationName:"AcknowledgedAt" type:"timestamp"`
 }
 
-// One directive delivered to an agent on its long poll. Concrete types land
-// with their owning phases — password apply, parameter reload, grow, quiesce.
+// Command is one directive delivered to an agent on its long poll. Concrete types land with their
+// owning phases — password apply, parameter reload, grow, quiesce.
 type Command struct {
 	CommandID  string      `json:"commandId" locationName:"CommandId" xml:"CommandId"`
 	Type       string      `json:"type" locationName:"Type"`
@@ -138,8 +139,8 @@ type Command struct {
 	IssuedAt   *time.Time  `json:"issuedAt,omitempty" locationName:"IssuedAt" type:"timestamp"`
 }
 
-// The agent's result for a command from an earlier poll, carried on the next
-// poll request and republished to the issuer.
+// CommandReply is the agent's result for a command from an earlier poll, carried on the next poll
+// request and republished to the issuer.
 type CommandReply struct {
 	CommandID string `json:"commandId" locationName:"CommandId" xml:"CommandId"`
 	Status    string `json:"status" locationName:"Status"`
@@ -156,8 +157,8 @@ const (
 	ParameterRollbackMessage = "engine did not start after a parameter change; rolled back to the last accepted set"
 )
 
-// Idempotent: re-registering is the normal case after an agent restart and
-// simply refreshes the record.
+// RegisterDBInstance records an agent's registration and returns the heartbeat interval. Idempotent:
+// re-registering is the normal case after an agent restart and simply refreshes the record.
 func (s *Service) RegisterDBInstance(ctx context.Context, input *RegisterDBInstanceInput, accountID string) (*RegisterDBInstanceOutput, error) {
 	if input.DBInstanceIdentifier == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -212,8 +213,8 @@ func (s *Service) RegisterDBInstance(ctx context.Context, input *RegisterDBInsta
 	}, nil
 }
 
-// Persists on a change of health or message and on the slower floor, holding
-// intermediate beats in memory so a steady fleet stays off the KV hot path.
+// SubmitDBStateChange records an agent beat. It persists on a change of health or message and on the
+// slower floor, holding intermediate beats in memory so a steady fleet stays off the KV hot path.
 func (s *Service) SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, accountID string) (*SubmitDBStateChangeOutput, error) {
 	if input.DBInstanceIdentifier == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -305,8 +306,8 @@ func (s *Service) noteBeat(accountID, dbID string, health EngineHealth, message 
 	return live.lastSeen, false
 }
 
-// The in-memory beat time, fresher than the record's persisted LastSeen. False
-// means this node saw no beat — normal after a leader change; fall back to KV.
+// LastSeen returns the in-memory beat time, fresher than the record's persisted LastSeen. False means
+// this node saw no beat — normal after a leader change; fall back to KV.
 func (s *Service) LastSeen(accountID, dbID string) (time.Time, bool) {
 	s.livenessMu.Lock()
 	defer s.livenessMu.Unlock()
@@ -317,10 +318,9 @@ func (s *Service) LastSeen(accountID, dbID string) (time.Time, bool) {
 	return live.lastSeen, true
 }
 
-// Serves boot material and, while a payload is staged for the caller's
-// generation, replays the master password. Nothing is mutated on the way, so a
-// dropped reply, a gateway restart or a reboot before the guest applied the
-// password all recover by simply asking again.
+// GetDBBootstrapConfig serves boot material and, while a payload is staged for the caller's
+// generation, replays the master password. Nothing is mutated on the way, so a dropped reply, a
+// gateway restart or a reboot before the guest applied the password all recover by asking again.
 func (s *Service) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, accountID string) (*GetDBBootstrapConfigOutput, error) {
 	if input.DBInstanceIdentifier == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -509,10 +509,10 @@ func (s *Service) scrubLegacyBootstrap(ctx context.Context, kv *kvstore.Bucket,
 		"this DB instance staged its master password before the password was encrypted at rest and never completed its initial bootstrap; delete and recreate it")
 }
 
-// Destroys the staged ciphertext once the guest has proven PostgreSQL applied
-// it. Deliberately never decrypts: a lost acknowledgement has to remain
-// deliverable even after a master.key change made the payload unreadable, so the
-// one operation that destroys key material must not depend on reading it.
+// AcknowledgeDBBootstrap destroys the staged ciphertext once the guest has proven PostgreSQL applied
+// it. Deliberately never decrypts: a lost acknowledgement has to remain deliverable even after a
+// master.key change made the payload unreadable, so the one operation that destroys key material
+// must not depend on reading it.
 func (s *Service) AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapInput,
 	accountID string) (*AcknowledgeDBBootstrapOutput, error) {
 	if input.DBInstanceIdentifier == "" || input.PayloadID == "" {
@@ -623,7 +623,7 @@ func (s *Service) mintServingCert(rec *DBInstanceRecord) (*bootstrapCert, error)
 	return &bootstrapCert{ServingCert: cert, caPEM: EncodeCertPEM(caCert)}, nil
 }
 
-// Maps an internal EC2 instance ID to the DB instance it backs, so an agent's
+// InstanceIndexEntry maps an internal EC2 instance ID to the DB instance it backs, so an agent's
 // credentials resolve with one Get instead of a scan across every bucket.
 type InstanceIndexEntry struct {
 	AccountID            string `json:"accountId"`
@@ -633,7 +633,8 @@ type InstanceIndexEntry struct {
 	VMGeneration int64 `json:"vmGeneration"`
 }
 
-// Returns (nil, nil) when the instance is not an RDS VM.
+// LookupInstanceIndex returns the DB instance an EC2 instance backs, or (nil, nil) when the instance
+// is not an RDS VM.
 func (s *Service) LookupInstanceIndex(ctx context.Context, instanceID string) (*InstanceIndexEntry, error) {
 	if instanceID == "" {
 		return nil, nil

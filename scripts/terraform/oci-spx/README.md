@@ -31,7 +31,7 @@ Every resource is prefixed with `deployment_name` (default `spinifex`), so nothi
 
 ## Quick Start
 
-Prerequisites: Terraform, Python 3, OCI credentials in `~/.oci/config`, and the public and private halves of the SSH key. The Python helper creates and uses this repository's isolated `.venv` and installs [requirements.txt](requirements.txt).
+Prerequisites: Terraform, Python 3, OCI credentials in `~/.oci/config` or the environment, and the public and private halves of the SSH key. The Python helper is standard library only, so there is nothing to install: it once used the OCI SDK, which meant a virtualenv and therefore `python3-venv` on every host that runs it.
 
 ```bash
 cd scripts/terraform/oci-spx
@@ -53,13 +53,11 @@ python3 scripts/oci_env.py --ssh-public-key-path <path_to_public_ssh_key> -- ter
 
 | Item | Purpose |
 | --- | --- |
-| `scripts/oci_env.py` | Loads OCI profile inputs, discovers the tenancy home region, exports Terraform variables, and runs Terraform in the repository `.venv`. |
-| `requirements.txt` | Python dependency set for the environment helper. |
+| `scripts/oci_env.py` | Loads the credential from a profile or the environment, checks its shape, exports Terraform variables, and runs Terraform. |
 | `terraform.tfvars.example` | Example non-secret Terraform inputs. Copy it to untracked `terraform.auto.tfvars` for local overrides. |
-| `.venv/` | Repository-local virtual environment; generated locally and not committed. |
 | `terraform.tfstate` | Terraform state; generated locally unless a remote backend is configured. Do not commit it. |
 
-The helper defaults to OCI profile `apacanzset03child03`. If it is absent and `apacanzset03child3` is locally configured, the helper explicitly falls back to that profile. Override either setting when needed:
+The helper reads the `DEFAULT` profile, which is what `oci setup config` writes. Set `OCI_CLI_PROFILE` or pass `--profile` to read a different one; a named profile the config does not hold is an error rather than a fallback, so a deployment cannot land in a tenancy nobody chose.
 
 ```bash
 python3 scripts/oci_env.py --profile my-profile --region ap-sydney-1 -- terraform plan
@@ -125,7 +123,6 @@ flowchart TB
 ├── outputs.tf           # OCIDs and policy outputs
 ├── versions.tf          # Terraform and provider version constraints
 ├── terraform.tfvars.example
-├── requirements.txt
 └── scripts/oci_env.py   # Python environment and Terraform command helper
 ```
 
@@ -208,9 +205,77 @@ The private subnet is **unused today** and kept only so it exists: Spinifex gues
 node_client_cidr_allow_list = ["203.0.113.10/32"]
 ```
 
-## The API user this seeds
+## How each node authenticates to OCI
 
-The OCI provider integration needs credentials on each node so Spinifex can allocate addresses at runtime. **Grant that user only the operations Spinifex performs on addresses** — create/get/list/delete private IPs, create/get/update/delete public IPs — and nothing else. It is not a tenancy admin. Broader rights widen the blast radius of a node compromise for no benefit.
+The allocator needs OCI credentials at runtime, and there are two ways to give it them. A node with neither forms, passes every health check, and then refuses every launch that wants a public address with `InsufficientAddressCapacity` — the cause appears only in the node's journal, so this is worth getting right before first start.
+
+**Instance principal is the better one.** Each node authenticates with the certificate its own metadata service serves, so no key material exists on any node, there is nothing to rotate, and nothing sensitive reaches Terraform state. The cost is a dynamic group and a policy, which are tenancy-root resources — so creating them needs a tenancy-admin principal, which is why the rest of this configuration deliberately creates nothing at tenancy root.
+
+`instance_principal` has three values, because using an instance principal and being allowed to create one are different rights:
+
+| Value | Pool auth | Creates the dynamic group and policy | Credential needed |
+| --- | --- | --- | --- |
+| `off` (default) | API key file | No | Compartment-scoped |
+| `adopt` | `instance_principal` | No — assumes they exist | Compartment-scoped |
+| `create` | `instance_principal` | Yes | **Tenancy admin** |
+
+Create them once per tenancy, then every deployment and rebuild afterwards uses `adopt`:
+
+```bash
+./setup-identity.sh --dry-run    # always first
+./setup-identity.sh
+```
+
+`setup-identity.sh` targets only those two resources and keeps them in `.identity/terraform.tfstate`, separate from every topology's state. That separation is load-bearing: `validate-topology.sh` destroys its own state at the end of each run, so holding tenancy resources there would let a nightly teardown delete the tenancy's policy.
+
+**`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `ocinet credential authorised to allocate` in each node's `spinifex-daemon` journal.
+
+The policy grants four verbs in one compartment: `use vnics`, `manage private-ips`, `manage public-ips` and `use subnets`.
+That is exactly what allocating an external address does and nothing more.
+`use subnets` looks unrelated and is not: `CreatePrivateIp` is checked against `SUBNET_ATTACH` and `CreatePrivateIp` is how an address is registered, so a policy without it authorises nothing and every allocation returns a 404.
+
+**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit.
+
+`spx-oci-config.sh` installs it on **every** node, as `/etc/spinifex/oci/{oci_api_key.pem,config}` — not a home directory, because the daemon's unit sets `ProtectHome=yes`. Both files are needed: `oci_config_file` names an ordinary OCI SDK config, so a node holding only the PEM forms and then fails every allocation. The profile it writes is `spinifex`, matching `oci_config_profile`:
+
+```ini
+[spinifex]
+user=ocid1.user.oc1..<yours>
+fingerprint=<yours>
+tenancy=ocid1.tenancy.oc1..<yours>
+region=ap-sydney-1
+key_file=/etc/spinifex/oci/oci_api_key.pem
+```
+
+The script takes `validate-topology.sh`'s hook contract, `hook <ssh-key> <host>...`, so it is both the default thing to pass to `--credential-hook` and runnable on its own against an existing cluster. `--dry-run` resolves and validates the credential without touching a host.
+
+It resolves the credential in four steps and takes the first complete one: the `OCI_SPX_*` environment variables, the `[spinifex]` profile in `~/.oci/config`, `~/.oci/oci_api_key_spx.pem` with the Terraform profile's identifiers, then the Terraform credential itself with a warning that it is wider than needed. Steps 2 to 4 go through `scripts/oci_env.py`, the same resolver the apply uses, so the node credential and the one that built the infrastructure cannot come from different profiles. The fingerprint is checked against the key before anything is written, because a mismatched pair is otherwise an OCI 401 at the first allocation.
+
+Credential material reaches the nodes over SSH, in the remote shell's stdin rather than its arguments, and goes into neither user-data nor Terraform state. `--credential-hook` still accepts any executable with that argument shape, so a tenancy holding credentials in a vault can substitute its own. Instance principal needs no hook at all, which is the reason to prefer it wherever a dynamic group can be created.
+
+Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/external-pool.toml` on each node, with `oci_auth` set to match. Append it to `/etc/spinifex/spinifex.toml` after `spx admin init` and restart `spinifex.target`. Under instance principal that file holds no secret at all, which is the point of it.
+
+## Validating a topology end to end
+
+`validate-topology.sh` builds one topology from nothing, installs the published Spinifex release, forms the cluster, runs a Terraform workbook against it, proves the workbook serves traffic, and destroys everything. Three topologies, because each breaks differently — bare metal presents VNICs unlike a VM, a single node has no Geneve underlay to get wrong, and only a cluster exercises RAFT, the gateway chassis and cross-node allocation.
+
+```bash
+./validate-topology.sh --topology bm        --dry-run
+./validate-topology.sh --topology vm-single --instance-principal
+./validate-topology.sh --topology vm-multi  --instance-principal
+```
+
+`--topology` has no default on purpose: a command aimed at the wrong one is the easiest expensive mistake here. Each topology keeps its own state under `.validate-<topology>/`, so two can be built from one checkout without either destroying the other's instances, and every log from the run lands there.
+
+**A topology's shape and node count are defaults, not settings.** They go to Terraform as `TF_VAR_compute_shape` and `TF_VAR_node_count`, which is the weakest source Terraform reads, so a `terraform.auto.tfvars` in the checkout outranks them and a deployment sizes itself in that file with no flag to pass. CI has no such file — `*.auto.tfvars` is gitignored — so a named topology stays the same every run. `instance_principal` is the exception and remains a `-var`, because `--instance-principal` is a choice about the run rather than about the infrastructure's size, and a stale tfvars must not quietly contradict it.
+
+The count that later gates read is the number of addresses the `hosts_file` output names, not the number asked for, and the run logs the shape and count it built. A tfvars that changes either is reported rather than silently diverging from the topology's name.
+
+**The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
+
+**A clean teardown can still leave public IPs behind, and they count against the tenancy.** The addresses Spinifex allocates for guests are created by the running node, so they are in no Terraform state and `destroy` neither sees nor removes them. The node's own reconcile collects detached ones every ten minutes, which is exactly the sweep a destroy takes away. Twenty accumulated in `spxbm` over four runs and exhausted the tenancy's 50 reserved-public-IP limit, at which point every later launch in every compartment failed. [Check for leftover public IPs afterwards](../../../docs/oci-integration/README.md#check-for-leftover-public-ips-afterwards) has the query and the rule for reading it.
+
+The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 
 ## Common Commands
 

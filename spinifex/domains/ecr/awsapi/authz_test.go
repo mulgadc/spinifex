@@ -129,6 +129,6 @@ func TestResourceARNs_FieldSpelledTwoWaysIsRejected(t *testing.T) {
 	for range 50 {
 		_, err := awsapi.ResourceARNs("DeleteRepository", testRegion, testAccountID,
 			[]byte(`{"repositoryName":"dev","RepositoryName":"prod"}`))
-		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
+		assert.Equal(t, awserrors.ErrorECRInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 	}
 }

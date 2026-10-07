@@ -256,7 +256,7 @@ func TestECRInventory_StubbedSetIsPinned(t *testing.T) {
 		"ListRepositories", "BatchGetImage", "BatchCheckLayerAvailability", "BatchDeleteImage",
 		"PutImage", "ListImages", "DescribeImages", "GetDownloadUrlForLayer", "InitiateLayerUpload",
 		"UploadLayerPart", "CompleteLayerUpload", "GetRegistryPolicy", "PutRegistryPolicy",
-		"DescribeRegistry", "StartLifecyclePolicyPreview", "GetLifecyclePolicyPreview",
+		"StartLifecyclePolicyPreview", "GetLifecyclePolicyPreview",
 		"PutReplicationConfiguration", "ReplicateImage",
 	}
 	assert.ElementsMatch(t, want, awsapi.StubbedActionNames())
@@ -270,7 +270,7 @@ func TestECRInventory_ReachableStubsAnswer501(t *testing.T) {
 	want := []string{
 		"ListRepositories", "BatchCheckLayerAvailability", "GetDownloadUrlForLayer",
 		"InitiateLayerUpload", "UploadLayerPart", "CompleteLayerUpload", "GetRegistryPolicy",
-		"PutRegistryPolicy", "DescribeRegistry", "PutReplicationConfiguration", "ReplicateImage",
+		"PutRegistryPolicy", "PutReplicationConfiguration", "ReplicateImage",
 	}
 	assert.ElementsMatch(t, want, reachableStubs)
 
@@ -533,7 +533,7 @@ func TestECRInventory_RegisteredStubbedUnsupportedArePinned(t *testing.T) {
 	wantStubbed := []string{
 		"ListRepositories", "BatchCheckLayerAvailability", "GetDownloadUrlForLayer",
 		"InitiateLayerUpload", "UploadLayerPart", "CompleteLayerUpload", "GetRegistryPolicy",
-		"PutRegistryPolicy", "DescribeRegistry", "PutReplicationConfiguration", "ReplicateImage",
+		"PutRegistryPolicy", "PutReplicationConfiguration", "ReplicateImage",
 	}
 	wantUnsupported := []string{
 		"GetImageScanningConfiguration", "StartImageScan", "DescribeImageScanFindings",

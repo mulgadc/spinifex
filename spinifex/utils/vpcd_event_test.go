@@ -77,6 +77,7 @@ func TestAddNAT_NoResponders(t *testing.T) {
 // replacement has not yet subscribed must be retried, not dropped: the address
 // is released while its host route still delivers to the guest that held it.
 func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
+	shortenDeleteNATRetryDelay(t)
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -108,6 +109,7 @@ func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 // The retry is bounded: with nothing ever subscribing it gives up rather than
 // blocking the API call that issued the disassociate.
 func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
+	shortenDeleteNATRetryDelay(t)
 	ns := startTestNATSServer(t)
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -118,6 +120,17 @@ func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
 	PublishNATEvent(nc, "vpc.delete-nat", "vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
 	elapsed := time.Since(start)
 
+	assert.GreaterOrEqual(t, elapsed, time.Duration(deleteNATRetries-1)*deleteNATRetryDelay,
+		"every retry must be attempted before giving up")
 	assert.Less(t, elapsed, deleteNATTimeout,
 		"no-responders must fail fast rather than burn the reply timeout")
+}
+
+// shortenDeleteNATRetryDelay keeps the gap test's delay/2 subscribe well clear
+// of the first retry while not paying the production delay.
+func shortenDeleteNATRetryDelay(t *testing.T) {
+	t.Helper()
+	prev := deleteNATRetryDelay
+	deleteNATRetryDelay = 50 * time.Millisecond
+	t.Cleanup(func() { deleteNATRetryDelay = prev })
 }

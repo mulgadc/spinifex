@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateModifyNetworkInterfaceAttributeInput requires NetworkInterfaceId (MissingParameter) and
+// then applies the handler's attribute checks.
 func ValidateModifyNetworkInterfaceAttributeInput(input *ec2.ModifyNetworkInterfaceAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

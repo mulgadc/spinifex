@@ -73,54 +73,54 @@ import { TargetGroupDetailPage } from "../-components/target-group-detail-page"
 
 const TG_ARN = "arn:tg:1"
 
+function seed() {
+  const qc = createTestQueryClient()
+  qc.setQueryData(["elbv2", "targetGroups", TG_ARN], {
+    TargetGroups: [
+      {
+        TargetGroupArn: TG_ARN,
+        TargetGroupName: "my-tg",
+        Protocol: "HTTP",
+        Port: 80,
+        VpcId: "vpc-aaa",
+        TargetType: "instance",
+        HealthCheckEnabled: true,
+        HealthCheckProtocol: "HTTP",
+        HealthCheckPath: "/health",
+        HealthCheckPort: "traffic-port",
+        HealthCheckIntervalSeconds: 30,
+        HealthCheckTimeoutSeconds: 5,
+        HealthyThresholdCount: 5,
+        UnhealthyThresholdCount: 2,
+        Matcher: { HttpCode: "200" },
+      },
+    ],
+  })
+  qc.setQueryData(["elbv2", "targetGroups", TG_ARN, "attributes"], {
+    Attributes: [
+      {
+        Key: "deregistration_delay.timeout_seconds",
+        Value: "300",
+      },
+    ],
+  })
+  qc.setQueryData(["elbv2", "tags", TG_ARN], {
+    TagDescriptions: [
+      {
+        ResourceArn: TG_ARN,
+        Tags: [{ Key: "env", Value: "prod" }],
+      },
+    ],
+  })
+  qc.setQueryData(["ec2", "instances"], { Reservations: [] })
+  return qc
+}
+
 describe("target-group detail route", () => {
   beforeEach(() => {
     sdk.reset()
   })
   afterEach(() => vi.clearAllMocks())
-
-  function seed() {
-    const qc = createTestQueryClient()
-    qc.setQueryData(["elbv2", "targetGroups", TG_ARN], {
-      TargetGroups: [
-        {
-          TargetGroupArn: TG_ARN,
-          TargetGroupName: "my-tg",
-          Protocol: "HTTP",
-          Port: 80,
-          VpcId: "vpc-aaa",
-          TargetType: "instance",
-          HealthCheckEnabled: true,
-          HealthCheckProtocol: "HTTP",
-          HealthCheckPath: "/health",
-          HealthCheckPort: "traffic-port",
-          HealthCheckIntervalSeconds: 30,
-          HealthCheckTimeoutSeconds: 5,
-          HealthyThresholdCount: 5,
-          UnhealthyThresholdCount: 2,
-          Matcher: { HttpCode: "200" },
-        },
-      ],
-    })
-    qc.setQueryData(["elbv2", "targetGroups", TG_ARN, "attributes"], {
-      Attributes: [
-        {
-          Key: "deregistration_delay.timeout_seconds",
-          Value: "300",
-        },
-      ],
-    })
-    qc.setQueryData(["elbv2", "tags", TG_ARN], {
-      TagDescriptions: [
-        {
-          ResourceArn: TG_ARN,
-          Tags: [{ Key: "env", Value: "prod" }],
-        },
-      ],
-    })
-    qc.setQueryData(["ec2", "instances"], { Reservations: [] })
-    return qc
-  }
 
   it("renders the overview card with TG fields", () => {
     renderWithClient(<TargetGroupDetailPage arn={TG_ARN} />, seed())

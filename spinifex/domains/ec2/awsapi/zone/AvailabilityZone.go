@@ -1,3 +1,6 @@
+// Package zone implements DescribeAvailabilityZones and
+// DescribeRegions, answered from the node's configured region and zone with
+// AWS's filter rules.
 package zone
 
 import (
@@ -34,6 +37,8 @@ var (
 	}
 )
 
+// DescribeAvailabilityZones implements the EC2 action for the single zone az in region. Unknown
+// ZoneNames or ZoneIds return InvalidParameterValue; non-matching filters yield an empty list.
 func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region string, az string) (output *ec2.DescribeAvailabilityZonesOutput, err error) {
 	filters, err := parseFilters(input.Filters, describeAvailabilityZonesValidFilters)
 	if err != nil {

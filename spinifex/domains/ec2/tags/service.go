@@ -1,3 +1,5 @@
+// Package tags implements the EC2 tagging actions: the TagsService
+// contract, its daemon-side JetStream KV implementation and its NATS client.
 package tags
 
 import (

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sync"
 	"testing"
+	"time"
 
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,7 @@ func newOrphanReaperManager(t *testing.T) (*OrphanQEMUReaper, *fakeStateStore) {
 }
 
 func TestOrphanQEMUReaper(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	t.Run("kills live QEMU for a terminated instance and removes its PID file", func(t *testing.T) {
 		reaper, store := newOrphanReaperManager(t)
 
@@ -34,9 +36,9 @@ func TestOrphanQEMUReaper(t *testing.T) {
 		require.NoError(t, hostprocess.WritePidFile(id, pid))
 		store.terminated[id] = &VM{ID: id, Status: StateTerminated}
 
+		t.Cleanup(func() { _ = cmd.Process.Kill(); wg.Wait() })
 		reaped, err := reaper.Sweep(context.Background())
 		require.NoError(t, err)
-		wg.Wait()
 
 		assert.Equal(t, 1, reaped, "the orphan QEMU for a terminated instance must be reaped")
 		assert.False(t, hostprocess.ProcessAlive(pid),

@@ -20,6 +20,8 @@ type Versioned struct {
 	SchemaVersion uint16 `json:"schema_version"`
 }
 
+// NewVersioned returns a Versioned stamped with this build's SchemaVersion, for
+// embedding in an outgoing request or response.
 func NewVersioned() Versioned { return Versioned{SchemaVersion: SchemaVersion} }
 
 // EBSProvider is the block-storage controller contract consumed by Spinifex.
@@ -132,8 +134,12 @@ func (e ExclusionSemantics) SingleWriter() bool {
 	return e.Scope == ExclusionScopeCluster
 }
 
+// GetCapabilitiesRequest asks the provider what it supports, over
+// CapabilitiesSubject.
 type GetCapabilitiesRequest struct{ Versioned }
 
+// GetCapabilitiesResponse is the reply to GetCapabilitiesRequest. A non-nil
+// Error means Capabilities is not set.
 type GetCapabilitiesResponse struct {
 	Versioned
 
@@ -148,6 +154,7 @@ type CapacityRange struct {
 	LimitBytes    int64 `json:"limit_bytes,omitempty"`
 }
 
+// VolumeState is a volume's attachment state, using the EC2 volume state names.
 type VolumeState string
 
 const (
@@ -171,6 +178,8 @@ type Volume struct {
 // inside the 1MB NATS max_payload the cluster runs with.
 const MaxSeedBytes = 640 * 1024
 
+// CreateVolumeRequest creates VolumeID, empty or from SourceSnapshotID, over
+// CreateVolumeSubject. Parameters are provider-specific and passed through opaque.
 type CreateVolumeRequest struct {
 	Versioned
 
@@ -201,6 +210,8 @@ func ValidateSeedData(seed []byte) error {
 	return nil
 }
 
+// CreateVolumeResponse is the reply to CreateVolumeRequest: the created volume,
+// or Error.
 type CreateVolumeResponse struct {
 	Versioned
 
@@ -208,6 +219,8 @@ type CreateVolumeResponse struct {
 	Error  *ProviderError `json:"error,omitempty"`
 }
 
+// GetVolumeRequest describes one volume over GetVolumeSubject. Handle, when
+// set, is the opaque handle the provider returned at create.
 type GetVolumeRequest struct {
 	Versioned
 
@@ -215,6 +228,7 @@ type GetVolumeRequest struct {
 	Handle   string `json:"handle,omitempty"`
 }
 
+// GetVolumeResponse is the reply to GetVolumeRequest: the volume, or Error.
 type GetVolumeResponse struct {
 	Versioned
 
@@ -263,6 +277,7 @@ func (r ListVolumesRequest) PageSize() int32 {
 	return r.MaxResults
 }
 
+// ExpandVolumeRequest grows a volume to CapacityRange over ExpandVolumeSubject.
 type ExpandVolumeRequest struct {
 	Versioned
 
@@ -271,6 +286,8 @@ type ExpandVolumeRequest struct {
 	CapacityRange CapacityRange `json:"capacity_range"`
 }
 
+// ExpandVolumeResponse is the reply to ExpandVolumeRequest: the resized volume,
+// or Error.
 type ExpandVolumeResponse struct {
 	Versioned
 
@@ -278,6 +295,8 @@ type ExpandVolumeResponse struct {
 	Error  *ProviderError `json:"error,omitempty"`
 }
 
+// DeleteVolumeRequest deletes a volume over DeleteVolumeSubject. Deleting a
+// volume that does not exist succeeds; a published one fails as in use.
 type DeleteVolumeRequest struct {
 	Versioned
 
@@ -285,12 +304,16 @@ type DeleteVolumeRequest struct {
 	Handle   string `json:"handle,omitempty"`
 }
 
+// DeleteVolumeResponse is the reply to DeleteVolumeRequest. A nil Error means
+// the volume is gone.
 type DeleteVolumeResponse struct {
 	Versioned
 
 	Error *ProviderError `json:"error,omitempty"`
 }
 
+// SnapshotState is a snapshot's lifecycle state, using the EC2 snapshot state
+// names.
 type SnapshotState string
 
 const (
@@ -299,6 +322,8 @@ const (
 	SnapshotStateError     SnapshotState = "error"
 )
 
+// Snapshot is the provider-neutral view of a snapshot. Handle is opaque and
+// must be passed back uninterpreted.
 type Snapshot struct {
 	ID             string        `json:"id"`
 	SourceVolumeID string        `json:"source_volume_id"`
@@ -308,6 +333,8 @@ type Snapshot struct {
 	Handle         string        `json:"handle"`
 }
 
+// CreateSnapshotRequest snapshots VolumeID as SnapshotID. It is sent to the
+// volume's owner node first, then to SnapshotSubject.
 type CreateSnapshotRequest struct {
 	Versioned
 
@@ -328,6 +355,7 @@ type CreateSnapshotResponse struct {
 	Error             *ProviderError `json:"error,omitempty"`
 }
 
+// DeleteSnapshotRequest deletes a snapshot over DeleteSnapshotSubject.
 type DeleteSnapshotRequest struct {
 	Versioned
 
@@ -335,6 +363,8 @@ type DeleteSnapshotRequest struct {
 	Handle     string `json:"handle,omitempty"`
 }
 
+// DeleteSnapshotResponse is the reply to DeleteSnapshotRequest. A nil Error
+// means the snapshot is gone.
 type DeleteSnapshotResponse struct {
 	Versioned
 
@@ -354,6 +384,8 @@ type CopySnapshotRequest struct {
 	VolumeID              string `json:"volume_id"`
 }
 
+// CopySnapshotResponse is the reply to CopySnapshotRequest: the new snapshot,
+// or Error.
 type CopySnapshotResponse struct {
 	Versioned
 
@@ -400,6 +432,8 @@ func (r ListSnapshotsRequest) PageSize() int32 {
 	return r.MaxResults
 }
 
+// PublishVolumeRequest mounts a volume on NodeID so a VM there can attach it,
+// over that node's PublishSubject.
 type PublishVolumeRequest struct {
 	Versioned
 
@@ -409,12 +443,16 @@ type PublishVolumeRequest struct {
 	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
+// PublishedVolume is where a published volume is served: the NBD URI on NodeID
+// that QEMU connects to.
 type PublishedVolume struct {
 	VolumeID string `json:"volume_id"`
 	NodeID   string `json:"node_id"`
 	NBDURI   string `json:"nbd_uri"`
 }
 
+// PublishVolumeResponse is the reply to PublishVolumeRequest: the mount, or
+// Error.
 type PublishVolumeResponse struct {
 	Versioned
 
@@ -422,6 +460,8 @@ type PublishVolumeResponse struct {
 	Error     *ProviderError   `json:"error,omitempty"`
 }
 
+// UnpublishVolumeRequest unmounts a volume from NodeID, over that node's
+// UnpublishSubject.
 type UnpublishVolumeRequest struct {
 	Versioned
 
@@ -430,6 +470,8 @@ type UnpublishVolumeRequest struct {
 	NodeID   string `json:"node_id"`
 }
 
+// UnpublishVolumeResponse is the reply to UnpublishVolumeRequest. A nil Error
+// means the volume is no longer published on the node.
 type UnpublishVolumeResponse struct {
 	Versioned
 

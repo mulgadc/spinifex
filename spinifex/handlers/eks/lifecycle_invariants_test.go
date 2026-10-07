@@ -18,6 +18,7 @@ import (
 // the run. The live-reference teardown is unaffected — only true absence is
 // idempotent.
 func TestRLC1_EKSDeleteClusterIdempotentOnAbsent(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 
 	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("absent"), testAccountID)
@@ -33,6 +34,7 @@ func TestRLC1_EKSDeleteClusterIdempotentOnAbsent(t *testing.T) {
 // intact for a retry — never erased out from under a still-running billable VM.
 // Regression guard for the errors.Join-before-sweep ordering in purgeClusterInfra.
 func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
@@ -51,6 +53,7 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 // orphaned EKS NLB target group would pin itself as ResourceInUse exactly as a
 // user target group does.
 func TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
 	lbName := ClusterNLBName("alpha")

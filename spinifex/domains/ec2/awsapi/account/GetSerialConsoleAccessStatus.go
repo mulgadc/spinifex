@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateGetSerialConsoleAccessStatusInput rejects a nil input with InvalidParameterValue; the
+// action takes no parameters.
 func ValidateGetSerialConsoleAccessStatusInput(input *ec2.GetSerialConsoleAccessStatusInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -17,6 +19,8 @@ func ValidateGetSerialConsoleAccessStatusInput(input *ec2.GetSerialConsoleAccess
 	return nil
 }
 
+// GetSerialConsoleAccessStatus implements the EC2 GetSerialConsoleAccessStatus action, reporting
+// whether serial console access is enabled for accountID.
 func GetSerialConsoleAccessStatus(ctx context.Context, input *ec2.GetSerialConsoleAccessStatusInput, natsConn *nats.Conn, accountID string) (ec2.GetSerialConsoleAccessStatusOutput, error) {
 	var output ec2.GetSerialConsoleAccessStatusOutput
 

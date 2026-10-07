@@ -40,6 +40,7 @@ func TestValidateAccessScope(t *testing.T) {
 }
 
 func TestAccessEntryRecordToAWS_IncludesTags(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	rec := &AccessEntryRecord{
 		ARN:                "arn:aws:eks:ap-southeast-2:000000000001:access-entry/dev1/abc",
@@ -61,6 +62,7 @@ func TestAccessEntryRecordToAWS_IncludesTags(t *testing.T) {
 }
 
 func TestAssociatedPolicyToAWS_ScopeNamespaces(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
 	p := AssociatedAccessPolicy{
 		PolicyARN:    "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy",
@@ -84,6 +86,7 @@ func TestAssociatedPolicyToAWS_ScopeNamespaces(t *testing.T) {
 // The record-store guard clauses reject malformed input before touching the KV,
 // so a nil handle is enough to exercise them.
 func TestAccessEntryRecordGuards(t *testing.T) {
+	t.Parallel()
 	require.Error(t, PutAccessEntryRecord(t.Context(), nil, nil))
 	require.Error(t, PutAccessEntryRecord(t.Context(), nil, &AccessEntryRecord{PrincipalARN: "arn:aws:iam::000000000001:user/admin"}))
 

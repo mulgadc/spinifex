@@ -12,6 +12,7 @@ import (
 )
 
 func TestReconcilerRegistry_SpawnAndStop(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 
 	var (
@@ -34,6 +35,7 @@ func TestReconcilerRegistry_SpawnAndStop(t *testing.T) {
 }
 
 func TestReconcilerRegistry_SpawnIdempotent(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	var spawnCalls atomic.Int32
 	fn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
@@ -50,6 +52,7 @@ func TestReconcilerRegistry_SpawnIdempotent(t *testing.T) {
 }
 
 func TestReconcilerRegistry_SpawnFnErrorRemovesEntry(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	fn := func(_ context.Context, _, _ string) (func(), <-chan struct{}, error) {
 		return nil, nil, errors.New("acquire lease failed")
@@ -61,6 +64,7 @@ func TestReconcilerRegistry_SpawnFnErrorRemovesEntry(t *testing.T) {
 }
 
 func TestReconcilerRegistry_LeaseHeldDropsEntryAndRetries(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	var spawnCalls atomic.Int32
 	leaseHeld := atomic.Bool{}
@@ -93,6 +97,7 @@ func TestReconcilerRegistry_LeaseHeldDropsEntryAndRetries(t *testing.T) {
 // a later same-name create spawns a fresh reconciler instead of silently
 // no-opping on a leaked holder.
 func TestReconcilerRegistry_SelfExitDropsEntryAndRespawns(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	var (
 		spawnCalls atomic.Int32
@@ -129,6 +134,7 @@ func TestReconcilerRegistry_SelfExitDropsEntryAndRespawns(t *testing.T) {
 }
 
 func TestReconcilerRegistry_StopAllCancelsEvery(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	var released atomic.Int32
 	fn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
@@ -148,12 +154,14 @@ func TestReconcilerRegistry_StopAllCancelsEvery(t *testing.T) {
 }
 
 func TestReconcilerRegistry_StopUnknownKeyNoop(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	reg.Stop("111122223333", "ghost")
 	assert.False(t, reg.Has("111122223333", "ghost"))
 }
 
 func TestReconcilerRegistry_SpawnRejectsBadArgs(t *testing.T) {
+	t.Parallel()
 	reg := NewReconcilerRegistry()
 	fn := func(_ context.Context, _, _ string) (func(), <-chan struct{}, error) { return func() {}, nil, nil }
 

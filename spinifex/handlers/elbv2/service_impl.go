@@ -1568,14 +1568,6 @@ func lbFrontendIP(r *LoadBalancerRecord) string {
 	return r.VPCIP
 }
 
-// DesiredDNSChanges returns the UPSERT records for every endpoint-ready load
-// balancer across all accounts, plus whether the enumeration was authoritative. The KV
-// store spans every tenant, so a successful list is a complete cross-account
-// view; a store error yields ok=false so the reconcile suppresses ELB pruning
-// rather than delete another tenant's live record on a partial view.
-//
-// The daemon's reconcile loop calls this without a context, so the read runs on
-// the service lifetime context: the sweep should stop once the service closes.
 // DNSWatchBucket is the bucket behind DesiredDNSChanges, so the DNS reconcile
 // can be woken by a load-balancer change rather than poll for one. Nil when
 // there is no store to watch.
@@ -1586,6 +1578,14 @@ func (s *ELBv2ServiceImpl) DNSWatchBucket() *kvstore.Bucket {
 	return s.store.WatchBucket()
 }
 
+// DesiredDNSChanges returns the UPSERT records for every endpoint-ready load
+// balancer across all accounts, plus whether the enumeration was authoritative. The KV
+// store spans every tenant, so a successful list is a complete cross-account
+// view; a store error yields ok=false so the reconcile suppresses ELB pruning
+// rather than delete another tenant's live record on a partial view.
+//
+// The daemon's reconcile loop calls this without a context, so the read runs on
+// the service lifetime context: the sweep should stop once the service closes.
 func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
 		return nil, false

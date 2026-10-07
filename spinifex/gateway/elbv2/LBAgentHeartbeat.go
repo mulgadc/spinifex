@@ -9,6 +9,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateLBAgentHeartbeatInput rejects a nil input with InvalidParameterValue and a missing LBID
+// with MissingParameter.
 func ValidateLBAgentHeartbeatInput(input *handlers_elbv2.LBAgentHeartbeatInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -46,7 +46,7 @@ func PutImage(ctx context.Context, writer ManifestWriter, accountID string, body
 	}
 	digest, err := writer.StoreManifest(ctx, accountID, req.RepositoryName, reference, req.ImageManifestMediaType, []byte(req.ImageManifest))
 	if err != nil {
-		return nil, mapStoreManifestError(ctx, err, req.RepositoryName)
+		return nil, mapStoreManifestError(ctx, err, accountID, req.RepositoryName)
 	}
 
 	image := &ecr.Image{
@@ -65,7 +65,7 @@ func PutImage(ctx context.Context, writer ManifestWriter, accountID string, body
 // mapStoreManifestError translates OCI manifest-store errors into AWS PutImage
 // errors. The OCI adapter's typed errors are part of the explicit ECR internal
 // capability boundary; unknown backend faults remain ServerInternal.
-func mapStoreManifestError(ctx context.Context, err error, repository string) error {
+func mapStoreManifestError(ctx context.Context, err error, accountID, repository string) error {
 	if manifestErr, ok := errors.AsType[*ecrregistry.ManifestStoreError](err); ok {
 		switch manifestErr.Code {
 		case "DIGEST_INVALID":
@@ -75,7 +75,7 @@ func mapStoreManifestError(ctx context.Context, err error, repository string) er
 		case "TAG_IMMUTABLE":
 			return errors.New(awserrors.ErrorImageTagAlreadyExists)
 		case "NAME_UNKNOWN":
-			return errors.New(awserrors.ErrorRepositoryNotFound)
+			return RepositoryNotFoundError(accountID, repository)
 		default:
 			return ConstraintError("imageManifest", manifestErr.Msg)
 		}

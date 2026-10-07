@@ -26,6 +26,7 @@ func markDeleting(t *testing.T, f *deleteClusterFixture, name string, age time.D
 // client re-issued) must be re-driven to completion by the backstop reaper —
 // infra torn down and meta swept — so its billable EIP is never stranded.
 func TestRLC4_DeletingReaperReDrivesWedgedTeardown(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	markDeleting(t, f, "alpha", 10*time.Minute)
 
@@ -43,6 +44,7 @@ func TestRLC4_DeletingReaperReDrivesWedgedTeardown(t *testing.T) {
 // TestDeletingReaperSkipsFreshDelete: a cluster that just entered DELETING is
 // within the in-flight synchronous-delete window; the reaper must not race it.
 func TestDeletingReaperSkipsFreshDelete(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "beta")
 	markDeleting(t, f, "beta", 1*time.Second) // younger than min-age
 
@@ -63,6 +65,7 @@ func TestDeletingReaperSkipsFreshDelete(t *testing.T) {
 // unreachable JetStream — leaving a stuck teardown holding its billable EIP with
 // nothing to say the sweep never looked.
 func TestDeletingReaper_EnumerationFailureIsReported(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "delta")
 	markDeleting(t, f, "delta", 10*time.Minute)
 
@@ -82,6 +85,7 @@ func TestDeletingReaper_EnumerationFailureIsReported(t *testing.T) {
 // the window survives a restart. No sleeping — the clock is advanced by
 // backdating LastDeleteReapAttempt directly.
 func TestDeletingReaper_BacksOffAfterFailedAttempt(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 	markDeleting(t, f, "alpha", 10*time.Minute)
@@ -126,6 +130,7 @@ func TestDeletingReaper_BacksOffAfterFailedAttempt(t *testing.T) {
 // invariant: an exhausted cluster must stay DELETING — its infra stays tracked
 // and billable — not silently vanish or move to some other status.
 func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("permanent hypervisor failure")
 	markDeleting(t, f, "alpha", 10*time.Minute)
@@ -172,6 +177,7 @@ func TestDeletingReaper_ExhaustsAfterMaxAttempts(t *testing.T) {
 // checking a still-retrying cluster already sees why), and the same error must
 // still be there once the reaper exhausts its attempts and gives up.
 func TestDeletingReaper_PersistsLastErrorOnFailure(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	f.inst.terminateErr = errors.New("dependency violation: eni still attached")
 	markDeleting(t, f, "alpha", 10*time.Minute)
@@ -205,6 +211,7 @@ func TestDeletingReaper_PersistsLastErrorOnFailure(t *testing.T) {
 
 // TestDeletingReaperSkipsNonDeleting: a CREATING/ACTIVE cluster is never touched.
 func TestDeletingReaperSkipsNonDeleting(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "gamma") // stays CREATING
 
 	reaper := f.svc.NewDeletingReaper()

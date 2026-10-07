@@ -76,12 +76,12 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 	// Missing repo.
 	_, err := callImage(t, gw, "GetLifecyclePolicyPreview", previewBody("team/ghost", previewExpireOldest))
 	require.Error(t, err)
-	assert.Equal(t, "RepositoryNotFoundException", err.Error())
+	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 
 	// Malformed override policy.
 	_, err = callImage(t, gw, "GetLifecyclePolicyPreview", previewBody("team/app", "not-json"))
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 
 	// Cross-account.
 	_, err = callImage(t, gw, "StartLifecyclePolicyPreview", `{"repositoryName":"team/app","registryId":"999999999999","lifecyclePolicyText":`+strconvQuotePreview(previewExpireOldest)+`}`)

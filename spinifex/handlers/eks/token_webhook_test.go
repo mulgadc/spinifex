@@ -9,6 +9,7 @@ import (
 )
 
 func TestDecodeGetToken_RoundTrips(t *testing.T) {
+	t.Parallel()
 	url := "https://sts.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15&X-Amz-Algorithm=AWS4-HMAC-SHA256"
 	token := getTokenV1Prefix + base64.RawURLEncoding.EncodeToString([]byte(url))
 
@@ -18,6 +19,7 @@ func TestDecodeGetToken_RoundTrips(t *testing.T) {
 }
 
 func TestDecodeGetToken_TrimsWhitespace(t *testing.T) {
+	t.Parallel()
 	url := "https://sts.amazonaws.com/?Action=GetCallerIdentity"
 	token := "  " + getTokenV1Prefix + base64.RawURLEncoding.EncodeToString([]byte(url)) + "\n"
 

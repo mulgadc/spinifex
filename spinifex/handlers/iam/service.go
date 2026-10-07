@@ -1,3 +1,6 @@
+// Package handlers_iam implements IAM: users, groups, roles, policies, access
+// keys, instance profiles and OIDC providers, persisted in JetStream KV with
+// secrets sealed under the deployment master key.
 package handlers_iam
 
 import (
@@ -48,6 +51,7 @@ type IAMService interface {
 	ListRoles(accountID string, input *iam.ListRolesInput) (*iam.ListRolesOutput, error)
 	DeleteRole(accountID string, input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error)
 	UpdateRole(accountID string, input *iam.UpdateRoleInput) (*iam.UpdateRoleOutput, error)
+	UpdateRoleDescription(accountID string, input *iam.UpdateRoleDescriptionInput) (*iam.UpdateRoleDescriptionOutput, error)
 	UpdateAssumeRolePolicy(accountID string, input *iam.UpdateAssumeRolePolicyInput) (*iam.UpdateAssumeRolePolicyOutput, error)
 
 	// Role policies — managed + inline — account-scoped
@@ -151,4 +155,8 @@ type IAMService interface {
 	// GetAccountSummary returns account-wide IAM usage counts plus AWS-parity
 	// quota values as a SummaryMap. Read-only and account-scoped.
 	GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
+
+	// ListAccountAliases lists the account's aliases. Spinifex has no account
+	// aliases, so every account has none.
+	ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error)
 }

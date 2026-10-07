@@ -1,3 +1,6 @@
+// Package instance implements the EC2 instance actions: it places
+// launches on nodes, fans lifecycle and Describe calls out across the cluster,
+// and authorizes the IAM instance profiles attached to instances.
 package instance
 
 import (
@@ -28,10 +31,14 @@ type PassRoleChecker func(roleARN string) error
 // validation and PassRole authorization, but before the launch is dispatched.
 type LaunchQuotaChecker func() error
 
+// RunInstancesResponse wraps a Reservation under the RunInstancesResponse XML element name.
 type RunInstancesResponse struct {
 	Reservation *ec2.Reservation `locationName:"RunInstancesResponse"`
 }
 
+// ValidateRunInstancesInput checks MinCount/MaxCount (present, non-zero, Min <= Max), ImageId
+// (ami- prefix) and InstanceType. It also refuses a pinned private IP on a multi-instance launch
+// and any block device mapping the launch cannot create.
 func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 	if input == nil {
 		return errors.New(awserrors.ErrorMissingParameter)

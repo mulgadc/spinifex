@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -103,4 +106,56 @@ func TestSigningTime_Sources(t *testing.T) {
 
 	none := httptest.NewRequest(http.MethodGet, "/", nil)
 	require.Empty(t, signingTime(none))
+}
+
+// A proxied request reaches the gateway from loopback. The auth-failure line
+// must name the client the request audit line names, while the lockout stays
+// keyed on the connection peer.
+func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
+	cases := []struct {
+		name       string
+		remoteAddr string
+		wantLogIP  string
+	}{
+		{"proxied via loopback", "127.0.0.1:41234", "203.0.113.7"},
+		{"direct client cannot choose the logged IP", "198.51.100.9:41234", "198.51.100.9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := authlimit.NewAuthRateLimiter()
+			defer rl.Stop()
+			gw := &GatewayConfig{
+				DisableLogging: true,
+				Region:         testRegion,
+				IAMService:     &mockIAMService{masterKey: testMasterKey},
+				STSService:     &mockSTSService{},
+				RateLimiter:    rl,
+			}
+			handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("an unknown session credential must not reach the handler")
+			}))
+			logs := captureLogs(t)
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Host = "localhost:9999"
+			req.RemoteAddr = tc.remoteAddr
+			req.Header.Set("X-Real-IP", "203.0.113.7")
+			signSessionRequest(t, req, nil, testSessionAKID, testSecretKey, testSessionToken)
+
+			resp := doRequest(handler, req)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+			out := logs.String()
+			require.Contains(t, out, "session credential not found")
+			require.Contains(t, out, "sourceIP="+tc.wantLogIP)
+
+			// The request's one failure counts against the connection peer: one
+			// fewer probe than the threshold then locks that address.
+			peer := ingresshttp.ClientIP(tc.remoteAddr)
+			recordProbeFailures(rl, peer, "below", authlimit.MaxFailures-2)
+			require.Empty(t, rl.CheckIP(peer), "lockout must key on the connection peer")
+			recordProbeFailures(rl, peer, "edge", 1)
+			require.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(peer), "lockout must key on the connection peer")
+		})
+	}
 }

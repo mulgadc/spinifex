@@ -25,9 +25,9 @@ const (
 	bootstrapPayloadIDPrefix = "bp"
 )
 
-// The cleartext wrapper, so a stale generation or a payload written under
-// another master key is rejected with a legible reason rather than as a GCM
-// authentication failure that reads as tampering.
+// BootstrapPayloadEnvelope is the cleartext wrapper around the encrypted bootstrap payload, so a stale
+// generation or a payload written under another master key is rejected with a legible reason rather
+// than as a GCM authentication failure that reads as tampering.
 type BootstrapPayloadEnvelope struct {
 	PayloadID         string    `json:"payloadId"`
 	EnvelopeVersion   int       `json:"envelopeVersion"`

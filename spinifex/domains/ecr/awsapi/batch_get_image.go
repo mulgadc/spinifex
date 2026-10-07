@@ -54,7 +54,7 @@ func BatchGetImage(ctx context.Context, reader ManifestReader, accountID string,
 
 		manifest, mediaType, digest, err := reader.GetManifest(ctx, accountID, req.RepositoryName, reference, req.AcceptedMediaTypes)
 		if errors.Is(err, ecrregistry.ErrImageNotFound) {
-			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeImageNotFound, "image not found"))
+			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeImageNotFound, ImageNotFoundReason))
 			continue
 		}
 		if err != nil {

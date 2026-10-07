@@ -378,7 +378,10 @@ func (s *IAMServiceImpl) ListAttachedGroupPolicies(accountID string, input *iam.
 		return nil, err
 	}
 
-	attached := s.attachedPolicies(ctx, accountID, group.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	attached, err := s.attachedPolicies(ctx, accountID, group.AttachedPolicies, aws.StringValue(input.PathPrefix))
+	if err != nil {
+		return nil, err
+	}
 
 	return &iam.ListAttachedGroupPoliciesOutput{
 		AttachedPolicies: attached,
@@ -403,6 +406,9 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 	if err := validateIAMName("policyName", policyName, 128); err != nil {
 		return nil, err
 	}
+	if err := checkPolicyDocumentLength(policyDoc); err != nil {
+		return nil, err
+	}
 	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
 			"policy %q on group %q: %w", policyName, groupName, err)
@@ -410,6 +416,9 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 
 	group, err := s.getGroup(ctx, accountID, groupName)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkInlinePolicySize("group", groupName, groupPolicySizeQuota, group.InlinePolicies, policyName, policyDoc); err != nil {
 		return nil, err
 	}
 

@@ -40,7 +40,7 @@ func TestDescribeRepositories_ValidatesRequestAndRepository(t *testing.T) {
 		body string
 		code string
 	}{
-		{"malformed body", `{`, awserrors.ErrorInvalidParameterValue},
+		{"malformed body", `{`, awserrors.ErrorECRInvalidParameter},
 		{"cross-account registry", `{"registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
 		{"missing named repository", `{"repositoryNames":["team/ghost"]}`, awserrors.ErrorRepositoryNotFound},
 	}

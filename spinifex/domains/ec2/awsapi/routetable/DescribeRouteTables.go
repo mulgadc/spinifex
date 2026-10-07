@@ -1,3 +1,5 @@
+// Package routetable implements the EC2 route table actions: it
+// validates each request and forwards it to the route table service over NATS.
 package routetable
 
 import (
@@ -10,6 +12,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// DescribeRouteTables implements the EC2 DescribeRouteTables action, returning accountID's route
+// tables from the NATS service. A nil input is rejected with InvalidParameterValue.
 func DescribeRouteTables(ctx context.Context, input *ec2.DescribeRouteTablesInput, natsConn *nats.Conn, accountID string) (ec2.DescribeRouteTablesOutput, error) {
 	var output ec2.DescribeRouteTablesOutput
 	if input == nil {

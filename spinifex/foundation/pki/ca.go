@@ -10,8 +10,9 @@ import (
 	"os"
 )
 
-// Exported so runtime services that mint from the cluster CA share one loader
-// rather than each re-implementing the PEM/PKCS8 handling.
+// LoadCAKeyPair reads the cluster CA certificate and its PKCS8 RSA key from PEM
+// files. Exported so runtime services that mint from the cluster CA share one
+// loader rather than each re-implementing the PEM/PKCS8 handling.
 func LoadCAKeyPair(caCertPath, caKeyPath string) (*x509.Certificate, *rsa.PrivateKey, error) {
 	certPEM, err := os.ReadFile(caCertPath)
 	if err != nil {

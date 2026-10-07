@@ -139,9 +139,9 @@ export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
               <p className="text-xs text-muted-foreground">
                 This group records which subnets RDS may place an endpoint in;
                 each subnet&apos;s own CIDR, addresses and routing live on its
-                EC2 page. Membership is fixed at create — ModifyDBSubnetGroup is
-                not implemented. Changing it means creating a new group, which a
-                DB instance can only adopt by being recreated.
+                EC2 page. This console cannot edit membership; use aws rds
+                modify-db-subnet-group. A running DB instance keeps the subnet
+                its endpoint was placed in.
               </p>
             </div>
           </TabsPanel>

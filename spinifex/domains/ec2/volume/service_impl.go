@@ -128,9 +128,10 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		return nil, errors.New(awserrors.ErrorAuthFailure)
 	}
 
-	// Validate volume type: only gp3 supported (or empty defaults to gp3)
-	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != ebspolicy.VolumeTypeGP3 {
-		return nil, errors.New(awserrors.ErrorUnknownVolumeType)
+	if input.VolumeType != nil {
+		if err := ebspolicy.ValidateVolumeType(*input.VolumeType); err != nil {
+			return nil, err
+		}
 	}
 	volumeType := ebspolicy.VolumeTypeGP3
 

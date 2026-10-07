@@ -25,6 +25,10 @@ func TestMain(m *testing.M) {
 	// refuse to start and every daemon-constructing test would fail. 4 keeps the
 	// default reserve intact with 2 schedulable cores — enough for these tests.
 	os.Setenv("SPINIFEX_HOST_VCPU", "4")
+	// Admission otherwise also clamps on the host's live MemAvailable, which a
+	// loaded box running tests in parallel can drop below the reserve. The gate
+	// has its own tests that inject a reader.
+	os.Setenv("SPINIFEX_ADMISSION_LIVE_MEM", "0")
 
 	// Start a plain NATS server (no JetStream)
 	ns, err := server.NewServer(&server.Options{

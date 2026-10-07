@@ -47,7 +47,7 @@ func BatchDeleteImage(ctx context.Context, deleter ImageDeleter, accountID strin
 
 		digest, err := deleter.DeleteImage(ctx, accountID, req.RepositoryName, imageID.ImageTag, imageID.ImageDigest)
 		if errors.Is(err, ecrregistry.ErrImageNotFound) {
-			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeImageNotFound, "image not found"))
+			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeImageNotFound, ImageNotFoundReason))
 			continue
 		}
 		if err != nil {

@@ -9,6 +9,9 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
+// CreateOpenIDConnectProvider implements the IAM CreateOpenIDConnectProvider action, registering
+// an OIDC identity provider. It returns MissingParameter when Url is absent, then calls the IAM
+// service for accountID.
 func CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.CreateOpenIDConnectProviderOutput, error) {
 	if input.Url == nil || *input.Url == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -16,6 +19,9 @@ func CreateOpenIDConnectProvider(accountID string, input *iam.CreateOpenIDConnec
 	return svc.CreateOpenIDConnectProvider(accountID, input)
 }
 
+// GetOpenIDConnectProvider implements the IAM GetOpenIDConnectProvider action, describing an OIDC
+// provider. It returns MissingParameter when OpenIDConnectProviderArn is absent, then calls the
+// IAM service for accountID.
 func GetOpenIDConnectProvider(accountID string, input *iam.GetOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.GetOpenIDConnectProviderOutput, error) {
 	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -23,10 +29,15 @@ func GetOpenIDConnectProvider(accountID string, input *iam.GetOpenIDConnectProvi
 	return svc.GetOpenIDConnectProvider(accountID, input)
 }
 
+// ListOpenIDConnectProviders implements the IAM ListOpenIDConnectProviders action. The action is
+// unpaginated in AWS, so the service result is returned as is.
 func ListOpenIDConnectProviders(accountID string, input *iam.ListOpenIDConnectProvidersInput, svc handlers_iam.IAMService) (*iam.ListOpenIDConnectProvidersOutput, error) {
 	return svc.ListOpenIDConnectProviders(accountID, input)
 }
 
+// DeleteOpenIDConnectProvider implements the IAM DeleteOpenIDConnectProvider action, deleting an
+// OIDC provider. It returns MissingParameter when OpenIDConnectProviderArn is absent, then calls
+// the IAM service for accountID.
 func DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.DeleteOpenIDConnectProviderOutput, error) {
 	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -34,6 +45,8 @@ func DeleteOpenIDConnectProvider(accountID string, input *iam.DeleteOpenIDConnec
 	return svc.DeleteOpenIDConnectProvider(accountID, input)
 }
 
+// TagOpenIDConnectProvider implements the IAM TagOpenIDConnectProvider action. It returns
+// MissingParameter when OpenIDConnectProviderArn is absent or Tags is empty.
 func TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.TagOpenIDConnectProviderOutput, error) {
 	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -44,6 +57,8 @@ func TagOpenIDConnectProvider(accountID string, input *iam.TagOpenIDConnectProvi
 	return svc.TagOpenIDConnectProvider(accountID, input)
 }
 
+// UntagOpenIDConnectProvider implements the IAM UntagOpenIDConnectProvider action. It returns
+// MissingParameter when OpenIDConnectProviderArn is absent or TagKeys is empty.
 func UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectProviderInput, svc handlers_iam.IAMService) (*iam.UntagOpenIDConnectProviderOutput, error) {
 	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -54,6 +69,9 @@ func UntagOpenIDConnectProvider(accountID string, input *iam.UntagOpenIDConnectP
 	return svc.UntagOpenIDConnectProvider(accountID, input)
 }
 
+// ListOpenIDConnectProviderTags implements the IAM ListOpenIDConnectProviderTags action, listing
+// an OIDC provider's tags. It requires OpenIDConnectProviderArn; results are paged here by Marker
+// and MaxItems.
 func ListOpenIDConnectProviderTags(accountID string, input *iam.ListOpenIDConnectProviderTagsInput, svc handlers_iam.IAMService) (*iam.ListOpenIDConnectProviderTagsOutput, error) {
 	if input.OpenIDConnectProviderArn == nil || *input.OpenIDConnectProviderArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

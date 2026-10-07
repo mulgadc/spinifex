@@ -1,6 +1,7 @@
 package handlers_iam
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -162,6 +164,28 @@ func TestListInstanceProfiles(t *testing.T) {
 	assert.True(t, names["profile3"])
 }
 
+// TestListInstanceProfiles_DanglingRoleSkipped pins that one profile naming a
+// role that no longer exists is left out rather than failing the whole listing.
+func TestListInstanceProfiles_DanglingRoleSkipped(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "gone-role")
+	createTestInstanceProfile(t, svc, "dangling-profile")
+	createTestInstanceProfile(t, svc, "healthy-profile")
+	_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+		InstanceProfileName: aws.String("dangling-profile"),
+		RoleName:            aws.String("gone-role"),
+	})
+	require.NoError(t, err)
+	// DeleteRole refuses while the role is attached, so remove the record directly.
+	require.NoError(t, svc.rolesBucket.Delete(t.Context(), testAccountID+".gone-role"))
+
+	out, err := svc.ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{})
+	require.NoError(t, err)
+	require.Len(t, out.InstanceProfiles, 1)
+	assert.Equal(t, "healthy-profile", *out.InstanceProfiles[0].InstanceProfileName)
+}
+
 func TestListInstanceProfiles_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -240,6 +264,55 @@ func TestDeleteInstanceProfile_WithRoleAttached(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}
+
+// attachBeforeDelete lands a role attach between DeleteInstanceProfile's read
+// and its delete, the window a concurrent AddRoleToInstanceProfile can win.
+type attachBeforeDelete struct {
+	jetstream.KeyValue
+
+	once   sync.Once
+	attach func() error
+	err    error
+}
+
+func (a *attachBeforeDelete) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	a.once.Do(func() { a.err = a.attach() })
+	return a.KeyValue.Delete(ctx, key, opts...)
+}
+
+// TestDeleteInstanceProfile_RoleAttachedAfterCheck pins the DeleteConflict
+// guard under concurrency: an attach that reported success must not have its
+// profile deleted out from under it.
+func TestDeleteInstanceProfile_RoleAttachedAfterCheck(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "late-role")
+	createTestInstanceProfile(t, svc, "late-profile")
+
+	bucket := &attachBeforeDelete{KeyValue: svc.instanceProfilesBucket}
+	bucket.attach = func() error {
+		_, err := svc.AddRoleToInstanceProfile(testAccountID, &iam.AddRoleToInstanceProfileInput{
+			InstanceProfileName: aws.String("late-profile"),
+			RoleName:            aws.String("late-role"),
+		})
+		return err
+	}
+	svc.instanceProfilesBucket = bucket
+
+	_, err := svc.DeleteInstanceProfile(testAccountID, &iam.DeleteInstanceProfileInput{
+		InstanceProfileName: aws.String("late-profile"),
+	})
+	require.NoError(t, bucket.err, "attach")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	out, err := svc.GetInstanceProfile(testAccountID, &iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String("late-profile"),
+	})
+	require.NoError(t, err, "the profile must survive an attach that reported success")
+	require.Len(t, out.InstanceProfile.Roles, 1)
+	assert.Equal(t, "late-role", *out.InstanceProfile.Roles[0].RoleName)
 }
 
 // ============================================================================

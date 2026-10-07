@@ -140,9 +140,9 @@ func TestDriftLoop_ConvergedStartupWaitsFullInterval(t *testing.T) {
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
 	startDriftLoop(t, rec, nc, nil)
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if got := rec.callCount(); got != 0 {
-		t.Errorf("reconcile ran %d times within 300ms of a converged startup, want 0 "+
+		t.Errorf("reconcile ran %d times within 100ms of a converged startup, want 0 "+
 			"— the first pass must wait DriftInterval (10s here)", got)
 	}
 }
@@ -160,7 +160,7 @@ func TestDriftLoop_ConvergedPassReturnsToDriftInterval(t *testing.T) {
 	if got := waitForCalls(t, rec, 2, 5*time.Second); got < 2 {
 		t.Fatalf("reconcile called %d times, want 2 before the loop settles", got)
 	}
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	if got := rec.callCount(); got != 2 {
 		t.Errorf("reconcile called %d times, want exactly 2 — a converged pass must "+
 			"reset the backoff to DriftInterval, not stay on the fast requeue", got)

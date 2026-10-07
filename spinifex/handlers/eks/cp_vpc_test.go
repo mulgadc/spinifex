@@ -411,6 +411,7 @@ func (f *fakeNatGatewayProvisioner) DeleteNatGateway(_ context.Context, input *e
 // a change to either orphans every deployed cluster from its own teardown,
 // stranding a billable NAT gateway and hanging DeleteCluster in DELETING.
 func TestCPVPCTagValuesAreFrozen(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, systemvpc.Roles{
 		VPC:           "cp-vpc",
 		PublicSubnet:  "cp-public",
@@ -423,6 +424,7 @@ func TestCPVPCTagValuesAreFrozen(t *testing.T) {
 }
 
 func TestCPVPCSupernetIsDisjointFromOtherComponents(t *testing.T) {
+	t.Parallel()
 	supernet, err := netip.ParsePrefix(cpVPCSupernet)
 	require.NoError(t, err)
 	assert.Equal(t, supernet.Masked(), supernet, "a supernet with host bits set is rejected by the builder")

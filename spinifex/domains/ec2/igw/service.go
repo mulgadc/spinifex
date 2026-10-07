@@ -1,3 +1,6 @@
+// Package igw implements the EC2 internet gateway actions: the
+// IGWService contract, its daemon-side JetStream KV implementation and its NATS
+// client.
 package igw
 
 import (

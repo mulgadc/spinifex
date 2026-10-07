@@ -44,10 +44,14 @@ func NewDocker(t *testing.T, dockerConfig string) *ExternalCLI {
 	return newExternalCLI(t, "docker", []string{"DOCKER_CONFIG=" + dockerConfig})
 }
 
+// NewCrane wraps the crane CLI, sharing the docker auth file through
+// DOCKER_CONFIG. It skips the test if crane is not installed.
 func NewCrane(t *testing.T, dockerConfig string) *ExternalCLI {
 	return newExternalCLI(t, "crane", []string{"DOCKER_CONFIG=" + dockerConfig})
 }
 
+// NewSkopeo wraps the skopeo CLI, pointing REGISTRY_AUTH_FILE at the docker
+// auth file. It skips the test if skopeo is not installed.
 func NewSkopeo(t *testing.T, dockerConfig string) *ExternalCLI {
 	return newExternalCLI(t, "skopeo", []string{"REGISTRY_AUTH_FILE=" + dockerConfig + "/config.json"})
 }

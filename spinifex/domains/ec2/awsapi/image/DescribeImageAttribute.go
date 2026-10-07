@@ -19,6 +19,8 @@ var supportedImageAttributes = map[string]bool{
 	ec2.ImageAttributeNameBlockDeviceMapping: true,
 }
 
+// ValidateDescribeImageAttributeInput requires an ami- prefixed ImageId and an Attribute.
+// Attributes outside supportedImageAttributes are rejected with InvalidParameterValue.
 func ValidateDescribeImageAttributeInput(input *ec2.DescribeImageAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -38,6 +40,8 @@ func ValidateDescribeImageAttributeInput(input *ec2.DescribeImageAttributeInput)
 	return nil
 }
 
+// DescribeImageAttribute implements the EC2 DescribeImageAttribute action, validating the input
+// and forwarding it to the NATS image service scoped to accountID.
 func DescribeImageAttribute(ctx context.Context, input *ec2.DescribeImageAttributeInput, natsConn *nats.Conn, accountID string) (ec2.DescribeImageAttributeOutput, error) {
 	var output ec2.DescribeImageAttributeOutput
 

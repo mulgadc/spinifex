@@ -1,3 +1,6 @@
+// Package launchtemplate implements the EC2 launch template
+// actions: it validates each request and forwards it to the launch template
+// service over NATS.
 package launchtemplate
 
 import (

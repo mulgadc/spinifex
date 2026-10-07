@@ -3,13 +3,11 @@ package awsapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // imageIdentifier is the AWS JSON 1.1 {imageDigest, imageTag} pair.
@@ -81,7 +79,8 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 		details = append(details, detail)
 	}
 	if len(req.ImageIDs) > 0 && len(details) == 0 {
-		return nil, errors.New(awserrors.ErrorImageNotFound)
+		first := req.ImageIDs[0]
+		return nil, ImageNotFoundError(accountID, req.RepositoryName, first.ImageDigest, first.ImageTag)
 	}
 
 	return &ecr.DescribeImagesOutput{ImageDetails: details}, nil

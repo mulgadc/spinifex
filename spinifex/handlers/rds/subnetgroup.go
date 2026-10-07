@@ -30,11 +30,10 @@ const (
 // written.
 const subnetGroupStatusComplete = "Complete"
 
-// AWS requires a DB subnet group to span at least two AZs. This platform is
-// single-AZ — every subnet reports the one zone — and multi-AZ is a V2
-// milestone, so the AZ-count rule is not enforced: rejecting on it would fail
-// every stock Terraform module for no safety benefit. The constraint that does
-// matter is enforced below, because a group spanning two VPCs cannot host an
+// CreateDBSubnetGroup implements the RDS CreateDBSubnetGroup action. AWS requires a group to span at
+// least two AZs, but this platform is single-AZ and multi-AZ is a V2 milestone, so that rule is not
+// enforced: rejecting on it would fail every stock Terraform module for no safety benefit. The
+// constraint that does matter is enforced below, because a group spanning two VPCs cannot host an
 // instance at all.
 func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSubnetGroupInput, accountID string) (*rds.CreateDBSubnetGroupOutput, error) {
 	if input == nil {
@@ -88,9 +87,8 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 	return &rds.CreateDBSubnetGroupOutput{DBSubnetGroup: s.projectSubnetGroup(&rec)}, nil
 }
 
-// A named group that does not exist is an error, matching AWS; an unnamed
-// request lists the account's groups. Filters is not read: AWS ignores it here,
-// even an unknown or malformed entry.
+// DescribeDBSubnetGroups errors on a named group that does not exist, matching AWS; an unnamed request
+// lists the account's groups. Filters is not read: AWS ignores it here, even an unknown or malformed entry.
 func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGroupsInput, accountID string) (*rds.DescribeDBSubnetGroupsOutput, error) {
 	if input == nil {
 		input = &rds.DescribeDBSubnetGroupsInput{}
@@ -132,9 +130,70 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups, Marker: next}, nil
 }
 
-// Refused while any instance still names the group, including one that is only
-// deleting: releasing it early would let a teardown lose the record of where its
-// ENI was placed, and would make destroy ordering ambiguous.
+// ModifyDBSubnetGroup replaces the group's subnet set with SubnetIds, which must stay in the group's
+// VPC, as AWS requires. An omitted or empty description keeps the stored one. A lost CAS replays
+// against the fresh record, so a concurrent write is not undone.
+func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSubnetGroupInput, accountID string) (*rds.ModifyDBSubnetGroupOutput, error) {
+	if input == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
+	}
+	name := aws.StringValue(input.DBSubnetGroupName)
+	if name == "" {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBSubnetGroupName is required")
+	}
+	description := aws.StringValue(input.DBSubnetGroupDescription)
+	if description != "" {
+		if err := validateDBGroupDescription("DBSubnetGroupDescription", description); err != nil {
+			return nil, err
+		}
+	}
+
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	// Read first so a missing group is reported as such rather than as whatever
+	// the subnet resolution would have objected to.
+	if _, _, err := getDBSubnetGroup(ctx, kv, name); err != nil {
+		return nil, err
+	}
+	subnets, vpcID, err := s.resolveGroupSubnets(ctx, accountID, aws.StringValueSlice(input.SubnetIds))
+	if err != nil {
+		return nil, err
+	}
+
+	key := DBSubnetGroupKey(name)
+	for range tagWriteAttempts {
+		rec, rev, err := getDBSubnetGroup(ctx, kv, name)
+		if err != nil {
+			return nil, err
+		}
+		if vpcID != rec.VpcID {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"The new Subnets are not in the same Vpc as the existing subnet group")
+		}
+		if description != "" {
+			rec.Description = description
+		}
+		rec.Subnets = subnets
+		rec.UpdatedAt = time.Now().UTC()
+
+		err = updateJSON(ctx, kv, key, rev, rec)
+		if err == nil {
+			slog.InfoContext(ctx, "rds: DB subnet group modified",
+				"dbSubnetGroup", name, "accountId", accountID, "vpcId", vpcID, "subnets", len(subnets))
+			return &rds.ModifyDBSubnetGroupOutput{DBSubnetGroup: s.projectSubnetGroup(rec)}, nil
+		}
+		if !errors.Is(err, kvstore.ErrConflict) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("rds: update of %s contended after %d attempts", key, tagWriteAttempts)
+}
+
+// DeleteDBSubnetGroup is refused while any instance still names the group, including one that is only
+// deleting: releasing it early would let a teardown lose the record of where its ENI was placed, and
+// would make destroy ordering ambiguous.
 func (s *Service) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, accountID string) (*rds.DeleteDBSubnetGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

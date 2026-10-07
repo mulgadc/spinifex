@@ -124,7 +124,7 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 	// Parse fails only on a field spelled two ways, which it cannot scope.
 	scope, err := bodyscope.Parse(action, body)
 	if err != nil {
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		return nil, awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
 			"The request body names the same field more than once in different letter case")
 	}
 

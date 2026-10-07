@@ -57,9 +57,9 @@ func TestBatchDeleteImage_ValidatesRequestAndDeleterFailure(t *testing.T) {
 		code    string
 	}{
 		{"missing deleter", nil, `{"repositoryName":"team/app"}`, awserrors.ErrorServerInternal},
-		{"malformed", fakeImageDeleter{}, `{`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", fakeImageDeleter{}, `{`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", fakeImageDeleter{}, `{"repositoryName":"team/app","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
-		{"cap exceeded", fakeImageDeleter{}, tooMany, awserrors.ErrorInvalidParameterValue},
+		{"cap exceeded", fakeImageDeleter{}, tooMany, awserrors.ErrorECRInvalidParameter},
 		{"backend failure", fakeImageDeleter{results: map[string]fakeDeleteResult{"present": {err: errors.New("unavailable")}}}, `{"repositoryName":"team/app","imageIds":[{"imageTag":"present"}]}`, awserrors.ErrorServerInternal},
 	}
 	for _, tc := range cases {

@@ -56,7 +56,7 @@ func EvaluateLifecyclePreview(ctx context.Context, policies LifecyclePolicyStore
 		stored, err := policies.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 		if err != nil {
 			if errors.Is(err, handlers_ecr.ErrNotFound) {
-				return LifecyclePreview{}, errors.New(awserrors.ErrorLifecyclePolicyNotFound)
+				return LifecyclePreview{}, LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 			}
 			return LifecyclePreview{}, err
 		}

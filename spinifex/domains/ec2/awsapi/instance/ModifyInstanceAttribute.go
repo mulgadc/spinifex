@@ -16,7 +16,8 @@ import (
 )
 
 // ValidateModifyInstanceAttributeInput validates the input constraints for ModifyInstanceAttribute.
-// AWS rejects calls with multiple attributes set in a single request.
+// AWS answers InvalidParameterCombination when no attribute, or more than one,
+// is set in a single request.
 func ValidateModifyInstanceAttributeInput(input *ec2.ModifyInstanceAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -41,8 +42,11 @@ func ValidateModifyInstanceAttributeInput(input *ec2.ModifyInstanceAttributeInpu
 	if input.DisableApiTermination != nil {
 		count++
 	}
-	if count != 1 {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	switch {
+	case count == 0:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination, "No attributes specified.")
+	case count > 1:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterCombination, "The request must contain a single attribute")
 	}
 
 	if input.InstanceType != nil && (input.InstanceType.Value == nil || *input.InstanceType.Value == "") {

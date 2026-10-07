@@ -55,7 +55,7 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 
 **Spinifex specifics**
 
-- **Auth mode is API-only.** `authentication_mode` must be `API`; the legacy `CONFIG_MAP` and `API_AND_CONFIG_MAP` modes are rejected. Grant access with access entries, not an `aws-auth` ConfigMap.
+- **Access entries are the only auth path.** `authentication_mode` accepts `API` (the default when unset) and `API_AND_CONFIG_MAP`; bare `CONFIG_MAP` is rejected. Spinifex has no `aws-auth` ConfigMap path, so `API_AND_CONFIG_MAP` behaves as `API`: grant access with access entries.
 - **Security groups are auto-managed.** Spinifex creates the cluster and node-group security groups deterministically (e.g. `eks-cluster-<name>-nodegroup-sg`); `vpc_config.security_group_ids` is ignored. To expose a workload you add an ingress rule to the auto-managed node-group SG.
 - **The worker image is fixed.** Node groups always boot Spinifex's `eks-node` image. `ami_type` is recorded but does not select the image, and the image must be registered on the cluster before you create a node group.
 - **Default Kubernetes version is `1.32`.**
@@ -262,7 +262,7 @@ The workbooks form a ladder. **eks-quickstart** is a NodePort demo; **eks-https-
 
 **Workload unreachable from outside the cluster.** The node-group security group only allows intra-cluster traffic by default. Add an ingress rule for your NodePort to `eks-cluster-<name>-nodegroup-sg`, as shown in the CLI tab.
 
-**`create-cluster` rejected with an authentication-mode error.** `authentication_mode` must be `API`. Remove any `CONFIG_MAP` / `API_AND_CONFIG_MAP` setting and grant access with access entries instead.
+**`create-cluster` rejected with an authentication-mode error.** `CONFIG_MAP` is the one mode Spinifex rejects, because it has no `aws-auth` ConfigMap path. Set `authentication_mode` to `API` or `API_AND_CONFIG_MAP`, or leave it unset, and grant access with access entries.
 
 **Addon install fails.** Only addons bundled into the registered `eks-node` image install successfully. If you pin an addon version in Terraform, leave `addon_version` unset so Spinifex selects the catalog default.
 

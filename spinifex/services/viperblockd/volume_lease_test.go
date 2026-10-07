@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -446,8 +447,24 @@ func TestVolumeLease_ValidityIsBoundedBelowTheServerTTL(t *testing.T) {
 		"a renewal that comes due after validity lapses can never confirm one in time")
 	require.Less(t, volumeLeaseCheckInterval, volumeLeaseValidity-volumeLeaseRenewInterval,
 		"validity has to be tested at least once between a missed renewal and the deadline it enforces")
-	require.Less(t, volumeLeaseRenewTimeout, volumeLeaseCheckInterval+volumeLeaseRenewInterval,
-		"an unbounded renewal holds the goroutine past the point the entry may have been re-granted")
+	require.Equal(t, volumeLeaseTTL, volumeLeaseValidity+volumeLeaseAcquireMargin,
+		"the margin between validity and the server TTL is the whole reason a holder stops before its successor starts")
+}
+
+// TestVolumeLease_SurvivesTheOutageTheHostProduces is the sizing this lease is
+// for. A confirmation can already be volumeLeaseRenewInterval old when an
+// outage begins, so what it survives is validity minus that interval, and that
+// has to cover the whole unwritable window rather than one stalled write.
+func TestVolumeLease_SurvivesTheOutageTheHostProduces(t *testing.T) {
+	tolerated := volumeLeaseValidity - volumeLeaseRenewInterval
+	require.GreaterOrEqual(t, tolerated, jetstreamOutageBound,
+		"a lease that cannot outlast the outages these hosts produce surrenders volumes no peer has taken")
+	require.Greater(t, volumeLeaseRenewTimeout, deviceStallBound,
+		"a renewal budget inside the stall bound is certain to fail whenever it begins during a stall")
+	require.Less(t, 2*volumeLeaseRenewTimeout, tolerated,
+		"a renewal and the re-read behind it share this budget, and together they must still fit inside what the lease tolerates")
+	require.Greater(t, jetstreamOutageBound, deviceStallBound,
+		"the outage is a run of stalled writes, so sizing against one stall is sizing against the wrong quantity")
 }
 
 // TestVolumeLease_UnconfirmedRenewalSurrendersTheVolume is the partition case
@@ -493,6 +510,99 @@ func TestVolumeLease_UnconfirmedRenewalSurrendersTheVolume(t *testing.T) {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
 	assert.True(t, lease.lost, "a surrendered lease must be marked lost so release cannot delete the successor's entry")
+}
+
+// blockingKV holds Update until the test releases it, and reports whether a
+// call is in flight. A renewal is the only thing that writes here, so the flag
+// says whether the renewal goroutine is still inside JetStream.
+type blockingKV struct {
+	jetstream.KeyValue
+
+	release chan struct{}
+	entered chan struct{}
+	enter   sync.Once
+
+	mu       sync.Mutex
+	inFlight bool
+}
+
+func (k *blockingKV) Update(ctx context.Context, _ string, _ []byte, _ uint64) (uint64, error) {
+	k.mu.Lock()
+	k.inFlight = true
+	k.mu.Unlock()
+	k.enter.Do(func() { close(k.entered) })
+	defer func() {
+		k.mu.Lock()
+		k.inFlight = false
+		k.mu.Unlock()
+	}()
+
+	select {
+	case <-k.release:
+		return 0, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func (k *blockingKV) updateInFlight() bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.inFlight
+}
+
+// TestVolumeLease_ValidityIsEnforcedWhileARenewalIsBlocked is why the renewal
+// does not run on the loop's goroutine. A renewal may now block for longer than
+// a device stall, and the holder has to stop writing on validity regardless —
+// so the surrender has to land while that renewal is still inside JetStream.
+func TestVolumeLease_ValidityIsEnforcedWhileARenewalIsBlocked(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	leases := newTestLeases(t, natsURL, "node-a")
+
+	const volumeName = "vol-leaseblockedrenewal"
+	lost := make(chan leaseLossKind, 1)
+	leases.onLost = func(_ context.Context, _ string, kind leaseLossKind) { lost <- kind }
+
+	lease, err := leases.acquire(t.Context(), volumeName)
+	require.NoError(t, err)
+
+	// Stop the loop acquire started so this test owns the only one running, then
+	// swap in a store that never answers a renewal.
+	lease.stop()
+	<-lease.done
+
+	blocking := &blockingKV{KeyValue: leases.kv, release: make(chan struct{}), entered: make(chan struct{})}
+	t.Cleanup(func() { close(blocking.release) })
+	leases.kv = blocking
+	leases.checkEvery = 10 * time.Millisecond
+
+	// Renewal due on the first check, validity still far off.
+	lease.mu.Lock()
+	lease.confirmed = time.Now().Add(-volumeLeaseRenewInterval)
+	lease.done = make(chan struct{})
+	lease.mu.Unlock()
+
+	go lease.renewLoop(t.Context())
+
+	select {
+	case <-blocking.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the renewal never reached the store")
+	}
+
+	// The renewal is now inside JetStream; let validity lapse under it.
+	lease.mu.Lock()
+	lease.confirmed = time.Now().Add(-volumeLeaseValidity)
+	lease.mu.Unlock()
+
+	select {
+	case kind := <-lost:
+		assert.Equal(t, leaseLostStalled, kind, "a blocked renewal is not a peer taking the volume")
+		assert.True(t, blocking.updateInFlight(),
+			"the surrender waited for the renewal to return, so validity was enforced late and the guest kept writing past it")
+	case <-time.After(volumeLeaseRenewTimeout - time.Second):
+		t.Fatal("validity lapsed and nothing surrendered the volume, so a blocked renewal can hold a lease open indefinitely")
+	}
 }
 
 // TestVolumeLease_SurrenderedLeaseIsNotDeletedOnRelease covers what happens

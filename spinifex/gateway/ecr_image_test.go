@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -89,7 +90,7 @@ func TestListImages_MissingRepo(t *testing.T) {
 	gw := newImageGateway(t)
 	_, err := callImage(t, gw, "ListImages", `{"repositoryName":"team/ghost"}`)
 	require.Error(t, err)
-	assert.Equal(t, "RepositoryNotFoundException", err.Error())
+	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDescribeImages_HappyAndNotFound(t *testing.T) {
@@ -115,10 +116,36 @@ func TestDescribeImages_HappyAndNotFound(t *testing.T) {
 	assert.Positive(t, out.ImageDetails[0].ImageSizeInBytes)
 	assert.Positive(t, out.ImageDetails[0].ImagePushedAt)
 
-	// Asking for an absent imageId -> ImageNotFound.
+	// Asking for an absent imageId -> ImageNotFound, naming it as AWS does.
 	_, err = callImage(t, gw, "DescribeImages", `{"repositoryName":"team/app","imageIds":[{"imageTag":"ghost"}]}`)
 	require.Error(t, err)
-	assert.Equal(t, "ImageNotFoundException", err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorImageNotFound, code)
+	assert.Equal(t, "The image with imageId {imageDigest:'null', imageTag:'ghost'} does not exist within the repository with name 'team/app' in the registry with id '"+ecrTestAccount+"'", message)
+}
+
+// AWS answers a BatchGetImage that finds nothing with an empty images list
+// beside the failures, not an absent one.
+func TestBatchGetImage_AllMissing(t *testing.T) {
+	gw := newImageGateway(t)
+	seedTaggedImage(t, gw, "team/app", "v1")
+
+	w, err := callImage(t, gw, "BatchGetImage", `{"repositoryName":"team/app","imageIds":[{"imageTag":"nope"}]}`)
+	require.NoError(t, err)
+	var out struct {
+		Images   []json.RawMessage `json:"images"`
+		Failures []struct {
+			FailureCode   string `json:"failureCode"`
+			FailureReason string `json:"failureReason"`
+		} `json:"failures"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	assert.NotNil(t, out.Images)
+	assert.Empty(t, out.Images)
+	require.Len(t, out.Failures, 1)
+	assert.Equal(t, "ImageNotFound", out.Failures[0].FailureCode)
+	assert.Equal(t, "Requested image not found", out.Failures[0].FailureReason)
 }
 
 func TestBatchGetImage_PartialAndDigestWins(t *testing.T) {
@@ -154,7 +181,7 @@ func TestBatchGetImage_CapExceeded(t *testing.T) {
 	body := `{"repositoryName":"team/app","imageIds":[` + strings.Join(ids, ",") + `]}`
 	_, err := callImage(t, gw, "BatchGetImage", body)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestPutImage_HappyAndMissingManifest(t *testing.T) {
@@ -182,10 +209,10 @@ func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
 	assert.Len(t, list.ImageIds, 1)
 
-	// Missing manifest -> InvalidParameterValue.
+	// Missing manifest -> InvalidParameterException.
 	_, err = callImage(t, gw, "PutImage", `{"repositoryName":"team/app","imageTag":"v2"}`)
 	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterValue", awserrors.ValidErrorCodeFromError(err))
+	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
 
 // TestPutImage_RepoNotCreated asserts the JSON PutImage path rejects an uncreated
@@ -200,7 +227,7 @@ func TestPutImage_RepoNotCreated(t *testing.T) {
 	})
 	_, err := callImage(t, gw, "PutImage", string(body))
 	require.Error(t, err)
-	assert.Equal(t, "RepositoryNotFoundException", err.Error())
+	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestBatchDeleteImage_Partial(t *testing.T) {
@@ -216,7 +243,18 @@ func TestBatchDeleteImage_Partial(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
 	require.Len(t, out.ImageIds, 1)
 	assert.Equal(t, digest, *out.ImageIds[0].ImageDigest)
-	require.Len(t, out.Failures, 2)
+	wantFailures := []struct{ tag, code, reason string }{
+		{"ghost", "ImageNotFound", "Requested image not found"},
+		{"", "MissingDigestAndTag", "no digest or tag specified"},
+	}
+	require.Len(t, out.Failures, len(wantFailures))
+	for i, want := range wantFailures {
+		f := out.Failures[i]
+		assert.Equal(t, want.code, aws.StringValue(f.FailureCode), "failure %d code", i)
+		assert.Equal(t, want.reason, aws.StringValue(f.FailureReason), "failure %d reason", i)
+		require.NotNil(t, f.ImageId, "failure %d imageId", i)
+		assert.Equal(t, want.tag, aws.StringValue(f.ImageId.ImageTag), "failure %d tag", i)
+	}
 
 	// The image is gone.
 	w, err = callImage(t, gw, "ListImages", `{"repositoryName":"team/app"}`)
@@ -224,6 +262,25 @@ func TestBatchDeleteImage_Partial(t *testing.T) {
 	var list ecr.ListImagesOutput
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
 	assert.Empty(t, list.ImageIds)
+}
+
+// TestBatchDeleteImage_EmptyArraysSerialised asserts both arrays are present
+// on the wire when empty, as AWS returns them.
+func TestBatchDeleteImage_EmptyArraysSerialised(t *testing.T) {
+	gw := newImageGateway(t)
+	digest := seedTaggedImage(t, gw, "team/app", "v1")
+
+	w, err := callImage(t, gw, "BatchDeleteImage", `{"repositoryName":"team/app","imageIds":[{"imageTag":"ghost"}]}`)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"imageIds":[]`)
+	assert.Contains(t, w.Body.String(), `"failureCode":"ImageNotFound"`)
+
+	body := fmt.Sprintf(`{"repositoryName":"team/app","imageIds":[{"imageDigest":"%s"}]}`, digest)
+	w, err = callImage(t, gw, "BatchDeleteImage", body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"failures":[]`)
 }
 
 func TestImageHandlers_GuardRails(t *testing.T) {

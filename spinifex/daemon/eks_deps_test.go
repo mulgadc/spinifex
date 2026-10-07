@@ -1,10 +1,18 @@
 package daemon
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResolveGatewayHost covers all five host-selection branches plus the
@@ -154,4 +162,79 @@ func TestBuildEKSServiceDeps(t *testing.T) {
 
 	assert.Equal(t, "https://10.15.8.1:8443", deps.SystemPredastoreURL)
 	assert.NotNil(t, deps.SnapshotStore)
+}
+
+// writeMasterKey drops a valid shared master key beside configPath.
+func writeMasterKey(t *testing.T, configPath string) {
+	t.Helper()
+	key := bytes.Repeat([]byte{0x42}, masterkey.MasterKeySize)
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(configPath), "master.key"), key, 0o640))
+}
+
+func TestSystemRoleEnsurer(t *testing.T) {
+	t.Run("no master key falls back to static creds", func(t *testing.T) {
+		d := &Daemon{ctx: t.Context(), configPath: filepath.Join(t.TempDir(), "spinifex.toml")}
+		assert.Nil(t, d.systemRoleEnsurer())
+	})
+
+	t.Run("IAM init failure is retried rather than cached", func(t *testing.T) {
+		nc, err := nats.Connect(sharedNATSURL)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		d := &Daemon{ctx: t.Context(), natsConn: nc, configPath: filepath.Join(t.TempDir(), "spinifex.toml")}
+		writeMasterKey(t, d.configPath)
+		assert.Nil(t, d.systemRoleEnsurer(), "a NATS server without JetStream cannot back IAM")
+		assert.Nil(t, d.iamEnsurerCached)
+	})
+
+	t.Run("success is built once and cached", func(t *testing.T) {
+		clustersize.DeclareForTest(t, 1)
+		nc, err := nats.Connect(sharedJSNATSURL)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		d := &Daemon{ctx: t.Context(), natsConn: nc, configPath: filepath.Join(t.TempDir(), "spinifex.toml")}
+		writeMasterKey(t, d.configPath)
+		first := d.systemRoleEnsurer()
+		require.NotNil(t, first)
+
+		// The key going away after a successful build must not matter.
+		require.NoError(t, os.Remove(filepath.Join(filepath.Dir(d.configPath), "master.key")))
+		assert.Same(t, first, d.systemRoleEnsurer())
+	})
+}
+
+func TestBuildEKSServiceDeps_ConfigDerivedFields(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("-----BEGIN CERTIFICATE-----"), 0o600))
+
+	base := func() *Daemon {
+		return &Daemon{
+			mgmtBridgeIP:  "10.15.8.1",
+			clusterConfig: &config.ClusterConfig{AWS: config.AWSConfig{ServicesDomain: "svc.example"}},
+			volumeService: &ec2volume.VolumeServiceImpl{},
+			config: &config.Config{
+				AdvertiseIP: "192.0.2.10",
+				AWSGW:       config.AWSGWConfig{Host: "0.0.0.0:8443"},
+				NATS:        config.NATSConfig{CACert: caPath},
+			},
+		}
+	}
+
+	t.Run("readable CA and gateway port", func(t *testing.T) {
+		deps := base().buildEKSServiceDeps()
+		assert.Equal(t, "svc.example", deps.InternalSuffix)
+		assert.Equal(t, "-----BEGIN CERTIFICATE-----", deps.GatewayCACert)
+		assert.Equal(t, "https://192.0.2.10:8443", deps.GatewayBaseURL)
+		assert.Equal(t, "https://10.15.8.1:8443", deps.SystemGatewayURL)
+		assert.NotNil(t, deps.Volume, "a configured volume service must reach CSI reclaim")
+	})
+
+	t.Run("unreadable CA leaves the gateway unverified", func(t *testing.T) {
+		d := base()
+		d.config.NATS.CACert = filepath.Join(t.TempDir(), "missing.pem")
+		deps := d.buildEKSServiceDeps()
+		assert.Empty(t, deps.GatewayCACert)
+	})
 }

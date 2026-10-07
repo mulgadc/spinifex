@@ -99,6 +99,8 @@ var _ UsageReader = (*UsageStore)(nil)
 
 // NewUsageStore constructs a UsageStore over the cluster's JetStream client,
 
+// NewUsageStore returns a UsageStore over the bedrock-usage KV bucket and its TTL'd dedupe
+// bucket. Buckets open lazily; with a nil js, calls fail with an error instead of panicking.
 func NewUsageStore(js jetstream.JetStream) *UsageStore {
 	return &UsageStore{
 		store: kvstore.New[UsageCounters](js, kvstore.Config{

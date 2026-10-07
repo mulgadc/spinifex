@@ -442,3 +442,68 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 	assert.Contains(t, xmlStr, "<Arn>arn:aws:iam::000000000000:user/alice</Arn>")
 	assert.Contains(t, xmlStr, "<UserId>AIDAALICE000</UserId>")
 }
+
+// A user at a non-root path is reported with its stored ARN, as AWS does,
+// resolved by the SigV4 middleware rather than reformatted at "/".
+func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) {
+	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
+	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	require.NoError(t, err)
+	gw := &GatewayConfig{
+		DisableLogging: true,
+		Region:         testRegion,
+		STSService:     &flexMockSTSService{},
+		IAMService: &mockIAMService{
+			masterKey: testMasterKey,
+			accessKeys: map[string]*handlers_iam.AccessKey{testAccessKey: {
+				AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret,
+				UserName: "alice", AccountID: "123456789012", Status: "Active",
+			}},
+			getUserFn: func(string, *iam.GetUserInput) (*iam.GetUserOutput, error) {
+				return &iam.GetUserOutput{User: &iam.User{
+					UserName: aws.String("alice"), UserId: aws.String("AIDAALICE"), Arn: aws.String(pathed),
+				}}, nil
+			},
+		},
+	}
+	handler := gw.SigV4AuthMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := gw.STS_Request(w, r); err != nil {
+			gw.ErrorHandler(w, r, err)
+		}
+	}))
+
+	body := []byte("Action=GetCallerIdentity")
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Host = "localhost:9999"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	signTestRequest(t, req, body, testAccessKey, testSecretKey)
+
+	resp := doRequest(handler, req)
+	b, _ := io.ReadAll(resp.Body)
+	require.Equalf(t, http.StatusOK, resp.StatusCode, "body: %s", string(b))
+	assert.Contains(t, string(b), "<Arn>"+pathed+"</Arn>")
+}
+
+func TestBuildCallerARN(t *testing.T) {
+	const acct = "123456789012"
+	cases := []struct {
+		name, accountID, identity, principalType, assumedRoleARN, userARN, want string
+	}{
+		{"pathed user takes its stored ARN", acct, "alice", principalTypeUser, "",
+			"arn:aws:iam::" + acct + ":user/eng/alice", "arn:aws:iam::" + acct + ":user/eng/alice"},
+		{"user with no record formats at the root path", acct, "alice", principalTypeUser, "", "",
+			"arn:aws:iam::" + acct + ":user/alice"},
+		{"global root ignores a user ARN", awsidentifiers.GlobalAccountID, "root", principalTypeUser, "",
+			"arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":user/root", "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":root"},
+		{"root principal", acct, "", principalTypeRoot, "", "", "arn:aws:iam::" + acct + ":root"},
+		{"assumed role keeps its session ARN", acct, "s", principalTypeAssumedRole,
+			"arn:aws:sts::" + acct + ":assumed-role/Ops/s", "", "arn:aws:sts::" + acct + ":assumed-role/Ops/s"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildCallerARN(tc.accountID, tc.identity, tc.principalType, tc.assumedRoleARN, tc.userARN)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

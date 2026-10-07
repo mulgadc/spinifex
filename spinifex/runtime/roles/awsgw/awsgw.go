@@ -1,3 +1,5 @@
+// Package awsgw runs the AWS gateway service: the TLS, SigV4-authenticated
+// endpoint that routes AWS API calls to the service handlers over NATS.
 package awsgw
 
 import (
@@ -68,10 +70,14 @@ func SetBuildInfo(v, c string) {
 	commit = c
 }
 
+// Service runs the AWS gateway: the TLS, SigV4-authenticated endpoint that
+// routes AWS API calls to the service handlers over NATS.
 type Service struct {
 	Config *config.ClusterConfig
 }
 
+// New returns the gateway service. cfg must be a *config.ClusterConfig;
+// anything else errors.
 func New(cfg any) (svc *Service, err error) {
 	c, ok := cfg.(*config.ClusterConfig)
 	if !ok {
@@ -218,6 +224,9 @@ func launchService(config *config.ClusterConfig) error {
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}
+
+	// DeleteUser and DeleteRole revoke the deleted principal's sessions through STS.
+	iamService.SetSessionRevoker(stsService)
 
 	// Janitor sweeps expired session credentials.
 	go stsService.RunJanitor(janitorCtx)

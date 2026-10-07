@@ -140,7 +140,7 @@ func (f *fakeClaimVerifier) ResetSBClusterState(_ context.Context) error {
 func withFastGuestPortBounds(t *testing.T) {
 	t.Helper()
 	to, iv := guestPortDatapathTimeout, guestPortDatapathInterval
-	guestPortDatapathTimeout = 200 * time.Millisecond
+	guestPortDatapathTimeout = 30 * time.Millisecond
 	guestPortDatapathInterval = 1 * time.Millisecond
 	t.Cleanup(func() { guestPortDatapathTimeout, guestPortDatapathInterval = to, iv })
 }
@@ -165,7 +165,7 @@ func ovnWithGuestLSP(t *testing.T, lspName string) *mock.Client {
 func withFastDatapathBounds(t *testing.T) {
 	t.Helper()
 	to, iv := gatewayDatapathTimeout, gatewayDatapathInterval
-	gatewayDatapathTimeout = 200 * time.Millisecond
+	gatewayDatapathTimeout = 30 * time.Millisecond
 	gatewayDatapathInterval = 1 * time.Millisecond
 	t.Cleanup(func() { gatewayDatapathTimeout, gatewayDatapathInterval = to, iv })
 }
@@ -173,7 +173,7 @@ func withFastDatapathBounds(t *testing.T) {
 func withFastClaimBounds(t *testing.T) {
 	t.Helper()
 	to, iv := gatewayClaimTimeout, gatewayClaimInterval
-	gatewayClaimTimeout = 200 * time.Millisecond
+	gatewayClaimTimeout = 30 * time.Millisecond
 	gatewayClaimInterval = 1 * time.Millisecond
 	t.Cleanup(func() { gatewayClaimTimeout, gatewayClaimInterval = to, iv })
 }

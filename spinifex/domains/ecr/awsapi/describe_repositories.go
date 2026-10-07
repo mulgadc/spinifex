@@ -55,7 +55,7 @@ func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint R
 		meta, err := store.GetRepo(ctx, accountID, name)
 		if err != nil {
 			if errors.Is(err, handlers_ecr.ErrNotFound) {
-				return nil, errors.New(awserrors.ErrorRepositoryNotFound)
+				return nil, RepositoryNotFoundError(accountID, name)
 			}
 			slog.ErrorContext(ctx, "ECR DescribeRepositories: get repository failed", "repository", name, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)

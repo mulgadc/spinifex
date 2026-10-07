@@ -42,8 +42,8 @@ type SubnetEvent struct {
 	CidrBlock string `json:"cidr_block"`
 }
 
-// PortEvent: vpc.create-port / vpc.delete-port. SecurityGroupIds set on create
-// for atomic PG wiring; empty on delete.
+// PortEvent is published on vpc.create-port / vpc.delete-port. SecurityGroupIds
+// is set on create for atomic PG wiring; empty on delete.
 type PortEvent struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	SubnetId           string   `json:"subnet_id"`
@@ -56,8 +56,8 @@ type PortEvent struct {
 	SuppressDHCP bool `json:"suppress_dhcp,omitempty"`
 }
 
-// UpdatePortSGsEvent: vpc.update-port-sgs. Declarative — vpcd diffs
-// SecurityGroupIds against the current cache memberships.
+// UpdatePortSGsEvent is published on vpc.update-port-sgs. Declarative — vpcd
+// diffs SecurityGroupIds against the current cache memberships.
 type UpdatePortSGsEvent struct {
 	NetworkInterfaceId string   `json:"network_interface_id"`
 	PrivateIpAddress   string   `json:"private_ip_address"`

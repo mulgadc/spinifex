@@ -7,10 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
+	"testing"
 	"time"
 )
 
+// ReadPidFile reads the PID from <name>.pid in RuntimeDir. A missing file
+// returns the os.ReadFile error, so callers can treat it as not running.
 func ReadPidFile(name string) (int, error) {
 	pidPath := RuntimeDir()
 
@@ -25,6 +29,8 @@ func ReadPidFile(name string) (int, error) {
 	return strconv.Atoi(string(pidFile))
 }
 
+// GeneratePidFile returns the path of <name>.pid in RuntimeDir without touching
+// the filesystem. It errors if name is empty.
 func GeneratePidFile(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("name is required")
@@ -39,6 +45,8 @@ func GeneratePidFile(name string) (string, error) {
 	return filepath.Join(pidPath, fmt.Sprintf("%s.pid", name)), nil
 }
 
+// WritePidFile writes pid to <name>.pid in RuntimeDir, truncating any existing
+// file. Use WritePidFileTo for a per-service directory.
 func WritePidFile(name string, pid int) error {
 	pidFilename, err := GeneratePidFile(name)
 
@@ -125,6 +133,8 @@ func StopProcessAt(dir string, name string) error {
 	return killErr
 }
 
+// RemovePidFile deletes <serviceName>.pid from RuntimeDir. A missing file is
+// returned as an error.
 func RemovePidFile(serviceName string) error {
 	pidPath := RuntimeDir()
 
@@ -150,9 +160,12 @@ func RuntimeDir() string {
 // WaitForProcessExit polls until the PID is no longer alive or timeout expires.
 // Uses kill(pid,0) — works after SIGKILL where the process can't clean up its PID file.
 func WaitForProcessExit(pid int, timeout time.Duration) error {
+	if !processAlive(pid) {
+		return nil
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(time.Duration(processExitPollNanos.Load()))
 	defer ticker.Stop()
 
 	for {
@@ -160,15 +173,30 @@ func WaitForProcessExit(pid int, timeout time.Duration) error {
 		case <-timer.C:
 			return fmt.Errorf("timeout waiting for process %d to exit", pid)
 		case <-ticker.C:
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				return nil // process gone
-			}
-			if proc.Signal(syscall.Signal(0)) != nil {
-				return nil // process no longer alive
+			if !processAlive(pid) {
+				return nil
 			}
 		}
 	}
+}
+
+// processExitPollNanos is how often WaitForProcessExit checks the PID. Atomic so a
+// test in another package can shorten it while earlier tests' waiters still run.
+var processExitPollNanos atomic.Int64
+
+func init() { processExitPollNanos.Store(int64(100 * time.Millisecond)) }
+
+// ShortenProcessExitPollForTest shortens the WaitForProcessExit poll for one test.
+func ShortenProcessExitPollForTest(tb testing.TB, d time.Duration) {
+	tb.Helper()
+	prev := processExitPollNanos.Swap(int64(d))
+	tb.Cleanup(func() { processExitPollNanos.Store(prev) })
+}
+
+// processAlive reports whether kill(pid,0) still reaches the process.
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	return err == nil && proc.Signal(syscall.Signal(0)) == nil
 }
 
 // WaitForPidFile polls until QEMU writes its pidfile or the timeout expires.
@@ -204,7 +232,12 @@ func WaitForUnixSocket(path string, timeout time.Duration) error {
 	}
 }
 
+// WaitForPidFileRemoval polls every 100ms until <instanceID>.pid in RuntimeDir
+// can no longer be read, erroring after timeout. An absent file returns at once.
 func WaitForPidFileRemoval(instanceID string, timeout time.Duration) error {
+	if _, err := ReadPidFile(instanceID); err != nil {
+		return nil
+	}
 	timeoutCh := time.After(timeout)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

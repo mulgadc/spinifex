@@ -36,6 +36,8 @@ type Service struct {
 	Config *Config
 }
 
+// New returns the qemunbdd service. config must be a *Config; anything else
+// errors.
 func New(config any) (svc *Service, err error) {
 	cfg, ok := config.(*Config)
 	if !ok {

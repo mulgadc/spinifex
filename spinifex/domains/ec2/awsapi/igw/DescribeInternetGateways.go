@@ -1,3 +1,5 @@
+// Package igw implements the EC2 internet gateway actions: it
+// validates each request and forwards it to the IGW service over NATS.
 package igw
 
 import (

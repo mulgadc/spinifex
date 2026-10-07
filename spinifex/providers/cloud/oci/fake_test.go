@@ -205,3 +205,48 @@ func TestFakeSeedHelpersExposeStateReconcileTestsNeed(t *testing.T) {
 	assert.Len(t, f.PublicIPs(), 1)
 	assert.True(t, f.PrivateIPs()[0].IsPrimary)
 }
+
+// Subnets are not modelled, so the fake reads any OCID back. What matters is
+// that FailWith reaches it, because a credential holding no subnet permission is
+// the only way the allocator's authorisation check can fail usefully.
+func TestFakeGetSubnetReadsBackAndHonoursFailWith(t *testing.T) {
+	ctx := context.Background()
+	f := oci.NewFake()
+
+	got, err := f.GetSubnet(ctx, "ocid1.subnet.oc1..s1")
+	require.NoError(t, err)
+	assert.Equal(t, "ocid1.subnet.oc1..s1", got.ID)
+	assert.NotEmpty(t, got.CIDRBlock)
+
+	denied := errors.New("NotAuthorizedOrNotFound")
+	f.FailWith["GetSubnet"] = denied
+	_, err = f.GetSubnet(ctx, "ocid1.subnet.oc1..s1")
+	assert.ErrorIs(t, err, denied)
+}
+
+// The fake's list has to honour the lifetime filter, or a test asserting that
+// reconcile leaves ephemeral addresses alone would pass for the wrong reason.
+func TestFakeListReservedPublicIPsReturnsOnlyReservedOnes(t *testing.T) {
+	ctx := context.Background()
+	f := oci.NewFake()
+	f.SeedPublicIP(oci.PublicIP{ID: "q-reserved", Lifetime: oci.LifetimeReserved})
+	f.SeedPublicIP(oci.PublicIP{ID: "q-ephemeral", Lifetime: "EPHEMERAL"})
+
+	got, err := f.ListReservedPublicIPs(ctx, "any-compartment")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "q-reserved", got[0].ID)
+
+	f.FailWith["ListReservedPublicIPs"] = oci.ErrNotFound
+	_, err = f.ListReservedPublicIPs(ctx, "any-compartment")
+	assert.ErrorIs(t, err, oci.ErrNotFound)
+}
+
+// CreatePublicIP has to date what it makes, or every address it creates is
+// immediately eligible for the orphan sweep.
+func TestFakeCreatePublicIPDatesTheAddress(t *testing.T) {
+	f := oci.NewFake()
+	p, err := f.CreatePublicIP(context.Background(), "c1", "", "spinifex-eni-1")
+	require.NoError(t, err)
+	assert.False(t, p.TimeCreated.IsZero())
+}

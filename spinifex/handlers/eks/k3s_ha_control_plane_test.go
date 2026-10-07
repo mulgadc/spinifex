@@ -26,8 +26,8 @@ import (
 
 // testFanoutTimeout shortens the fan-out window, which has no early exit and so
 // is otherwise the whole runtime of every scheduler test. The replies here are
-// local and land in tens of milliseconds, well inside this.
-const testFanoutTimeout = 250 * time.Millisecond
+// in-process and land in a few milliseconds, well inside this.
+const testFanoutTimeout = 50 * time.Millisecond
 
 // serveNodeStatus replies to spinifex.node.status fan-outs with the given node
 // snapshots so the NATS host scheduler can be exercised end-to-end.
@@ -46,6 +46,7 @@ func serveNodeStatus(t *testing.T, nc *nats.Conn, nodes []types.NodeStatusRespon
 // TestNATSHostScheduler_SchedulableHosts covers both fit paths: customer types
 // fit on advertised per-type Available; system types fit on raw headroom.
 func TestNATSHostScheduler_SchedulableHosts(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	serveNodeStatus(t, nc, []types.NodeStatusResponse{
 		{
@@ -75,6 +76,7 @@ func TestNATSHostScheduler_SchedulableHosts(t *testing.T) {
 // AZs as hosts, round-robin visits every AZ once before repeating any of them,
 // so a prefix of the result spans distinct AZs.
 func TestSpreadHostsByAZ_DistinctAZs(t *testing.T) {
+	t.Parallel()
 	hosts := []azHost{
 		{node: "node-1", az: "az-a"},
 		{node: "node-2", az: "az-b"},
@@ -99,6 +101,7 @@ func TestSpreadHostsByAZ_DistinctAZs(t *testing.T) {
 // for a 3-way spread, every host is still returned and the first 2 picks land
 // in distinct AZs, the third necessarily repeating one.
 func TestSpreadHostsByAZ_FewerAZsThanHosts(t *testing.T) {
+	t.Parallel()
 	hosts := []azHost{
 		{node: "node-1", az: "az-a"},
 		{node: "node-2", az: "az-a"},
@@ -116,6 +119,7 @@ func TestSpreadHostsByAZ_FewerAZsThanHosts(t *testing.T) {
 // every node reports the same AZ (or none at all): interleaving collapses to a
 // single bucket, so the original arrival order is preserved and nothing breaks.
 func TestSpreadHostsByAZ_UniformAZDegradesToNodeOrder(t *testing.T) {
+	t.Parallel()
 	hosts := []azHost{
 		{node: "node-1", az: "ap-southeast-2a"},
 		{node: "node-2", az: "ap-southeast-2a"},
@@ -128,6 +132,7 @@ func TestSpreadHostsByAZ_UniformAZDegradesToNodeOrder(t *testing.T) {
 // end-to-end: node.status responses carrying distinct AZs must come back
 // ordered so the first haControlPlaneCount hosts span distinct AZs.
 func TestNATSHostScheduler_SchedulableHosts_SpreadsByAZ(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	serveNodeStatus(t, nc, []types.NodeStatusResponse{
 		{Node: "node-1", AZ: "az-a", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.medium", Available: 1}}},
@@ -366,6 +371,7 @@ func nodeIDs(nodes []ControlPlaneNode) []string {
 const testHAAccountID = "111122223333"
 
 func TestPlaceControlPlane_SpreadHappyPath(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c", "node-d"}}
 	placer := &fakePlacer{reserved: []string{"node-a", "node-b", "node-c"}}
 	vpc := &seqK3sVPC{}
@@ -403,6 +409,7 @@ func TestPlaceControlPlane_SpreadHappyPath(t *testing.T) {
 // the real NATS-backed HostScheduler with 4 nodes across 3 AZs, and a placer
 // reserving what it is offered first, as ReserveSpreadNodes does.
 func TestPlaceControlPlane_SpreadPrefersDistinctAZs(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	serveNodeStatus(t, nc, []types.NodeStatusResponse{
 		{Node: "node-a", AZ: "az-1", TotalVCPU: 32, TotalMemGB: 128},
@@ -429,6 +436,7 @@ func TestPlaceControlPlane_SpreadPrefersDistinctAZs(t *testing.T) {
 }
 
 func TestPlaceControlPlane_SpreadFirstInitsRestJoin(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	placer := &fakePlacer{reserved: []string{"node-a", "node-b", "node-c"}}
 	vpc := &seqK3sVPC{}
@@ -459,6 +467,7 @@ func TestPlaceControlPlane_SpreadFirstInitsRestJoin(t *testing.T) {
 }
 
 func TestPlaceControlPlane_FirstServerFailureRollsBackNoJoins(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	placer := &fakePlacer{reserved: []string{"node-a", "node-b", "node-c"}}
 	inst := &seqK3sInst{failNodes: map[string]bool{"node-a": true}}
@@ -480,6 +489,7 @@ func TestPlaceControlPlane_FirstServerFailureRollsBackNoJoins(t *testing.T) {
 }
 
 func TestPlaceControlPlane_FallbackUnderThreeHosts(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b"}}
 	placer := &fakePlacer{}
 	inst := &seqK3sInst{}
@@ -498,6 +508,7 @@ func TestPlaceControlPlane_FallbackUnderThreeHosts(t *testing.T) {
 }
 
 func TestPlaceControlPlane_BoundaryExactlyThree(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	placer := &fakePlacer{}
 	inst := &seqK3sInst{}
@@ -512,6 +523,7 @@ func TestPlaceControlPlane_BoundaryExactlyThree(t *testing.T) {
 }
 
 func TestPlaceControlPlane_PartialLaunchRollsBack(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	placer := &fakePlacer{reserved: []string{"node-a", "node-b", "node-c"}}
 	inst := &seqK3sInst{failNodes: map[string]bool{"node-c": true}}
@@ -530,6 +542,7 @@ func TestPlaceControlPlane_PartialLaunchRollsBack(t *testing.T) {
 }
 
 func TestPlaceControlPlane_ReserveFailureFallsBackToSingle(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	placer := &fakePlacer{reserveErr: errors.New(awserrors.ErrorInsufficientInstanceCapacity)}
 	inst := &seqK3sInst{}
@@ -548,6 +561,7 @@ func TestPlaceControlPlane_ReserveFailureFallsBackToSingle(t *testing.T) {
 }
 
 func TestPlaceControlPlane_VerifyMismatchRollsBack(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{
 		hosts:     []string{"node-a", "node-b", "node-c"},
 		wrongHost: map[string]string{"i-node-c": "node-x"},
@@ -568,6 +582,7 @@ func TestPlaceControlPlane_VerifyMismatchRollsBack(t *testing.T) {
 }
 
 func TestPlaceControlPlane_VerifyToleratesNotYetVisible(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{
 		hosts:      []string{"node-a", "node-b", "node-c"},
 		notVisible: map[string]bool{"i-node-b": true},
@@ -586,6 +601,7 @@ func TestPlaceControlPlane_VerifyToleratesNotYetVisible(t *testing.T) {
 }
 
 func TestPlaceControlPlane_FinalizeFailureRollsBack(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
 	placer := &fakePlacer{
 		reserved:    []string{"node-a", "node-b", "node-c"},
@@ -606,6 +622,7 @@ func TestPlaceControlPlane_FinalizeFailureRollsBack(t *testing.T) {
 }
 
 func TestControlPlaneTeardownNodes(t *testing.T) {
+	t.Parallel()
 	multi := &ClusterMeta{ControlPlaneNodes: []ControlPlaneNode{
 		{NodeID: "n1", InstanceID: "i-1", ENIID: "eni-1"},
 		{NodeID: "n2", InstanceID: "i-2", ENIID: "eni-2"},
@@ -628,6 +645,7 @@ func TestControlPlaneTeardownNodes(t *testing.T) {
 }
 
 func TestTeardownSpreadGroup(t *testing.T) {
+	t.Parallel()
 	placer := &fakePlacer{}
 	svc := &EKSServiceImpl{deps: EKSServiceDeps{PlacementGroup: placer}}
 	meta := &ClusterMeta{
@@ -690,6 +708,7 @@ func TestNodeFitsSystemInstance(t *testing.T) {
 }
 
 func TestSpecForSystemType_RejectsNonSystem(t *testing.T) {
+	t.Parallel()
 	_, _, ok := instancetypes.SpecForSystemType("t3.medium")
 	assert.False(t, ok, "customer types are not system types")
 	_, _, ok = instancetypes.SpecForSystemType("sys.nonexistent")
@@ -697,6 +716,7 @@ func TestSpecForSystemType_RejectsNonSystem(t *testing.T) {
 }
 
 func TestProvisionFreshControlPlane_ClusterInitNoJoin(t *testing.T) {
+	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b"}}
 	inst := &seqK3sInst{}
 	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, inst)
@@ -724,6 +744,7 @@ func TestProvisionFreshControlPlane_ClusterInitNoJoin(t *testing.T) {
 }
 
 func TestProvisionFreshControlPlane_NoFreeHostErrors(t *testing.T) {
+	t.Parallel()
 	// Two hosts, both excluded: genuinely nothing schedulable. A single
 	// excluded host is covered separately since that falls back to it
 	// (single-node topology).
@@ -744,6 +765,7 @@ func TestProvisionFreshControlPlane_NoFreeHostErrors(t *testing.T) {
 }
 
 func TestProvisionFreshControlPlane_SingleHostFallsBack(t *testing.T) {
+	t.Parallel()
 	// Single-node deployment: the only schedulable host is also the excluded
 	// (old CP) host. pickReplacementHost falls back to it rather than erroring.
 	sched := &fakeHostScheduler{hosts: []string{"node-a"}}
@@ -763,6 +785,7 @@ func TestProvisionFreshControlPlane_SingleHostFallsBack(t *testing.T) {
 }
 
 func TestProvisionFreshControlPlane_NilTemplateRejected(t *testing.T) {
+	t.Parallel()
 	svc := newPlacerService(&fakeHostScheduler{}, &fakePlacer{}, &seqK3sVPC{}, &seqK3sInst{})
 	_, err := svc.ProvisionFreshControlPlane(context.Background(), FreshCPRequest{ClusterName: "alpha"})
 	require.Error(t, err, "nil template rejected")

@@ -16,7 +16,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Host-side capabilities the RDS control plane needs beyond NATS.
+// Deps holds the host-side capabilities the RDS control plane needs beyond NATS.
 type Deps struct {
 	// The cluster CA the serving certs are signed by. Empty disables minting,
 	// and GetDBBootstrapConfig returns no cert rather than failing the boot.
@@ -77,7 +77,7 @@ type Deps struct {
 	Backup BackupPolicy
 }
 
-// The RDS control plane's KV-backed handler set. One per daemon.
+// Service is the RDS control plane's KV-backed handler set. One per daemon.
 type Service struct {
 	nc     *nats.Conn
 	region string
@@ -103,7 +103,7 @@ type agentLiveness struct {
 	beatsSinceKV int
 }
 
-// region scopes the ARNs the Service mints.
+// NewService returns a Service with no Deps; region scopes the ARNs the Service mints.
 func NewService(nc *nats.Conn, region string) *Service {
 	return &Service{nc: nc, region: region, liveness: make(map[string]*agentLiveness)}
 }

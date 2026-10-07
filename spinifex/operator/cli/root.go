@@ -1,12 +1,17 @@
+// Package cli defines the spx command-line interface: the cobra commands that
+// install, configure, start and administer a Spinifex node and its cluster.
 package cli
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -49,10 +54,34 @@ func Execute() {
 	cliLogLevel.Set(slog.LevelError)
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cliLogLevel})))
 
+	setOutputStyling(outputStylingEnabled(os.Getenv("NO_COLOR"), os.Getenv("TERM"), isTerminal(os.Stdout)))
+
 	err := rootCmd.Execute()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// outputStylingEnabled reports whether spx may emit ANSI colour and text styling:
+// only on a terminal that is not TERM=dumb, with NO_COLOR unset or empty.
+func outputStylingEnabled(noColor, termName string, stdoutIsTerminal bool) bool {
+	return noColor == "" && termName != "dumb" && stdoutIsTerminal
+}
+
+// isTerminal reports whether w is a file attached to a terminal.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// setOutputStyling switches pterm's colour and bold/underline styling for every
+// printer at once. pterm forces colour on at init regardless of the terminal.
+func setOutputStyling(enabled bool) {
+	if enabled {
+		pterm.EnableStyling()
+	} else {
+		pterm.DisableStyling()
 	}
 }
 

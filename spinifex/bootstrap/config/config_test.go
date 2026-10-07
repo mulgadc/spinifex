@@ -1262,6 +1262,58 @@ oci_compartment_id = "ocid1.compartment.oc1..c1"
 	assert.Contains(t, err.Error(), "exactly one of oci_vnic_id or oci_vnic_iface")
 }
 
+func TestLoadConfig_NetworkPoolOCIDefaultsToConfigFileAuth(t *testing.T) {
+	cfg, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+`)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Network.ExternalPools[0].OCIAuth)
+}
+
+func TestLoadConfig_NetworkPoolOCIAcceptsInstancePrincipal(t *testing.T) {
+	cfg, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_auth = "instance_principal"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+`)
+	require.NoError(t, err)
+	assert.Equal(t, "instance_principal", cfg.Network.ExternalPools[0].OCIAuth)
+}
+
+// A typo must not fall back to the key file, because a node meant to use its own
+// identity would then fail on a credential nobody installed rather than here.
+func TestLoadConfig_NetworkPoolOCIRejectsUnknownAuth(t *testing.T) {
+	_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_auth = "instance-principal"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "oci_auth must be")
+}
+
+// Under instance principal the certificate is the credential, so a config file
+// beside it is a second source of truth and the one that is silently ignored.
+func TestLoadConfig_NetworkPoolOCIRejectsConfigFileWithInstancePrincipal(t *testing.T) {
+	for _, key := range []string{
+		`oci_config_file = "/etc/spinifex/oci/config"`,
+		`oci_config_profile = "spinifex"`,
+	} {
+		_, err := loadOCIPool(t, "nat", `
+source = "oci"
+oci_auth = "instance_principal"
+oci_compartment_id = "ocid1.compartment.oc1..c1"
+oci_vnic_iface = "br-wan"
+`+key+"\n")
+		require.Error(t, err, key)
+		assert.Contains(t, err.Error(), "not valid with oci_auth=\"instance_principal\"", key)
+	}
+}
+
 func TestLoadConfig_NetworkPoolOCIRejectsRange(t *testing.T) {
 	_, err := loadOCIPool(t, "nat", `
 source = "oci"

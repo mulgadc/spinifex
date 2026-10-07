@@ -51,8 +51,8 @@ func TestDeleteRepository_ValidatesRequest(t *testing.T) {
 		body string
 		code string
 	}{
-		{"malformed", `{`, awserrors.ErrorInvalidParameterValue},
-		{"missing name", `{}`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", `{`, awserrors.ErrorECRInvalidParameter},
+		{"missing name", `{}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", `{"repositoryName":"team/app","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
 		{"missing repository", `{"repositoryName":"team/missing"}`, awserrors.ErrorRepositoryNotFound},
 	}

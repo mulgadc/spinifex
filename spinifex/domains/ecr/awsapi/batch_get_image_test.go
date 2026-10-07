@@ -55,9 +55,9 @@ func TestBatchGetImage_ValidatesRequestAndReaderFailure(t *testing.T) {
 		code   string
 	}{
 		{"missing reader", nil, `{"repositoryName":"team/app"}`, awserrors.ErrorServerInternal},
-		{"malformed", fakeManifestReader{}, `{`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", fakeManifestReader{}, `{`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", fakeManifestReader{}, `{"repositoryName":"team/app","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
-		{"cap exceeded", fakeManifestReader{}, tooMany, awserrors.ErrorInvalidParameterValue},
+		{"cap exceeded", fakeManifestReader{}, tooMany, awserrors.ErrorECRInvalidParameter},
 		{"backend failure", fakeManifestReader{manifests: map[string]fakeManifest{"present": {err: errors.New("unavailable")}}}, `{"repositoryName":"team/app","imageIds":[{"imageTag":"present"}]}`, awserrors.ErrorServerInternal},
 	}
 	for _, tc := range cases {

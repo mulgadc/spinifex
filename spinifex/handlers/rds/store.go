@@ -54,31 +54,35 @@ const (
 // Tags live inline on each resource's own record rather than in a separate key
 // space, so there is no tags/ prefix here.
 
+// DBInstancesPrefix returns the per-account key prefix under which each DB instance record lives.
 func DBInstancesPrefix() string {
 	return "db-instances/"
 }
 
+// DBInstanceKey returns the per-account KV key of a DB instance's record.
 func DBInstanceKey(dbInstanceIdentifier string) string {
 	return DBInstancesPrefix() + dbInstanceIdentifier
 }
 
-// The encrypted bootstrap payload, kept out of the instance record so it has its
-// own CAS domain and so a daemon that predates it cannot drop it through a
+// BootstrapPayloadsPrefix returns the prefix for encrypted bootstrap payloads, kept out of the instance
+// record so they have their own CAS domain and a daemon that predates them cannot drop them through a
 // read-modify-marshal of the record.
 func BootstrapPayloadsPrefix() string {
 	return "bootstrap-payloads/"
 }
 
+// BootstrapPayloadKey returns the per-account KV key of a DB instance's encrypted bootstrap payload.
 func BootstrapPayloadKey(dbInstanceIdentifier string) string {
 	return BootstrapPayloadsPrefix() + dbInstanceIdentifier
 }
 
-// Manual and automated snapshots share this space, distinguished by the
-// snapshot type on the record.
+// DBSnapshotsPrefix returns the prefix shared by manual and automated snapshots, which are
+// distinguished by the snapshot type on the record.
 func DBSnapshotsPrefix() string {
 	return "db-snapshots/"
 }
 
+// DBSnapshotKey returns a snapshot's KV key, escaping the colon in an automated backup's rds: identifier.
 func DBSnapshotKey(dbSnapshotIdentifier string) string {
 	return DBSnapshotsPrefix() + kvKeySegment(dbSnapshotIdentifier)
 }
@@ -97,89 +101,96 @@ func kvKeySegmentIdentifier(segment string) string {
 	return strings.ReplaceAll(segment, kvKeyColon, ":")
 }
 
+// DBSubnetGroupsPrefix returns the per-account key prefix under which each DB subnet group record lives.
 func DBSubnetGroupsPrefix() string {
 	return "db-subnet-groups/"
 }
 
+// DBSubnetGroupKey returns the per-account KV key of a DB subnet group's record.
 func DBSubnetGroupKey(name string) string {
 	return DBSubnetGroupsPrefix() + name
 }
 
-// A group's own record is at .../meta and its values hang off .../params/, so
-// listing groups walks the meta keys.
+// DBParameterGroupsPrefix returns the parameter group prefix. A group's own record is at .../meta and
+// its values hang off .../params/, so listing groups walks the meta keys.
 func DBParameterGroupsPrefix() string {
 	return "db-parameter-groups/"
 }
 
+// DBParameterGroupMetaKey returns the KV key of a DB parameter group's own record.
 func DBParameterGroupMetaKey(name string) string {
 	return fmt.Sprintf("%s%s/meta", DBParameterGroupsPrefix(), name)
 }
 
-// One key per value rather than one blob, so a ModifyDBParameterGroup touching
-// a single parameter cannot clobber a concurrent change to another.
+// DBParameterGroupParamsPrefix returns the prefix holding one key per parameter value rather than one
+// blob, so a ModifyDBParameterGroup touching a single parameter cannot clobber a concurrent change to another.
 func DBParameterGroupParamsPrefix(name string) string {
 	return fmt.Sprintf("%s%s/params/", DBParameterGroupsPrefix(), name)
 }
 
+// DBParameterGroupParamKey returns the KV key of one parameter override in a DB parameter group.
 func DBParameterGroupParamKey(name, param string) string {
 	return DBParameterGroupParamsPrefix(name) + param
 }
 
-// Kept separate from db-snapshots/ so the retention sweep enumerates only
-// automated backups, ordered lexically by their timestamp suffix.
+// AutomatedBackupsRootPrefix returns the automated-backup index prefix, kept separate from db-snapshots/
+// so the retention sweep enumerates only automated backups, ordered lexically by their timestamp suffix.
 func AutomatedBackupsRootPrefix() string {
 	return "backups/"
 }
 
+// AutomatedBackupsPrefix returns the prefix holding one DB instance's automated-backup index entries.
 func AutomatedBackupsPrefix(dbInstanceIdentifier string) string {
 	return fmt.Sprintf("%s%s/automated/", AutomatedBackupsRootPrefix(), dbInstanceIdentifier)
 }
 
+// AutomatedBackupKey returns the index key of the automated backup a DB instance took at timestamp ts.
 func AutomatedBackupKey(dbInstanceIdentifier, ts string) string {
 	return AutomatedBackupsPrefix(dbInstanceIdentifier) + ts
 }
 
-// Data volumes held alive by surviving snapshots: a COW snapshot references its
-// source volume's chunks, so deleting a DB instance cannot delete the volume.
+// RetainedVolumesPrefix returns the prefix for data volumes held alive by surviving snapshots: a COW
+// snapshot references its source volume's chunks, so deleting a DB instance cannot delete the volume.
 func RetainedVolumesPrefix() string {
 	return "retained-volumes/"
 }
 
+// RetainedVolumeKey returns the KV key recording that volumeID is retained for its snapshots.
 func RetainedVolumeKey(volumeID string) string {
 	return RetainedVolumesPrefix() + volumeID
 }
 
-// One bounded ring per resource rather than a key per event: DescribeEvents
-// always reads a whole resource's history, and a key per event would make the
-// 14-day trim a listing plus a delete per expired entry.
-//
-// The ring is deliberately outside the resource's own record, so a deleted DB
-// instance's events survive it for the rest of the retention window.
+// EventsPrefix returns the events prefix: one bounded ring per resource, since DescribeEvents reads a
+// whole history and the 14-day trim would otherwise cost a delete per entry. The ring sits outside the
+// resource's record, so a deleted DB instance's events outlive it for the retention window.
 func EventsPrefix() string {
 	return "events/"
 }
 
-// The source identifier is escaped the same way a snapshot key is: an automated
-// backup's events hang off an identifier carrying a colon.
+// EventRingKey returns the key of a resource's event ring. The source identifier is escaped the same
+// way a snapshot key is: an automated backup's events hang off an identifier carrying a colon.
 func EventRingKey(sourceType, sourceIdentifier string) string {
 	return fmt.Sprintf("%s%s/%s", EventsPrefix(), sourceType, kvKeySegment(sourceIdentifier))
 }
 
-// Entries are rewritten on every VM replace (each mints a new instance ID) and
-// removed at teardown.
+// InstanceIndexPrefix returns the system-bucket prefix of the instanceID to DB instance index. Entries
+// are rewritten on every VM replace (each mints a new instance ID) and removed at teardown.
 func InstanceIndexPrefix() string {
 	return "instance-index/"
 }
 
+// InstanceIndexKey returns the system-bucket key mapping an EC2 instance ID back to its DB instance.
 func InstanceIndexKey(instanceID string) string {
 	return InstanceIndexPrefix() + instanceID
 }
 
+// Store holds the NATS connection the RDS KV buckets are opened from; it caches no bucket handles.
 type Store struct {
 	nc *nats.Conn
 }
 
-// Does not touch JetStream — buckets are created lazily by the factories below.
+// NewStore returns a Store over nc, or an error when nc is nil. It does not touch JetStream; buckets
+// are created lazily by the factories below.
 func NewStore(nc *nats.Conn) (*Store, error) {
 	if nc == nil {
 		return nil, errors.New("rds store: nats connection is nil")
@@ -187,6 +198,7 @@ func NewStore(nc *nats.Conn) (*Store, error) {
 	return &Store{nc: nc}, nil
 }
 
+// AccountBucketName returns the name of an account's RDS KV bucket, "rds-account-{accountID}".
 func AccountBucketName(accountID string) string {
 	return KVBucketRDSAccountPrefix + accountID
 }
@@ -231,7 +243,8 @@ func SystemBucketConfig() kvstore.Config {
 	}
 }
 
-// Creates the bucket on first use; subsequent calls return the existing handle.
+// GetOrCreateAccountBucket opens an account's RDS bucket, creating it and running its migrations on
+// first use; subsequent calls return the existing handle.
 func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
 	kv, err := kvstore.NewBucket(js, AccountBucketConfig(accountID)).KV(ctx)
 	if err != nil {
@@ -240,8 +253,8 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 	return kv, nil
 }
 
-// Created lazily alongside the first DB instance rather than at daemon boot, so
-// a cluster with no RDS usage carries no bucket.
+// GetOrCreateSystemBucket opens the rds-system bucket, created lazily alongside the first DB instance
+// rather than at daemon boot, so a cluster with no RDS usage carries no bucket.
 func GetOrCreateSystemBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
 	kv, err := kvstore.NewBucket(js, SystemBucketConfig()).KV(ctx)
 	if err != nil {
@@ -260,7 +273,7 @@ func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.Ke
 	})
 }
 
-// Every RDS per-account bucket in the cluster. The reconciler and the DNS
+// AccountBucketNames lists every RDS per-account bucket in the cluster. The reconciler and the DNS
 // desired-set both need a cross-tenant view, which only this provides.
 func AccountBucketNames(ctx context.Context, js jetstream.JetStream) ([]string, error) {
 	all, err := kvutil.BucketNames(ctx, js)
@@ -303,20 +316,20 @@ func AccountWatchBuckets(ctx context.Context, js jetstream.JetStream) ([]*kvstor
 	return AccountBuckets(ctx, js)
 }
 
-// The account a per-account bucket belongs to, for callers that enumerated
-// buckets rather than starting from an account.
+// AccountIDFromBucketName returns the account a per-account bucket belongs to, for callers that
+// enumerated buckets rather than starting from an account.
 func AccountIDFromBucketName(bucket string) string {
 	return strings.TrimPrefix(bucket, KVBucketRDSAccountPrefix)
 }
 
-// The DB instance identifiers held in one account bucket. An empty bucket
+// ListDBInstanceIDs returns the DB instance identifiers held in one account bucket. An empty bucket
 // yields no names rather than an error.
 func ListDBInstanceIDs(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
 	return listNames(ctx, kv, DBInstancesPrefix())
 }
 
-// Manual and automated snapshots alike: the type is on the record, so a listing
-// filtered by it still has to read every one.
+// ListDBSnapshotIDs returns manual and automated snapshot identifiers alike, unescaped: the type is on
+// the record, so a listing filtered by it still has to read every one.
 func ListDBSnapshotIDs(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
 	names, err := listNames(ctx, kv, DBSnapshotsPrefix())
 	if err != nil {
@@ -328,7 +341,7 @@ func ListDBSnapshotIDs(ctx context.Context, kv *kvstore.Bucket) ([]string, error
 	return names, nil
 }
 
-// Walks the .../meta keys, which is what makes a group's own record findable
+// ListDBParameterGroupNames walks the .../meta keys, which is what makes a group's own record findable
 // among the per-parameter keys hanging off the same prefix.
 func ListDBParameterGroupNames(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
 	keys, err := bucketKeys(ctx, kv)
@@ -351,7 +364,7 @@ func ListDBParameterGroupNames(ctx context.Context, kv *kvstore.Bucket) ([]strin
 	return names, nil
 }
 
-// The stored overrides of one parameter group, keyed by parameter name.
+// ListDBParameterOverrides returns the stored overrides of one parameter group, keyed by parameter name.
 func ListDBParameterOverrides(ctx context.Context, kv *kvstore.Bucket, group string) (map[string]DBParameterRecord, error) {
 	prefix := DBParameterGroupParamsPrefix(group)
 	names, err := listNames(ctx, kv, prefix)
@@ -374,9 +387,9 @@ func ListDBParameterOverrides(ctx context.Context, kv *kvstore.Bucket, group str
 	return out, nil
 }
 
-// Every account's automated-backup index, grouped by DB instance, from one
-// bucket listing: the retention sweep needs every instance's set, and a Keys call
-// per instance would cost one listing each.
+// ListAutomatedBackups returns the automated-backup timestamps grouped by DB instance from one bucket
+// listing: the retention sweep needs every instance's set, and a Keys call per instance would cost one
+// listing each.
 func ListAutomatedBackups(ctx context.Context, kv *kvstore.Bucket) (map[string][]string, error) {
 	keys, err := bucketKeys(ctx, kv)
 	if err != nil {

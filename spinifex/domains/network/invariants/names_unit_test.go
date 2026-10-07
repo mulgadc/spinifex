@@ -3,6 +3,7 @@ package invariants
 import "testing"
 
 func TestS4_HasOVNPrefix(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want bool

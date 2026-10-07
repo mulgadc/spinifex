@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 )
 
 // Fake is an in-memory Client for tests. It is in the production package
@@ -81,6 +82,24 @@ func (f *Fake) PublicIPs() []PublicIP {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Collect(maps.Values(f.publicIPs))
+}
+
+// ListReservedPublicIPs returns the fake's RESERVED public IPs. Compartments
+// are not modelled, so every reserved IP reads back whatever compartment is
+// asked for. Only the lifetime filter is real.
+func (f *Fake) ListReservedPublicIPs(_ context.Context, _ string) ([]PublicIP, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("ListReservedPublicIPs"); err != nil {
+		return nil, err
+	}
+	var out []PublicIP
+	for _, p := range f.publicIPs {
+		if p.Lifetime == LifetimeReserved {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // FailOp stages err for the next call to op. Locked, so a test may stage one
@@ -214,6 +233,18 @@ func (f *Fake) ListPrivateIPs(_ context.Context, vnicID string) ([]PrivateIP, er
 	return out, nil
 }
 
+// GetSubnet returns a fixed 10.200.0.0/23 subnet: subnets are not modelled, so
+// any OCID reads back. FailWith["GetSubnet"] is how a test reproduces the
+// credential that holds no subnet permission.
+func (f *Fake) GetSubnet(_ context.Context, subnetID string) (Subnet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.take("GetSubnet"); err != nil {
+		return Subnet{}, err
+	}
+	return Subnet{ID: subnetID, CIDRBlock: "10.200.0.0/23"}, nil
+}
+
 func (f *Fake) CreatePublicIP(_ context.Context, compartmentID, privateIPID, displayName string) (PublicIP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -230,6 +261,7 @@ func (f *Fake) CreatePublicIP(_ context.Context, compartmentID, privateIPID, dis
 		DisplayName:    displayName,
 		Lifetime:       LifetimeReserved,
 		LifecycleState: LifecycleStateAssigned,
+		TimeCreated:    time.Now(),
 	}
 	if privateIPID == "" {
 		p.LifecycleState = LifecycleStateAvailable

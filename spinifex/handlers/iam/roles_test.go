@@ -2,6 +2,7 @@ package handlers_iam
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -557,6 +558,43 @@ func TestUpdateRole_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
 }
 
+func TestUpdateRoleDescription(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "desc-role")
+
+	out, err := svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String("desc-role"),
+		Description: aws.String("new description"),
+	})
+	require.NoError(t, err)
+	got, err := svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("desc-role")})
+	require.NoError(t, err)
+	assert.Equal(t, "new description", *got.Role.Description)
+	assert.Equal(t, got.Role, out.Role, "output carries the role in the GetRole shape")
+
+	_, err = svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String("desc-role"),
+		Description: aws.String(""),
+	})
+	require.NoError(t, err)
+	got, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("desc-role")})
+	require.NoError(t, err)
+	assert.Empty(t, aws.StringValue(got.Role.Description))
+}
+
+func TestUpdateRoleDescription_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{
+		RoleName:    aws.String("ghost"),
+		Description: aws.String("never"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
 func TestUpdateAssumeRolePolicy(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -815,6 +853,62 @@ func TestAttachRolePolicy_ConcurrentDistinctPolicies(t *testing.T) {
 	assert.ElementsMatch(t, arns, got, "all concurrently-attached policies must persist")
 }
 
+// A recorded ARN whose policy cannot be read must fail the call, not shorten
+// the list. Reporting it as not attached makes a client delete its own record
+// of the attachment while DeleteRole keeps refusing on the same field, so the
+// attachment can never be cleared through the API.
+func TestListAttachedRolePolicies_UnreadablePolicyIsAnError(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "unreadable-attach")
+	policy := createTestPolicy(t, svc, "UnreadablePolicy")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: policy.Arn,
+	})
+	require.NoError(t, err)
+
+	// DeletePolicy refuses while the policy is attached, so the only way to this
+	// state is the bucket directly — which is the point: it models a failed read.
+	require.NoError(t, svc.policiesBucket.Delete(t.Context(), testAccountID+".UnreadablePolicy"))
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.Error(t, err, "an unresolvable attached ARN must not be dropped")
+	assert.Nil(t, out)
+	assert.Contains(t, err.Error(), *policy.Arn, "the error must name the ARN it could not read")
+
+	// The attachment is still recorded, which is what DeleteRole refuses on.
+	_, err = svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}
+
+// AWS-managed ARNs are stored without a policy record by design, so they must
+// still round-trip once an unreadable ARN is an error.
+func TestListAttachedRolePolicies_AWSManagedNeedsNoRecord(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	role := createTestRole(t, svc, "aws-managed-attach")
+	const arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  role.RoleName,
+		PolicyArn: aws.String(arn),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{
+		RoleName: role.RoleName,
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, arn, *out.AttachedPolicies[0].PolicyArn)
+	assert.Equal(t, "AmazonEKSClusterPolicy", *out.AttachedPolicies[0].PolicyName)
+}
+
 func TestListAttachedRolePolicies_Empty(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
@@ -1048,21 +1142,6 @@ func TestPutRolePolicy_MalformedDocument(t *testing.T) {
 		RoleName:       aws.String("malformed-role"),
 		PolicyName:     aws.String("Bad"),
 		PolicyDocument: aws.String(`{not valid json`),
-	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
-}
-
-func TestPutRolePolicy_OversizedDocument(t *testing.T) {
-	t.Parallel()
-	svc := setupTestIAMService(t)
-	createTestRole(t, svc, "oversized-role")
-
-	huge := strings.Repeat("a", maxPolicyDocumentSize+1)
-	_, err := svc.PutRolePolicy(testAccountID, &iam.PutRolePolicyInput{
-		RoleName:       aws.String("oversized-role"),
-		PolicyName:     aws.String("Huge"),
-		PolicyDocument: aws.String(huge),
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
@@ -1615,6 +1694,8 @@ func TestRoleAndPolicy_DescriptionLength(t *testing.T) {
 	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
 	_, err = svc.UpdateRole(testAccountID, &iam.UpdateRoleInput{RoleName: aws.String("missing"), Description: tooLong})
 	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
+	_, err = svc.UpdateRoleDescription(testAccountID, &iam.UpdateRoleDescriptionInput{RoleName: aws.String("missing"), Description: tooLong})
+	requireIAMError(t, err, awserrors.ErrorValidationError, msg)
 	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
 		PolicyName: aws.String("p"), PolicyDocument: aws.String("{"), Description: tooLong,
 	})
@@ -1631,4 +1712,49 @@ func TestRoleAndPolicy_DescriptionLength(t *testing.T) {
 		PolicyName: aws.String("p"), PolicyDocument: aws.String(validPolicyDocument()), Description: atMax,
 	})
 	require.NoError(t, err)
+}
+
+func TestDeleteRole_RevokesSessionsOnceRecordIsGone(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	role := createTestRole(t, svc, "retired")
+
+	_, err := svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.NoError(t, err)
+
+	require.Len(t, revoker.calls, 1)
+	assert.Equal(t, revocation{testAccountID, aws.StringValue(role.Arn), aws.StringValue(role.RoleId), true}, revoker.calls[0])
+}
+
+func TestDeleteRole_ConflictDoesNotRevoke(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	role := createTestRole(t, svc, "attached")
+	policy := createTestPolicy(t, svc, "RolePolicy")
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: role.RoleName, PolicyArn: policy.Arn})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+	assert.Empty(t, revoker.calls, "a role that survives the delete keeps its sessions")
+}
+
+func TestDeleteRole_RevocationFailureKeepsDelete(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc, err: errors.New("jetstream unavailable")}
+	svc.SetSessionRevoker(revoker)
+	role := createTestRole(t, svc, "retired")
+
+	_, err := svc.DeleteRole(testAccountID, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	require.NoError(t, err)
+	require.Len(t, revoker.calls, 1)
+
+	_, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: role.RoleName})
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
 }

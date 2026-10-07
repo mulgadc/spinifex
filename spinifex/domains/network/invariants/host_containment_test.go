@@ -17,6 +17,7 @@ import (
 //	 bridge mode, or physical NIC state directly. L0's UplinkMode() is the
 //	 only resolver; all layers above receive a typed enum at init time."
 func TestS2_BridgeModeContainedInL0(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S2: "Bridge mode is contained in L0. No layer ` +
 		`above L0 reads uplink type, bridge mode, or physical NIC state ` +
 		`directly. L0's UplinkMode() is the only resolver; all layers ` +

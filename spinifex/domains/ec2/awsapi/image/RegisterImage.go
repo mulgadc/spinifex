@@ -124,6 +124,8 @@ func selectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping, rootDevice
 	return nil
 }
 
+// RegisterImage implements the EC2 RegisterImage action, registering an AMI that points at an
+// existing EBS snapshot via the NATS image service.
 func RegisterImage(ctx context.Context, input *ec2.RegisterImageInput, natsConn *nats.Conn, accountID string) (ec2.RegisterImageOutput, error) {
 	var output ec2.RegisterImageOutput
 

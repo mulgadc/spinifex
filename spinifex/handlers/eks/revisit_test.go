@@ -27,6 +27,7 @@ func woke(r *ClusterReconciler) bool {
 // healthy report is a trigger, so the timeout expiring is the only thing left
 // that announces itself to nobody.
 func TestReconcileOnce_ACreatingClusterAsksForWhatIsLeftOfItsCreateTimeout(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t, WithCreateTimeout(15*time.Minute))
 	freshenClusterCreatedAt(t, acctKV)
 	// No bootstrap state and no report, so the cluster stays CREATING.
@@ -41,6 +42,7 @@ func TestReconcileOnce_ACreatingClusterAsksForWhatIsLeftOfItsCreateTimeout(t *te
 // A create timeout already past belongs to the pass that fails the cluster.
 // Returning nothing would leave that pass unscheduled.
 func TestReconcileOnce_ACreatingClusterPastItsTimeoutAsksForTheInterval(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t,
 		WithCreateTimeout(15*time.Minute),
 		WithReconcileInterval(30*time.Second),
@@ -60,6 +62,7 @@ func TestReconcileOnce_ACreatingClusterPastItsTimeoutAsksForTheInterval(t *testi
 // is published by nobody. The deadline is the instant the newest report expires,
 // which lands the pass on it rather than up to a tick after it.
 func TestReconcileOnce_AHealthyClusterAsksForItsReportsStalenessInstant(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t, WithStateStaleAfter(90*time.Second))
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(freshReport("ok", 3))
@@ -74,6 +77,7 @@ func TestReconcileOnce_AHealthyClusterAsksForItsReportsStalenessInstant(t *testi
 // A report already past its window is the case the next pass has to notice, so
 // the deadline falls back to the interval rather than to nothing.
 func TestReconcileOnce_AClusterWithAStaleReportAsksForTheInterval(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t,
 		WithStateStaleAfter(90*time.Second),
 		WithReconcileInterval(30*time.Second),
@@ -91,6 +95,7 @@ func TestReconcileOnce_AClusterWithAStaleReportAsksForTheInterval(t *testing.T) 
 // time that this deliberately does not restate, and they poll their members'
 // VM state on every pass regardless.
 func TestReconcileOnce_ADegradedClusterAsksForTheInterval(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t, WithReconcileInterval(30*time.Second))
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusActive))
 	r.latest.Store(freshReport("fail", 0))
@@ -104,6 +109,7 @@ func TestReconcileOnce_ADegradedClusterAsksForTheInterval(t *testing.T) {
 // Without a state source health comes from an HTTP probe, which answers only
 // when asked, so there is nothing to wait for and the poll has to stay.
 func TestReconcileOnce_AProbedClusterAsksForTheInterval(t *testing.T) {
+	t.Parallel()
 	stub := &stubHTTPDoer{status: 200}
 	r, _, acctKV := newReconcilerHarness(t, "https://nlb.example/healthz",
 		WithHTTPClient(stub),
@@ -119,6 +125,7 @@ func TestReconcileOnce_AProbedClusterAsksForTheInterval(t *testing.T) {
 
 // A terminal status ends the loop, so there is no next run to schedule.
 func TestReconcileOnce_ADeletingClusterAsksForNoDeadline(t *testing.T) {
+	t.Parallel()
 	r, _, acctKV := newStateReconcilerHarness(t)
 	require.NoError(t, SetClusterStatus(t.Context(), acctKV, "alpha", ClusterStatusDeleting))
 
@@ -130,6 +137,7 @@ func TestReconcileOnce_ADeletingClusterAsksForNoDeadline(t *testing.T) {
 // The first report is always news: there is nothing to compare it against, and
 // it is what flips a CREATING cluster.
 func TestStoreReport_TheFirstReportWakesTheLoop(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 
 	r.storeReport(freshReport("ok", 3))
@@ -140,6 +148,7 @@ func TestStoreReport_TheFirstReportWakesTheLoop(t *testing.T) {
 // The control plane publishes on its own timer whether or not anything changed.
 // Waking on every report would be the old 30s tick under another name.
 func TestStoreReport_ARepeatedReportDoesNotWakeTheLoop(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 	r.storeReport(&ServerStateReport{Healthz: "ok", NodeCount: 3, TS: time.Now().Unix()})
 	require.True(t, woke(r))
@@ -152,6 +161,7 @@ func TestStoreReport_ARepeatedReportDoesNotWakeTheLoop(t *testing.T) {
 // The newest report still has to be stored even when it does not wake anything,
 // because the staleness deadline is measured from it.
 func TestStoreReport_ARepeatedReportStillRefreshesWhatIsStored(t *testing.T) {
+	t.Parallel()
 	r, _, _ := newStateReconcilerHarness(t)
 	r.storeReport(&ServerStateReport{Healthz: "ok", NodeCount: 3, TS: 1000})
 

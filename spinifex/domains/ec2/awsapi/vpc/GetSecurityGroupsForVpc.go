@@ -18,9 +18,9 @@ const (
 	maxSGForVpcResults = 1000
 )
 
-// VpcId is required by the model, so an absent one is MissingParameter before
-// the request crosses NATS. Whether it names a VPC is the handler's call: only
-// the store knows.
+// GetSecurityGroupsForVpc returns MissingParameter for an absent VpcId (required by the model)
+// before the request crosses NATS. Whether it names a VPC is the handler's call: only the store
+// knows.
 func GetSecurityGroupsForVpc(ctx context.Context, input *ec2.GetSecurityGroupsForVpcInput, natsConn *nats.Conn, accountID string) (ec2.GetSecurityGroupsForVpcOutput, error) {
 	var output ec2.GetSecurityGroupsForVpcOutput
 	if input == nil {

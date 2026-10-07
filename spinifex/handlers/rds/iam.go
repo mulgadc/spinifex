@@ -18,9 +18,9 @@ const (
 	instanceRoleInlinePolicyName = "spinifex-rds-instance-internal"
 )
 
-// The agent-only actions. The gateway's principal-class gate reserves exactly
-// this set, and the role below grants exactly it — one list, so adding another
-// cannot leave the gate and the grant disagreeing.
+// InternalAgentActions lists the agent-only actions. The gateway's principal-class
+// gate reserves exactly this set and the role below grants exactly it, so adding
+// another cannot leave the gate and the grant disagreeing.
 var InternalAgentActions = []string{
 	"RegisterDBInstance",
 	"SubmitDBStateChange",
@@ -50,9 +50,9 @@ func instanceRoleInlinePolicy() (string, error) {
 	return string(doc), nil
 }
 
-// Resolved per launch rather than held, mirroring EKS: the KV-backed IAM
-// service has no responders until JetStream is up, so an eager build races
-// daemon boot and fails permanently on the node that loses.
+// IAMProvider returns the system instance-role ensurer. It is resolved per launch rather than held,
+// mirroring EKS: the KV-backed IAM service has no responders until JetStream is up, so an eager build
+// races daemon boot and fails permanently on the node that loses.
 type IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
 
 // Returns the mandatory instance-profile ARN. Unlike EKS there is no

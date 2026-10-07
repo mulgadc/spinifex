@@ -92,6 +92,9 @@ func SnapshotSubject(volumeID string) (string, error) {
 	return SnapshotCreateSubjectPrefix + volumeID, nil
 }
 
+// SnapshotCompletionSubject returns the subject the provider publishes a
+// snapshot's final CreateSnapshotResponse on once its data is captured. It
+// fails with ErrInvalidArgument if snapshotID is not a valid subject token.
 func SnapshotCompletionSubject(snapshotID string) (string, error) {
 	if err := validateSubjectToken(snapshotID); err != nil {
 		return "", err
@@ -99,6 +102,8 @@ func SnapshotCompletionSubject(snapshotID string) (string, error) {
 	return "ebs.provider.v1.snapshot.response." + snapshotID, nil
 }
 
+// PublishSubject returns nodeID's per-node mount subject
+// (ebs.provider.v1.<node>.mount), which serves PublishVolume on that node.
 func PublishSubject(nodeID string) (string, error) {
 	if err := validateSubjectToken(nodeID); err != nil {
 		return "", err
@@ -106,6 +111,8 @@ func PublishSubject(nodeID string) (string, error) {
 	return subjectPrefix + nodeID + ".mount", nil
 }
 
+// UnpublishSubject returns nodeID's per-node unmount subject
+// (ebs.provider.v1.<node>.unmount), which serves UnpublishVolume on that node.
 func UnpublishSubject(nodeID string) (string, error) {
 	if err := validateSubjectToken(nodeID); err != nil {
 		return "", err
@@ -137,18 +144,26 @@ func OwnerSubject(volumeID, verb string) (string, error) {
 	return ownerSubjectPrefix + volumeID + "." + verb, nil
 }
 
+// SnapshotCreateOwnerSubject returns the owner-routed CreateSnapshot subject
+// for volumeID; see OwnerSubject.
 func SnapshotCreateOwnerSubject(volumeID string) (string, error) {
 	return OwnerSubject(volumeID, verbSnapshotCreate)
 }
 
+// SnapshotCopyOwnerSubject returns the owner-routed CopySnapshot subject for
+// volumeID, the snapshot's source volume; see OwnerSubject.
 func SnapshotCopyOwnerSubject(volumeID string) (string, error) {
 	return OwnerSubject(volumeID, verbSnapshotCopy)
 }
 
+// ExpandVolumeOwnerSubject returns the owner-routed ExpandVolume subject for
+// volumeID; see OwnerSubject.
 func ExpandVolumeOwnerSubject(volumeID string) (string, error) {
 	return OwnerSubject(volumeID, verbVolumeExpand)
 }
 
+// GetVolumeOwnerSubject returns the owner-routed GetVolume subject for
+// volumeID; see OwnerSubject.
 func GetVolumeOwnerSubject(volumeID string) (string, error) {
 	return OwnerSubject(volumeID, verbVolumeDescribe)
 }
@@ -184,6 +199,8 @@ type NATSProvider struct {
 
 var _ EBSProvider = (*NATSProvider)(nil)
 
+// NewNATSProvider returns a provider client over conn. A non-positive
+// requestTimeout takes the 30s default; data-moving subjects get at least 180s.
 func NewNATSProvider(conn *nats.Conn, requestTimeout time.Duration) *NATSProvider {
 	if requestTimeout <= 0 {
 		requestTimeout = defaultRequestTimeout

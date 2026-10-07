@@ -21,6 +21,8 @@ import (
 // and never the guest's shutdown.
 var rebootInstancesTimeout = 5 * time.Second
 
+// ValidateRebootInstancesInput rejects a nil input with InvalidParameterValue and an empty
+// InstanceIds list with MissingParameter.
 func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -1,5 +1,8 @@
 version: "2"
 
+run:
+  allow-serial-runners: true
+
 issues:
   max-same-issues: 10
 
@@ -142,14 +145,10 @@ linters:
     staticcheck:
       checks:
         - all
-        - -ST1000 # package comment
         - -ST1003 # naming conventions (Id→ID etc.) — too noisy to retrofit
         - -ST1012 # error var naming — errname covers this + error type suffixes
         - -ST1013 # HTTP status constants — usestdlibvars is broader
         - -ST1016 # receiver name consistency (too noisy to retrofit)
-        - -ST1020 # godoc on exported types — not enforcing yet
-        - -ST1021 # godoc on exported type groups — not enforcing yet
-        - -ST1022 # godoc on exported vars/consts — not enforcing yet
         - -SA4006 # value overwritten — ineffassign catches strictly more of these
         - -SA9005 # marshaling structs with no exported fields — intended {} for empty API-response types
 

@@ -5,7 +5,9 @@ package vm
 
 import (
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,6 +100,44 @@ func TestFenceVolume_LeavesATerminalInstanceAlone(t *testing.T) {
 				"the reason belongs to the teardown already under way, not to this fence")
 		})
 	}
+}
+
+// TestResumeRecoveryFailed_RefusesAFencedInstance is the relaunch a daemon
+// start would otherwise perform. The fence does not seal, so the volumes are a
+// state nothing has shown is mountable, and relaunching makes that permanent.
+func TestResumeRecoveryFailed_RefusesAFencedInstance(t *testing.T) {
+	m := NewManagerWithDeps(Deps{NodeID: "node-a"})
+	instance := vmUsingVolume("i-fenced", "vol-fenced")
+	m.Insert(instance)
+
+	m.FenceVolume(t.Context(), "vol-fenced", "lease moved to node-b")
+	m.goroutineWg.Wait()
+
+	// Older than RestartWindow with the budget already spent, which is the state
+	// a fence days in the past leaves: the window resets and reports a budget,
+	// so nothing else in this path would refuse the relaunch.
+	m.Inspect(instance, func(v *VM) {
+		v.Health.FirstCrashTime = time.Now().Add(-10 * RestartWindow)
+		v.Health.CrashCount = MaxRestartsInWindow + 1
+	})
+
+	assert.False(t, m.resumeRecoveryFailed(instance))
+	assert.Equal(t, StateError, m.Status(instance),
+		"a refused resume has to leave the instance where the fence left it")
+}
+
+// The refusal has to be narrower than StateError. A recovery that failed for its
+// own reasons is what the restart budget exists for, and reading every error as
+// a fence would make StateError permanent for all of them.
+func TestResumeRecoveryFailed_StillRetriesAnErrorThatIsNotAFence(t *testing.T) {
+	m := NewManagerWithDeps(Deps{NodeID: "node-a"})
+	instance := vmUsingVolume("i-failed", "vol-failed")
+	instance.Status = StateError
+	instance.Instance.StateReason = &ec2.StateReason{Code: aws.String("Server.RecoveryFailed")}
+	m.Insert(instance)
+
+	assert.True(t, m.resumeRecoveryFailed(instance))
+	assert.Equal(t, StatePending, m.Status(instance))
 }
 
 // TestInstanceUsingVolume_MatchesOnAnyAttachedVolume covers the lookup. A guest

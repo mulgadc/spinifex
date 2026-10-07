@@ -24,6 +24,8 @@ func TenantCACertPath(configDir string) string {
 	return filepath.Join(configDir, tenantCACertFilename)
 }
 
+// TenantCAKeyPath returns the tenant private CA key path under configDir; see
+// TenantCACertPath.
 func TenantCAKeyPath(configDir string) string {
 	return filepath.Join(configDir, tenantCAKeyFilename)
 }

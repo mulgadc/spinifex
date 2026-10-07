@@ -4,7 +4,7 @@ import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { JsonEditor } from "@/components/ui/json-editor"
-import { isValidJson } from "@/lib/json"
+import { formatJson, isValidJson } from "@/lib/json"
 import { formatDateTime } from "@/lib/utils"
 import {
   useDeleteLifecyclePolicy,
@@ -33,6 +33,15 @@ const SAMPLE_POLICY = `{
   ]
 }`
 
+// The server stores the policy compacted; indent it for editing, keeping the
+// raw text when it does not parse.
+function toDraft(policyText: string | null | undefined): string {
+  if (!policyText) {
+    return ""
+  }
+  return formatJson(policyText) ?? policyText
+}
+
 export function LifecyclePolicyEditor({
   repositoryName,
 }: LifecyclePolicyEditorProps) {
@@ -42,14 +51,14 @@ export function LifecyclePolicyEditor({
   const putPolicy = usePutLifecyclePolicy()
   const deletePolicy = useDeleteLifecyclePolicy()
   const preview = usePreviewLifecyclePolicy()
-  const [draft, setDraft] = useState(policyText ?? "")
+  const [draft, setDraft] = useState(() => toDraft(policyText))
 
   // Re-seed the editor when the stored policy changes (save/delete invalidates
   // the query), so the textarea tracks the server document.
   const [seededPolicy, setSeededPolicy] = useState(policyText)
   if (policyText !== seededPolicy) {
     setSeededPolicy(policyText)
-    setDraft(policyText ?? "")
+    setDraft(toDraft(policyText))
   }
 
   async function handleSave() {

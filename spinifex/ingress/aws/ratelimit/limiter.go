@@ -1,3 +1,5 @@
+// Package ratelimit locks out client addresses that repeatedly fail AWS
+// request authentication.
 package ratelimit
 
 import (

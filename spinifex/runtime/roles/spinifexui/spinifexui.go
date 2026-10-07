@@ -1,3 +1,5 @@
+// Package spinifexui serves the embedded Spinifex web console and reverse
+// proxies its API calls to the cluster's backend services.
 package spinifexui
 
 import (

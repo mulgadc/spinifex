@@ -30,7 +30,9 @@ func TestGenerateSocketFile(t *testing.T) {
 }
 
 func TestWaitForNBDReady(t *testing.T) {
+	t.Parallel()
 	t.Run("unix socket ready", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "nbd.sock")
 		ln, err := net.Listen("unix", path)
@@ -41,6 +43,7 @@ func TestWaitForNBDReady(t *testing.T) {
 	})
 
 	t.Run("unix socket times out", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "missing.sock")
 		err := WaitForNBDReady(FormatNBDSocketURI(path), 100*time.Millisecond)
@@ -48,6 +51,7 @@ func TestWaitForNBDReady(t *testing.T) {
 	})
 
 	t.Run("tcp listener ready", func(t *testing.T) {
+		t.Parallel()
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = ln.Close() })
@@ -60,12 +64,14 @@ func TestWaitForNBDReady(t *testing.T) {
 	})
 
 	t.Run("tcp listener times out", func(t *testing.T) {
+		t.Parallel()
 		// Port 1 is unprivileged-bind reserved; nothing will be listening.
 		err := WaitForNBDReady(FormatNBDTCPURI("127.0.0.1", 1), 100*time.Millisecond)
 		require.Error(t, err)
 	})
 
 	t.Run("rejects malformed uri", func(t *testing.T) {
+		t.Parallel()
 		err := WaitForNBDReady("garbage://nope", time.Second)
 		require.Error(t, err)
 	})

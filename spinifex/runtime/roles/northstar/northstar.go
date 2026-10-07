@@ -1,3 +1,5 @@
+// Package northstar runs the northstar DNS server as a Spinifex service and
+// bootstraps the cluster's base zone.
 package northstar
 
 import (

@@ -31,26 +31,6 @@ func ListClusters(ctx context.Context, natsConn *nats.Conn, accountID string) (*
 	return handlers_eks.NewNATSEKSService(natsConn).ListClusters(ctx, &eks.ListClustersInput{}, accountID)
 }
 
-// UpdateClusterConfig — POST /clusters/{name}/update-config.
-func UpdateClusterConfig(ctx context.Context, natsConn *nats.Conn, accountID, name string, body []byte) (*eks.UpdateClusterConfigOutput, error) {
-	input := new(eks.UpdateClusterConfigInput)
-	if err := unmarshalIfBody(body, input); err != nil {
-		return nil, err
-	}
-	input.Name = aws.String(name)
-	return handlers_eks.NewNATSEKSService(natsConn).UpdateClusterConfig(ctx, input, accountID)
-}
-
-// UpdateClusterVersion — POST /clusters/{name}/update-version.
-func UpdateClusterVersion(ctx context.Context, natsConn *nats.Conn, accountID, name string, body []byte) (*eks.UpdateClusterVersionOutput, error) {
-	input := new(eks.UpdateClusterVersionInput)
-	if err := unmarshalIfBody(body, input); err != nil {
-		return nil, err
-	}
-	input.Name = aws.String(name)
-	return handlers_eks.NewNATSEKSService(natsConn).UpdateClusterVersion(ctx, input, accountID)
-}
-
 // DeleteCluster — DELETE /clusters/{name}.
 func DeleteCluster(ctx context.Context, natsConn *nats.Conn, accountID, name string) (*eks.DeleteClusterOutput, error) {
 	input := &eks.DeleteClusterInput{Name: aws.String(name)}

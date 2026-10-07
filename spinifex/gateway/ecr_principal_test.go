@@ -119,6 +119,9 @@ type ecrMockSTSService struct {
 	// returns. Detection itself is exercised against real IAM/STS services in
 	// handlers/sts; what these tests pin is how this door maps the answer.
 	principalErr error
+
+	// liveUserARN is the stored ARN the continuity read returns for a user session.
+	liveUserARN string
 }
 
 func newECRMockSTSService() *ecrMockSTSService {
@@ -133,7 +136,11 @@ func (m *ecrMockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCre
 	if m.principalErr != nil {
 		return nil, m.principalErr
 	}
-	return stubSessionPrincipal(cred)
+	live, err := stubSessionPrincipal(cred)
+	if err == nil && cred.PrincipalType == principalTypeUser {
+		live.UserARN = m.liveUserARN
+	}
+	return live, err
 }
 
 const (
@@ -172,7 +179,34 @@ func TestResolveECRPrincipal_LongLivedUser(t *testing.T) {
 	got, err := gw.resolveECRPrincipal(claims)
 	require.NoError(t, err)
 	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
-		principalType: principalTypeUser, userID: "AIDADEV"}, got)
+		principalType: principalTypeUser, userID: "AIDADEV", userARN: claims.Subject}, got)
+}
+
+const ecrPathedUserARN = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/eng/dev"
+
+// A user at a non-root path verifies against its stored ARN, path included. A
+// token whose subject drops the path, as one minted before the path was carried
+// would, no longer names the principal and is rejected.
+func TestResolveECRPrincipal_LongLivedUser_Pathed(t *testing.T) {
+	iamSvc := newECRMockIAMService()
+	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
+	iamSvc.users[ecrPrincipalTestAccount+"|dev"].Arn = aws.String(ecrPathedUserARN)
+	gw := &GatewayConfig{IAMService: iamSvc}
+
+	claims := &ecrauth.Claims{
+		AccountID:     ecrPrincipalTestAccount,
+		PrincipalType: principalTypeUser,
+		AccessKeyID:   ecrPrincipalTestAKID,
+	}
+	claims.Subject = ecrPathedUserARN
+	got, err := gw.resolveECRPrincipal(claims)
+	require.NoError(t, err)
+	assert.Equal(t, ecrPathedUserARN, got.userARN)
+
+	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
+	_, err = gw.resolveECRPrincipal(claims)
+	require.Error(t, err)
+	assert.False(t, isECRDependencyFailure(err))
 }
 
 func TestResolveECRPrincipal_GlobalRoot(t *testing.T) {
@@ -322,6 +356,29 @@ func TestResolveECRPrincipal_SessionToken_User(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, principalContext{identity: "dev", accountID: ecrPrincipalTestAccount,
 		principalType: principalTypeUser, userID: "AIDADEV"}, got)
+}
+
+func TestResolveECRPrincipal_SessionToken_User_Pathed(t *testing.T) {
+	iamSvc := newECRMockIAMService()
+	stsSvc := newECRMockSTSService()
+	seedECRSessionUser(iamSvc, stsSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestASID, time.Now().Add(time.Hour))
+	stsSvc.liveUserARN = ecrPathedUserARN
+	gw := &GatewayConfig{IAMService: iamSvc, STSService: stsSvc}
+
+	claims := &ecrauth.Claims{
+		AccountID:     ecrPrincipalTestAccount,
+		PrincipalType: principalTypeUser,
+		AccessKeyID:   ecrPrincipalTestASID,
+	}
+	claims.Subject = ecrPathedUserARN
+	got, err := gw.resolveECRPrincipal(claims)
+	require.NoError(t, err)
+	assert.Equal(t, ecrPathedUserARN, got.userARN)
+
+	claims.Subject = "arn:aws:iam::" + ecrPrincipalTestAccount + ":user/dev"
+	_, err = gw.resolveECRPrincipal(claims)
+	require.Error(t, err)
+	assert.False(t, isECRDependencyFailure(err))
 }
 
 // The user branch had no continuity check at all before: a GetSessionToken

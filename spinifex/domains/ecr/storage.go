@@ -141,11 +141,14 @@ func DigestToken(digest string) string {
 	return strings.ReplaceAll(digest, ":", "-")
 }
 
-// repoNameRe is the OCI Distribution repository-name grammar. Compiled once.
-var repoNameRe = regexp.MustCompile(`^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+// RepoNamePattern is the repository-name expression AWS ECR enforces, which is
+// also the OCI Distribution grammar: components split by '.', '_', '__' or '-'
+// runs, joined by '/'.
+const RepoNamePattern = `[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*`
 
-// ValidateRepoName enforces the OCI repository-name grammar and 2-256 length
-// bound. It returns nil for a valid name and a descriptive error otherwise.
+var repoNameRe = regexp.MustCompile(`^(?:` + RepoNamePattern + `)$`)
+
+// ValidateRepoName enforces RepoNamePattern and the 2-256 length bound. It returns nil for a valid name and a descriptive error otherwise.
 func ValidateRepoName(name string) error {
 	if len(name) < 2 || len(name) > 256 {
 		return errors.New("repository name must be 2-256 characters")

@@ -1,3 +1,6 @@
+// Package handlers_elbv2 implements the ELBv2 actions for application and
+// network load balancers: the daemon-side JetStream KV implementation, its NATS
+// client, and the HAProxy and nginx configs rendered for the LB VMs.
 package handlers_elbv2
 
 import (

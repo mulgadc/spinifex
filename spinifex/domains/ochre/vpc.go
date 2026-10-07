@@ -29,8 +29,8 @@ func SystemVPCName(region string) string {
 	return "bedrock-system-" + region
 }
 
-// cfg supplies the operator-overridable address space and subnet count; a nil
-// or unset cfg falls back to the defaults.
+// SystemVPCSpec builds the region's Bedrock system VPC spec. cfg supplies the operator-overridable
+// address space and subnet count; a nil or unset cfg falls back to the defaults.
 func SystemVPCSpec(cfg *config.BedrockConfig, region string) systemvpc.Spec {
 	supernet := config.BedrockDefaultSystemVPCSupernet
 	privateSubnets := 1

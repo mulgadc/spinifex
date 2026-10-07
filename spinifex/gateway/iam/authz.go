@@ -69,6 +69,7 @@ var iamScopes = map[string]resourceScope{
 	"GetRole":                     existingScope(arn.IAMRole, "RoleName"),
 	"DeleteRole":                  existingScope(arn.IAMRole, "RoleName"),
 	"UpdateRole":                  existingScope(arn.IAMRole, "RoleName"),
+	"UpdateRoleDescription":       existingScope(arn.IAMRole, "RoleName"),
 	"UpdateAssumeRolePolicy":      existingScope(arn.IAMRole, "RoleName"),
 	"AttachRolePolicy":            existingScope(arn.IAMRole, "RoleName"),
 	"DetachRolePolicy":            existingScope(arn.IAMRole, "RoleName"),
@@ -136,6 +137,7 @@ var iamScopes = map[string]resourceScope{
 	"ListOpenIDConnectProviders": {source: sourceAccount},
 	"ListGroups":                 {source: sourceAccount},
 	"GetAccountSummary":          {source: sourceAccount},
+	"ListAccountAliases":         {source: sourceAccount},
 }
 
 // HasScope reports whether action has an explicit IAM scope-table entry.

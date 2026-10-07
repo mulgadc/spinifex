@@ -1,3 +1,6 @@
+// Package image implements the EC2 AMI actions: the ImageService
+// contract, its daemon-side implementation over the object store and its NATS
+// client.
 package image
 
 import (

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateModifyTargetGroupInput rejects a nil input with InvalidParameterValue and a missing
+// TargetGroupArn with MissingParameter.
 func ValidateModifyTargetGroupInput(input *elbv2.ModifyTargetGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -20,6 +22,8 @@ func ValidateModifyTargetGroupInput(input *elbv2.ModifyTargetGroupInput) error {
 	return nil
 }
 
+// ModifyTargetGroup implements the ELBv2 ModifyTargetGroup action, updating health check settings
+// via the NATS ELBv2 service scoped to accountID.
 func ModifyTargetGroup(ctx context.Context, input *elbv2.ModifyTargetGroupInput, natsConn *nats.Conn, accountID string) (elbv2.ModifyTargetGroupOutput, error) {
 	var output elbv2.ModifyTargetGroupOutput
 

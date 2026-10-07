@@ -24,6 +24,8 @@ type EnsureEndpointInput struct {
 	Pinned    bool   `json:"pinned,omitempty"`
 }
 
+// EnsureEndpointOutput carries the model's endpoint record, either the one already STARTING or READY
+// or the one just launched.
 type EnsureEndpointOutput struct {
 	Endpoint EndpointRecord `json:"endpoint"`
 }
@@ -35,6 +37,7 @@ type DescribeEndpointInput struct {
 	AccountID string `json:"account_id,omitempty"`
 }
 
+// DescribeEndpointOutput carries the model's current endpoint record.
 type DescribeEndpointOutput struct {
 	Endpoint EndpointRecord `json:"endpoint"`
 }
@@ -43,6 +46,8 @@ type DescribeEndpointOutput struct {
 // message header like every other handler, not the payload.
 type ListEndpointsInput struct{}
 
+// ListEndpointsOutput holds every endpoint record across every account, shared platform and
+// account-scoped alike.
 type ListEndpointsOutput struct {
 	Endpoints []EndpointRecord `json:"endpoints"`
 }

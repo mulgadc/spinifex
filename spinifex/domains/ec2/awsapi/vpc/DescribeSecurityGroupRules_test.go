@@ -23,10 +23,9 @@ func TestDescribeSecurityGroupRules_NilInput_PassesValidation(t *testing.T) {
 func TestDescribeSecurityGroupRules_MalformedRuleID(t *testing.T) {
 	cases := []string{
 		"sgr-toolong0123456789abcdef",
-		"sgr-XYZ",
+		"SGR-0123456789abcdef0",
 		"sg-0123456789abcdef0",
 		"",
-		"sgr-0123456789abcdefX",
 	}
 	for _, bad := range cases {
 		input := &ec2.DescribeSecurityGroupRulesInput{
@@ -46,12 +45,14 @@ func TestDescribeSecurityGroupRules_NilRuleIDEntry(t *testing.T) {
 }
 
 func TestDescribeSecurityGroupRules_ValidRuleIDPassesValidation(t *testing.T) {
-	// A well-formed sgr- ID passes gateway validation; the call then dives
-	// into the NATS service (nil conn) and fails there.
-	input := &ec2.DescribeSecurityGroupRulesInput{
-		SecurityGroupRuleIds: []*string{aws.String("sgr-0123456789abcdef0")},
+	// An ID AWS answers NotFound for, not Malformed, passes gateway validation;
+	// the call then dives into the NATS service (nil conn) and fails there.
+	for _, id := range []string{"sgr-0123456789abcdef0", "sgr-XYZ", "sgr-0123456789abcdefX"} {
+		input := &ec2.DescribeSecurityGroupRulesInput{
+			SecurityGroupRuleIds: []*string{aws.String(id)},
+		}
+		_, err := DescribeSecurityGroupRules(context.Background(), input, nil, testAccountID)
+		require.Error(t, err)
+		assert.NotEqual(t, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, err.Error(), "id %q", id)
 	}
-	_, err := DescribeSecurityGroupRules(context.Background(), input, nil, testAccountID)
-	require.Error(t, err)
-	assert.NotEqual(t, awserrors.ErrorInvalidSecurityGroupRuleIdMalformed, err.Error())
 }

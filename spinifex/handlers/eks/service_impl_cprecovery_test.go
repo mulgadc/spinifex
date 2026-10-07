@@ -56,6 +56,7 @@ func describeWithState(instanceID, state string) *ec2.DescribeInstancesOutput {
 }
 
 func TestCPControlAdapter_InstanceStateReturnsStateName(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{describeOut: describeWithState("i-cp", "stopped")}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
@@ -66,6 +67,7 @@ func TestCPControlAdapter_InstanceStateReturnsStateName(t *testing.T) {
 }
 
 func TestCPControlAdapter_InstanceStateNotFound(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{describeOut: &ec2.DescribeInstancesOutput{}}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
@@ -75,6 +77,7 @@ func TestCPControlAdapter_InstanceStateNotFound(t *testing.T) {
 }
 
 func TestCPControlAdapter_InstanceStatePropagatesDescribeError(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{describeErr: errors.New("describe boom")}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
@@ -84,6 +87,7 @@ func TestCPControlAdapter_InstanceStatePropagatesDescribeError(t *testing.T) {
 }
 
 func TestCPControlAdapter_StartInstanceForwardsIDAndAccount(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
@@ -94,6 +98,7 @@ func TestCPControlAdapter_StartInstanceForwardsIDAndAccount(t *testing.T) {
 }
 
 func TestCPControlAdapter_StartInstancePropagatesError(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{recoverErr: errors.New("no owner")}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
@@ -101,6 +106,7 @@ func TestCPControlAdapter_StartInstancePropagatesError(t *testing.T) {
 }
 
 func TestCPControlAdapter_StopInstanceForwardsIDAndAccount(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 
@@ -112,6 +118,7 @@ func TestCPControlAdapter_StopInstanceForwardsIDAndAccount(t *testing.T) {
 }
 
 func TestCPControlAdapter_StopInstancePropagatesError(t *testing.T) {
+	t.Parallel()
 	ctl := &fakeCPController{stopErr: errors.New("no owner")}
 	a := cpControlAdapter{ctl: ctl, accountID: testAccountID}
 

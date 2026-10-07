@@ -19,6 +19,7 @@ import (
 //	 EnsurePortGroup). Callers outside network/ovn MUST use the Ensure*
 //	 primitive."
 func TestS4_OVNNamedCreatesUseEnsure(t *testing.T) {
+	t.Parallel()
 	const clause = `ADR-0006 S4.7: "OVN logical entities owned by spinifex ` +
 		`MUST be unique on (table, Name). The libovsdb client enforces this ` +
 		`via wait-then-insert transactions (EnsureLogicalRouter / ` +

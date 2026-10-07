@@ -14,6 +14,7 @@ import (
 )
 
 func TestClusterJoinEndpoint_PrivateAccessPrefersSetA(t *testing.T) {
+	t.Parallel()
 	// public+private: published endpoint is public, but workers join via Set A.
 	meta := &ClusterMeta{
 		Endpoint:          "https://203.0.113.9:443",
@@ -27,6 +28,7 @@ func TestClusterJoinEndpoint_PrivateAccessPrefersSetA(t *testing.T) {
 }
 
 func TestClusterJoinEndpoint_PrivateOnlyMatchesPublished(t *testing.T) {
+	t.Parallel()
 	// private-only: meta.Endpoint already equals the Set A endpoint.
 	meta := &ClusterMeta{
 		Endpoint:          "https://10.20.0.5:443",
@@ -40,6 +42,7 @@ func TestClusterJoinEndpoint_PrivateOnlyMatchesPublished(t *testing.T) {
 }
 
 func TestClusterJoinEndpoint_PublicOnlyUsesPublished(t *testing.T) {
+	t.Parallel()
 	meta := &ClusterMeta{
 		Endpoint: "https://203.0.113.9:443",
 		ResourcesVpcConfig: &ClusterVpcConfig{
@@ -51,6 +54,7 @@ func TestClusterJoinEndpoint_PublicOnlyUsesPublished(t *testing.T) {
 }
 
 func TestClusterJoinEndpoint_PublicJoinsByEndpointIP(t *testing.T) {
+	t.Parallel()
 	// With northstar on, meta.Endpoint is the DNS name but workers join by IP so
 	// cluster bring-up never depends on DNS resolution of the published name.
 	meta := &ClusterMeta{
@@ -65,6 +69,7 @@ func TestClusterJoinEndpoint_PublicJoinsByEndpointIP(t *testing.T) {
 }
 
 func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.createIDs = []string{"sg-pe-001"}
 
@@ -92,6 +97,7 @@ func TestEnsurePrivateEndpointSG_AuthorizesVPCCIDROnAPIServerPorts(t *testing.T)
 }
 
 func TestEnsurePrivateEndpointSG_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	_, err := EnsurePrivateEndpointSG(context.Background(), sgp, "111122223333", "", "vpc-aaa", "10.0.0.0/16")
 	require.Error(t, err)
@@ -103,6 +109,7 @@ func TestEnsurePrivateEndpointSG_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestEnsurePrivateEndpointSG_DuplicateIngressTolerated(t *testing.T) {
+	t.Parallel()
 	sgp := newFakeSGProvisioner()
 	sgp.authorizeErr = errors.New(awserrors.ErrorInvalidPermissionDuplicate)
 
@@ -111,6 +118,7 @@ func TestEnsurePrivateEndpointSG_DuplicateIngressTolerated(t *testing.T) {
 }
 
 func TestEnsurePrivateEndpointENI_HappyPath(t *testing.T) {
+	t.Parallel()
 	vpcSvc := &fakeK3sVPC{
 		createOut: &ec2.CreateNetworkInterfaceOutput{
 			NetworkInterface: &ec2.NetworkInterface{
@@ -140,6 +148,7 @@ func TestEnsurePrivateEndpointENI_HappyPath(t *testing.T) {
 }
 
 func TestEnsurePrivateEndpointENI_EmptyInputsRejected(t *testing.T) {
+	t.Parallel()
 	vpcSvc := &fakeK3sVPC{}
 	sgp := newFakeSGProvisioner()
 	_, err := EnsurePrivateEndpointENI(context.Background(), vpcSvc, sgp, fakeSubnetResolver{}, "", "alpha", "subnet-aaa", "vpc-aaa")
@@ -152,6 +161,7 @@ func TestEnsurePrivateEndpointENI_EmptyInputsRejected(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_ThreadsCrossAccountENIToSyncCreate(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 	extras := []systeminstance.ExtraENIInput{{
 		ENIID:     "eni-pe-001",
@@ -171,6 +181,7 @@ func TestEnsureClusterNLB_ThreadsCrossAccountENIToSyncCreate(t *testing.T) {
 }
 
 func TestEnsureClusterNLB_NoExtrasUsesPlainSync(t *testing.T) {
+	t.Parallel()
 	nlbp := newFakeNLBProvisioner()
 
 	_, err := EnsureClusterNLB(context.Background(), nlbp, "000000000000", "alpha", []string{"subnet-cp"}, false, nil, nil)

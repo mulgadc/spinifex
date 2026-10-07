@@ -34,26 +34,6 @@ var eksRoutes = []eksRoute{
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.ListClusters(ctx, gw.NATSConn, acct)
 		}},
-	{Method: "POST", Pattern: "/clusters/{clusterName}/update-config", Action: "UpdateClusterConfig",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateClusterConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{Method: "POST", Pattern: "/clusters/{clusterName}/updates", Action: "UpdateClusterVersion",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateClusterVersion(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	// The update surface these two read is absent, so they refuse here rather
-	// than through a service method: a round-trip to reach a constant refusal
-	// is surface for its own sake. Left unregistered they would answer
-	// InvalidAction, which blames the caller's spelling for a routing gap.
-	{Method: "GET", Pattern: "/clusters/{clusterName}/updates", Action: "ListUpdates",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return nil, errors.New(awserrors.ErrorNotImplemented)
-		}},
-	{Method: "GET", Pattern: "/clusters/{clusterName}/updates/{updateId}", Action: "DescribeUpdate",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return nil, errors.New(awserrors.ErrorNotImplemented)
-		}},
 	// Control-plane VM broker: relays bootstrap/state POSTs onto eks.bus.*/eks.state.* NATS subjects.
 	// acct and callerARN are ignored; cluster account comes from the body.
 	{Method: "POST", Pattern: "/clusters/{clusterName}/internal-publish", Action: "PublishInternal",
@@ -97,10 +77,6 @@ var eksRoutes = []eksRoute{
 	{Method: "POST", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}/update-config", Action: "UpdateNodegroupConfig",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.UpdateNodegroupConfig(ctx, gw.NATSConn, acct, p[0], p[1], b)
-		}},
-	{Method: "POST", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}/update-version", Action: "UpdateNodegroupVersion",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.UpdateNodegroupVersion(ctx, gw.NATSConn, acct, p[0], p[1], b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}", Action: "DescribeNodegroup",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
@@ -173,24 +149,6 @@ var eksRoutes = []eksRoute{
 	{Method: "DELETE", Pattern: "/clusters/{clusterName}/addons/{addonName}", Action: "DeleteAddon",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.DeleteAddon(ctx, gw.NATSConn, acct, p[0], p[1])
-		}},
-
-	// OIDC identity-provider configs
-	{Method: "POST", Pattern: "/clusters/{clusterName}/identity-provider-configs/associate", Action: "AssociateIdentityProviderConfig",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.AssociateIdentityProviderConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{Method: "POST", Pattern: "/clusters/{clusterName}/identity-provider-configs/describe", Action: "DescribeIdentityProviderConfig",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DescribeIdentityProviderConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{Method: "POST", Pattern: "/clusters/{clusterName}/identity-provider-configs/disassociate", Action: "DisassociateIdentityProviderConfig",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.DisassociateIdentityProviderConfig(ctx, gw.NATSConn, acct, p[0], b)
-		}},
-	{Method: "GET", Pattern: "/clusters/{clusterName}/identity-provider-configs", Action: "ListIdentityProviderConfigs",
-		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
-			return gateway_eks.ListIdentityProviderConfigs(ctx, gw.NATSConn, acct, p[0])
 		}},
 
 	// Cluster CRUD — listed after more-specific /clusters/{name}/... routes.
@@ -370,7 +328,8 @@ func eksCallerPrincipalARN(r *http.Request) string {
 	identity, _ := ctx.Value(ctxIdentity).(string)
 	principalType, _ := ctx.Value(ctxPrincipalType).(string)
 	assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
-	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
+	userARN, _ := ctx.Value(ctxUserARN).(string)
+	arn, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
 	if err != nil {
 		slog.DebugContext(r.Context(), "EKS_Request: could not resolve caller principal ARN", "err", err)
 		return ""

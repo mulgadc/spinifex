@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteVpcInput rejects a nil input with InvalidParameterValue and a missing VpcId with
+// MissingParameter.
 func ValidateDeleteVpcInput(input *ec2.DeleteVpcInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

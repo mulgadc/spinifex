@@ -14,12 +14,11 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
-// The retention sweep is a cluster-wide vm.Reaper rather than a reconciler tick,
-// because it is the one part of retention that deletes customer data. The shared GC
-// backstop buys it the two properties that matters most for: it is skipped
-// entirely while KV is unhealthy, so it can never reap against a desired state it
-// cannot read, and cluster-wide scope is leader-gated by the framework. Backup
-// *creation* stays in the RDS reconciler, where the per-instance state it reads
+// BackupRetentionReaper is the retention sweep, a cluster-wide vm.Reaper rather than a reconciler tick
+// because it is the one part of retention that deletes customer data. The shared GC backstop buys it
+// the two properties that matters most for: it is skipped entirely while KV is unhealthy, so it can
+// never reap against a desired state it cannot read, and cluster-wide scope is leader-gated by the
+// framework. Backup *creation* stays in the RDS reconciler, where the per-instance state it reads
 // already lives.
 type BackupRetentionReaper struct {
 	svc *Service
@@ -37,11 +36,10 @@ func (s *Service) NewBackupRetentionReaper() *BackupRetentionReaper {
 func (r *BackupRetentionReaper) Class() string         { return "rds-backup-retention" }
 func (r *BackupRetentionReaper) Scope() vm.ReaperScope { return vm.ScopeClusterWide }
 
-// Sweeps every account's automated backups past their retention, and reclaims the
-// retained data volumes nothing references any more. Drives from the RDS KV index
-// rather than from a snapshot scan: a bucket-wide ListObjectsV2 per pass would
-// grow without bound with the fleet, and the same cost lands on viperblock's own
-// GC safety scan.
+// Sweep deletes every account's automated backups past their retention, and reclaims the retained data
+// volumes nothing references any more. Drives from the RDS KV index rather than from a snapshot scan: a
+// bucket-wide ListObjectsV2 per pass would grow without bound with the fleet, and the same cost lands
+// on viperblock's own GC safety scan.
 func (r *BackupRetentionReaper) Sweep(ctx context.Context) (int, error) {
 	js, err := r.svc.js()
 	if err != nil {

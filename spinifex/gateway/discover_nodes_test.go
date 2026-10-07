@@ -44,9 +44,11 @@ func respondAsNodes(t *testing.T, nc *nats.Conn, n int) *atomic.Int64 {
 
 // Discovery fronts eight EC2 handlers, so whatever it costs is added to every
 // one of their calls. The gather counts whoever answers and therefore cannot
-// know when to stop, so it always sits out its whole 500ms timeout — that cost
+// know when to stop, so it always sits out its whole timeout — that cost
 // has to be paid once in a while, not once per request.
 func TestDiscoverActiveNodesKeepsItsCostOffTheRequestPath(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	gateway.SetDiscoverActiveNodesTimeoutForTest(t, timeout)
 	_, nc := testutil.StartTestNATS(t)
 	respondAsNodes(t, nc, 4)
 
@@ -62,7 +64,8 @@ func TestDiscoverActiveNodesKeepsItsCostOffTheRequestPath(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	if elapsed > 100*time.Millisecond {
+	// Five uncached calls would cost five timeouts, so two bounds the cached path well clear of that.
+	if elapsed > 2*timeout {
 		t.Errorf("five further discoveries took %v; each was paying the fan-out timeout again", elapsed)
 	}
 }
@@ -70,6 +73,7 @@ func TestDiscoverActiveNodesKeepsItsCostOffTheRequestPath(t *testing.T) {
 // Membership does not change per request. Re-deriving it on every call put a
 // fan-out in front of every API call that needs it, which is most of them.
 func TestDiscoverActiveNodesReusesARecentAnswer(t *testing.T) {
+	gateway.SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	_, nc := testutil.StartTestNATS(t)
 	rounds := respondAsNodes(t, nc, 3)
 
@@ -94,6 +98,7 @@ func TestDiscoverActiveNodesReusesARecentAnswer(t *testing.T) {
 // A fallback is not evidence of anything: caching one would make a momentary
 // NATS problem outlive itself for the whole TTL.
 func TestDiscoverActiveNodesDoesNotCacheAFallback(t *testing.T) {
+	gateway.SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	_, nc := testutil.StartTestNATS(t)
 
 	gw := &gateway.GatewayConfig{NATSConn: nc, ExpectedNodes: 2}

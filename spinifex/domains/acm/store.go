@@ -111,6 +111,10 @@ type CertRecord struct {
 	// CertificateDetail.InUseBy field.
 	InUseBy []string `json:"in_use_by,omitempty"`
 
+	// CreatedAt is the first import and survives re-imports, which move
+	// ImportedAt. Zero on records stored before it was kept.
+	CreatedAt time.Time `json:"created_at"`
+
 	// Type is the ACM certificate type: AMAZON_ISSUED, PRIVATE or IMPORTED.
 	Type string `json:"type,omitempty"`
 	// Status is the ACM certificate status (PENDING_VALIDATION, ISSUED,
@@ -273,6 +277,7 @@ func (s *Store) getCert(ctx context.Context, certArn string, decrypt bool) (*Cer
 	if err != nil {
 		return nil, err
 	}
+	rec.KeyAlgorithm = normaliseKeyAlgorithm(rec.KeyAlgorithm)
 	if !decrypt {
 		rec.PrivateKey = ""
 		return rec, nil
@@ -410,6 +415,7 @@ func (s *Store) listCerts(ctx context.Context, keep func(*CertRecord) bool, decr
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
 			continue
 		}
+		rec.KeyAlgorithm = normaliseKeyAlgorithm(rec.KeyAlgorithm)
 		if !keep(&rec) {
 			continue
 		}

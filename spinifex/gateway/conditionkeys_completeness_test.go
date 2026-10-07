@@ -37,6 +37,7 @@ var gatewayDoorKeys = []string{
 var allConditionKeys = []string{
 	iampolicy.KeySourceIP,
 	iampolicy.KeyS3Prefix,
+	iampolicy.KeyS3MaxKeys,
 	iampolicy.KeySecureTransport,
 	iampolicy.KeyUsername,
 	iampolicy.KeyPrincipalAccount,
@@ -45,9 +46,10 @@ var allConditionKeys = []string{
 	iampolicy.KeyPassedToService,
 	iampolicy.KeyCurrentTime,
 	iampolicy.KeyEpochTime,
-	// Deliberately outside the allowlist: there is no MFA in the stack, so the
-	// key could never be true. It is here to prove the validator says no.
+	// Deliberately outside the allowlist: there is no MFA in the stack, so neither
+	// key could ever be supplied. They are here to prove the validator says no.
 	"aws:MultiFactorAuthPresent",
+	"aws:MultiFactorAuthAge",
 }
 
 // One value per operator that the leaf validator accepts, so a rejection can
@@ -69,6 +71,12 @@ var operatorValues = map[string]string{
 	iampolicy.OpDateLessThanEquals:        "2026-01-01T00:00:00Z",
 	iampolicy.OpDateGreaterThan:           "1767225600",
 	iampolicy.OpDateGreaterThanEquals:     "1767225600",
+	iampolicy.OpNumericEquals:             "100",
+	iampolicy.OpNumericNotEquals:          "100",
+	iampolicy.OpNumericLessThan:           "100",
+	iampolicy.OpNumericLessThanEquals:     "1767225600",
+	iampolicy.OpNumericGreaterThan:        "10.5",
+	iampolicy.OpNumericGreaterThanEquals:  "1e3",
 	// Implemented, but no supported key is ARN-valued, so every pair below is
 	// rejected until one is.
 	iampolicy.OpArnEquals:    "arn:aws:iam::000000000001:user/alice",
@@ -77,7 +85,7 @@ var operatorValues = map[string]string{
 	iampolicy.OpArnNotLike:   "arn:aws:iam::000000000001:user/*",
 	// Operators the evaluator does not implement. Accepting one would store a
 	// restriction that compares false forever.
-	"NumericLessThan": "3",
+	"BinaryEquals": "QmluYXJ5",
 }
 
 // withIfExists adds the IfExists form of every operator, so the gate below covers
@@ -113,12 +121,12 @@ func emittedKeys(t *testing.T) map[string]string {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: &mockIAMService{}}
 	union := make(map[string]string)
 	for name, principal := range principals {
-		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/", nil)
+		r := httptest.NewRequest(http.MethodPost, "/?prefix=home/&max-keys=100", nil)
 		r.TLS = &tls.ConnectionState{}
 		r.RemoteAddr = "10.4.1.9:52344"
 		// Resolved the way the middleware resolves it, so the gate cannot pass on
 		// a value only the test supplies.
-		userID, err := gw.principalUserID(principal)
+		userID, _, err := gw.principalUser(principal)
 		require.NoError(t, err)
 		principal.userID = userID
 		for key := range requestConditionKeys(r, principal) {
@@ -154,9 +162,10 @@ func TestRequestConditionKeys_MatchesTheDoorKeySet(t *testing.T) {
 		"the AWS gateway door key set changed: update predastore's mirror in "+
 			"internal/gate/conditionkeys_completeness_test.go and the door table in bluebottle's door_test.go")
 
-	// s3:prefix is the one key the S3 gate adds over this set, and it is absent
-	// here even when the request carries a prefix parameter.
+	// s3:prefix and s3:max-keys are the keys the S3 gate adds over this set, and
+	// they are absent here even when the request carries the parameters.
 	assert.NotContains(t, emitted, iampolicy.KeyS3Prefix)
+	assert.NotContains(t, emitted, iampolicy.KeyS3MaxKeys)
 }
 
 // The write path and the evaluator are the same allowlist or they are a bug:

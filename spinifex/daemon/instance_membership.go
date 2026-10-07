@@ -44,6 +44,10 @@ func runsOn(record *vm.InstanceRecord, nodeID string) bool {
 // drained for maintenance leaves them observed-stopped but still wanted — both
 // are recoveries. What is excluded is an instance nobody wants running: an
 // operator stop, or a terminate already under way.
+//
+// A fenced instance is excluded for the same reason the restore path excludes
+// it. The fence does not seal, so no node can show the volumes are mountable,
+// and taking it over is how an unproven state becomes a destroyed one.
 func recoverable(record *vm.InstanceRecord) bool {
 	if record == nil || record.Spec.DesiredState != vm.DesiredRunning {
 		return false
@@ -53,6 +57,9 @@ func recoverable(record *vm.InstanceRecord) bool {
 	}
 	switch record.Status.Status {
 	case vm.StateTerminated, vm.StateShuttingDown:
+		return false
+	}
+	if vm.VolumeFenced(record.Status.Instance) {
 		return false
 	}
 	return !storageFaulted(record)

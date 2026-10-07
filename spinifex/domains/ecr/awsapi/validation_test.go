@@ -21,7 +21,7 @@ func requireInvalidParameter(t *testing.T, err error, wantMessage string) {
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, awserrors.ErrorECRInvalidParameter, code)
 	assert.Equal(t, wantMessage, message)
 }
 
@@ -31,26 +31,45 @@ func TestValidateRepositoryName(t *testing.T) {
 	}{
 		{"pattern", "Bad_Name!", awsRepositoryNameMessage},
 		{"uppercase", "Team/App", awsRepositoryNameMessage},
-		{"missing", "", "1 validation error detected: Value null at 'repositoryName' failed to satisfy constraint: Member must not be null"},
-		{"too short", "a", "1 validation error detected: Value 'a' at 'repositoryName' failed to satisfy constraint: Member must have length greater than or equal to 2"},
-		{"too long", strings.Repeat("a", 257), "1 validation error detected: Value '" + strings.Repeat("a", 257) + "' at 'repositoryName' failed to satisfy constraint: Member must have length less than or equal to 256"},
+		{"missing", "", "Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must not be null'"},
+		{"too short", "a", "Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must have length greater than or equal to 2'"},
+		{"too long", strings.Repeat("a", 257), "Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must have length less than or equal to 256'"},
+		{"triple underscore", "a___b", awsRepositoryNameMessage},
+		{"underscore then hyphen", "a_-b", awsRepositoryNameMessage},
+		{"leading separator", "_a", awsRepositoryNameMessage},
+		{"trailing separator", "a_", awsRepositoryNameMessage},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			requireInvalidParameter(t, awsapi.ValidateRepositoryName(tc.input), tc.want)
 		})
 	}
-	assert.NoError(t, awsapi.ValidateRepositoryName("team/app"))
+	for _, name := range []string{"team/app", "a__b", "a--b", "a---b", "a/b__c", strings.Repeat("a", 256)} {
+		assert.NoError(t, awsapi.ValidateRepositoryName(name), "expected %q valid", name)
+	}
 }
 
 func TestValidateTags(t *testing.T) {
 	requireInvalidParameter(t,
 		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env")}, {Value: aws.String("prod")}}),
-		"1 validation error detected: Value null at 'tags.2.member.key' failed to satisfy constraint: Member must not be null")
-	requireInvalidParameter(t,
-		awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("")}}),
-		"1 validation error detected: Value '' at 'tags.1.member.key' failed to satisfy constraint: Member must have length greater than or equal to 1")
+		"Invalid parameter at 'tags.2.member.key' failed to satisfy constraint: 'Member must not be null'")
+	err := awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("")}})
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, "InvalidTagParameterException", code)
+	assert.Equal(t, "Tag parameters are invalid", message)
 	assert.NoError(t, awsapi.ValidateTags([]*ecr.Tag{{Key: aws.String("env"), Value: aws.String("")}}))
+}
+
+// The messages below are AWS's, captured from real ECR refusals.
+func TestConstraintHelpers_AWSMessages(t *testing.T) {
+	requireInvalidParameter(t, awsapi.RequiredParameterError("imageTagMutability"),
+		"Invalid parameter at 'imageTagMutability' failed to satisfy constraint: 'Member must not be null'")
+	requireInvalidParameter(t, awsapi.EnumValueError("imageTagMutability", awsapi.ImageTagMutabilityValues...),
+		"Invalid parameter at 'imageTagMutability' failed to satisfy constraint: 'Member must satisfy enum value set: [IMMUTABLE, MUTABLE, MUTABLE_WITH_EXCLUSION, IMMUTABLE_WITH_EXCLUSION]'")
+	requireInvalidParameter(t, awsapi.MaxItemsError("imageIds", 100),
+		"Invalid parameter at 'imageIds' failed to satisfy constraint: 'Member must have length less than or equal to 100'")
 }
 
 func TestResourceARNs_AmbiguousBodyNamesTheFault(t *testing.T) {

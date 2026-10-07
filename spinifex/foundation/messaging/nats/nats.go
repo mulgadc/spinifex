@@ -1,3 +1,5 @@
+// Package natsmsg holds the shared NATS plumbing: connecting with retry and
+// TLS, account-scoped request/reply and fan-out gathers, and their headers.
 package natsmsg
 
 import (

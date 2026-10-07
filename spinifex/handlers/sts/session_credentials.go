@@ -155,36 +155,91 @@ func (s *STSServiceImpl) RunJanitor(ctx context.Context) {
 			slog.Info("STS session credential janitor stopped")
 			return
 		case <-ticker.C:
-			s.sweepExpired(ctx, time.Now().UTC())
+			s.sweep(ctx, time.Now().UTC())
 		}
 	}
 }
 
-// sweepExpired deletes all records whose ExpiresAt is past the grace period.
-// Per-key errors are logged and skipped; returns the delete count.
-//
-// Deliberately on the raw handle rather than Store.List: the sweep needs the key
-// to delete it, and one undecodable record must not stop it expiring every
-// other credential.
-func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
+// sweep deletes every record past the grace period, and every unexpired record
+// whose principal no longer verifies: the retry path for a failed revocation at
+// deletion and for a mint that raced it. A verification fault keeps the record.
+func (s *STSServiceImpl) sweep(ctx context.Context, now time.Time) int {
 	cutoff := now.Add(-janitorGracePeriod)
 
+	var orphaned, faults int
+	deleted, err := s.deleteSessions(ctx, func(cred *SessionCredential) bool {
+		if cred.ExpiresAt.Before(cutoff) {
+			return true
+		}
+		_, verr := s.VerifySessionPrincipal(cred)
+		switch {
+		case verr == nil:
+			return false
+		case IsSessionPrincipalVerdict(verr):
+			orphaned++
+			return true
+		default:
+			faults++
+			return false
+		}
+	})
+	if err != nil {
+		slog.Warn("STS janitor: sweep incomplete", "err", err)
+	}
+	if faults > 0 {
+		slog.Warn("STS janitor: session principal verification failed; records kept", "count", faults)
+	}
+	if deleted > 0 {
+		slog.Info("session credentials swept", "count", deleted, "orphaned", orphaned)
+	}
+	return deleted
+}
+
+// RevokeUserSessions deletes the session records of a deleted user. A record
+// matches on UserID or, for records predating it, on name: names are unique per
+// account, so no live user can hold a session under the deleted user's name.
+func (s *STSServiceImpl) RevokeUserSessions(ctx context.Context, accountID, userName, userID string) (int, error) {
+	return s.deleteSessions(ctx, func(cred *SessionCredential) bool {
+		if cred.PrincipalType != principalTypeUser || cred.AccountID != accountID {
+			return false
+		}
+		return (userID != "" && cred.UserID == userID) || (userName != "" && cred.SessionName == userName)
+	})
+}
+
+// RevokeRoleSessions deletes the session records of a deleted role, matching on
+// RoleID or, for records predating it, on the underlying role ARN.
+func (s *STSServiceImpl) RevokeRoleSessions(ctx context.Context, accountID, roleARN, roleID string) (int, error) {
+	return s.deleteSessions(ctx, func(cred *SessionCredential) bool {
+		if cred.PrincipalType == principalTypeUser || cred.AccountID != accountID {
+			return false
+		}
+		return (roleID != "" && cred.RoleID == roleID) || (roleARN != "" && cred.UnderlyingRoleARN == roleARN)
+	})
+}
+
+// deleteSessions scans the bucket and deletes every record match selects. The
+// bucket is keyed by AKID, so selecting by anything else is a full scan.
+// Per-key failures are skipped and joined, so one bad record shields no other.
+//
+// Deliberately on the raw handle rather than Store.List: the scan needs the key
+// to delete it, and one undecodable record must not stop the rest.
+func (s *STSServiceImpl) deleteSessions(ctx context.Context, match func(*SessionCredential) bool) (int, error) {
 	bucket, err := s.sessions.KV(ctx)
 	if err != nil {
-		slog.Warn("STS janitor: open session credential bucket failed", "err", err)
-		return 0
+		return 0, fmt.Errorf("open session credential bucket: %w", err)
 	}
 
 	keys, err := kvutil.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return 0
+			return 0, nil
 		}
-		slog.Warn("STS janitor: list session credential keys failed", "err", err)
-		return 0
+		return 0, fmt.Errorf("list session credential keys: %w", err)
 	}
 
 	var deleted int
+	var errs []error
 	for _, key := range keys {
 		if key == kvutil.VersionKey {
 			continue
@@ -194,32 +249,24 @@ func (s *STSServiceImpl) sweepExpired(ctx context.Context, now time.Time) int {
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
-			slog.Warn("STS janitor: get session credential failed",
-				"key", key, "err", err)
+			errs = append(errs, fmt.Errorf("get session credential %s: %w", key, err))
 			continue
 		}
 
 		var cred SessionCredential
 		if err := json.Unmarshal(entry.Value(), &cred); err != nil {
-			slog.Warn("STS janitor: unmarshal session credential failed",
-				"key", key, "err", err)
+			errs = append(errs, fmt.Errorf("unmarshal session credential %s: %w", key, err))
 			continue
 		}
-
-		if !cred.ExpiresAt.Before(cutoff) {
+		if !match(&cred) {
 			continue
 		}
 
 		if err := bucket.Delete(ctx, key); err != nil {
-			slog.Warn("STS janitor: delete expired session credential failed",
-				"key", key, "err", err)
+			errs = append(errs, fmt.Errorf("delete session credential %s: %w", key, err))
 			continue
 		}
 		deleted++
 	}
-
-	if deleted > 0 {
-		slog.Info("session credentials swept", "count", deleted)
-	}
-	return deleted
+	return deleted, errors.Join(errs...)
 }

@@ -1,13 +1,17 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -1869,4 +1873,238 @@ func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
 
 	assert.Empty(t, read("stamp-node").VMS,
 		"the node key is a presence marker: carrying the running set is the cost the split removes")
+}
+
+// faultBucket creates a uniquely named bucket on the shared JetStream server
+// and wraps it so a test can fail individual KV methods.
+func faultBucket(t *testing.T) (jetstream.JetStream, *failingKV) {
+	t.Helper()
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	name := "fault-" + strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, t.Name())
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: name, History: 1})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = js.DeleteKeyValue(context.Background(), name) })
+	return js, newFailingKV(kv)
+}
+
+// newFaultInjectedJSM returns a manager whose instance-state, terminated and
+// cluster buckets all sit on one fault-injectable bucket with recovery off.
+func newFaultInjectedJSM(t *testing.T) (*JetStreamManager, *failingKV) {
+	t.Helper()
+	js, f := faultBucket(t)
+	m := &JetStreamManager{js: js, clusterKV: f}
+	m.setInstanceStateBucket(kvstore.NewOpenBucket(nil, f, instanceStateConfig()))
+	term := kvstore.NewOpenBucket(nil, f, terminatedInstanceConfig())
+	m.term = kvstore.On[vm.VM](term)
+	m.termRecords = kvstore.On[vm.InstanceRecord](term)
+	return m, f
+}
+
+func TestJetStreamManager_NilGuards(t *testing.T) {
+	m := &JetStreamManager{}
+	noop := func(*vm.VM) {}
+
+	assert.False(t, m.KVHealthy(), "a manager with no JetStream context cannot be healthy")
+
+	guards := map[string]func() error{
+		"WriteHeartbeat": func() error { return m.WriteHeartbeat(&Heartbeat{Node: "n"}) },
+		"ReadHeartbeat":  func() error { _, err := m.ReadHeartbeat("n"); return err },
+		"WriteClusterShutdown": func() error {
+			return m.WriteClusterShutdown(&ClusterShutdownState{})
+		},
+		"UpdateClusterShutdown": func() error {
+			_, err := m.UpdateClusterShutdown(func(*ClusterShutdownState) {})
+			return err
+		},
+		"UpdateMgmtIPAM": func() error {
+			_, err := m.UpdateMgmtIPAM("10.0.0.0/24", func(*MgmtIPRecord) {}, true)
+			return err
+		},
+		"ReadClusterShutdown":   func() error { _, err := m.ReadClusterShutdown(); return err },
+		"DeleteClusterShutdown": m.DeleteClusterShutdown,
+		"WriteShutdownMarker":   func() error { return m.WriteShutdownMarker("n") },
+		"ReadShutdownMarker":    func() error { _, err := m.ReadShutdownMarker("n"); return err },
+		"DeleteShutdownMarker":  func() error { return m.DeleteShutdownMarker("n") },
+		"WriteNodeMarker":       func() error { return m.WriteNodeMarker("n") },
+		"ClaimStoppedInstance":  func() error { _, err := m.ClaimStoppedInstance("i-1"); return err },
+		"ClaimRecoverableInstance": func() error {
+			_, err := m.ClaimRecoverableInstance("i-1", "a", "b")
+			return err
+		},
+		"ReleaseRecoveredInstance": func() error { return m.ReleaseRecoveredInstance("i-1", "a", "b") },
+		"AbandonRecovery": func() error {
+			_, err := m.AbandonRecovery("i-1", "a", "code", "reason")
+			return err
+		},
+		"UpdateStoppedInstance": func() error { _, err := m.UpdateStoppedInstance("i-1", noop); return err },
+		"WriteTerminatedInstance": func() error {
+			return m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1"})
+		},
+		"UpdateTerminatedInstance": func() error {
+			_, err := m.UpdateTerminatedInstance("i-1", noop)
+			return err
+		},
+	}
+	for name, call := range guards {
+		t.Run(name, func(t *testing.T) {
+			assert.ErrorContains(t, call(), "not initialized")
+		})
+	}
+}
+
+func TestJetStreamManager_InitClusterStateBucket_NoJetStream(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc)
+	require.NoError(t, err)
+	require.Error(t, jsm.InitClusterStateBucket())
+	assert.Nil(t, jsm.clusterKV, "a failed init must not leave a half-open handle")
+}
+
+func TestJetStreamManager_ClusterStateReads(t *testing.T) {
+	m, f := newFaultInjectedJSM(t)
+
+	t.Run("heartbeat missing", func(t *testing.T) {
+		_, err := m.ReadHeartbeat("absent")
+		assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	})
+
+	t.Run("heartbeat corrupt", func(t *testing.T) {
+		_, err := f.Put(t.Context(), "heartbeat.corrupt", []byte("{"))
+		require.NoError(t, err)
+		_, err = m.ReadHeartbeat("corrupt")
+		assert.Error(t, err)
+	})
+
+	t.Run("cluster shutdown missing then corrupt", func(t *testing.T) {
+		_, err := m.ReadClusterShutdown()
+		require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+		_, err = f.Put(t.Context(), "cluster.shutdown", []byte("{"))
+		require.NoError(t, err)
+		_, err = m.ReadClusterShutdown()
+		assert.Error(t, err)
+		require.NoError(t, m.DeleteClusterShutdown())
+	})
+
+	t.Run("update cluster shutdown merges an ack", func(t *testing.T) {
+		require.NoError(t, m.WriteClusterShutdown(&ClusterShutdownState{
+			Initiator: "n1", Phase: "drain", NodesTotal: 2, NodesAcked: map[string]string{},
+		}))
+		got, err := m.UpdateClusterShutdown(func(s *ClusterShutdownState) {
+			s.NodesAcked["n2"] = "done"
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "done", got.NodesAcked["n2"])
+
+		stored, err := m.ReadClusterShutdown()
+		require.NoError(t, err)
+		assert.Equal(t, "drain", stored.Phase)
+		assert.Equal(t, map[string]string{"n2": "done"}, stored.NodesAcked)
+	})
+
+	t.Run("kv errors surface", func(t *testing.T) {
+		f.setFail("Get", true)
+		f.setFail("Delete", true)
+		t.Cleanup(func() { f.setFail("Get", false); f.setFail("Delete", false) })
+
+		_, err := m.ReadShutdownMarker("n1")
+		require.ErrorIs(t, err, errInjected, "only a missing key reads as no marker")
+		require.ErrorIs(t, m.DeleteClusterShutdown(), errInjected)
+		require.ErrorIs(t, m.DeleteShutdownMarker("n1"), errInjected)
+	})
+}
+
+func TestJetStreamManager_WriteNodeMarkerBestEffort_Timeout(t *testing.T) {
+	clustersize.DeclareForTest(t, 1)
+	nc, err := nats.Connect(sharedJSNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	jsm, err := NewJetStreamManager(nc)
+	require.NoError(t, err)
+	require.NoError(t, jsm.InitKVBucket())
+
+	obs := &fakeKVObserver{}
+	jsm.SetSyncObserver(obs)
+
+	jsm.WriteNodeMarkerBestEffort("obs-timeout", time.Nanosecond)
+
+	successes, failures := obs.snapshot()
+	assert.Empty(t, successes)
+	require.Len(t, failures, 1)
+	assert.ErrorIs(t, failures[0].err, context.DeadlineExceeded)
+}
+
+func TestJetStreamManager_InstanceRecordKVErrors(t *testing.T) {
+	m, f := newFaultInjectedJSM(t)
+
+	require.NoError(t, m.WriteStoppedInstance("i-stopped", &vm.VM{ID: "i-stopped", InstanceType: "t3.micro"}))
+	require.NoError(t, m.WriteInstanceRecord("i-run", &vm.InstanceRecord{
+		Metadata: resource.Metadata{Name: "i-run", AccountID: "111122223333"},
+		Spec:     vm.InstanceSpec{InstanceType: "t3.micro", DesiredState: vm.DesiredRunning},
+		Status:   vm.InstanceStatus{Status: vm.StateRunning, LastNode: "node-1"},
+	}))
+	require.NoError(t, m.WriteNodeMarker("node-1"))
+
+	t.Run("read failures", func(t *testing.T) {
+		f.setFail("Get", true)
+		t.Cleanup(func() { f.setFail("Get", false) })
+
+		_, err := m.ClaimStoppedInstance("i-stopped")
+		require.ErrorIs(t, err, errInjected)
+		_, err = m.ClaimRecoverableInstance("i-run", "node-1", "node-2")
+		require.ErrorIs(t, err, errInjected)
+		require.ErrorIs(t, m.ReleaseRecoveredInstance("i-run", "node-2", "node-1"), errInjected)
+		_, err = m.AbandonRecovery("i-run", "node-1", "code", "reason")
+		require.ErrorIs(t, err, errInjected)
+	})
+
+	t.Run("write failures are not lost claims", func(t *testing.T) {
+		f.setFail("Update", true)
+		t.Cleanup(func() { f.setFail("Update", false) })
+
+		_, err := m.ClaimStoppedInstance("i-stopped")
+		require.ErrorIs(t, err, errInjected)
+		assert.NotErrorIs(t, err, vm.ErrStoppedInstanceClaimed)
+		_, err = m.ClaimRecoverableInstance("i-run", "node-1", "node-2")
+		require.ErrorIs(t, err, errInjected)
+		assert.NotErrorIs(t, err, vm.ErrRecoveryClaimLost)
+
+		rec, err := m.LoadInstanceRecord("i-run")
+		require.NoError(t, err)
+		assert.Equal(t, "node-1", rec.Status.LastNode, "a failed claim must leave the owner unchanged")
+	})
+
+	t.Run("load state listing fails", func(t *testing.T) {
+		f.setFail("ListKeys", true)
+		f.setFail("Keys", true)
+		t.Cleanup(func() { f.setFail("ListKeys", false); f.setFail("Keys", false) })
+
+		vms, known, err := m.LoadState("node-1")
+		require.ErrorIs(t, err, errInjected)
+		assert.False(t, known, "a node whose records cannot be read is not a node with no instances")
+		assert.Nil(t, vms)
+	})
+
+	t.Run("terminated write and delete", func(t *testing.T) {
+		f.setFail("Get", true)
+		f.setFail("Delete", true)
+		t.Cleanup(func() { f.setFail("Get", false); f.setFail("Delete", false) })
+
+		require.ErrorIs(t, m.WriteTerminatedInstance("i-term", &vm.VM{ID: "i-term"}), errInjected)
+		require.ErrorIs(t, m.DeleteTerminatedInstance("i-term"), errInjected)
+	})
 }

@@ -18,9 +18,8 @@ import (
 	"time"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats-server/v2/server"
-	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,24 +27,10 @@ import (
 
 // setupEmbeddedNATS starts an embedded NATS server for testing. JetStream is
 // on because volume leases live in a KV bucket, and a daemon that cannot take
-// one refuses to open an engine.
+// one refuses to open an engine. The helper also declares a one-node cluster.
 func setupEmbeddedNATS(t *testing.T) (*server.Server, string) {
-	opts := &server.Options{
-		Host:      "127.0.0.1",
-		Port:      -1, // Random available port
-		JetStream: true,
-		StoreDir:  t.TempDir(),
-	}
-	ns := natstest.RunServer(opts)
-
-	if ns == nil {
-		t.Fatal("Failed to start embedded NATS server")
-	}
-	t.Cleanup(ns.Shutdown)
-
-	// One embedded server is a one-node cluster, and bucket creation refuses to
-	// guess a replica count it was never told.
-	clustersize.DeclareForTest(t, 1)
+	t.Helper()
+	ns, _, _ := testutil.StartTestJetStream(t)
 	return ns, ns.ClientURL()
 }
 

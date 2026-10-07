@@ -188,7 +188,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	// Progress is polled, so the record has to reach a terminal state on its own.
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == DeletionStateCompleted
-	}, 60*time.Second, 100*time.Millisecond)
+	}, 60*time.Second, 10*time.Millisecond)
 
 	job := describeDeletion(t, gw, account.AccountID)
 	assert.Equal(t, response.DeletionID, job.DeletionID)
@@ -213,7 +213,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == DeletionStateCompleted
-	}, 60*time.Second, 100*time.Millisecond)
+	}, 60*time.Second, 10*time.Millisecond)
 
 	second, err := gw.adminDeleteAccount(t.Context(), body)
 	require.NoError(t, err)

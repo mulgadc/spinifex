@@ -333,7 +333,8 @@ func TestDecompressXz_WritesSparseHoles(t *testing.T) {
 
 	const zeroRun = 8 << 20
 	payload := append([]byte("MULGA-SPARSE-FIXTURE-HEADER"), make([]byte, zeroRun)...)
-	compressed := pipeCompress(t, "xz", []string{"-z", "-c"}, payload)
+	// The preset only affects how fast the fixture compresses, not the decompress path under test.
+	compressed := pipeCompress(t, "xz", []string{"-0", "-z", "-c"}, payload)
 
 	srcDir := t.TempDir()
 	outDir := t.TempDir()

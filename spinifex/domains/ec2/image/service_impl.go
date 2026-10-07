@@ -901,6 +901,8 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		ImageOwnerAlias: accountID,
 		CreationDate:    time.Now().UTC(),
 		BootMode:        srcMeta.BootMode,
+		Distro:          srcMeta.Distro,
+		DistroFamily:    srcMeta.DistroFamily,
 		Tags:            tags,
 		SourceDigest:    srcMeta.SourceDigest,
 		// Zero-copy: the new config shares the source's already-durable

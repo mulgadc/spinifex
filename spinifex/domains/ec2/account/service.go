@@ -1,3 +1,6 @@
+// Package account implements the EC2 account-settings actions (EBS
+// encryption by default, serial console access): the AccountSettingsService
+// contract, its daemon-side JetStream KV implementation and its NATS client.
 package account
 
 import (

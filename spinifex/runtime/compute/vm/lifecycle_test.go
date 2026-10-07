@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1437,7 +1438,15 @@ func TestNewQMPClientWithHandshake_RetriesTransientConnect(t *testing.T) {
 	unixLn.SetUnlinkOnClose(false)
 	require.NoError(t, stale.Close())
 
-	stop := startDelayedQMPListener(t, sockPath, 150*time.Millisecond)
+	var dials atomic.Int32
+	orig := qmpDial
+	t.Cleanup(func() { qmpDial = orig })
+	qmpDial = func(path string, greetingTimeout time.Duration) (*qmp.QMPClient, error) {
+		dials.Add(1)
+		return orig(path, greetingTimeout)
+	}
+
+	stop := startDelayedQMPListener(t, sockPath, 60*time.Millisecond)
 	defer stop()
 
 	instance := &VM{ID: "i-retry", Config: Config{QMPSocket: sockPath}}
@@ -1445,6 +1454,8 @@ func TestNewQMPClientWithHandshake_RetriesTransientConnect(t *testing.T) {
 	require.NoError(t, err, "dial must retry past the refused window")
 	require.NotNil(t, client)
 	_ = client.Conn.Close()
+	assert.Greater(t, dials.Load(), int32(1),
+		"the first dial must hit the refused window, so success needs a retry")
 }
 
 // startRecordingQMPListener is startWorkingQMPListener with a tally: it counts

@@ -36,9 +36,9 @@ func TestPutImageTagMutability_ValidatesRequest(t *testing.T) {
 		body string
 		code string
 	}{
-		{"malformed", `{`, awserrors.ErrorInvalidParameterValue},
-		{"missing value", `{"repositoryName":"team/app"}`, awserrors.ErrorInvalidParameterValue},
-		{"invalid value", `{"repositoryName":"team/app","imageTagMutability":"NOPE"}`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", `{`, awserrors.ErrorECRInvalidParameter},
+		{"missing value", `{"repositoryName":"team/app"}`, awserrors.ErrorECRInvalidParameter},
+		{"invalid value", `{"repositoryName":"team/app","imageTagMutability":"NOPE"}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", `{"repositoryName":"team/app","registryId":"999999999999","imageTagMutability":"IMMUTABLE"}`, awserrors.ErrorAccessDenied},
 		{"missing repository", `{"repositoryName":"team/missing","imageTagMutability":"IMMUTABLE"}`, awserrors.ErrorRepositoryNotFound},
 	}

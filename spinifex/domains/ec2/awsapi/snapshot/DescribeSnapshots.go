@@ -1,3 +1,5 @@
+// Package snapshot implements the EC2 EBS snapshot actions: it
+// validates each request and forwards it to the snapshot service over NATS.
 package snapshot
 
 import (

@@ -1,3 +1,5 @@
+// Package tagmirror applies EC2 CreateTags and DeleteTags changes to the tag
+// maps mirrored on resource records in JetStream KV.
 package tagmirror
 
 import (

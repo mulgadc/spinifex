@@ -77,6 +77,21 @@ func TestVerifySessionPrincipal_UnchangedUser_ReturnsLiveID(t *testing.T) {
 	assert.Empty(t, got.RoleID)
 }
 
+// A user session reports the stored ARN, path included, so a door naming the
+// session's principal agrees with the IAM record.
+func TestVerifySessionPrincipal_PathedUser_ReturnsStoredARN(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	_, err := svc.iamSvc.CreateUser(testCallerAccountID, &iam.CreateUserInput{
+		UserName: aws.String(testCallerUserName), Path: aws.String("/eng/"),
+	})
+	require.NoError(t, err)
+	cred := mintUserSession(t, svc, testCallerAccountID, testCallerUserName)
+
+	got, err := svc.VerifySessionPrincipal(cred)
+	require.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::"+testCallerAccountID+":user/eng/"+testCallerUserName, got.UserARN)
+}
+
 func TestVerifySessionPrincipal_UnchangedRole_ReturnsLiveRecord(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))

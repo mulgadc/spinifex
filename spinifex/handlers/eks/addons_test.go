@@ -45,6 +45,7 @@ func setupAddonService(t *testing.T) (*EKSServiceImpl, *fakeAddonInstaller) {
 const albController = "aws-load-balancer-controller"
 
 func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 
 	out, err := svc.DescribeAddonVersions(context.Background(), &eks.DescribeAddonVersionsInput{}, testAccountID)
@@ -72,6 +73,7 @@ func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 }
 
 func TestCreateAddon_UnknownClusterIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("missing"), AddonName: aws.String(albController),
@@ -80,6 +82,7 @@ func TestCreateAddon_UnknownClusterIsNotFound(t *testing.T) {
 }
 
 func TestCreateAddon_UnknownAddonRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupAddonService(t)
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("not-a-real-addon"),
@@ -88,6 +91,7 @@ func TestCreateAddon_UnknownAddonRejected(t *testing.T) {
 }
 
 func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupAddonService(t)
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
@@ -97,6 +101,7 @@ func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
 }
 
 func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
+	t.Parallel()
 	svc, fake := setupAddonService(t)
 	spec, _ := lookupAddon(albController)
 
@@ -123,6 +128,7 @@ func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
 }
 
 func TestCreateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
+	t.Parallel()
 	svc, fake := setupAddonService(t)
 	fake.installErr = errors.New("delivery bus unreachable")
 
@@ -139,6 +145,7 @@ func TestCreateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
 }
 
 func TestAddon_DescribeListDelete(t *testing.T) {
+	t.Parallel()
 	svc, fake := setupAddonService(t)
 
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
@@ -169,6 +176,7 @@ func TestAddon_DescribeListDelete(t *testing.T) {
 }
 
 func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupAddonService(t)
 	_, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
@@ -181,6 +189,7 @@ func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
 }
 
 func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
+	t.Parallel()
 	svc, fake := setupAddonService(t)
 	spec, _ := lookupAddon("argocd")
 
@@ -209,6 +218,7 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 }
 
 func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupAddonService(t)
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
@@ -223,6 +233,7 @@ func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
 }
 
 func TestUpdateAddon_MissingIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc, _ := setupAddonService(t)
 	_, err := svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
@@ -233,6 +244,7 @@ func TestUpdateAddon_MissingIsNotFound(t *testing.T) {
 // The default (uninjected) installer stages a manifest in KV that the VM-side
 // delivery slice consumes.
 func TestStagingInstaller_StagesManifest(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 
@@ -251,6 +263,7 @@ func TestStagingInstaller_StagesManifest(t *testing.T) {
 }
 
 func TestListStagedAddonManifests(t *testing.T) {
+	t.Parallel()
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 

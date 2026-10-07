@@ -23,6 +23,7 @@ func newStuckTerminateReaper(t *testing.T, cleaner InstanceCleaner) (*StuckTermi
 }
 
 func TestStuckTerminateReaper(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 	t.Run("force-completes a terminate wedged past the timeout, reclaiming DoT volume space", func(t *testing.T) {
 		cleaner := &recordingInstanceCleaner{}
 		reaper, store := newStuckTerminateReaper(t, cleaner)
@@ -46,9 +47,9 @@ func TestStuckTerminateReaper(t *testing.T) {
 			ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
 		})
 
+		t.Cleanup(func() { _ = cmd.Process.Kill(); wg.Wait() })
 		reaped, err := reaper.Sweep(context.Background())
 		require.NoError(t, err)
-		wg.Wait()
 		assert.Equal(t, 1, reaped, "a terminate wedged past the timeout must be force-completed")
 
 		assert.False(t, hostprocess.ProcessAlive(pid), "the wedged QEMU must be force-killed")

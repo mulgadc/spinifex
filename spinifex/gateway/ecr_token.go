@@ -82,7 +82,7 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	callerARN, err := buildCallerARN(principal.accountID, principal.identity, principal.principalType, principal.assumedRoleARN)
+	callerARN, err := buildCallerARN(principal.accountID, principal.identity, principal.principalType, principal.assumedRoleARN, principal.userARN)
 	if err != nil {
 		slog.Error("ECR token endpoint: cannot build canonical caller ARN", "err", err)
 		ecrregistry.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "token mint failed")

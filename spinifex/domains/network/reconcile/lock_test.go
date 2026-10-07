@@ -54,7 +54,7 @@ func TestAcquireLeader_ReleaseSurvivesCancelledContext(t *testing.T) {
 }
 
 // shrinkLeaderTiming compresses the leader key's lifetime so a test can outlast
-// the TTL in a second rather than a minute.
+// the TTL in under a second rather than a minute.
 func shrinkLeaderTiming(t *testing.T, ttl, renew time.Duration) {
 	t.Helper()
 	oldTTL, oldRenew := reconcileLeaderTTL, reconcileLeaderRenew
@@ -67,14 +67,14 @@ func shrinkLeaderTiming(t *testing.T, ttl, renew time.Duration) {
 // this a peer elects itself mid-pass and two reconcilers race the same OVN NB.
 func TestAcquireLeader_RenewsKeyBeyondTTL(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	shrinkLeaderTiming(t, time.Second, 100*time.Millisecond)
+	shrinkLeaderTiming(t, 300*time.Millisecond, 100*time.Millisecond)
 
 	release, ok := AcquireLeader(t.Context(), nc, KVBucketVPCDReconcile, "node-1")
 	require.True(t, ok)
 	defer release()
 
 	// Well past the TTL: an unrenewed key would have expired by now.
-	time.Sleep(2500 * time.Millisecond)
+	time.Sleep(750 * time.Millisecond)
 
 	loserRelease, ok := AcquireLeader(t.Context(), nc, KVBucketVPCDReconcile, "node-2")
 	assert.False(t, ok, "leader key expired mid-pass: a peer can now reconcile concurrently")

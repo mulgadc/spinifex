@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ModifySecurityGroupRules implements the EC2 ModifySecurityGroupRules action. It requires
+// GroupId and at least one rule, and rejects malformed rule IDs before calling NATS.
 func ModifySecurityGroupRules(ctx context.Context, input *ec2.ModifySecurityGroupRulesInput, natsConn *nats.Conn, accountID string) (ec2.ModifySecurityGroupRulesOutput, error) {
 	var output ec2.ModifySecurityGroupRulesOutput
 	if input == nil {

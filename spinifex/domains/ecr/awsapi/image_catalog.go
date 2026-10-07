@@ -57,7 +57,7 @@ func listImageRecords(ctx context.Context, catalog ImageCatalog, accountID, repo
 	}
 	records, err := catalog.ListImages(ctx, accountID, repository)
 	if errors.Is(err, handlers_ecr.ErrNotFound) {
-		return nil, errors.New(awserrors.ErrorRepositoryNotFound)
+		return nil, RepositoryNotFoundError(accountID, repository)
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "ECR image action: list images failed", "repository", repository, "err", err)

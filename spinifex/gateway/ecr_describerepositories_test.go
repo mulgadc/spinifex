@@ -152,7 +152,7 @@ func TestDescribeRepositories_MissingNamedRepo(t *testing.T) {
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
-	assert.Equal(t, "RepositoryNotFoundException", err.Error())
+	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDescribeRepositories_CrossAccountDenied(t *testing.T) {

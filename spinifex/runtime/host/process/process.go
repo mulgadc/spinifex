@@ -1,3 +1,5 @@
+// Package process starts, signals and waits on host processes, and manages
+// the PID files that track them.
 package process
 
 import (
@@ -87,6 +89,9 @@ const (
 	killProcessGracePeriod  = 120 * time.Second
 )
 
+// KillProcess sends SIGTERM to pid and waits up to 120s for it to exit before
+// sending SIGKILL. It errors if the process cannot be signaled, including one
+// that has already exited.
 func KillProcess(pid int) error {
 	return killProcessWithTiming(pid, killProcessPollInterval, killProcessGracePeriod)
 }

@@ -66,15 +66,15 @@ const (
 	instanceStateTerminated = "terminated"
 )
 
-// The VM's EC2 lifecycle state, fanned out across every host so a DB VM is
-// observed wherever it landed. Nil disables the VM half of the check.
+// InstanceStateResolver reports the VM's EC2 lifecycle state, fanned out across every host so a DB VM
+// is observed wherever it landed. Nil disables the VM half of the check.
 type InstanceStateResolver interface {
 	InstanceState(ctx context.Context, instanceID, accountID string) (string, error)
 }
 
-// The leader-elected RDS control loop. One node holds the lease and does the
-// control work; every node keeps serving the API, so a leaderless gap delays a
-// status transition without failing a request.
+// Reconciler is the leader-elected RDS control loop. One node holds the lease and does the control
+// work; every node keeps serving the API, so a leaderless gap delays a status transition without
+// failing a request.
 //
 // Its responsibilities are the transitions no single API call can finish — the
 // ones it drives itself and the ones whose caller died partway through — plus
@@ -100,7 +100,8 @@ type Reconciler struct {
 	systemSGID string
 }
 
-// holder identifies this daemon in the lease.
+// NewReconciler returns a Reconciler for svc; holder identifies this daemon in the lease. A bad lease
+// config is kept, and Run logs it and returns.
 func NewReconciler(svc *Service, holder string) *Reconciler {
 	r := &Reconciler{svc: svc, holder: holder, reportedPending: make(map[string]string)}
 	r.lease, r.leaseErr = kvlease.New(kvlease.Config{
@@ -115,8 +116,8 @@ func NewReconciler(svc *Service, holder string) *Reconciler {
 	return r
 }
 
-// Drives the leadership and reconcile loop until ctx is cancelled. Intended as
-// a daemon-boot goroutine; panics are the caller's recover concern.
+// Run drives the leadership and reconcile loop until ctx is canceled. Intended as a daemon-boot
+// goroutine; panics are the caller's recover concern.
 func (r *Reconciler) Run(ctx context.Context) {
 	if r.leaseErr != nil {
 		slog.ErrorContext(ctx, "rds reconciler: lease config invalid", "holder", r.holder, "err", r.leaseErr)
@@ -168,9 +169,9 @@ func (r *Reconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
 	return revisit, nil
 }
 
-// The shared GC backstop's cluster-wide gate. The reconciler's lease is already
-// cluster-singular and held continuously rather than claimed per sweep, so
-// holding it is the whole answer and there is nothing for the caller to release.
+// AcquireClusterLease is the shared GC backstop's cluster-wide gate. The reconciler's lease is already
+// cluster-singular and held continuously rather than claimed per sweep, so holding it is the whole
+// answer and the returned release func is a no-op.
 func (r *Reconciler) AcquireClusterLease() (func(), bool) {
 	return func() {}, r.lease.Held()
 }
@@ -870,8 +871,9 @@ type describeInstanceState struct {
 
 var _ InstanceStateResolver = (*describeInstanceState)(nil)
 
-// The VM runs in the system account, so the describe is issued there; the
-// customer account cannot see a platform-managed instance.
+// NewDescribeInstanceState returns an InstanceStateResolver backed by DescribeInstances. The VM runs in
+// the system account, so the describe is issued there; the customer account cannot see a
+// platform-managed instance.
 func NewDescribeInstanceState(describe func(*ec2.DescribeInstancesInput, string) (*ec2.DescribeInstancesOutput, error)) InstanceStateResolver {
 	return &describeInstanceState{describe: describe}
 }

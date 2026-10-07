@@ -147,6 +147,12 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 
 		sdkProfile, err := s.listedProfileToSDK(ctx, accountID, &profile)
 		if err != nil {
+			// One dangling role reference must not hide every other profile in the account.
+			if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorIAMNoSuchEntity {
+				slog.Warn("ListInstanceProfiles: skipping profile whose attached role no longer exists",
+					"key", key, "roleName", profile.RoleName)
+				continue
+			}
 			return nil, err
 		}
 		profiles = append(profiles, sdkProfile)
@@ -162,17 +168,16 @@ func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.Dele
 	ctx := context.Background()
 	profileName := *input.InstanceProfileName
 
-	profile, err := s.getInstanceProfile(ctx, accountID, profileName)
+	// Revision-guarded, so a role attached after the check sends the delete back through it.
+	_, err := kvutil.DeleteIf(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName),
+		func(p *InstanceProfile) error {
+			if p.RoleName != "" {
+				return errors.New(awserrors.ErrorIAMDeleteConflict)
+			}
+			return nil
+		})
 	if err != nil {
 		return nil, err
-	}
-
-	if profile.RoleName != "" {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
-	}
-
-	if err := s.instanceProfilesBucket.Delete(ctx, accountID+"."+profileName); err != nil {
-		return nil, fmt.Errorf("delete instance profile: %w", err)
 	}
 
 	slog.Info("IAM instance profile deleted", "accountID", accountID, "instanceProfileName", profileName)
@@ -372,7 +377,12 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 // re-reading and re-running mutate when a concurrent writer wins the race.
 // mutate reports whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
-	_, err := kvutil.Update(ctx, s.instanceProfilesBucket, accountID+"."+profileName, kvutil.CASConfig{
+	_, err := kvutil.Update(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName), mutate)
+	return err
+}
+
+func (s *IAMServiceImpl) instanceProfileCASConfig(accountID, profileName string) kvutil.CASConfig {
+	return kvutil.CASConfig{
 		Attempts: instanceProfileCASMaxRetries,
 		NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity),
 		Exhausted: func(string, int) error {
@@ -380,8 +390,7 @@ func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID
 				"accountID", accountID, "instanceProfileName", profileName, "attempts", instanceProfileCASMaxRetries)
 			return errors.New(awserrors.ErrorServerInternal)
 		},
-	}, mutate)
-	return err
+	}
 }
 
 // profileToSDK converts the internal InstanceProfile to the AWS SDK shape.

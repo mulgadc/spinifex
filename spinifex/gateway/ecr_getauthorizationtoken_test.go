@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,6 +60,52 @@ func TestGetAuthorizationToken_MintsUsableToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ecrTestAccount, claims.AccountID)
 	assert.Equal(t, "arn:aws:iam::"+ecrTestAccount+":user/dev", claims.Subject)
+}
+
+// The mint and verify halves agree on a pathed user: the token is minted for the
+// stored ARN the middleware resolved, and verifies against the same record.
+func TestGetAuthorizationToken_PathedUserRoundTrips(t *testing.T) {
+	iamSvc := newECRMockIAMService()
+	seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
+	iamSvc.users[ecrPrincipalTestAccount+"|dev"].Arn = aws.String(ecrPathedUserARN)
+	allow, _ := allowAllIAMService().getUserPoliciesFn(ecrPrincipalTestAccount, "dev")
+	iamSvc.userPolicies[ecrPrincipalTestAccount+"|dev"] = allow
+	iss, verify := newECRAuth(t)
+	endpoint := awsapi.RepositoryEndpoint{Region: ecrTestRegion, ServicesDomain: ecrTestSuffix}
+	gw := withECR(&GatewayConfig{
+		Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+		ECRTokenIssuer: iss, ECRTokenVerifier: verify, DisableLogging: true,
+		IAMService: iamSvc,
+	}, awsapi.Deps{AuthorizationToken: awsapi.NewAuthorizationTokenActionService(iss, endpoint)})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+	ctx := context.WithValue(req.Context(), ctxAccountID, ecrPrincipalTestAccount)
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+	ctx = context.WithValue(ctx, ctxIdentity, "dev")
+	ctx = context.WithValue(ctx, ctxUserARN, ecrPathedUserARN)
+	ctx = context.WithValue(ctx, ctxAccessKey, ecrPrincipalTestAKID)
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".GetAuthorizationToken")
+	w := httptest.NewRecorder()
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var out struct {
+		AuthorizationData []struct {
+			AuthorizationToken string `json:"authorizationToken"`
+		} `json:"authorizationData"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	require.Len(t, out.AuthorizationData, 1)
+	decoded, err := base64.StdEncoding.DecodeString(out.AuthorizationData[0].AuthorizationToken)
+	require.NoError(t, err)
+	_, jwtStr, _ := strings.Cut(string(decoded), ":")
+
+	claims, err := verify.Verify(jwtStr)
+	require.NoError(t, err)
+	assert.Equal(t, ecrPathedUserARN, claims.Subject)
+	got, err := gw.resolveECRPrincipal(claims)
+	require.NoError(t, err)
+	assert.Equal(t, ecrPathedUserARN, got.userARN)
 }
 
 func TestGetAuthorizationToken_ProxyEndpointCarriesPort(t *testing.T) {

@@ -11,12 +11,13 @@ import (
 // ECS/EKS ARNs, so resource-scoped IAM policies and Terraform state round-trip
 // against the real service.
 
-// The one place the ARN shape is written.
+// FormatARN builds arn:aws:rds:{region}:{account}:{kind}:{identifier}; it is the one place the ARN
+// shape is written.
 func FormatARN(kind ResourceKind, region, accountID, identifier string) string {
 	return fmt.Sprintf("arn:aws:rds:%s:%s:%s:%s", region, accountID, kind, identifier)
 }
 
-// The resource-type segment of an RDS ARN, and the key the tag registry and
+// ResourceKind is the resource-type segment of an RDS ARN, and the key the tag registry and
 // resource-scoped authorization dispatch on.
 type ResourceKind string
 
@@ -37,8 +38,8 @@ func validResourceKind(kind ResourceKind) bool {
 	}
 }
 
-// An ARN split into the parts a caller acts on. Partition and service are
-// validated rather than returned: only "arn:aws:rds" is ever accepted.
+// ParsedARN is an ARN split into the parts a caller acts on. Partition and service are validated rather
+// than returned: only "arn:aws:rds" is ever accepted.
 type ParsedARN struct {
 	Region     string
 	AccountID  string
@@ -49,9 +50,9 @@ type ParsedARN struct {
 // arn:aws:rds:{region}:{accountID}:{kind}:{identifier}
 const arnSegmentCount = 7
 
-// Parses one of the four supported RDS ARNs and validates it belongs to the caller.
-// Region and account are checked here rather than at policy evaluation, so a
-// foreign-account reference never reaches the evaluator at all.
+// ParseARN parses one of the four supported RDS ARNs and validates it belongs to the caller. Region and
+// account are checked here rather than at policy evaluation, so a foreign-account reference never
+// reaches the evaluator at all.
 func ParseARN(arn, region, accountID string) (ParsedARN, error) {
 	// SplitN leaves an automated snapshot's rds: prefix in the identifier. Other
 	// resource kinds still reject that extra separator below.

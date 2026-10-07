@@ -70,7 +70,7 @@ func TestEvaluateLifecyclePreview_MapsPolicyAndRepositoryFailures(t *testing.T) 
 	}{
 		{"missing policy", fakeLifecyclePolicyStore{err: handlers_ecr.ErrNotFound}, fakeImageCatalog{}, `{"repositoryName":"team/app"}`, awserrors.ErrorLifecyclePolicyNotFound},
 		{"missing repository", fakeLifecyclePolicyStore{}, fakeImageCatalog{err: handlers_ecr.ErrNotFound}, `{"repositoryName":"team/app","lifecyclePolicyText":"{}"}`, awserrors.ErrorRepositoryNotFound},
-		{"invalid policy", fakeLifecyclePolicyStore{}, fakeImageCatalog{}, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorInvalidParameterValue},
+		{"invalid policy", fakeLifecyclePolicyStore{}, fakeImageCatalog{}, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

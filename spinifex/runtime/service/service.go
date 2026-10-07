@@ -1,3 +1,5 @@
+// Package service maps a service name to the Spinifex component the CLI
+// launches for it.
 package service
 
 import (
@@ -15,6 +17,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 )
 
+// Service is a Spinifex component the CLI can launch. Start runs it and
+// returns the PID written to its pid file.
 type Service interface {
 	Start() (int, error)
 }
@@ -32,6 +36,8 @@ var (
 	_ Service = (*qmpcollector.Service)(nil)
 )
 
+// New returns the Service registered under btype (nats, viperblock, awsgw and
+// so on), passing config through to its constructor. Unknown types error.
 func New(btype string, config any) (Service, error) {
 	switch btype {
 	case "nats":

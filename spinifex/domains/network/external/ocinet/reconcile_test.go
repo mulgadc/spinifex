@@ -227,3 +227,160 @@ func TestReconcileStillDropsItsOwnStaleBinding(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{ip.String()}, res.Stale)
 }
+
+// orphanAllocator runs with a clock advanced past the grace period, so a
+// seeded address created "now" reads as old without the test waiting.
+func orphanAllocator(t *testing.T, fake *oci.Fake) (*ocinet.PoolAllocator, *ocinet.MemStore) {
+	t.Helper()
+	store := ocinet.NewMemStore()
+	a, err := ocinet.New(fake, store, ocinet.Config{
+		Pool:          external.ExternalPoolConfig{Name: "oci-wan", Source: external.SourceOCI},
+		VNICID:        "ocid1.vnic.oc1..vnic1",
+		CompartmentID: "ocid1.compartment.oc1..comp1",
+		Schedule:      []time.Duration{time.Millisecond},
+		Budget:        time.Second,
+		Sleep:         func(context.Context, time.Duration) error { return nil },
+		Now:           func() time.Time { return time.Now().Add(2 * time.Hour) },
+	})
+	require.NoError(t, err)
+	// The sweep needs a readable record to judge bindings against, and a pool
+	// that has ever allocated has one. Creating it empty is that pool.
+	require.NoError(t, store.Mutate(context.Background(), "oci-wan",
+		func(*ocinet.Record) (bool, error) { return true, nil }))
+	return a, store
+}
+
+// seedOrphan is a reserved public IP attached to nothing, which is what a
+// destroyed node or a failed rollback leaves behind.
+func seedOrphan(fake *oci.Fake, id, name string, created time.Time) {
+	fake.SeedPublicIP(oci.PublicIP{
+		ID:             id,
+		Address:        netip.MustParseAddr("203.0.113.200"),
+		DisplayName:    name,
+		Lifetime:       oci.LifetimeReserved,
+		LifecycleState: oci.LifecycleStateAvailable,
+		TimeCreated:    created,
+	})
+}
+
+// The leak that exhausted the tenancy. A detached reserved public IP is on no
+// VNIC, so walking the VNIC cannot see it however many passes run.
+func TestReconcileCollectsADetachedReservedPublicIPNoVNICCanReport(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..orphan", ocinet.DisplayNamePrefix+"eipalloc-gone", time.Now())
+	a, _ := orphanAllocator(t, fake)
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"ocid1.publicip.oc1..orphan"}, res.Orphaned)
+	assert.Empty(t, fake.PublicIPs(), "the orphan still holds a tenancy quota slot")
+}
+
+func TestReconcileLeavesAReservedPublicIPThatIsNotOursAlone(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..theirs", "IP for NAT gateway", time.Now())
+	a, _ := orphanAllocator(t, fake)
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Orphaned)
+	assert.Len(t, fake.PublicIPs(), 1, "an address without our prefix is never a candidate")
+}
+
+// An allocated but unassociated Elastic IP is detached too, and is the
+// customer's to keep. The binding is what tells the two apart.
+func TestReconcileLeavesADetachedButBoundElasticIPAlone(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..heldeip", ocinet.DisplayNamePrefix+"eipalloc-held", time.Now())
+	a, store := orphanAllocator(t, fake)
+	require.NoError(t, store.Mutate(ctx, "oci-wan", func(r *ocinet.Record) (bool, error) {
+		r.Bindings["203.0.113.200"] = ocinet.Binding{
+			PublicIPID:   "ocid1.publicip.oc1..heldeip",
+			Purpose:      "eip",
+			AllocationID: "eipalloc-held",
+		}
+		return true, nil
+	}))
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Orphaned)
+	assert.Len(t, fake.PublicIPs(), 1, "a held EIP must survive a reconcile on any node")
+}
+
+// CreatePublicIP returns before the address attaches, so a young detached one
+// may be another node's allocation mid-flight.
+func TestReconcileLeavesAYoungDetachedAddressAlone(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..inflight", ocinet.DisplayNamePrefix+"eni-new", time.Now())
+	a, store := newTestAllocator(t, fake)
+	require.NoError(t, store.Mutate(ctx, "oci-wan",
+		func(*ocinet.Record) (bool, error) { return true, nil }))
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Orphaned)
+	assert.Len(t, fake.PublicIPs(), 1, "an in-flight allocation must not be collected")
+}
+
+// An unknown age is not evidence of an orphan.
+func TestReconcileLeavesAnAddressWithNoCreationTimeAlone(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..undated", ocinet.DisplayNamePrefix+"eni-undated", time.Time{})
+	a, _ := orphanAllocator(t, fake)
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Orphaned)
+	assert.Len(t, fake.PublicIPs(), 1)
+}
+
+// A credential that cannot list the compartment can still allocate, so the
+// pass warns and carries on rather than failing a working node.
+func TestReconcileSurvivesACredentialThatCannotListReservedPublicIPs(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..orphan", ocinet.DisplayNamePrefix+"eni-x", time.Now())
+	fake.FailWith["ListReservedPublicIPs"] = oci.ErrNotFound
+	a, _ := orphanAllocator(t, fake)
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Orphaned)
+}
+
+// A store that cannot be read looks exactly like a pool that never allocated,
+// and one of those means every address a customer holds appears unbound.
+func TestReconcileDoesNotSweepWhenThereIsNoBindingRecord(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	seedOrphan(fake, "ocid1.publicip.oc1..orphan", ocinet.DisplayNamePrefix+"eipalloc-x", time.Now())
+	// Deliberately no record: orphanAllocator's empty one is what makes the
+	// sweep safe, so its absence must disable it.
+	store := ocinet.NewMemStore()
+	a, err := ocinet.New(fake, store, ocinet.Config{
+		Pool:          external.ExternalPoolConfig{Name: "oci-wan", Source: external.SourceOCI},
+		VNICID:        "ocid1.vnic.oc1..vnic1",
+		CompartmentID: "ocid1.compartment.oc1..comp1",
+		Sleep:         func(context.Context, time.Duration) error { return nil },
+		Now:           func() time.Time { return time.Now().Add(2 * time.Hour) },
+	})
+	require.NoError(t, err)
+
+	res, err := a.Reconcile(ctx)
+	require.NoError(t, err)
+
+	assert.Empty(t, res.Orphaned)
+	assert.Len(t, fake.PublicIPs(), 1)
+}

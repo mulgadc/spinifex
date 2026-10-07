@@ -1,3 +1,6 @@
+// Package handlers_sts implements STS for the gateway: role assumption, web
+// identity federation and session tokens, with session credentials persisted in
+// JetStream KV under the master key shared with IAM.
 package handlers_sts
 
 import (

@@ -1,3 +1,6 @@
+// Package instancetypes generates the EC2 instance types a node offers from its
+// CPU and GPUs and answers per-type questions such as vCPUs, memory, GPU
+// count and ENI limits.
 package instancetypes
 
 import (
@@ -282,6 +285,8 @@ var builtinGPUTiers = []int{2, 4, 8}
 // every tier so no gpu.* shape is one EC2 would find unfamiliar.
 const builtinGPUMemPerVCPUGB = 4
 
+// IsBuiltinGPUType reports whether instanceType is in the built-in gpu.* family
+// (gpu.<count>x<vcpu>c). It checks the prefix only, not that the size exists.
 func IsBuiltinGPUType(instanceType string) bool {
 	return strings.HasPrefix(instanceType, builtinGPUPrefix)
 }

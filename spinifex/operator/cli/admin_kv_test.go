@@ -215,11 +215,15 @@ func TestKVDigestClusteredReplicas(t *testing.T) {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
+	// Each attempt gets its own deadline: before a meta leader is elected a
+	// create blocks for the client's default timeout instead of failing fast.
 	var kv jetstream.KeyValue
 	require.Eventually(t, func() bool {
-		kv, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "rep", History: 3, Replicas: n, TTL: time.Hour})
+		attemptCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+		defer cancel()
+		kv, err = js.CreateKeyValue(attemptCtx, jetstream.KeyValueConfig{Bucket: "rep", History: 3, Replicas: n, TTL: time.Hour})
 		return err == nil
-	}, 30*time.Second, 250*time.Millisecond, "clustered KV create: %v", err)
+	}, 30*time.Second, 20*time.Millisecond, "clustered KV create: %v", err)
 	for i := range 5 {
 		_, err := kv.PutString(ctx, fmt.Sprintf("k%d", i%2), fmt.Sprintf("v%d", i))
 		require.NoError(t, err)
@@ -279,10 +283,12 @@ func TestKVDigestIgnoresExpiry(t *testing.T) {
 	require.NoError(t, err)
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ttl", TTL: 200 * time.Millisecond})
+	const ttl = 200 * time.Millisecond
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ttl", TTL: ttl})
 	require.NoError(t, err)
 	_, err = kv.PutString(ctx, "k", "v")
 	require.NoError(t, err)
+	putAt := time.Now()
 
 	work := t.TempDir()
 	_, metas, err := copyStreamTree(filepath.Join(parent, "jetstream"), filepath.Join(work, "jetstream"))
@@ -291,7 +297,9 @@ func TestKVDigestIgnoresExpiry(t *testing.T) {
 	ns.Shutdown()
 	ns.WaitForShutdown()
 
-	time.Sleep(400 * time.Millisecond)
+	// The server stamped the message before the put returned, so it is now
+	// older than the TTL.
+	time.Sleep(time.Until(putAt.Add(ttl + 50*time.Millisecond)))
 	d, err := digestStore(ctx, work, nil, false, metas)
 	require.NoError(t, err)
 	require.Len(t, d, 1)

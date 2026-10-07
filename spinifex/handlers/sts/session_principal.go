@@ -42,6 +42,7 @@ func IsSessionPrincipalVerdict(err error) bool {
 // SessionPrincipal is the live IAM record a session credential still resolves to.
 type SessionPrincipal struct {
 	UserID   string // user sessions
+	UserARN  string // user sessions
 	RoleID   string // role sessions
 	RoleName string
 	RoleARN  string
@@ -85,7 +86,7 @@ func (s *STSServiceImpl) verifySessionUser(cred *SessionCredential) (*SessionPri
 	if liveUserID != cred.UserID {
 		return nil, ErrSessionPrincipalReplaced
 	}
-	return &SessionPrincipal{UserID: liveUserID}, nil
+	return &SessionPrincipal{UserID: liveUserID, UserARN: aws.StringValue(out.User.Arn)}, nil
 }
 
 // verifySessionRole resolves the session's underlying role ARN and compares the

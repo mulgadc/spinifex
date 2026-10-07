@@ -21,11 +21,10 @@ const firstVMGeneration = 1
 // Bounds retries when same-owner record writes race rollback cleanup.
 const rollbackDeleteAttempts = 3
 
-// Assembles a live DB instance out of the launch primitives: validate, reserve
-// the identifier, place and launch the dual-NIC VM with its data volume and
-// customer ENI, seed the one-shot bootstrap config, and publish the endpoint
-// record. The instance is returned at status=creating; the reconciler flips it
-// to available on the first healthy agent heartbeat.
+// CreateDBInstance assembles a live DB instance out of the launch primitives: validate, reserve the
+// identifier, place and launch the dual-NIC VM with its data volume and customer ENI, seed the
+// one-shot bootstrap config, and publish the endpoint record. The instance is returned at
+// status=creating; the reconciler flips it to available on the first healthy agent heartbeat.
 func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInstanceInput, accountID string) (out *rds.CreateDBInstanceOutput, err error) {
 	req, err := s.validateCreateRequest(input)
 	if err != nil {

@@ -68,7 +68,7 @@ func validEventSourceType(sourceType string) bool {
 	}
 }
 
-// One entry in a resource's ring.
+// Event is one entry in a resource's ring.
 type Event struct {
 	SourceIdentifier string    `json:"sourceIdentifier"`
 	SourceType       string    `json:"sourceType"`
@@ -82,9 +82,9 @@ type eventRing struct {
 	Events []Event `json:"events"`
 }
 
-// Best-effort by design: an event is a report about work that already happened,
-// so failing the operation because its narration could not be stored would turn
-// a successful stop into a failed one. Failures are logged instead.
+// RecordEvent appends an event to the resource's ring. Best-effort by design: failing the operation
+// because its narration could not be stored would turn a successful stop into a failed one, so
+// failures are logged instead.
 func (s *Service) RecordEvent(ctx context.Context, accountID, sourceType, sourceIdentifier, message string, categories ...string) {
 	if err := s.appendEvent(ctx, accountID, sourceType, sourceIdentifier, message, categories); err != nil {
 		slog.WarnContext(ctx, "rds: recording an event failed",
@@ -153,9 +153,9 @@ func trimEvents(events []Event) []Event {
 	return kept
 }
 
-// The customer view of the ring. AWS scopes a read to a time window rather than
-// to a resource, so an unfiltered call reports the whole account's recent
-// history, including resources that have since been deleted.
+// DescribeEvents returns the customer view of the ring. AWS scopes a read to a time window rather than
+// to a resource, so an unfiltered call reports the whole account's recent history, including resources
+// that have since been deleted.
 func (s *Service) DescribeEvents(ctx context.Context, input *rds.DescribeEventsInput, accountID string) (*rds.DescribeEventsOutput, error) {
 	// AWS recognises these names. They are not applied, as recognised names are
 	// not on the other calls documented as not supporting Filters.

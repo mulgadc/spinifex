@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDescribeVpcAttributeInput rejects a nil input with InvalidParameterValue and a missing
+// VpcId or Attribute with MissingParameter.
 func ValidateDescribeVpcAttributeInput(input *ec2.DescribeVpcAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

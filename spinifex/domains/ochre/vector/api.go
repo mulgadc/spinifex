@@ -33,6 +33,7 @@ type CreateIndexRequest struct {
 	EmbeddingModel string `json:"embeddingModel"`
 }
 
+// CreateIndexResponse carries the newly registered index record.
 type CreateIndexResponse struct {
 	Index Record `json:"index"`
 }
@@ -43,12 +44,14 @@ type DeleteIndexRequest struct {
 	IndexID string `json:"indexId"`
 }
 
+// DeleteIndexResponse is the empty reply to a DeleteIndex, including the no-op delete of an absent index.
 type DeleteIndexResponse struct{}
 
 // ListIndexesRequest has no fields: accountID comes from the caller context
 // (D10), never the payload.
 type ListIndexesRequest struct{}
 
+// ListIndexesResponse holds every index registered to the caller's account.
 type ListIndexesResponse struct {
 	Indexes []Record `json:"indexes"`
 }
@@ -67,6 +70,7 @@ type IngestRequest struct {
 	DataSourceID string     `json:"dataSourceId,omitempty"`
 }
 
+// IngestResponse carries the record of the ingestion job just started; poll it with DescribeJob.
 type IngestResponse struct {
 	Job JobRecord `json:"job"`
 }
@@ -76,6 +80,7 @@ type DescribeJobRequest struct {
 	JobID string `json:"jobId"`
 }
 
+// DescribeJobResponse carries the ingestion job's current record.
 type DescribeJobResponse struct {
 	Job JobRecord `json:"job"`
 }
@@ -92,6 +97,8 @@ type QueryRequest struct {
 	Filter  *Filter `json:"filter,omitempty"`
 }
 
+// QueryResponse holds the nearest chunks found. It is empty, not an error, when the index
+// is not READY.
 type QueryResponse struct {
 	Results []QueryResult `json:"results"`
 }
@@ -100,6 +107,7 @@ type QueryResponse struct {
 // (D10), never the payload, mirroring ListIndexesRequest.
 type ListJobsRequest struct{}
 
+// ListJobsResponse holds every ingestion job recorded for the caller's account.
 type ListJobsResponse struct {
 	Jobs []JobRecord `json:"jobs"`
 }
@@ -109,6 +117,7 @@ type StopJobRequest struct {
 	JobID string `json:"jobId"`
 }
 
+// StopJobResponse carries the job's record after the cancellation request.
 type StopJobResponse struct {
 	Job JobRecord `json:"job"`
 }

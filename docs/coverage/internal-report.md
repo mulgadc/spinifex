@@ -762,7 +762,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## ecr
 
-`2015-09-21` — 22 of 58 modelled operations implemented (37.9%), 11 stubbed, 0 not applicable, 3 registered outside the pinned model.
+`2015-09-21` — 23 of 58 modelled operations implemented (39.7%), 10 stubbed, 0 not applicable, 3 registered outside the pinned model.
 
 ### Not implemented
 
@@ -793,7 +793,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 - `BatchCheckLayerAvailability`
 - `CompleteLayerUpload`
-- `DescribeRegistry`
 - `GetDownloadUrlForLayer`
 - `GetRegistryPolicy`
 - `InitiateLayerUpload`
@@ -882,12 +881,13 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## eks
 
-`2017-11-01` — 36 of 70 modelled operations implemented (51.4%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
+`2017-11-01` — 27 of 70 modelled operations implemented (38.6%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
 
 ### Not implemented
 
 - `ActivateCertificateAuthority`
 - `AssociateEncryptionConfig`
+- `AssociateIdentityProviderConfig`
 - `CancelUpdate`
 - `CreateCapability`
 - `CreateCertificateAuthority`
@@ -906,19 +906,27 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `DescribeClusterVersions`
 - `DescribeEksAnywhereSubscription`
 - `DescribeFargateProfile`
+- `DescribeIdentityProviderConfig`
 - `DescribeInsight`
 - `DescribeInsightsRefresh`
 - `DescribePodIdentityAssociation`
+- `DescribeUpdate`
+- `DisassociateIdentityProviderConfig`
 - `ListCapabilities`
 - `ListCertificateAuthorities`
 - `ListEksAnywhereSubscriptions`
 - `ListFargateProfiles`
+- `ListIdentityProviderConfigs`
 - `ListInsights`
 - `ListPodIdentityAssociations`
+- `ListUpdates`
 - `RegisterCluster`
 - `StartInsightsRefresh`
 - `UpdateCapability`
+- `UpdateClusterConfig`
+- `UpdateClusterVersion`
 - `UpdateEksAnywhereSubscription`
+- `UpdateNodegroupVersion`
 - `UpdatePodIdentityAssociation`
 
 ### Registered outside the pinned model
@@ -957,7 +965,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## iam
 
-`2010-05-08` — 79 of 180 modelled operations implemented (43.9%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
+`2010-05-08` — 81 of 180 modelled operations implemented (45.0%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1006,7 +1014,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `GetServerCertificate`
 - `GetServiceLastAccessedDetails`
 - `GetServiceLastAccessedDetailsWithEntities`
-- `ListAccountAliases`
 - `ListDelegationRequests`
 - `ListMFADeviceTags`
 - `ListMFADevices`
@@ -1038,7 +1045,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 - `UpdateGroup`
 - `UpdateLoginProfile`
 - `UpdateOpenIDConnectProviderThumbprint`
-- `UpdateRoleDescription`
 - `UpdateSAMLProvider`
 - `UpdateServerCertificate`
 - `UpdateUser`
@@ -1079,7 +1085,7 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 
 ## rds
 
-`2014-10-31` — 26 of 164 modelled operations implemented (15.9%), 0 stubbed, 4 not applicable, 5 registered outside the pinned model.
+`2014-10-31` — 27 of 164 modelled operations implemented (16.5%), 0 stubbed, 4 not applicable, 5 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1178,7 +1184,6 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 - `ModifyDBShardGroup`
 - `ModifyDBSnapshot`
 - `ModifyDBSnapshotAttribute`
-- `ModifyDBSubnetGroup`
 - `ModifyEventSubscription`
 - `ModifyGlobalCluster`
 - `ModifyIntegration`

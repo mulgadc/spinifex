@@ -96,6 +96,7 @@ type IAMAccounts struct{ svc handlers_iam.IAMService }
 
 var _ AccountStore = (*IAMAccounts)(nil)
 
+// NewIAMAccounts wraps svc as the engine's AccountStore.
 func NewIAMAccounts(svc handlers_iam.IAMService) *IAMAccounts {
 	return &IAMAccounts{svc: svc}
 }

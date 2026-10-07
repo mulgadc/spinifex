@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteNetworkInterfaceInput rejects a nil input with InvalidParameterValue and a
+// missing NetworkInterfaceId with MissingParameter.
 func ValidateDeleteNetworkInterfaceInput(input *ec2.DeleteNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

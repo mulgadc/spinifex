@@ -100,7 +100,9 @@ func TestExecProcessAndKill(t *testing.T) {
 }
 
 func TestWaitForPidFile(t *testing.T) {
+	t.Parallel()
 	t.Run("returns pid when file appears within timeout", func(t *testing.T) {
+		t.Parallel()
 		const name = "wait-pidfile-appears"
 		_ = RemovePidFile(name)
 		t.Cleanup(func() { _ = RemovePidFile(name) })
@@ -116,6 +118,7 @@ func TestWaitForPidFile(t *testing.T) {
 	})
 
 	t.Run("returns error when timeout expires", func(t *testing.T) {
+		t.Parallel()
 		const name = "wait-pidfile-missing"
 		_ = RemovePidFile(name)
 
@@ -124,6 +127,7 @@ func TestWaitForPidFile(t *testing.T) {
 	})
 
 	t.Run("returns immediately when file already present", func(t *testing.T) {
+		t.Parallel()
 		const name = "wait-pidfile-present"
 		require.NoError(t, WritePidFile(name, 7777))
 		t.Cleanup(func() { _ = RemovePidFile(name) })
@@ -136,8 +140,19 @@ func TestWaitForPidFile(t *testing.T) {
 	})
 }
 
+func TestWaitForPidFileRemoval_AlreadyGoneReturnsBeforeFirstPoll(t *testing.T) {
+	t.Parallel()
+	const name = "wait-pidfile-removal-absent"
+	_ = RemovePidFile(name)
+
+	// The poll ticks every 100ms, so this timeout fails unless absence is seen up front.
+	require.NoError(t, WaitForPidFileRemoval(name, 20*time.Millisecond))
+}
+
 func TestWaitForUnixSocket(t *testing.T) {
+	t.Parallel()
 	t.Run("returns nil when socket appears within timeout", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "appears.sock")
 
@@ -149,6 +164,7 @@ func TestWaitForUnixSocket(t *testing.T) {
 	})
 
 	t.Run("returns error when timeout expires", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "missing.sock")
 
@@ -157,6 +173,7 @@ func TestWaitForUnixSocket(t *testing.T) {
 	})
 
 	t.Run("waits for socket created after a delay", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "delayed.sock")
 
@@ -435,18 +452,20 @@ func TestReadPidFileFrom_EmptyDir(t *testing.T) {
 }
 
 func TestWaitForProcessExit_ProcessAlreadyDead(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("true")
 	require.NoError(t, cmd.Start())
 	pid := cmd.Process.Pid
 	require.NoError(t, cmd.Wait())
 
-	// `true` has exited and been reaped — WaitForProcessExit should return
-	// nil immediately on the first tick.
-	err := WaitForProcessExit(pid, 2*time.Second)
+	// `true` has exited and been reaped. A timeout shorter than one poll fails
+	// unless WaitForProcessExit checks the PID before its first tick.
+	err := WaitForProcessExit(pid, time.Duration(processExitPollNanos.Load())/2)
 	assert.NoError(t, err)
 }
 
 func TestWaitForProcessExit_ProcessExitsBeforeTimeout(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "0.1")
 	require.NoError(t, cmd.Start())
 	pid := cmd.Process.Pid
@@ -459,6 +478,7 @@ func TestWaitForProcessExit_ProcessExitsBeforeTimeout(t *testing.T) {
 }
 
 func TestWaitForProcessExit_Timeout(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "30")
 	require.NoError(t, cmd.Start())
 	defer func() {

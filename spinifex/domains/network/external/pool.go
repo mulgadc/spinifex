@@ -69,6 +69,8 @@ type StaticRangeAllocator struct {
 
 var _ GatewayIPAllocator = (*StaticRangeAllocator)(nil)
 
+// NewStaticRangeAllocator returns an allocator that reads existing gateway LRPs
+// from client to find the next free IP in a pool's gw_lrp_range.
 func NewStaticRangeAllocator(client ovn.Client) *StaticRangeAllocator {
 	return &StaticRangeAllocator{OVN: client}
 }

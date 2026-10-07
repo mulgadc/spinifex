@@ -1,3 +1,5 @@
+// Package key implements the EC2 key pair actions: it validates
+// each request and forwards it to the key pair service over NATS.
 package key
 
 import (

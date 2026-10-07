@@ -24,6 +24,8 @@ type terminateStoppedInstanceRequest struct {
 // terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
 var terminateRetrySleep = time.Sleep
 
+// ValidateTerminateInstancesInput rejects a nil input with InvalidParameterValue and an empty
+// InstanceIds list with MissingParameter.
 func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

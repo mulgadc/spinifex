@@ -32,9 +32,10 @@ func TestGetCertificate_ReturnsBodyAndChain(t *testing.T) {
 	assert.Equal(t, string(chainPEM), aws.StringValue(out.CertificateChain))
 }
 
-// A self-signed leaf has no chain; the field is left absent rather than an
-// empty string a client would have to distinguish from a real chain.
-func TestGetCertificate_OmitsAbsentChain(t *testing.T) {
+// AWS answers a certificate imported without a chain with the certificate
+// itself as the chain. The substitution is response-only: the stored record
+// keeps no chain, which is what ELBv2 builds its leaf+chain bundle from.
+func TestGetCertificate_AbsentChainReturnsCertificate(t *testing.T) {
 	svc := setupACMService(t)
 	leafPEM, keyPEM := genCert(t, "nochain.example.com")
 
@@ -49,7 +50,43 @@ func TestGetCertificate_OmitsAbsentChain(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, string(leafPEM), aws.StringValue(out.Certificate))
-	assert.Nil(t, out.CertificateChain)
+	require.NotNil(t, out.CertificateChain)
+	assert.Equal(t, string(leafPEM), aws.StringValue(out.CertificateChain))
+
+	rec, err := svc.store.GetCertMetadata(t.Context(), aws.StringValue(imported.CertificateArn))
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.Empty(t, rec.CertificateChain)
+}
+
+// A re-import without a chain drops the chain the first import carried, so
+// GetCertificate falls back to the new certificate, not the stale chain.
+func TestGetCertificate_ReimportWithoutChainReturnsNewCertificate(t *testing.T) {
+	svc := setupACMService(t)
+	leafPEM, keyPEM := genCert(t, "reimport.example.com")
+	chainPEM, _ := genCert(t, "issuer.example.com")
+
+	imported, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		Certificate:      leafPEM,
+		PrivateKey:       keyPEM,
+		CertificateChain: chainPEM,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	newLeafPEM, newKeyPEM := genCert(t, "reimport.example.com")
+	_, err = svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
+		CertificateArn: imported.CertificateArn,
+		Certificate:    newLeafPEM,
+		PrivateKey:     newKeyPEM,
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.GetCertificate(context.Background(), &acm.GetCertificateInput{
+		CertificateArn: imported.CertificateArn,
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, string(newLeafPEM), aws.StringValue(out.Certificate))
+	assert.Equal(t, string(newLeafPEM), aws.StringValue(out.CertificateChain))
 }
 
 func TestGetCertificate_UnknownArnNotFound(t *testing.T) {

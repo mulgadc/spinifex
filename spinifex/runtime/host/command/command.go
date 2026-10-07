@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-const (
-	commandOutputLimit = 64 * 1024
-	commandWaitDelay   = time.Second
-)
+const commandOutputLimit = 64 * 1024
+
+// commandWaitDelay is a var only so tests can shorten the wait for output holders.
+var commandWaitDelay = time.Second
 
 // RunCommandWithTimeout runs a host command with bounded output and execution.
 // The command gets its own process group so timeout cleanup also kills child

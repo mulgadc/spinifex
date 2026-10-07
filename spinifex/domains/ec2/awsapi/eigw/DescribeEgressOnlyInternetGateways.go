@@ -1,3 +1,6 @@
+// Package eigw implements the EC2 egress-only internet gateway
+// actions: it validates each request and forwards it to the EIGW service over
+// NATS.
 package eigw
 
 import (
@@ -10,6 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDescribeEgressOnlyInternetGatewaysInput rejects only a nil input, with
+// InvalidParameterValue; IDs and filters are checked by the handler.
 func ValidateDescribeEgressOnlyInternetGatewaysInput(input *ec2.DescribeEgressOnlyInternetGatewaysInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -27,6 +27,10 @@ var DriftInterval = 5 * time.Minute
 // floor on how often a change may drive a pass. Var so tests can shrink it.
 var driftBackoffBase = 5 * time.Second
 
+// driftDebounce is how long the loop waits for a burst of intent writes to
+// settle before a pass. Var so tests can shrink it.
+var driftDebounce = loop.DefaultDebounce
+
 // driftBackoffFactor grows the requeue gap per consecutive incomplete pass, up
 // to DriftInterval. Without a requeue the repair latency for any transient apply
 // failure is a full DriftInterval, so a 57-second DHCP stall costs five minutes
@@ -97,6 +101,7 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, hold
 		Sources:   []loop.Source{intentSource(js)},
 		Reconcile: driftPass(rec, nc, js, localAZ, holder, startup),
 		Resync:    DriftInterval,
+		Debounce:  driftDebounce,
 	})
 }
 

@@ -1,3 +1,5 @@
+// Package imagecatalog lists the machine images an operator can import, and
+// downloads, verifies and extracts their disk images.
 package imagecatalog
 
 import (
@@ -321,6 +323,8 @@ func hashImageFile(imagePath string, hasher hash.Hash) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+// Images describes one importable cloud image in the AvailableImages catalog:
+// where to download it, how to verify its checksum, and the AMI metadata it gets.
 type Images struct {
 	Name         string    `json:"name"`
 	Description  string    `json:"description"`

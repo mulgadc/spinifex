@@ -13,17 +13,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 )
 
-// FromPoolConfig builds a live allocator for one source="oci" pool: API-key
-// auth from an ~/.oci/config profile, the VNIC resolved from the host interface
-// when the config names one rather than an OCID, and the JetStream-backed
-// bindings store.
-//
-// v1 authenticates from the config file rather than as an instance principal.
-// It needs no dynamic group and no IAM policy from a tenancy admin, and it
-// reads no instance metadata — which matters, because Spinifex's own IMDS
-// endpoints claim 169.254.169.254 on the host and take the cloud's metadata
-// service down with it. Configure oci_vnic_id rather than oci_vnic_iface for
-// the same reason: resolving by interface is a metadata lookup.
+// FromPoolConfig builds a live allocator for one source="oci" pool: the auth
+// method the pool names, the VNIC resolved from the host interface when the
+// config names one rather than an OCID, and the JetStream-backed bindings store.
 //
 // It does not reconcile. The caller decides when that pass runs, because it
 // deletes OCI objects and a startup path that does so before the store is
@@ -35,7 +27,7 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 		return nil, fmt.Errorf("ocinet: pool %q has source %q, not %q", pool.Name, pool.Source, external.SourceOCI)
 	}
 
-	client, err := oci.NewConfigFileClient(pool.OCIConfigFile, pool.OCIConfigProfile)
+	client, err := newClient(pool)
 	if err != nil {
 		return nil, fmt.Errorf("ocinet: pool %q: %w", pool.Name, err)
 	}
@@ -56,7 +48,7 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 		compartmentID = inst.CompartmentID
 	}
 
-	return New(client, NewKVStore(js), Config{
+	alloc, err := New(client, NewKVStore(js), Config{
 		Pool:          pool,
 		VNICID:        vnicID,
 		CompartmentID: compartmentID,
@@ -73,7 +65,41 @@ func FromPoolConfig(ctx context.Context, js jetstream.JetStream, pool external.E
 				GatewayPortLocal(ctx, topology.GatewayChassisRedirectPort(vpcID))
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Before this, resolving the VNIC was the last thing logged, and that comes
+	// from the metadata service and needs no IAM policy at all. So an
+	// unauthorised node looked ready and refused the first launch instead.
+	reportAuthorisation(ctx, alloc, pool)
+	return alloc, nil
 }
+
+// newClient authenticates the way the pool asks. Instance principal takes the
+// credential from the instance's own certificate, so no key material sits on any
+// node; a config file is the default because it needs nothing from a tenancy
+// admin.
+//
+// Both read the metadata service on a pool configured with oci_vnic_iface, which
+// is what the guide recommends, so instance principal adds no dependency on IMDS
+// that such a node does not already have. The IMDS remap is what makes either
+// work, since Spinifex's own endpoints otherwise claim 169.254.169.254.
+func newClient(pool external.ExternalPoolConfig) (oci.Client, error) {
+	if pool.UsesInstancePrincipal() {
+		slog.Info("ocinet authenticating as the instance principal", "pool", pool.Name)
+		return newInstancePrincipalClient()
+	}
+	return newConfigFileClient(pool.OCIConfigFile, pool.OCIConfigProfile)
+}
+
+// Indirected so a test can assert which credential a pool selects. Both real
+// constructors need an instance or a key file, so the branch is otherwise only
+// observable on OCI, and it was wrong there for a release without anyone seeing.
+var (
+	newInstancePrincipalClient = oci.NewInstancePrincipalClient
+	newConfigFileClient        = oci.NewConfigFileClient
+)
 
 // resolveVNICID turns whichever VNIC key the operator set into an OCID.
 func resolveVNICID(ctx context.Context, pool external.ExternalPoolConfig) (string, error) {

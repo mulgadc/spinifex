@@ -24,9 +24,9 @@ type finalSnapshotReservation struct {
 	revision uint64
 }
 
-// Tears the DB instance down. AWS requires the caller to choose explicitly
-// between a final snapshot and none, so neither an accidental data loss nor an
-// accidental retained volume can happen by omission.
+// DeleteDBInstance tears the DB instance down. AWS requires the caller to choose explicitly between a
+// final snapshot and none, so neither an accidental data loss nor an accidental retained volume can
+// happen by omission.
 //
 // The record is moved to deleting first and every step below tolerates a
 // missing resource, so a retried call or a reconciler-resumed teardown

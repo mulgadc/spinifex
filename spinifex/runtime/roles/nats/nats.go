@@ -1,3 +1,5 @@
+// Package nats runs the embedded NATS server Spinifex components talk over,
+// including the JetStream store reserve that keeps a full disk recoverable.
 package nats
 
 import (
@@ -11,6 +13,9 @@ import (
 
 var serviceName = "nats"
 
+// Config configures the embedded NATS server. A non-empty ConfigFile is used
+// on its own and the other fields are ignored; otherwise Port defaults to 4222
+// and Host to 0.0.0.0.
 type Config struct {
 	ConfigFile string `json:"config_file"`
 	Port       int    `json:"port"`
@@ -21,10 +26,14 @@ type Config struct {
 	JetStream  bool   `json:"jetstream"`
 }
 
+// Service runs an embedded NATS server, the message bus every Spinifex
+// component talks over.
 type Service struct {
 	Config *Config
 }
 
+// New returns the NATS service. config must be a *Config; anything else
+// errors.
 func New(config any) (svc *Service, err error) {
 	cfg, ok := config.(*Config)
 	if !ok {

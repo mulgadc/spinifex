@@ -61,7 +61,7 @@ var (
 	defaultMaintenanceWindowBlock = dailyWindow{start: 11 * time.Hour, end: 19 * time.Hour}
 )
 
-// The operator-tunable backup settings: bounds and defaults, never a per-instance
+// BackupPolicy holds the operator-tunable backup settings: bounds and defaults, never a per-instance
 // setting — those live on the DB instance record.
 type BackupPolicy struct {
 	// The upper bound ModifyDBInstance and CreateDBInstance accept. Zero takes
@@ -380,19 +380,21 @@ func (s *Service) runMaintenanceWindow(ctx context.Context, kv *kvstore.Bucket, 
 	return true, nil
 }
 
-// AWS's own name for an automated snapshot, minute-precise so a retry inside the
-// same window never collides with the attempt that failed.
+// AutomatedSnapshotIdentifier returns AWS's own name for an automated snapshot, rds:{db}-{YYYY-MM-DD-HH-MM},
+// minute-precise so a retry inside the same window never collides with the attempt that failed.
 func AutomatedSnapshotIdentifier(dbInstanceIdentifier string, at time.Time) string {
 	return automatedSnapshotPrefix + dbInstanceIdentifier + "-" + at.UTC().Format(automatedSnapshotTimeLayout)
 }
 
+// AutomatedBackupStamp returns the fixed-width UTC timestamp keying an automated-backup index entry, so
+// lexical key order is chronological order.
 func AutomatedBackupStamp(at time.Time) string {
 	return at.UTC().Format(automatedBackupKeyLayout)
 }
 
-// The customer's view of the automated backup set: one entry per instance that
-// has automated backups, as AWS reports it. The individual snapshots stay
-// listable through DescribeDBSnapshots --snapshot-type automated.
+// DescribeDBInstanceAutomatedBackups returns the customer's view of the automated backup set: one entry
+// per instance that has automated backups, as AWS reports it. The individual snapshots stay listable
+// through DescribeDBSnapshots --snapshot-type automated.
 func (s *Service) DescribeDBInstanceAutomatedBackups(ctx context.Context,
 	input *rds.DescribeDBInstanceAutomatedBackupsInput, accountID string) (*rds.DescribeDBInstanceAutomatedBackupsOutput, error) {
 	if input == nil {

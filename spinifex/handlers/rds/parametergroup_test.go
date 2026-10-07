@@ -90,24 +90,45 @@ func TestCreateDBParameterGroup_StoresAnEmptyGroup(t *testing.T) {
 	}
 }
 
-// An omitted family can only mean the one family this platform offers, so it
-// takes the pin rather than failing a Terraform config that leaves it out.
-func TestCreateDBParameterGroup_DefaultsTheFamilyAndRejectsAnother(t *testing.T) {
+// AWS refuses an omitted and an empty family with the same code and message.
+func TestCreateDBParameterGroup_RefusesAnOmittedOrEmptyFamily(t *testing.T) {
 	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 
-	input := parameterGroupInput(testParameterGroup)
-	input.DBParameterGroupFamily = nil
-	out, err := h.svc.CreateDBParameterGroup(t.Context(), input, testAccountID)
-	require.NoError(t, err)
-	assert.Equal(t, "postgres18", aws.StringValue(out.DBParameterGroup.DBParameterGroupFamily))
+	for name, family := range map[string]*string{"omitted": nil, "empty": aws.String("")} {
+		input := parameterGroupInput(testParameterGroup)
+		input.DBParameterGroupFamily = family
+		_, err := h.svc.CreateDBParameterGroup(t.Context(), input, testAccountID)
+		code, message, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, name)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, code, name)
+		assert.Equal(t, "The parameter ParameterGroupFamily must be provided and must not be empty.", message, name)
+	}
+
+	_, err := h.svc.DescribeDBParameterGroups(t.Context(), &rds.DescribeDBParameterGroupsInput{
+		DBParameterGroupName: aws.String(testParameterGroup),
+	}, testAccountID)
+	assert.Equal(t, awserrors.ErrorDBParameterGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"a refused create must not leave a group behind")
+}
+
+func TestCreateDBParameterGroup_RejectsAnUnofferedFamily(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
 
 	other := parameterGroupInput("mysql-tuned")
 	other.DBParameterGroupFamily = aws.String("mysql8.0")
-	_, err = h.svc.CreateDBParameterGroup(t.Context(), other, testAccountID)
+	_, err := h.svc.CreateDBParameterGroup(t.Context(), other, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
+
+	// AWS's wording, with the offered families appended so the caller can retry.
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	const prefix = "ParameterGroupFamily mysql8.0 is not a valid parameter group family. Supported families: "
+	require.True(t, strings.HasPrefix(message, prefix), message)
+	named := strings.Split(strings.TrimSuffix(strings.TrimPrefix(message, prefix), "."), ", ")
+	assert.ElementsMatch(t, SupportedParameterGroupFamilies(), named)
 }
 
 // A customer group under the reserved prefix would be indistinguishable from the

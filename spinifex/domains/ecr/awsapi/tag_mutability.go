@@ -39,15 +39,14 @@ func PutImageTagMutability(ctx context.Context, nc *nats.Conn, accountID string,
 	case "":
 		return nil, RequiredParameterError("imageTagMutability")
 	default:
-		return nil, EnumValueError("imageTagMutability", req.ImageTagMutability,
-			handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable)
+		return nil, EnumValueError("imageTagMutability", ImageTagMutabilityValues...)
 	}
 
 	store := handlers_ecr.NewNATSMetaStore(nc)
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "ECR PutImageTagMutability: get repository failed", "repository", req.RepositoryName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

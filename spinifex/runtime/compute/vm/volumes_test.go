@@ -707,6 +707,9 @@ func TestReboot_QMPFailureSurfacesError(t *testing.T) {
 // that needs cont before its vCPUs run again.
 func TestReboot_ResumesPausedRunstates(t *testing.T) {
 	pausingGuest(t)
+	previous := rebootStatusPollInterval
+	rebootStatusPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { rebootStatusPollInterval = previous })
 	for _, runstate := range []string{"paused", "prelaunch"} {
 		t.Run(runstate, func(t *testing.T) {
 			recorder := &qmpRecorder{}
@@ -1498,7 +1501,7 @@ func TestDetachVolume_WaitsForDeviceDeletedBeforeBlockdevDel(t *testing.T) {
 		},
 	})
 
-	const releaseDelay = 100 * time.Millisecond
+	const releaseDelay = 20 * time.Millisecond
 	go func() {
 		time.Sleep(releaseDelay)
 		close(releaseEvent)
@@ -1640,6 +1643,9 @@ func TestReboot_WedgedGuestFallsBackToHardReset(t *testing.T) {
 	previous := rebootPowerdownTimeout
 	rebootPowerdownTimeout = 30 * time.Millisecond
 	t.Cleanup(func() { rebootPowerdownTimeout = previous })
+	previousPoll := powerdownPollInterval
+	powerdownPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { powerdownPollInterval = previousPoll })
 
 	recorder := &qmpRecorder{}
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {

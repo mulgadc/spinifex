@@ -1,3 +1,6 @@
+// Package gateway_sts implements the STS actions: it validates each request
+// and delegates it to the STS service, which owns trust-policy checks and
+// credential issuance.
 package gateway_sts
 
 import (
@@ -35,7 +38,7 @@ func GetCallerIdentity(
 	iamSvc handlers_iam.IAMService,
 	stsSvc handlers_sts.STSService,
 ) (*sts.GetCallerIdentityOutput, error) {
-	userID, err := ResolveCallerUserID(accountID, callerPrincipalType, identity, assumedRoleID, iamSvc)
+	userID, _, err := ResolveCallerUser(accountID, callerPrincipalType, identity, assumedRoleID, iamSvc)
 	if err != nil {
 		return nil, err
 	}
@@ -52,38 +55,37 @@ func GetCallerIdentity(
 	return stsSvc.GetCallerIdentity(accountID, callerARN, userID, input)
 }
 
-// ResolveCallerUserID resolves the UserId of an authenticated principal, which
-// is also aws:userid at the authorization door. An error is a dependency fault;
-// a principal with no ID to report returns empty, which each caller reads on its
-// own terms.
-func ResolveCallerUserID(
+// ResolveCallerUser resolves the UserId of an authenticated principal, which is
+// also aws:userid at the authorization door, and for an IAM user its stored ARN.
+// An error is a dependency fault; a missing value returns empty.
+func ResolveCallerUser(
 	accountID, callerPrincipalType, identity, assumedRoleID string,
 	iamSvc handlers_iam.IAMService,
-) (string, error) {
+) (userID, userARN string, err error) {
 	switch callerPrincipalType {
 	case PrincipalTypeRoot:
-		return accountID, nil
+		return accountID, "", nil
 	case PrincipalTypeUser:
 		// Root is encoded as principalType=user + identity="root"; UserId is the account ID.
 		if identity == "root" {
-			return accountID, nil
+			return accountID, "", nil
 		}
 		if iamSvc == nil {
-			slog.Error("ResolveCallerUserID: IAM service not initialized")
-			return "", errors.New(awserrors.ErrorInternalError)
+			slog.Error("ResolveCallerUser: IAM service not initialized")
+			return "", "", errors.New(awserrors.ErrorInternalError)
 		}
 		out, err := iamSvc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(identity)})
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if out == nil || out.User == nil {
-			return "", nil
+			return "", "", nil
 		}
-		return aws.StringValue(out.User.UserId), nil
+		return aws.StringValue(out.User.UserId), aws.StringValue(out.User.Arn), nil
 	case PrincipalTypeAssumedRole:
-		return assumedRoleID, nil
+		return assumedRoleID, "", nil
 	default:
-		slog.Error("ResolveCallerUserID: unknown principal type", "principalType", callerPrincipalType)
-		return "", errors.New(awserrors.ErrorInternalError)
+		slog.Error("ResolveCallerUser: unknown principal type", "principalType", callerPrincipalType)
+		return "", "", errors.New(awserrors.ErrorInternalError)
 	}
 }

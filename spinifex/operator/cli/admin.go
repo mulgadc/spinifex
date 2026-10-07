@@ -428,7 +428,7 @@ func init() {
 	mustMarkFlagRequired(adminJoinCmd, "host")
 	mustMarkFlagRequired(adminJoinCmd, "token")
 
-	imagesImportCmd.Flags().String("tmp-dir", os.TempDir(), "Temporary directory for image import processing")
+	imagesImportCmd.Flags().String("tmp-dir", "", "Scratch directory for extracting the image (default: <spinifex-dir>/images); must be disk-backed, not tmpfs")
 
 	imagesImportCmd.Flags().String("name", "", "Import specified image by name")
 	imagesImportCmd.Flags().String("ami-name", "", "Override the registered AMI name (DescribeImages name). Defaults to ami-{distro}-{version}-{arch}. Use for locally-built appliances (e.g. --ami-name spinifex-eks-node).")
@@ -588,7 +588,6 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	var image imagecatalog.Images
 
 	var imageFile string
-	var imageStat os.FileInfo
 	var err error
 
 	forceCmd, _ := cmd.Flags().GetBool("force")
@@ -756,25 +755,59 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Next, validate if the image is raw, tar, gz, xv, etc. We need to upload the raw image
-	tmpDir, err := os.MkdirTemp(ostmpDir, "spinifex-image-tmp-*")
+	// An empty --tmp-dir scratches beside the catalog: disk-backed, unlike a
+	// tmpfs /tmp, and already root:spinifex 0770.
+	scratchRoot := ostmpDir
+	if scratchRoot == "" {
+		scratchRoot = imageDir
+	}
 
+	extractedImagePath, cleanupScratch, err := extractToScratch(imageFile, scratchRoot)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not create temp dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	extractedImagePath, err := imagecatalog.ExtractDiskImageFromFile(imageFile, imagePath)
+	// os.Exit skips deferred calls, so scratch is removed before any exit.
+	volumeId, err := registerExtractedImage(image, amiNameOverride, imagePath, extractedImagePath, sourceDigest)
+	cleanupScratch()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not extract image: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	imageStat, err = os.Stat(extractedImagePath)
+	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+	fmt.Printf("✅ Source digest: %s:%s (%s)\n", sourceDigest.Algorithm, sourceDigest.Value, sourceDigest.Verification)
+}
 
+// extractToScratch extracts imageFile into a fresh hidden directory under
+// scratchRoot and returns the extracted path with a cleanup that removes that
+// directory. On error the directory is already removed.
+func extractToScratch(imageFile, scratchRoot string) (string, func(), error) {
+	scratchDir, err := os.MkdirTemp(scratchRoot, ".import-*")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not stat image: %v\n", err)
-		os.Exit(1)
+		return "", nil, fmt.Errorf("create scratch dir under %s: %w", scratchRoot, err)
+	}
+	cleanup := func() {
+		if err := os.RemoveAll(scratchDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not remove scratch dir %s: %v\n", scratchDir, err)
+		}
+	}
+
+	extracted, err := imagecatalog.ExtractDiskImageFromFile(imageFile, scratchDir)
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("extract image: %w", err)
+	}
+	return extracted, cleanup, nil
+}
+
+// registerExtractedImage writes the AMI manifest into imagePath, imports
+// extractedImagePath into storage and registers the AMI, returning its ID.
+func registerExtractedImage(image imagecatalog.Images, amiNameOverride, imagePath, extractedImagePath string, sourceDigest ebsmetadata.ImageDigest) (string, error) {
+	imageStat, err := os.Stat(extractedImagePath)
+	if err != nil {
+		return "", fmt.Errorf("stat image: %w", err)
 	}
 
 	// Describe the image/AMI as the control-plane document it will become.
@@ -813,24 +846,19 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// Save as JSON
 	jsonData, err := json.Marshal(ami)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not marshal manifest: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("marshal manifest: %w", err)
 	}
 
 	manifestFilename := fmt.Sprintf("%s/%s.json", imagePath, ami.Name)
 	// Write to file
 	err = os.WriteFile(manifestFilename, jsonData, 0600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not write manifest: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("write manifest: %w", err)
 	}
-
-	defer os.RemoveAll(tmpDir)
 
 	appConfig, nc, err := loadConfigAndConnect()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("connect to the cluster: %w", err)
 	}
 	defer nc.Close()
 	node := appConfig.Nodes[appConfig.Node]
@@ -847,8 +875,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 		Progress:         os.Stdout,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Could not import image: %v\n", err)
-		os.Exit(1)
+		return "", fmt.Errorf("import image: %w", err)
 	}
 
 	// admin.ImportImage only wrote the provider's half of the snapshot (its
@@ -856,8 +883,7 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// DescribeSnapshots and GetAMISourceVolumeID cannot resolve the import.
 	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
 	if err := registerImportedAMISnapshot(metaStore, node.Predastore.Bucket, ami, node.AZ, node.Viperblock.EncryptionKeyFile != ""); err != nil {
-		fmt.Fprintf(os.Stderr, "Imported %s but could not register its snapshot: %v\n", volumeId, err)
-		os.Exit(1)
+		return "", fmt.Errorf("imported %s but could not register its snapshot: %w", volumeId, err)
 	}
 
 	// The document is what DescribeImages enumerates, so it is written last:
@@ -865,12 +891,10 @@ func runimagesImportCmd(cmd *cobra.Command, args []string) {
 	// partway leaves no half-registered image behind.
 	ami.State = "available"
 	if err := ebsmetadata.NewStore(metaStore, node.Predastore.Bucket).PutAMI(context.Background(), ami); err != nil {
-		fmt.Fprintf(os.Stderr, "Imported %s but could not register it: %v\n", volumeId, err)
-		os.Exit(1)
+		return "", fmt.Errorf("imported %s but could not register it: %w", volumeId, err)
 	}
 
-	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
-	fmt.Printf("✅ Source digest: %s:%s (%s)\n", sourceDigest.Algorithm, sourceDigest.Value, sourceDigest.Verification)
+	return volumeId, nil
 }
 
 // registerImportedAMISnapshot writes the EC2 control plane's snapshot document
@@ -2978,7 +3002,6 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 			endpointHost = h
 		}
 	}
-	endpointURL := "https://" + net.JoinHostPort(endpointHost, "9999")
 
 	credPath := filepath.Join(homeDir, ".aws", "credentials")
 	configPath := filepath.Join(homeDir, ".aws", "config")
@@ -2993,12 +3016,7 @@ func runAccountCreate(cmd *cobra.Command, args []string) {
 	if region == "" {
 		region = "ap-southeast-2"
 	}
-	if err := admin.UpdateAWSINIFile(configPath, "profile "+profileName, map[string]string{
-		"region":       region,
-		"endpoint_url": endpointURL,
-		"ca_bundle":    certPath,
-		"output":       "json",
-	}); err != nil {
+	if err := admin.WriteAWSProfileConfig(configPath, profileName, region, certPath, endpointHost); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not update AWS config: %v\n", err)
 	}
 

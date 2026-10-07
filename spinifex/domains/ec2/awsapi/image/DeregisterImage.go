@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeregisterImageInput requires an ImageId (MissingParameter) carrying the ami- prefix
+// (InvalidAMIID.Malformed).
 func ValidateDeregisterImageInput(input *ec2.DeregisterImageInput) error {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -21,6 +23,8 @@ func ValidateDeregisterImageInput(input *ec2.DeregisterImageInput) error {
 	return nil
 }
 
+// DeregisterImage implements the EC2 DeregisterImage action, validating the input and forwarding
+// it to the NATS image service scoped to accountID.
 func DeregisterImage(ctx context.Context, input *ec2.DeregisterImageInput, natsConn *nats.Conn, accountID string) (ec2.DeregisterImageOutput, error) {
 	var output ec2.DeregisterImageOutput
 

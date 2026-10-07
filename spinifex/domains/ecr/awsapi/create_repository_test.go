@@ -41,10 +41,10 @@ func TestCreateRepository_RejectsInvalidRequestsAndDuplicates(t *testing.T) {
 		code string
 	}{
 		{"duplicate", `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryAlreadyExists},
-		{"malformed", `{`, awserrors.ErrorInvalidParameterValue},
-		{"missing name", `{}`, awserrors.ErrorInvalidParameterValue},
+		{"malformed", `{`, awserrors.ErrorECRInvalidParameter},
+		{"missing name", `{}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", `{"repositoryName":"team/other","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
-		{"unsupported KMS", `{"repositoryName":"team/other","encryptionConfiguration":{"encryptionType":"KMS"}}`, awserrors.ErrorInvalidParameterValue},
+		{"unsupported KMS", `{"repositoryName":"team/other","encryptionConfiguration":{"encryptionType":"KMS"}}`, awserrors.ErrorECRInvalidParameter},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

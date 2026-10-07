@@ -1,3 +1,6 @@
+// Package formation coordinates cluster formation: an HTTPS server that nodes
+// join with a token, which hands each the shared credentials and the topology
+// of the formed cluster.
 package formation
 
 import (

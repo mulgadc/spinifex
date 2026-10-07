@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateModifyRuleInput rejects a nil input with InvalidParameterValue and returns
+// MissingParameter for a missing RuleArn or when neither Conditions nor Actions is given.
 func ValidateModifyRuleInput(input *elbv2.ModifyRuleInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

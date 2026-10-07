@@ -9,9 +9,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// The control-plane half of the engine seam: what CreateDBInstance needs to
-// validate a request and assemble a bootstrap config. The in-guest half —
-// initdb, quiesce, live password apply — lives in rds-init and rds-agent.
+// Engine is the control-plane half of the engine seam: what CreateDBInstance needs to validate a
+// request and assemble a bootstrap config. The in-guest half — initdb, quiesce, live password apply —
+// lives in rds-init and rds-agent.
 type Engine struct {
 	Name string
 	// Pinned for v1. A request naming another version is rejected rather than
@@ -104,37 +104,38 @@ func indexEnginesByFamily(registry map[string]Engine) (map[string]Engine, error)
 	return out, nil
 }
 
-// The pinned version an AMI lookup resolves against, which is the major alone:
+// EngineVersion returns the pinned version an AMI lookup resolves against, which is the major alone:
 // the AMI carries the major, and a minor is chosen by the image build.
 func (e Engine) EngineVersion() string {
 	return e.MajorVersion
 }
 
-// The engine's own name for itself, as a describe reports it.
+// Description returns the engine's own name for itself, as a describe reports it.
 func (e Engine) Description() string {
 	return e.description
 }
 
-// The AWS licence model name, which an orderable option carries and which a
+// LicenseModel returns the AWS license model name, which an orderable option carries and which a
 // client may filter on.
 func (e Engine) LicenseModel() string {
 	return e.licenseModel
 }
 
-// The parameter-group name AWS clients expect when none is named. The group is
-// implicit: it is resolvable and reportable without ever having been created,
-// and is neither modifiable nor deletable.
+// DefaultParameterGroupName returns the parameter-group name AWS clients expect when none is named. The
+// group is implicit: it is resolvable and reportable without ever having been created, and is neither
+// modifiable nor deletable.
 func (e Engine) DefaultParameterGroupName() string {
 	return defaultParameterGroupPrefix + e.ParameterGroupFamily()
 }
 
-// The family every parameter group of this engine belongs to. v1 pins one major
-// per engine, so a family is a name rather than a version axis.
+// ParameterGroupFamily returns the family every parameter group of this engine belongs to. v1 pins one
+// major per engine, so a family is a name rather than a version axis.
 func (e Engine) ParameterGroupFamily() string {
 	return e.Name + e.MajorVersion
 }
 
-// An unknown engine is rejected at validation, before any volume or ENI exists.
+// LookupEngine resolves an engine name case-insensitively. An unknown engine is rejected with
+// InvalidParameterValue at validation, before any volume or ENI exists.
 func LookupEngine(name string) (Engine, error) {
 	engine, ok := engines[strings.ToLower(strings.TrimSpace(name))]
 	if !ok {
@@ -144,6 +145,7 @@ func LookupEngine(name string) (Engine, error) {
 	return engine, nil
 }
 
+// SupportedEngines returns the engine names CreateDBInstance accepts, sorted for stable error messages.
 func SupportedEngines() []string {
 	return slices.Sorted(maps.Keys(engines))
 }
@@ -155,12 +157,14 @@ func engineForFamily(family string) (Engine, error) {
 	engine, ok := enginesByFamily[normaliseFamily(family)]
 	if !ok {
 		return Engine{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"DBParameterGroupFamily %q is not offered; supported families are %s",
+			"ParameterGroupFamily %s is not a valid parameter group family. Supported families: %s.",
 			family, strings.Join(SupportedParameterGroupFamilies(), ", "))
 	}
 	return engine, nil
 }
 
+// SupportedParameterGroupFamilies returns every engine's parameter group family name (e.g. postgres18),
+// sorted.
 func SupportedParameterGroupFamilies() []string {
 	return slices.Sorted(maps.Keys(enginesByFamily))
 }
@@ -169,8 +173,8 @@ func normaliseFamily(family string) string {
 	return strings.ToLower(strings.TrimSpace(family))
 }
 
-// An empty version takes the pin. A supplied one must name the pinned major
-// exactly, since the image does not promise any particular minor version.
+// ValidateVersion accepts an empty version, which takes the pin. A supplied one must name the pinned
+// major exactly, since the image does not promise any particular minor version.
 func (e Engine) ValidateVersion(version string) error {
 	if version == "" || version == e.MajorVersion {
 		return nil
@@ -179,7 +183,7 @@ func (e Engine) ValidateVersion(version string) error {
 		"EngineVersion %q is not available; %s %s is the only supported version", version, e.Name, e.MajorVersion)
 }
 
-// Mirrors the engine's own rules rather than a generic identifier check, so a
+// ValidateMasterUsername mirrors the engine's own rules rather than a generic identifier check, so a
 // name the control plane accepts cannot fail at initdb time inside the guest.
 func (e Engine) ValidateMasterUsername(username string) error {
 	if err := validateIdentifier("MasterUsername", username, e.maxUsernameLen, false); err != nil {
@@ -188,9 +192,9 @@ func (e Engine) ValidateMasterUsername(username string) error {
 	return e.ValidateUsernameNotReserved(username)
 }
 
-// The reserved-role half of the check on its own, exported for the in-guest
-// agent: its live password apply runs as the cluster superuser, so it re-checks
-// the name it is handed rather than trusting the control plane to have done it.
+// ValidateUsernameNotReserved is the reserved-role half of the check on its own, exported for the
+// in-guest agent: its live password apply runs as the cluster superuser, so it re-checks the name it
+// is handed rather than trusting the control plane to have done it.
 func (e Engine) ValidateUsernameNotReserved(username string) error {
 	lower := strings.ToLower(strings.TrimSpace(username))
 	if slices.Contains(e.reservedUsernames, lower) {
@@ -206,7 +210,7 @@ func (e Engine) ValidateUsernameNotReserved(username string) error {
 	return nil
 }
 
-// The initial database, which AWS leaves optional: an empty name creates no
+// ValidateDBName checks the initial database name, which AWS leaves optional: an empty name creates no
 // database at all rather than one named by default.
 func (e Engine) ValidateDBName(name string) error {
 	return e.validateDBName(name)
@@ -246,9 +250,8 @@ func validateIdentifier(field, value string, maxLen int, allowEmpty bool) error 
 	return nil
 }
 
-// Bounds and the printable-ASCII range AWS accepts. The password is never
-// inspected beyond this and never stored in cleartext past the first bootstrap
-// fetch.
+// ValidateMasterUserPassword enforces the bounds and printable-ASCII range AWS accepts. The password is
+// never inspected beyond this and never stored in cleartext past the first bootstrap fetch.
 func ValidateMasterUserPassword(password string) error {
 	switch {
 	case password == "":

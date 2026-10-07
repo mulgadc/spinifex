@@ -34,7 +34,8 @@ type Subscriber struct {
 	mac      MACBindingFlusher
 }
 
-// Config: all manager fields required. MAC is optional (nil disables the flush).
+// Config holds the managers New wires to. All manager fields are required; MAC
+// is optional (nil disables the flush).
 type Config struct {
 	Topology topology.Manager
 	SG       policy.SecurityGroupManager

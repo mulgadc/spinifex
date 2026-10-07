@@ -1,1 +1,0 @@
-import{n as e}from"./dist-BKgR2qk6.js";function t(t){return e(t.defaultTagName??`div`,t,t)}export{t};

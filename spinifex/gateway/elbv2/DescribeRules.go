@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDescribeRulesInput rejects a nil input with InvalidParameterValue and returns
+// MissingParameter when neither ListenerArn nor RuleArns is given.
 func ValidateDescribeRulesInput(input *elbv2.DescribeRulesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

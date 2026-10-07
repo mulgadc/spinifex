@@ -5,11 +5,15 @@ import (
 	"errors"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateVolumeInput requires Size (1-16384 GiB) unless SnapshotId is set, requires an
+// AvailabilityZone, and checks VolumeType when given. Errors are MissingParameter or
+// InvalidParameterValue.
 func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -29,8 +33,10 @@ func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	if input.VolumeType != nil && *input.VolumeType != "" && *input.VolumeType != "gp3" {
-		return errors.New(awserrors.ErrorUnknownVolumeType)
+	if input.VolumeType != nil {
+		if err := ebspolicy.ValidateVolumeType(*input.VolumeType); err != nil {
+			return err
+		}
 	}
 
 	return nil

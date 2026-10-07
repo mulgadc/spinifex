@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateSubnetInput rejects a nil input with InvalidParameterValue and a missing VpcId or
+// CidrBlock with MissingParameter.
 func ValidateCreateSubnetInput(input *ec2.CreateSubnetInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

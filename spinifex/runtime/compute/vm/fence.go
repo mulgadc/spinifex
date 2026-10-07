@@ -13,6 +13,21 @@ import (
 // recover the guest" from "another node owns this guest's disks now".
 const fenceStateReasonCode = "Server.VolumeFenced"
 
+// VolumeFenced reports whether this is the record of an instance a fence
+// stopped. It reads the projection because that is where the fence writes the
+// reason, and both the node's own VM and the cluster record carry one.
+//
+// It exists to keep a fenced instance out of every automatic relaunch. A fence
+// deliberately does not seal, so the volumes it leaves behind are a state
+// nothing has proven mountable, and relaunching is how that becomes permanent.
+// Restarting one is an operator's decision made against the volumes.
+func VolumeFenced(projection *ec2.Instance) bool {
+	if projection == nil || projection.StateReason == nil {
+		return false
+	}
+	return aws.StringValue(projection.StateReason.Code) == fenceStateReasonCode
+}
+
 // FenceVolume stops the guest running against volumeID on this node, because
 // the volume's lease has moved and this node is no longer its owner.
 //

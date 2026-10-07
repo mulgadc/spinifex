@@ -79,7 +79,7 @@ var Actions = map[string]Handler{
 	"DeleteRepositoryPolicy": DeleteRepositoryPolicy,
 	"GetRegistryPolicy":      NotImplemented,
 	"PutRegistryPolicy":      NotImplemented,
-	"DescribeRegistry":       NotImplemented,
+	"DescribeRegistry":       DescribeRegistry,
 
 	// Image scanning is unsupported (no scanner backend), except that
 	// PutImageScanningConfiguration accepts the scanOnPush=false no-op rather

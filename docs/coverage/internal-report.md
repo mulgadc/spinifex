@@ -762,7 +762,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## ecr
 
-`2015-09-21` — 22 of 58 modelled operations implemented (37.9%), 11 stubbed, 0 not applicable, 3 registered outside the pinned model.
+`2015-09-21` — 23 of 58 modelled operations implemented (39.7%), 10 stubbed, 0 not applicable, 3 registered outside the pinned model.
 
 ### Not implemented
 
@@ -793,7 +793,6 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 - `BatchCheckLayerAvailability`
 - `CompleteLayerUpload`
-- `DescribeRegistry`
 - `GetDownloadUrlForLayer`
 - `GetRegistryPolicy`
 - `InitiateLayerUpload`

@@ -34,13 +34,13 @@ type instanceCommander interface {
 	StartStoppedInstance(ctx context.Context, instanceID string) error
 }
 
-// No node subscribes ec2.cmd.{instanceID} for this VM, so its power state can
-// only be changed through the stopped-instance path.
+// ErrInstanceNotOnNode means no node subscribes ec2.cmd.{instanceID} for this VM,
+// so its power state can only be changed through the stopped-instance path.
 var ErrInstanceNotOnNode = errors.New("rds: no node is holding this DB VM")
 
-// The owning node refused the command because the VM is not in a state for it.
-// A stop gets this when something else is already stopping the VM, which is
-// where the stop was going, so only the fleet view settles it.
+// ErrInstanceStateRefused means the owning node refused the command for the VM's
+// current state. A stop gets this when something else is already stopping the VM,
+// which is where the stop was going, so only the fleet view settles it.
 var ErrInstanceStateRefused = errors.New("rds: the DB VM is not in a state for this command")
 
 // How long a VM stop, start or reboot may take before the command is treated as

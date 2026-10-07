@@ -18,9 +18,9 @@ const (
 	instanceRoleInlinePolicyName = "spinifex-rds-instance-internal"
 )
 
-// The agent-only actions. The gateway's principal-class gate reserves exactly
-// this set, and the role below grants exactly it — one list, so adding another
-// cannot leave the gate and the grant disagreeing.
+// InternalAgentActions lists the agent-only actions. The gateway's principal-class
+// gate reserves exactly this set and the role below grants exactly it, so adding
+// another cannot leave the gate and the grant disagreeing.
 var InternalAgentActions = []string{
 	"RegisterDBInstance",
 	"SubmitDBStateChange",

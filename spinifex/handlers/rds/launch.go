@@ -49,8 +49,8 @@ const (
 	rollbackTimeout = 60 * time.Second
 )
 
-// A DB VM must never fall back to another image, so callers surface this as a
-// validation failure rather than launching something else.
+// ErrEngineAMINotFound means no AMI exists for the engine. A DB VM must never fall
+// back to another image, so callers surface this as a validation failure.
 var ErrEngineAMINotFound = errors.New("rds: no AMI found for engine")
 
 // The catalog registers every engine's system image under this prefix, so the

@@ -75,7 +75,7 @@ const (
 	commandRepublishEvery = 2 * time.Second
 )
 
-// The agent could not be reached, or did not answer inside the command's
+// ErrCommandUnreachable means the agent was unreachable or missed the command's
 // budget. Callers that can degrade — the graceful engine stop — check for this;
 // callers that must not, like a password rotation, surface it as retryable.
 var ErrCommandUnreachable = errors.New("rds: the instance agent did not answer the command")

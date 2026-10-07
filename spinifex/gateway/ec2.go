@@ -18,6 +18,7 @@ import (
 	ec2eigwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eigw"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
+	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2natgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/natgw"
@@ -29,7 +30,6 @@ import (
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
-	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
@@ -306,28 +306,28 @@ var ec2Actions = map[string]ec2Action{
 		}
 	}),
 	"DescribeImages": ec2Handler(func(ctx context.Context, input *ec2.DescribeImagesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.DescribeImages(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.DescribeImages(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateImage": ec2Handler(func(ctx context.Context, input *ec2.CreateImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.CreateImage(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2imageapi.CreateImage(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"DeregisterImage": ec2Handler(func(ctx context.Context, input *ec2.DeregisterImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.DeregisterImage(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.DeregisterImage(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RegisterImage": ec2Handler(func(ctx context.Context, input *ec2.RegisterImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.RegisterImage(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.RegisterImage(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CopyImage": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CopyImageInput, gw *GatewayConfig, accountID string) (ec2.CopyImageOutput, error) {
-		return gateway_ec2_image.CopyImage(ctx, input, gw.NATSConn, gw.Region, accountID)
+		return ec2imageapi.CopyImage(ctx, input, gw.NATSConn, gw.Region, accountID)
 	}),
 	"DescribeImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.DescribeImageAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.DescribeImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.ModifyImageAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.ModifyImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ResetImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.ResetImageAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.ResetImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRegions": ec2Handler(func(ctx context.Context, input *ec2.DescribeRegionsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return ec2zoneapi.DescribeRegions(input, gw.Region, gw.advertisedEndpoint())

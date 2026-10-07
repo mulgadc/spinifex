@@ -13,13 +13,13 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
+	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
@@ -194,7 +194,7 @@ func (r *imageReaper) Stage() Stage { return StageStorage }
 func (r *imageReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
 	// Owner-scoped: a public or shared image the account merely sees is not
 	// its property and must survive its deletion.
-	out, err := gateway_ec2_image.DescribeImages(ctx, &ec2.DescribeImagesInput{
+	out, err := ec2imageapi.DescribeImages(ctx, &ec2.DescribeImagesInput{
 		Owners: []*string{aws.String(accountID)},
 	}, r.nc, accountID)
 	if err != nil {
@@ -212,7 +212,7 @@ func (r *imageReaper) List(ctx context.Context, accountID string) ([]Resource, e
 }
 
 func (r *imageReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_image.DeregisterImage(ctx, &ec2.DeregisterImageInput{
+	_, err := ec2imageapi.DeregisterImage(ctx, &ec2.DeregisterImageInput{
 		ImageId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

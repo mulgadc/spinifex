@@ -1,4 +1,4 @@
-package gateway_ec2_image
+package image
 
 import (
 	"context"

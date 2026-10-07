@@ -76,7 +76,7 @@ func TestLifecyclePreview_Errors(t *testing.T) {
 	// Missing repo.
 	_, err := callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/ghost", previewExpireOldest))
 	require.Error(t, err)
-	assert.Equal(t, "RepositoryNotFoundException", err.Error())
+	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 
 	// Malformed override policy.
 	_, err = callImage(t, gw, (*GatewayConfig).handleGetLifecyclePolicyPreview, previewBody("team/app", "not-json"))

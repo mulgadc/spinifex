@@ -2,8 +2,9 @@ package gateway_ecrapi
 
 import (
 	"context"
-
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -87,4 +88,59 @@ func TestLifecyclePolicy_Errors(t *testing.T) {
 			assert.Equal(t, tc.expect, awserrors.ValidErrorCodeFromError(err))
 		})
 	}
+}
+
+// AWS returns lifecyclePolicyText compacted with the submitted key order, and
+// lastEvaluatedAt (epoch 0 before any evaluation) from Get and Delete only.
+func TestLifecyclePolicy_CompactTextAndLastEvaluatedAt(t *testing.T) {
+	nc := newLifecycleTestConn(t)
+	seedRepo(t, nc, "team/app")
+	pretty := "{\n  \"rules\" : [ {\n    \"rulePriority\" : 1,\n    \"selection\" : {\"tagStatus\": \"untagged\", \"countType\": \"sinceImagePushed\", \"countUnit\": \"days\", \"countNumber\": 14},\n    \"action\" : {\"type\": \"expire\"}\n  } ]\n}"
+	body := []byte(`{"repositoryName":"team/app","lifecyclePolicyText":` + strconvQuote(pretty) + `}`)
+
+	out, err := PutLifecyclePolicy(context.Background(), nc, policyTestAccount, body)
+	require.NoError(t, err)
+	put, ok := out.(*ecr.PutLifecyclePolicyOutput)
+	require.True(t, ok)
+	assert.Equal(t, validLifecyclePolicy, *put.LifecyclePolicyText)
+
+	repoBody := []byte(`{"repositoryName":"team/app"}`)
+	out, err = GetLifecyclePolicy(context.Background(), nc, policyTestAccount, repoBody)
+	require.NoError(t, err)
+	got, ok := out.(*ecr.GetLifecyclePolicyOutput)
+	require.True(t, ok)
+	assert.Equal(t, validLifecyclePolicy, *got.LifecyclePolicyText)
+	require.NotNil(t, got.LastEvaluatedAt)
+	assert.True(t, got.LastEvaluatedAt.Equal(time.Unix(0, 0)))
+
+	w := httptest.NewRecorder()
+	WriteJSONResponse(w, got)
+	assert.Contains(t, w.Body.String(), `"lastEvaluatedAt":0`)
+
+	out, err = DeleteLifecyclePolicy(context.Background(), nc, policyTestAccount, repoBody)
+	require.NoError(t, err)
+	del, ok := out.(*ecr.DeleteLifecyclePolicyOutput)
+	require.True(t, ok)
+	assert.Equal(t, validLifecyclePolicy, *del.LifecyclePolicyText)
+	require.NotNil(t, del.LastEvaluatedAt)
+	assert.True(t, del.LastEvaluatedAt.Equal(time.Unix(0, 0)))
+}
+
+func TestLifecyclePolicy_NotFoundMessagesNameRepository(t *testing.T) {
+	nc := newLifecycleTestConn(t)
+	seedRepo(t, nc, "team/app")
+
+	_, err := GetLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
+	require.Error(t, err)
+	code, message, found := awserrors.ResolveErrorDetail(err)
+	require.True(t, found)
+	assert.Equal(t, awserrors.ErrorLifecyclePolicyNotFound, code)
+	assert.Equal(t, "Lifecycle policy does not exist for the repository with name 'team/app' in the registry with id '"+policyTestAccount+"'", message)
+
+	_, err = GetLifecyclePolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/ghost"}`))
+	require.Error(t, err)
+	code, message, found = awserrors.ResolveErrorDetail(err)
+	require.True(t, found)
+	assert.Equal(t, awserrors.ErrorRepositoryNotFound, code)
+	assert.Equal(t, "The repository with name 'team/ghost' does not exist in the registry with id '"+policyTestAccount+"'", message)
 }

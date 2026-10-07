@@ -61,7 +61,7 @@ func (gw *GatewayConfig) handlePutImageTagMutability(w http.ResponseWriter, r *h
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return errors.New(awserrors.ErrorRepositoryNotFound)
+			return gateway_ecrapi.RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "PutImageTagMutability: get repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)

@@ -63,7 +63,7 @@ func (gw *GatewayConfig) handleDescribeRepositories(w http.ResponseWriter, r *ht
 		meta, err := store.GetRepo(ctx, accountID, name)
 		if err != nil {
 			if errors.Is(err, handlers_ecr.ErrNotFound) {
-				return errors.New(awserrors.ErrorRepositoryNotFound)
+				return gateway_ecrapi.RepositoryNotFoundError(accountID, name)
 			}
 			slog.ErrorContext(ctx, "DescribeRepositories: get repo failed", "repo", name, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)

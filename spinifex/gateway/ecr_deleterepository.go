@@ -53,7 +53,7 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return errors.New(awserrors.ErrorRepositoryNotFound)
+			return gateway_ecrapi.RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "DeleteRepository: get repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -72,14 +72,17 @@ func (gw *GatewayConfig) handleDeleteRepository(w http.ResponseWriter, r *http.R
 
 	if err := store.DeleteRepo(ctx, accountID, req.RepositoryName); err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return errors.New(awserrors.ErrorRepositoryNotFound)
+			return gateway_ecrapi.RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "DeleteRepository: delete repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	gateway_ecrapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{
-		Repository: gw.buildRepository(accountID, req.RepositoryName, meta),
-	})
+	// AWS's DeleteRepository omits the encryption and scanning configurations
+	// that every other repository response carries.
+	repo := gw.buildRepository(accountID, req.RepositoryName, meta)
+	repo.EncryptionConfiguration = nil
+	repo.ImageScanningConfiguration = nil
+	gateway_ecrapi.WriteJSONResponse(w, &ecr.DeleteRepositoryOutput{Repository: repo})
 	return nil
 }

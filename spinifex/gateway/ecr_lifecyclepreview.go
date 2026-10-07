@@ -44,7 +44,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 		stored, err := store.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 		if err != nil {
 			if errors.Is(err, handlers_ecr.ErrNotFound) {
-				return "", nil, nil, errors.New(awserrors.ErrorLifecyclePolicyNotFound)
+				return "", nil, nil, gateway_ecrapi.LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 			}
 			return "", nil, nil, err
 		}
@@ -54,7 +54,7 @@ func (gw *GatewayConfig) evaluateLifecyclePreview(r *http.Request) (string, []ha
 	records, err := gw.ECRRegistry.ListImages(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return "", nil, nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return "", nil, nil, gateway_ecrapi.RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return "", nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}

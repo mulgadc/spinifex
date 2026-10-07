@@ -9,7 +9,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	"github.com/nats-io/nats.go"
 )
@@ -48,7 +47,7 @@ func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceAr
 	meta, err := store.GetRepo(ctx, accountID, name)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return "", handlers_ecr.RepoMeta{}, nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return "", handlers_ecr.RepoMeta{}, nil, RepositoryNotFoundError(accountID, name)
 		}
 		return "", handlers_ecr.RepoMeta{}, nil, err
 	}

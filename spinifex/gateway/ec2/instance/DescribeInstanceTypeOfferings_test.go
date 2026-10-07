@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,7 +46,7 @@ func TestDescribeInstanceTypeOfferings_AvailabilityZone(t *testing.T) {
 
 	types, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, nc, 1, nil, "")
 	require.NoError(t, err)
-	zones, err := gateway_ec2_zone.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
+	zones, err := ec2zoneapi.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
 	require.NoError(t, err)
 
 	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
@@ -106,7 +106,7 @@ func TestDescribeInstanceTypeOfferings_AvailabilityZoneID(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	serveInstanceTypes(t, nc, "t3.micro")
 
-	zones, err := gateway_ec2_zone.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
+	zones, err := ec2zoneapi.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
 	require.NoError(t, err)
 	zoneID := aws.StringValue(zones.AvailabilityZones[0].ZoneId)
 	require.NotEqual(t, offeringsTestAZ, zoneID, "zone ID must differ from zone name for this assertion to mean anything")

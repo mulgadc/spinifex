@@ -18,6 +18,7 @@ import (
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
+	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -34,7 +35,6 @@ import (
 	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
-	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
@@ -330,10 +330,10 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_image.ResetImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRegions": ec2Handler(func(ctx context.Context, input *ec2.DescribeRegionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_zone.DescribeRegions(input, gw.Region, gw.advertisedEndpoint())
+		return ec2zoneapi.DescribeRegions(input, gw.Region, gw.advertisedEndpoint())
 	}),
 	"DescribeAvailabilityZones": ec2Handler(func(ctx context.Context, input *ec2.DescribeAvailabilityZonesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_zone.DescribeAvailabilityZones(input, gw.Region, gw.AZ)
+		return ec2zoneapi.DescribeAvailabilityZones(input, gw.Region, gw.AZ)
 	}),
 	"DescribeVolumes": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_volume.DescribeVolumes(ctx, input, gw.NATSConn, accountID)

@@ -1,4 +1,4 @@
-package gateway_ec2_zone
+package zone
 
 import (
 	"testing"

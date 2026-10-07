@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
 	"github.com/nats-io/nats.go"
 )
 
@@ -105,7 +105,7 @@ func offeringLocations(locationType, region, az string) ([]string, error) {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	zones, err := gateway_ec2_zone.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, region, az)
+	zones, err := ec2zoneapi.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, region, az)
 	if err != nil {
 		return nil, err
 	}

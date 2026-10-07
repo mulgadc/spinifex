@@ -10,10 +10,6 @@ import (
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 )
 
-// repositoryNamePattern is the expression AWS names when it refuses a
-// repositoryName.
-const repositoryNamePattern = `[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*)*`
-
 const (
 	minRepositoryNameLength = 2
 	maxRepositoryNameLength = 256
@@ -30,11 +26,9 @@ func ValidateRepositoryName(name string) error {
 			"1 validation error detected: Value '%s' at 'repositoryName' failed to satisfy constraint: Member must have length greater than or equal to %d",
 			name, minRepositoryNameLength)
 	case len(name) > maxRepositoryNameLength:
-		return awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
-			"1 validation error detected: Value '%s' at 'repositoryName' failed to satisfy constraint: Member must have length less than or equal to %d",
-			name, maxRepositoryNameLength)
+		return ConstraintError("repositoryName", fmt.Sprintf("must have length less than or equal to %d", maxRepositoryNameLength))
 	case handlers_ecr.ValidateRepoName(name) != nil:
-		return ConstraintError("repositoryName", "must satisfy regular expression '"+repositoryNamePattern+"'")
+		return ConstraintError("repositoryName", "must satisfy regular expression '"+handlers_ecr.RepoNamePattern+"'")
 	}
 	return nil
 }

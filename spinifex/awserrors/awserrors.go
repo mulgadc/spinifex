@@ -389,7 +389,7 @@ var (
 	// so this gives EKS call sites their own name for the same registered code.
 	ErrorEKSInvalidParameter = ErrorECSInvalidParameter
 	// ErrorECRInvalidParameter aliases ErrorECSInvalidParameter: every ECR
-	// operation declares the restJson1 wire code "InvalidParameterException".
+	// operation declares the AWS JSON 1.1 wire code "InvalidParameterException".
 	ErrorECRInvalidParameter = ErrorECSInvalidParameter
 	// ErrorACMResourceInUse aliases ErrorEKSResourceInUse: real ACM's
 	// DeleteCertificate and real EKS's CreateCluster both legitimately use the

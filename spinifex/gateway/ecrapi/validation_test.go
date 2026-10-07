@@ -33,14 +33,20 @@ func TestValidateRepositoryName(t *testing.T) {
 		{"uppercase", "Team/App", awsRepositoryNameMessage},
 		{"missing", "", "1 validation error detected: Value null at 'repositoryName' failed to satisfy constraint: Member must not be null"},
 		{"too short", "a", "1 validation error detected: Value 'a' at 'repositoryName' failed to satisfy constraint: Member must have length greater than or equal to 2"},
-		{"too long", strings.Repeat("a", 257), "1 validation error detected: Value '" + strings.Repeat("a", 257) + "' at 'repositoryName' failed to satisfy constraint: Member must have length less than or equal to 256"},
+		{"too long", strings.Repeat("a", 257), "Invalid parameter at 'repositoryName' failed to satisfy constraint: 'must have length less than or equal to 256'"},
+		{"triple underscore", "a___b", awsRepositoryNameMessage},
+		{"underscore then hyphen", "a_-b", awsRepositoryNameMessage},
+		{"leading separator", "_a", awsRepositoryNameMessage},
+		{"trailing separator", "a_", awsRepositoryNameMessage},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			requireInvalidParameter(t, gateway_ecrapi.ValidateRepositoryName(tc.input), tc.want)
 		})
 	}
-	assert.NoError(t, gateway_ecrapi.ValidateRepositoryName("team/app"))
+	for _, name := range []string{"team/app", "a__b", "a--b", "a---b", "a/b__c", strings.Repeat("a", 256)} {
+		assert.NoError(t, gateway_ecrapi.ValidateRepositoryName(name), "expected %q valid", name)
+	}
 }
 
 func TestValidateTags(t *testing.T) {

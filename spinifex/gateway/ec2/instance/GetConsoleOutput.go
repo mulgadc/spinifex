@@ -14,6 +14,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateGetConsoleOutputInput rejects a nil input with InvalidParameterValue and a missing
+// InstanceId with MissingParameter.
 func ValidateGetConsoleOutputInput(input *ec2.GetConsoleOutputInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

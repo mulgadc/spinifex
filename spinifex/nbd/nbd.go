@@ -16,6 +16,9 @@ const (
 	secretKeyEnv = "VB_SECRET_KEY" //nolint:gosec // G101 false positive: env var name, not a credential value
 )
 
+// NBDKitConfig describes one nbdkit process serving a viperblock volume as an
+// NBD export over a Unix socket or TCP. S3 credentials reach the child through
+// its environment, not argv.
 type NBDKitConfig struct {
 	Port       int    `json:"port"`   // TCP port (when using TCP transport)
 	Socket     string `json:"socket"` // Unix socket path (when using socket transport)

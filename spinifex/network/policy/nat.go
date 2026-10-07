@@ -112,6 +112,7 @@ type NeighFlusher func(externalIP string) error
 // no node answers for a same-chassis recycled IP. Best-effort; callers warn and proceed.
 type NeighPrimer func(eip EIPSpec) error
 
+// Option customizes the NATManager built by NewNATManager.
 type Option func(*natManager)
 
 // WithFlowsBarrier injects the post-write flow-install barrier so callers

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDisassociateRouteTableInput rejects a nil input with InvalidParameterValue and a
+// missing AssociationId with MissingParameter.
 func ValidateDisassociateRouteTableInput(input *ec2.DisassociateRouteTableInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -20,6 +22,8 @@ func ValidateDisassociateRouteTableInput(input *ec2.DisassociateRouteTableInput)
 	return nil
 }
 
+// DisassociateRouteTable implements the EC2 DisassociateRouteTable action, removing a subnet
+// association via the NATS route table service.
 func DisassociateRouteTable(ctx context.Context, input *ec2.DisassociateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.DisassociateRouteTableOutput, error) {
 	var output ec2.DisassociateRouteTableOutput
 	if err := ValidateDisassociateRouteTableInput(input); err != nil {

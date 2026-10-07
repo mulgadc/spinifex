@@ -28,6 +28,8 @@ var (
 	ErrUnavailable = errors.New("provider is temporarily unable to answer")
 )
 
+// ErrorCode is the wire form of a provider error in ProviderError. Unwrap maps
+// every code but internal back to the matching Err sentinel.
 type ErrorCode string
 
 const (

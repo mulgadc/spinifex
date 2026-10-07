@@ -28,9 +28,9 @@ const (
 // number of writers that can contend for one resource, not a timing guess.
 const tagWriteAttempts = 16
 
-// Implemented by every record whose ARN kind is registered below. Keeping the
-// tag map behind an interface is what lets one mutate path serve every
-// resource type without a type switch per action.
+// TaggedRecord is implemented by every record whose ARN kind is registered below. Keeping the tag map
+// behind an interface is what lets one mutate path serve every resource type without a type switch
+// per action.
 type TaggedRecord interface {
 	GetTags() map[string]string
 	SetTags(tags map[string]string)
@@ -94,8 +94,8 @@ func (s *Service) ListTagsForResource(ctx context.Context, input *rds.ListTagsFo
 	return &rds.ListTagsForResourceOutput{TagList: tagsToAWS(rec.GetTags())}, nil
 }
 
-// Adding a key that is already present overwrites it, so a repeated Terraform
-// apply converges instead of failing on the second run.
+// AddTagsToResource implements the RDS action of the same name. Adding a key that is already present
+// overwrites it, so a repeated Terraform apply converges instead of failing on the second run.
 func (s *Service) AddTagsToResource(ctx context.Context, input *rds.AddTagsToResourceInput, accountID string) (*rds.AddTagsToResourceOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -131,8 +131,8 @@ func (s *Service) AddTagsToResource(ctx context.Context, input *rds.AddTagsToRes
 	return &rds.AddTagsToResourceOutput{}, nil
 }
 
-// Removing a key that is not present is a success, matching AWS: a retried
-// destroy must not fail on the tags it already removed.
+// RemoveTagsFromResource implements the RDS action of the same name. Removing a key that is not present
+// is a success, matching AWS: a retried destroy must not fail on the tags it already removed.
 func (s *Service) RemoveTagsFromResource(ctx context.Context, input *rds.RemoveTagsFromResourceInput, accountID string) (*rds.RemoveTagsFromResourceOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

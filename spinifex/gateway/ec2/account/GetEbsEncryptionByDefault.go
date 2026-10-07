@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateGetEbsEncryptionByDefaultInput rejects a nil input with InvalidParameterValue; the
+// action takes no parameters.
 func ValidateGetEbsEncryptionByDefaultInput(input *ec2.GetEbsEncryptionByDefaultInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -17,6 +19,8 @@ func ValidateGetEbsEncryptionByDefaultInput(input *ec2.GetEbsEncryptionByDefault
 	return nil
 }
 
+// GetEbsEncryptionByDefault implements the EC2 GetEbsEncryptionByDefault action, reporting
+// whether new EBS volumes in accountID are encrypted by default.
 func GetEbsEncryptionByDefault(ctx context.Context, input *ec2.GetEbsEncryptionByDefaultInput, natsConn *nats.Conn, accountID string) (ec2.GetEbsEncryptionByDefaultOutput, error) {
 	var output ec2.GetEbsEncryptionByDefaultOutput
 

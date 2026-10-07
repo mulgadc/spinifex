@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateTargetGroupInput rejects a nil input with InvalidParameterValue and a missing
+// Name with MissingParameter.
 func ValidateCreateTargetGroupInput(input *elbv2.CreateTargetGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

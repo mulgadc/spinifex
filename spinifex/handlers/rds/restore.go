@@ -16,11 +16,10 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
-// Builds a new DB instance on a volume created from the snapshot. It is a fresh
-// instance in every respect but its data: a new identifier, customer ENI, DNS
-// name, serving certificate and VM. What it inherits is the datadir — which
-// already holds the database, its roles and their password hashes, so the engine
-// starts on it rather than running initdb.
+// RestoreDBInstanceFromDBSnapshot builds a new DB instance on a volume created from the snapshot. It is
+// a fresh instance in every respect but its data: a new identifier, customer ENI, DNS name, serving
+// certificate and VM. What it inherits is the datadir — which already holds the database, its roles
+// and their password hashes, so the engine starts on it rather than running initdb.
 func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rds.RestoreDBInstanceFromDBSnapshotInput, accountID string) (out *rds.RestoreDBInstanceFromDBSnapshotOutput, err error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

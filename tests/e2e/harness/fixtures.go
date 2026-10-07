@@ -453,6 +453,8 @@ type AMISource struct {
 	CreateFrom *AMICreateSpec
 }
 
+// AMICreateSpec is the CreateImage input EnsureAMI uses to bake an AMI from
+// SourceInstanceID.
 type AMICreateSpec struct {
 	SourceInstanceID string
 	Name             string

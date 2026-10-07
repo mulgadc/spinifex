@@ -18,6 +18,8 @@ import (
 // the ErrTimeout path can be exercised without a real 5-second wait.
 var getPasswordDataTimeout = 5 * time.Second
 
+// ValidateGetPasswordDataInput rejects a nil input with InvalidParameterValue and a missing
+// InstanceId with MissingParameter.
 func ValidateGetPasswordDataInput(input *ec2.GetPasswordDataInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

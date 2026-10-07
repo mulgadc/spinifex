@@ -8,11 +8,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 )
 
+// EBSRequests is an instance's attached volumes, persisted with its state. Hold
+// Mu while reading or changing Requests.
 type EBSRequests struct {
 	Requests []EBSRequest `json:"Requests" mapstructure:"ebs_requests"`
 	Mu       sync.Mutex   `json:"-"`
 }
 
+// EBSRequest is one volume attached to an instance: its volume ID in Name, its
+// boot/EFI role and, once mounted, the NBD URI QEMU connects to.
 type EBSRequest struct {
 	Name                string `json:"Name"`
 	VolType             string `json:"VolType"`
@@ -72,6 +76,8 @@ const (
 	NBDTransportTCP NBDTransport = "tcp"
 )
 
+// EBSMountResponse is viperblockd's reply to ebs.mount: the NBD URI the volume
+// is served on, or Error.
 type EBSMountResponse struct {
 	URI     string `json:"URI"`
 	Mounted bool   `json:"Mounted"`
@@ -82,6 +88,8 @@ type EBSMountResponse struct {
 	Retryable bool `json:"Retryable"`
 }
 
+// EBSUnMountResponse is viperblockd's reply to ebs.unmount. Mounted is false
+// once the export is stopped and the volume sealed.
 type EBSUnMountResponse struct {
 	Volume  string `json:"Volume"`
 	Mounted bool   `json:"Mounted"`
@@ -95,20 +103,28 @@ type EBSUnMountResponse struct {
 	Reaped bool `json:"Reaped,omitempty"`
 }
 
+// EBSSyncRequest asks viperblockd on ebs.sync to reload a mounted volume's
+// state, such as its size after ModifyVolume.
 type EBSSyncRequest struct {
 	Volume string `json:"Volume"`
 }
 
+// EBSSyncResponse is the reply to EBSSyncRequest. Error is set when Synced is
+// false.
 type EBSSyncResponse struct {
 	Volume string `json:"Volume"`
 	Synced bool   `json:"Synced"`
 	Error  string `json:"Error"`
 }
 
+// EBSDeleteRequest asks viperblockd on ebs.delete to stop any export of Volume
+// and remove its node-local data.
 type EBSDeleteRequest struct {
 	Volume string `json:"Volume"`
 }
 
+// EBSDeleteResponse is the reply to EBSDeleteRequest. Error is set when
+// Success is false.
 type EBSDeleteResponse struct {
 	Volume  string `json:"Volume"`
 	Success bool   `json:"Success"`
@@ -125,6 +141,8 @@ type EBSConfigUpdateRequest struct {
 	VolumeConfig json.RawMessage `json:"VolumeConfig"`
 }
 
+// EBSConfigUpdateResponse is the reply to EBSConfigUpdateRequest. Error is set
+// when Success is false.
 type EBSConfigUpdateResponse struct {
 	Volume  string `json:"Volume"`
 	Success bool   `json:"Success"`

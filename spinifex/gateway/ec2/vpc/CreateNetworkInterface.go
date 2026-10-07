@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateNetworkInterfaceInput rejects a nil input with InvalidParameterValue and a
+// missing SubnetId with MissingParameter.
 func ValidateCreateNetworkInterfaceInput(input *ec2.CreateNetworkInterfaceInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

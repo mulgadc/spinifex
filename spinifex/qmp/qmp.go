@@ -55,17 +55,23 @@ type BalloonInfo struct {
 	Actual int64 `json:"actual"`
 }
 
+// Status is the query-status response: the VM run state (running, paused,
+// shutdown and so on) and whether vCPUs are executing.
 type Status struct {
 	Status     string `json:"status"`
 	Singlestep bool   `json:"singlestep"`
 	Running    bool   `json:"running"`
 }
 
+// QMPQueryBlockResponse is the full query-block reply envelope: the block
+// devices, or a QMP error.
 type QMPQueryBlockResponse struct {
 	Return []BlockDevice `json:"return"`
 	Error  *QMPError     `json:"error,omitempty"`
 }
 
+// BlockDevice is one device entry from query-block. Inserted is nil when no
+// medium is present, such as an empty CD-ROM drive.
 type BlockDevice struct {
 	IOStatus  string         `json:"io-status,omitempty"`
 	Device    string         `json:"device"`
@@ -77,6 +83,8 @@ type BlockDevice struct {
 	Type      string         `json:"type"`
 }
 
+// BlockInserted describes the medium inserted in a query-block device: its
+// image, driver, cache mode and I/O throttle limits.
 type BlockInserted struct {
 	IOPSRead       int        `json:"iops_rd"`
 	IOPSWrite      int        `json:"iops_wr"`
@@ -96,24 +104,30 @@ type BlockInserted struct {
 	Cache          BlockCache `json:"cache"`
 }
 
+// BlockImage is the image backing a query-block medium. VirtualSize is the
+// guest-visible size in bytes.
 type BlockImage struct {
 	VirtualSize int64  `json:"virtual-size"`
 	Filename    string `json:"filename"`
 	Format      string `json:"format"`
 }
 
+// BlockCache is a query-block medium's cache mode flags.
 type BlockCache struct {
 	NoFlush   bool `json:"no-flush"`
 	Direct    bool `json:"direct"`
 	Writeback bool `json:"writeback"`
 }
 
+// QMPError is the error object QEMU returns in place of a result, with its
+// error class (such as GenericError) and description.
 type QMPError struct {
 	Class string `json:"class"`
 	Desc  string `json:"desc"`
 }
 
-// QMP greeting on connect.
+// QMPGreeting is the banner QEMU sends on connect, carrying its version and
+// QMP capabilities.
 type QMPGreeting struct {
 	QMP struct {
 		Version struct {
@@ -126,16 +140,22 @@ type QMPGreeting struct {
 	} `json:"QMP"`
 }
 
+// QMPCommand is one request sent to QEMU: the command name in Execute and its
+// optional arguments.
 type QMPCommand struct {
 	Execute   string         `json:"execute"`
 	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
+// QMPResponse is QEMU's reply to a command. Return is left raw for the caller
+// to decode; Error is set instead when the command failed.
 type QMPResponse struct {
 	Return json.RawMessage `json:"return"`
 	Error  *QMPError       `json:"error,omitempty"`
 }
 
+// QMPClient is a connection to one QEMU QMP Unix socket. Mu serializes
+// commands on the shared Encoder/Decoder stream.
 type QMPClient struct {
 	Conn    net.Conn
 	Decoder *json.Decoder
@@ -156,6 +176,8 @@ type QMPClient struct {
 // NewQMPClientWithGreetingTimeout.
 const DefaultGreetingTimeout = 30 * time.Second
 
+// NewQMPClient dials the QMP socket at path and reads the greeting within
+// DefaultGreetingTimeout. It does not send qmp_capabilities; callers do.
 func NewQMPClient(path string) (*QMPClient, error) {
 	return NewQMPClientWithGreetingTimeout(path, DefaultGreetingTimeout)
 }

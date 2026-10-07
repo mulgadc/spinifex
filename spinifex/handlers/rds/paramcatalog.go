@@ -48,9 +48,9 @@ const (
 	ParamTypeEnum    = "enum"
 )
 
-// One catalog entry. Exactly one of Default and DefaultFor is set: a literal for
-// the parameters whose engine default is size-independent, and a formula over
-// the instance class's memory for the ones that are not.
+// ParameterSpec is one catalog entry. Exactly one of Default and DefaultFor is set: a literal for the
+// parameters whose engine default is size-independent, and a formula over the instance class's memory
+// for the ones that are not.
 type ParameterSpec struct {
 	Name        string
 	DataType    string
@@ -122,16 +122,16 @@ func validateParameterCatalogs() error {
 	return nil
 }
 
-// The catalog entry for a parameter name, or false when the engine has no such
+// LookupParameter returns the catalog entry for a parameter name, or false when the engine has no such
 // setting or it is one this platform does not expose.
 func (e Engine) LookupParameter(name string) (ParameterSpec, bool) {
 	spec, ok := e.catalog[strings.ToLower(strings.TrimSpace(name))]
 	return spec, ok
 }
 
-// The spelling to write into the engine's option file for a parameter the
-// customer set. A name the server does not accept there is a boot loop with the
-// bad file already on the data volume, so the two names are kept apart.
+// OptionFileName returns the spelling to write into the engine's option file for a parameter the
+// customer set. A name the server does not accept there is a boot loop with the bad file already on
+// the data volume, so the two names are kept apart.
 func (e Engine) OptionFileName(name string) string {
 	spec, ok := e.LookupParameter(name)
 	if !ok || spec.optionFileName == "" {
@@ -140,21 +140,21 @@ func (e Engine) OptionFileName(name string) string {
 	return spec.optionFileName
 }
 
-// The parameter that requires TLS of a client connection, under AWS's own name
-// for it. Exported for the in-guest agent, which derives enforcement from the
-// installed set and has no business knowing which engine it is running.
+// TLSEnforcementParameter returns the parameter that requires TLS of a client connection, under AWS's
+// own name for it. Exported for the in-guest agent, which derives enforcement from the installed set
+// and has no business knowing which engine it is running.
 func (e Engine) TLSEnforcementParameter() string {
 	return e.tlsEnforcementParameter
 }
 
-// Sorted, so a describe returns the same order on every call and Terraform does
-// not read a reshuffle as drift.
+// CatalogParameterNames returns the catalog's parameter names sorted, so a describe returns the same
+// order on every call and Terraform does not read a reshuffle as drift.
 func (e Engine) CatalogParameterNames() []string {
 	return slices.Sorted(maps.Keys(e.catalog))
 }
 
-// The engine default for one parameter at one instance class: the literal, or
-// the formula evaluated against the class's memory.
+// DefaultAt returns the engine default for one parameter at one instance class: the literal, or the
+// formula evaluated against the class's memory.
 func (s ParameterSpec) DefaultAt(memoryMiB int64) string {
 	if s.DefaultFor != nil {
 		return s.DefaultFor(memoryMiB)
@@ -162,7 +162,7 @@ func (s ParameterSpec) DefaultAt(memoryMiB int64) string {
 	return s.Default
 }
 
-// The AllowedValues string AWS reports: a range for numerics, the alternatives
+// AllowedValues returns the AllowedValues string AWS reports: a range for numerics, the alternatives
 // for an enum or boolean. Empty for a free-form string, as AWS leaves it.
 func (s ParameterSpec) AllowedValues() string {
 	switch s.DataType {
@@ -344,10 +344,10 @@ func rangeError(spec ParameterSpec, value string) error {
 		"the value %q of parameter %s is outside its allowed range %s", value, spec.Name, spec.AllowedValues())
 }
 
-// The full parameter set an instance runs with: every catalog default evaluated
-// at the instance's class, overlaid with the group's stored overrides. The
-// result is literals only, sorted by name so a re-resolve that changed nothing
-// produces a byte-identical include, and every boolean canonicalised.
+// ResolveEffectiveParameters returns the full parameter set an instance runs with: every catalog
+// default evaluated at the instance's class, overlaid with the group's stored overrides. The result is
+// literals only, sorted by name so a re-resolve that changed nothing produces a byte-identical include,
+// and every boolean canonicalized.
 //
 // Overrides are re-validated rather than trusted: a catalog whose bounds
 // tightened must not keep handing the engine a value it would now reject.

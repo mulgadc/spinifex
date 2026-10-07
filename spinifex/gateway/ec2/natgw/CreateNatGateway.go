@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateNatGatewayInput requires SubnetId and AllocationId (MissingParameter) and rejects
+// ConnectivityType=private with Unsupported, since only public NAT gateways exist.
 func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -28,6 +30,8 @@ func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
 	return nil
 }
 
+// CreateNatGateway implements the EC2 CreateNatGateway action, validating the input and
+// forwarding it to the NATS NAT gateway service scoped to accountID.
 func CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
 	var output ec2.CreateNatGatewayOutput
 	if err := ValidateCreateNatGatewayInput(input); err != nil {

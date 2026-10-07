@@ -15,6 +15,7 @@ type DisabledEIPService struct{}
 
 var _ EIPService = (*DisabledEIPService)(nil)
 
+// NewDisabledEIPService returns the EIPService used when the cluster has no external IPAM.
 func NewDisabledEIPService() *DisabledEIPService { return &DisabledEIPService{} }
 
 func (s *DisabledEIPService) AllocateAddress(_ context.Context, _ *ec2.AllocateAddressInput, _ string) (*ec2.AllocateAddressOutput, error) {

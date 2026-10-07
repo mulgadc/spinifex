@@ -57,6 +57,8 @@ func DistinctIDs(ids []*string) []string {
 	return distinct
 }
 
+// MarshalToXML encodes payload as AWS Query-protocol XML using the SDK's
+// xmlutil rules, so locationName tags name the elements.
 func MarshalToXML(payload any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := xml.NewEncoder(&buf)
@@ -274,6 +276,8 @@ func ValidateKeyPairName(name string) error {
 	return nil
 }
 
+// DownloadFileWithProgress GETs url into filename, showing a progress bar
+// labeled name. A positive timeout bounds the download, and Ctrl-C cancels it.
 func DownloadFileWithProgress(url string, name string, filename string, timeout time.Duration) (err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	if timeout > 0 {

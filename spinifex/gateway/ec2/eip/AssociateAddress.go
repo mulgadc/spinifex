@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateAssociateAddressInput rejects a nil input with InvalidParameterValue and a missing
+// AllocationId with MissingParameter; EC2-Classic PublicIp-only requests are not accepted.
 func ValidateAssociateAddressInput(input *ec2.AssociateAddressInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

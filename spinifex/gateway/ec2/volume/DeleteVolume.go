@@ -14,6 +14,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteVolumeInput rejects a nil input with InvalidParameterValue and a VolumeId that is
+// missing or not a non-empty vol- ID with InvalidVolumeID.Malformed.
 func ValidateDeleteVolumeInput(input *ec2.DeleteVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

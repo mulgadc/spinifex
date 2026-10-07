@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteLoadBalancerInput rejects a nil input with InvalidParameterValue and a missing
+// LoadBalancerArn with MissingParameter.
 func ValidateDeleteLoadBalancerInput(input *elbv2.DeleteLoadBalancerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateRouteInput rejects a nil input with InvalidParameterValue and a missing
+// RouteTableId or DestinationCidrBlock with MissingParameter.
 func ValidateCreateRouteInput(input *ec2.CreateRouteInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -23,6 +25,8 @@ func ValidateCreateRouteInput(input *ec2.CreateRouteInput) error {
 	return nil
 }
 
+// CreateRoute implements the EC2 CreateRoute action, adding an IPv4 route to a route table via
+// the NATS route table service.
 func CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, natsConn *nats.Conn, accountID string) (ec2.CreateRouteOutput, error) {
 	var output ec2.CreateRouteOutput
 	if err := ValidateCreateRouteInput(input); err != nil {

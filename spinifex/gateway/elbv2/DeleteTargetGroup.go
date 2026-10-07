@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeleteTargetGroupInput rejects a nil input with InvalidParameterValue and a missing
+// TargetGroupArn with MissingParameter.
 func ValidateDeleteTargetGroupInput(input *elbv2.DeleteTargetGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

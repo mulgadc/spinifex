@@ -220,7 +220,8 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) (*Agent, error) {
 	return a, nil
 }
 
-// Does not wait for IMDS: the register loop rides out a datapath still coming up.
+// New builds the agent from cfg, failing if no gateway URL is set. It does not
+// wait for IMDS: the register loop rides out a datapath still coming up.
 func New(cfg config) (*Agent, error) {
 	if cfg.GatewayURL == "" {
 		return nil, fmt.Errorf("no gateway URL configured (RDS_GATEWAY_URL)")

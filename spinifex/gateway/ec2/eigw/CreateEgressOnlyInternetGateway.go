@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateEgressOnlyInternetGatewayInput rejects a nil input with InvalidParameterValue and
+// a missing VpcId with MissingParameter.
 func ValidateCreateEgressOnlyInternetGatewayInput(input *ec2.CreateEgressOnlyInternetGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -14,6 +14,9 @@ import (
 // Callers should map this to AWS's MalformedQueryString error code.
 var ErrSliceTooLarge = errors.New("list parameter exceeds maximum entries")
 
+// QueryParamsToStruct fills the struct out points to from flattened EC2 Query
+// params, matching each field by name or locationName tag and recursing into
+// dotted prefixes for nested structs and lists. out must be a struct pointer.
 func QueryParamsToStruct(params map[string]string, out any) error {
 	v := reflect.ValueOf(out)
 

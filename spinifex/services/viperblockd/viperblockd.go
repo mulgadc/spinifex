@@ -86,6 +86,8 @@ func loadStateWithRetry(ctx context.Context, cfg *Config, vb *viperblock.VB, vol
 
 var serviceName = "viperblock"
 
+// MountedVolume is one volume this node currently exports over NBD: its nbdkit
+// process and endpoint, live viperblock instance, NATS subscriptions and lease.
 type MountedVolume struct {
 	Name      string
 	Port      int    // TCP port (when using TCP transport)
@@ -122,6 +124,8 @@ func (v MountedVolume) leaseGeneration() uint64 {
 	return v.Lease.generation
 }
 
+// Config is viperblockd's startup configuration: NATS and Predastore access,
+// nbdkit settings, and the registry of volumes mounted on this node.
 type Config struct {
 	ConfigPath     string
 	PluginPath     string
@@ -300,12 +304,16 @@ func (cfg *Config) procScanRoot() string {
 	return cfg.procRoot
 }
 
+// Service runs viperblockd, which serves EBS volumes from viperblock through
+// nbdkit and answers the ebs.* NATS topics.
 type Service struct {
 	Config *Config
 }
 
 //  nbdkit -p 10812 --pidfile /tmp/vb-vol-1.pid ./lib/nbdkit-viperblock-plugin.so -v -f size=67108864 volume=vol-2 bucket=predastore region=ap-southeast-2 access_key="X" secret_key="Y" base_dir="/tmp/vb/" host="https://127.0.0.1:8443" cache_size=0
 
+// New returns the viperblockd service. config must be a *Config; anything else
+// errors.
 func New(config any) (svc *Service, err error) {
 	cfg, ok := config.(*Config)
 	if !ok {

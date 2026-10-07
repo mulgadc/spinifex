@@ -11,6 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateModifyVolumeInput requires a vol- prefixed VolumeId (InvalidVolumeID.Malformed) and
+// rejects a non-positive Size with InvalidParameterValue.
 func ValidateModifyVolumeInput(input *ec2.ModifyVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

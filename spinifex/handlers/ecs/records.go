@@ -101,13 +101,13 @@ type ServiceEvent struct {
 	Message   string    `json:"message"`
 }
 
-// ARN builders for the ECS resource shapes (ecs-v1.md §1). Region + accountID
-// scope every ARN; the partition is fixed to "aws" to match the rest of the
-// stack.
+// ClusterARN returns arn:aws:ecs:{region}:{account}:cluster/{name}. Region and accountID scope every
+// ECS ARN; the partition is fixed to "aws" to match the rest of the stack.
 func ClusterARN(region, accountID, name string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", region, accountID, name)
 }
 
+// TaskDefARN returns the task-definition ARN for a resolved numeric revision, family:rev.
 func TaskDefARN(region, accountID, family string, rev int) string {
 	return TaskDefRefARN(region, accountID, family, strconv.Itoa(rev))
 }
@@ -118,18 +118,22 @@ func TaskDefRefARN(region, accountID, family, revision string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%s", region, accountID, family, revision)
 }
 
+// TaskARN returns the long-format task ARN, arn:aws:ecs:{region}:{account}:task/{cluster}/{taskID}.
 func TaskARN(region, accountID, cluster, taskID string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:task/%s/%s", region, accountID, cluster, taskID)
 }
 
+// ContainerInstanceARN returns the long-format container-instance ARN, scoped under its cluster.
 func ContainerInstanceARN(region, accountID, cluster, ciID string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:container-instance/%s/%s", region, accountID, cluster, ciID)
 }
 
+// ServiceARN returns the long-format service ARN, arn:aws:ecs:{region}:{account}:service/{cluster}/{name}.
 func ServiceARN(region, accountID, cluster, name string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:service/%s/%s", region, accountID, cluster, name)
 }
 
+// CapacityProviderARN returns arn:aws:ecs:{region}:{account}:capacity-provider/{name}.
 func CapacityProviderARN(region, accountID, name string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:capacity-provider/%s", region, accountID, name)
 }

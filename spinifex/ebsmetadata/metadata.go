@@ -164,11 +164,15 @@ func key(kind, id string) (string, error) {
 	return "spinifex/ebsmetadata/v2/" + kind + "/" + id + ".json", nil
 }
 
+// MarshalVolume encodes volume as JSON, stamping the current SchemaVersion over
+// whatever the caller set.
 func MarshalVolume(volume Volume) ([]byte, error) {
 	volume.SchemaVersion = SchemaVersion
 	return json.Marshal(volume)
 }
 
+// UnmarshalVolume decodes a stored volume document. Malformed JSON or a schema
+// version other than SchemaVersion returns an error wrapping ErrCorruptDocument.
 func UnmarshalVolume(data []byte) (Volume, error) {
 	var volume Volume
 	if err := json.Unmarshal(data, &volume); err != nil {
@@ -180,11 +184,15 @@ func UnmarshalVolume(data []byte) (Volume, error) {
 	return volume, nil
 }
 
+// MarshalSnapshot encodes snapshot as JSON, stamping the current SchemaVersion over
+// whatever the caller set.
 func MarshalSnapshot(snapshot Snapshot) ([]byte, error) {
 	snapshot.SchemaVersion = SchemaVersion
 	return json.Marshal(snapshot)
 }
 
+// UnmarshalSnapshot decodes a stored snapshot document. Malformed JSON or a schema
+// version other than SchemaVersion returns an error wrapping ErrCorruptDocument.
 func UnmarshalSnapshot(data []byte) (Snapshot, error) {
 	var snapshot Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
@@ -196,11 +204,15 @@ func UnmarshalSnapshot(data []byte) (Snapshot, error) {
 	return snapshot, nil
 }
 
+// MarshalAMI encodes ami as JSON, stamping the current SchemaVersion over
+// whatever the caller set.
 func MarshalAMI(ami AMI) ([]byte, error) {
 	ami.SchemaVersion = SchemaVersion
 	return json.Marshal(ami)
 }
 
+// UnmarshalAMI decodes a stored AMI document. Malformed JSON or a schema
+// version other than SchemaVersion returns an error wrapping ErrCorruptDocument.
 func UnmarshalAMI(data []byte) (AMI, error) {
 	var ami AMI
 	if err := json.Unmarshal(data, &ami); err != nil {

@@ -101,13 +101,16 @@ func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) 
 	return &out, nil
 }
 
-// The identifier is accepted but authoritative identity comes from the gate.
+// RegisterDBInstanceInput is the in-guest agent's registration request. The identifier is
+// accepted but authoritative identity comes from the gate.
 type RegisterDBInstanceInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 	AgentVersion         string `locationName:"AgentVersion"`
 	EngineVersion        string `locationName:"EngineVersion"`
 }
 
+// RegisterDBInstance is the internal agent action announcing a DB instance's agent and engine
+// versions. The instance and account come from the caller's role session, not the body.
 func RegisterDBInstance(ctx context.Context, input *RegisterDBInstanceInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -121,6 +124,7 @@ func RegisterDBInstance(ctx context.Context, input *RegisterDBInstanceInput, nc 
 	}, id.AccountID)
 }
 
+// SubmitDBStateChangeInput is the agent's engine health report for its DB instance.
 type SubmitDBStateChangeInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 	EngineHealth         string `locationName:"EngineHealth"`
@@ -128,6 +132,8 @@ type SubmitDBStateChangeInput struct {
 	Message              string `locationName:"Message"`
 }
 
+// SubmitDBStateChange is the internal agent action reporting engine health and version. The
+// instance and account come from the caller's role session, not the body.
 func SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -142,12 +148,13 @@ func SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, n
 	}, id.AccountID)
 }
 
+// GetDBBootstrapConfigInput asks for the boot material of the agent's DB instance.
 type GetDBBootstrapConfigInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 }
 
-// Serves boot material, replaying the master password for as long as the staged
-// payload bound to this VM generation has not been acknowledged.
+// GetDBBootstrapConfig serves boot material, replaying the master password for as long as the
+// staged payload bound to this VM generation has not been acknowledged.
 func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -160,8 +167,8 @@ func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput,
 	}, id.AccountID)
 }
 
-// PayloadId, VMGeneration and DataVolumeId are the guest's assertions about the
-// payload it applied; the control plane checks each against the record.
+// AcknowledgeDBBootstrapInput carries PayloadId, VMGeneration and DataVolumeId, the guest's
+// assertions about the payload it applied; the control plane checks each against the record.
 type AcknowledgeDBBootstrapInput struct {
 	DBInstanceIdentifier string `locationName:"DBInstanceIdentifier"`
 	PayloadId            string `locationName:"PayloadId"`
@@ -169,9 +176,9 @@ type AcknowledgeDBBootstrapInput struct {
 	DataVolumeId         string `locationName:"DataVolumeId"`
 }
 
-// The only agent call whose side effect destroys key material, so it is a
-// distinct action rather than a field on the heartbeat: it has to be denied on
-// an identity mismatch, which would break liveness reporting if a beat carried it.
+// AcknowledgeDBBootstrap is the only agent call whose side effect destroys key material, so it is
+// a distinct action, not a heartbeat field: it must be denied on an identity mismatch, which
+// would break liveness reporting if a beat carried it.
 func AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {
@@ -186,7 +193,7 @@ func AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapIn
 	}, id.AccountID)
 }
 
-// Carries results for commands delivered on an earlier poll and asks for the
+// PollDBCommandsInput carries results for commands delivered on an earlier poll and asks for the
 // next one, matching the ECS ack-on-poll shape.
 type PollDBCommandsInput struct {
 	DBInstanceIdentifier string                      `locationName:"DBInstanceIdentifier"`
@@ -194,15 +201,14 @@ type PollDBCommandsInput struct {
 	Replies              []handlers_rds.CommandReply `locationName:"Replies" locationNameList:"member"`
 }
 
-// At most one command per poll: each is a discrete guest operation the agent
-// must complete and report before the next is safe to issue.
+// PollDBCommandsOutput holds at most one command per poll: each is a discrete guest operation the
+// agent must complete and report before the next is safe to issue.
 type PollDBCommandsOutput struct {
 	Commands []handlers_rds.Command `locationName:"Commands" locationNameList:"member"`
 }
 
-// The command channel is a live subscription, not a durable queue, so a
-// set-password that cannot reach the agent fails loudly rather than queueing
-// cleartext in KV.
+// PollDBCommands reads from a live subscription, not a durable queue, so a set-password that
+// cannot reach the agent fails loudly rather than queueing cleartext in KV.
 func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Conn, caller Caller) (any, error) {
 	id, err := authorizeAgent(ctx, nc, caller, input.DBInstanceIdentifier)
 	if err != nil {

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateModifySubnetAttributeInput rejects a nil input with InvalidParameterValue and a missing
+// SubnetId with MissingParameter.
 func ValidateModifySubnetAttributeInput(input *ec2.ModifySubnetAttributeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

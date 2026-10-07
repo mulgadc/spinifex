@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+// Mode is the cluster topology a scenario runs against, from SPINIFEX_MODE.
 type Mode string
 
 const (
@@ -23,6 +24,8 @@ const (
 	ModeBaremetal Mode = "baremetal"
 )
 
+// Env is the target cluster as seen by a scenario: its node and service IPs,
+// ports, config directory and default wait budgets.
 type Env struct {
 	Mode    Mode
 	NodeIPs []string
@@ -42,6 +45,8 @@ type Env struct {
 	DefaultPoll    time.Duration
 }
 
+// LoadEnv builds the Env from SPINIFEX_* variables, discovering IPs and the
+// config directory when unset. It skips the test unless SPINIFEX_E2E is set.
 func LoadEnv(t *testing.T) *Env {
 	t.Helper()
 	if os.Getenv("SPINIFEX_E2E") == "" {

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateReleaseAddressInput rejects a nil input with InvalidParameterValue and a missing
+// AllocationId with MissingParameter.
 func ValidateReleaseAddressInput(input *ec2.ReleaseAddressInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateRouteTableInput rejects a nil input with InvalidParameterValue and a missing
+// VpcId with MissingParameter.
 func ValidateCreateRouteTableInput(input *ec2.CreateRouteTableInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -20,6 +22,8 @@ func ValidateCreateRouteTableInput(input *ec2.CreateRouteTableInput) error {
 	return nil
 }
 
+// CreateRouteTable implements the EC2 CreateRouteTable action, creating a route table in a VPC
+// via the NATS route table service.
 func CreateRouteTable(ctx context.Context, input *ec2.CreateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.CreateRouteTableOutput, error) {
 	var output ec2.CreateRouteTableOutput
 	if err := ValidateCreateRouteTableInput(input); err != nil {

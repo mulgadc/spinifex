@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDescribeTargetHealthInput rejects a nil input with InvalidParameterValue and a missing
+// TargetGroupArn with MissingParameter.
 func ValidateDescribeTargetHealthInput(input *elbv2.DescribeTargetHealthInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+// ReadPidFile reads the PID from <name>.pid in RuntimeDir. A missing file
+// returns the os.ReadFile error, so callers can treat it as not running.
 func ReadPidFile(name string) (int, error) {
 	pidPath := RuntimeDir()
 
@@ -27,6 +29,8 @@ func ReadPidFile(name string) (int, error) {
 	return strconv.Atoi(string(pidFile))
 }
 
+// GeneratePidFile returns the path of <name>.pid in RuntimeDir without touching
+// the filesystem. It errors if name is empty.
 func GeneratePidFile(name string) (string, error) {
 	if name == "" {
 		return "", errors.New("name is required")
@@ -41,6 +45,8 @@ func GeneratePidFile(name string) (string, error) {
 	return filepath.Join(pidPath, fmt.Sprintf("%s.pid", name)), nil
 }
 
+// WritePidFile writes pid to <name>.pid in RuntimeDir, truncating any existing
+// file. Use WritePidFileTo for a per-service directory.
 func WritePidFile(name string, pid int) error {
 	pidFilename, err := GeneratePidFile(name)
 
@@ -127,6 +133,8 @@ func StopProcessAt(dir string, name string) error {
 	return killErr
 }
 
+// RemovePidFile deletes <serviceName>.pid from RuntimeDir. A missing file is
+// returned as an error.
 func RemovePidFile(serviceName string) error {
 	pidPath := RuntimeDir()
 
@@ -233,6 +241,8 @@ func WaitForUnixSocket(path string, timeout time.Duration) error {
 	}
 }
 
+// WaitForPidFileRemoval polls every 100ms until <instanceID>.pid in RuntimeDir
+// can no longer be read, erroring after timeout. An absent file returns at once.
 func WaitForPidFileRemoval(instanceID string, timeout time.Duration) error {
 	if _, err := ReadPidFile(instanceID); err != nil {
 		return nil

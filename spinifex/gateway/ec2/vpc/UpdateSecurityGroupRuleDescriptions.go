@@ -21,6 +21,8 @@ func validateSGRuleDescriptions(descriptions []*ec2.SecurityGroupRuleDescription
 	return nil
 }
 
+// UpdateSecurityGroupRuleDescriptionsIngress implements the EC2 action of the same name,
+// requiring GroupId and validating each rule description before calling the NATS VPC service.
 func UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsIngressInput, natsConn *nats.Conn, accountID string) (ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput, error) {
 	var output ec2.UpdateSecurityGroupRuleDescriptionsIngressOutput
 	if input == nil {
@@ -40,6 +42,8 @@ func UpdateSecurityGroupRuleDescriptionsIngress(ctx context.Context, input *ec2.
 	return *result, nil
 }
 
+// UpdateSecurityGroupRuleDescriptionsEgress implements the EC2 action of the same name, requiring
+// GroupId and validating each rule description before calling the NATS VPC service.
 func UpdateSecurityGroupRuleDescriptionsEgress(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, natsConn *nats.Conn, accountID string) (ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput, error) {
 	var output ec2.UpdateSecurityGroupRuleDescriptionsEgressOutput
 	if input == nil {

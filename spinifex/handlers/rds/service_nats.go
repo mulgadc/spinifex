@@ -36,12 +36,13 @@ const (
 	restoreTimeout        = 8 * time.Minute
 )
 
-// The gateway-side adapter that forwards each agent action as a NATS request to
-// the daemon's matching subscriber.
+// NATSService is the gateway-side adapter that forwards each agent action as a NATS request to the
+// daemon's matching subscriber.
 type NATSService struct {
 	nc *nats.Conn
 }
 
+// NewNATSService returns a NATSService that issues its requests over nc.
 func NewNATSService(nc *nats.Conn) *NATSService {
 	return &NATSService{nc: nc}
 }
@@ -182,7 +183,7 @@ func (s *NATSService) DeleteDBParameterGroup(ctx context.Context, input *rds.Del
 		SubjectDeleteDBParameterGroup, input, defaultTimeout, accountID)
 }
 
-// Requested on the Layer-1 subject, not the bus.
+// GetDBBootstrapConfig is requested on the Layer-1 subject, not the bus.
 func (s *NATSService) GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput, accountID string) (*GetDBBootstrapConfigOutput, error) {
 	return utils.NATSRequest[GetDBBootstrapConfigOutput](ctx, s.nc,
 		SubjectGetDBBootstrapConfig, input, defaultTimeout, accountID)

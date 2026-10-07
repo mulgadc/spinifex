@@ -355,6 +355,8 @@ func imageHasTagKey(img *ec2.Image, key string) bool {
 	})
 }
 
+// Images describes one importable cloud image in the AvailableImages catalog:
+// where to download it, how to verify its checksum, and the AMI metadata it gets.
 type Images struct {
 	Name         string    `json:"name"`
 	Description  string    `json:"description"`

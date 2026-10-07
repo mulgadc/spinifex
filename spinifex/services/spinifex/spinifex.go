@@ -12,11 +12,15 @@ import (
 
 var serviceName = "spinifex"
 
+// Service runs this node's Spinifex daemon from the cluster config. ConfigPath
+// is the spinifex.toml the daemon was loaded from, set via SetConfigPath.
 type Service struct {
 	Config     *config.ClusterConfig
 	ConfigPath string
 }
 
+// New returns the daemon service. cfg must be a *config.ClusterConfig;
+// anything else errors.
 func New(cfg any) (svc *Service, err error) {
 	c, ok := cfg.(*config.ClusterConfig)
 	if !ok {

@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDisableSerialConsoleAccessInput rejects a nil input with InvalidParameterValue; the
+// action takes no parameters.
 func ValidateDisableSerialConsoleAccessInput(input *ec2.DisableSerialConsoleAccessInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -17,6 +19,8 @@ func ValidateDisableSerialConsoleAccessInput(input *ec2.DisableSerialConsoleAcce
 	return nil
 }
 
+// DisableSerialConsoleAccess implements the EC2 DisableSerialConsoleAccess action, turning off
+// serial console access for accountID via the NATS account settings service.
 func DisableSerialConsoleAccess(ctx context.Context, input *ec2.DisableSerialConsoleAccessInput, natsConn *nats.Conn, accountID string) (ec2.DisableSerialConsoleAccessOutput, error) {
 	var output ec2.DisableSerialConsoleAccessOutput
 

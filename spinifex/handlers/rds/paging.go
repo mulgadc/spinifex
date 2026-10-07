@@ -17,9 +17,9 @@ const defaultMaxRecords = 100
 // so a key compares field by field exactly as the fields do.
 const pageKeySeparator = "\x00"
 
-// One page of items, already in ascending key order. The Marker is base64 of the
-// next item's key, as AWS issues it; a resume starts at the first key not below
-// it, so that item's deletion skips nothing. MaxRecords outside 1-100 is 100.
+// Page returns one page of items, already in ascending key order. The Marker is base64 of the next
+// item's key, as AWS issues it; a resume starts at the first key not below it, so that item's deletion
+// skips nothing. MaxRecords outside 1-100 is 100.
 func Page[T any](items []T, key func(T) string, maxRecords *int64, marker *string) ([]T, *string, error) {
 	start := 0
 	if encoded := aws.StringValue(marker); encoded != "" {
@@ -65,10 +65,14 @@ func parameterGroupPageKey(g *rds.DBParameterGroup) string {
 	return aws.StringValue(g.DBParameterGroupName)
 }
 
+// EngineVersionPageKey returns the engine-plus-version key a DescribeDBEngineVersions listing is
+// sorted and paged by.
 func EngineVersionPageKey(v *rds.DBEngineVersion) string {
 	return pageKey(aws.StringValue(v.Engine), aws.StringValue(v.EngineVersion))
 }
 
+// OrderableOptionPageKey returns the engine, version and instance class key a
+// DescribeOrderableDBInstanceOptions listing is sorted and paged by.
 func OrderableOptionPageKey(o *rds.OrderableDBInstanceOption) string {
 	return pageKey(aws.StringValue(o.Engine), aws.StringValue(o.EngineVersion), aws.StringValue(o.DBInstanceClass))
 }

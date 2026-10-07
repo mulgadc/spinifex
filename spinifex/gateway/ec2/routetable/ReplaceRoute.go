@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateReplaceRouteInput rejects a nil input with InvalidParameterValue and a missing
+// RouteTableId or DestinationCidrBlock with MissingParameter.
 func ValidateReplaceRouteInput(input *ec2.ReplaceRouteInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -23,6 +25,8 @@ func ValidateReplaceRouteInput(input *ec2.ReplaceRouteInput) error {
 	return nil
 }
 
+// ReplaceRoute implements the EC2 ReplaceRoute action, changing the target of an existing route
+// via the NATS route table service.
 func ReplaceRoute(ctx context.Context, input *ec2.ReplaceRouteInput, natsConn *nats.Conn, accountID string) (ec2.ReplaceRouteOutput, error) {
 	var output ec2.ReplaceRouteOutput
 	if err := ValidateReplaceRouteInput(input); err != nil {

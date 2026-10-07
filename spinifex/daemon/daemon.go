@@ -3244,7 +3244,9 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 
 var _ handlers_ec2_instance.InstanceTypeAllocator = (*ResourceManager)(nil)
 
-// Allocate, Deallocate, CanAllocate satisfy handlers_ec2_instance.InstanceTypeAllocator.
+// Allocate reserves host capacity for one instance of type it, erroring when
+// the node lacks room. With Deallocate and CanAllocate it satisfies
+// handlers_ec2_instance.InstanceTypeAllocator.
 func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
 func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }
 func (rm *ResourceManager) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {

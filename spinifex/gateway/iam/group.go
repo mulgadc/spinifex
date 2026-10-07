@@ -9,6 +9,8 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
+// CreateGroup implements the IAM CreateGroup action, creating an IAM group. It returns
+// MissingParameter when GroupName is absent, then calls the IAM service for accountID.
 func CreateGroup(accountID string, input *iam.CreateGroupInput, svc handlers_iam.IAMService) (*iam.CreateGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -16,6 +18,8 @@ func CreateGroup(accountID string, input *iam.CreateGroupInput, svc handlers_iam
 	return svc.CreateGroup(accountID, input)
 }
 
+// GetGroup implements the IAM GetGroup action, returning the group and its members. It requires
+// GroupName; the Users list is paged here by Marker and MaxItems.
 func GetGroup(accountID string, input *iam.GetGroupInput, svc handlers_iam.IAMService) (*iam.GetGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -33,6 +37,8 @@ func GetGroup(accountID string, input *iam.GetGroupInput, svc handlers_iam.IAMSe
 	return out, nil
 }
 
+// ListGroups implements the IAM ListGroups action, listing the account's groups. It validates
+// PathPrefix; results are paged here by Marker and MaxItems.
 func ListGroups(accountID string, input *iam.ListGroupsInput, svc handlers_iam.IAMService) (*iam.ListGroupsOutput, error) {
 	if err := validatePathPrefix(input.PathPrefix, identityPathPrefix); err != nil {
 		return nil, err
@@ -50,6 +56,8 @@ func ListGroups(accountID string, input *iam.ListGroupsInput, svc handlers_iam.I
 	return out, nil
 }
 
+// DeleteGroup implements the IAM DeleteGroup action, deleting an IAM group. It returns
+// MissingParameter when GroupName is absent, then calls the IAM service for accountID.
 func DeleteGroup(accountID string, input *iam.DeleteGroupInput, svc handlers_iam.IAMService) (*iam.DeleteGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -57,6 +65,9 @@ func DeleteGroup(accountID string, input *iam.DeleteGroupInput, svc handlers_iam
 	return svc.DeleteGroup(accountID, input)
 }
 
+// AddUserToGroup implements the IAM AddUserToGroup action, adding a user to a group. It returns
+// MissingParameter when GroupName or UserName is absent, then calls the IAM service for
+// accountID.
 func AddUserToGroup(accountID string, input *iam.AddUserToGroupInput, svc handlers_iam.IAMService) (*iam.AddUserToGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -67,6 +78,9 @@ func AddUserToGroup(accountID string, input *iam.AddUserToGroupInput, svc handle
 	return svc.AddUserToGroup(accountID, input)
 }
 
+// RemoveUserFromGroup implements the IAM RemoveUserFromGroup action, removing a user from a
+// group. It returns MissingParameter when GroupName or UserName is absent, then calls the IAM
+// service for accountID.
 func RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput, svc handlers_iam.IAMService) (*iam.RemoveUserFromGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -77,6 +91,8 @@ func RemoveUserFromGroup(accountID string, input *iam.RemoveUserFromGroupInput, 
 	return svc.RemoveUserFromGroup(accountID, input)
 }
 
+// ListGroupsForUser implements the IAM ListGroupsForUser action, listing the groups a user
+// belongs to. It requires UserName; results are paged here by Marker and MaxItems.
 func ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput, svc handlers_iam.IAMService) (*iam.ListGroupsForUserOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -94,6 +110,9 @@ func ListGroupsForUser(accountID string, input *iam.ListGroupsForUserInput, svc 
 	return out, nil
 }
 
+// AttachGroupPolicy implements the IAM AttachGroupPolicy action, attaching a managed policy to a
+// group. It returns MissingParameter when GroupName or PolicyArn is absent, then calls the IAM
+// service for accountID.
 func AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput, svc handlers_iam.IAMService) (*iam.AttachGroupPolicyOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -104,6 +123,9 @@ func AttachGroupPolicy(accountID string, input *iam.AttachGroupPolicyInput, svc 
 	return svc.AttachGroupPolicy(accountID, input)
 }
 
+// DetachGroupPolicy implements the IAM DetachGroupPolicy action, detaching a managed policy from
+// a group. It returns MissingParameter when GroupName or PolicyArn is absent, then calls the IAM
+// service for accountID.
 func DetachGroupPolicy(accountID string, input *iam.DetachGroupPolicyInput, svc handlers_iam.IAMService) (*iam.DetachGroupPolicyOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -114,6 +136,9 @@ func DetachGroupPolicy(accountID string, input *iam.DetachGroupPolicyInput, svc 
 	return svc.DetachGroupPolicy(accountID, input)
 }
 
+// ListAttachedGroupPolicies implements the IAM ListAttachedGroupPolicies action, listing a
+// group's managed policies. It requires GroupName and validates PathPrefix; results are paged
+// here by Marker and MaxItems.
 func ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPoliciesInput, svc handlers_iam.IAMService) (*iam.ListAttachedGroupPoliciesOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -134,6 +159,9 @@ func ListAttachedGroupPolicies(accountID string, input *iam.ListAttachedGroupPol
 	return out, nil
 }
 
+// PutGroupPolicy implements the IAM PutGroupPolicy action, adding or replacing a group inline
+// policy. It returns MissingParameter when GroupName, PolicyName or PolicyDocument is absent,
+// then calls the IAM service for accountID.
 func PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput, svc handlers_iam.IAMService) (*iam.PutGroupPolicyOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -147,6 +175,9 @@ func PutGroupPolicy(accountID string, input *iam.PutGroupPolicyInput, svc handle
 	return svc.PutGroupPolicy(accountID, input)
 }
 
+// GetGroupPolicy implements the IAM GetGroupPolicy action, reading a group inline policy. It
+// requires GroupName or PolicyName and returns the document percent-encoded as the IAM Query API
+// does.
 func GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput, svc handlers_iam.IAMService) (*iam.GetGroupPolicyOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -162,6 +193,9 @@ func GetGroupPolicy(accountID string, input *iam.GetGroupPolicyInput, svc handle
 	return out, nil
 }
 
+// DeleteGroupPolicy implements the IAM DeleteGroupPolicy action, deleting a group inline policy.
+// It returns MissingParameter when GroupName or PolicyName is absent, then calls the IAM service
+// for accountID.
 func DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput, svc handlers_iam.IAMService) (*iam.DeleteGroupPolicyOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -172,6 +206,8 @@ func DeleteGroupPolicy(accountID string, input *iam.DeleteGroupPolicyInput, svc 
 	return svc.DeleteGroupPolicy(accountID, input)
 }
 
+// ListGroupPolicies implements the IAM ListGroupPolicies action, listing a group's inline policy
+// names. It requires GroupName; results are paged here by Marker and MaxItems.
 func ListGroupPolicies(accountID string, input *iam.ListGroupPoliciesInput, svc handlers_iam.IAMService) (*iam.ListGroupPoliciesOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

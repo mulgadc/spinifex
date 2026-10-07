@@ -80,6 +80,9 @@ const (
 	DesiredStopped DesiredState = "stopped"
 )
 
+// VM is one EC2 instance on this node: its observed and desired state, QEMU
+// Config, attached volumes and ENIs, and the EC2 API records returned for it.
+// It is persisted as JSON, minus the live QMPClient and unexported fields.
 type VM struct {
 	ID           string        `json:"id"`
 	Status       InstanceState `json:"status"`
@@ -307,14 +310,18 @@ func (v *VM) IsTerminationProtected() bool {
 	return aws.BoolValue(v.RunInstancesInput.DisableApiTermination)
 }
 
+// NetDev is one QEMU -netdev argument, rendered verbatim from Value.
 type NetDev struct {
 	Value string `json:"value"`
 }
 
+// Device is one QEMU -device argument, rendered verbatim from Value.
 type Device struct {
 	Value string `json:"value"`
 }
 
+// Drive is one QEMU -drive entry, used for boot, EFI and pflash firmware
+// drives. Each set field becomes a key=value option.
 type Drive struct {
 	File   string `json:"file"`
 	Format string `json:"format"`
@@ -338,6 +345,8 @@ type Drive struct {
 	ReadOnly bool `json:"readonly,omitempty"`
 }
 
+// IOThread is one QEMU iothread object (-object iothread,id=ID) a device can
+// run its I/O on.
 type IOThread struct {
 	ID string `json:"id"`
 }
@@ -352,6 +361,8 @@ type Blockdev struct {
 	Value string `json:"value"`
 }
 
+// Config is the QEMU command line for one instance, built by Execute. Memory
+// is in MiB.
 type Config struct {
 	Name      string `json:"name"`
 	PIDFile   string `json:"pid_file"`

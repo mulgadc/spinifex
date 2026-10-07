@@ -9,6 +9,9 @@ type SharedClusterData struct {
 	Nodes   map[string]config.Config `json:"nodes" toml:"nodes"`
 }
 
+// NodeHealthResponse is a daemon's reply to a node health check. Status is
+// running or starting, Uptime is in seconds, and ConfigHash lets peers spot
+// config drift.
 type NodeHealthResponse struct {
 	Node          string            `json:"node"`
 	Status        string            `json:"status"`

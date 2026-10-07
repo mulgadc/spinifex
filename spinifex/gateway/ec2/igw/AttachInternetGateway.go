@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateAttachInternetGatewayInput rejects a nil input with InvalidParameterValue and a missing
+// InternetGatewayId or VpcId with MissingParameter.
 func ValidateAttachInternetGatewayInput(input *ec2.AttachInternetGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

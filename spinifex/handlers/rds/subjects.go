@@ -69,23 +69,27 @@ const (
 	CommandQueueGroup = "spinifex-rds-agents"
 )
 
+// BusRegisterSubject returns the agent-bus subject a DB instance's agent registers on,
+// rds.bus.{accountID}.{dbInstanceIdentifier}.register.
 func BusRegisterSubject(accountID, dbInstanceIdentifier string) string {
 	return fmt.Sprintf("%s%s.%s.register", busPrefix, accountID, dbInstanceIdentifier)
 }
 
-// The reserved .heartbeat subject stays unused: the beat is folded into the
-// state change so a healthy instance costs one round trip per tick.
+// BusHealthSubject returns the subject an agent publishes its state changes on. The reserved
+// .heartbeat subject stays unused: the beat is folded into the state change so a healthy instance
+// costs one round trip per tick.
 func BusHealthSubject(accountID, dbInstanceIdentifier string) string {
 	return fmt.Sprintf("%s%s.%s.health", busPrefix, accountID, dbInstanceIdentifier)
 }
 
-// A live long poll rather than a durable queue, so a set-password that cannot
-// reach the agent fails loudly instead of deferring cleartext.
+// BusCommandSubject returns the subject an agent long-polls for commands. A live long poll rather than
+// a durable queue, so a set-password that cannot reach the agent fails loudly instead of deferring cleartext.
 func BusCommandSubject(accountID, dbInstanceIdentifier string) string {
 	return fmt.Sprintf("%s%s.%s.command", busPrefix, accountID, dbInstanceIdentifier)
 }
 
-// Correlated by the issuer on CommandID.
+// BusCommandReplySubject returns the subject an agent's command results are republished on,
+// correlated by the issuer on CommandID.
 func BusCommandReplySubject(accountID, dbInstanceIdentifier string) string {
 	return fmt.Sprintf("%s%s.%s.command-reply", busPrefix, accountID, dbInstanceIdentifier)
 }

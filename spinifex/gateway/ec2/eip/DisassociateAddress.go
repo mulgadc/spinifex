@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDisassociateAddressInput rejects a nil input with InvalidParameterValue and a missing
+// AssociationId with MissingParameter.
 func ValidateDisassociateAddressInput(input *ec2.DisassociateAddressInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

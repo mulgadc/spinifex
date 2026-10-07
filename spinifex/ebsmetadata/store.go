@@ -23,6 +23,7 @@ type Store struct {
 	bucket  string
 }
 
+// NewStore returns a Store that keeps its documents in bucket on objects.
 func NewStore(objects objectstore.ObjectStore, bucket string) *Store {
 	return &Store{objects: objects, bucket: bucket}
 }

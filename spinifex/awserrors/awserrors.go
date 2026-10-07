@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+// ErrorMessage is the HTTP status and default message returned for an AWS
+// error code, as resolved by LookupErrorMessage.
 type ErrorMessage struct {
 	HTTPCode int
 	Message  string

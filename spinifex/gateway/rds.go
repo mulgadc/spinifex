@@ -11,8 +11,8 @@ import (
 	gateway_rds "github.com/mulgadc/spinifex/spinifex/gateway/rds"
 )
 
-// RDS shares the query-in/XML-out shape of ELBv2: the action comes from the
-// Action= form param and the response is the IAM-style XML envelope.
+// RDS_Request serves RDS, which shares the query-in/XML-out shape of ELBv2: the action comes from
+// the Action= form param and the response is the IAM-style XML envelope.
 func (gw *GatewayConfig) RDS_Request(w http.ResponseWriter, r *http.Request) error {
 	queryArgs, err := readQueryArgs(r)
 	if err != nil {

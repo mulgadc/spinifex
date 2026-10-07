@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeletePlacementGroupInput rejects a nil input with InvalidParameterValue and a missing
+// GroupName with MissingParameter.
 func ValidateDeletePlacementGroupInput(input *ec2.DeletePlacementGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

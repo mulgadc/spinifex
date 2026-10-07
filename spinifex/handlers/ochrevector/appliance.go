@@ -100,6 +100,7 @@ type TeardownApplianceRequest struct {
 	PurgeMetadata bool `json:"purgeMetadata,omitempty"`
 }
 
+// TeardownApplianceResponse is the empty reply to SubjectTeardownAppliance; failures arrive as an error.
 type TeardownApplianceResponse struct{}
 
 // ApplianceConnInfo is the appliance's connection endpoint: safe to log,

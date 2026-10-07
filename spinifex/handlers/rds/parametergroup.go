@@ -23,9 +23,9 @@ const maxParametersPerModify = 20
 // with it is reported and resolvable but never modifiable or deletable.
 const defaultParameterGroupPrefix = "default."
 
-// Creates a customer-owned parameter group. It starts empty: every value is a
-// catalog default until the customer overrides one, so a fresh group and the
-// default group resolve to the same effective set.
+// CreateDBParameterGroup creates a customer-owned parameter group. It starts empty: every value is a
+// catalog default until the customer overrides one, so a fresh group and the default group resolve to
+// the same effective set.
 func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateDBParameterGroupInput, accountID string) (*rds.CreateDBParameterGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -80,9 +80,9 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 	return &rds.CreateDBParameterGroupOutput{DBParameterGroup: s.projectParameterGroupRecord(&rec)}, nil
 }
 
-// The implicit default group is reported alongside the customer's own, whether
-// or not anything has materialised it yet — a client that lists groups before
-// creating its first instance must still see the one it can name.
+// DescribeDBParameterGroups reports the implicit default group alongside the customer's own, whether
+// or not anything has materialized it yet — a client that lists groups before creating its first
+// instance must still see the one it can name.
 func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.DescribeDBParameterGroupsInput, accountID string) (*rds.DescribeDBParameterGroupsOutput, error) {
 	if input == nil {
 		input = &rds.DescribeDBParameterGroupsInput{}
@@ -137,10 +137,9 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 	return &rds.DescribeDBParameterGroupsOutput{DBParameterGroups: groups, Marker: next}, nil
 }
 
-// Stores validated overrides, one KV key per parameter, so a modify touching one
-// setting cannot clobber a concurrent change to another. The whole request
-// is validated before anything is written: a batch with one bad value must leave
-// the group exactly as it was rather than half-applied.
+// ModifyDBParameterGroup stores validated overrides, one KV key per parameter, so a modify touching
+// one setting cannot clobber a concurrent change to another. The whole request is validated before
+// anything is written: a batch with one bad value must leave the group exactly as it was.
 func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyDBParameterGroupInput, accountID string) (*rds.DBParameterGroupNameMessage, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -233,10 +232,9 @@ func (s *Service) propagateParameterGroup(ctx context.Context, kv *kvstore.Bucke
 	return errors.Join(failures...)
 }
 
-// Merges catalog defaults with the group's stored overrides. The defaults are
-// evaluated at the smallest supported class, because a parameter group is not
-// bound to an instance: a customer reading a group's values before creating
-// anything has to see literals, and formulas stay off this surface.
+// DescribeDBParameters merges catalog defaults with the group's stored overrides. The defaults are
+// evaluated at the smallest supported class, because a parameter group is not bound to an instance:
+// a customer reading a group's values before creating anything has to see literals.
 func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeDBParametersInput, accountID string) (*rds.DescribeDBParametersOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -316,9 +314,9 @@ func parameterNameMatches(filters []Filter, param string) bool {
 	return true
 }
 
-// Refused for a default group, and while any instance still references it —
-// including one that is only deleting, so a destroy that races the teardown
-// fails cleanly rather than leaving a live engine's configuration unreadable.
+// DeleteDBParameterGroup is refused for a default group, and while any instance still references it —
+// including one that is only deleting, so a destroy that races the teardown fails cleanly rather than
+// leaving a live engine's configuration unreadable.
 func (s *Service) DeleteDBParameterGroup(ctx context.Context, input *rds.DeleteDBParameterGroupInput, accountID string) (*rds.DeleteDBParameterGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

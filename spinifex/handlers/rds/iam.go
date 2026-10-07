@@ -50,9 +50,9 @@ func instanceRoleInlinePolicy() (string, error) {
 	return string(doc), nil
 }
 
-// Resolved per launch rather than held, mirroring EKS: the KV-backed IAM
-// service has no responders until JetStream is up, so an eager build races
-// daemon boot and fails permanently on the node that loses.
+// IAMProvider returns the system instance-role ensurer. It is resolved per launch rather than held,
+// mirroring EKS: the KV-backed IAM service has no responders until JetStream is up, so an eager build
+// races daemon boot and fails permanently on the node that loses.
 type IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
 
 // Returns the mandatory instance-profile ARN. Unlike EKS there is no

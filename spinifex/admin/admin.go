@@ -43,6 +43,8 @@ type RemoteNode struct {
 	NorthstarConfigPath string
 }
 
+// ConfigSettings is the template data rendered into every generated config file
+// (spinifex.toml, predastore.toml, NATS and the rest) by GenerateConfigFile.
 type ConfigSettings struct {
 	AccessKey string
 	SecretKey string
@@ -174,12 +176,16 @@ type PredastoreNodeConfig struct {
 	Host string
 }
 
+// ConfigFile names one config file to render: Template is the text/template
+// source and Path the destination it is written to.
 type ConfigFile struct {
 	Name     string
 	Path     string
 	Template string
 }
 
+// GenerateConfigFiles renders each of configs with configSettings, printing a
+// line per file and stopping at the first failure.
 func GenerateConfigFiles(configs []ConfigFile, configSettings ConfigSettings) error {
 	for _, cfg := range configs {
 		if err := GenerateConfigFile(cfg.Path, cfg.Template, configSettings); err != nil {
@@ -310,6 +316,8 @@ func TenantCACertPath(configDir string) string {
 	return filepath.Join(configDir, tenantCACertFilename)
 }
 
+// TenantCAKeyPath returns the tenant private CA key path under configDir; see
+// TenantCACertPath.
 func TenantCAKeyPath(configDir string) string {
 	return filepath.Join(configDir, tenantCAKeyFilename)
 }
@@ -342,6 +350,8 @@ func PredastoreDataDir(spxRoot string) string {
 	return filepath.Join(spxRoot, "predastore", "cluster")
 }
 
+// CreateServiceDirectories creates the per-service directories under spxRoot.
+// A directory that cannot be created is warned about on stderr, not returned.
 func CreateServiceDirectories(spxRoot string) {
 	dirs := []string{
 		filepath.Join(spxRoot, "images"),
@@ -368,6 +378,8 @@ func CreateServiceDirectories(spxRoot string) {
 	fmt.Printf("✅ Directory structure created in %s\n", spxRoot)
 }
 
+// FileExists reports whether path can be stat'd. Any stat error, including
+// permission denied, reads as false.
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

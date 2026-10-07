@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreatePlacementGroupInput rejects a nil input with InvalidParameterValue and a missing
+// GroupName with MissingParameter.
 func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

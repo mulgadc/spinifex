@@ -31,6 +31,8 @@ type memoryVolume struct {
 
 var _ EBSProvider = (*MemoryProvider)(nil)
 
+// NewMemoryProvider returns an empty in-process provider advertising
+// capabilities. An unset exclusion scope is filled in as ExclusionScopeNode.
 func NewMemoryProvider(capabilities Capabilities) *MemoryProvider {
 	// Publication lives in this process's map, so node is what this provider
 	// does whatever the caller passed. An unset scope is filled rather than

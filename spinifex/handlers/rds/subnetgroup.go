@@ -30,11 +30,10 @@ const (
 // written.
 const subnetGroupStatusComplete = "Complete"
 
-// AWS requires a DB subnet group to span at least two AZs. This platform is
-// single-AZ — every subnet reports the one zone — and multi-AZ is a V2
-// milestone, so the AZ-count rule is not enforced: rejecting on it would fail
-// every stock Terraform module for no safety benefit. The constraint that does
-// matter is enforced below, because a group spanning two VPCs cannot host an
+// CreateDBSubnetGroup implements the RDS CreateDBSubnetGroup action. AWS requires a group to span at
+// least two AZs, but this platform is single-AZ and multi-AZ is a V2 milestone, so that rule is not
+// enforced: rejecting on it would fail every stock Terraform module for no safety benefit. The
+// constraint that does matter is enforced below, because a group spanning two VPCs cannot host an
 // instance at all.
 func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSubnetGroupInput, accountID string) (*rds.CreateDBSubnetGroupOutput, error) {
 	if input == nil {
@@ -88,9 +87,8 @@ func (s *Service) CreateDBSubnetGroup(ctx context.Context, input *rds.CreateDBSu
 	return &rds.CreateDBSubnetGroupOutput{DBSubnetGroup: s.projectSubnetGroup(&rec)}, nil
 }
 
-// A named group that does not exist is an error, matching AWS; an unnamed
-// request lists the account's groups. Filters is not read: AWS ignores it here,
-// even an unknown or malformed entry.
+// DescribeDBSubnetGroups errors on a named group that does not exist, matching AWS; an unnamed request
+// lists the account's groups. Filters is not read: AWS ignores it here, even an unknown or malformed entry.
 func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.DescribeDBSubnetGroupsInput, accountID string) (*rds.DescribeDBSubnetGroupsOutput, error) {
 	if input == nil {
 		input = &rds.DescribeDBSubnetGroupsInput{}
@@ -132,9 +130,9 @@ func (s *Service) DescribeDBSubnetGroups(ctx context.Context, input *rds.Describ
 	return &rds.DescribeDBSubnetGroupsOutput{DBSubnetGroups: groups, Marker: next}, nil
 }
 
-// SubnetIds is the group's complete new subnet set and must stay in the group's
-// VPC, as AWS requires. An omitted or empty description keeps the stored one. A
-// lost CAS replays against the fresh record, so a concurrent write is not undone.
+// ModifyDBSubnetGroup replaces the group's subnet set with SubnetIds, which must stay in the group's
+// VPC, as AWS requires. An omitted or empty description keeps the stored one. A lost CAS replays
+// against the fresh record, so a concurrent write is not undone.
 func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSubnetGroupInput, accountID string) (*rds.ModifyDBSubnetGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
@@ -193,9 +191,9 @@ func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSu
 	return nil, fmt.Errorf("rds: update of %s contended after %d attempts", key, tagWriteAttempts)
 }
 
-// Refused while any instance still names the group, including one that is only
-// deleting: releasing it early would let a teardown lose the record of where its
-// ENI was placed, and would make destroy ordering ambiguous.
+// DeleteDBSubnetGroup is refused while any instance still names the group, including one that is only
+// deleting: releasing it early would let a teardown lose the record of where its ENI was placed, and
+// would make destroy ordering ambiguous.
 func (s *Service) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, accountID string) (*rds.DeleteDBSubnetGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

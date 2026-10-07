@@ -37,7 +37,8 @@ const (
 	defaultTimeout = 40 * time.Second
 )
 
-// One client is reused for register/heartbeat/bootstrap/poll.
+// Client sends SigV4-signed RDS Query calls to the gateway. One client is
+// reused for register/heartbeat/bootstrap/poll.
 type Client struct {
 	baseURL    string
 	signer     *gwsign.Signer
@@ -45,8 +46,9 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// caPath optionally pins the gateway TLS CA; empty relies on the system trust
-// store. region defaults to us-east-1, since SigV4 requires a non-empty one.
+// New builds a TLS 1.3 client for baseURL. caPath optionally pins the gateway
+// TLS CA; empty relies on the system trust store. region defaults to us-east-1,
+// since SigV4 requires a non-empty one.
 func New(baseURL, caPath string, signer *gwsign.Signer, region string, timeout time.Duration) (*Client, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("rdsgw: baseURL is required")
@@ -88,8 +90,8 @@ func New(baseURL, caPath string, signer *gwsign.Signer, region string, timeout t
 	}, nil
 }
 
-// Code is the AWS error code, so a caller branches on the failure class rather
-// than matching message text.
+// APIError is a non-2xx gateway response. Code is the AWS error code, so a
+// caller branches on the failure class rather than matching message text.
 type APIError struct {
 	Action     string
 	StatusCode int
@@ -113,8 +115,9 @@ type errorResponse struct {
 	} `xml:"Error"`
 }
 
+// Call POSTs action and decodes its <ActionResult> into out, which may be nil.
 // params carries the action's own arguments; Action and Version are set here.
-// out may be nil. A non-2xx yields an *APIError. No retry; callers wrap.
+// A non-2xx yields an *APIError. No retry; callers wrap.
 func (c *Client) Call(ctx context.Context, action string, params url.Values, out any) error {
 	form := make(url.Values, len(params)+2)
 	maps.Copy(form, params)

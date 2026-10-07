@@ -16,6 +16,9 @@ const (
 	maxARNLength = 2048
 )
 
+// CreatePolicy implements the IAM CreatePolicy action, creating a customer managed policy. It
+// returns MissingParameter when PolicyName or PolicyDocument is absent, then calls the IAM
+// service for accountID.
 func CreatePolicy(accountID string, input *iam.CreatePolicyInput, svc handlers_iam.IAMService) (*iam.CreatePolicyOutput, error) {
 	if input.PolicyName == nil || *input.PolicyName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -26,6 +29,8 @@ func CreatePolicy(accountID string, input *iam.CreatePolicyInput, svc handlers_i
 	return svc.CreatePolicy(accountID, input)
 }
 
+// GetPolicy implements the IAM GetPolicy action, describing a managed policy. It returns
+// MissingParameter when PolicyArn is absent, then calls the IAM service for accountID.
 func GetPolicy(accountID string, input *iam.GetPolicyInput, svc handlers_iam.IAMService) (*iam.GetPolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -33,6 +38,9 @@ func GetPolicy(accountID string, input *iam.GetPolicyInput, svc handlers_iam.IAM
 	return svc.GetPolicy(accountID, input)
 }
 
+// GetPolicyVersion implements the IAM GetPolicyVersion action, reading one version of a managed
+// policy. It requires PolicyArn or VersionId and returns the document percent-encoded as the IAM
+// Query API does.
 func GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput, svc handlers_iam.IAMService) (*iam.GetPolicyVersionOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -50,6 +58,8 @@ func GetPolicyVersion(accountID string, input *iam.GetPolicyVersionInput, svc ha
 	return out, nil
 }
 
+// ListPolicyVersions implements the IAM ListPolicyVersions action. It requires PolicyArn;
+// versions are paged here newest first by Marker and MaxItems.
 func ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput, svc handlers_iam.IAMService) (*iam.ListPolicyVersionsOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -67,6 +77,9 @@ func ListPolicyVersions(accountID string, input *iam.ListPolicyVersionsInput, sv
 	return out, nil
 }
 
+// CreatePolicyVersion implements the IAM CreatePolicyVersion action, adding a new version to a
+// managed policy. It returns MissingParameter when PolicyArn or PolicyDocument is absent, then
+// calls the IAM service for accountID.
 func CreatePolicyVersion(accountID string, input *iam.CreatePolicyVersionInput, svc handlers_iam.IAMService) (*iam.CreatePolicyVersionOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -77,6 +90,9 @@ func CreatePolicyVersion(accountID string, input *iam.CreatePolicyVersionInput, 
 	return svc.CreatePolicyVersion(accountID, input)
 }
 
+// SetDefaultPolicyVersion implements the IAM SetDefaultPolicyVersion action, choosing a managed
+// policy's default version. It returns MissingParameter when PolicyArn or VersionId is absent,
+// then calls the IAM service for accountID.
 func SetDefaultPolicyVersion(accountID string, input *iam.SetDefaultPolicyVersionInput, svc handlers_iam.IAMService) (*iam.SetDefaultPolicyVersionOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -87,6 +103,9 @@ func SetDefaultPolicyVersion(accountID string, input *iam.SetDefaultPolicyVersio
 	return svc.SetDefaultPolicyVersion(accountID, input)
 }
 
+// DeletePolicyVersion implements the IAM DeletePolicyVersion action, deleting a non-default
+// policy version. It returns MissingParameter when PolicyArn or VersionId is absent, then calls
+// the IAM service for accountID.
 func DeletePolicyVersion(accountID string, input *iam.DeletePolicyVersionInput, svc handlers_iam.IAMService) (*iam.DeletePolicyVersionOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -97,6 +116,8 @@ func DeletePolicyVersion(accountID string, input *iam.DeletePolicyVersionInput, 
 	return svc.DeletePolicyVersion(accountID, input)
 }
 
+// ListPolicies implements the IAM ListPolicies action, listing managed policies. It validates
+// PathPrefix; results are paged here by Marker and MaxItems.
 func ListPolicies(accountID string, input *iam.ListPoliciesInput, svc handlers_iam.IAMService) (*iam.ListPoliciesOutput, error) {
 	if err := validatePathPrefix(input.PathPrefix, policyPathPrefix); err != nil {
 		return nil, err
@@ -114,6 +135,8 @@ func ListPolicies(accountID string, input *iam.ListPoliciesInput, svc handlers_i
 	return out, nil
 }
 
+// DeletePolicy implements the IAM DeletePolicy action, deleting a customer managed policy. It
+// returns MissingParameter when PolicyArn is absent, then calls the IAM service for accountID.
 func DeletePolicy(accountID string, input *iam.DeletePolicyInput, svc handlers_iam.IAMService) (*iam.DeletePolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -121,6 +144,9 @@ func DeletePolicy(accountID string, input *iam.DeletePolicyInput, svc handlers_i
 	return svc.DeletePolicy(accountID, input)
 }
 
+// ListEntitiesForPolicy implements the IAM ListEntitiesForPolicy action. It checks PolicyArn's
+// length and PathPrefix as the IAM model does, then pages groups, roles and users as one
+// sequence.
 func ListEntitiesForPolicy(accountID string, input *iam.ListEntitiesForPolicyInput, svc handlers_iam.IAMService) (*iam.ListEntitiesForPolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -184,6 +210,9 @@ func pageEntitiesForPolicy(p pager, out *iam.ListEntitiesForPolicyOutput) {
 	out.Marker, out.IsTruncated = marker, aws.Bool(marker != nil)
 }
 
+// AttachUserPolicy implements the IAM AttachUserPolicy action, attaching a managed policy to a
+// user. It returns MissingParameter when UserName or PolicyArn is absent, then calls the IAM
+// service for accountID.
 func AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput, svc handlers_iam.IAMService) (*iam.AttachUserPolicyOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -194,6 +223,9 @@ func AttachUserPolicy(accountID string, input *iam.AttachUserPolicyInput, svc ha
 	return svc.AttachUserPolicy(accountID, input)
 }
 
+// DetachUserPolicy implements the IAM DetachUserPolicy action, detaching a managed policy from a
+// user. It returns MissingParameter when UserName or PolicyArn is absent, then calls the IAM
+// service for accountID.
 func DetachUserPolicy(accountID string, input *iam.DetachUserPolicyInput, svc handlers_iam.IAMService) (*iam.DetachUserPolicyOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -204,6 +236,9 @@ func DetachUserPolicy(accountID string, input *iam.DetachUserPolicyInput, svc ha
 	return svc.DetachUserPolicy(accountID, input)
 }
 
+// ListAttachedUserPolicies implements the IAM ListAttachedUserPolicies action, listing a user's
+// managed policies. It requires UserName and validates PathPrefix; results are paged here by
+// Marker and MaxItems.
 func ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPoliciesInput, svc handlers_iam.IAMService) (*iam.ListAttachedUserPoliciesOutput, error) {
 	if input.UserName == nil || *input.UserName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -224,6 +259,8 @@ func ListAttachedUserPolicies(accountID string, input *iam.ListAttachedUserPolic
 	return out, nil
 }
 
+// TagPolicy implements the IAM TagPolicy action. It returns MissingParameter when PolicyArn is
+// absent or Tags is empty.
 func TagPolicy(accountID string, input *iam.TagPolicyInput, svc handlers_iam.IAMService) (*iam.TagPolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -234,6 +271,8 @@ func TagPolicy(accountID string, input *iam.TagPolicyInput, svc handlers_iam.IAM
 	return svc.TagPolicy(accountID, input)
 }
 
+// UntagPolicy implements the IAM UntagPolicy action. It returns MissingParameter when PolicyArn
+// is absent or TagKeys is empty.
 func UntagPolicy(accountID string, input *iam.UntagPolicyInput, svc handlers_iam.IAMService) (*iam.UntagPolicyOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -244,6 +283,8 @@ func UntagPolicy(accountID string, input *iam.UntagPolicyInput, svc handlers_iam
 	return svc.UntagPolicy(accountID, input)
 }
 
+// ListPolicyTags implements the IAM ListPolicyTags action, listing a managed policy's tags. It
+// requires PolicyArn; results are paged here by Marker and MaxItems.
 func ListPolicyTags(accountID string, input *iam.ListPolicyTagsInput, svc handlers_iam.IAMService) (*iam.ListPolicyTagsOutput, error) {
 	if input.PolicyArn == nil || *input.PolicyArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)

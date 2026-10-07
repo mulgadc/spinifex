@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateVpcInput rejects a nil input with InvalidParameterValue and a missing CidrBlock
+// with MissingParameter; IPAM-allocated CIDRs are not accepted.
 func ValidateCreateVpcInput(input *ec2.CreateVpcInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

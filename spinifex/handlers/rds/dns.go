@@ -17,11 +17,10 @@ func (s *Service) dnsName(accountID, dbInstanceIdentifier string) string {
 	return handlers_dns.RDSName(dbInstanceIdentifier, accountID, s.region, s.deps.BaseDomain)
 }
 
-// The UPSERTs for every endpoint-ready DB instance across all account buckets,
-// plus whether the enumeration was authoritative. Instances live in per-account
-// buckets, so a complete cross-tenant view requires reading every one: any
-// failure yields ok=false, which suppresses RDS pruning rather than deleting a
-// tenant's endpoint on a partial view.
+// DesiredDNSChanges returns the UPSERTs for every endpoint-ready DB instance across all account
+// buckets, plus whether the enumeration was authoritative. Instances live in per-account buckets, so
+// a complete cross-tenant view requires reading every one: any failure yields ok=false, which
+// suppresses RDS pruning rather than deleting a tenant's endpoint on a partial view.
 func (s *Service) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
 	if s == nil || s.deps.BaseDomain == "" {
 		return nil, false

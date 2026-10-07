@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateLoadBalancerInput rejects a nil input with InvalidParameterValue and a missing
+// Name with MissingParameter.
 func ValidateCreateLoadBalancerInput(input *elbv2.CreateLoadBalancerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

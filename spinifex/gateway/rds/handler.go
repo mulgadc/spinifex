@@ -18,8 +18,8 @@ import (
 // Only an assumed-role session can be an in-guest agent.
 const principalTypeAssumedRole = "assumed-role"
 
-// Customer actions need only AccountID; the internal agent actions have to tell
-// an instance role apart from a user, which the account alone cannot do.
+// Caller identifies the requester. Customer actions need only AccountID; the internal agent
+// actions have to tell an instance role apart from a user, which the account alone cannot do.
 type Caller struct {
 	AccountID     string
 	PrincipalType string
@@ -29,9 +29,9 @@ type Caller struct {
 	SessionName string
 }
 
-// Cluster facts a handler needs that the request cannot carry. It holds the
-// ingredient rather than a ready-made probe, so the next action needing a
-// fan-out gets it without another parameter.
+// Env holds cluster facts a handler needs that the request cannot carry. It holds the ingredient
+// rather than a ready-made probe, so the next action needing a fan-out gets it without another
+// parameter.
 type Env struct {
 	// How many nodes a fan-out waits for before it stops waiting. Without it a
 	// gather burns its full timeout on every call instead of early-exiting.
@@ -43,6 +43,8 @@ type Env struct {
 	QuotaCheck func(ctx context.Context, accountID string, want int) error
 }
 
+// Handler is one entry in the RDS action table: it decodes the query params q, runs the action
+// for caller and returns the marshalled XML response.
 type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error)
 
 // Allocates the input struct, parses the query params into it, calls handler and
@@ -176,16 +178,17 @@ var actions = map[string]actionDef{
 	"RestoreDBInstanceToPointInTime": {unsupported: true},
 }
 
-// Checked before the IAM policy check, so an unknown action is rejected as
-// InvalidAction rather than logged as a denial.
+// HasAction reports whether action is in the RDS table, including unsupported ones. It is checked
+// before the IAM policy check, so an unknown action is rejected as InvalidAction rather than
+// logged as a denial.
 func HasAction(action string) bool {
 	_, ok := actions[action]
 	return ok
 }
 
-// Callers are expected to have authorized the action already; the unknown-action
-// check here is a backstop, not the enforcement point. The internal actions
-// re-run their own gate, so skipping AuthorizeCaller still cannot reach one.
+// Dispatch runs action and returns its XML. Callers are expected to have authorized it already;
+// the unknown-action check here is a backstop. The internal actions re-run their own gate, so
+// skipping AuthorizeCaller still cannot reach one.
 func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
 	def, ok := actions[action]
 	if !ok {

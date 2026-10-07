@@ -57,6 +57,8 @@ func checkTaskLaunchRoles(ctx context.Context, svc handlers_ecs.ECSService, acco
 
 // --- Cluster ---
 
+// CreateCluster implements the ECS CreateCluster action, creating a cluster. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateClusterInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -65,6 +67,8 @@ func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).CreateCluster(ctx, input, accountID)
 }
 
+// DeleteCluster implements the ECS DeleteCluster action, deleting a cluster. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteClusterInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -73,6 +77,8 @@ func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).DeleteCluster(ctx, input, accountID)
 }
 
+// DescribeClusters implements the ECS DescribeClusters action, describing clusters. The JSON body
+// (empty means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeClustersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -81,6 +87,8 @@ func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body
 	return handlers_ecs.NewNATSECSService(nc).DescribeClusters(ctx, input, accountID)
 }
 
+// ListClusters implements the ECS ListClusters action, listing cluster ARNs. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListClustersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -91,6 +99,8 @@ func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []b
 
 // --- Task definition ---
 
+// RegisterTaskDefinition implements the ECS RegisterTaskDefinition action. It enforces
+// iam:PassRole on the task and execution role ARNs before registering via NATS.
 func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RegisterTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -102,6 +112,9 @@ func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 	return handlers_ecs.NewNATSECSService(nc).RegisterTaskDefinition(ctx, input, accountID)
 }
 
+// DeregisterTaskDefinition implements the ECS DeregisterTaskDefinition action, marking a task
+// definition revision INACTIVE. The JSON body (empty means a zero input) is decoded and forwarded
+// to the NATS ECS service for accountID.
 func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeregisterTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -110,6 +123,9 @@ func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID stri
 	return handlers_ecs.NewNATSECSService(nc).DeregisterTaskDefinition(ctx, input, accountID)
 }
 
+// DescribeTaskDefinition implements the ECS DescribeTaskDefinition action, describing a task
+// definition revision. The JSON body (empty means a zero input) is decoded and forwarded to the
+// NATS ECS service for accountID.
 func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeTaskDefinitionInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -118,6 +134,9 @@ func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 	return handlers_ecs.NewNATSECSService(nc).DescribeTaskDefinition(ctx, input, accountID)
 }
 
+// ListTaskDefinitions implements the ECS ListTaskDefinitions action, listing task definition
+// ARNs. The JSON body (empty means a zero input) is decoded and forwarded to the NATS ECS service
+// for accountID.
 func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTaskDefinitionsInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -128,6 +147,9 @@ func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, b
 
 // --- Container instance ---
 
+// RegisterContainerInstance implements the ECS RegisterContainerInstance action, registering an
+// EC2 instance into a cluster. The JSON body (empty means a zero input) is decoded and forwarded
+// to the NATS ECS service for accountID.
 func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RegisterContainerInstanceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -146,6 +168,9 @@ func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, bod
 	return handlers_ecs.NewNATSECSService(nc).ProvisionCapacity(ctx, input, accountID)
 }
 
+// DeregisterContainerInstance implements the ECS DeregisterContainerInstance action, removing a
+// container instance from a cluster. The JSON body (empty means a zero input) is decoded and
+// forwarded to the NATS ECS service for accountID.
 func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeregisterContainerInstanceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -154,6 +179,9 @@ func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID s
 	return handlers_ecs.NewNATSECSService(nc).DeregisterContainerInstance(ctx, input, accountID)
 }
 
+// UpdateContainerInstancesState implements the ECS UpdateContainerInstancesState action, setting
+// container instances ACTIVE or DRAINING. The JSON body (empty means a zero input) is decoded and
+// forwarded to the NATS ECS service for accountID.
 func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateContainerInstancesStateInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -162,6 +190,9 @@ func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID
 	return handlers_ecs.NewNATSECSService(nc).UpdateContainerInstancesState(ctx, input, accountID)
 }
 
+// DescribeContainerInstances implements the ECS DescribeContainerInstances action, describing
+// container instances. The JSON body (empty means a zero input) is decoded and forwarded to the
+// NATS ECS service for accountID.
 func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeContainerInstancesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -170,6 +201,9 @@ func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID st
 	return handlers_ecs.NewNATSECSService(nc).DescribeContainerInstances(ctx, input, accountID)
 }
 
+// ListContainerInstances implements the ECS ListContainerInstances action, listing container
+// instance ARNs. The JSON body (empty means a zero input) is decoded and forwarded to the NATS
+// ECS service for accountID.
 func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListContainerInstancesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -246,6 +280,8 @@ func runTask(ctx context.Context, svc handlers_ecs.ECSService, accountID string,
 	return svc.RunTask(ctx, input, accountID)
 }
 
+// StartTask implements the ECS StartTask action, placing a task on named container instances
+// after enforcing iam:PassRole on the task definition's roles.
 func StartTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.StartTaskInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -263,6 +299,8 @@ func startTask(ctx context.Context, svc handlers_ecs.ECSService, accountID strin
 	return svc.StartTask(ctx, input, accountID)
 }
 
+// StopTask implements the ECS StopTask action, stopping a running task. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.StopTaskInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -271,6 +309,8 @@ func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte,
 	return handlers_ecs.NewNATSECSService(nc).StopTask(ctx, input, accountID)
 }
 
+// DescribeTasks implements the ECS DescribeTasks action, describing tasks. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeTasksInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -279,6 +319,8 @@ func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).DescribeTasks(ctx, input, accountID)
 }
 
+// ListTasks implements the ECS ListTasks action, listing task ARNs. The JSON body (empty means a
+// zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTasksInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -312,6 +354,8 @@ func createService(ctx context.Context, svc handlers_ecs.ECSService, accountID s
 	return svc.CreateService(ctx, input, accountID)
 }
 
+// UpdateService implements the ECS UpdateService action. It refuses AZ rebalancing and enforces
+// iam:PassRole on a new task definition's roles before calling NATS.
 func UpdateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateServiceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -333,6 +377,8 @@ func updateService(ctx context.Context, svc handlers_ecs.ECSService, accountID s
 	return svc.UpdateService(ctx, input, accountID)
 }
 
+// DeleteService implements the ECS DeleteService action, deleting a service. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteServiceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -341,6 +387,8 @@ func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).DeleteService(ctx, input, accountID)
 }
 
+// DescribeServices implements the ECS DescribeServices action, describing services. The JSON body
+// (empty means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeServicesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -349,6 +397,8 @@ func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body
 	return handlers_ecs.NewNATSECSService(nc).DescribeServices(ctx, input, accountID)
 }
 
+// ListServices implements the ECS ListServices action, listing service ARNs. The JSON body (empty
+// means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListServicesInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -393,6 +443,8 @@ func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []
 
 // --- Tags ---
 
+// TagResource implements the ECS TagResource action, adding tags to an ECS resource. The JSON
+// body (empty means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.TagResourceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -401,6 +453,9 @@ func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []by
 	return handlers_ecs.NewNATSECSService(nc).TagResource(ctx, input, accountID)
 }
 
+// UntagResource implements the ECS UntagResource action, removing tags from an ECS resource. The
+// JSON body (empty means a zero input) is decoded and forwarded to the NATS ECS service for
+// accountID.
 func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UntagResourceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -409,6 +464,9 @@ func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []
 	return handlers_ecs.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
 }
 
+// ListTagsForResource implements the ECS ListTagsForResource action, listing an ECS resource's
+// tags. The JSON body (empty means a zero input) is decoded and forwarded to the NATS ECS service
+// for accountID.
 func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTagsForResourceInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -419,6 +477,9 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 
 // --- Capacity providers ---
 
+// PutClusterCapacityProviders implements the ECS PutClusterCapacityProviders action, setting a
+// cluster's capacity providers and default strategy. The JSON body (empty means a zero input) is
+// decoded and forwarded to the NATS ECS service for accountID.
 func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.PutClusterCapacityProvidersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -427,6 +488,9 @@ func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID s
 	return handlers_ecs.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)
 }
 
+// CreateCapacityProvider implements the ECS CreateCapacityProvider action, creating a capacity
+// provider. The JSON body (empty means a zero input) is decoded and forwarded to the NATS ECS
+// service for accountID.
 func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateCapacityProviderInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -435,6 +499,9 @@ func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 	return handlers_ecs.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
 }
 
+// DescribeCapacityProviders implements the ECS DescribeCapacityProviders action, describing
+// capacity providers. The JSON body (empty means a zero input) is decoded and forwarded to the
+// NATS ECS service for accountID.
 func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeCapacityProvidersInput)
 	if err := unmarshalIfBody(body, input); err != nil {
@@ -443,6 +510,9 @@ func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID str
 	return handlers_ecs.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)
 }
 
+// DeleteCapacityProvider implements the ECS DeleteCapacityProvider action, deleting a capacity
+// provider. The JSON body (empty means a zero input) is decoded and forwarded to the NATS ECS
+// service for accountID.
 func DeleteCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteCapacityProviderInput)
 	if err := unmarshalIfBody(body, input); err != nil {

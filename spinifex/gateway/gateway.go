@@ -97,6 +97,9 @@ const (
 	principalTypeRoot        = "root"
 )
 
+// GatewayConfig is the AWS API gateway's shared state: its NATS connection, region and cluster
+// facts, auth and throttling collaborators, and lazily built caches. Its methods are the
+// per-service request handlers.
 type GatewayConfig struct {
 	Debug          bool       `json:"debug"`
 	DisableLogging bool       `json:"disable_logging"`
@@ -256,10 +259,12 @@ type EC2ErrorResponse struct {
 	RequestID string    `xml:"RequestID"`
 }
 
+// EC2Errors is the <Errors> wrapper inside an EC2ErrorResponse, holding a single error.
 type EC2Errors struct {
 	Error ErrorDetail `xml:"Error"`
 }
 
+// ErrorDetail is the Code and Message of one EC2 query-API error.
 type ErrorDetail struct {
 	Code    string `xml:"Code"`
 	Message string `xml:"Message"`
@@ -945,6 +950,8 @@ func ParseAWSQueryArgs(query string) (map[string]string, error) {
 	return params, nil
 }
 
+// GenerateEC2ErrorResponse renders the EC2 <Response><Errors> error envelope with an XML header.
+// If marshalling fails it returns a fixed InternalError document instead.
 func GenerateEC2ErrorResponse(code, message, requestID string) (output []byte) {
 	errorXml := EC2ErrorResponse{
 		Errors: EC2Errors{
@@ -976,6 +983,7 @@ type IAMErrorResponse struct {
 	RequestID string         `xml:"RequestId"`
 }
 
+// IAMErrorDetail is the <Error> element of an IAMErrorResponse; Type is Sender or Receiver.
 type IAMErrorDetail struct {
 	Type    string `xml:"Type"`
 	Code    string `xml:"Code"`

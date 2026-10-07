@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateDeregisterTargetsInput rejects a nil input with InvalidParameterValue and a missing
+// TargetGroupArn or empty Targets with MissingParameter.
 func ValidateDeregisterTargetsInput(input *elbv2.DeregisterTargetsInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

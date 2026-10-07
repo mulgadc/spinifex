@@ -113,6 +113,8 @@ type volumeAttacher interface {
 	AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error)
 }
 
+// LaunchDeps bundles the EC2, VPC, AMI and volume services LaunchDBInstanceVM drives, so tests can
+// substitute each one.
 type LaunchDeps struct {
 	Config    *config.Config
 	SystemVPC handlers_systemvpc.Deps
@@ -123,8 +125,8 @@ type LaunchDeps struct {
 	Attacher  volumeAttacher
 }
 
-// Everything here is already validated by the caller: the launch helper
-// resolves and wires, it does not police the AWS API surface.
+// LaunchInput describes the DB VM to launch. Everything here is already validated by the caller: the
+// launch helper resolves and wires, it does not police the AWS API surface.
 type LaunchInput struct {
 	DBInstanceIdentifier string
 	// The customer account owning the DB, subnet and customer ENI. The VM
@@ -147,6 +149,8 @@ type LaunchInput struct {
 	ExistingDataVolume  string
 }
 
+// LaunchOutput reports the VM, ENIs and data volume a launch produced or reused, plus an Unwind for a
+// caller that fails after the launch returned.
 type LaunchOutput struct {
 	InstanceID string
 	// The system ENI is disposable — a replace makes a new one. The customer
@@ -171,8 +175,9 @@ type LaunchOutput struct {
 	Unwind func(context.Context)
 }
 
-// On any failure every resource this call created is torn down, so a retried
-// create does not accumulate orphan ENIs, volumes and VMs.
+// LaunchDBInstanceVM resolves the engine AMI and creates the ENIs, data volume and VM backing a DB
+// instance. On any failure every resource this call created is torn down, so a retried create does
+// not accumulate orphan ENIs, volumes and VMs.
 func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out *LaunchOutput, err error) {
 	if err := validateLaunchInput(in); err != nil {
 		return nil, err
@@ -562,6 +567,8 @@ type natsVolumeAttacher struct {
 
 var _ volumeAttacher = (*natsVolumeAttacher)(nil)
 
+// NewNATSVolumeAttacher returns a volumeAttacher that sends AttachVolume over the VM's per-instance
+// ec2.cmd subject, so the node running the VM performs the attach.
 func NewNATSVolumeAttacher(nc *nats.Conn) volumeAttacher {
 	return &natsVolumeAttacher{nc: nc, timeout: attachRequestTimeout}
 }

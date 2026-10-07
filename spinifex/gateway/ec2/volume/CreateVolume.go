@@ -11,6 +11,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateVolumeInput requires Size (1-16384 GiB) unless SnapshotId is set, requires an
+// AvailabilityZone, and checks VolumeType when given. Errors are MissingParameter or
+// InvalidParameterValue.
 func ValidateCreateVolumeInput(input *ec2.CreateVolumeInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

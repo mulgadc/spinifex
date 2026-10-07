@@ -84,8 +84,9 @@ func (f *Fake) PublicIPs() []PublicIP {
 	return slices.Collect(maps.Values(f.publicIPs))
 }
 
-// Compartments are not modelled, so every reserved public IP reads back
-// whatever compartment is asked for. Only the lifetime filter is real.
+// ListReservedPublicIPs returns the fake's RESERVED public IPs. Compartments
+// are not modelled, so every reserved IP reads back whatever compartment is
+// asked for. Only the lifetime filter is real.
 func (f *Fake) ListReservedPublicIPs(_ context.Context, _ string) ([]PublicIP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -232,8 +233,9 @@ func (f *Fake) ListPrivateIPs(_ context.Context, vnicID string) ([]PrivateIP, er
 	return out, nil
 }
 
-// Subnets are not modelled, so any OCID reads back. FailWith["GetSubnet"] is
-// how a test reproduces the credential that holds no subnet permission.
+// GetSubnet returns a fixed 10.200.0.0/23 subnet: subnets are not modelled, so
+// any OCID reads back. FailWith["GetSubnet"] is how a test reproduces the
+// credential that holds no subnet permission.
 func (f *Fake) GetSubnet(_ context.Context, subnetID string) (Subnet, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

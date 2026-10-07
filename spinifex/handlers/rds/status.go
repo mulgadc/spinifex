@@ -2,8 +2,8 @@ package handlers_rds
 
 import "slices"
 
-// The only instance state the API exposes, derived from the VM, data volume and
-// agent heartbeat, so a customer never depends on a DB instance being a VM.
+// Status is the only instance state the API exposes, derived from the VM, data volume and agent
+// heartbeat, so a customer never depends on a DB instance being a VM.
 type Status string
 
 const (
@@ -49,15 +49,15 @@ var transitions = map[Status][]Status{
 	StatusDeleted:  nil,
 }
 
-// Anything read back from KV that fails this check was written by a newer or
-// corrupted control plane, not a state to act on.
+// Valid reports whether s is a known status. Anything read back from KV that fails this check was
+// written by a newer or corrupted control plane, not a state to act on.
 func (s Status) Valid() bool {
 	_, ok := transitions[s]
 	return ok
 }
 
-// A no-op is legal for any valid status, so a repeated observation of the same
-// state is not treated as an illegal transition.
+// CanTransition reports whether moving from one status to another is legal. A no-op is legal for any
+// valid status, so a repeated observation of the same state is not treated as an illegal transition.
 func CanTransition(from, to Status) bool {
 	if !from.Valid() || !to.Valid() {
 		return false

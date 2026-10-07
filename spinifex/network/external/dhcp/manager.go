@@ -56,8 +56,8 @@ const gwLRPAcquireBudget = 90 * time.Second
 // timeout so concurrent acquires across vpcds don't synchronise.
 const acquireAttemptJitter = time.Second
 
-// ManagerConfig: Client + Store required. Now is for tests.
-// AcquireSchedule/AcquireBudget control the outer DORA backoff;
+// ManagerConfig configures NewManager. Client and Store are required; Now is
+// for tests. AcquireSchedule/AcquireBudget control the outer DORA backoff;
 // zero values fall back to defaults.
 type ManagerConfig struct {
 	Client          Client

@@ -2,8 +2,8 @@ package handlers_rds
 
 import "time"
 
-// Fields are grouped by writer: the AWS API owns the configuration, the
-// reconciler the plumbing, the agent protocol Bootstrap and Agent.
+// DBInstanceRecord is the db-instances/{id} record. Fields are grouped by writer: the AWS API owns the
+// configuration, the reconciler the plumbing, the agent protocol Bootstrap and Agent.
 type DBInstanceRecord struct {
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
 	AccountID            string `json:"accountId"`
@@ -161,11 +161,10 @@ type DBInstanceRecord struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// The disruptive half of a modify: every field here takes the engine down, so
-// each is recorded before the work starts and cleared as it lands. That makes
-// one structure serve both meanings AWS gives PendingModifiedValues — a
-// deferred change waiting for its maintenance window, and an in-flight change a
-// crashed leader has to be able to finish.
+// PendingModifiedValues is the disruptive half of a modify: every field here takes the engine down, so
+// each is recorded before the work starts and cleared as it lands. That makes one structure serve both
+// meanings AWS gives PendingModifiedValues — a deferred change waiting for its maintenance window, and
+// an in-flight change a crashed leader has to be able to finish.
 //
 // MasterUserPassword is deliberately absent: cleartext is never persisted,
 // and AWS applies a password change as soon as possible regardless
@@ -198,10 +197,10 @@ func (p *PendingModifiedValues) growingFilesystem() bool {
 	return p != nil && p.FilesystemGrowPending
 }
 
-// Claimed for as long as a worker is applying PendingModifiedValues, and
-// renewed while it works. A modify still inside its own API call and one a dead
-// leader abandoned are the same record otherwise — both are modifying with
-// values not yet applied — so this is the only thing that tells them apart.
+// ModifyLease is claimed for as long as a worker is applying PendingModifiedValues, and renewed while
+// it works. A modify still inside its own API call and one a dead leader abandoned are the same record
+// otherwise — both are modifying with values not yet applied — so this is the only thing that tells
+// them apart.
 type ModifyLease struct {
 	// The node and the claim, so two workers on one node are still distinct.
 	Holder    string    `json:"holder"`
@@ -236,9 +235,9 @@ const (
 	BootstrapStateNone = "none"
 )
 
-// The record's view of the initial bootstrap. The master password itself lives
-// encrypted under bootstrap-payloads/{id}, never here, and that key is what a
-// fetch replays until the guest proves PostgreSQL applied it.
+// BootstrapState is the record's view of the initial bootstrap. The master password itself lives
+// encrypted under bootstrap-payloads/{id}, never here, and that key is what a fetch replays until the
+// guest proves PostgreSQL applied it.
 type BootstrapState struct {
 	// Kept after acknowledgement so a duplicate acknowledgement, whose payload
 	// key is already gone, is still answerable.
@@ -274,9 +273,9 @@ const (
 	SnapshotStatusAvailable = "available"
 )
 
-// The snapshot operation holding a DB instance, written under the same CAS that
-// moves it to backing-up so a second request is rejected rather than queued. An
-// An automated snapshot and a manual one serialise against each other here.
+// SnapshotOperation is the snapshot operation holding a DB instance, written under the same CAS that
+// moves it to backing-up so a second request is rejected rather than queued. An automated snapshot and
+// a manual one serialize against each other here.
 type SnapshotOperation struct {
 	DBSnapshotIdentifier string `json:"dbSnapshotIdentifier"`
 	// Where the instance goes when the snapshot finishes. Recorded rather than
@@ -286,9 +285,9 @@ type SnapshotOperation struct {
 	StartedAt    time.Time `json:"startedAt"`
 }
 
-// The db-snapshots/{id} record. The EC2 snapshot holds the data; this is the
-// RDS-level metadata a restore needs and DescribeDBSnapshots projects, captured
-// at snapshot time because the DB instance it describes may be gone by then.
+// DBSnapshotRecord is the db-snapshots/{id} record. The EC2 snapshot holds the data; this is the
+// RDS-level metadata a restore needs and DescribeDBSnapshots projects, captured at snapshot time
+// because the DB instance it describes may be gone by then.
 type DBSnapshotRecord struct {
 	DBSnapshotIdentifier string `json:"dbSnapshotIdentifier"`
 	DBInstanceIdentifier string `json:"dbInstanceIdentifier"`
@@ -343,19 +342,19 @@ func (r *DBSnapshotRecord) GetTags() map[string]string { return r.Tags }
 
 func (r *DBSnapshotRecord) SetTags(tags map[string]string) { r.Tags = tags }
 
-// The backups/{db}/automated/{ts} index entry. Deliberately thin: it exists so
-// the retention sweep can enumerate one instance's automated backups without a
-// bucket-wide snapshot scan, and everything else it needs — age, status, source
-// volume — is read from the db-snapshots record this names.
+// AutomatedBackupRecord is the backups/{db}/automated/{ts} index entry. Deliberately thin: it exists so
+// the retention sweep can enumerate one instance's automated backups without a bucket-wide snapshot
+// scan, and everything else it needs — age, status, source volume — is read from the db-snapshots
+// record this names.
 type AutomatedBackupRecord struct {
 	DBInstanceIdentifier string    `json:"dbInstanceIdentifier"`
 	DBSnapshotIdentifier string    `json:"dbSnapshotIdentifier"`
 	CreatedAt            time.Time `json:"createdAt"`
 }
 
-// A data volume that outlived its DB instance because a COW snapshot still
-// references its chunks. The last DeleteDBSnapshot to empty Snapshots
-// deletes it; the retention reaper is the backstop for a crash in between.
+// RetainedVolumeRecord is a data volume that outlived its DB instance because a COW snapshot still
+// references its chunks. The last DeleteDBSnapshot to empty Snapshots deletes it; the retention reaper
+// is the backstop for a crash in between.
 type RetainedVolumeRecord struct {
 	VolumeID  string `json:"volumeId"`
 	AccountID string `json:"accountId"`
@@ -372,16 +371,16 @@ type RetainedVolumeRecord struct {
 	RetainedAt        time.Time `json:"retainedAt"`
 }
 
-// A member list rather than a map because the XML marshaller renders a map as an
-// AWS-foreign <entry> shape in nondeterministic order.
+// Parameter is one name/value pair. A member list is used rather than a map because the XML marshaller
+// renders a map as an AWS-foreign <entry> shape in nondeterministic order.
 type Parameter struct {
 	Name  string `json:"name" locationName:"Name"`
 	Value string `json:"value" locationName:"Value"`
 }
 
-// The db-subnet-groups/{name} record. The subnet list is stored verbatim rather
-// than reduced to a placement, so when V2 makes AZs real the group needs no
-// migration — only the code that chooses among its subnets changes.
+// DBSubnetGroupRecord is the db-subnet-groups/{name} record. The subnet list is stored verbatim rather
+// than reduced to a placement, so when V2 makes AZs real the group needs no migration — only the code
+// that chooses among its subnets changes.
 type DBSubnetGroupRecord struct {
 	Name        string `json:"name"`
 	AccountID   string `json:"accountId"`
@@ -399,6 +398,8 @@ type DBSubnetGroupRecord struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// DBSubnetGroupSubnet is one subnet of a DB subnet group, with the AZ recorded on the subnet itself;
+// AvailabilityZone is empty when the subnet carries none.
 type DBSubnetGroupSubnet struct {
 	SubnetID         string `json:"subnetId"`
 	AvailabilityZone string `json:"availabilityZone,omitempty"`
@@ -410,9 +411,9 @@ func (r *DBSubnetGroupRecord) GetTags() map[string]string { return r.Tags }
 
 func (r *DBSubnetGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
 
-// The db-parameter-groups/{name}/meta record. The values themselves live one key
-// each under .../params/, so a modify touching one parameter cannot clobber a
-// concurrent change to another.
+// DBParameterGroupRecord is the db-parameter-groups/{name}/meta record. The values themselves live one
+// key each under .../params/, so a modify touching one parameter cannot clobber a concurrent change to
+// another.
 type DBParameterGroupRecord struct {
 	Name        string `json:"name"`
 	AccountID   string `json:"accountId"`
@@ -431,9 +432,9 @@ func (r *DBParameterGroupRecord) GetTags() map[string]string { return r.Tags }
 
 func (r *DBParameterGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
 
-// One stored override, at db-parameter-groups/{name}/params/{key}. ApplyMethod
-// is the customer's request rather than a fact: whether a change lands live is
-// decided by the parameter's own ApplyType.
+// DBParameterRecord is one stored override, at db-parameter-groups/{name}/params/{key}. ApplyMethod is
+// the customer's request rather than a fact: whether a change lands live is decided by the parameter's
+// own ApplyType.
 type DBParameterRecord struct {
 	Name        string    `json:"name"`
 	Value       string    `json:"value"`
@@ -441,8 +442,8 @@ type DBParameterRecord struct {
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
-// Separate from Status: the reconciler needs both to tell "stopped because we
-// stopped it" from "stopped because it died".
+// EngineHealth is the agent-reported state of the database engine, separate from Status: the reconciler
+// needs both to tell "stopped because we stopped it" from "stopped because it died".
 type EngineHealth string
 
 const (
@@ -455,7 +456,7 @@ const (
 	EngineHealthStopped EngineHealth = "stopped"
 )
 
-// Rejects unrecognised values at the boundary so a newer agent cannot persist a
+// ValidEngineHealth rejects unrecognized values at the boundary so a newer agent cannot persist a
 // health the reconciler will fail to classify.
 func ValidEngineHealth(h EngineHealth) bool {
 	switch h {
@@ -466,7 +467,7 @@ func ValidEngineHealth(h EngineHealth) bool {
 	}
 }
 
-// Written only by RegisterDBInstance and SubmitDBStateChange.
+// AgentState is the agent's last report, written only by RegisterDBInstance and SubmitDBStateChange.
 type AgentState struct {
 	// A report from an instance other than the record's current one is a
 	// superseded VM still running after a replace.

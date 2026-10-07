@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateCreateListenerInput rejects a nil input with InvalidParameterValue and a missing
+// LoadBalancerArn or empty DefaultActions with MissingParameter.
 func ValidateCreateListenerInput(input *elbv2.CreateListenerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

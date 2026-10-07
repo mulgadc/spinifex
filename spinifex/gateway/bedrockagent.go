@@ -790,10 +790,8 @@ func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochreve
 	return &bedrockagent.GetIngestionJobOutput{IngestionJob: jobRecordToOutput(kbID, dsID, resp.Job)}, nil
 }
 
-// StopIngestionJobInput/StopIngestionJobOutput mirror the shape of
-// GetIngestionJobInput/GetIngestionJobOutput (KnowledgeBaseId/DataSourceId/
-// IngestionJobId in, an IngestionJob summary out). Defined locally, not in
-// aws-sdk-go, because the vendored aws-sdk-go v1.55.8 predates AWS's
+// StopIngestionJobInput mirrors GetIngestionJobInput (KnowledgeBaseId, DataSourceId,
+// IngestionJobId). It is defined locally because the vendored aws-sdk-go v1.55.8 predates AWS's
 // StopIngestionJob operation and carries no types for it.
 type StopIngestionJobInput struct {
 	DataSourceId    *string `json:"dataSourceId"`
@@ -801,6 +799,8 @@ type StopIngestionJobInput struct {
 	KnowledgeBaseId *string `json:"knowledgeBaseId"`
 }
 
+// StopIngestionJobOutput mirrors GetIngestionJobOutput, returning the stopped IngestionJob
+// summary; like StopIngestionJobInput it has no aws-sdk-go v1 counterpart.
 type StopIngestionJobOutput struct {
 	IngestionJob *bedrockagent.IngestionJob `json:"ingestionJob"`
 }

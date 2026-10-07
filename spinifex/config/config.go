@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/viper"
 )
 
+// ClusterConfig is the root of spinifex.toml as returned by LoadConfig: the
+// cluster-wide settings plus a [nodes.<name>] Config for every node.
 type ClusterConfig struct {
 	Epoch     uint64            `mapstructure:"epoch"`     // bump when leader commits changes
 	Node      string            `mapstructure:"node"`      // my node name
@@ -209,6 +211,8 @@ type Config struct {
 	WalDir  string `json:"WalDir" mapstructure:"wal_dir"`
 }
 
+// AWSGWConfig is a node's [awsgw] section: the AWS gateway's listen address,
+// TLS key pair and the path of its own config file.
 type AWSGWConfig struct {
 	Host    string `json:"Host" mapstructure:"host"`
 	TLSKey  string `json:"TLSKey" mapstructure:"tlskey"`
@@ -219,6 +223,8 @@ type AWSGWConfig struct {
 	ExpectedNodes int  `json:"ExpectedNodes" mapstructure:"expected_nodes"` // TODO: Replace with root cluster config
 }
 
+// ViperblockConfig is a node's [viperblock] section, tuning every viperblock
+// instance the node constructs for EBS volumes.
 type ViperblockConfig struct {
 	ShardWAL *bool `json:"ShardWAL" mapstructure:"shardwal"` // Enable sharded WAL (default false when nil)
 
@@ -334,8 +340,9 @@ type NorthstarConfig struct {
 	InternalDomain string `json:"InternalDomain" mapstructure:"internal_domain"`
 }
 
-// Every DB VM's primary NIC lives in the shared system VPC, which gives the
-// in-guest agent management egress while the customer ENI stays ingress-only.
+// RDSConfig is a node's [rds] section. Every DB VM's primary NIC lives in the
+// shared system VPC, which gives the in-guest agent management egress while
+// the customer ENI stays ingress-only.
 type RDSConfig struct {
 	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
 	// EKS control-plane supernet or any customer VPC CIDR.
@@ -381,9 +388,9 @@ type RDSConfig struct {
 // supernet, so a name-hash collision can never place an RDS subnet in EKS space.
 const RDSDefaultSystemVPCSupernet = "10.248.0.0/14"
 
-// Every self-hosted vLLM serving VM's primary NIC lives in the shared Bedrock
-// system VPC, mirroring RDS's DB-VM VPC: one shared VPC per region rather
-// than one per endpoint, since a serving VM has no customer ENI to isolate.
+// BedrockConfig is a node's [bedrock] section. Every vLLM serving VM's primary
+// NIC lives in one shared system VPC per region, not one per endpoint, as with
+// RDS DB VMs, since a serving VM has no customer ENI to isolate.
 type BedrockConfig struct {
 	// The IPv4 /14 the system VPC's /22 is carved from. It must not overlap the
 	// RDS or EKS control-plane supernets or any customer VPC CIDR.
@@ -454,6 +461,8 @@ func ParseEndpoints(addr string) []string {
 	return out
 }
 
+// PredastoreConfig is a node's [predastore] section: the S3 endpoint, bucket
+// and credentials Spinifex uses to reach Predastore.
 type PredastoreConfig struct {
 	Host      string `json:"Host" mapstructure:"host"`
 	Bucket    string `json:"Bucket" mapstructure:"bucket"`

@@ -38,6 +38,8 @@ type QMPDeviceController struct {
 
 var _ DeviceController = (*QMPDeviceController)(nil)
 
+// NewQMPDeviceController returns a DeviceController issuing commands over
+// client for instanceID. Its QMP spans start from Background until bound.
 func NewQMPDeviceController(client *qmp.QMPClient, instanceID string) *QMPDeviceController {
 	return &QMPDeviceController{client: client, instanceID: instanceID}
 }
@@ -150,6 +152,8 @@ type StubCall struct {
 	Args    map[string]any
 }
 
+// NewStubDeviceController returns an empty in-memory DeviceController that
+// records every call, for tests.
 func NewStubDeviceController() *StubDeviceController {
 	return &StubDeviceController{
 		devices:  make(map[string]map[string]any),

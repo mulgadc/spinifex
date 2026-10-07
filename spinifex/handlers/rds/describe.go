@@ -16,9 +16,8 @@ import (
 // The prefix AWS gives a DB instance's immutable resource ID.
 const dbiResourceIDPrefix = "db"
 
-// Named DB instances that do not exist are an error, matching AWS: a client
-// polling a create would otherwise read an empty list as "gone" rather than
-// "not ready".
+// DescribeDBInstances errors on named DB instances that do not exist, matching AWS: a client polling a
+// create would otherwise read an empty list as "gone" rather than "not ready".
 func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDBInstancesInput, accountID string) (*rds.DescribeDBInstancesOutput, error) {
 	if input == nil {
 		input = &rds.DescribeDBInstancesInput{}

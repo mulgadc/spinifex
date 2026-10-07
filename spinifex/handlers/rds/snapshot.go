@@ -42,10 +42,9 @@ const (
 	rdsSnapshotAccountTagKey = "spinifex:rds-db-snapshot-account"
 )
 
-// Takes a customer-requested snapshot of the instance's data volume. The engine
-// is held at a checkpoint for the length of it, so the captured datadir is a
-// checkpoint rather than a mid-write state — and if it cannot be, the snapshot
-// is still taken and reported as crash consistent.
+// CreateDBSnapshot takes a customer-requested snapshot of the instance's data volume. The engine is
+// held at a checkpoint for the length of it, so the captured datadir is a checkpoint rather than a
+// mid-write state — and if it cannot be, the snapshot is still taken and reported as crash consistent.
 func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnapshotInput, accountID string) (*rds.CreateDBSnapshotOutput, error) {
 	req, err := validateCreateSnapshotRequest(input)
 	if err != nil {
@@ -217,10 +216,9 @@ func (s *Service) releaseQuiesce(ctx context.Context, accountID, dbInstanceIdent
 	}
 }
 
-// The customer's view of one account's snapshots, filtered the three ways AWS
-// scopes them. A named snapshot that does not exist is an error rather than an
-// empty list, matching AWS: a client polling a create would otherwise read
-// "gone" for "not ready".
+// DescribeDBSnapshots returns the customer's view of one account's snapshots, filtered the three ways
+// AWS scopes them. A named snapshot that does not exist is an error rather than an empty list,
+// matching AWS: a client polling a create would otherwise read "gone" for "not ready".
 func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDBSnapshotsInput, accountID string) (*rds.DescribeDBSnapshotsOutput, error) {
 	snapshotType, filters, err := validateDescribeSnapshotsRequest(input)
 	if err != nil {
@@ -292,10 +290,9 @@ func snapshotMatches(rec *DBSnapshotRecord, dbInstanceIdentifier, snapshotType s
 	})
 }
 
-// Removes the snapshot and, when it was the last thing holding a data volume
-// its DB instance already released, that volume too. A snapshot a restored
-// instance still reads from is refused with the instance named, so the customer
-// knows what to remove first.
+// DeleteDBSnapshot removes the snapshot and, when it was the last thing holding a data volume its DB
+// instance already released, that volume too. A snapshot a restored instance still reads from is
+// refused with the instance named, so the customer knows what to remove first.
 func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnapshotInput, accountID string) (*rds.DeleteDBSnapshotOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

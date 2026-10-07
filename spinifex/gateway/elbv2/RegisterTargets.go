@@ -10,6 +10,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// ValidateRegisterTargetsInput rejects a nil input with InvalidParameterValue and a missing
+// TargetGroupArn or empty Targets with MissingParameter.
 func ValidateRegisterTargetsInput(input *elbv2.RegisterTargetsInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)

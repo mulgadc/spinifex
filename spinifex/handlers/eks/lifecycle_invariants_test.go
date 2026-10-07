@@ -46,7 +46,7 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 }
 
 // TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete enforces ADR-0006 §6 NLB
-// no-orphan (riding ADR-0002 cascade composition): after a
+// no-orphan (riding historic PROP-LIFECYCLE-002 cascade composition): after a
 // successful DeleteCluster, the eks-{cluster}-cp target group must be gone — an
 // orphaned EKS NLB target group would pin itself as ResourceInUse exactly as a
 // user target group does.
@@ -70,5 +70,5 @@ func TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete(t *testing.T) {
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.ErrorIs(t, getErr, ErrClusterNotFound, "a fully torn-down cluster must be swept")
 	assert.NotContainsf(t, f.nlb.tgByName, tgName,
-		"ADR-0006 §6 NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides ADR-0002/172)")
+		"ADR-0006 §6 NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides PROP-LIFECYCLE-002 / mulga-siv-172)")
 }

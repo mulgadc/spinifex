@@ -1,4 +1,4 @@
-package main
+package agent
 
 //test:in-package — the agent is a main package, which has no external test
 // package to import it from, and these cases drive the unexported mariadbEngine
@@ -808,7 +808,7 @@ func TestMariaDBEngine_LastKnownGoodAdvancesOnADynamicApply(t *testing.T) {
 
 // A probe that reports what the test hands it, in place of whichever binaries
 // the engine's own state function would have run.
-func mariadbTestProbeConfig(t *testing.T) config {
+func mariadbTestProbeConfig(t *testing.T) Config {
 	t.Helper()
 	cfg := testLoadConfig(t, engineMariaDB)
 	cfg.EnginePidFile = filepath.Join(t.TempDir(), "mariadb.pid")

@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"os"
@@ -10,14 +10,14 @@ import (
 
 // Stamps the engine a real image bakes and loads the configuration against it,
 // which is what selects the guest layout the agent's defaults come from.
-func testLoadConfig(t *testing.T, engine string) config {
+func testLoadConfig(t *testing.T, engine string) Config {
 	t.Helper()
 	stamp := filepath.Join(t.TempDir(), "engine")
 	if err := os.WriteFile(stamp, []byte(engine+"\n"), 0o444); err != nil {
 		t.Fatalf("write the engine stamp: %v", err)
 	}
 	t.Setenv("RDS_ENGINE_FILE", stamp)
-	return loadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	return LoadConfig(filepath.Join(t.TempDir(), "absent.env"))
 }
 
 func TestLoadConfig_Defaults(t *testing.T) {
@@ -66,7 +66,7 @@ func TestLoadConfig_TakesTheLayoutFromTheBakedEngine(t *testing.T) {
 // guessed would be the failure the stamp exists to prevent.
 func TestNewEngine_RefusesAnImageWithNoEngineStamp(t *testing.T) {
 	t.Setenv("RDS_ENGINE_FILE", filepath.Join(t.TempDir(), "absent-engine"))
-	cfg := loadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	cfg := LoadConfig(filepath.Join(t.TempDir(), "absent.env"))
 
 	if _, err := newProbe(cfg, staticProbe(0)); err == nil {
 		t.Error("newProbe built a probe for an image carrying no engine stamp")
@@ -134,7 +134,7 @@ func TestLoadConfig_ReadsEnvFile(t *testing.T) {
 		t.Fatalf("write env file: %v", err)
 	}
 
-	cfg := loadConfig(path)
+	cfg := LoadConfig(path)
 	if cfg.GatewayURL != "https://gw.internal:9999" || cfg.Region != "ap-southeast-2" {
 		t.Errorf("gateway/region = %q/%q, want the delivered values", cfg.GatewayURL, cfg.Region)
 	}

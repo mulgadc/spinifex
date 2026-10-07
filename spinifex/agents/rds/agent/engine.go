@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"bytes"
@@ -85,11 +85,11 @@ type engineLayout struct {
 	errorLog string
 	// The engine's own liveness signal, which is the only part of engineProbe
 	// that is not shared.
-	newProbe func(cfg config, run probeRunner) *engineProbe
+	newProbe func(cfg Config, run probeRunner) *engineProbe
 	// The implementation every control-plane directive is served by. It fails
 	// when the control plane this agent was built against does not offer the
 	// engine the image bakes, rather than serving one it has no definition for.
-	newEngine func(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error)
+	newEngine func(cfg Config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error)
 }
 
 // The names the control plane knows these implementations by, which are also
@@ -192,7 +192,7 @@ func engineLogTail(path string) string {
 }
 
 // Builds the health probe the image's engine supplies.
-func newProbe(cfg config, run probeRunner) (*engineProbe, error) {
+func newProbe(cfg Config, run probeRunner) (*engineProbe, error) {
 	layout, err := layoutFor(cfg)
 	if err != nil {
 		return nil, err
@@ -203,7 +203,7 @@ func newProbe(cfg config, run probeRunner) (*engineProbe, error) {
 // Builds the implementation the image bakes. Nothing here consults the control
 // plane for which engine to be: the agent runs the engine it is made of, and the
 // delivered engine is only ever checked against it.
-func newEngine(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
+func newEngine(cfg Config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
 	layout, err := layoutFor(cfg)
 	if err != nil {
 		return nil, err
@@ -211,7 +211,7 @@ func newEngine(cfg config, run commandRunner, startSess sessionRunner, probe *en
 	return layout.newEngine(cfg, run, startSess, probe)
 }
 
-func layoutFor(cfg config) (engineLayout, error) {
+func layoutFor(cfg Config) (engineLayout, error) {
 	if cfg.BakedEngine == "" {
 		return engineLayout{}, fmt.Errorf("this image carries no engine stamp at %s", cfg.EngineFile)
 	}

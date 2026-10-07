@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -171,7 +171,7 @@ func (f *fakeControlPlane) snapshotReplies() [][]handlers_rds.CommandReply {
 // testConfig stamps the engine a real rds-postgres image bakes, so the agent
 // resolves the same guest layout it would in a guest, and points its file output
 // at a temp dir.
-func testConfig(t *testing.T) config {
+func testConfig(t *testing.T) Config {
 	t.Helper()
 	cfg := testLoadConfig(t, enginePostgres)
 	cfg.GatewayURL = "https://gw.test"
@@ -181,7 +181,7 @@ func testConfig(t *testing.T) config {
 }
 
 // newTestAgent builds the agent over a probe the test drives directly.
-func newTestAgent(t *testing.T, cfg config, cp controlPlane, run probeRunner) *Agent {
+func newTestAgent(t *testing.T, cfg Config, cp controlPlane, run probeRunner) *Agent {
 	t.Helper()
 	a, err := newAgent(cfg, cp, newPostgresProbe(cfg, run))
 	if err != nil {

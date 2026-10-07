@@ -1,4 +1,4 @@
-package main
+package agent
 
 //test:in-package — the agent is a main package, which has no external test
 // package to import it from, and these cases are built on the unexported

@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -164,7 +164,7 @@ func newScriptedTestEngine(t *testing.T, run commandRunner) *postgresEngine {
 	return newPostgresEngine(cfg, testPostgresEngineMeta(t), run, nil, newPostgresProbe(cfg, staticProbe(0)))
 }
 
-func testEngineConfig(t *testing.T) config {
+func testEngineConfig(t *testing.T) Config {
 	t.Helper()
 	cfg := testLoadConfig(t, enginePostgres)
 	cfg.EngineDataDir = t.TempDir()

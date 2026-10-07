@@ -1,11 +1,7 @@
-// rds-agent runs inside a Spinifex RDS instance. It registers the VM with the
-// control plane over TLS+SigV4 (never NATS), writes the bootstrap handoff the
-// engine's first-boot script consumes, then heartbeats health and polls for
-// directives.
-//
-// It is the only path by which a secret reaches the VM: the master password is
-// served once, to an authenticated caller. Static config is read from the
-// cloud-init env file /etc/spinifex-rds/agent.env; real env vars override it.
+// Command rds-agent runs inside a Spinifex RDS instance; the implementation is
+// in agents/rds/agent. This binary owns process lifecycle: signal handling,
+// treating a cancelled startup as a clean stop, failure logging and the exit
+// code.
 package main
 
 import (
@@ -17,23 +13,22 @@ import (
 	"syscall"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
+
+	rdsagent "github.com/mulgadc/spinifex/spinifex/agents/rds/agent"
 )
 
+// version is the agent build version, reported at registration.
+// Overridable via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
-	cfg := loadConfig(defaultEnvFile)
+	cfg := rdsagent.LoadConfig(rdsagent.DefaultEnvFile)
+	cfg.AgentVersion = version
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Retried rather than fatal: construction resolves the IMDS credential chain,
-	// so a metadata service that is not answering yet would otherwise end the
-	// process with the engine still down and nothing left to bring it back.
-	var agent *Agent
-	err := retry(ctx, "startup", func(context.Context) error {
-		var err error
-		agent, err = New(cfg)
-		return err
-	})
+	agent, err := rdsagent.Start(ctx, cfg)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return

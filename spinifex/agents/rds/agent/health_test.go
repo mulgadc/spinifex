@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -138,8 +138,8 @@ func TestPostgresProbe_ProbesTheUnixSocket(t *testing.T) {
 	}
 }
 
-func testProbeConfig() config {
-	return config{
+func testProbeConfig() Config {
+	return Config{
 		SocketDir:  engineLayouts[enginePostgres].socketDir,
 		EnginePort: engineLayouts[enginePostgres].port,
 	}

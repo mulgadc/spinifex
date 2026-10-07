@@ -1,4 +1,4 @@
-package main
+package agent
 
 //test:in-package — the agent is a main package, which has no external test
 // package to import it from, and this covers the unexported default parameter
@@ -16,10 +16,10 @@ import (
 // The include the image build validates against a real mariadbd. It is checked
 // in rather than generated during the build because the build runs inside the
 // libguestfs appliance, where there is no Go toolchain to resolve the catalog.
-const mariadbDefaultParametersFixture = "../../scripts/images/rds-mariadb/default-parameters.cnf"
+const mariadbDefaultParametersFixture = "../../../../scripts/images/rds-mariadb/default-parameters.cnf"
 
 // Byte-for-byte what rds-init installs on a smallest-class instance that
-// overrides nothing. Regenerate with RDS_UPDATE_FIXTURES=1 go test ./cmd/rds-agent/.
+// overrides nothing. Regenerate with RDS_UPDATE_FIXTURES=1 go test ./spinifex/agents/rds/agent/.
 //
 // Keeping it in step matters because setup.sh feeds exactly this file to
 // mariadbd: a catalog that grew a name the server refuses at startup would
@@ -53,7 +53,7 @@ func TestMariaDBDefaultParametersFixture_MatchesTheCatalog(t *testing.T) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	if string(got) != want {
-		t.Errorf("%s is stale for class %s.\nRegenerate with RDS_UPDATE_FIXTURES=1 go test ./cmd/rds-agent/\n\ngot:\n%s\nwant:\n%s",
+		t.Errorf("%s is stale for class %s.\nRegenerate with RDS_UPDATE_FIXTURES=1 go test ./spinifex/agents/rds/agent/\n\ngot:\n%s\nwant:\n%s",
 			path, class, got, want)
 	}
 }

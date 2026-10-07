@@ -1,4 +1,4 @@
-package main
+package agent
 
 //test:in-package — the agent is a main package, which has no external test
 // package to import it from, and this covers the unexported engineLogTail and
@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-const mariadbRDSInitScript = "../../scripts/images/rds-mariadb/rds-init"
+const mariadbRDSInitScript = "../../../../scripts/images/rds-mariadb/rds-init"
 
 func writeEngineLog(t *testing.T, body string) string {
 	t.Helper()
@@ -210,7 +210,7 @@ func TestWithEngineLogTailLeavesReasonAloneWithoutALog(t *testing.T) {
 	}
 }
 
-const postgresConfD = "../../scripts/images/rds-postgres/postgresql.confd"
+const postgresConfD = "../../../../scripts/images/rds-postgres/postgresql.confd"
 
 // "engine did not respond" is where a postmaster that refused a setting lands,
 // and it is the same message as an engine that never got as far as trying. Only

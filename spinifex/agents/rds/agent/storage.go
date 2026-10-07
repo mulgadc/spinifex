@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"bufio"
@@ -46,7 +46,7 @@ type guestStorage struct {
 
 var _ storageOps = (*guestStorage)(nil)
 
-func newGuestStorage(cfg config, run commandRunner) *guestStorage {
+func newGuestStorage(cfg Config, run commandRunner) *guestStorage {
 	return &guestStorage{
 		run:        run,
 		dataMount:  cfg.DataMount,

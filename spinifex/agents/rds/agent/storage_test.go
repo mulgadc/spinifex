@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -73,7 +73,7 @@ func newTestStorage(t *testing.T, device, fstype string, run commandRunner) *gue
 	if err := os.WriteFile(mounts, []byte(content), 0o600); err != nil {
 		t.Fatalf("write the mount table: %v", err)
 	}
-	cfg := config{DataMount: testDataMount, MountsFile: mounts, SysBlock: filepath.Join(dir, "block")}
+	cfg := Config{DataMount: testDataMount, MountsFile: mounts, SysBlock: filepath.Join(dir, "block")}
 	if err := os.MkdirAll(cfg.SysBlock, 0o755); err != nil {
 		t.Fatalf("create the sysfs tree: %v", err)
 	}

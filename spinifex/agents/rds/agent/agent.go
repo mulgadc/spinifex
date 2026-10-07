@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"bufio"
@@ -17,9 +17,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
-
-// Overridable via -ldflags "-X main.version=...".
-var version = "dev"
 
 // The gateway resolves the authoritative DB instance from the request's
 // credentials, so DBInstanceIdentifier is an assertion to be checked, not
@@ -60,7 +57,7 @@ var _ controlPlane = (*gatewayControlPlane)(nil)
 
 // Signs with the instance-role credentials the SDK chain resolves from IMDS,
 // against the pinned gateway CA.
-func newGatewayControlPlane(cfg config) (*gatewayControlPlane, error) {
+func newGatewayControlPlane(cfg Config) (*gatewayControlPlane, error) {
 	signer, err := gwsign.NewIMDS(context.Background(), cfg.Region)
 	if err != nil {
 		return nil, fmt.Errorf("build IMDS signer: %w", err)
@@ -177,7 +174,7 @@ func setIfPresent(params url.Values, key, value string) {
 }
 
 type Agent struct {
-	cfg             config
+	cfg             Config
 	id              identity
 	cp              controlPlane
 	probe           *engineProbe
@@ -194,15 +191,28 @@ type Agent struct {
 	guard *paramGuard
 }
 
+// Start builds the agent, retrying rather than failing: construction resolves
+// the IMDS credential chain, so a metadata service that is not answering yet
+// would otherwise end the process with the engine still down.
+func Start(ctx context.Context, cfg Config) (*Agent, error) {
+	var agent *Agent
+	err := retry(ctx, "startup", func(context.Context) error {
+		var err error
+		agent, err = New(cfg)
+		return err
+	})
+	return agent, err
+}
+
 // Assembles from already-built parts, so tests can pass fakes; New builds the
 // production control plane and delegates here.
-func newAgent(cfg config, cp controlPlane, probe *engineProbe) (*Agent, error) {
+func newAgent(cfg Config, cp controlPlane, probe *engineProbe) (*Agent, error) {
 	if cfg.MountsFile == "" {
 		cfg.MountsFile = defaultMountsFile
 	}
 	id := identity{
 		DBInstanceIdentifier: cfg.DBInstanceIdentifier,
-		AgentVersion:         version,
+		AgentVersion:         cfg.AgentVersion,
 		EngineVersion:        cfg.EngineVersion,
 	}
 	a := &Agent{
@@ -221,7 +231,7 @@ func newAgent(cfg config, cp controlPlane, probe *engineProbe) (*Agent, error) {
 }
 
 // Does not wait for IMDS: the register loop rides out a datapath still coming up.
-func New(cfg config) (*Agent, error) {
+func New(cfg Config) (*Agent, error) {
 	if cfg.GatewayURL == "" {
 		return nil, fmt.Errorf("no gateway URL configured (RDS_GATEWAY_URL)")
 	}

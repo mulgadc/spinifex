@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -46,7 +46,7 @@ const postgresProbeBinary = "pg_isready"
 // liveness independent of the network path, of the pg_hba scope and of the TLS
 // enforcement rule — libpq reads a host beginning with / as a socket directory,
 // and the generated `local ... peer` line covers it.
-func newPostgresProbe(cfg config, run probeRunner) *engineProbe {
+func newPostgresProbe(cfg Config, run probeRunner) *engineProbe {
 	return newEngineProbe(cfg.EnginePort, postgresProbeState(cfg.SocketDir, cfg.EngineErrorLog, run))
 }
 
@@ -107,7 +107,7 @@ hostnossl all all ::/0 reject
 )
 
 // The layout's factory resolves the control plane metadata during startup.
-func newPostgresEngineFromCatalog(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
+func newPostgresEngineFromCatalog(cfg Config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
 	meta, err := handlers_rds.LookupEngine(enginePostgres)
 	if err != nil {
 		return nil, fmt.Errorf("this image bakes %s, which this build's control plane does not offer: %w", enginePostgres, err)
@@ -115,7 +115,7 @@ func newPostgresEngineFromCatalog(cfg config, run commandRunner, startSess sessi
 	return newPostgresEngine(cfg, meta, run, startSess, probe), nil
 }
 
-func newPostgresEngine(cfg config, meta handlers_rds.Engine, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
+func newPostgresEngine(cfg Config, meta handlers_rds.Engine, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	return &postgresEngine{
 		meta:      meta,
 		run:       run,

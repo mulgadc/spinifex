@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"os"
@@ -9,8 +9,11 @@ import (
 	"github.com/mulgadc/spinifex/internal/guestenv"
 )
 
+// DefaultEnvFile is the cloud-init env file the RDS AMI seeds with the
+// agent's static configuration.
+const DefaultEnvFile = "/etc/spinifex-rds/agent.env"
+
 const (
-	defaultEnvFile    = "/etc/spinifex-rds/agent.env"
 	defaultGatewayCA  = "/etc/spinifex-rds/gateway-ca.pem"
 	defaultHandoffDir = "/run/spinifex-rds"
 	// Where setup.sh stamps the engine the image bakes. The agent builds its
@@ -23,10 +26,10 @@ const (
 	defaultPollWait = 20 * time.Second
 )
 
-// Static settings delivered per-instance by cloud-init. It carries no secrets:
+// Config holds the static settings delivered per-instance by cloud-init. It carries no secrets:
 // IMDS is readable by anything in the guest, so the master password only
 // arrives via GetDBBootstrapConfig.
-type config struct {
+type Config struct {
 	GatewayURL string
 	GatewayCA  string
 	Region     string
@@ -72,13 +75,17 @@ type config struct {
 	DataMount  string
 	MountsFile string
 	SysBlock   string
+
+	// AgentVersion is the binary's build version, reported at registration;
+	// the binary sets it, not the env file.
+	AgentVersion string
 }
 
 // Reads the cloud-init env file, then lets real env vars override.
-func loadConfig(envFile string) config {
+func LoadConfig(envFile string) Config {
 	get := guestenv.Load(envFile).Get
 
-	cfg := config{
+	cfg := Config{
 		GatewayURL:           get("RDS_GATEWAY_URL"),
 		GatewayCA:            get("RDS_GATEWAY_CA"),
 		Region:               get("RDS_REGION"),
@@ -144,7 +151,7 @@ func loadConfig(envFile string) config {
 // Fills in whatever the delivered configuration left unset. An override always
 // wins, so a test can point any of these at a fixture. An unrecognised engine
 // leaves the layout empty, and New refuses rather than guessing at one.
-func (c *config) applyLayout(layout engineLayout) {
+func (c *Config) applyLayout(layout engineLayout) {
 	if c.EngineBinDir == "" {
 		c.EngineBinDir = layout.binDir
 	}

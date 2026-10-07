@@ -1,4 +1,4 @@
-package main
+package agent
 
 import (
 	"context"
@@ -126,7 +126,7 @@ const (
 // The layout's factory. The rules come from the control plane's own definition
 // of this engine, so a build whose control plane does not offer MariaDB refuses
 // to run this implementation rather than inventing a definition for it.
-func newMariaDBEngineFromCatalog(cfg config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
+func newMariaDBEngineFromCatalog(cfg Config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
 	meta, err := handlers_rds.LookupEngine(engineMariaDB)
 	if err != nil {
 		return nil, fmt.Errorf("this image bakes %s, which this build's control plane does not offer: %w", engineMariaDB, err)
@@ -134,7 +134,7 @@ func newMariaDBEngineFromCatalog(cfg config, run commandRunner, startSess sessio
 	return newMariaDBEngine(cfg, controlPlaneRulesFrom(meta), run, startSess, probe), nil
 }
 
-func newMariaDBEngine(cfg config, rules controlPlaneRules, run commandRunner, startSess sessionRunner, probe *engineProbe) *mariadbEngine {
+func newMariaDBEngine(cfg Config, rules controlPlaneRules, run commandRunner, startSess sessionRunner, probe *engineProbe) *mariadbEngine {
 	return &mariadbEngine{
 		rules:     rules,
 		run:       run,
@@ -162,7 +162,7 @@ func newMariaDBEngine(cfg config, rules controlPlaneRules, run commandRunner, st
 	}
 }
 
-func mariadbSocketPath(cfg config) string {
+func mariadbSocketPath(cfg Config) string {
 	return filepath.Join(cfg.SocketDir, mariadbSocketFile)
 }
 
@@ -189,14 +189,14 @@ func processAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-func newMariaDBProbe(cfg config, run probeRunner) *engineProbe {
+func newMariaDBProbe(cfg Config, run probeRunner) *engineProbe {
 	return newEngineProbe(cfg.EnginePort, mariadbProbeState(cfg, run, processAlive))
 }
 
 // Three stages: during InnoDB crash recovery mariadbd opens neither socket nor
 // port, so a ping cannot tell a recovering engine from an absent one — and
 // reading recovery as absent has the rollback guard restart a server mid-replay.
-func mariadbProbeState(cfg config, run probeRunner, alive processLivenessFn) probeStateFn {
+func mariadbProbeState(cfg Config, run probeRunner, alive processLivenessFn) probeStateFn {
 	pidFile, socket := cfg.EnginePidFile, mariadbSocketPath(cfg)
 	admin, client := filepath.Join(cfg.EngineBinDir, mariadbAdminBinary), filepath.Join(cfg.EngineBinDir, mariadbClientBinary)
 	// The probe alone bounds the connect: it must come back and report, where a

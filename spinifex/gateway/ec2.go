@@ -20,6 +20,7 @@ import (
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
+	ec2natgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/natgw"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
@@ -29,7 +30,6 @@ import (
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_natgw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/natgw"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
@@ -628,13 +628,13 @@ var ec2Actions = map[string]ec2Action{
 		return ec2eipapi.DescribeAddressesAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateNatGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNatGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateNatGatewayOutput, error) {
-		return gateway_ec2_natgw.CreateNatGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2natgwapi.CreateNatGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteNatGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteNatGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_natgw.DeleteNatGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2natgwapi.DeleteNatGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeNatGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeNatGatewaysInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_natgw.DescribeNatGateways(ctx, input, gw.NATSConn, accountID)
+		return ec2natgwapi.DescribeNatGateways(ctx, input, gw.NATSConn, accountID)
 	}),
 }
 

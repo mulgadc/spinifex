@@ -1,4 +1,4 @@
-package gateway_ec2_natgw
+package natgw
 
 import (
 	"context"

@@ -104,8 +104,7 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			// the client-claimed service name and rubber-stamps the scope. A
 			// credential-scope service is served if the legacy table or the
 			// registration seam carries it.
-			_, isRegistered := gw.registered(sig.Credential.Service)
-			if !supportedServices[sig.Credential.Service] && !isRegistered {
+			if !gw.selector().Served(sig.Credential.Service) {
 				slog.Warn("Auth failure: unsupported service in credential scope",
 					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
 					"service", sig.Credential.Service)
@@ -244,13 +243,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			}
 
 			// A registered service names its own action; everything else keeps
-			// resolving JSON-1.1/path-routed REST-JSON actions here, since
-			// those carry no query-protocol Action for the parse above to find.
-			if entry, ok := gw.registered(sig.Credential.Service); ok {
-				if action := entry.ResolveAction(r); action != "" {
-					ctx = context.WithValue(ctx, ctxAction, action)
-				}
-			} else if action := resolveNonQueryAction(r, sig.Credential.Service); action != "" {
+			// resolving JSON-1.1/path-routed REST-JSON actions through the legacy
+			// resolver, since those carry no query-protocol Action to parse above.
+			if action := gw.selector().ResolveAction(r, sig.Credential.Service); action != "" {
 				ctx = context.WithValue(ctx, ctxAction, action)
 			}
 

@@ -235,28 +235,36 @@ type GatewayConfig struct {
 	Services *dispatch.Registry
 }
 
+// selector answers service selection over Services and the legacy tables. It
+// holds only the two pointers, so it is built per call and needs no cache.
+func (gw *GatewayConfig) selector() *dispatch.Selector {
+	return dispatch.NewSelector(gw.Services, legacyServices{})
+}
+
+// legacyServices answers selection for services still on Request's switch.
+type legacyServices struct{}
+
+var _ dispatch.Legacy = legacyServices{}
+
+func (legacyServices) Serves(svc string) bool { return supportedServices[svc] }
+
+func (legacyServices) ResolveAction(r *http.Request, svc string) string {
+	return resolveNonQueryAction(r, svc)
+}
+
+func (legacyServices) JSONErrors(svc string) bool { return jsonErrorService(svc) }
+
 // registered reports whether svc is served through the registration seam. A
 // nil registry (no registrations) always reports false.
 func (gw *GatewayConfig) registered(svc string) (*dispatch.Entry, bool) {
-	if gw.Services == nil {
-		return nil, false
-	}
-	return gw.Services.Lookup(svc)
+	return gw.selector().Lookup(svc)
 }
 
 // ValidateServices fails if a name the registry serves is also served by the
 // legacy supportedServices table, so no service is ever reachable down both
 // dispatch paths at once.
 func (gw *GatewayConfig) ValidateServices() error {
-	if gw.Services == nil {
-		return nil
-	}
-	for svc := range supportedServices {
-		if _, ok := gw.Services.Lookup(svc); ok {
-			return fmt.Errorf("gateway: service %q is registered and also served by the legacy dispatch table", svc)
-		}
-	}
-	return nil
+	return gw.selector().Validate()
 }
 
 // registeredActorFunc returns the lazy Actor resolver a registered
@@ -406,10 +414,7 @@ func jsonErrorService(svc string) bool {
 // emitter calls this method, never the free function, so the two can never
 // disagree on a registered service.
 func (gw *GatewayConfig) jsonErrorService(svc string) bool {
-	if entry, ok := gw.registered(svc); ok {
-		return entry.ErrorEnvelope() == dispatch.ErrorEnvelopeJSON
-	}
-	return jsonErrorService(svc)
+	return gw.selector().JSONErrors(svc)
 }
 
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points

@@ -18,10 +18,10 @@ import (
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
+	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
 	"github.com/nats-io/nats.go"
 )
@@ -162,7 +162,7 @@ func (r *snapshotReaper) Kind() string { return "snapshot" }
 func (r *snapshotReaper) Stage() Stage { return StageStorage }
 
 func (r *snapshotReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_snapshot.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
+	out, err := ec2snapshotapi.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{
 		OwnerIds: []*string{aws.String(accountID)},
 	}, r.nc, accountID)
 	if err != nil {
@@ -180,7 +180,7 @@ func (r *snapshotReaper) List(ctx context.Context, accountID string) ([]Resource
 }
 
 func (r *snapshotReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_snapshot.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{
+	_, err := ec2snapshotapi.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{
 		SnapshotId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

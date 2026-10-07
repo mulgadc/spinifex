@@ -1,4 +1,4 @@
-package gateway_ec2_snapshot
+package snapshot
 
 import (
 	"context"

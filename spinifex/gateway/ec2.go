@@ -24,6 +24,7 @@ import (
 	ec2natgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/natgw"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
+	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -31,7 +32,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
 	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
@@ -398,16 +398,16 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_tags.DescribeTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateSnapshot": ec2Handler(func(ctx context.Context, input *ec2.CreateSnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.CreateSnapshot(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.CreateSnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteSnapshot": ec2Handler(func(ctx context.Context, input *ec2.DeleteSnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.DeleteSnapshot(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.DeleteSnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeSnapshots": ec2Handler(func(ctx context.Context, input *ec2.DescribeSnapshotsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.DescribeSnapshots(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.DescribeSnapshots(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CopySnapshot": ec2Handler(func(ctx context.Context, input *ec2.CopySnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.CopySnapshot(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.CopySnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.CreateInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
 		return ec2igwapi.CreateInternetGateway(ctx, input, gw.NATSConn, accountID)

@@ -1,4 +1,4 @@
-package gateway_ec2_account
+package account
 
 import (
 	"log/slog"

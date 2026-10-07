@@ -13,11 +13,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2accountapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/account"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
-	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
 	gateway_ec2_capacityreservation "github.com/mulgadc/spinifex/spinifex/gateway/ec2/capacityreservation"
 	gateway_ec2_eigw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eigw"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
@@ -366,27 +366,27 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_volume.DetachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAccountAttributes": ec2Handler(func(ctx context.Context, input *ec2.DescribeAccountAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DescribeAccountAttributes(input, func() (string, error) {
+		return ec2accountapi.DescribeAccountAttributes(input, func() (string, error) {
 			return defaultVPCID(ctx, gw.NATSConn, accountID)
 		})
 	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.EnableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.EnableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.DisableEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DisableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.DisableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.GetEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.GetEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.GetEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetSerialConsoleAccessStatus": ec2Handler(func(ctx context.Context, input *ec2.GetSerialConsoleAccessStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.GetSerialConsoleAccessStatus(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.GetSerialConsoleAccessStatus(ctx, input, gw.NATSConn, accountID)
 	}),
 	"EnableSerialConsoleAccess": ec2Handler(func(ctx context.Context, input *ec2.EnableSerialConsoleAccessInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.EnableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.EnableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisableSerialConsoleAccess": ec2Handler(func(ctx context.Context, input *ec2.DisableSerialConsoleAccessInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DisableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.DisableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateTags": ec2Handler(func(ctx context.Context, input *ec2.CreateTagsInput, gw *GatewayConfig, accountID string) (any, error) {
 		return gateway_ec2_tags.CreateTags(ctx, input, gw.NATSConn, accountID)

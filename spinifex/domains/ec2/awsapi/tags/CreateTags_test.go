@@ -1,4 +1,4 @@
-package gateway_ec2_tags
+package tags
 
 import (
 	"testing"

@@ -25,6 +25,7 @@ import (
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
+	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
@@ -34,7 +35,6 @@ import (
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
-	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
@@ -389,13 +389,13 @@ var ec2Actions = map[string]ec2Action{
 		return ec2accountapi.DisableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateTags": ec2Handler(func(ctx context.Context, input *ec2.CreateTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_tags.CreateTags(ctx, input, gw.NATSConn, accountID)
+		return ec2tagsapi.CreateTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteTags": ec2Handler(func(ctx context.Context, input *ec2.DeleteTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_tags.DeleteTags(ctx, input, gw.NATSConn, accountID)
+		return ec2tagsapi.DeleteTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeTags": ec2Handler(func(ctx context.Context, input *ec2.DescribeTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_tags.DescribeTags(ctx, input, gw.NATSConn, accountID)
+		return ec2tagsapi.DescribeTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateSnapshot": ec2Handler(func(ctx context.Context, input *ec2.CreateSnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
 		return ec2snapshotapi.CreateSnapshot(ctx, input, gw.NATSConn, accountID)

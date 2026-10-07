@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"testing"
 
@@ -86,13 +85,6 @@ func runMigrateCases(t *testing.T, run func(context.Context, migrate.KVContext) 
 	}
 }
 
-func mustJSON(t *testing.T, v any) []byte {
-	t.Helper()
-	data, err := json.Marshal(v)
-	require.NoError(t, err)
-	return data
-}
-
 func assertKeyAbsent(t *testing.T, kv jetstream.KeyValue, key string) {
 	t.Helper()
 	_, err := kv.Get(context.Background(), key)
@@ -133,10 +125,10 @@ func TestRekeyRecordSeparator_Faults(t *testing.T) {
 
 func TestCarryNodeOwnershipForward_Faults(t *testing.T) {
 	t.Parallel()
-	blob := mustJSON(t, LocalState{SchemaVersion: LocalStateSchemaVersion, VMS: map[string]*vm.VM{"i-1": {ID: "i-1"}}})
+	blob := mustMarshal(t, LocalState{SchemaVersion: LocalStateSchemaVersion, VMS: map[string]*vm.VM{"i-1": {ID: "i-1"}}})
 	withRecord := map[string][]byte{
 		"node.n1": blob,
-		"i.i-1":   mustJSON(t, (&vm.VM{ID: "i-1"}).Record()),
+		"i.i-1":   mustMarshal(t, (&vm.VM{ID: "i-1"}).Record()),
 	}
 
 	runMigrateCases(t, carryNodeOwnershipForward, []migrateCase{
@@ -173,7 +165,7 @@ func TestCarryNodeOwnershipForward_Faults(t *testing.T) {
 
 func TestCopyInstancesForward_Faults(t *testing.T) {
 	t.Parallel()
-	stopped := map[string][]byte{"instance.i-1": mustJSON(t, &vm.VM{ID: "i-1", InstanceType: "t3.nano"})}
+	stopped := map[string][]byte{"instance.i-1": mustMarshal(t, &vm.VM{ID: "i-1", InstanceType: "t3.nano"})}
 	run := func(ctx context.Context, kvc migrate.KVContext) error {
 		return copyInstancesForward(ctx, kvc, StoppedInstancePrefix)
 	}
@@ -205,7 +197,7 @@ func TestCopyInstancesForward_Faults(t *testing.T) {
 
 func TestCopyRunningSetsForward_Faults(t *testing.T) {
 	t.Parallel()
-	set := map[string][]byte{"node.n1": mustJSON(t, LocalState{
+	set := map[string][]byte{"node.n1": mustMarshal(t, LocalState{
 		SchemaVersion: LocalStateSchemaVersion,
 		VMS:           map[string]*vm.VM{"i-1": {ID: "i-1"}},
 	})}

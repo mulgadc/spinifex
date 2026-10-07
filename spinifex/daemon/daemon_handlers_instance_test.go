@@ -9,8 +9,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
 	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/types"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/mulgadc/spinifex/spinifex/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
@@ -486,4 +490,234 @@ func TestHandleEC2DescribeStoppedInstances_CrossAccountIsolation(t *testing.T) {
 		}
 	}
 	assert.ElementsMatch(t, []string{"i-mine"}, seen, "caller must only see their own instances")
+}
+
+// --- handleEC2RunInstances ---
+
+func TestHandleEC2RunInstances_MissingAccountHeader(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	body := mustMarshal(t, &ec2.RunInstancesInput{InstanceType: aws.String(getTestInstanceType(t))})
+
+	reply := requestHandler(t, d.natsConn, "ec2.RunInstances.p1-noacct", asMsgHandler(d.handleEC2RunInstances), "", body)
+	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
+	assert.Zero(t, d.vmMgr.Count(), "an unattributable launch must not reserve anything")
+}
+
+func TestHandleEC2RunInstances_InvalidReservationTarget(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	body := mustMarshal(t, &ec2.RunInstancesInput{
+		InstanceType: aws.String(getTestInstanceType(t)),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		CapacityReservationSpecification: &ec2.CapacityReservationSpecification{
+			CapacityReservationTarget: &ec2.CapacityReservationTarget{CapacityReservationId: aws.String("cr-0000000000missing")},
+		},
+	})
+
+	reply := requestHandler(t, d.natsConn, "ec2.RunInstances.p1-badcr", asMsgHandler(d.handleEC2RunInstances), testAccountID, body)
+	assert.NotEmpty(t, decodeError(t, reply.Data)["Code"])
+	assert.Zero(t, d.vmMgr.Count())
+}
+
+// A gateway-minted reservation ID replaces the one prepare generated, and a
+// central tag store that cannot take the launch tags does not fail the launch.
+func TestHandleEC2RunInstances_GatewayReservationAndTagStoreFailure(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	images := objectstore.NewMemoryObjectStore()
+	seedTestAMI(t, images, d.config.Predastore.Bucket, "ami-p1-gateway")
+	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+		d.config, d.resourceMgr.instanceTypes, d.natsConn, images, d.vmMgr, d.resourceMgr, nil)
+	d.instanceService.SetRunInstancesDeps(
+		handlers_ec2_image.NewImageServiceImplWithStore(images, d.config.Predastore.Bucket),
+		handlers_ec2_key.NewKeyServiceImplWithStore(images, d.config.Predastore.Bucket), nil, nil)
+
+	_, tagKV := faultBucket(t)
+	for _, m := range []string{"Put", "Create", "Update"} {
+		tagKV.setFail(m, true)
+	}
+	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
+	t.Cleanup(d.vmMgr.WaitForBackgroundWork)
+
+	subject := "ec2.RunInstances.p1-gateway"
+	sub, err := d.natsConn.Subscribe(subject, asMsgHandler(d.handleEC2RunInstances))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	msg := nats.NewMsg(subject)
+	msg.Data = mustMarshal(t, &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-p1-gateway"),
+		InstanceType: aws.String(getTestInstanceType(t)),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("instance"),
+			Tags:         []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("web")}},
+		}},
+	})
+	msg.Header.Set(utils.AccountIDHeader, testAccountID)
+	msg.Header.Set(utils.ReservationIDHeader, "r-0gateway000000001")
+	reply, err := d.natsConn.RequestMsg(msg, 5*time.Second)
+	require.NoError(t, err)
+
+	var reservation ec2.Reservation
+	require.NoError(t, json.Unmarshal(reply.Data, &reservation), "%s", reply.Data)
+	assert.Equal(t, "r-0gateway000000001", aws.StringValue(reservation.ReservationId))
+	require.Len(t, reservation.Instances, 1, "a failed tag projection must not fail the launch")
+}
+
+// --- handleEC2StartStoppedInstance forwarding ---
+
+func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
+	newFixture := func(t *testing.T, id, lastNode string) (*Daemon, *vmmock.StateStore, []byte) {
+		store := vmmock.New()
+		v := stoppedVMFixture(id, testAccountID)
+		v.InstanceType = "definitely.not.a.real.type"
+		v.LastNode = lastNode
+		store.Stopped[v.ID] = v
+		body, err := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+		require.NoError(t, err)
+		return daemonWithFakeStateStore(t, store), store, body
+	}
+	owner := func(t *testing.T, d *Daemon, node string, fn nats.MsgHandler) {
+		sub, err := d.natsConn.Subscribe("ec2.start."+node, fn)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+
+	t.Run("owner success is relayed", func(t *testing.T) {
+		d, _, body := newFixture(t, "i-p1-fwd-ok", "node-p1-ok")
+		owner(t, d, "node-p1-ok", func(m *nats.Msg) { _ = m.Respond([]byte(`{"started":true}`)) })
+
+		reply := requestHandler(t, d.natsConn, "ec2.start.p1-ok", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
+		assert.JSONEq(t, `{"started":true}`, string(reply.Data))
+	})
+
+	t.Run("owner at capacity falls back locally", func(t *testing.T) {
+		d, store, body := newFixture(t, "i-p1-fwd-cap", "node-p1-cap")
+		// The owner claims the record before answering at capacity, so the local
+		// attempt that follows finds it gone: a NotFound reply proves the
+		// fallback ran rather than the capacity error being relayed.
+		owner(t, d, "node-p1-cap", func(m *nats.Msg) {
+			_, _ = store.ClaimStoppedInstance("i-p1-fwd-cap")
+			_ = m.Respond(utils.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
+		})
+
+		reply := requestHandler(t, d.natsConn, "ec2.start.p1-cap", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
+		assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
+	})
+
+	t.Run("owner not subscribed falls back locally", func(t *testing.T) {
+		d, _, body := newFixture(t, "i-p1-fwd-gone", "node-p1-gone")
+		reply := requestHandler(t, d.natsConn, "ec2.start.p1-gone", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
+			"the local attempt must run and reject the unresolvable instance type")
+	})
+
+	t.Run("relay to a departed caller is an error", func(t *testing.T) {
+		d, _, body := newFixture(t, "i-p1-fwd-relay", "node-p1-relay")
+		owner(t, d, "node-p1-relay", func(m *nats.Msg) { _ = m.Respond([]byte(`{}`)) })
+
+		msg := nats.NewMsg("ec2.start.p1-relay")
+		msg.Data = body
+		msg.Header.Set(utils.AccountIDHeader, testAccountID)
+		assert.Equal(t, outcomeError, d.handleEC2StartStoppedInstance(msg))
+	})
+}
+
+// --- handleSetInstanceTags / handleSetInstanceMonitoring ---
+
+func setTagsCommand(id string) types.EC2InstanceCommand {
+	return types.EC2InstanceCommand{
+		ID:         id,
+		Attributes: types.EC2CommandAttributes{SetInstanceTags: true},
+		InstanceTagsData: &types.InstanceTagsData{
+			Tags: map[string]string{"env": "dev"},
+		},
+	}
+}
+
+func TestHandleSetInstanceTags_Failures(t *testing.T) {
+	t.Run("record without an instance", func(t *testing.T) {
+		const id = "i-p1-tags-norecord"
+		d := tagTestDaemon(t, id, nil)
+		d.vmMgr.UpdateState(id, func(v *vm.VM) { v.Instance = nil })
+
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, mustMarshal(t, setTagsCommand(id)))
+		assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
+	})
+
+	t.Run("central store write fails", func(t *testing.T) {
+		const id = "i-p1-tags-central"
+		d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
+		_, tagKV := faultBucket(t)
+		for _, m := range []string{"Put", "Create", "Update"} {
+			tagKV.setFail(m, true)
+		}
+		d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
+
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, mustMarshal(t, setTagsCommand(id)))
+		assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
+		assert.Equal(t, map[string]string{"Name": "web"}, recordTags(t, d, id),
+			"the record must not move ahead of the central store")
+	})
+
+	t.Run("persist fails", func(t *testing.T) {
+		const id = "i-p1-tags-persist"
+		d := tagTestDaemon(t, id, nil)
+		d.vmMgr.SetDeps(vm.Deps{NodeID: d.node, StateStore: &vmmock.StateStore{SaveRunningErr: errInjected}})
+
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, mustMarshal(t, setTagsCommand(id)))
+		assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
+	})
+
+	t.Run("caller gone after the write", func(t *testing.T) {
+		const id = "i-p1-tags-noreply"
+		d := tagTestDaemon(t, id, nil)
+		instance, ok := d.vmMgr.Get(id)
+		require.True(t, ok)
+
+		msg := nats.NewMsg("ec2.cmd." + id)
+		msg.Header.Set(utils.AccountIDHeader, testAccountID)
+		assert.Equal(t, outcomeSuccess, d.handleSetInstanceTags(t.Context(), msg, setTagsCommand(id), instance))
+		assert.Equal(t, map[string]string{"env": "dev"}, recordTags(t, d, id))
+	})
+}
+
+func TestHandleSetInstanceMonitoring_Failures(t *testing.T) {
+	enable := func(id string) types.EC2InstanceCommand {
+		return types.EC2InstanceCommand{
+			ID:                     id,
+			Attributes:             types.EC2CommandAttributes{SetInstanceMonitoring: true},
+			InstanceMonitoringData: &types.InstanceMonitoringData{Enabled: true},
+		}
+	}
+
+	t.Run("missing data", func(t *testing.T) {
+		const id = "i-p1-mon-nodata"
+		d, _ := monitoringTestDaemon(t, id, false)
+		cmd := enable(id)
+		cmd.InstanceMonitoringData = nil
+
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, mustMarshal(t, cmd))
+		assert.Equal(t, awserrors.ErrorMissingParameter, decodeError(t, reply.Data)["Code"])
+	})
+
+	t.Run("persist fails", func(t *testing.T) {
+		const id = "i-p1-mon-persist"
+		d, _ := monitoringTestDaemon(t, id, false)
+		d.vmMgr.SetDeps(vm.Deps{NodeID: d.node, StateStore: &vmmock.StateStore{SaveRunningErr: errInjected}})
+
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, mustMarshal(t, enable(id)))
+		assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
+	})
+
+	t.Run("caller gone after the write", func(t *testing.T) {
+		const id = "i-p1-mon-noreply"
+		d, _ := monitoringTestDaemon(t, id, false)
+		instance, ok := d.vmMgr.Get(id)
+		require.True(t, ok)
+
+		assert.Equal(t, outcomeSuccess, d.handleSetInstanceMonitoring(t.Context(), noReplyMsg("ec2.cmd."+id, nil), enable(id), instance))
+		assert.True(t, recordMonitoring(t, d, id))
+	})
 }

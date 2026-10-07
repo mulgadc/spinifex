@@ -1,13 +1,39 @@
 package awsgw
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// wireServiceRegistry is the exact call launchService makes to wire
+// gw.Services before serving a request. An empty call (production's shape)
+// must wire a non-nil, overlap-free registry; a registration claiming a
+// legacy name must fail it, so the role refuses to start.
+func TestWireServiceRegistry(t *testing.T) {
+	t.Run("empty registry wires non-nil Services and passes", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		require.NoError(t, wireServiceRegistry(gw))
+		assert.NotNil(t, gw.Services)
+	})
+
+	t.Run("a registration claiming a legacy name fails startup", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		err := wireServiceRegistry(gw, dispatch.Registration{
+			Service:   "ecr",
+			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
+			Errors:    dispatch.ErrorEnvelopeJSON,
+			Inventory: dispatch.Inventory{Registered: []string{"Whatever"}},
+		})
+		require.Error(t, err)
+	})
+}
 
 func TestLoadThrottleConfig_Enabled(t *testing.T) {
 	dir := t.TempDir()

@@ -41,6 +41,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -121,6 +122,20 @@ func resolveSignupMaxAccounts(cfg signupConfig) int {
 		return defaultSignupMaxAccounts
 	}
 	return *cfg.MaxAccounts
+}
+
+// wireServiceRegistry builds gw.Services from regs and validates it against
+// the legacy dispatch table before the gateway ever serves a request. regs is
+// empty in production: no service registers through the seam yet.
+func wireServiceRegistry(gw *gateway.GatewayConfig, regs ...dispatch.Registration) error {
+	b := dispatch.NewBuilder()
+	for _, reg := range regs {
+		if err := b.Register(reg); err != nil {
+			return err
+		}
+	}
+	gw.Services = b.Build()
+	return gw.ValidateServices()
 }
 
 // loadAWSGWConfig reads and parses awsgw.toml once, returning the [ratelimit] and
@@ -483,6 +498,12 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,
+	}
+
+	// No service registers through the seam yet; wireServiceRegistry only
+	// proves the registry is wired and cannot overlap the legacy table.
+	if err := wireServiceRegistry(&gw); err != nil {
+		return fmt.Errorf("awsgw: %w", err)
 	}
 
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys

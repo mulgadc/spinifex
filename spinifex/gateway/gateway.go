@@ -44,6 +44,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -243,6 +244,61 @@ type GatewayConfig struct {
 	// the concrete client, so a test can inject a fake without a live NATS
 	// connection.
 	BedrockAgentVector ochrevector.VectorService
+
+	// Services holds the signed AWS services dispatched through the
+	// registration seam. Nil means nothing is registered, so every request
+	// falls through to the legacy switch in Request.
+	Services *dispatch.Registry
+}
+
+// registered reports whether svc is served through the registration seam. A
+// nil registry (no registrations) always reports false.
+func (gw *GatewayConfig) registered(svc string) (*dispatch.Entry, bool) {
+	if gw.Services == nil {
+		return nil, false
+	}
+	return gw.Services.Lookup(svc)
+}
+
+// ValidateServices fails if a name the registry serves is also served by the
+// legacy supportedServices table, so no service is ever reachable down both
+// dispatch paths at once.
+func (gw *GatewayConfig) ValidateServices() error {
+	if gw.Services == nil {
+		return nil
+	}
+	for svc := range supportedServices {
+		if _, ok := gw.Services.Lookup(svc); ok {
+			return fmt.Errorf("gateway: service %q is registered and also served by the legacy dispatch table", svc)
+		}
+	}
+	return nil
+}
+
+// registeredActorFunc returns the lazy Actor resolver a registered
+// dispatcher's Invocation carries. It reads the same context values and
+// shared buildCallerARN helper ecrAuthorizationPrincipal uses, so nothing is
+// computed until a dispatcher calls it.
+func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
+	return func() (dispatch.Actor, error) {
+		ctx := r.Context()
+		accountID, _ := ctx.Value(ctxAccountID).(string)
+		identity, _ := ctx.Value(ctxIdentity).(string)
+		principalType, _ := ctx.Value(ctxPrincipalType).(string)
+		assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
+		accessKey, _ := ctx.Value(ctxAccessKey).(string)
+
+		callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN)
+		if err != nil {
+			return dispatch.Actor{}, err
+		}
+		return dispatch.Actor{
+			AccountID:     accountID,
+			CallerARN:     callerARN,
+			PrincipalType: principalType,
+			AccessKeyID:   accessKey,
+		}, nil
+	}
 }
 
 var supportedServices = map[string]bool{
@@ -394,6 +450,18 @@ func jsonErrorService(svc string) bool {
 	return false
 }
 
+// jsonErrorService reports whether svc's errors render in the AWS JSON 1.1
+// envelope: a registered service's own declared envelope, or the legacy
+// table for every service not yet registered through the seam. Every error
+// emitter calls this method, never the free function, so the two can never
+// disagree on a registered service.
+func (gw *GatewayConfig) jsonErrorService(svc string) bool {
+	if entry, ok := gw.registered(svc); ok {
+		return entry.ErrorEnvelope() == dispatch.ErrorEnvelopeJSON
+	}
+	return jsonErrorService(svc)
+}
+
 // requestSignalsJSONProtocol reads r's own headers for the AWS JSON-1.x
 // tells, for a scope jsonErrorService has no entry for because the gateway
 // does not serve it. A JSON-1.1 action always carries X-Amz-Target, and a
@@ -415,7 +483,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 	requestID := uuid.NewV4().String()
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if jsonErrorService(svc) {
+	if gw.jsonErrorService(svc) {
 		body := gateway_eks.GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(awserrors.ErrorServiceUnavailable))
@@ -447,7 +515,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	errorMsg := awserrors.ErrorLookup[errorCode]
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if jsonErrorService(svc) {
+	if gw.jsonErrorService(svc) {
 		body := gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message)
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
@@ -479,45 +547,60 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
-	// until per-call timeout.
+	// until per-call timeout. Applies ahead of either dispatch path below.
 	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
 
-	switch svc {
-	case "ec2":
-		err = gw.EC2_Request(w, r)
-	case "iam":
-		err = gw.IAM_Request(w, r)
-	case "sts":
-		err = gw.STS_Request(w, r)
-	case "elasticloadbalancing":
-		err = gw.ELBv2_Request(w, r)
-	case "eks":
-		err = gw.EKS_Request(w, r)
-	case "bedrock":
-		err = gw.Bedrock_Request(w, r)
-	case "bedrock-runtime":
-		err = gw.BedrockRuntime_Request(w, r)
-	case "bedrock-agent":
-		err = gw.BedrockAgent_Request(w, r)
-	case "bedrock-agent-runtime":
-		err = gw.BedrockAgentRuntime_Request(w, r)
-	case "ecs":
-		err = gw.ECS_Request(w, r)
-	case "ecr":
-		err = gw.ECR_Request(w, r)
-	case "acm":
-		err = gw.ACM_Request(w, r)
-	case "rds":
-		err = gw.RDS_Request(w, r)
-	case "tagging":
-		err = gw.Tagging_Request(w, r)
-	case "spinifex":
-		err = gw.Spinifex_Request(w, r)
-	default:
-		err = errors.New(awserrors.ErrorUnsupportedOperation)
+	if entry, ok := gw.registered(svc); ok {
+		inv := dispatch.Invocation{
+			Request:   r,
+			AccountID: mustCtxString(r, ctxAccountID),
+			Region:    gw.Region,
+			Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
+				return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
+			},
+			Actor: gw.registeredActorFunc(r),
+		}
+		err = entry.Dispatch(w, inv)
+	} else {
+		// Legacy dispatch path for every service not yet registered through
+		// the seam. This switch must only shrink as services register.
+		switch svc {
+		case "ec2":
+			err = gw.EC2_Request(w, r)
+		case "iam":
+			err = gw.IAM_Request(w, r)
+		case "sts":
+			err = gw.STS_Request(w, r)
+		case "elasticloadbalancing":
+			err = gw.ELBv2_Request(w, r)
+		case "eks":
+			err = gw.EKS_Request(w, r)
+		case "bedrock":
+			err = gw.Bedrock_Request(w, r)
+		case "bedrock-runtime":
+			err = gw.BedrockRuntime_Request(w, r)
+		case "bedrock-agent":
+			err = gw.BedrockAgent_Request(w, r)
+		case "bedrock-agent-runtime":
+			err = gw.BedrockAgentRuntime_Request(w, r)
+		case "ecs":
+			err = gw.ECS_Request(w, r)
+		case "ecr":
+			err = gw.ECR_Request(w, r)
+		case "acm":
+			err = gw.ACM_Request(w, r)
+		case "rds":
+			err = gw.RDS_Request(w, r)
+		case "tagging":
+			err = gw.Tagging_Request(w, r)
+		case "spinifex":
+			err = gw.Spinifex_Request(w, r)
+		default:
+			err = errors.New(awserrors.ErrorUnsupportedOperation)
+		}
 	}
 
 	if err != nil {
@@ -532,6 +615,11 @@ func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	svc, ok := r.Context().Value(ctxService).(string)
 	if !ok {
 		return "", errors.New(awserrors.ErrorAuthFailure)
+	}
+	// A registered service needs no bedrock sub-service rewriting: that
+	// rewrite exists only for the legacy "bedrock" signing-name split below.
+	if _, ok := gw.registered(svc); ok {
+		return svc, nil
 	}
 	// The whole Bedrock family shares the SigV4 signing name "bedrock"; the
 	// request path is the only discriminator, since the gateway serves one endpoint.
@@ -897,7 +985,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
 	// query/XML services fall through.
-	if jsonErrorService(svc) {
+	if gw.jsonErrorService(svc) {
 		body := gateway_eks.GenerateEKSErrorResponse(code, errorMsg.Message)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
 		w.Header().Set("Content-Type", eksJSONContentType)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"log/slog"
@@ -19,6 +18,7 @@ import (
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
@@ -101,16 +101,19 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			r = r.WithContext(context.WithValue(r.Context(), ctxService, sig.Credential.Service))
 
 			// Reject unknown services before crypto; otherwise Verify re-signs with
-			// the client-claimed service name and rubber-stamps the scope.
-			if !supportedServices[sig.Credential.Service] {
+			// the client-claimed service name and rubber-stamps the scope. A
+			// credential-scope service is served if the legacy table or the
+			// registration seam carries it.
+			_, isRegistered := gw.registered(sig.Credential.Service)
+			if !supportedServices[sig.Credential.Service] && !isRegistered {
 				slog.Warn("Auth failure: unsupported service in credential scope",
 					"accessKeyID", sig.Credential.AccessKeyID, "sourceIP", clientIP,
 					"service", sig.Credential.Service)
 				// Consistent with an unimplemented action on a served service: this
 				// gate runs before Verify, so nothing was ever wrong with the
 				// credentials, and no signature was ever checked.
-				gw.writeSigV4Error(w, r, awserrors.ErrorInvalidAction,
-					fmt.Sprintf("Service %q is not served by this gateway.", sig.Credential.Service))
+				code, message := dispatch.UnknownService(sig.Credential.Service)
+				gw.writeSigV4Error(w, r, code, message)
 				return
 			}
 
@@ -240,10 +243,14 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				ctx = context.WithValue(ctx, ctxAction, method)
 			}
 
-			// JSON-1.1 and path-routed REST-JSON services carry no query-protocol
-			// Action; without this every one of their requests shared the same
-			// "unknown" throttle bucket, so no per-action override could ever match.
-			if action := resolveNonQueryAction(r, sig.Credential.Service); action != "" {
+			// A registered service names its own action; everything else keeps
+			// resolving JSON-1.1/path-routed REST-JSON actions here, since
+			// those carry no query-protocol Action for the parse above to find.
+			if entry, ok := gw.registered(sig.Credential.Service); ok {
+				if action := entry.ResolveAction(r); action != "" {
+					ctx = context.WithValue(ctx, ctxAction, action)
+				}
+			} else if action := resolveNonQueryAction(r, sig.Credential.Service); action != "" {
 				ctx = context.WithValue(ctx, ctxAction, action)
 			}
 
@@ -519,7 +526,7 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 	// the SDK chokes deserializing our XML into its shape. An unserved scope is
 	// absent from jsonErrorService by definition, so its protocol is read off
 	// the request itself instead.
-	if jsonErrorService(svc) || requestSignalsJSONProtocol(r) {
+	if gw.jsonErrorService(svc) || requestSignalsJSONProtocol(r) {
 		w.Header().Set("Content-Type", eksJSONContentType)
 		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)

@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mulgadc/spinifex/cmd/installer/install"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
 )
 
 // namedKeys maps the key names the handlers switch on to their tea.KeyType.

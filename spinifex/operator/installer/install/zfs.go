@@ -297,7 +297,7 @@ func datasetProtectFilters(cfg DiskConfig) []string {
 // memory the ARC is holding.
 func writeZFSSystemConfig(opts ZFSOpts) error {
 	modprobeDir := filepath.Join(mountRoot, "etc/modprobe.d")
-	if err := os.MkdirAll(modprobeDir, 0o755); err != nil {
+	if err := os.MkdirAll(modprobeDir, 0o755); err != nil { //nolint:gosec // G301: /etc/modprobe.d must be 0755 for modprobe to read it. Contains no secret material.
 		return err
 	}
 	arcBytes := int64(opts.ARCMaxMiB) << 20
@@ -305,7 +305,7 @@ func writeZFSSystemConfig(opts ZFSOpts) error {
 		"# Guest RAM is the scarce resource on a hypervisor, so the ARC is\n"+
 		"# capped well below the ZFS default of half of system memory.\n"+
 		"options zfs zfs_arc_max=%d\n", arcBytes)
-	if err := os.WriteFile(filepath.Join(modprobeDir, "zfs.conf"), []byte(conf), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(modprobeDir, "zfs.conf"), []byte(conf), 0o644); err != nil { //nolint:gosec // G306: /etc/modprobe.d/zfs.conf holds the ARC ceiling and is conventionally world-readable (0644). Contains no secret material.
 		return fmt.Errorf("write zfs.conf: %w", err)
 	}
 
@@ -319,10 +319,10 @@ func writeZFSSystemConfig(opts ZFSOpts) error {
 		"SPINIFEX_RESERVED_MEM_GB=%.1f\n",
 		defaultHostReserveGB, float64(opts.ARCMaxMiB)/1024.0, reserve)
 	confDir := filepath.Join(mountRoot, "etc/spinifex")
-	if err := os.MkdirAll(confDir, 0o755); err != nil {
+	if err := os.MkdirAll(confDir, 0o755); err != nil { //nolint:gosec // G301: /etc/spinifex configuration directory, 0755 so Spinifex service users can traverse it. Contains no secret material.
 		return err
 	}
-	return os.WriteFile(filepath.Join(confDir, "host.env"), []byte(env), 0o644)
+	return os.WriteFile(filepath.Join(confDir, "host.env"), []byte(env), 0o644) //nolint:gosec // G306: /etc/spinifex/host.env holds the memory reserve, read by non-root Spinifex services (0644). Contains no secret material.
 }
 
 // defaultHostReserveGB mirrors defaultHostReserve.memGB in

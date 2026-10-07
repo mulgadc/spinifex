@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/cmd/installer/install"
-	"github.com/mulgadc/spinifex/cmd/installer/netprobe"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/netprobe"
 )
 
 func nics(n int) []netprobe.NIC {

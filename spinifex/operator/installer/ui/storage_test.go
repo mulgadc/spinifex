@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/cmd/installer/install"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
 )
 
 // diskModel is a storage screen with n unselected disks and ext4 chosen, which

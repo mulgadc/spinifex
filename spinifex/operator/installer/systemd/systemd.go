@@ -34,7 +34,7 @@ SuccessExitStatus=0 1
 WantedBy=multi-user.target
 `, bridge, bridge)
 	unitPath := filepath.Join(root, "etc/systemd/system", name)
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil { //nolint:gosec // G306: systemd bridge unit must be world-readable (0644) for systemd to load it. Contains no secret material.
 		return err
 	}
 	return EnableUnit(root, name)
@@ -77,7 +77,7 @@ StandardError=journal
 WantedBy=multi-user.target
 `
 	path := filepath.Join(root, "etc/systemd/system/spinifex-firstboot.service")
-	return os.WriteFile(path, []byte(unit), 0o644)
+	return os.WriteFile(path, []byte(unit), 0o644) //nolint:gosec // G306: spinifex-firstboot.service unit must be world-readable (0644) for systemd to load it. Contains no secret material.
 }
 
 // WriteBannerUnit writes the spinifex-banner.service unit that runs
@@ -113,7 +113,7 @@ StandardError=journal
 WantedBy=multi-user.target
 `
 	path := filepath.Join(root, "etc/systemd/system/spinifex-banner.service")
-	return os.WriteFile(path, []byte(unit), 0o644)
+	return os.WriteFile(path, []byte(unit), 0o644) //nolint:gosec // G306: spinifex-banner.service unit must be world-readable (0644) for systemd to load it. Contains no secret material.
 }
 
 // WriteGettyDropIn holds the primary consoles (tty1 and ttyS0) until
@@ -135,10 +135,10 @@ After=spinifex-firstboot.service
 `
 	for _, svc := range []string{"getty@tty1", "serial-getty@ttyS0"} {
 		dropInDir := filepath.Join(root, "etc/systemd/system/"+svc+".service.d")
-		if err := os.MkdirAll(dropInDir, 0o755); err != nil {
+		if err := os.MkdirAll(dropInDir, 0o755); err != nil { //nolint:gosec // G301: getty drop-in directory, 0755 as systemd expects. Contains no secret material.
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dropInDir, "spinifex-wait.conf"), []byte(dropIn), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dropInDir, "spinifex-wait.conf"), []byte(dropIn), 0o644); err != nil { //nolint:gosec // G306: getty drop-in must be world-readable (0644) for systemd to load it. Contains no secret material.
 			return err
 		}
 	}
@@ -149,7 +149,7 @@ After=spinifex-firstboot.service
 // equivalent to `systemctl enable` for a unit that targets multi-user.target.
 func EnableUnit(root, serviceName string) error {
 	wantsDir := filepath.Join(root, "etc/systemd/system/multi-user.target.wants")
-	if err := os.MkdirAll(wantsDir, 0o755); err != nil {
+	if err := os.MkdirAll(wantsDir, 0o755); err != nil { //nolint:gosec // G301: multi-user.target.wants directory, 0755 as systemd expects. Contains no secret material.
 		return err
 	}
 	link := filepath.Join(wantsDir, serviceName)

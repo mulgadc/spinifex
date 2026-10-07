@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/spinifex/cmd/installer/firstboot"
-	"github.com/mulgadc/spinifex/cmd/installer/systemd"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/firstboot"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/systemd"
 )
 
 // mountRoot is the install target. A variable, not a constant, so tests can
@@ -159,13 +159,13 @@ func formatPartitions(cfg DiskConfig) error {
 
 func mountPartitions(cfg DiskConfig) error {
 	d := cfg.Primary()
-	if err := os.MkdirAll(mountRoot, 0o755); err != nil {
+	if err := os.MkdirAll(mountRoot, 0o755); err != nil { //nolint:gosec // G301: install target mount point; a standard 0755 mount directory. Contains no secret material.
 		return err
 	}
 	if err := run("mount", d.PartitionPath(rootPartNum), mountRoot); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(efiPart(), 0o755); err != nil {
+	if err := os.MkdirAll(efiPart(), 0o755); err != nil { //nolint:gosec // G301: EFI system partition mount point inside the target; a standard 0755 mount directory. Contains no secret material.
 		return err
 	}
 	if err := run("mount", d.PartitionPath(espPartNum), efiPart()); err != nil {
@@ -176,7 +176,7 @@ func mountPartitions(cfg DiskConfig) error {
 	// ISO build time. Mounting afterwards hides those trees and loses it.
 	for _, rm := range cfg.DataMounts() {
 		target := targetPath(rm.Mountpoint())
-		if err := os.MkdirAll(target, 0o755); err != nil {
+		if err := os.MkdirAll(target, 0o755); err != nil { //nolint:gosec // G301: data-role mount points inside the target; standard 0755 mount directories that services traverse. Contains no secret material.
 			return err
 		}
 		if err := run("mount", rm.Disk.PartitionPath(dataPartNum), target); err != nil {
@@ -307,7 +307,11 @@ func matchesLiveOwnership(target, source string) error {
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", source, err)
 	}
-	srcSt, dstSt := src.Sys().(*syscall.Stat_t), dst.Sys().(*syscall.Stat_t)
+	srcSt, srcOK := src.Sys().(*syscall.Stat_t)
+	dstSt, dstOK := dst.Sys().(*syscall.Stat_t)
+	if !srcOK || !dstOK {
+		return fmt.Errorf("verify %s: no ownership information", source)
+	}
 	if srcSt.Uid != dstSt.Uid || srcSt.Gid != dstSt.Gid || src.Mode().Perm() != dst.Mode().Perm() {
 		return fmt.Errorf("%s copied as %d:%d %o, expected %d:%d %o — the drive was mounted after the rootfs copy",
 			source, dstSt.Uid, dstSt.Gid, dst.Mode().Perm(), srcSt.Uid, srcSt.Gid, src.Mode().Perm())
@@ -354,7 +358,7 @@ func installSpinifex(cfg *Config) error {
 		return fmt.Errorf("installSpinifex: read kernel uuid: %w", err)
 	}
 	machineID := strings.ReplaceAll(strings.TrimSpace(string(rawUUID)), "-", "") + "\n"
-	if err := os.WriteFile(machineIDPath, []byte(machineID), 0o444); err != nil {
+	if err := os.WriteFile(machineIDPath, []byte(machineID), 0o444); err != nil { //nolint:gosec // G306: /etc/machine-id is conventionally world-readable and read-only (0444); it is an identifier, not secret material.
 		return fmt.Errorf("installSpinifex: write machine-id: %w", err)
 	}
 	// dbus mirrors /etc/machine-id; remove it so it is re-created from the
@@ -363,13 +367,13 @@ func installSpinifex(cfg *Config) error {
 
 	// Hostname.
 	hostnamePath := filepath.Join(mountRoot, "etc/hostname")
-	if err := os.WriteFile(hostnamePath, []byte(cfg.Hostname+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(hostnamePath, []byte(cfg.Hostname+"\n"), 0o644); err != nil { //nolint:gosec // G306: /etc/hostname must be world-readable (0644) for every process that resolves the local name. Contains no secret material.
 		return err
 	}
 
 	// /etc/hosts entry for the hostname.
 	hosts := fmt.Sprintf("127.0.0.1\tlocalhost\n127.0.1.1\t%s\n", cfg.Hostname)
-	if err := os.WriteFile(filepath.Join(mountRoot, "etc/hosts"), []byte(hosts), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(mountRoot, "etc/hosts"), []byte(hosts), 0o644); err != nil { //nolint:gosec // G306: /etc/hosts must be world-readable (0644) for the system resolver. Contains no secret material.
 		return err
 	}
 
@@ -407,10 +411,10 @@ func installSpinifex(cfg *Config) error {
 	nodeConf := fmt.Sprintf("MANAGEMENT_IP=%s\nMANAGEMENT_IFACE=br-wan\nNODE_HOSTNAME=%s\n",
 		cfg.WAN.Address, cfg.Hostname)
 	confDir := filepath.Join(mountRoot, "etc/spinifex")
-	if err := os.MkdirAll(confDir, 0o755); err != nil {
+	if err := os.MkdirAll(confDir, 0o755); err != nil { //nolint:gosec // G301: /etc/spinifex configuration directory, 0755 so Spinifex service users can traverse it. Contains no secret material.
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(confDir, "node.conf"), []byte(nodeConf), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(confDir, "node.conf"), []byte(nodeConf), 0o644); err != nil { //nolint:gosec // G306: /etc/spinifex/node.conf holds the management IP, interface and hostname, read by non-root Spinifex services (0644). Contains no secret material.
 		return err
 	}
 
@@ -432,7 +436,7 @@ func writeNetworkConfig(cfg *Config) error {
 	// veth pair that setup-ovn.sh adds later (veth-wan-br) is a port of a
 	// networkd-known bridge, so a networkctl reload or reboot never orphans it.
 	netdDir := filepath.Join(mountRoot, "etc/systemd/network")
-	if err := os.MkdirAll(netdDir, 0o755); err != nil {
+	if err := os.MkdirAll(netdDir, 0o755); err != nil { //nolint:gosec // G301: /etc/systemd/network must be 0755 for systemd-networkd to read its configuration. Contains no secret material.
 		return err
 	}
 
@@ -494,11 +498,11 @@ func writeNetworkConfig(cfg *Config) error {
 	waitOnlineMask := filepath.Join(mountRoot, "etc/systemd/system/systemd-networkd-wait-online.service")
 	_ = os.Remove(waitOnlineMask)
 	waitOnlineDir := filepath.Join(mountRoot, "etc/systemd/system/systemd-networkd-wait-online.service.d")
-	if err := os.MkdirAll(waitOnlineDir, 0o755); err != nil {
+	if err := os.MkdirAll(waitOnlineDir, 0o755); err != nil { //nolint:gosec // G301: systemd drop-in directory, 0755 as systemd expects. Contains no secret material.
 		return err
 	}
 	waitOnlineConf := "[Service]\nExecStart=\nExecStart=/lib/systemd/systemd-networkd-wait-online --interface=br-wan --timeout=60\n"
-	if err := os.WriteFile(filepath.Join(waitOnlineDir, "spinifex-wan-only.conf"), []byte(waitOnlineConf), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(waitOnlineDir, "spinifex-wan-only.conf"), []byte(waitOnlineConf), 0o644); err != nil { //nolint:gosec // G306: systemd-networkd-wait-online drop-in must be world-readable (0644) for systemd to load it. Contains no secret material.
 		return err
 	}
 
@@ -514,17 +518,17 @@ func writeNetworkConfig(cfg *Config) error {
 		fmt.Fprintf(&sysctl, "net.ipv6.conf.%s.disable_ipv6=1\n", br)
 	}
 	sysctlDir := filepath.Join(mountRoot, "etc/sysctl.d")
-	if err := os.MkdirAll(sysctlDir, 0o755); err != nil {
+	if err := os.MkdirAll(sysctlDir, 0o755); err != nil { //nolint:gosec // G301: /etc/sysctl.d must be 0755 for systemd-sysctl to read it. Contains no secret material.
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(sysctlDir, "99-spinifex-network.conf"), []byte(sysctl.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sysctlDir, "99-spinifex-network.conf"), []byte(sysctl.String()), 0o644); err != nil { //nolint:gosec // G306: sysctl.d network tunables are conventionally world-readable (0644). Contains no secret material.
 		return err
 	}
 
 	// Pin each NIC name to its MAC address via udev so the installed system
 	// always uses the same interface name regardless of probe order.
 	udevDir := filepath.Join(mountRoot, "etc/udev/rules.d")
-	if err := os.MkdirAll(udevDir, 0o755); err != nil {
+	if err := os.MkdirAll(udevDir, 0o755); err != nil { //nolint:gosec // G301: /etc/udev/rules.d must be 0755 for udev to read it. Contains no secret material.
 		return err
 	}
 	var udevRules strings.Builder
@@ -545,7 +549,7 @@ func writeNetworkConfig(cfg *Config) error {
 			strings.TrimSpace(string(mac)), iface)
 	}
 	if udevRules.Len() > 0 {
-		return os.WriteFile(filepath.Join(udevDir, "70-spinifex-net.rules"), []byte(udevRules.String()), 0o644)
+		return os.WriteFile(filepath.Join(udevDir, "70-spinifex-net.rules"), []byte(udevRules.String()), 0o644) //nolint:gosec // G306: udev NIC naming rules are conventionally world-readable (0644). Contains no secret material.
 	}
 	return nil
 }
@@ -582,7 +586,7 @@ func writeParentNIC(dir, iface string, p *parentNIC) error {
 		fmt.Fprintf(&b, "VLAN=%s\n", v)
 	}
 	b.WriteString("IPv6AcceptRA=no\n")
-	return os.WriteFile(filepath.Join(dir, fmt.Sprintf("05-spinifex-nic-%s.network", iface)), []byte(b.String()), 0o644)
+	return os.WriteFile(filepath.Join(dir, fmt.Sprintf("05-spinifex-nic-%s.network", iface)), []byte(b.String()), 0o644) //nolint:gosec // G306: systemd-networkd .network file must be readable by the unprivileged systemd-network user (0644). Contains no secret material.
 }
 
 // writeNetworkdBridge writes the systemd-networkd files that put a plane's
@@ -606,7 +610,7 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 	if role.VLAN > 0 {
 		link := role.Link()
 		vlanNetdev := fmt.Sprintf("[NetDev]\nName=%s\nKind=vlan\n\n[VLAN]\nId=%d\n", link, role.VLAN)
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("10-spinifex-%s-vlan.netdev", name)), []byte(vlanNetdev), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("10-spinifex-%s-vlan.netdev", name)), []byte(vlanNetdev), 0o644); err != nil { //nolint:gosec // G306: systemd-networkd VLAN .netdev must be readable by the unprivileged systemd-network user (0644). Contains no secret material.
 			return err
 		}
 		var v strings.Builder
@@ -617,7 +621,7 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 			fmt.Fprintf(&v, "MTUBytes=%d\n", role.MTU)
 		}
 		fmt.Fprintf(&v, "\n[Network]\nBridge=%s\nIPv6AcceptRA=no\n", bridgeName)
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("11-spinifex-%s-vlan.network", name)), []byte(v.String()), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("11-spinifex-%s-vlan.network", name)), []byte(v.String()), 0o644); err != nil { //nolint:gosec // G306: systemd-networkd VLAN .network must be readable by the unprivileged systemd-network user (0644). Contains no secret material.
 			return err
 		}
 	}
@@ -633,7 +637,7 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 		brNetdev += fmt.Sprintf("MTUBytes=%d\n", role.MTU)
 	}
 	brNetdev += "\n[Bridge]\nSTP=no\n"
-	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("20-spinifex-%s.netdev", name)), []byte(brNetdev), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("20-spinifex-%s.netdev", name)), []byte(brNetdev), 0o644); err != nil { //nolint:gosec // G306: systemd-networkd bridge .netdev must be readable by the unprivileged systemd-network user (0644). Contains no secret material.
 		return err
 	}
 
@@ -675,7 +679,7 @@ func writeNetworkdBridge(dir string, plane Plane, role NetworkRole, manual bool)
 		// missing cable does not stall their activation unit indefinitely.
 		b.WriteString("\n[DHCP]\nTimeout=10\n")
 	}
-	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("20-spinifex-%s.network", name)), []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("20-spinifex-%s.network", name)), []byte(b.String()), 0o644); err != nil { //nolint:gosec // G306: systemd-networkd bridge .network must be readable by the unprivileged systemd-network user (0644). Contains no secret material.
 		return err
 	}
 
@@ -713,7 +717,7 @@ func writeWPASupplicant(nicIface, ssid, psk string) error {
 		ssid, psk,
 	)
 	wpaDir := filepath.Join(mountRoot, "etc/wpa_supplicant")
-	if err := os.MkdirAll(wpaDir, 0o755); err != nil {
+	if err := os.MkdirAll(wpaDir, 0o755); err != nil { //nolint:gosec // G301: /etc/wpa_supplicant directory, 0755 as conventional; the PSK-bearing config inside is written 0600.
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(wpaDir, "wpa_supplicant-"+nicIface+".conf"), []byte(conf), 0o600); err != nil {
@@ -722,7 +726,7 @@ func writeWPASupplicant(nicIface, ssid, psk string) error {
 	// Enable via symlink into multi-user.target.wants pointing at the
 	// package-provided template unit.
 	wantsDir := filepath.Join(mountRoot, "etc/systemd/system/multi-user.target.wants")
-	if err := os.MkdirAll(wantsDir, 0o755); err != nil {
+	if err := os.MkdirAll(wantsDir, 0o755); err != nil { //nolint:gosec // G301: systemd .wants directory, 0755 as systemd expects. Contains no secret material.
 		return err
 	}
 	link := filepath.Join(wantsDir, "wpa_supplicant@"+nicIface+".service")
@@ -765,7 +769,7 @@ func buildZFSInitramfs() error {
 	// not claim it. The installed system needs the cache to import at boot
 	// without scanning every block device.
 	cacheDir := filepath.Join(mountRoot, "etc/zfs")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil { //nolint:gosec // G301: /etc/zfs must be 0755 for the ZFS import services to read the pool cache. Contains no secret material.
 		return err
 	}
 	if err := run("zpool", "set", "cachefile="+filepath.Join(cacheDir, "zpool.cache"), ZFSPoolName); err != nil {
@@ -829,7 +833,7 @@ func installCACert(cfg *Config) error {
 		return nil
 	}
 	certPath := filepath.Join(mountRoot, "usr/local/share/ca-certificates/spinifex-ca.crt")
-	if err := os.WriteFile(certPath, []byte(cfg.CACert), 0o644); err != nil {
+	if err := os.WriteFile(certPath, []byte(cfg.CACert), 0o644); err != nil { //nolint:gosec // G306: public CA certificate in the system trust store must be world-readable (0644); no private key is written here.
 		return err
 	}
 	if err := bindChrootMounts(); err != nil {
@@ -950,7 +954,7 @@ func writeFstab(cfg DiskConfig) error {
 			fstab += fmt.Sprintf("/%s none swap sw 0 0\n", swapFileName)
 		}
 	}
-	return os.WriteFile(filepath.Join(mountRoot, "etc/fstab"), []byte(fstab), 0o644)
+	return os.WriteFile(filepath.Join(mountRoot, "etc/fstab"), []byte(fstab), 0o644) //nolint:gosec // G306: /etc/fstab must be world-readable (0644) for mount and systemd fstab generators. Contains no secret material.
 }
 
 const (
@@ -1100,7 +1104,7 @@ func swapSize(root string) (int64, error) {
 	}
 	// Free space, not total: the rootfs is already copied in, so this is what is
 	// genuinely left to give away.
-	free := int64(st.Bavail) * st.Bsize
+	free := int64(st.Bavail) * st.Bsize //nolint:gosec // G115: statfs Bavail on Linux is a block count far below MaxInt64; the conversion cannot overflow for any real filesystem.
 	if diskCap := free / swapDiskShare; size > diskCap {
 		size = diskCap
 	}
@@ -1120,7 +1124,7 @@ func totalRAM() (int64, error) {
 	if unit == 0 {
 		unit = 1
 	}
-	return int64(si.Totalram) * unit, nil
+	return int64(si.Totalram) * unit, nil //nolint:gosec // G115: sysinfo Totalram on Linux is a RAM size in units, far below MaxInt64; the conversion cannot overflow for any real host.
 }
 
 // parseSize reads a plain byte count or a G/M suffixed size ("32G", "512M").
@@ -1175,11 +1179,11 @@ func copyGrubFont(root string) {
 		}
 		defer in.Close()
 		dstDir := filepath.Join(root, "boot/grub/fonts")
-		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		if err := os.MkdirAll(dstDir, 0o755); err != nil { //nolint:gosec // G301: /boot/grub/fonts directory, 0755 for the bootloader. Contains no secret material.
 			slog.Warn("copyGrubFont: cannot create fonts dir", "err", err)
 			return
 		}
-		out, err := os.OpenFile(filepath.Join(dstDir, "unicode.pf2"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		out, err := os.OpenFile(filepath.Join(dstDir, "unicode.pf2"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) //nolint:gosec // G302: GRUB font in /boot/grub/fonts is read by the bootloader and is conventionally 0644. Contains no secret material.
 		if err != nil {
 			slog.Warn("copyGrubFont: cannot open destination", "err", err)
 			return
@@ -1206,11 +1210,11 @@ func copySplashImage(root string) {
 	defer in.Close()
 
 	dstDir := filepath.Join(root, "boot/grub")
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+	if err := os.MkdirAll(dstDir, 0o755); err != nil { //nolint:gosec // G301: /boot/grub directory, 0755 for the bootloader. Contains no secret material.
 		slog.Warn("copySplashImage: cannot create boot/grub dir", "err", err)
 		return
 	}
-	out, err := os.OpenFile(filepath.Join(dstDir, "splash.png"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(filepath.Join(dstDir, "splash.png"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) //nolint:gosec // G302: GRUB splash image in /boot/grub is read by the bootloader and is conventionally 0644. Contains no secret material.
 	if err != nil {
 		slog.Warn("copySplashImage: cannot open destination", "err", err)
 		return
@@ -1251,7 +1255,7 @@ var chrootMountPaths = []string{"dev", "proc", "sys"}
 func bindChrootMounts() error {
 	for _, m := range chrootMountPaths {
 		dst := filepath.Join(mountRoot, m)
-		if err := os.MkdirAll(dst, 0o755); err != nil {
+		if err := os.MkdirAll(dst, 0o755); err != nil { //nolint:gosec // G301: /dev, /proc and /sys bind-mount points in the target, standard 0755 mount directories. Contains no secret material.
 			return fmt.Errorf("create chroot mountpoint /%s: %w", m, err)
 		}
 		if err := run("mount", "--bind", "/"+m, dst); err != nil {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/cmd/installer/install"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
 )
 
 const gib = 1 << 30

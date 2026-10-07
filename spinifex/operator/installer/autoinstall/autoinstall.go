@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/spinifex/cmd/installer/install"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
 )
 
 // listDisks is the block-device scan, indirected so tests can drive selection

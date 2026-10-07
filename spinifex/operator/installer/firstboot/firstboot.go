@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mulgadc/spinifex/cmd/installer/systemd"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/systemd"
 )
 
 // Config holds the values the firstboot service needs to configure the node.
@@ -260,7 +260,7 @@ fi
 `, cfg.Hostname, ovnPrestart, setupOVN, clusterCmd, callbackBlock)
 
 	path := filepath.Join(root, "usr/local/bin/spinifex-firstboot.sh")
-	return os.WriteFile(path, []byte(script), 0o755)
+	return os.WriteFile(path, []byte(script), 0o755) //nolint:gosec // G306: spinifex-firstboot.sh runs as a systemd ExecStart and must be executable (0755); it is world-readable, so it must never contain credentials or tokenised callback URLs.
 }
 
 func buildClusterCmd(cfg Config) string {

@@ -14,7 +14,7 @@ import (
 // ec2launchtemplate.LaunchTemplateServiceImpl — the same production
 // code a live daemon runs (daemon/daemon_handlers_launchtemplate.go) — to
 // every ec2.*LaunchTemplate* subject the gateway's NATSLaunchTemplateService
-// client calls (gateway/ec2/launchtemplate/*.go, RunInstances.go's
+// client calls (domains/ec2/awsapi/launchtemplate/*.go, RunInstances.go's
 // expandLaunchTemplate). Unlike StubSubject's static canned JSON, this
 // exercises the real KV-backed CRUD and version-resolution logic, matching
 // how RunInstances resolves a referenced template into effective ImageId/

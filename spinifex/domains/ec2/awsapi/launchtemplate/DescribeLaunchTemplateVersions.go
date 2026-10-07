@@ -1,4 +1,4 @@
-package gateway_ec2_launchtemplate
+package launchtemplate
 
 import (
 	"context"

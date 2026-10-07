@@ -12,12 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
+	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/gateway/ec2/launchtemplate"
 	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
 	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
@@ -624,7 +624,7 @@ func (r *launchTemplateReaper) Kind() string { return "launch-template" }
 func (r *launchTemplateReaper) Stage() Stage { return StagePlatform }
 
 func (r *launchTemplateReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_launchtemplate.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{}, r.nc, accountID)
+	out, err := ec2launchtemplateapi.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +640,7 @@ func (r *launchTemplateReaper) List(ctx context.Context, accountID string) ([]Re
 }
 
 func (r *launchTemplateReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_launchtemplate.DeleteLaunchTemplate(ctx, &ec2.DeleteLaunchTemplateInput{
+	_, err := ec2launchtemplateapi.DeleteLaunchTemplate(ctx, &ec2.DeleteLaunchTemplateInput{
 		LaunchTemplateId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

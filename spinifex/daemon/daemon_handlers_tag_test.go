@@ -7,7 +7,20 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
+	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
+	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
+	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
+	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
+	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
+	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
+	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
+	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
+	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
+	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -204,4 +217,74 @@ func TestDeleteTags_Validation(t *testing.T) {
 
 	_, err = d.deleteTags(context.Background(), &ec2.DeleteTagsInput{}, testAccountID)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+}
+
+// Every service that stores tags on its own record must be mirrored, or a
+// create-tags reaches the central store and leaves that record stale.
+func TestRecordTagMirrors_IncludesEveryRecordStore(t *testing.T) {
+	assert.Empty(t, (&Daemon{eipService: handlers_ec2_eip.NewDisabledEIPService()}).recordTagMirrors(),
+		"the disabled EIP service holds no records to mirror")
+
+	d := &Daemon{
+		vpcService:        &handlers_ec2_vpc.VPCServiceImpl{},
+		imageService:      &handlers_ec2_image.ImageServiceImpl{},
+		volumeService:     &handlers_ec2_volume.VolumeServiceImpl{},
+		snapshotService:   &handlers_ec2_snapshot.SnapshotServiceImpl{},
+		routeTableService: &handlers_ec2_routetable.RouteTableServiceImpl{},
+		igwService:        &handlers_ec2_igw.IGWServiceImpl{},
+		eigwService:       &handlers_ec2_eigw.EgressOnlyIGWServiceImpl{},
+		eipService:        &handlers_ec2_eip.EIPServiceImpl{},
+		natGatewayService: &handlers_ec2_natgw.NatGatewayServiceImpl{},
+		keyService:        &handlers_ec2_key.KeyServiceImpl{},
+	}
+	assert.Len(t, d.recordTagMirrors(), 10)
+}
+
+func TestDeleteTags_NonInstanceResource(t *testing.T) {
+	d := tagTestDaemon(t, "i-p1-tag-unused", nil)
+	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, "vol-p1-tagdel",
+		map[string]string{"env": "dev", "team": "infra"}))
+
+	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
+		Resources: []*string{nil, aws.String("vol-p1-tagdel")},
+		Tags:      []*ec2.Tag{{Key: nil}, {Key: aws.String("team")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"env": "dev"}, centralTags(t, d, testAccountID, "vol-p1-tagdel"))
+}
+
+func TestTags_CentralStoreFailure(t *testing.T) {
+	d := tagTestDaemon(t, "i-p1-tag-unused2", nil)
+	_, tagKV := faultBucket(t)
+	for _, m := range []string{"Get", "Put", "Create", "Update", "Delete", "Purge"} {
+		tagKV.setFail(m, true)
+	}
+	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
+	vol := []*string{aws.String("vol-p1-tagfail")}
+
+	_, err := d.createTags(context.Background(), &ec2.CreateTagsInput{
+		Resources: vol, Tags: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	require.Error(t, err)
+
+	_, err = d.deleteTags(context.Background(), &ec2.DeleteTagsInput{Resources: vol}, testAccountID)
+	require.Error(t, err)
+}
+
+func TestCreateTags_OwnerRequestFails(t *testing.T) {
+	d := tagTestDaemon(t, "i-p1-tag-closed", nil)
+	closed, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	closed.Close()
+	orig := d.natsConn
+	d.natsConn = closed
+	defer func() { d.natsConn = orig }()
+
+	_, err = d.createTags(context.Background(), &ec2.CreateTagsInput{
+		Resources: []*string{aws.String("i-p1-tag-closed")},
+		Tags:      []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error(),
+		"a transport failure is not evidence the instance is gone")
 }

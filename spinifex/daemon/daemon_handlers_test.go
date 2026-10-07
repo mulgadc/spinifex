@@ -18,6 +18,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/config"
 	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
 	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
 	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
@@ -4063,4 +4064,120 @@ func TestHandleEC2CreateImage_StoppedInstanceNotInKV(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, errResp["Code"])
+}
+
+func TestHandleNATSRequestWithPrincipal(t *testing.T) {
+	nc, err := nats.Connect(sharedNATSURL)
+	require.NoError(t, err)
+	defer nc.Close()
+
+	const principal = "arn:aws:iam::000000000001:user/alice"
+	fn := func(_ context.Context, in *testInput, accountID, principalARN string) (*testOutput, error) {
+		if in.Name == "fail" {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		return &testOutput{Greeting: in.Name + "@" + accountID + "/" + principalARN}, nil
+	}
+	sub, err := nc.Subscribe("test.principal", asMsgHandler(handleNATSRequestWithPrincipal("test-node", fn)))
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	request := func(body string) *nats.Msg {
+		msg := nats.NewMsg("test.principal")
+		msg.Data = []byte(body)
+		msg.Header.Set(utils.AccountIDHeader, testAccountID)
+		msg.Header.Set(utils.PrincipalARNHeader, principal)
+		reply, err := nc.RequestMsg(msg, 5*time.Second)
+		require.NoError(t, err)
+		return reply
+	}
+
+	t.Run("caller identity reaches the service", func(t *testing.T) {
+		var out testOutput
+		require.NoError(t, json.Unmarshal(request(`{"name":"bob"}`).Data, &out))
+		assert.Equal(t, "bob@"+testAccountID+"/"+principal, out.Greeting)
+	})
+
+	t.Run("service error", func(t *testing.T) {
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, decodeError(t, request(`{"name":"fail"}`).Data)["Code"])
+	})
+
+	t.Run("malformed payload", func(t *testing.T) {
+		assert.Equal(t, awserrors.ErrorValidationError, decodeError(t, request(`{`).Data)["Code"])
+	})
+}
+
+func TestHandleEC2Events_CommandValidation(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	instanceID := "i-p1-cmd-validate"
+	d.vmMgr.Insert(&vm.VM{
+		ID:           instanceID,
+		InstanceType: getTestInstanceType(t),
+		Status:       vm.StateRunning,
+		Instance:     &ec2.Instance{},
+		AccountID:    testAccountID,
+	})
+
+	cases := []struct {
+		name  string
+		attrs types.EC2CommandAttributes
+		want  string
+	}{
+		{"start a running instance", types.EC2CommandAttributes{StartInstance: true}, awserrors.ErrorIncorrectInstanceState},
+		{"attach ENI without data", types.EC2CommandAttributes{AttachENI: true}, awserrors.ErrorInvalidParameterValue},
+		{"detach ENI without data", types.EC2CommandAttributes{DetachENI: true}, awserrors.ErrorInvalidParameterValue},
+		{"associate profile without data", types.EC2CommandAttributes{AssociateIamInstanceProfile: true}, awserrors.ErrorMissingParameter},
+		{"no command set", types.EC2CommandAttributes{}, awserrors.ErrorServerInternal},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(types.EC2InstanceCommand{ID: instanceID, Attributes: tc.attrs})
+			require.NoError(t, err)
+			subject := fmt.Sprintf("ec2.cmd.p1-validate-%d", i)
+			reply := requestHandler(t, d.natsConn, subject, d.handleEC2Events, testAccountID, body)
+			assert.Equal(t, tc.want, decodeError(t, reply.Data)["Code"])
+		})
+	}
+
+	var status vm.InstanceState
+	d.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
+	assert.Equal(t, vm.StateRunning, status, "rejected commands must leave the instance alone")
+}
+
+// A requester that has gone away cannot be answered, but the admitted reboot
+// still counts as a success rather than an error.
+func TestDispatchEC2Command_RebootWithoutReplySubject(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	instanceID := "i-p1-reboot-noreply"
+	d.vmMgr.Insert(&vm.VM{
+		ID:           instanceID,
+		InstanceType: getTestInstanceType(t),
+		Status:       vm.StateRunning,
+		Instance:     &ec2.Instance{},
+		QMPClient:    &qmp.QMPClient{},
+		AccountID:    testAccountID,
+	})
+	t.Cleanup(d.vmMgr.WaitForBackgroundWork)
+
+	body, err := json.Marshal(types.EC2InstanceCommand{
+		ID:         instanceID,
+		Attributes: types.EC2CommandAttributes{RebootInstance: true},
+	})
+	require.NoError(t, err)
+	msg := nats.NewMsg("ec2.cmd." + instanceID)
+	msg.Data = body
+	msg.Header.Set(utils.AccountIDHeader, testAccountID)
+
+	name, outcome := d.dispatchEC2Command(msg)
+	assert.Equal(t, "RebootInstance", name)
+	assert.Equal(t, outcomeSuccess, outcome)
+}
+
+func TestIsOVNDBQuorumMember_NoClusterConfig(t *testing.T) {
+	assert.False(t, (&Daemon{node: "node-1"}).isOVNDBQuorumMember())
+}
+
+func TestQueryNATSRole_NoNATSService(t *testing.T) {
+	d := &Daemon{config: &config.Config{Services: []string{"daemon"}}}
+	assert.Empty(t, d.queryNATSRole(), "a node without NATS has no JetStream role to probe")
 }

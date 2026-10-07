@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -550,7 +551,7 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	for range maxFailures + 1 {
+	for range authlimit.MaxFailures + 1 {
 		req := httptest.NewRequest(http.MethodPost, "/", iotest.ErrReader(io.ErrUnexpectedEOF))
 		req.Host = "localhost:9999"
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2028,7 +2029,7 @@ func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 // principal survives presents a distinct AKID each time. Legacy must not, and
 // that is not symmetry for its own sake — every record predating the field
 // fails on the deploy that ships this check, so a shared egress address would
-// cross maxFailures on distinct-attempt volume alone and be told to retry
+// cross MaxFailures on distinct-attempt volume alone and be told to retry
 // later by a fleet that has nothing to retry with.
 func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 	cases := []struct {
@@ -2042,7 +2043,7 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rl := NewAuthRateLimiter()
+			rl := authlimit.NewAuthRateLimiter()
 			defer rl.Stop()
 			gw := &GatewayConfig{
 				DisableLogging: true,
@@ -2059,15 +2060,19 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 			code := gw.checkSessionPrincipal(principal, testSessionAKID, ip)
 			require.Equal(t, awserrors.ErrorInvalidClientTokenId, code)
 
-			rl.mu.RLock()
-			defer rl.mu.RUnlock()
-			rec := rl.records[ip]
-			if !tc.recorded {
-				assert.Nil(t, rec, "a legacy verdict must not count toward the lockout")
-				return
+			// Read at the lockout boundary: with exactly `recorded` failures from
+			// the verdict, n more distinct ones leave the address open and one
+			// further locks it. Zero or two recorded would miss either edge.
+			recorded := 0
+			if tc.recorded {
+				recorded = 1
 			}
-			require.NotNil(t, rec)
-			assert.Len(t, rec.failures, 1)
+			n := authlimit.MaxFailures - 1 - recorded
+			recordProbeFailures(rl, ip, "below", n)
+			assert.Empty(t, rl.CheckIP(ip), "address must stay open below the threshold")
+			recordProbeFailures(rl, ip, "edge", 1)
+			assert.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(ip),
+				"the next distinct failure must lock the address")
 		})
 	}
 }

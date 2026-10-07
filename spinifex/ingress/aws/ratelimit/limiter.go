@@ -1,4 +1,4 @@
-package gateway
+package ratelimit
 
 import (
 	"crypto/sha256"
@@ -14,17 +14,17 @@ import (
 
 const (
 	failureWindow     = 60 * time.Second // sliding window for auth-failure counting
-	maxFailures       = 10               // distinct attempts within window before lockout
+	MaxFailures       = 10               // distinct attempts within window before lockout
 	initialLockout    = 30 * time.Second // first lockout duration
 	backoffMultiplier = 2                // lockout duration multiplier on repeat
 	maxLockout        = 5 * time.Minute  // cap on escalating lockout
 	gcInterval        = 60 * time.Second // stale-entry eviction interval
 )
 
-// anonymousAttempt is the fingerprint for a failure that named no credential —
+// Anonymous is the fingerprint for a failure that named no credential —
 // a request rejected before its key id was parsed. There is no client identity
 // to shield from the lockout, so every occurrence counts.
-const anonymousAttempt = ""
+const Anonymous = ""
 
 // attempt is one distinct failed authentication attempt inside the window.
 // Repeating the same attempt refreshes at instead of adding another entry, so
@@ -92,7 +92,7 @@ func (rl *AuthRateLimiter) CheckIP(ip string) string {
 }
 
 // RecordFailure records an auth failure for the IP, locking it out with
-// escalating backoff once maxFailures distinct attempts fall inside the window.
+// escalating backoff once MaxFailures distinct attempts fall inside the window.
 // fingerprint identifies the attempt — the key id, the signature it presented,
 // whatever the caller had to get right. Repeating one hopeless request is one
 // fault however many times it is sent, and must not lock the address out: the
@@ -113,7 +113,7 @@ func (rl *AuthRateLimiter) RecordFailure(ip, fingerprint string) {
 	rec.failures = pruneOldFailures(rec.failures, now)
 	rec.failures = recordAttempt(rec.failures, fingerprint, now)
 
-	if len(rec.failures) >= maxFailures && (rec.lockedUntil.IsZero() || now.After(rec.lockedUntil)) {
+	if len(rec.failures) >= MaxFailures && (rec.lockedUntil.IsZero() || now.After(rec.lockedUntil)) {
 		lockout := initialLockout
 		for range rec.lockouts {
 			lockout *= time.Duration(backoffMultiplier)
@@ -128,23 +128,23 @@ func (rl *AuthRateLimiter) RecordFailure(ip, fingerprint string) {
 
 		slog.Warn("Rate limit: IP locked out",
 			"ip", ip,
-			"distinct_attempts", maxFailures,
+			"distinct_attempts", MaxFailures,
 			"lockout_ms", otelsetup.Millis(lockout),
 		)
 	}
 }
 
-// failureFingerprint identifies a failed attempt: the reason plus whatever the
+// Fingerprint identifies a failed attempt: the reason plus whatever the
 // caller had to get right for it. Two failures sharing one are the same fault
 // repeated, so only the first of them counts toward a lockout.
-func failureFingerprint(reason string, parts ...string) string {
+func Fingerprint(reason string, parts ...string) string {
 	return reason + "\x00" + strings.Join(parts, "\x00")
 }
 
-// tokenDigest reduces a presented session token to a fingerprint component.
+// TokenDigest reduces a presented session token to a fingerprint component.
 // Each distinct token is a distinct guess and must count, but a bearer token has
 // no business being held in rate-limiter state.
-func tokenDigest(token string) string {
+func TokenDigest(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:8])
 }
@@ -217,10 +217,10 @@ func pruneOldFailures(failures []attempt, now time.Time) []attempt {
 // recordAttempt refreshes a fingerprint already in the window, or appends it.
 // An empty fingerprint always appends: it means the failure named no credential
 // to protect, so repetition is all there is to count. The slice is scanned
-// rather than mapped — it holds at most maxFailures entries, because reaching
+// rather than mapped — it holds at most MaxFailures entries, because reaching
 // that clears it.
 func recordAttempt(failures []attempt, fingerprint string, now time.Time) []attempt {
-	if fingerprint != anonymousAttempt {
+	if fingerprint != Anonymous {
 		for i := range failures {
 			if failures[i].fingerprint == fingerprint {
 				failures[i].at = now

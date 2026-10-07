@@ -1,13 +1,11 @@
 package gateway
 
 import (
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,312 +14,15 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"strconv"
 )
-
-// distinctFingerprint returns a fingerprint no other attempt shares, which is
-// the shape of credential guessing: the lockout counts distinct attempts, so a
-// test driving it to the threshold must vary them.
-func distinctFingerprint() string {
-	return failureFingerprint("test", strconv.Itoa(int(fingerprintSeq.Add(1))))
-}
-
-var fingerprintSeq atomic.Int64
-
-func TestCheckIP_AllowsUnknownIP(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	if errCode := rl.CheckIP("10.0.0.1"); errCode != "" {
-		t.Fatalf("expected empty error for unknown IP, got %q", errCode)
-	}
-}
-
-func TestRecordFailure_BelowThreshold(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.2"
-	for range maxFailures - 1 {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	if errCode := rl.CheckIP(ip); errCode != "" {
-		t.Fatalf("expected IP to be allowed after %d failures, got %q", maxFailures-1, errCode)
-	}
-}
-
-func TestRecordFailure_AtThreshold(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.3"
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
-		t.Fatalf("expected %s after %d failures, got %q", awserrors.ErrorRequestLimitExceeded, maxFailures, errCode)
-	}
-}
-
-func TestCheckIP_RejectsLockedIP(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.4"
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
-		t.Fatalf("expected locked IP to be rejected, got %q", errCode)
-	}
-
-	if errCode := rl.CheckIP(ip); errCode != awserrors.ErrorRequestLimitExceeded {
-		t.Fatalf("expected locked IP to still be rejected, got %q", errCode)
-	}
-}
-
-func TestRecordSuccess_ClearsState(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.5"
-	// Accumulate failures but stay below threshold.
-	for range maxFailures - 1 {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	rl.RecordSuccess(ip)
-
-	// After success, all state should be cleared — can accumulate failures again from 0.
-	for range maxFailures - 1 {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	if errCode := rl.CheckIP(ip); errCode != "" {
-		t.Fatalf("expected IP to be allowed after success reset, got %q", errCode)
-	}
-}
-
-func TestRecordSuccess_ClearsLockout(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.6"
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	if errCode := rl.CheckIP(ip); errCode == "" {
-		t.Fatal("expected IP to be locked")
-	}
-
-	rl.RecordSuccess(ip)
-
-	if errCode := rl.CheckIP(ip); errCode != "" {
-		t.Fatalf("expected IP to be allowed after success, got %q", errCode)
-	}
-}
-
-func TestEscalatingBackoff(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.7"
-
-	// First lockout: 30s
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	rl.mu.Lock()
-	rec := rl.records[ip]
-	firstLockout := time.Until(rec.lockedUntil)
-	rl.mu.Unlock()
-
-	if firstLockout > initialLockout+time.Second || firstLockout < initialLockout-time.Second {
-		t.Fatalf("expected first lockout ~%v, got %v", initialLockout, firstLockout)
-	}
-
-	// Simulate lockout expiry and trigger second lockout.
-	rl.mu.Lock()
-	rec.lockedUntil = time.Now().Add(-time.Second) // expired
-	rec.failures = nil                             // reset failures for next round
-	rl.mu.Unlock()
-
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	rl.mu.Lock()
-	secondLockout := time.Until(rec.lockedUntil)
-	rl.mu.Unlock()
-
-	expectedSecond := initialLockout * backoffMultiplier
-	if secondLockout > expectedSecond+time.Second || secondLockout < expectedSecond-time.Second {
-		t.Fatalf("expected second lockout ~%v, got %v", expectedSecond, secondLockout)
-	}
-
-	// Third lockout: 120s
-	rl.mu.Lock()
-	rec.lockedUntil = time.Now().Add(-time.Second)
-	rec.failures = nil
-	rl.mu.Unlock()
-
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	rl.mu.Lock()
-	thirdLockout := time.Until(rec.lockedUntil)
-	rl.mu.Unlock()
-
-	expectedThird := initialLockout * backoffMultiplier * backoffMultiplier
-	if thirdLockout > expectedThird+time.Second || thirdLockout < expectedThird-time.Second {
-		t.Fatalf("expected third lockout ~%v, got %v", expectedThird, thirdLockout)
-	}
-
-	// Fourth lockout: 30s * 2^3 = 240s = 4m.
-	rl.mu.Lock()
-	rec.lockedUntil = time.Now().Add(-time.Second)
-	rec.failures = nil
-	rl.mu.Unlock()
-
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	rl.mu.Lock()
-	fourthLockout := time.Until(rec.lockedUntil)
-	rl.mu.Unlock()
-
-	expectedFourth := initialLockout * backoffMultiplier * backoffMultiplier * backoffMultiplier
-	if fourthLockout > expectedFourth+time.Second || fourthLockout < expectedFourth-time.Second {
-		t.Fatalf("expected fourth lockout ~%v, got %v", expectedFourth, fourthLockout)
-	}
-
-	// Fifth lockout: 30s * 2^4 = 480s, capped at maxLockout (300s).
-	rl.mu.Lock()
-	rec.lockedUntil = time.Now().Add(-time.Second)
-	rec.failures = nil
-	rl.mu.Unlock()
-
-	for range maxFailures {
-		rl.RecordFailure(ip, distinctFingerprint())
-	}
-
-	rl.mu.Lock()
-	fifthLockout := time.Until(rec.lockedUntil)
-	rl.mu.Unlock()
-
-	if fifthLockout > maxLockout+time.Second || fifthLockout < maxLockout-time.Second {
-		t.Fatalf("expected fifth lockout to cap at ~%v, got %v", maxLockout, fifthLockout)
-	}
-}
-
-func TestFailureWindowSliding(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.8"
-
-	// Inject failures that are outside the sliding window.
-	rl.mu.Lock()
-	rec := &ipRecord{}
-	oldTime := time.Now().Add(-failureWindow - time.Second)
-	for range maxFailures - 1 {
-		rec.failures = append(rec.failures, attempt{fingerprint: distinctFingerprint(), at: oldTime})
-	}
-	rl.records[ip] = rec
-	rl.mu.Unlock()
-
-	// Add one recent failure — total "recent" failures should be just 1.
-	rl.RecordFailure(ip, distinctFingerprint())
-
-	if errCode := rl.CheckIP(ip); errCode != "" {
-		t.Fatalf("expected IP to be allowed (old failures expired), got %q", errCode)
-	}
-}
-
-func TestCleanup_EvictsStaleEntries(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.9"
-
-	// Insert a stale entry: lockout expired and all failures old.
-	rl.mu.Lock()
-	rl.records[ip] = &ipRecord{
-		failures:    []attempt{{fingerprint: "stale", at: time.Now().Add(-failureWindow - time.Second)}},
-		lockedUntil: time.Now().Add(-time.Second),
-		lockouts:    1,
-	}
-	rl.mu.Unlock()
-
-	rl.cleanup()
-
-	rl.mu.Lock()
-	_, exists := rl.records[ip]
-	rl.mu.Unlock()
-
-	if exists {
-		t.Fatal("expected stale entry to be evicted by cleanup")
-	}
-}
-
-func TestCleanup_KeepsActiveEntries(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	ip := "10.0.0.10"
-
-	// Insert an entry that's still locked.
-	rl.mu.Lock()
-	rl.records[ip] = &ipRecord{
-		failures:    []attempt{{fingerprint: "recent", at: time.Now()}},
-		lockedUntil: time.Now().Add(30 * time.Second),
-		lockouts:    1,
-	}
-	rl.mu.Unlock()
-
-	rl.cleanup()
-
-	rl.mu.Lock()
-	_, exists := rl.records[ip]
-	rl.mu.Unlock()
-
-	if !exists {
-		t.Fatal("expected active entry to be kept by cleanup")
-	}
-}
-
-func TestConcurrentAccess(t *testing.T) {
-	rl := NewAuthRateLimiter()
-	defer rl.Stop()
-
-	var wg sync.WaitGroup
-	ips := []string{"10.0.0.20", "10.0.0.21", "10.0.0.22"}
-
-	for _, ip := range ips {
-		for range 20 {
-			wg.Go(func() {
-				rl.CheckIP(ip)
-				rl.RecordFailure(ip, distinctFingerprint())
-				rl.RecordSuccess(ip)
-				rl.CheckIP(ip)
-			})
-		}
-	}
-
-	wg.Wait()
-}
 
 // setupTestAppWithRateLimiter creates a test HTTP handler with SigV4 auth and
 // the given rate limiter attached. A real NATS connection is used so the
 // cluster-unavailable short-circuit does not mask rate-limit behaviour.
-func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *AuthRateLimiter) http.Handler {
+func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *authlimit.AuthRateLimiter) http.Handler {
 	t.Helper()
 
 	encryptedSecret, err := handlers_iam.EncryptSecret(secretKey, testMasterKey)
@@ -364,13 +65,13 @@ func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *
 }
 
 func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
-	rl := NewAuthRateLimiter()
+	rl := authlimit.NewAuthRateLimiter()
 	defer rl.Stop()
 
 	handler := setupTestAppWithRateLimiter(t, testAccessKey, testSecretKey, rl)
 
 	// Send maxFailures requests with invalid signatures to trigger lockout.
-	for range maxFailures {
+	for range authlimit.MaxFailures {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = "localhost:9999"
 		req.RemoteAddr = "10.99.0.1:54321"
@@ -398,13 +99,13 @@ func TestRateLimitIntegration_LockedIPGets503(t *testing.T) {
 }
 
 func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
-	rl := NewAuthRateLimiter()
+	rl := authlimit.NewAuthRateLimiter()
 	defer rl.Stop()
 
 	handler := setupTestAppWithRateLimiter(t, testAccessKey, testSecretKey, rl)
 
 	// Accumulate failures below threshold.
-	for range maxFailures - 1 {
+	for range authlimit.MaxFailures - 1 {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Host = "localhost:9999"
 		req.RemoteAddr = "10.99.0.2:54321"
@@ -424,12 +125,32 @@ func TestRateLimitIntegration_SuccessResetsLockout(t *testing.T) {
 		t.Fatalf("expected 200 on valid request, got %d", resp.StatusCode)
 	}
 
-	// Verify state was cleared — should be no record.
-	rl.mu.Lock()
-	_, exists := rl.records["10.99.0.2"]
-	rl.mu.Unlock()
+	// Cleared state reads at the boundary: MaxFailures-1 fresh failures leave
+	// the address open, which any surviving failure would push over.
+	const ip = "10.99.0.2"
+	recordProbeFailures(rl, ip, "after-success", authlimit.MaxFailures-1)
+	assert.Empty(t, rl.CheckIP(ip), "success must clear the earlier failures")
+	recordProbeFailures(rl, ip, "edge", 1)
+	assert.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(ip),
+		"the probes must count, or the check above proves nothing")
+}
 
-	if exists {
-		t.Fatal("expected IP record to be cleared after successful auth")
+// recordProbeFailures records n failures distinct from each other and from any
+// fingerprint the gateway produces, so each one counts toward the lockout.
+func recordProbeFailures(rl *authlimit.AuthRateLimiter, ip, batch string, n int) {
+	for i := range n {
+		rl.RecordFailure(ip, authlimit.Fingerprint("test-probe", batch, strconv.Itoa(i)))
+	}
+}
+
+// End to end: a client whose credential will never resolve keeps getting the
+// verdict that says so, and never the 503 that tells it to retry.
+func TestStaleCredentialNeverLocksTheAddressOut(t *testing.T) {
+	handler, _ := auditRouter(t, map[string]*handlers_iam.AccessKey{})
+
+	for range authlimit.MaxFailures * 3 {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, signedRequest("10.15.8.14:54321"))
+		require.Equal(t, http.StatusForbidden, w.Code, "a dead credential is a client fault, not throttling")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"log/slog"
 	"maps"
@@ -148,8 +149,8 @@ type GatewayConfig struct {
 	// Nil makes DeleteAccount refuse rather than tear down around the data.
 	BucketStore accountteardown.BucketStore
 	STSService  handlers_sts.STSService
-	RateLimiter *AuthRateLimiter     // Per-IP auth failure rate limiter
-	Throttler   *ratelimit.Throttler // Per-account+action API request throttler
+	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
+	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
 	// status does not add a KV read to every authenticated request.
 	accountStatus *accountStatusCache
@@ -307,7 +308,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	bbotel.SetLevel(logLevel)
 
 	if gw.RateLimiter == nil {
-		gw.RateLimiter = NewAuthRateLimiter()
+		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
 
 	r := chi.NewRouter()

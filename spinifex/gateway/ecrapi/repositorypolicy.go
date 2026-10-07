@@ -43,7 +43,7 @@ func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, bod
 	store := handlers_ecr.NewNATSMetaStore(nc)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return req, nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return req, nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return req, nil, err
 	}
@@ -84,7 +84,7 @@ func GetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, b
 	policy, err := store.GetRepoPolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorRepositoryPolicyNotFound)
+			return nil, RepositoryPolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func DeleteRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string
 	policy, err := store.DeleteRepoPolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorRepositoryPolicyNotFound)
+			return nil, RepositoryPolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
 	}

@@ -165,6 +165,18 @@ func TestCreateRepository_Errors(t *testing.T) {
 	}
 }
 
+func TestCreateRepository_AlreadyExistsNamesRepository(t *testing.T) {
+	gw, _ := newRepoLifecycleGateway(t)
+	_, err := createRepo(t, gw, `{"repositoryName":"team/app"}`)
+	require.NoError(t, err)
+	_, err = createRepo(t, gw, `{"repositoryName":"team/app"}`)
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorRepositoryAlreadyExists, code)
+	assert.Equal(t, "The repository with name 'team/app' already exists in the registry with id '"+ecrTestAccount+"'", message)
+}
+
 // AWS's CreateRepository names the pattern a refused repositoryName must match.
 func TestCreateRepository_BadNameCarriesAWSMessage(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
@@ -214,15 +226,23 @@ func TestDeleteRepository_Happy(t *testing.T) {
 	w, err := deleteRepo(t, gw, `{"repositoryName":"team/app"}`)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
-	var out repoOut
+	var out struct {
+		Repository map[string]any `json:"repository"`
+	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
-	assert.Equal(t, "team/app", out.Repository.RepositoryName)
-	assert.Equal(t, "AES256", out.Repository.EncryptionConfiguration.EncryptionType)
+	assert.Equal(t, "team/app", out.Repository["repositoryName"])
+	assert.Equal(t, "MUTABLE", out.Repository["imageTagMutability"])
+	// AWS's DeleteRepository omits both configurations.
+	assert.NotContains(t, out.Repository, "encryptionConfiguration")
+	assert.NotContains(t, out.Repository, "imageScanningConfiguration")
 
 	// Gone afterwards.
 	_, err = deleteRepo(t, gw, `{"repositoryName":"team/app"}`)
 	require.Error(t, err)
-	assert.Equal(t, "RepositoryNotFoundException", err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorRepositoryNotFound, code)
+	assert.Equal(t, "The repository with name 'team/app' does not exist in the registry with id '"+ecrTestAccount+"'", message)
 }
 
 func TestDeleteRepository_NotEmpty(t *testing.T) {

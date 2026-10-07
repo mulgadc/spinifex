@@ -51,7 +51,7 @@ func PutImageScanningConfiguration(ctx context.Context, nc *nats.Conn, accountID
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
 		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorRepositoryNotFound)
+			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
 	}

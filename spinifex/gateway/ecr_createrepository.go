@@ -83,7 +83,7 @@ func (gw *GatewayConfig) handleCreateRepository(w http.ResponseWriter, r *http.R
 
 	store := handlers_ecr.NewNATSMetaStore(gw.NATSConn)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err == nil {
-		return errors.New(awserrors.ErrorRepositoryAlreadyExists)
+		return gateway_ecrapi.RepositoryAlreadyExistsError(accountID, req.RepositoryName)
 	} else if !errors.Is(err, handlers_ecr.ErrNotFound) {
 		slog.ErrorContext(ctx, "CreateRepository: get repo failed", "repo", req.RepositoryName, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)

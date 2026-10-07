@@ -88,10 +88,13 @@ func TestRepositoryPolicy_Lifecycle(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, policy, *del.PolicyText)
 
-	// Policy gone after delete.
+	// Policy gone after delete; AWS names the repository and registry.
 	_, err = GetRepositoryPolicy(context.Background(), nc, policyTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, awserrors.ValidErrorCodeFromError(err))
+	code, message, found := awserrors.ResolveErrorDetail(err)
+	require.True(t, found)
+	assert.Equal(t, awserrors.ErrorRepositoryPolicyNotFound, code)
+	assert.Equal(t, "Repository policy does not exist for the repository with name 'team/app' in the registry with id '"+policyTestAccount+"'", message)
 }
 
 func TestRepositoryPolicy_Errors(t *testing.T) {

@@ -1,0 +1,4 @@
+# Reachable vulnerabilities accepted for a bounded time, read by scripts/govulncheck-gate.sh.
+# Format: <OSV-ID> <expiry YYYY-MM-DD> <reason>
+# The gate fails once the expiry passes: fix the dependency or renew deliberately.
+GO-2026-6597 2026-11-07 containerd v2.4.0 image-pull DoS, fixed in v2.4.1; inherited from dev and deferred to a dependency update outside the package-boundary refactor.

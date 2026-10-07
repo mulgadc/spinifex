@@ -11,12 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
+	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_key "github.com/mulgadc/spinifex/spinifex/gateway/ec2/key"
 	gateway_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/gateway/ec2/launchtemplate"
 	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
@@ -568,7 +568,7 @@ func (r *keyPairReaper) Kind() string { return "key-pair" }
 func (r *keyPairReaper) Stage() Stage { return StagePlatform }
 
 func (r *keyPairReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_key.DescribeKeyPairs(ctx, &ec2.DescribeKeyPairsInput{}, r.nc, accountID)
+	out, err := ec2keyapi.DescribeKeyPairs(ctx, &ec2.DescribeKeyPairsInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -584,7 +584,7 @@ func (r *keyPairReaper) List(ctx context.Context, accountID string) ([]Resource,
 }
 
 func (r *keyPairReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := gateway_ec2_key.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{
+	_, err := ec2keyapi.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{
 		KeyName: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

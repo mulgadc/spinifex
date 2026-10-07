@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2accountapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/account"
 	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
+	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -24,7 +25,6 @@ import (
 	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_key "github.com/mulgadc/spinifex/spinifex/gateway/ec2/key"
 	gateway_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/gateway/ec2/launchtemplate"
 	gateway_ec2_natgw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/natgw"
 	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
@@ -289,16 +289,16 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_instance.DescribeInstanceCreditSpecifications(input)
 	}),
 	"CreateKeyPair": ec2Handler(func(ctx context.Context, input *ec2.CreateKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.CreateKeyPair(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.CreateKeyPair(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteKeyPair": ec2Handler(func(ctx context.Context, input *ec2.DeleteKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.DeleteKeyPair(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.DeleteKeyPair(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeKeyPairs": ec2Handler(func(ctx context.Context, input *ec2.DescribeKeyPairsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.DescribeKeyPairs(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.DescribeKeyPairs(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ImportKeyPair": ec2Handler(func(ctx context.Context, input *ec2.ImportKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.ImportKeyPair(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.ImportKeyPair(ctx, input, gw.NATSConn, accountID)
 	}).withQueryPreprocessor(func(q map[string]string) {
 		// Parser leaves Base64 padding URL-encoded; decode it before dispatch.
 		if strings.HasSuffix(q["PublicKeyMaterial"], "%3D%3D") {

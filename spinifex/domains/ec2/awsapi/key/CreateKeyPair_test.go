@@ -1,4 +1,4 @@
-package gateway_ec2_key
+package key
 
 import (
 	"testing"

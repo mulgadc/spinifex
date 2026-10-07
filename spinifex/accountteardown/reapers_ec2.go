@@ -12,12 +12,12 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
+	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
@@ -364,7 +364,7 @@ func (r *igwReaper) Kind() string { return "internet-gateway" }
 func (r *igwReaper) Stage() Stage { return StageNetwork }
 
 func (r *igwReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := gateway_ec2_igw.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, r.nc, accountID)
+	out, err := ec2igwapi.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{}, r.nc, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +390,7 @@ func (r *igwReaper) List(ctx context.Context, accountID string) ([]Resource, err
 // cannot be deleted while it is attached.
 func (r *igwReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
 	if resource.Detail != "" {
-		if _, err := gateway_ec2_igw.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+		if _, err := ec2igwapi.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
 			InternetGatewayId: aws.String(resource.ID),
 			VpcId:             aws.String(resource.Detail),
 		}, r.nc, accountID); err != nil && !isAlreadyGone(err) {
@@ -401,7 +401,7 @@ func (r *igwReaper) Delete(ctx context.Context, accountID string, resource Resou
 	// Detail is empty and the delete is refused. DeleteVpc rejects while the
 	// gateway is attached, so the VPC survives and the next sweep, once the
 	// attachment is confirmed, takes the branch above.
-	_, err := gateway_ec2_igw.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
+	_, err := ec2igwapi.DeleteInternetGateway(ctx, &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)

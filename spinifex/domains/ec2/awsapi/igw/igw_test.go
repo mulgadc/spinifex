@@ -1,4 +1,4 @@
-package gateway_ec2_igw
+package igw
 
 import (
 	"context"

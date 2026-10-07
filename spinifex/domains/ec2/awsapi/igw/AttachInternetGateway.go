@@ -1,4 +1,4 @@
-package gateway_ec2_igw
+package igw
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func ValidateDetachInternetGatewayInput(input *ec2.DetachInternetGatewayInput) error {
+func ValidateAttachInternetGatewayInput(input *ec2.AttachInternetGatewayInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -23,16 +23,16 @@ func ValidateDetachInternetGatewayInput(input *ec2.DetachInternetGatewayInput) e
 	return nil
 }
 
-// DetachInternetGateway handles the EC2 DetachInternetGateway API call.
-func DetachInternetGateway(ctx context.Context, input *ec2.DetachInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.DetachInternetGatewayOutput, error) {
-	var output ec2.DetachInternetGatewayOutput
+// AttachInternetGateway handles the EC2 AttachInternetGateway API call.
+func AttachInternetGateway(ctx context.Context, input *ec2.AttachInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.AttachInternetGatewayOutput, error) {
+	var output ec2.AttachInternetGatewayOutput
 
-	if err := ValidateDetachInternetGatewayInput(input); err != nil {
+	if err := ValidateAttachInternetGatewayInput(input); err != nil {
 		return output, err
 	}
 
 	svc := ec2igw.NewNATSIGWService(natsConn)
-	result, err := svc.DetachInternetGateway(ctx, input, accountID)
+	result, err := svc.AttachInternetGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

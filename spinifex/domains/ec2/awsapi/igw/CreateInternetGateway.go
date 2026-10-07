@@ -1,4 +1,4 @@
-package gateway_ec2_igw
+package igw
 
 import (
 	"context"
@@ -10,16 +10,16 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// DescribeInternetGateways handles the EC2 DescribeInternetGateways API call.
-func DescribeInternetGateways(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, natsConn *nats.Conn, accountID string) (ec2.DescribeInternetGatewaysOutput, error) {
-	var output ec2.DescribeInternetGatewaysOutput
+// CreateInternetGateway handles the EC2 CreateInternetGateway API call.
+func CreateInternetGateway(ctx context.Context, input *ec2.CreateInternetGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateInternetGatewayOutput, error) {
+	var output ec2.CreateInternetGatewayOutput
 
 	if input == nil {
 		return output, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	svc := ec2igw.NewNATSIGWService(natsConn)
-	result, err := svc.DescribeInternetGateways(ctx, input, accountID)
+	result, err := svc.CreateInternetGateway(ctx, input, accountID)
 	if err != nil {
 		return output, err
 	}

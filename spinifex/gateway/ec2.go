@@ -17,6 +17,7 @@ import (
 	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
 	ec2eigwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eigw"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
+	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
 	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
@@ -26,7 +27,6 @@ import (
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
-	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
 	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
 	gateway_ec2_natgw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/natgw"
@@ -410,19 +410,19 @@ var ec2Actions = map[string]ec2Action{
 		return gateway_ec2_snapshot.CopySnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.CreateInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.CreateInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.CreateInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.DeleteInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.DeleteInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInternetGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.DescribeInternetGateways(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.DescribeInternetGateways(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AttachInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.AttachInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.AttachInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.AttachInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DetachInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DetachInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.DetachInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.DetachInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateEgressOnlyInternetGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateEgressOnlyInternetGatewayOutput, error) {
 		return ec2eigwapi.CreateEgressOnlyInternetGateway(ctx, input, gw.NATSConn, accountID)

@@ -64,6 +64,7 @@ func runMigrateCases(t *testing.T, run func(context.Context, migrate.KVContext) 
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			_, f := faultBucket(t)
 			for k, v := range tc.seed {
 				_, err := f.KeyValue.Put(t.Context(), k, v)

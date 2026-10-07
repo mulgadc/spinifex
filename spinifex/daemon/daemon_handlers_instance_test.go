@@ -515,7 +515,7 @@ func TestHandleEC2RunInstances_InvalidReservationTarget(t *testing.T) {
 	})
 
 	reply := requestHandler(t, d.natsConn, "ec2.RunInstances.p1-badcr", asMsgHandler(d.handleEC2RunInstances), testAccountID, body)
-	assert.NotEmpty(t, decodeError(t, reply.Data)["Code"])
+	assert.Equal(t, awserrors.ErrorInvalidCapacityReservationIdNotFound, decodeError(t, reply.Data)["Code"])
 	assert.Zero(t, d.vmMgr.Count())
 }
 

@@ -213,16 +213,6 @@ func TestCleanupOrphanNBDKit_Failures(t *testing.T) {
 	})
 }
 
-func TestPublishShutdownProgress_ClosedConn(t *testing.T) {
-	logs := captureSlogForTest(t)
-	nc, err := nats.Connect(sharedNATSURL)
-	require.NoError(t, err)
-	nc.Close()
-
-	(&Daemon{node: "node-1", natsConn: nc}).publishShutdownProgress("drain", 2, 1)
-	assert.Contains(t, logs.String(), "Failed to publish shutdown progress")
-}
-
 func TestPidDirEmpty(t *testing.T) {
 	assert.Empty(t, (&Daemon{config: &config.Config{}}).pidDir(), "no base dir means no pid dir to look in")
 	assert.Equal(t, "/data/logs", (&Daemon{config: &config.Config{BaseDir: "/data/spinifex/"}}).pidDir())

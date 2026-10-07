@@ -320,7 +320,7 @@ func TestDefaultVPCHandlers_UnreadableClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"error":"could not create default VPC"}`, string(reply.Data))
 
-	// A requester that has gone away still gets the work done.
+	// A requester that has gone away gets the same outcome, with no reply sent.
 	assert.Equal(t, outcomeError, d.handleEnsureDefaultVpc(noReplyMsg("ec2.EnsureDefaultVpc", []byte(`{"account_id":"`+account+`"}`))))
 }
 

@@ -4103,7 +4103,7 @@ func TestHandleNATSRequestWithPrincipal(t *testing.T) {
 	})
 
 	t.Run("malformed payload", func(t *testing.T) {
-		assert.NotEmpty(t, decodeError(t, request(`{`).Data)["Code"])
+		assert.Equal(t, awserrors.ErrorValidationError, decodeError(t, request(`{`).Data)["Code"])
 	})
 }
 

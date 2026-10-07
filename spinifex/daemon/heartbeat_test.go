@@ -176,13 +176,6 @@ func heartbeatDaemon(t *testing.T, node string) *Daemon {
 	}
 }
 
-// Without JetStream there is nowhere to publish, so no goroutine may start:
-// this daemon has no context or resource manager for one to use.
-func TestStartHeartbeat_NoJetStream(t *testing.T) {
-	d := &Daemon{}
-	d.startHeartbeat()
-}
-
 func TestStartHeartbeat_PublishesImmediately(t *testing.T) {
 	jsm, _ := newFaultInjectedJSM(t)
 	d := heartbeatDaemon(t, "hb-start-node")

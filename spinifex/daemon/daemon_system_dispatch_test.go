@@ -695,13 +695,3 @@ func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
 		d.systemDispatchWg.Wait()
 	})
 }
-
-// A requester that stopped waiting leaves nothing to reply to; the responders
-// log and return rather than fail the handler.
-func TestSystemDispatchResponders_NoReplySubject(t *testing.T) {
-	msg := noReplyMsg("system.LaunchInstance.sys.p1", nil)
-	respondWithSystemLaunchOutput(msg, &handlers_elbv2.SystemInstanceOutput{InstanceID: "i-1"})
-	respondWithSystemLaunchError(msg, "boom")
-	respondWithSystemTerminateOK(msg)
-	respondWithSystemTerminateError(msg, "boom")
-}

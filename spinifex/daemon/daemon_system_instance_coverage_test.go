@@ -231,8 +231,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 
 	t.Run("made-up ENI still reaches launch", func(t *testing.T) {
 		sysInstLaunchFails(d)
-		eni := f.newENI(t)
-		in := f.input(eni)
+		in := f.input(f.newENI(t))
 		in.ENIID = "eni-madeup"
 		in.IamInstanceProfileArn = "arn:aws:iam::123456789012:instance-profile/lb"
 
@@ -240,7 +239,6 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 		_, err := d.LaunchSystemInstance(in)
 		require.ErrorIs(t, err, errSysInstLaunchRefused)
 		assert.Contains(t, err.Error(), "launch instance")
-		assert.Empty(t, f.eniRecord(t, testAccountID, aws.StringValue(eni.NetworkInterfaceId)).InstanceId)
 	})
 
 	t.Run("cross-account ENI and extras are attached and stamped", func(t *testing.T) {

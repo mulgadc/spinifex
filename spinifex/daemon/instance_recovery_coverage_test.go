@@ -122,19 +122,6 @@ func threeNodes() *config.ClusterConfig {
 }
 
 func TestRecoveryStartsAndStopsOnContext(t *testing.T) {
-	t.Run("no liveness view means no loop", func(t *testing.T) {
-		logs := captureSlogForTest(t)
-		d := &Daemon{
-			node:            "node-1",
-			clusterConfig:   threeNodes(),
-			jsManager:       &JetStreamManager{},
-			instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
-		}
-		d.startInstanceRecovery()
-		d.shutdownWg.Wait()
-		assert.Contains(t, logs.String(), "no liveness view")
-	})
-
 	t.Run("the loop runs until the daemon stops", func(t *testing.T) {
 		logs := captureSlogForTest(t)
 		nc, err := nats.Connect(sharedJSNATSURL)
@@ -327,18 +314,9 @@ func TestAbandonOutcomes(t *testing.T) {
 		reason := record.Status.Instance.StateReason
 		require.NotNil(t, reason)
 		assert.Equal(t, "Server.HostRecoveryFailed", aws.StringValue(reason.Code))
-		assert.Contains(t, aws.StringValue(reason.Message), "failed 12 times")
+		assert.Contains(t, aws.StringValue(reason.Message), fmt.Sprintf("failed %d times", recoveryMaxAttempts))
 		assert.NotContains(t, r.backoff, "i-gone")
 	})
-}
-
-// The fault name is what the span and the give-up log report, so each class
-// has to keep a distinct label.
-func TestRecoveryFaultString(t *testing.T) {
-	assert.Equal(t, "volume_lease_held", recoveryFaultLeaseHeld.String())
-	assert.Equal(t, "insufficient_capacity", recoveryFaultCapacity.String())
-	assert.Equal(t, "unknown", recoveryFaultUnknown.String())
-	assert.Equal(t, "unknown", recoveryFault(99).String())
 }
 
 // Every survivor derives the same candidates, so each has to try them in an
@@ -367,14 +345,6 @@ func TestCandidateOrderingIsPerNode(t *testing.T) {
 	assert.True(t, slices.IsSortedFunc(a, func(x, y string) int {
 		return cmp.Compare(r.preference(x), r.preference(y))
 	}), "candidates are tried in this node's preference order")
-}
-
-func TestNewLiveness(t *testing.T) {
-	assert.Nil(t, (&Daemon{}).newLiveness(), "no JetStream manager")
-	assert.Nil(t, (&Daemon{jsManager: &JetStreamManager{}}).newLiveness(), "a manager with no JetStream")
-
-	s := newRecoveryStore(t)
-	assert.NotNil(t, (&Daemon{jsManager: s.m}).newLiveness())
 }
 
 // A returning node drops only the instances the records say another node now

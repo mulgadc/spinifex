@@ -58,6 +58,8 @@ func acmPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 		},
 	}
 
+	withACM(gw, acmawsapi.Deps{})
+
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
 	r.HandleFunc("/*", gw.Request)
@@ -165,12 +167,14 @@ func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 		{"bare action", "ListCertificates", "ListCertificates"},
 		{"trailing dot", "CertificateManager.", ""},
 	}
+	acmEntry, ok := withACM(&GatewayConfig{}, acmawsapi.Deps{}).registered(acmawsapi.ServiceName)
+	require.True(t, ok)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.wantAction, acmActionFromTarget(tc.target))
-
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", tc.target)
+			assert.Equal(t, tc.wantAction, acmEntry.ResolveAction(req))
+
 			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req, "acm"),
 				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
@@ -236,7 +240,7 @@ func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
 func TestRequest_ClusterUnavailableNilConn_ACM(t *testing.T) {
 	for _, action := range []string{"ListCertificates", "DeleteCertificate"} {
 		t.Run(action, func(t *testing.T) {
-			gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+			gw := withACM(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, acmawsapi.Deps{})
 
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", "CertificateManager."+action)
@@ -324,7 +328,7 @@ func TestACMPipeline_RequestAudit_RecordsResolvedAction(t *testing.T) {
 // that drops or adds an action, including by moving ACM onto the
 // registration seam, fails here.
 func TestACMInventory_RegisteredArePinned(t *testing.T) {
-	acm := AWSOperationInventory(nil)["acm"]
+	acm := AWSOperationInventory(acmRegistrationInventory())["acm"]
 
 	want := []string{
 		"ImportCertificate", "RequestCertificate", "DescribeCertificate", "GetCertificate",

@@ -24,9 +24,6 @@ type ServiceOperationInventory struct {
 // operations and delegates that REST surface to Predastore.
 func AWSOperationInventory(registered map[string]dispatch.Inventory) map[string]ServiceOperationInventory {
 	inventory := map[string]ServiceOperationInventory{
-		"acm": {
-			Registered: mapKeys(acmActions),
-		},
 		"ec2": {
 			Registered: mapKeys(ec2Actions),
 		},

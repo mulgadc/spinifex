@@ -77,13 +77,24 @@ var declaredInventoryReaders = map[string]bool{
 	"cmd/aws-model-coverage": true,
 }
 
+// domainAWSAPIImpls are the registered domains' awsapi packages: the
+// implementations ADR-0002 acceptance 3 confines to the awsgw role,
+// alongside the registration contract itself.
+var domainAWSAPIImpls = map[string]string{
+	modulePrefix + "domains/ecr/awsapi": "ECR implementation",
+	modulePrefix + "domains/acm/awsapi": "ACM implementation",
+}
+
 // ADR-0002 acceptance 3: the awsgw role is the only production composition
-// point that imports both the registration contract and ECR implementation.
+// point that imports both the registration contract and a registered
+// domain's awsapi implementation (ECR, ACM, …).
 func TestS4_OnlyAWSGWRoleImportsDispatchAndECRAWSAPI(t *testing.T) {
-	const (
-		contract = modulePrefix + "ingress/aws/dispatch"
-		ecrImpl  = modulePrefix + "domains/ecr/awsapi"
-	)
+	const contract = modulePrefix + "ingress/aws/dispatch"
+	watched := map[string]bool{contract: true}
+	for impl := range domainAWSAPIImpls {
+		watched[impl] = true
+	}
+
 	moduleRoot := filepath.Dir(filepath.Dir(filepath.Dir(ingressAWSDir(t))))
 	imports := map[string]map[string]token.Position{}
 	fset := token.NewFileSet()
@@ -112,7 +123,7 @@ func TestS4_OnlyAWSGWRoleImportsDispatchAndECRAWSAPI(t *testing.T) {
 			pkg := filepath.ToSlash(rel)
 			for _, imp := range f.Imports {
 				p, _ := strconv.Unquote(imp.Path.Value)
-				if p != contract && p != ecrImpl {
+				if !watched[p] {
 					continue
 				}
 				if imports[pkg] == nil {
@@ -127,14 +138,22 @@ func TestS4_OnlyAWSGWRoleImportsDispatchAndECRAWSAPI(t *testing.T) {
 		}
 	}
 
-	if len(imports[compositionRoot]) != 2 {
-		t.Fatalf("%s no longer imports both %s and %s; the invariant would pass vacuously", compositionRoot, contract, ecrImpl)
+	if len(imports[compositionRoot]) != len(watched) {
+		t.Fatalf("%s no longer imports the registration contract and every registered domain awsapi (%d of %d); the invariant would pass vacuously",
+			compositionRoot, len(imports[compositionRoot]), len(watched))
 	}
 	for pkg, found := range imports {
-		if len(found) < 2 || pkg == compositionRoot || declaredInventoryReaders[pkg] {
+		if pkg == compositionRoot || declaredInventoryReaders[pkg] {
 			continue
 		}
-		t.Errorf("ADR-0002 acceptance 3 \"The awsgw role is the only production composition point that imports both the registration contract and ECR implementation\": %s imports %s (%s) and %s (%s); register ECR in runtime/roles/awsgw instead",
-			pkg, contract, found[contract], ecrImpl, found[ecrImpl])
+		if _, hasContract := found[contract]; !hasContract {
+			continue
+		}
+		for impl, label := range domainAWSAPIImpls {
+			if pos, ok := found[impl]; ok {
+				t.Errorf("ADR-0002 acceptance 3 \"The awsgw role is the only production composition point that imports both the registration contract and a registered domain's awsapi implementation\": %s imports %s (%s) and %s (%s, the %s); register it in runtime/roles/awsgw instead",
+					pkg, contract, found[contract], impl, pos, label)
+			}
+		}
 	}
 }

@@ -20,8 +20,8 @@
 package integration
 
 import (
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http/httptest"
 	"testing"
 
@@ -34,6 +34,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -180,6 +181,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		AuthorizationToken: awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
 		NATS:               nc,
 	})))
+	require.NoError(t, services.Register(acmawsapi.NewRegistration(acmawsapi.Deps{NATS: nc})))
 
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,

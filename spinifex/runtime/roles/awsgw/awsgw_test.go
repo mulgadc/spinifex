@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -14,9 +15,10 @@ import (
 )
 
 // wireServiceRegistry is the exact call launchService makes to wire
-// gw.Services before serving a request. Production's ECR registration must
-// wire an overlap-free registry serving ecr; a duplicate or a registration
-// claiming a legacy name must fail it, so the role refuses to start.
+// gw.Services before serving a request. Production's ECR and ACM
+// registrations must wire an overlap-free registry serving ecr and acm; a
+// duplicate or a registration claiming a legacy name must fail it, so the
+// role refuses to start.
 func TestWireServiceRegistry(t *testing.T) {
 	t.Run("ECR registration wires and passes the overlap guard", func(t *testing.T) {
 		gw := &gateway.GatewayConfig{}
@@ -32,10 +34,35 @@ func TestWireServiceRegistry(t *testing.T) {
 		require.Error(t, wireServiceRegistry(gw, reg, reg))
 	})
 
+	t.Run("ACM registration wires and passes the overlap guard", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		require.NoError(t, wireServiceRegistry(gw, acmawsapi.NewRegistration(acmawsapi.Deps{})))
+		require.NotNil(t, gw.Services)
+		_, ok := gw.Services.Lookup("acm")
+		assert.True(t, ok)
+	})
+
+	t.Run("a duplicate ACM registration fails startup", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		reg := acmawsapi.NewRegistration(acmawsapi.Deps{})
+		require.Error(t, wireServiceRegistry(gw, reg, reg))
+	})
+
+	t.Run("ECR and ACM registrations wire together, as production does", func(t *testing.T) {
+		gw := &gateway.GatewayConfig{}
+		require.NoError(t, wireServiceRegistry(gw,
+			awsapi.NewRegistration(awsapi.Deps{}), acmawsapi.NewRegistration(acmawsapi.Deps{})))
+		require.NotNil(t, gw.Services)
+		_, ecrOK := gw.Services.Lookup("ecr")
+		_, acmOK := gw.Services.Lookup("acm")
+		assert.True(t, ecrOK)
+		assert.True(t, acmOK)
+	})
+
 	t.Run("a registration claiming a legacy name fails startup", func(t *testing.T) {
 		gw := &gateway.GatewayConfig{}
 		err := wireServiceRegistry(gw, dispatch.Registration{
-			Service:   "acm",
+			Service:   "ec2",
 			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
 			Errors:    dispatch.ErrorEnvelopeJSON,
 			Inventory: dispatch.Inventory{Registered: []string{"Whatever"}},

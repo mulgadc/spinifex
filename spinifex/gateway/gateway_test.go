@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -171,7 +173,7 @@ func TestErrorHandler_PrefersCallSiteMessage(t *testing.T) {
 // ResourceInUseException collision check: ACM's DeleteCertificate must not
 // surface EKS's "cluster already exists" wording for the shared wire code.
 func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withACM(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, acmawsapi.Deps{})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "acm")
 	req = req.WithContext(ctx)
@@ -234,8 +236,12 @@ func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
 // validation code outside EC2: the default must not be EC2's Reserved Instance
 // or resource-ID wording, whichever envelope the service uses.
 func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
-	gw := withECR(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, awsapi.Deps{})
-	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName)
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	gw.Services = b.Build()
+	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName, acmawsapi.ServiceName)
 	for _, svc := range services {
 		if svc == "ec2" {
 			continue

@@ -8,8 +8,10 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
@@ -2674,7 +2676,11 @@ func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
 // envelope by exactly the path it did before the fallback was added — a
 // regression guard proving the fallback widened nothing for served scopes.
 func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
-	gw := withECR(&GatewayConfig{DisableLogging: true}, awsapi.Deps{})
+	gw := &GatewayConfig{DisableLogging: true}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	gw.Services = b.Build()
 
 	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
@@ -2745,7 +2751,11 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 			},
 		},
 	}
-	gw := withECR(&GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}, awsapi.Deps{})
+	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	gw.Services = b.Build()
 
 	var gotAction, gotThrottleKey string
 	r := chi.NewRouter()

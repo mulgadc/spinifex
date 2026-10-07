@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
@@ -502,7 +503,8 @@ func launchService(config *config.ClusterConfig) error {
 		AuthorizationToken: awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
 		NATS:               natsConn,
 	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane); err != nil {
+	acmControlPlane := acmawsapi.NewRegistration(acmawsapi.Deps{NATS: natsConn})
+	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane); err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
 

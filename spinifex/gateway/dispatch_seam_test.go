@@ -419,7 +419,7 @@ func TestValidateServices(t *testing.T) {
 	t.Run("claiming a legacy name fails", func(t *testing.T) {
 		b := dispatch.NewBuilder()
 		require.NoError(t, b.Register(dispatch.Registration{
-			Service:   "acm",
+			Service:   "ec2",
 			Dispatch:  func(http.ResponseWriter, dispatch.Invocation) error { return nil },
 			Errors:    dispatch.ErrorEnvelopeJSON,
 			Inventory: dispatch.Inventory{Registered: []string{fakeAction}},

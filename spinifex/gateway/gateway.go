@@ -299,7 +299,6 @@ var supportedServices = map[string]bool{
 	"elasticloadbalancing":  true,
 	"eks":                   true,
 	"ecs":                   true,
-	"acm":                   true,
 	"rds":                   true,
 	"tagging":               true,
 	"spinifex":              true,
@@ -401,7 +400,7 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "acm", "ecs", "tagging",
+	case "eks", "ecs", "tagging",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
@@ -523,8 +522,6 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 			err = gw.BedrockAgentRuntime_Request(w, r)
 		case "ecs":
 			err = gw.ECS_Request(w, r)
-		case "acm":
-			err = gw.ACM_Request(w, r)
 		case "rds":
 			err = gw.RDS_Request(w, r)
 		case "tagging":

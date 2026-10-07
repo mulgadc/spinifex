@@ -25,7 +25,7 @@ func acmCertARN(id string) string {
 // which is what proves the policy check ran ahead of the certificate existing.
 func dispatchACM(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
-	return gw.ACM_Request(httptest.NewRecorder(), setupACMRequest("CertificateManager."+action, body))
+	return gw.serveACM(httptest.NewRecorder(), setupACMRequest("CertificateManager."+action, body))
 }
 
 // TestACMRequest_ScopedDenyFires is the bypass this work closes. An operator
@@ -185,7 +185,7 @@ func TestACMRequest_MissingAccountID(t *testing.T) {
 	req := setupACMRequest("CertificateManager.ListCertificates", `{}`)
 	req = req.WithContext(context.WithValue(req.Context(), ctxAccountID, ""))
 
-	err := gw.ACM_Request(httptest.NewRecorder(), req)
+	err := gw.serveACM(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

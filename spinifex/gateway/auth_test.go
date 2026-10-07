@@ -2769,6 +2769,8 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 		{"path-routed EKS", http.MethodGet, "/clusters", "eks", "", "ListClusters"},
 		{"JSON-1.1 X-Amz-Target ECR", http.MethodPost, "/", "ecr",
 			awsapi.TargetPrefix + ".ListRepositories", "ListRepositories"},
+		{"JSON-1.1 X-Amz-Target ACM", http.MethodPost, "/", "acm",
+			"CertificateManager.ListCertificates", "ListCertificates"},
 	}
 
 	for _, tc := range testCases {

@@ -27,6 +27,7 @@ import (
 	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
+	ec2spotinstanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/spotinstance"
 	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
@@ -34,7 +35,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
 	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
@@ -476,13 +476,13 @@ var ec2Actions = map[string]ec2Action{
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
-		return gateway_ec2_spotinstance.RequestSpotInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
+		return ec2spotinstanceapi.RequestSpotInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
 	}),
 	"DescribeSpotInstanceRequests": ec2Handler(func(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_spotinstance.DescribeSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
+		return ec2spotinstanceapi.DescribeSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CancelSpotInstanceRequests": ec2Handler(func(ctx context.Context, input *ec2.CancelSpotInstanceRequestsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_spotinstance.CancelSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
+		return ec2spotinstanceapi.CancelSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateVpc": ec2Handler(func(ctx context.Context, input *ec2.CreateVpcInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceVPCs(ctx, gw.NATSConn, accountID, 1); err != nil {

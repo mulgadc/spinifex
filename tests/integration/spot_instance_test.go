@@ -22,7 +22,7 @@ import (
 
 // TestRequestSpotInstances_Lifecycle exercises the gateway's Spot Instance Request
 // orchestration end to end: RequestSpotInstances validates the input, dispatches the shared
-// on-demand RunInstances placement/quota path (spinifex/gateway/ec2/spotinstance/
+// on-demand RunInstances placement/quota path (spinifex/domains/ec2/awsapi/spotinstance/
 // RequestSpotInstances.go), persists one active/fulfilled SpotInstanceRequest per launched
 // instance via the daemon's spot service, and stamps spot lineage back onto each instance.
 // Fulfilment itself is a documented mock (RequestSpotInstances.go:2 — no bidding,

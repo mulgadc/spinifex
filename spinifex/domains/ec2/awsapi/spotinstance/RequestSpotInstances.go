@@ -1,9 +1,9 @@
-// Package gateway_ec2_spotinstance provides the gateway-side orchestration for
+// Package spotinstance provides the gateway-side orchestration for
 // AWS-compatible Spot Instance Requests. Fulfilment is a mock over the existing
 // on-demand RunInstances path: a request synchronously launches real VMs and is
 // then reported as active/fulfilled. There is no bidding, interruption, or
 // reclamation.
-package gateway_ec2_spotinstance
+package spotinstance
 
 import (
 	"context"

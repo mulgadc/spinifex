@@ -1,4 +1,4 @@
-package gateway_ec2_spotinstance
+package spotinstance
 
 import (
 	"errors"

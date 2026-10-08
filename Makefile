@@ -248,7 +248,7 @@ manifest-lint-update:
 # Run unit tests
 test:
 	@echo -e "\n....Running tests for $(GO_PROJECT_NAME)...."
-	LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/...
+	LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/... ./contracts/...
 
 # Empty locally, where reusing a cached result between runs is the point.
 # CI passes -count=1 so a green run means the suite executed against that commit
@@ -259,7 +259,7 @@ GOTESTFLAGS ?=
 COVERPROFILE ?= coverage.out
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... ./contracts/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
 
 # Refresh the README coverage badge. Measured as awesome-go documents
@@ -276,7 +276,7 @@ coverage-badge:
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.

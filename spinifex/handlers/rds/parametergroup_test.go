@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/parametergroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -422,7 +423,7 @@ func TestModifyDBParameterGroup_ReturnsAPropagationFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), testDBID)
 
-	overrides, listErr := ListDBParameterOverrides(t.Context(), h.kv(t), testParameterGroup)
+	overrides, listErr := h.svc.parameterGroups().Overrides(t.Context(), testAccountID, testParameterGroup)
 	require.NoError(t, listErr)
 	assert.Equal(t, "16384", overrides["work_mem"].Value,
 		"the durable group edit remains available for a retry")
@@ -588,11 +589,11 @@ func TestDescribeDBParameters_DerivesApplyMethodForLegacyOverrides(t *testing.T)
 	require.NoError(t, err)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	for _, rec := range []DBParameterRecord{
+	for _, rec := range []parametergroup.Override{
 		{Name: "work_mem", Value: "16384"},
 		{Name: "shared_buffers", Value: "65536"},
 	} {
-		require.NoError(t, putJSON(t.Context(), kv, DBParameterGroupParamKey(testParameterGroup, rec.Name), &rec))
+		require.NoError(t, putJSON(t.Context(), kv, parametergroup.ParamKey(testParameterGroup, rec.Name), &rec))
 	}
 
 	params := describedParameters(t, h, testParameterGroup)
@@ -688,11 +689,9 @@ func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
 		&rds.DeleteDBParameterGroupInput{DBParameterGroupName: aws.String(testParameterGroup)}, testAccountID)
 	require.NoError(t, err)
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
 	// Orphaned values would be silently inherited by a later group of the same
 	// name, which is a configuration nobody wrote.
-	overrides, err := ListDBParameterOverrides(t.Context(), kv, testParameterGroup)
+	overrides, err := h.svc.parameterGroups().Overrides(t.Context(), testAccountID, testParameterGroup)
 	require.NoError(t, err)
 	assert.Empty(t, overrides)
 

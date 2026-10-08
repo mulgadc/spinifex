@@ -77,6 +77,7 @@ services:
       - spinifex/handlers/ecs
       - spinifex/handlers/rds
       - spinifex/domains/rds/subnetgroup
+      - spinifex/domains/rds/parametergroup
       - spinifex/domains/rds/engine
       - spinifex/domains/ecs/taskdefinition
       - spinifex/handlers/eks

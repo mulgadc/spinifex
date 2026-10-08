@@ -378,37 +378,6 @@ type Parameter struct {
 	Value string `json:"value" locationName:"Value"`
 }
 
-// DBParameterGroupRecord is the db-parameter-groups/{name}/meta record. The values themselves live one
-// key each under .../params/, so a modify touching one parameter cannot clobber a concurrent change to
-// another.
-type DBParameterGroupRecord struct {
-	Name        string `json:"name"`
-	AccountID   string `json:"accountId"`
-	Family      string `json:"family"`
-	Description string `json:"description"`
-
-	Tags map[string]string `json:"tags,omitempty"`
-
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
-var _ TaggedRecord = (*DBParameterGroupRecord)(nil)
-
-func (r *DBParameterGroupRecord) GetTags() map[string]string { return r.Tags }
-
-func (r *DBParameterGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
-
-// DBParameterRecord is one stored override, at db-parameter-groups/{name}/params/{key}. ApplyMethod is
-// the customer's request rather than a fact: whether a change lands live is decided by the parameter's
-// own ApplyType.
-type DBParameterRecord struct {
-	Name        string    `json:"name"`
-	Value       string    `json:"value"`
-	ApplyMethod string    `json:"applyMethod,omitempty"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-}
-
 // EngineHealth is the agent-reported state of the database engine, separate from Status: the reconciler
 // needs both to tell "stopped because we stopped it" from "stopped because it died".
 type EngineHealth string

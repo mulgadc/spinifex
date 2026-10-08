@@ -242,11 +242,7 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 		if err != nil {
 			return nil, err
 		}
-		kv, err := s.bucket(ctx, accountID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := s.resolveGroupParameters(ctx, kv, accountID, engine, targetGroup, targetClass); err != nil {
+		if _, err := s.resolveGroupParameters(ctx, accountID, engine, targetGroup, targetClass); err != nil {
 			return nil, err
 		}
 	}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/parametergroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,7 +88,7 @@ func TestDBParameterGroupRecord_DecodesAHandWrittenBlob(t *testing.T) {
 	_, err = js.Put(t.Context(), "db-parameter-groups/"+testParameterGroup+"/params/work_mem", []byte(paramJSON))
 	require.NoError(t, err)
 
-	rec, _, err := getDBParameterGroup(t.Context(), kv, testAccountID, testParameterGroup)
+	rec, err := h.svc.parameterGroups().Get(t.Context(), testAccountID, testParameterGroup)
 	require.NoError(t, err)
 	assert.Equal(t, "tuned-pg", rec.Name)
 	assert.Equal(t, testAccountID, rec.AccountID)
@@ -95,7 +96,7 @@ func TestDBParameterGroupRecord_DecodesAHandWrittenBlob(t *testing.T) {
 	assert.Equal(t, "Tuned for the orders workload", rec.Description)
 	assert.Equal(t, map[string]string{"env": "prod"}, rec.Tags)
 
-	overrides, err := ListDBParameterOverrides(t.Context(), kv, testParameterGroup)
+	overrides, err := h.svc.parameterGroups().Overrides(t.Context(), testAccountID, testParameterGroup)
 	require.NoError(t, err)
 	override, ok := overrides["work_mem"]
 	require.True(t, ok)
@@ -120,8 +121,8 @@ func TestDescribeDBParameterGroups_TheDefaultGroupIsSynthesisedNotStored(t *test
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	var rec DBParameterGroupRecord
-	found, err := getJSON(t.Context(), kv, DBParameterGroupMetaKey(testDefaultPG), &rec)
+	var rec parametergroup.Record
+	found, err := getJSON(t.Context(), kv, parametergroup.MetaKey(testDefaultPG), &rec)
 	require.NoError(t, err)
 	assert.False(t, found, "a lazily-synthesised default group must not be written by a describe")
 }

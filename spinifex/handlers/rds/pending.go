@@ -155,7 +155,7 @@ func (s *Service) applyParameterGroup(ctx context.Context, kv *kvstore.Bucket, a
 	// Reached from a deferred modify, whose group was checked at request time,
 	// and from group propagation, where the binding was checked at attach. A
 	// family mismatch here is corrupt state rather than a bad request.
-	resolved, err := s.resolveGroupParameters(ctx, kv, accountID, engine, group, instanceClass)
+	resolved, err := s.resolveGroupParameters(ctx, accountID, engine, group, instanceClass)
 	if err != nil {
 		return s.recordParameterApplyFailure(ctx, kv, accountID, rec, group, err)
 	}

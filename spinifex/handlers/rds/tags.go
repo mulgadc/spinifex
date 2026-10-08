@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/parametergroup"
 	"github.com/mulgadc/spinifex/spinifex/domains/rds/subnetgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -50,6 +51,7 @@ type taggableResource struct {
 // record, so a tag written to it would have nowhere to live and would read back
 // as absent on the next apply.
 var _ TaggedRecord = (*subnetgroup.Record)(nil)
+var _ TaggedRecord = (*parametergroup.Record)(nil)
 
 var taggableResources = map[ResourceKind]taggableResource{
 	ResourceKindDBInstance: {
@@ -68,8 +70,8 @@ var taggableResources = map[ResourceKind]taggableResource{
 		notFound:  awserrors.ErrorDBSubnetGroupNotFound,
 	},
 	ResourceKindDBParameterGroup: {
-		key:       DBParameterGroupMetaKey,
-		newRecord: func() TaggedRecord { return &DBParameterGroupRecord{} },
+		key:       parametergroup.MetaKey,
+		newRecord: func() TaggedRecord { return &parametergroup.Record{} },
 		notFound:  awserrors.ErrorDBParameterGroupNotFound,
 	},
 }

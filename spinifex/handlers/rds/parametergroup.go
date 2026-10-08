@@ -8,11 +8,11 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/parametergroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
@@ -69,31 +69,16 @@ func (s *Service) CreateDBParameterGroup(ctx context.Context, input *rds.CreateD
 		return nil, err
 	}
 
-	kv, err := s.bucket(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC()
-	rec := DBParameterGroupRecord{
+	rec, err := s.parameterGroups().Create(ctx, accountID, parametergroup.Spec{
 		Name:        name,
-		AccountID:   accountID,
 		Family:      family,
 		Description: description,
 		Tags:        tags,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-	if err := createJSON(ctx, kv, DBParameterGroupMetaKey(name), &rec); err != nil {
-		if errors.Is(err, kvstore.ErrExists) {
-			return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupAlreadyExists,
-				"DB parameter group %s already exists", name)
-		}
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	slog.InfoContext(ctx, "rds: DB parameter group created",
-		"dbParameterGroup", name, "accountId", accountID, "family", family)
-	return &rds.CreateDBParameterGroupOutput{DBParameterGroup: s.projectParameterGroupRecord(&rec)}, nil
+	return &rds.CreateDBParameterGroupOutput{DBParameterGroup: s.projectParameterGroupRecord(rec)}, nil
 }
 
 // DescribeDBParameterGroups reports the implicit default group alongside the customer's own, whether
@@ -107,12 +92,8 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 	if _, err := ReadFilters(input.Filters, filterDBParameterGroupFamily, filterEngine); err != nil {
 		return nil, err
 	}
-	kv, err := s.bucket(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
 	if name := aws.StringValue(input.DBParameterGroupName); name != "" {
-		rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
+		rec, err := s.parameterGroups().Get(ctx, accountID, name)
 		if err != nil {
 			return nil, err
 		}
@@ -121,34 +102,15 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 		}, nil
 	}
 
-	names, err := ListDBParameterGroupNames(ctx, kv)
+	// The default group is synthesised rather than read, so it appears exactly
+	// once whether or not a prior create persisted it.
+	recs, err := s.parameterGroups().List(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	// The default group is synthesised rather than read, so it appears exactly
-	// once whether or not a prior create persisted it.
-	for _, name := range rdsengine.SupportedEngines() {
-		engine, err := rdsengine.LookupEngine(name)
-		if err != nil {
-			return nil, err
-		}
-		names = append(names, engine.DefaultParameterGroupName())
-	}
-	slices.Sort(names)
-	names = slices.Compact(names)
-
-	groups := make([]*rds.DBParameterGroup, 0, len(names))
-	for _, name := range names {
-		rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
-		if err != nil {
-			// Deleted between the listing and this read; the same answer a describe
-			// one tick later would give.
-			if awserrors.IsErrorCode(err, awserrors.ErrorDBParameterGroupNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		groups = append(groups, s.projectParameterGroupRecord(rec))
+	groups := make([]*rds.DBParameterGroup, 0, len(recs))
+	for i := range recs {
+		groups = append(groups, s.projectParameterGroupRecord(&recs[i]))
 	}
 	groups, next, err := Page(groups, parameterGroupPageKey, input.MaxRecords, input.Marker)
 	if err != nil {
@@ -181,15 +143,11 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 			"at most %d parameters may be modified in one request, got %d", maxParametersPerModify, len(input.Parameters))
 	}
 
-	kv, err := s.bucket(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
 	// The group is read before its values are checked because the engine that
 	// owns them comes from the group's family. Validating against anything else
 	// would store one engine's parameter into another's group and defer the
 	// failure to whichever instance next attached it.
-	rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
+	rec, err := s.parameterGroups().Get(ctx, accountID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -202,18 +160,18 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	for _, update := range updates {
-		if err := putJSON(ctx, kv, DBParameterGroupParamKey(name, update.Name), &DBParameterRecord{
-			Name:        update.Name,
-			Value:       update.Value,
-			ApplyMethod: update.ApplyMethod,
-			UpdatedAt:   now,
-		}); err != nil {
-			return nil, err
-		}
+	values := make([]parametergroup.Override, len(updates))
+	for i, update := range updates {
+		values[i] = parametergroup.Override{Name: update.Name, Value: update.Value, ApplyMethod: update.ApplyMethod}
+	}
+	if err := s.parameterGroups().SetOverrides(ctx, accountID, name, values); err != nil {
+		return nil, err
 	}
 
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.propagateParameterGroup(ctx, kv, accountID, name); err != nil {
 		return nil, err
 	}
@@ -276,11 +234,7 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 		return nil, err
 	}
 
-	kv, err := s.bucket(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-	rec, _, err := getDBParameterGroup(ctx, kv, accountID, name)
+	rec, err := s.parameterGroups().Get(ctx, accountID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +244,7 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	if err != nil {
 		return nil, err
 	}
-	overrides, err := ListDBParameterOverrides(ctx, kv, name)
+	overrides, err := s.parameterGroups().Overrides(ctx, accountID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -350,42 +304,33 @@ func (s *Service) DeleteDBParameterGroup(ctx context.Context, input *rds.DeleteD
 			"DB parameter group %s is a default group and cannot be deleted", name)
 	}
 
-	kv, err := s.bucket(ctx, accountID)
+	if err := s.parameterGroups().Delete(ctx, accountID, name); err != nil {
+		return nil, err
+	}
+	return &rds.DeleteDBParameterGroupOutput{}, nil
+}
+
+// The group's lifecycle owner, bound to this Service's bucket.
+func (s *Service) parameterGroups() *parametergroup.Owner {
+	return parametergroup.New(parameterGroupReferences{s}, s.bucket)
+}
+
+// The instance side of the group's in-use guard: current or pending attachment,
+// matching the delete guard's own predicate. It reads instance records directly
+// until instances have their own lifecycle owner.
+type parameterGroupReferences struct{ s *Service }
+
+var _ parametergroup.Dependants = parameterGroupReferences{}
+
+func (r parameterGroupReferences) InstancesUsing(ctx context.Context, accountID, name string) ([]string, error) {
+	kv, err := r.s.bucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := getDBParameterGroup(ctx, kv, accountID, name); err != nil {
-		return nil, err
-	}
-	users, err := instancesUsingGroup(ctx, kv, func(rec *DBInstanceRecord) bool {
+	return instancesUsingGroup(ctx, kv, func(rec *DBInstanceRecord) bool {
 		return rec.DBParameterGroupName == name ||
 			(rec.PendingModifiedValues != nil && rec.PendingModifiedValues.DBParameterGroupName == name)
 	})
-	if err != nil {
-		return nil, err
-	}
-	if len(users) > 0 {
-		return nil, awserrors.Errorf(awserrors.ErrorDBParameterGroupInvalidState,
-			"DB parameter group %s is still used by %s", name, strings.Join(users, ", "))
-	}
-
-	// The values go first: a crash between the two leaves orphaned parameter keys
-	// under a name a later create would then inherit silently.
-	overrides, err := ListDBParameterOverrides(ctx, kv, name)
-	if err != nil {
-		return nil, err
-	}
-	for _, param := range slices.Sorted(maps.Keys(overrides)) {
-		if err := kv.Delete(ctx, DBParameterGroupParamKey(name, param)); err != nil {
-			return nil, fmt.Errorf("rds: delete parameter %s of group %s: %w", param, name, err)
-		}
-	}
-	if err := kv.Delete(ctx, DBParameterGroupMetaKey(name)); err != nil {
-		return nil, fmt.Errorf("rds: delete DB parameter group %s: %w", name, err)
-	}
-
-	slog.InfoContext(ctx, "rds: DB parameter group deleted", "dbParameterGroup", name, "accountId", accountID)
-	return &rds.DeleteDBParameterGroupOutput{}, nil
 }
 
 // One validated override from a ModifyDBParameterGroup request.
@@ -450,36 +395,6 @@ func resolveApplyMethod(spec rdsengine.ParameterSpec, requested string) (string,
 	}
 }
 
-// The stored record, or the lazily materialised default group. A default group
-// is synthesised rather than written on read: the record carries nothing a write
-// would preserve, and materialising it on a describe would make a read path a
-// writer for no gain.
-func getDBParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID, name string) (*DBParameterGroupRecord, uint64, error) {
-	var rec DBParameterGroupRecord
-	rev, found, err := getJSONRevision(ctx, kv, DBParameterGroupMetaKey(name), &rec)
-	if err != nil {
-		return nil, 0, err
-	}
-	if found {
-		return &rec, rev, nil
-	}
-	if engine, ok := rdsengine.EngineForDefaultParameterGroup(name); ok {
-		return defaultParameterGroupRecord(engine, accountID), 0, nil
-	}
-	return nil, 0, awserrors.Errorf(awserrors.ErrorDBParameterGroupNotFound, "DB parameter group %s not found", name)
-}
-
-// The implicit group, identical for every account. It carries no tags and no
-// stored values, so it resolves to the catalog defaults alone.
-func defaultParameterGroupRecord(engine rdsengine.Engine, accountID string) *DBParameterGroupRecord {
-	return &DBParameterGroupRecord{
-		Name:        engine.DefaultParameterGroupName(),
-		AccountID:   accountID,
-		Family:      engine.ParameterGroupFamily(),
-		Description: fmt.Sprintf("Default parameter group for %s", engine.ParameterGroupFamily()),
-	}
-}
-
 func isDefaultParameterGroupName(name string) bool {
 	return strings.HasPrefix(strings.ToLower(name), defaultParameterGroupPrefix)
 }
@@ -532,7 +447,7 @@ func projectParameter(spec rdsengine.ParameterSpec, value, storedApplyMethod str
 	return out
 }
 
-func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.DBParameterGroup {
+func (s *Service) projectParameterGroupRecord(rec *parametergroup.Record) *rds.DBParameterGroup {
 	if rec == nil {
 		return nil
 	}
@@ -544,6 +459,15 @@ func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.
 	}
 }
 
+// parameterGroupValues is the instance side's narrow read of a DB parameter group: its family and its
+// stored overrides, satisfied by the group's lifecycle owner.
+type parameterGroupValues interface {
+	Get(ctx context.Context, accountID, name string) (*parametergroup.Record, error)
+	Overrides(ctx context.Context, accountID, name string) (map[string]parametergroup.Override, error)
+}
+
+var _ parameterGroupValues = (*parametergroup.Owner)(nil)
+
 // The effective set an instance of this class runs with under this group: catalog
 // defaults evaluated at the class, overlaid with the group's stored overrides.
 // A group that does not exist fails here rather than silently resolving to the
@@ -552,8 +476,9 @@ func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.
 // Every path that binds a group to an instance comes through here — create,
 // modify, restore, the deferred apply and group propagation — so the
 // cross-engine refusal is one check rather than five.
-func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket, accountID string, engine rdsengine.Engine, group, instanceClass string) ([]Parameter, error) {
-	rec, _, err := getDBParameterGroup(ctx, kv, accountID, group)
+func (s *Service) resolveGroupParameters(ctx context.Context, accountID string, engine rdsengine.Engine, group, instanceClass string) ([]Parameter, error) {
+	var groups parameterGroupValues = s.parameterGroups()
+	rec, err := groups.Get(ctx, accountID, group)
 	if err != nil {
 		return nil, err
 	}
@@ -562,7 +487,7 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket
 			"DB parameter group %s is of family %s, which cannot be used by a %s DB instance; it requires a group of family %s",
 			group, rec.Family, engine.Name, engine.ParameterGroupFamily())
 	}
-	overrides, err := ListDBParameterOverrides(ctx, kv, group)
+	overrides, err := groups.Overrides(ctx, accountID, group)
 	if err != nil {
 		return nil, err
 	}

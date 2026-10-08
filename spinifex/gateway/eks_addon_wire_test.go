@@ -78,12 +78,18 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 		rec.Body.String())
 }
 
-// Only CreateCluster and CreateNodegroup hand a role to iam:PassRole; the add-on
-// service-account role is stored and rendered without that check.
-func TestPassedRoleARNs_AddonServiceAccountRoleIsNotChecked(t *testing.T) {
+// CreateAddon and UpdateAddon hand their service-account role to iam:PassRole,
+// same as CreateCluster's roleArn and CreateNodegroup's nodeRole; an absent
+// role passes nothing.
+func TestPassedRoleARNs_AddonServiceAccountRoleIsChecked(t *testing.T) {
 	body := []byte(`{"addonName":"aws-load-balancer-controller","serviceAccountRoleArn":"arn:aws:iam::123456789012:role/alb"}`)
-	assert.Empty(t, gateway_eks.PassedRoleARNs("CreateAddon", body))
-	assert.Empty(t, gateway_eks.PassedRoleARNs("UpdateAddon", body))
+	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, gateway_eks.PassedRoleARNs("CreateAddon", body))
+	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/alb"}, gateway_eks.PassedRoleARNs("UpdateAddon", body))
+
+	roleless := []byte(`{"addonName":"spinifex-noop"}`)
+	assert.Empty(t, gateway_eks.PassedRoleARNs("CreateAddon", roleless))
+	assert.Empty(t, gateway_eks.PassedRoleARNs("UpdateAddon", roleless))
+
 	assert.Equal(t, []string{"arn:aws:iam::123456789012:role/node"},
 		gateway_eks.PassedRoleARNs("CreateNodegroup", []byte(`{"nodeRole":"arn:aws:iam::123456789012:role/node"}`)))
 }

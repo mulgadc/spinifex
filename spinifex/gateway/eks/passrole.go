@@ -23,6 +23,18 @@ func PassedRoleARNs(action string, body []byte) []string {
 			return nil
 		}
 		roleARN = input.NodeRole
+	case "CreateAddon":
+		input := new(eks.CreateAddonInput)
+		if unmarshalIfBody(body, input) != nil {
+			return nil
+		}
+		roleARN = input.ServiceAccountRoleArn
+	case "UpdateAddon":
+		input := new(eks.UpdateAddonInput)
+		if unmarshalIfBody(body, input) != nil {
+			return nil
+		}
+		roleARN = input.ServiceAccountRoleArn
 	}
 	if aws.StringValue(roleARN) == "" {
 		return nil

@@ -49,7 +49,7 @@ services:
     # forwards to vpcd / viperblockd / predastore.
     #
     # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/daemon
-    # (subscribe registration), spinifex/domains/ec2/<resource> and spinifex/handlers/{elbv2,iam} (per-
+    # (subscribe registration), spinifex/domains/ec2/<resource> and spinifex/handlers/{ecs,elbv2,iam} (per-
     # subject handler bodies). Selector treats these paths as belonging
     # to this service via the `additional_paths` field.
     additional_paths:
@@ -74,8 +74,10 @@ services:
       - spinifex/handlers/elbv2
       - spinifex/domains/acm
       - spinifex/handlers/iam
+      - spinifex/handlers/ecs
       - spinifex/handlers/rds
       - spinifex/domains/rds/subnetgroup
+      - spinifex/domains/ecs/taskdefinition
       - spinifex/domains/ochre/vector
     subscribes:
       # EC2 instance lifecycle.

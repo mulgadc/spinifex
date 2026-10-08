@@ -3,6 +3,7 @@ package handlers_ecs
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -62,7 +63,7 @@ func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
 	for ref, want := range map[string]int64{
 		"app":   2,
 		"app:1": 1,
-		TaskDefARN(testRegion, testAccountID, "app", 1): 1,
+		taskdefinition.ARN(testRegion, testAccountID, "app", 1): 1,
 	} {
 		out, err := svc.DescribeTaskDefinition(context.Background(),
 			&ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(ref)}, testAccountID)
@@ -88,7 +89,7 @@ func TestDeregisterTaskDefinition_RepeatSucceedsAndUnknownIsRefused(t *testing.T
 		out, err := svc.DeregisterTaskDefinition(context.Background(),
 			&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app:1")}, testAccountID)
 		require.NoError(t, err)
-		assert.Equal(t, TaskDefStatusInactive, aws.StringValue(out.TaskDefinition.Status))
+		assert.Equal(t, taskdefinition.StatusInactive, aws.StringValue(out.TaskDefinition.Status))
 	}
 
 	_, err := svc.DeregisterTaskDefinition(context.Background(),
@@ -132,7 +133,7 @@ func TestRunTask_BareFamilyRunsTheLatestRevision(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Tasks, 1)
-	assert.Equal(t, TaskDefARN(testRegion, testAccountID, "app", 2), aws.StringValue(out.Tasks[0].TaskDefinitionArn))
+	assert.Equal(t, taskdefinition.ARN(testRegion, testAccountID, "app", 2), aws.StringValue(out.Tasks[0].TaskDefinitionArn))
 }
 
 // A service pins the revision it resolved at create, so a later register does
@@ -144,7 +145,7 @@ func TestCreateService_PinsTheResolvedRevision(t *testing.T) {
 		TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
 	}, testAccountID)
 	require.NoError(t, err)
-	pinned := TaskDefARN(testRegion, testAccountID, "app", 1)
+	pinned := taskdefinition.ARN(testRegion, testAccountID, "app", 1)
 	assert.Equal(t, pinned, aws.StringValue(out.Service.TaskDefinition))
 
 	registerTaskDef(t, svc, "app", 128, 256)

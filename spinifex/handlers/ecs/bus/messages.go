@@ -53,9 +53,9 @@ const (
 	TaskStatusStopped = "STOPPED"
 )
 
-// PortMapping is a container port exposed on the host (bridge mode v1). Shared
-// by the persisted ContainerDef and the AssignContainer wire payload below; Name
-// is a pure echo the agent does not read.
+// PortMapping is a container port exposed on the host (bridge mode v1), as
+// carried in the AssignContainer wire payload below; Name is a pure echo the
+// agent does not read.
 type PortMapping struct {
 	ContainerPort int    `json:"containerPort"`
 	HostPort      int    `json:"hostPort,omitempty"`
@@ -66,7 +66,6 @@ type PortMapping struct {
 }
 
 // SystemControl is a sysctl namespace/value pair (linux systemControls).
-// Shared by the persisted ContainerDef and the AssignContainer wire payload.
 type SystemControl struct {
 	Namespace string `json:"namespace"`
 	Value     string `json:"value"`
@@ -89,7 +88,7 @@ type AssignContainer struct {
 	// (host-side). Any other value means logs are discarded (warned at register).
 	LogDriver string `json:"logDriver,omitempty"`
 	// User, ReadonlyRootFilesystem, Privileged, PseudoTerminal, Interactive,
-	// SystemControls and CapAdd/CapDrop mirror the persisted ContainerDef and
+	// SystemControls and CapAdd/CapDrop mirror the persisted task definition and
 	// are applied to the OCI spec by the agent. Nil bools mean "not requested",
 	// distinct from an explicit false; an older agent decoding this struct
 	// ignores fields it does not know, so adding fields here is safe.

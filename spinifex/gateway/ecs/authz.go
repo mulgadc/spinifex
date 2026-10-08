@@ -2,6 +2,7 @@ package gateway_ecs
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"maps"
 	"slices"
@@ -323,14 +324,14 @@ func taskDefARN(region, accountID, ref string) string {
 	if ref == "" || region == "" || accountID == "" {
 		return anyResource
 	}
-	family, rev := handlers_ecs.ParseTaskDefRef(ref)
+	family, rev := taskdefinition.ParseRef(ref)
 	if family == "" {
 		return anyResource
 	}
 	if rev <= 0 {
-		return handlers_ecs.TaskDefRefARN(region, accountID, family, anyRevision)
+		return taskdefinition.RefARN(region, accountID, family, anyRevision)
 	}
-	return handlers_ecs.TaskDefARN(region, accountID, family, rev)
+	return taskdefinition.ARN(region, accountID, family, rev)
 }
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the

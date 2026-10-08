@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"strings"
 	"time"
@@ -51,7 +52,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		count = 1
 	}
 	strategy := placementStrategyFromAWS(input.PlacementStrategy)
-	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
+	cpu, mem, gpu := taskDef.ReservedCPU(), taskDef.ReservedMemory(), taskDef.ReservedGPU()
 
 	mode := resolveNetworkMode(taskDef)
 	netCfg, err := parseAwsvpcConfig(input, mode)
@@ -218,7 +219,7 @@ func (s *Service) reservePlacement(ctx context.Context, kv jetstream.KeyValue, c
 }
 
 // newTaskRecord builds a PENDING task record for a placed task.
-func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRecord, inst *InstanceRecord, cpu, mem, gpu int) *TaskRecord {
+func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *taskdefinition.Record, inst *InstanceRecord, cpu, mem, gpu int) *TaskRecord {
 	now := time.Now().UTC()
 	rec := &TaskRecord{
 		TaskID:               taskID,
@@ -246,7 +247,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *TaskDefRe
 // agent drains it by polling the gateway (PollAssignments) rather than
 // subscribing to NATS, so the bus stays host-internal. Durable + restart-safe:
 // an unacked assign survives an agent crash and is re-delivered on the next poll.
-func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *TaskDefRecord) error {
+func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *taskdefinition.Record) error {
 	msg := bus.Assign{
 		AccountID:        accountID,
 		ClusterName:      cluster,
@@ -264,7 +265,7 @@ func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, acco
 		AssignedAt:       time.Now().UTC(),
 	}
 	for _, c := range td.Containers {
-		msg.Containers = append(msg.Containers, c.toAssignContainer())
+		msg.Containers = append(msg.Containers, containerToAssign(c))
 	}
 	return putJSON(ctx, kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
 }

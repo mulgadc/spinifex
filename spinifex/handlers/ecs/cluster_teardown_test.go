@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -45,12 +46,12 @@ func TestService_DeregisterTaskDefinition_InactivatesRevision(t *testing.T) {
 		TaskDefinition: aws.String("app:1"),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, TaskDefStatusInactive, aws.StringValue(out.TaskDefinition.Status))
+	assert.Equal(t, taskdefinition.StatusInactive, aws.StringValue(out.TaskDefinition.Status))
 
 	// Still describable, now INACTIVE.
 	d, err := svc.DescribeTaskDefinition(context.Background(), &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String("app:1")}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, TaskDefStatusInactive, aws.StringValue(d.TaskDefinition.Status))
+	assert.Equal(t, taskdefinition.StatusInactive, aws.StringValue(d.TaskDefinition.Status))
 }
 
 func TestService_DeregisterTaskDefinition_RequiresRevision(t *testing.T) {

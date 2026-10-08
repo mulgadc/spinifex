@@ -11,13 +11,13 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
@@ -113,6 +113,10 @@ type Service struct {
 	nc     *nats.Conn
 	region string
 	suffix string
+	// taskDefs owns task definition revisions; launches reach them only through
+	// launchDefs.
+	taskDefs   *taskdefinition.Owner
+	launchDefs taskDefinitionResolver
 	// eni owns the awsvpc task-ENI control-plane (create/attach/detach/delete).
 	// Defaults to the NATS-backed controller; tests substitute a stub.
 	eni eniController
@@ -141,7 +145,8 @@ func (s *Service) WithDeps(d Deps) *Service {
 // ARNs it mints; suffix is the AWS-parity internal DNS suffix (reserved for ECR
 // endpoint composition).
 func NewService(nc *nats.Conn, region, suffix string) *Service {
-	return &Service{nc: nc, region: region, suffix: suffix, eni: newNATSENIController(nc), targets: newNATSTargetRegistrar(nc), eips: newNATSEIPManager(nc)}
+	taskDefs := taskdefinition.New(region)
+	return &Service{nc: nc, region: region, suffix: suffix, taskDefs: taskDefs, launchDefs: taskDefs, eni: newNATSENIController(nc), targets: newNATSTargetRegistrar(nc), eips: newNATSEIPManager(nc)}
 }
 
 // defaultCluster is the implicit cluster name when a request omits one.
@@ -430,35 +435,23 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		return nil, err
 	}
 
-	rev, err := s.nextRevision(ctx, kv, family)
-	if err != nil {
-		return nil, err
-	}
-
-	rec := TaskDefRecord{
+	rec, err := s.taskDefs.Register(ctx, kv, accountID, taskdefinition.Spec{
 		Family:           family,
-		Revision:         rev,
-		ARN:              TaskDefARN(s.region, accountID, family, rev),
 		NetworkMode:      aws.StringValue(input.NetworkMode),
 		CPU:              aws.StringValue(input.Cpu),
 		Memory:           aws.StringValue(input.Memory),
 		TaskRoleArn:      aws.StringValue(input.TaskRoleArn),
 		ExecutionRoleArn: aws.StringValue(input.ExecutionRoleArn),
-		Status:           TaskDefStatusActive,
 		Tags:             tagsToMap(input.Tags),
-		RegisteredAt:     time.Now().UTC(),
 		Containers:       containerDefsFromAWS(input.ContainerDefinitions),
 
 		RequiresCompatibilities: aws.StringValueSlice(input.RequiresCompatibilities),
 		RuntimePlatform:         runtimePlatformFromAWS(input.RuntimePlatform),
-	}
-	if err := putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := putJSON(ctx, kv, TaskDefLatestRevKey(family), rev); err != nil {
-		return nil, err
-	}
-	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: rec.toAWS(), Tags: tagsToAWS(rec.Tags)}, nil
+	return &ecs.RegisterTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec), Tags: tagsToAWS(rec.Tags)}, nil
 }
 
 // validateContainerDefs hard-rejects taskdef features the data plane cannot
@@ -530,24 +523,11 @@ func warnUnsupportedLogDrivers(ctx context.Context, family string, defs []*ecs.C
 	}
 }
 
-// nextRevision reads the family's latest-rev and returns latest+1 (1 if absent).
-func (s *Service) nextRevision(ctx context.Context, kv jetstream.KeyValue, family string) (int, error) {
-	var latest int
-	found, err := getJSON(ctx, kv, TaskDefLatestRevKey(family), &latest)
-	if err != nil {
-		return 0, err
-	}
-	if !found {
-		return 1, nil
-	}
-	return latest + 1, nil
-}
-
 // DeregisterTaskDefinition marks a specific task-definition revision INACTIVE.
 // AWS requires an explicit family:revision (a bare family is rejected); the
 // revision stays describable, matching AWS. Idempotent.
 func (s *Service) DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
-	family, rev := ParseTaskDefRef(aws.StringValue(input.TaskDefinition))
+	family, rev := taskdefinition.ParseRef(aws.StringValue(input.TaskDefinition))
 	if family == "" || rev == 0 {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
@@ -555,19 +535,11 @@ func (s *Service) DeregisterTaskDefinition(ctx context.Context, input *ecs.Dereg
 	if err != nil {
 		return nil, err
 	}
-	var rec TaskDefRecord
-	found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
+	rec, err := s.taskDefs.Deregister(ctx, kv, family, rev)
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
-	}
-	rec.Status = TaskDefStatusInactive
-	if err := putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec); err != nil {
-		return nil, err
-	}
-	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: rec.toAWS()}, nil
+	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec)}, nil
 }
 
 // DescribeTaskDefinition resolves "family", "family:rev" or an ARN to a revision.
@@ -576,11 +548,11 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	if err != nil {
 		return nil, err
 	}
-	rec, err := s.resolveTaskDef(ctx, kv, aws.StringValue(input.TaskDefinition))
+	rec, err := s.taskDefs.Resolve(ctx, kv, aws.StringValue(input.TaskDefinition))
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: rec.toAWS(), Tags: tagsToAWS(rec.Tags)}, nil
+	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec), Tags: tagsToAWS(rec.Tags)}, nil
 }
 
 // ListTaskDefinitions returns revision ARNs, optionally filtered by family and
@@ -593,81 +565,29 @@ func (s *Service) ListTaskDefinitions(ctx context.Context, input *ecs.ListTaskDe
 	}
 	wantStatus := aws.StringValue(input.Status)
 	if wantStatus == "" {
-		wantStatus = TaskDefStatusActive
+		wantStatus = taskdefinition.StatusActive
 	}
-	prefix := TaskDefFamiliesPrefix()
-	if fam := aws.StringValue(input.FamilyPrefix); fam != "" {
-		prefix = TaskDefRevsPrefix(fam)
-	}
-	keys, err := keysWithPrefix(ctx, kv, prefix)
+	arns, err := s.taskDefs.List(ctx, kv, aws.StringValue(input.FamilyPrefix), wantStatus)
 	if err != nil {
 		return nil, err
-	}
-	arns := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if !strings.Contains(k, "/revs/") {
-			continue
-		}
-		var rec TaskDefRecord
-		found, err := getJSON(ctx, kv, k, &rec)
-		if err != nil {
-			return nil, err
-		}
-		if found && rec.Status == wantStatus {
-			arns = append(arns, rec.ARN)
-		}
 	}
 	return &ecs.ListTaskDefinitionsOutput{TaskDefinitionArns: aws.StringSlice(arns)}, nil
 }
 
-// resolveTaskDef loads the TaskDefRecord named by ref ("family", "family:rev",
-// or a task-definition ARN). A bare family resolves to its latest revision.
-func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*TaskDefRecord, error) {
-	family, rev := ParseTaskDefRef(ref)
-	if family == "" {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
-	}
-	if rev == 0 {
-		var latest int
-		found, err := getJSON(ctx, kv, TaskDefLatestRevKey(family), &latest)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
-		}
-		rev = latest
-	}
-	var rec TaskDefRecord
-	found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
-	}
-	return &rec, nil
+// The launch side's view of task definitions: resolve a reference to the
+// revision a task or service runs.
+type taskDefinitionResolver interface {
+	Resolve(ctx context.Context, kv jetstream.KeyValue, ref string) (*taskdefinition.Record, error)
 }
 
-// ParseTaskDefRef splits "family", "family:rev" or an ARN into (family, rev).
-// rev is 0 when unspecified (caller resolves to latest).
-func ParseTaskDefRef(ref string) (string, int) {
-	ref = strings.TrimSpace(ref)
-	if i := strings.LastIndex(ref, "task-definition/"); i >= 0 {
-		ref = ref[i+len("task-definition/"):]
-	}
-	family := ref
-	rev := 0
-	if i := strings.LastIndexByte(ref, ':'); i >= 0 {
-		family = ref[:i]
-		if n, err := strconv.Atoi(ref[i+1:]); err == nil {
-			rev = n
-		}
-	}
-	return family, rev
+var _ taskDefinitionResolver = (*taskdefinition.Owner)(nil)
+
+// resolveTaskDef is how task and service launches reach task definitions.
+func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*taskdefinition.Record, error) {
+	return s.launchDefs.Resolve(ctx, kv, ref)
 }
 
-func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
+func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {
 	td := &ecs.TaskDefinition{
 		Family:            aws.String(r.Family),
 		Revision:          aws.Int64(int64(r.Revision)),
@@ -703,7 +623,7 @@ func (r *TaskDefRecord) toAWS() *ecs.TaskDefinition {
 		td.RuntimePlatform = rp
 	}
 	for _, c := range r.Containers {
-		td.ContainerDefinitions = append(td.ContainerDefinitions, c.toAWS())
+		td.ContainerDefinitions = append(td.ContainerDefinitions, containerToAWS(c))
 	}
 	return td
 }

@@ -3,6 +3,7 @@ package handlers_ecs
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"maps"
 	"strings"
 
@@ -86,12 +87,12 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		}
 		return rec.Tags, nil
 	case ecsResourceTaskDefinition:
-		family, rev := ParseTaskDefRef(id)
+		family, rev := taskdefinition.ParseRef(id)
 		if family == "" || rev == 0 {
 			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 		}
-		var rec TaskDefRecord
-		found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
+		var rec taskdefinition.Record
+		found, err := getJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -151,12 +152,12 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		rec.Tags = mutate(rec.Tags)
 		return putJSON(ctx, kv, ClusterMetaKey(id), &rec)
 	case ecsResourceTaskDefinition:
-		family, rev := ParseTaskDefRef(id)
+		family, rev := taskdefinition.ParseRef(id)
 		if family == "" || rev == 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
-		var rec TaskDefRecord
-		found, err := getJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
+		var rec taskdefinition.Record
+		found, err := getJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 		if err != nil {
 			return err
 		}
@@ -164,7 +165,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(ctx, kv, TaskDefRevKey(family, rev), &rec)
+		return putJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 	case ecsResourceService:
 		var rec ServiceRecord
 		found, err := getJSON(ctx, kv, ServiceKey(cluster, id), &rec)

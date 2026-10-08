@@ -74,7 +74,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	if mode == NetworkModeAwsvpc && netCfg.firstSubnet() == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	cpu, mem, gpu := taskDef.reservedCPU(), taskDef.reservedMemory(), taskDef.reservedGPU()
+	cpu, mem, gpu := taskDef.ReservedCPU(), taskDef.ReservedMemory(), taskDef.ReservedGPU()
 	eni := eniReservationFor(mode)
 	group := aws.StringValue(input.Group)
 	startedBy := aws.StringValue(input.StartedBy)

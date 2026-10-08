@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -160,9 +161,44 @@ func TestRunTask_AssignCarriesExecutionRoleAndLogDriver(t *testing.T) {
 	assert.Equal(t, LogDriverJSONFile, poll.Assignments[0].Containers[0].LogDriver)
 }
 
+// The persisted port mappings and sysctls are translated field by field onto
+// the assign payload the agent polls for.
+func TestRunTask_AssignCarriesPortMappingsAndSystemControls(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:      aws.String("app"),
+		NetworkMode: aws.String("bridge"),
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("app"), Image: aws.String("registry/app:1"),
+			Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
+			PortMappings: []*ecs.PortMapping{{
+				ContainerPort: aws.Int64(80), HostPort: aws.Int64(8080), Protocol: aws.String("udp"), Name: aws.String("web"),
+			}},
+			SystemControls: []*ecs.SystemControl{{Namespace: aws.String("net.core.somaxconn"), Value: aws.String("1024")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+
+	_, err = svc.RunTask(context.Background(), &ecs.RunTaskInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	poll, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, poll.Assignments, 1)
+	require.Len(t, poll.Assignments[0].Containers, 1)
+	c := poll.Assignments[0].Containers[0]
+	assert.Equal(t, []bus.PortMapping{{ContainerPort: 80, HostPort: 8080, Protocol: "udp", Name: "web"}}, c.PortMappings)
+	assert.Equal(t, []bus.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}}, c.SystemControls)
+}
+
 // TestRunTask_AssignCarriesGPU verifies that a
 // resourceRequirements GPU count on the task def is threaded end-to-end —
-// conv -> ContainerDef -> task-level aggregate (TaskRecord.GPU) -> the
+// conv -> taskdefinition.Container -> task-level aggregate (TaskRecord.GPU) -> the
 // AssignContainer the agent polls for.
 func TestRunTask_AssignCarriesGPU(t *testing.T) {
 	svc, _ := newTestService(t)

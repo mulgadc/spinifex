@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 	"time"
 
@@ -324,7 +325,7 @@ func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 	rec := &ServiceRecord{
 		Name: "legacy", ARN: ServiceARN(testRegion, testAccountID, "web", "legacy"),
 		Cluster: "web", TaskDefFamily: "app", TaskDefRevision: 1,
-		TaskDefARN:   TaskDefARN(testRegion, testAccountID, "app", 1),
+		TaskDefARN:   taskdefinition.ARN(testRegion, testAccountID, "app", 1),
 		DesiredCount: 1, Status: ServiceStatusActive,
 		SchedulingStrategy: SchedulingStrategyReplica, DeploymentID: "legacy-dep",
 	}

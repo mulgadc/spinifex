@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -29,7 +30,7 @@ type awsvpcConfig struct {
 
 // resolveNetworkMode normalises a task definition's networkMode, defaulting to
 // bridge when unset (AWS EC2-launch-type behaviour).
-func resolveNetworkMode(td *TaskDefRecord) string {
+func resolveNetworkMode(td *taskdefinition.Record) string {
 	mode := strings.ToLower(strings.TrimSpace(td.NetworkMode))
 	switch mode {
 	case NetworkModeAwsvpc, NetworkModeBridge, NetworkModeHost, NetworkModeNone:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"testing"
 	"time"
@@ -373,11 +374,11 @@ func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing
 }
 
 func TestResolveNetworkMode(t *testing.T) {
-	assert.Equal(t, NetworkModeAwsvpc, resolveNetworkMode(&TaskDefRecord{NetworkMode: "awsvpc"}))
-	assert.Equal(t, NetworkModeAwsvpc, resolveNetworkMode(&TaskDefRecord{NetworkMode: "AWSVPC"}))
-	assert.Equal(t, NetworkModeHost, resolveNetworkMode(&TaskDefRecord{NetworkMode: "host"}))
-	assert.Equal(t, NetworkModeBridge, resolveNetworkMode(&TaskDefRecord{})) // default
-	assert.Equal(t, NetworkModeBridge, resolveNetworkMode(&TaskDefRecord{NetworkMode: "garbage"}))
+	assert.Equal(t, NetworkModeAwsvpc, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "awsvpc"}))
+	assert.Equal(t, NetworkModeAwsvpc, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "AWSVPC"}))
+	assert.Equal(t, NetworkModeHost, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "host"}))
+	assert.Equal(t, NetworkModeBridge, resolveNetworkMode(&taskdefinition.Record{})) // default
+	assert.Equal(t, NetworkModeBridge, resolveNetworkMode(&taskdefinition.Record{NetworkMode: "garbage"}))
 }
 
 func TestParseAwsvpcConfig(t *testing.T) {

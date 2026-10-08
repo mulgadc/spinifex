@@ -125,11 +125,6 @@ func TestKeyPaths(t *testing.T) {
 	assert.Equal(t, "clusters/web/services/", ServicesPrefix("web"))
 	assert.Equal(t, "clusters/web/services/api", ServiceKey("web", "api"))
 
-	assert.Equal(t, "taskdef-families/", TaskDefFamiliesPrefix())
-	assert.Equal(t, "taskdef-families/nginx/latest-rev", TaskDefLatestRevKey("nginx"))
-	assert.Equal(t, "taskdef-families/nginx/revs/", TaskDefRevsPrefix("nginx"))
-	assert.Equal(t, "taskdef-families/nginx/revs/3", TaskDefRevKey("nginx", 3))
-
 	assert.Equal(t, "123456789012/web", LeaderLeaseKey("123456789012", "web"))
 }
 
@@ -139,5 +134,4 @@ func TestPrefixContainment(t *testing.T) {
 	assert.Contains(t, InstanceKey("c", "x"), InstancesPrefix("c"))
 	assert.Contains(t, TaskKey("c", "x"), TasksPrefix("c"))
 	assert.Contains(t, ServiceKey("c", "x"), ServicesPrefix("c"))
-	assert.Contains(t, TaskDefRevKey("f", 1), TaskDefRevsPrefix("f"))
 }

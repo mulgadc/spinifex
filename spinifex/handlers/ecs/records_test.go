@@ -7,13 +7,14 @@ package handlers_ecs
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestTaskDefRecord_DecodesPreExistingJSON verifies that a TaskDefRecord
+// TestTaskDefRecord_DecodesPreExistingJSON verifies that a taskdefinition.Record
 // persisted before portMappings[].name and runtimePlatform existed still
 // decodes cleanly: every KV entry written by an older daemon build must stay
 // readable without a migration.
@@ -30,7 +31,7 @@ func TestTaskDefRecord_DecodesPreExistingJSON(t *testing.T) {
 			"portMappings": [{"containerPort": 80, "hostPort": 8080, "protocol": "tcp"}]
 		}]
 	}`
-	var rec TaskDefRecord
+	var rec taskdefinition.Record
 	require.NoError(t, json.Unmarshal([]byte(legacy), &rec))
 	assert.Nil(t, rec.RuntimePlatform)
 	require.Len(t, rec.Containers, 1)
@@ -38,7 +39,7 @@ func TestTaskDefRecord_DecodesPreExistingJSON(t *testing.T) {
 	assert.Empty(t, rec.Containers[0].PortMappings[0].Name)
 
 	// toAWS must not panic or invent a RuntimePlatform for the missing field.
-	td := rec.toAWS()
+	td := taskDefToAWS(&rec)
 	assert.Nil(t, td.RuntimePlatform)
 	require.Len(t, td.ContainerDefinitions, 1)
 	assert.Nil(t, td.ContainerDefinitions[0].PortMappings[0].Name)

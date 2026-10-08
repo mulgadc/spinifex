@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"slices"
 	"strconv"
 	"strings"
@@ -454,7 +455,7 @@ func TestCreateNodegroup_GPUNodegroupStagesDevicePluginAddon(t *testing.T) {
 	markWorkersReady(t, f, "c1", "ng-gpu", 1)
 	f.svc.WaitLaunches()
 
-	rec, err := GetAddonRecord(t.Context(), f.kv, "c1", nvidiaDevicePluginAddonName)
+	rec, err := addon.Get(t.Context(), f.kv, "c1", addon.NvidiaDevicePlugin)
 	require.NoError(t, err, "nvidia-device-plugin must be staged for a GPU nodegroup")
 	assert.Equal(t, "0.17.4", rec.AddonVersion)
 }
@@ -472,8 +473,8 @@ func TestCreateNodegroup_NonGPUNodegroupDoesNotStageDevicePluginAddon(t *testing
 	markWorkersReady(t, f, "c1", "ng1", 1)
 	f.svc.WaitLaunches()
 
-	_, err = GetAddonRecord(t.Context(), f.kv, "c1", nvidiaDevicePluginAddonName)
-	require.ErrorIs(t, err, ErrAddonNotFound)
+	_, err = addon.Get(t.Context(), f.kv, "c1", addon.NvidiaDevicePlugin)
+	require.ErrorIs(t, err, addon.ErrNotFound)
 }
 
 // A non-GPU instance type must leave the record's GPU fields unset, so the

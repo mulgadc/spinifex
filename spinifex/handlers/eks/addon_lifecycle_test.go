@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"testing"
 	"time"
 
@@ -136,9 +137,9 @@ func TestCreateAddon_InstallerFailureLeavesDurableCreateFailedRecord(t *testing.
 	}, testAccountID)
 	require.ErrorIs(t, err, cause)
 
-	rec, err := GetAddonRecord(t.Context(), acctKVForTest(t, svc), "c1", albController)
+	rec, err := addon.Get(t.Context(), acctKVForTest(t, svc), "c1", albController)
 	require.NoError(t, err)
-	assert.Equal(t, AddonStatusCreateFailed, rec.Status)
+	assert.Equal(t, addon.StatusCreateFailed, rec.Status)
 	assert.Equal(t, "delivery bus unreachable", rec.Health)
 
 	fake.installErr = nil
@@ -168,9 +169,9 @@ func TestUpdateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
 	}, testAccountID)
 	require.ErrorIs(t, err, cause)
 
-	rec, err := GetAddonRecord(t.Context(), acctKVForTest(t, svc), "c1", "argocd")
+	rec, err := addon.Get(t.Context(), acctKVForTest(t, svc), "c1", "argocd")
 	require.NoError(t, err)
-	assert.Equal(t, AddonStatusCreateFailed, rec.Status)
+	assert.Equal(t, addon.StatusCreateFailed, rec.Status)
 	assert.Equal(t, `{"replicaCount":2}`, rec.ConfigurationValues, "the new desired config stays stored")
 }
 
@@ -218,32 +219,32 @@ func TestUpdateAddon_ReportsSuccessfulWhileRecordIsUpdating(t *testing.T) {
 func TestAddonStatusReport_MismatchedVersionIsAccepted(t *testing.T) {
 	t.Parallel()
 	_, kv := setupStagingAddonService(t)
-	r := &ClusterReconciler{acctKV: kv, clusterName: "c1"}
-	put := func(status AddonStatus) {
+	r := &ClusterReconciler{acctKV: kv, clusterName: "c1", addonReports: addon.New("", nil)}
+	put := func(status addon.Status) {
 		now := time.Now().UTC()
-		require.NoError(t, PutAddonRecord(t.Context(), kv, "c1", &AddonRecord{
+		require.NoError(t, putAddonRecord(t, kv, "c1", &addon.Record{
 			AddonName: "argocd", AddonVersion: "3.0.23", Status: status, Arn: "arn", CreatedAt: now, ModifiedAt: now,
 		}))
 	}
-	get := func() *AddonRecord {
-		rec, err := GetAddonRecord(t.Context(), kv, "c1", "argocd")
+	get := func() *addon.Record {
+		rec, err := addon.Get(t.Context(), kv, "c1", "argocd")
 		require.NoError(t, err)
 		return rec
 	}
-	put(AddonStatusUpdating)
+	put(addon.StatusUpdating)
 	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: AddonPhaseReady, TS: 1})
-	assert.Equal(t, AddonStatusActive, get().Status)
+	assert.Equal(t, addon.StatusActive, get().Status)
 	assert.Equal(t, "3.0.23", get().AddonVersion, "the report's version is not recorded either")
 
-	put(AddonStatusUpdating)
+	put(addon.StatusUpdating)
 	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: AddonPhaseFailed, Message: "old", TS: 1})
-	assert.Equal(t, AddonStatusCreateFailed, get().Status)
+	assert.Equal(t, addon.StatusCreateFailed, get().Status)
 	assert.Equal(t, "old", get().Health)
 
 	// A later ready report lifts CREATE_FAILED straight back to ACTIVE; failure
 	// is not terminal against reports.
 	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: AddonPhaseReady, TS: 0})
-	assert.Equal(t, AddonStatusActive, get().Status)
+	assert.Equal(t, addon.StatusActive, get().Status)
 	assert.Empty(t, get().Health)
 }
 
@@ -274,10 +275,10 @@ func TestDeleteAddon_ReturnsDeletingAfterErasingRecordAndManifest(t *testing.T) 
 	assert.Empty(t, staged.Manifests)
 
 	// A report racing the delete does not recreate the record.
-	r := &ClusterReconciler{acctKV: kv, clusterName: "c1"}
+	r := &ClusterReconciler{acctKV: kv, clusterName: "c1", addonReports: addon.New("", nil)}
 	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: albController, Version: "2.11.0", Phase: AddonPhaseReady})
-	_, err = GetAddonRecord(t.Context(), kv, "c1", albController)
-	require.ErrorIs(t, err, ErrAddonNotFound)
+	_, err = addon.Get(t.Context(), kv, "c1", albController)
+	require.ErrorIs(t, err, addon.ErrNotFound)
 
 	_, err = svc.DeleteAddon(context.Background(), &eks.DeleteAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
@@ -318,7 +319,7 @@ func TestDeleteClusterPrefix_SweepsAddonRecordsAndManifestsScopedToCluster(t *te
 		_, err := kv.Get(t.Context(), key)
 		require.ErrorIs(t, err, jetstream.ErrKeyNotFound, "key %s", key)
 	}
-	for _, key := range []string{AddonKey("c2", albController), AddonManifestKey("c2", albController)} {
+	for _, key := range []string{addon.Key("c2", albController), addon.ManifestKey("c2", albController)} {
 		_, err := kv.Get(t.Context(), key)
 		require.NoError(t, err, "key %s", key)
 	}

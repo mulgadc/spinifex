@@ -169,12 +169,11 @@ type ClusterReconciler struct {
 	stopRun    context.CancelFunc
 
 	// Add-on delivery status source. When addonStatusSub is non-nil the
-	// reconciler subscribes to the per-cluster add-on status subject and CASes
-	// each AddonRecord (CREATING → ACTIVE/DEGRADED) from the on-VM addon-sync
-	// agent's reports. Add-on lifecycle is tracked per-resource (AWS parity), so
-	// this is a sibling of the cluster state-report, not folded into it.
+	// reconciler subscribes to the per-cluster add-on status subject and hands
+	// each guest report to addonReports, which owns the add-on status.
 	addonStatusSub     natsSubscriber
 	addonStatusSubject string
+	addonReports       addonReports
 
 	// cpControl recovers a wedged control-plane VM in place; nil disables
 	// auto-restart. restart* fields tune the grace window before the first
@@ -260,12 +259,13 @@ func WithStateStaleAfter(d time.Duration) ReconcilerOption {
 }
 
 // WithAddonStatusSource configures the reconciler to consume per-add-on delivery
-// status reports (subject) via sub and CAS the matching AddonRecord. The
+// status reports (subject) via sub and apply each through reports. The
 // subscription is opened in Run and closed when it returns.
-func WithAddonStatusSource(sub natsSubscriber, subject string) ReconcilerOption {
+func WithAddonStatusSource(sub natsSubscriber, subject string, reports addonReports) ReconcilerOption {
 	return func(r *ClusterReconciler) {
 		r.addonStatusSub = sub
 		r.addonStatusSubject = subject
+		r.addonReports = reports
 	}
 }
 
@@ -444,7 +444,7 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 		defer func() { _ = sub.Unsubscribe() }()
 	}
 
-	if r.addonStatusSub != nil && r.addonStatusSubject != "" {
+	if r.addonStatusSub != nil && r.addonStatusSubject != "" && r.addonReports != nil {
 		sub, err := r.addonStatusSub.Subscribe(r.addonStatusSubject, func(m *nats.Msg) {
 			report, perr := unmarshalAddonStatusReport(m.Data)
 			if perr != nil {

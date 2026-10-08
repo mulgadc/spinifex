@@ -82,6 +82,7 @@ services:
       - spinifex/domains/ecs/taskdefinition
       - spinifex/handlers/eks
       - spinifex/domains/eks/access
+      - spinifex/domains/eks/addon
       - spinifex/domains/ochre/vector
     subscribes:
       # EC2 instance lifecycle.

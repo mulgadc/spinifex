@@ -1,6 +1,8 @@
 package handlers_eks
 
 import (
+	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"testing"
 	"time"
 
@@ -20,51 +22,34 @@ func acctKVForTest(t *testing.T, svc *EKSServiceImpl) jetstream.KeyValue {
 	return kv
 }
 
-func TestNextAddonStatus(t *testing.T) {
-	cases := []struct {
-		name        string
-		cur         AddonStatus
-		phase       AddonDeliveryPhase
-		wantStatus  AddonStatus
-		wantChanged bool
-	}{
-		{"ready from creating -> active", AddonStatusCreating, AddonPhaseReady, AddonStatusActive, true},
-		{"ready from updating -> active", AddonStatusUpdating, AddonPhaseReady, AddonStatusActive, true},
-		{"ready when already active -> no-op", AddonStatusActive, AddonPhaseReady, AddonStatusActive, false},
-		{"applied is informational -> no-op", AddonStatusCreating, AddonPhaseApplied, AddonStatusCreating, false},
-		{"failed from creating -> create_failed", AddonStatusCreating, AddonPhaseFailed, AddonStatusCreateFailed, true},
-		{"failed from updating -> create_failed", AddonStatusUpdating, AddonPhaseFailed, AddonStatusCreateFailed, true},
-		{"failed when active -> degraded", AddonStatusActive, AddonPhaseFailed, AddonStatusDegraded, true},
-		{"failed when degraded -> sticky", AddonStatusDegraded, AddonPhaseFailed, AddonStatusDegraded, false},
-		{"failed when create_failed -> sticky", AddonStatusCreateFailed, AddonPhaseFailed, AddonStatusCreateFailed, false},
-		{"unknown phase -> no-op", AddonStatusCreating, AddonDeliveryPhase("bogus"), AddonStatusCreating, false},
+// putAddonRecord seeds a record at its stored key, bypassing the owner.
+func putAddonRecord(t *testing.T, kv jetstream.KeyValue, cluster string, rec *addon.Record) error {
+	t.Helper()
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, changed := nextAddonStatus(tc.cur, tc.phase)
-			assert.Equal(t, tc.wantStatus, got)
-			assert.Equal(t, tc.wantChanged, changed)
-		})
-	}
+	_, err = kv.Put(t.Context(), addon.Key(cluster, rec.AddonName), data)
+	return err
 }
 
 func TestApplyAddonStatusReport(t *testing.T) {
 	svc := setupTestService(t)
 	seedTestCluster(t, svc, "c1")
 	acctKV := acctKVForTest(t, svc)
-	r := &ClusterReconciler{acctKV: acctKV, clusterName: "c1"}
+	r := &ClusterReconciler{acctKV: acctKV, clusterName: "c1", addonReports: addon.New("", nil)}
 
 	seed := func(t *testing.T) {
 		t.Helper()
 		now := time.Now().UTC()
-		require.NoError(t, PutAddonRecord(t.Context(), acctKV, "c1", &AddonRecord{
-			AddonName: "coredns", AddonVersion: "1.11.1", Status: AddonStatusCreating,
+		require.NoError(t, putAddonRecord(t, acctKV, "c1", &addon.Record{
+			AddonName: "coredns", AddonVersion: "1.11.1", Status: addon.StatusCreating,
 			Arn: arn.FormatEKSAddon("us-east-1", testAccountID, "c1", "coredns"), CreatedAt: now, ModifiedAt: now,
 		}))
 	}
-	get := func(t *testing.T) *AddonRecord {
+	get := func(t *testing.T) *addon.Record {
 		t.Helper()
-		rec, err := GetAddonRecord(t.Context(), acctKV, "c1", "coredns")
+		rec, err := addon.Get(t.Context(), acctKV, "c1", "coredns")
 		require.NoError(t, err)
 		return rec
 	}
@@ -73,14 +58,14 @@ func TestApplyAddonStatusReport(t *testing.T) {
 		seed(t)
 		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseReady, Message: "ignored", TS: time.Now().Unix()})
 		rec := get(t)
-		assert.Equal(t, AddonStatusActive, rec.Status)
+		assert.Equal(t, addon.StatusActive, rec.Status)
 		assert.Empty(t, rec.Health)
 	})
 
 	t.Run("failed on active goes degraded and records message", func(t *testing.T) {
 		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseFailed, Message: "rollout stalled", TS: time.Now().Unix()})
 		rec := get(t)
-		assert.Equal(t, AddonStatusDegraded, rec.Status)
+		assert.Equal(t, addon.StatusDegraded, rec.Status)
 		assert.Equal(t, "rollout stalled", rec.Health)
 	})
 
@@ -89,7 +74,7 @@ func TestApplyAddonStatusReport(t *testing.T) {
 		before := get(t)
 		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseApplied, TS: time.Now().Unix()})
 		after := get(t)
-		assert.Equal(t, AddonStatusCreating, after.Status)
+		assert.Equal(t, addon.StatusCreating, after.Status)
 		assert.Equal(t, before.ModifiedAt, after.ModifiedAt, "no-op must not bump ModifiedAt")
 	})
 

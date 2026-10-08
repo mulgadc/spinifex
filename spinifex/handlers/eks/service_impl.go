@@ -26,6 +26,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -113,7 +114,7 @@ type EKSServiceDeps struct {
 	Scheduler      HostScheduler
 
 	// AddonInstaller delivers managed-addon manifests; nil defaults to the KV staging installer.
-	AddonInstaller AddonInstaller
+	AddonInstaller addon.Installer
 
 	// CPControl lets the reconciler recover a wedged control-plane VM: describe
 	// its state and restart it. Nil disables auto-restart (health is still
@@ -290,7 +291,7 @@ const defaultK8sVersion = "1.32"
 
 // NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
-	if err := validateAddonCatalog(addonCatalog); err != nil {
+	if err := addon.ValidateCatalog(); err != nil {
 		return nil, fmt.Errorf("eks: validate add-on catalog: %w", err)
 	}
 	if deps.NATSConn == nil {
@@ -2158,7 +2159,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
 	opts := []ReconcilerOption{
 		WithStateSource(s.deps.NATSConn, stateSubject),
-		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject),
+		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject, s.addons()),
 	}
 	if s.deps.CPControl != nil {
 		// The control-plane VMs are launched under the system account (see

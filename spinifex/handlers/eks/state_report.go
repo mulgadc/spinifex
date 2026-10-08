@@ -67,7 +67,7 @@ func unmarshalServerStateReport(data []byte) (ServerStateReport, error) {
 // AddonStatusSubject returns the NATS subject the control-plane VM publishes a
 // per-add-on delivery status to: "eks.addon.{accountID}.{clusterName}.status".
 // One subject per cluster carries reports for every add-on (Addon names the
-// add-on); the host-side AddonStatusReconciler CASes the matching AddonRecord.
+// add-on); the host-side cluster reconciler relays each to the add-on owner.
 // Distinct from StateSubject because add-on lifecycle is tracked per-resource,
 // mirroring AWS EKS (DescribeAddon.status is independent of cluster status).
 func AddonStatusSubject(accountID, clusterName string) string {
@@ -75,8 +75,8 @@ func AddonStatusSubject(accountID, clusterName string) string {
 }
 
 // AddonDeliveryPhase is the VM-observed delivery phase the on-VM addon-sync
-// agent reports for one managed add-on. The reconciler maps it onto the
-// AWS-visible AddonStatus.
+// agent reports for one managed add-on. The add-on owner maps it onto the
+// AWS-visible add-on status.
 type AddonDeliveryPhase string
 
 const (
@@ -87,7 +87,7 @@ const (
 	// flips to ACTIVE.
 	AddonPhaseReady AddonDeliveryPhase = "ready"
 	// AddonPhaseFailed: render or rollout failed. Record flips to DEGRADED
-	// (CREATE_FAILED if it never reached ACTIVE — decided by the reconciler).
+	// (CREATE_FAILED if it never reached ACTIVE — decided by the add-on owner).
 	AddonPhaseFailed AddonDeliveryPhase = "failed"
 )
 

@@ -3,6 +3,7 @@ package handlers_eks
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -16,14 +17,14 @@ import (
 // fakeAddonInstaller records calls so tests can assert the state machine drives
 // the installer with the right record.
 type fakeAddonInstaller struct {
-	installs   []*AddonRecord
+	installs   []*addon.Record
 	uninstalls []string
 	installErr error
 }
 
-var _ AddonInstaller = (*fakeAddonInstaller)(nil)
+var _ addon.Installer = (*fakeAddonInstaller)(nil)
 
-func (f *fakeAddonInstaller) Install(_ context.Context, _, _ string, rec *AddonRecord) error {
+func (f *fakeAddonInstaller) Install(_ context.Context, _, _ string, rec *addon.Record) error {
 	f.installs = append(f.installs, rec)
 	return f.installErr
 }
@@ -51,7 +52,7 @@ func TestDescribeAddonVersions_ReturnsCatalog(t *testing.T) {
 	out, err := svc.DescribeAddonVersions(context.Background(), &eks.DescribeAddonVersionsInput{}, testAccountID)
 	require.NoError(t, err)
 	visible := 0
-	for _, spec := range addonCatalog {
+	for _, spec := range addon.Specs() {
 		if !spec.Hidden {
 			visible++
 		}
@@ -103,7 +104,7 @@ func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
 func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
 	t.Parallel()
 	svc, fake := setupAddonService(t)
-	spec, _ := lookupAddon(albController)
+	spec, _ := addon.Lookup(albController)
 
 	out, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
@@ -113,7 +114,7 @@ func TestCreateAddon_CreatesStagingAndDefaultsVersion(t *testing.T) {
 	// Version defaults to catalog default; status starts CREATING (honest until
 	// VM-side delivery confirms ACTIVE).
 	assert.Equal(t, spec.DefaultVersion, aws.StringValue(out.Addon.AddonVersion))
-	assert.Equal(t, string(AddonStatusCreating), aws.StringValue(out.Addon.Status))
+	assert.Equal(t, string(addon.StatusCreating), aws.StringValue(out.Addon.Status))
 	assert.Contains(t, aws.StringValue(out.Addon.AddonArn), ":addon/c1/"+albController)
 
 	// Installer was driven with the persisted record.
@@ -141,7 +142,7 @@ func TestCreateAddon_InstallerFailureMarksCreateFailed(t *testing.T) {
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, string(AddonStatusCreateFailed), aws.StringValue(desc.Addon.Status))
+	assert.Equal(t, string(addon.StatusCreateFailed), aws.StringValue(desc.Addon.Status))
 }
 
 func TestAddon_DescribeListDelete(t *testing.T) {
@@ -191,7 +192,7 @@ func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
 func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	t.Parallel()
 	svc, fake := setupAddonService(t)
-	spec, _ := lookupAddon("argocd")
+	spec, _ := addon.Lookup("argocd")
 
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
@@ -214,7 +215,7 @@ func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `{"replicaCount":2}`, aws.StringValue(desc.Addon.ConfigurationValues))
 	assert.Equal(t, spec.DefaultVersion, aws.StringValue(desc.Addon.AddonVersion))
-	assert.Equal(t, string(AddonStatusUpdating), aws.StringValue(desc.Addon.Status))
+	assert.Equal(t, string(addon.StatusUpdating), aws.StringValue(desc.Addon.Status))
 }
 
 func TestUpdateAddon_UnknownVersionRejected(t *testing.T) {
@@ -257,7 +258,7 @@ func TestStagingInstaller_StagesManifest(t *testing.T) {
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
-	entry, err := kv.Get(t.Context(), AddonManifestKey("c1", albController))
+	entry, err := kv.Get(t.Context(), addon.ManifestKey("c1", albController))
 	require.NoError(t, err, "installer must stage a manifest for VM-side delivery")
 	assert.Contains(t, string(entry.Value()), albController)
 }
@@ -307,3 +308,6 @@ func TestListStagedAddonManifests(t *testing.T) {
 	_, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: ""}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
+
+// Not parallel: it swaps the package-wide catalogue check every service the
+// parallel tests construct runs.

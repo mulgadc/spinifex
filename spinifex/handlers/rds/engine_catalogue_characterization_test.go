@@ -56,21 +56,15 @@ func TestEngineValidateVersion_UnsupportedVersionCarriesExactCode(t *testing.T) 
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
 }
 
-// ValidateMasterUserPassword's three rejections are built two different ways
-// today: the length and character checks go through awserrors.Errorf, whose
-// wrapped code resolves through ValidErrorCodeFromError; the empty-password
-// check is a bare errors.New with the code only prefixed into the message
-// text, which ValidErrorCodeFromError's exact-match lookup does not resolve.
-// This pins that divergence rather than papering over it.
+// ValidateMasterUserPassword's three rejections all go through awserrors.Errorf,
+// so each one resolves through ValidErrorCodeFromError to the same code.
 func TestValidateMasterUserPassword_ExactCodesAndMessages(t *testing.T) {
 	t.Parallel()
 
 	empty := ValidateMasterUserPassword("")
 	require.Error(t, empty)
-	assert.Equal(t, "InvalidParameterValue: MasterUserPassword is required", empty.Error())
-	assert.Equal(t, awserrors.ErrorServerInternal, awserrors.ValidErrorCodeFromError(empty),
-		"today this does NOT resolve to InvalidParameterValue: the code is only prefixed into the "+
-			"message text, not carried as a wrapped codedError, so the helper's exact-match lookup misses it")
+	assert.Equal(t, "MasterUserPassword is required: InvalidParameterValue", empty.Error())
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(empty))
 
 	tooShort := ValidateMasterUserPassword("short1")
 	require.Error(t, tooShort)

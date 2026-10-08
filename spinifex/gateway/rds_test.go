@@ -9,10 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -361,3 +364,31 @@ func TestRDSErrorHandler_UsesRDSUnsupportedActionWording(t *testing.T) {
 }
 
 var errNotImplementedForTest = errors.New(awserrors.ErrorNotImplemented)
+
+// TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400 runs the real public path:
+// a CreateDBInstance query request through RDS_Request, over NATS, into the production
+// handlers_rds.Service, and the resulting error through ErrorHandler's HTTP/XML rendering. AWS
+// returns 400 InvalidParameterValue for a create with no MasterUserPassword.
+func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc := handlers_rds.NewService(nc, "ap-southeast-2")
+	sub, err := nc.Subscribe(handlers_rds.SubjectCreateDBInstance, func(msg *nats.Msg) {
+		natsmsg.ServeNATSRequestCtx(msg, func(ctx context.Context, in *rds.CreateDBInstanceInput) (*rds.CreateDBInstanceOutput, error) {
+			return svc.CreateDBInstance(ctx, in, natsmsg.AccountIDFromMsg(msg))
+		})
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	gw := &GatewayConfig{DisableLogging: true, NATSConn: nc, IAMService: allowAllIAMService()}
+	req := setupRDSRequest("Action=CreateDBInstance&DBInstanceIdentifier=orders-db&Engine=postgres&" +
+		"DBInstanceClass=db.t3.medium&AllocatedStorage=20&MasterUsername=appuser&DBName=orders")
+
+	reqErr := gw.RDS_Request(httptest.NewRecorder(), req)
+	require.Error(t, reqErr)
+
+	w := httptest.NewRecorder()
+	gw.ErrorHandler(w, req, reqErr)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "<Code>"+awserrors.ErrorInvalidParameterValue+"</Code>")
+}

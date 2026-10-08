@@ -255,7 +255,7 @@ func validateIdentifier(field, value string, maxLen int, allowEmpty bool) error 
 func ValidateMasterUserPassword(password string) error {
 	switch {
 	case password == "":
-		return errors.New(awserrors.ErrorInvalidParameterValue + ": MasterUserPassword is required")
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUserPassword is required")
 	case len(password) < minMasterPasswordLen || len(password) > maxMasterPasswordLen:
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"MasterUserPassword must be between %d and %d characters", minMasterPasswordLen, maxMasterPasswordLen)

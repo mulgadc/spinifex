@@ -29,22 +29,9 @@ import (
 	"log/slog"
 	"time"
 
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/internal/eksgw"
 )
-
-// stagedAddon mirrors the gateway's StagedAddonManifest wire shape; duplicated
-// here to keep this tiny VM binary free of the handler package's dependency
-// graph.
-type stagedAddon struct {
-	AddonName             string `json:"addonName"`
-	AddonVersion          string `json:"addonVersion"`
-	ServiceAccountRoleArn string `json:"serviceAccountRoleArn"`
-	ConfigurationValues   string `json:"configurationValues"`
-}
-
-type internalAddonsResponse struct {
-	Addons []stagedAddon `json:"addons"`
-}
 
 const maxAttempts = 30
 
@@ -126,7 +113,7 @@ func Run(ctx context.Context, cfg Config) error {
 // every locally-rendered manifest), which is the correct steady state for a
 // cluster with no managed add-ons.
 func emitAddonsTSV(out io.Writer, body []byte) error {
-	var resp internalAddonsResponse
+	var resp eksv1.InternalAddonsResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("unmarshal internal-addons response: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
@@ -97,16 +98,6 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	return &eks.CreateAddonOutput{Addon: addonRecordToAWS(cluster, rec)}, nil
 }
 
-// StagedAddonManifest is the descriptor the guest addon-sync agent fetches via
-// GET /clusters/{name}/internal-addons: the bundled add-on and version plus the
-// operator-supplied config it renders the baked manifests with.
-type StagedAddonManifest struct {
-	AddonName             string `json:"addonName"`
-	AddonVersion          string `json:"addonVersion"`
-	ServiceAccountRoleArn string `json:"serviceAccountRoleArn,omitempty"`
-	ConfigurationValues   string `json:"configurationValues,omitempty"`
-}
-
 // ListStagedAddonManifestsInput names the cluster whose staged add-on manifests
 // to return. It is an internal control-plane request (not an AWS-SDK shape),
 // served over NATS for the guest addon-sync agent via the internal-addons route.
@@ -117,7 +108,7 @@ type ListStagedAddonManifestsInput struct {
 // ListStagedAddonManifestsOutput carries the staged manifest descriptors, sorted
 // by add-on name.
 type ListStagedAddonManifestsOutput struct {
-	Manifests []StagedAddonManifest `json:"manifests"`
+	Manifests []eksv1.StagedAddonManifest `json:"manifests"`
 }
 
 // ListStagedAddonManifests returns the staged manifest for every add-on staged
@@ -135,9 +126,9 @@ func (s *EKSServiceImpl) ListStagedAddonManifests(ctx context.Context, input *Li
 	if err != nil {
 		return nil, err
 	}
-	out := make([]StagedAddonManifest, 0, len(staged))
+	out := make([]eksv1.StagedAddonManifest, 0, len(staged))
 	for _, m := range staged {
-		out = append(out, StagedAddonManifest{
+		out = append(out, eksv1.StagedAddonManifest{
 			AddonName:             m.AddonName,
 			AddonVersion:          m.AddonVersion,
 			ServiceAccountRoleArn: m.ServiceAccountRoleArn,

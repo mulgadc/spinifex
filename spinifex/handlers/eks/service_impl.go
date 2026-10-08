@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
@@ -2156,7 +2157,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
 	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
 	stateSubject := StateSubject(accountID, clusterName)
-	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
+	addonStatusSubject := eksv1.AddonStatusSubject(accountID, clusterName)
 	opts := []ReconcilerOption{
 		WithStateSource(s.deps.NATSConn, stateSubject),
 		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject, s.addons()),

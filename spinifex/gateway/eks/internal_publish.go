@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 
@@ -72,7 +73,7 @@ func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName strin
 	case internalChannelState:
 		subject = handlers_eks.StateSubject(req.AccountID, clusterName)
 	case internalChannelAddon:
-		subject = handlers_eks.AddonStatusSubject(req.AccountID, clusterName)
+		subject = eksv1.AddonStatusSubject(req.AccountID, clusterName)
 	default:
 		slog.DebugContext(ctx, "PublishInternal: unknown channel", "cluster", clusterName, "channel", req.Channel)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"testing"
 	"time"
@@ -232,18 +233,18 @@ func TestAddonStatusReport_MismatchedVersionIsAccepted(t *testing.T) {
 		return rec
 	}
 	put(addon.StatusUpdating)
-	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: AddonPhaseReady, TS: 1})
+	r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: eksv1.AddonPhaseReady, TS: 1})
 	assert.Equal(t, addon.StatusActive, get().Status)
 	assert.Equal(t, "3.0.23", get().AddonVersion, "the report's version is not recorded either")
 
 	put(addon.StatusUpdating)
-	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: AddonPhaseFailed, Message: "old", TS: 1})
+	r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: eksv1.AddonPhaseFailed, Message: "old", TS: 1})
 	assert.Equal(t, addon.StatusCreateFailed, get().Status)
 	assert.Equal(t, "old", get().Health)
 
 	// A later ready report lifts CREATE_FAILED straight back to ACTIVE; failure
 	// is not terminal against reports.
-	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: AddonPhaseReady, TS: 0})
+	r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "argocd", Version: "1.0.0", Phase: eksv1.AddonPhaseReady, TS: 0})
 	assert.Equal(t, addon.StatusActive, get().Status)
 	assert.Empty(t, get().Health)
 }
@@ -276,7 +277,7 @@ func TestDeleteAddon_ReturnsDeletingAfterErasingRecordAndManifest(t *testing.T) 
 
 	// A report racing the delete does not recreate the record.
 	r := &ClusterReconciler{acctKV: kv, clusterName: "c1", addonReports: addon.New("", nil)}
-	r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: albController, Version: "2.11.0", Phase: AddonPhaseReady})
+	r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: albController, Version: "2.11.0", Phase: eksv1.AddonPhaseReady})
 	_, err = addon.Get(t.Context(), kv, "c1", albController)
 	require.ErrorIs(t, err, addon.ErrNotFound)
 

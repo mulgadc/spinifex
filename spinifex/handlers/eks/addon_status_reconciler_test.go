@@ -2,6 +2,7 @@ package handlers_eks
 
 import (
 	"encoding/json"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"testing"
 	"time"
@@ -56,14 +57,14 @@ func TestApplyAddonStatusReport(t *testing.T) {
 
 	t.Run("ready flips creating to active and clears health", func(t *testing.T) {
 		seed(t)
-		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseReady, Message: "ignored", TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "coredns", Phase: eksv1.AddonPhaseReady, Message: "ignored", TS: time.Now().Unix()})
 		rec := get(t)
 		assert.Equal(t, addon.StatusActive, rec.Status)
 		assert.Empty(t, rec.Health)
 	})
 
 	t.Run("failed on active goes degraded and records message", func(t *testing.T) {
-		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseFailed, Message: "rollout stalled", TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "coredns", Phase: eksv1.AddonPhaseFailed, Message: "rollout stalled", TS: time.Now().Unix()})
 		rec := get(t)
 		assert.Equal(t, addon.StatusDegraded, rec.Status)
 		assert.Equal(t, "rollout stalled", rec.Health)
@@ -72,17 +73,17 @@ func TestApplyAddonStatusReport(t *testing.T) {
 	t.Run("applied is a no-op", func(t *testing.T) {
 		seed(t)
 		before := get(t)
-		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "coredns", Phase: AddonPhaseApplied, TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "coredns", Phase: eksv1.AddonPhaseApplied, TS: time.Now().Unix()})
 		after := get(t)
 		assert.Equal(t, addon.StatusCreating, after.Status)
 		assert.Equal(t, before.ModifiedAt, after.ModifiedAt, "no-op must not bump ModifiedAt")
 	})
 
 	t.Run("unknown addon is a no-op (no panic)", func(t *testing.T) {
-		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Addon: "not-installed", Phase: AddonPhaseReady, TS: time.Now().Unix()})
+		r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Addon: "not-installed", Phase: eksv1.AddonPhaseReady, TS: time.Now().Unix()})
 	})
 
 	t.Run("empty addon is ignored", func(t *testing.T) {
-		r.applyAddonStatusReport(t.Context(), AddonStatusReport{Phase: AddonPhaseReady})
+		r.applyAddonStatusReport(t.Context(), eksv1.AddonStatusReport{Phase: eksv1.AddonPhaseReady})
 	})
 }

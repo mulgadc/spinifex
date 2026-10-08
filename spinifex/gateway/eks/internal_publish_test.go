@@ -2,6 +2,7 @@ package gateway_eks
 
 import (
 	"context"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"testing"
 	"time"
 
@@ -35,7 +36,7 @@ func TestPublishInternal_RelaysToSubjects(t *testing.T) {
 		{
 			name:    "addon status report",
 			body:    `{"accountId":"111122223333","channel":"addon","payload":{"addon":"spinifex-noop","version":"0.1.0","phase":"ready","ts":42}}`,
-			subject: handlers_eks.AddonStatusSubject("111122223333", "alpha"),
+			subject: eksv1.AddonStatusSubject("111122223333", "alpha"),
 			payload: `{"addon":"spinifex-noop","version":"0.1.0","phase":"ready","ts":42}`,
 		},
 	}

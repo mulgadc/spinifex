@@ -5,6 +5,11 @@ It is not verified against a live system, and the branch is 59 commits behind `d
 Items marked "verify" or "uncertain" are unconfirmed.
 Gaps record observed behaviour, not target behaviour.
 
+Add-on update: every add-on row, the add-on boundary edges (Section 7.1) and the add-on gaps were re-read from the code at `18794e017`, after the add-on owner and guest wire contract were extracted.
+That update is a code read only; it is not verified against a live system.
+Everything else still describes `6c50349bd`, and line numbers outside the add-on rows may have drifted.
+The add-on lifecycle contract and its gap list are in `docs/package-boundary/eks-addon-lifecycle.md`; the proposed lifecycle correction is in `docs/package-boundary/eks-addon-lifecycle-design.md`.
+
 
 Repo: `spinifex` submodule, branch `refactor/spinifex-package-boundaries`; all paths are relative to `spinifex/spinifex/` unless stated.
 Binding inputs: ADR-0001, ADR-0002, ADR-0003, ADR-0004 and Q-78 as on `origin/main` of mulga.
@@ -16,21 +21,21 @@ Line numbers are from the working tree at time of writing; "uncertain" marks inf
 Production `.go` files only; `_test.go` excluded.
 Line counts are `wc -l`.
 
-### 1.1 `handlers/eks/` (single package `handlers_eks`, 37 files, 12,310 lines)
+### 1.1 `handlers/eks/` (single package `handlers_eks`, 37 files, 12,310 lines at `6c50349bd`)
+
+The add-on files `addon_catalog.go`, `addon_installer.go` and `addon_state.go` have left this package; Section 1.1a lists where they went.
+The add-on rows below are at `18794e017`.
 
 | File | Lines | Class | Reason |
 |---|---|---|---|
 | `access_entry.go` | 255 | resource owner (`access`) | AccessEntry record CRUD/CAS, supported access-policy catalogue, scope validation, ARN/record projection. |
-| `addon_catalog.go` | 121 | resource owner (`addon`) | Read-only add-on version catalogue backing CreateAddon/DescribeAddonVersions. |
-| `addon_installer.go` | 97 | resource owner (`addon`) + guest wire contract | Stages manifests in KV; `StagedAddonManifest` is the payload the on-VM addon-sync agent reads, so the type should split to a contract. |
-| `addon_state.go` | 186 | resource owner (`addon`) | AddonRecord, status enum, CAS update, list/delete. |
-| `addon_status_reconciler.go` | 79 | resource owner (`addon`), hosted on cluster reconciler | Transition function is addon semantics but is a method on `ClusterReconciler`; split: addon owns `nextAddonStatus`/apply, cluster reconciler only relays reports. |
-| `addons.go` | 348 | resource owner (`addon`) + guest wire contract | Six AWS add-on actions plus internal `ListStagedAddonManifests` served to the guest. |
+| `addon_status_reconciler.go` | 32 | temporary residue (report relay hosted on `cluster`) | `applyAddonStatusReport` (`:22`) converts a `contracts/eks/v1` `AddonStatusReport` into `addon.Report` and calls the reconciler-declared `addonReports` capability (`:13-15`, bound to `*addon.Owner` at `:17`); `report.Version` and `report.TS` are dropped. Removal: add-on delivery observation gets its own host (Section 7.1, edge E3). |
+| `addons.go` | 287 | AWS protocol adapter (`addon`) + internal guest route | Six AWS add-on actions validate against `addon.Lookup`, check cluster existence (`acctKVForCluster`), call `*addon.Owner` and project `addon.Record` to SDK shapes (`addonRecordToAWS` `:222`); `UpdateAddon` builds the `Successful` update with `Id = rec.Arn` (`:192-197`). Internal `ListStagedAddonManifests` (`:117`) copies `addon.Manifest` into `eksv1.StagedAddonManifest`. `addons()` (`:265`) builds a new `Owner` per call; `addonBucket` (`:278`) opens the account bucket for the staging installer. |
 | `awsgw_endpoint.go` | 42 | resource owner (`cluster`) | Builds the per-cluster OIDC issuer URL. |
 | `claim.go` | 31 | resource owner (`nodegroup`) | CAS-create helper; only caller is `nodegroup.go:123`. |
 | `clienttoken.go` | 57 | resource owner (`cluster`) | CreateCluster `clientRequestToken` store (`spinifex-eks-clustertokens`). |
-| `cluster_reconciler.go` | 1209 | resource owner (`cluster`), mixed | Cluster readiness/health, CP restart, member replacement, etcd reset; also subscribes the addon status subject (`:265-268`, `:447-458`) on behalf of `addon`. |
-| `cluster_state.go` | 515 | resource owner (`cluster`) | `ClusterMeta` record, status enum, CAS helpers, delete-reap bookkeeping, `DeleteClusterPrefix` (which also erases nodegroup/addon/access keys). |
+| `cluster_reconciler.go` | 1209 | resource owner (`cluster`), mixed | Cluster readiness/health, CP restart, member replacement, etcd reset; also hosts the add-on status subscription for `addon` (`addonReports` field `:171-176`, `WithAddonStatusSource` `:264-269`, plain subscribe `:447-458`), wired in `service_impl.go:2160-2163` (add-on rows at `18794e017`). |
+| `cluster_state.go` | 515 | resource owner (`cluster`) | `ClusterMeta` record, status enum, CAS helpers, delete-reap bookkeeping, `DeleteClusterPrefix` (`:493`, which also erases nodegroup, access and add-on record and manifest keys by prefix without calling the add-on owner). |
 | `cp_vpc.go` | 128 | resource owner (`cluster`) | EKS-specific managed CP VPC realization via `domains/network/systemvpc`. |
 | `eks_billable_reaper.go` | 133 | resource owner (`cluster`) | Node-local GC backstop for CP VMs whose meta is gone; comment at `:3` cites "ADR-0006 §5", which is not an accepted ADR. |
 | `eks_deleting_reaper.go` | 159 | resource owner (`cluster`) | Re-drives DELETING clusters with backoff and exhaustion. |
@@ -40,7 +45,7 @@ Line counts are `wc -l`.
 | `k3s_server_vm.go` | 700 | resource owner (`cluster`) + guest wire contract | CP VM/ENI launch/terminate and AMI lookup; `buildK3sUserData` (`:524+`) is the CP guest boot contract; `lookupEKSGPUNodeAMI` is used by `nodegroup`. |
 | `nats_bootstrap.go` | 347 | resource owner (`cluster`) + guest wire contract | Bootstrap subject vocabulary and envelope (`:47-57`) are a guest contract; persistence of token/kubeconfig/JWKS/CA is cluster state. |
 | `nlb.go` | 591 | resource owner (`cluster`) | EKS-specific NLB realization via an ELBv2-shaped capability; also `ReapLBCLoadBalancers` (`:517`) for LBC-created ALBs in the customer VPC. |
-| `nodegroup.go` | 1409 | resource owner (`nodegroup`), mixed | Nodegroup CRUD, scaling CAS, worker launch/terminate; also creates customer IAM roles/instance profiles (`:768-838`), stages a GPU add-on (`:410`, crosses into `addon`), and decrypts the cluster join token (`:1160`, reads `cluster` secrets). |
+| `nodegroup.go` | 1409 | resource owner (`nodegroup`), mixed | Nodegroup CRUD, scaling CAS, worker launch/terminate; also creates customer IAM roles/instance profiles (`:768-838`), stages a GPU add-on (`stageGPUDeviceAddon` `:405-416`, called from `:473`, through `addons().EnsureGPUDevicePlugin`; at `18794e017`), and decrypts the cluster join token (`:1160`, reads `cluster` secrets). |
 | `nodegroup_userdata.go` | 171 | resource owner (`nodegroup`) + guest wire contract | Worker cloud-init (K3S_TOKEN, registry mirrors) is the worker guest boot contract. |
 | `oidc_keypair.go` | 202 | resource owner (`cluster`) | Per-cluster OIDC signing key (encrypted) and JWKS. |
 | `private_endpoint.go` | 88 | resource owner (`cluster`) | Customer-VPC private-endpoint ENI. |
@@ -51,12 +56,27 @@ Line counts are `wc -l`.
 | `service.go` | 73 | temporary residue | `EKSService`, one method per AWS action plus internal methods; it is the NATS RPC surface between gateway and daemon and is also consumed by `accountteardown` and the operator CLI; removal condition: per-resource commands behind `domains/eks/awsapi` registration (ADR-0004 S3) with any remaining process boundary versioned under `contracts/eks/v1`. |
 | `service_impl.go` | 2518 | mixed: cross-resource orchestration + resource owners | Split: CreateCluster launch sequence and `purgeClusterInfra` (`:504-1013`, `:1268-1452`) are cluster realization orchestration; cluster read/delete (`:1041-1162`) is `cluster`; access-entry actions (`:1527-1816`) are `access`; nodegroup wrappers (`:1465-1525`) are `nodegroup`; Tag actions (`:1842-1992`) span cluster and nodegroup; IdP stubs (`:1818-1832`); `DesiredDNSChanges` (`:2143`) is a DNS projection; `EKSServiceDeps` and capability interfaces (`:39-245`). |
 | `service_nats.go` | 190 | temporary residue | Gateway-side NATS client implementing `EKSService` over `eks.<Action>` subjects; removal condition as for `service.go`. |
-| `state_report.go` | 111 | guest/controller wire contract | `eks.state.*` and `eks.addon.*` subjects and payloads published by the CP VM. |
-| `store.go` | 255 | resource owner (`cluster`), mixed | Bucket names, leader bucket, migrations, key helpers for every resource; split per-resource key helpers into each owner; `AccountWatchBuckets` (`:215`) is effectively a projection consumed by DNS. |
+| `state_report.go` | 75 | guest/controller wire contract (`cluster`) | `eks.state.*` subject and `ServerStateReport`; the add-on subject and report moved to `contracts/eks/v1`, leaving only `unmarshalAddonStatusReport` (`:69`), which decodes into `eksv1.AddonStatusReport` (add-on rows at `18794e017`). |
+| `store.go` | 255 | resource owner (`cluster`), mixed | Bucket names, leader bucket, migrations, key helpers for every resource (the add-on key helpers have moved to `domains/eks/addon/store.go`; 217 lines at `18794e017`); split per-resource key helpers into each owner; `AccountWatchBuckets` (`:215`) is effectively a projection consumed by DNS. |
 | `token_review.go` | 128 | resource owner (`access`) | Authenticates a `get-token` bearer against STS and maps to AccessEntry groups; `ResolveTokenReview` is called from the gateway process and opens EKS KV there. |
 | `token_webhook.go` | 57 | guest/controller wire contract | `eks.VerifyToken` subject and request/response consumed by `runtime/roles/awsgw`. |
 | `types.go` | 131 | mixed: `nodegroup` + `access` + residue | `NodegroupRecord` (nodegroup), `AccessEntryRecord`/`AccessScope` (access); `ClusterRecord` (`:19`) and `OIDCProviderConfigRecord` (`:125`) have no production readers or writers (temporary residue; removal: delete). |
 | `volume_reclaim.go` | 81 | resource owner (`cluster`) | Surfaces (never deletes) CSI-created EBS volumes at cluster delete. |
+
+### 1.1a Add-on owner and wire contract (at `18794e017`)
+
+| File | Lines | Class | Reason |
+|---|---|---|---|
+| `domains/eks/addon/record.go` | 52 | resource owner (`addon`) | `Record` and `Manifest` (persisted JSON fields unchanged from the former `AddonRecord`), `Status` (six values; `UPDATE_FAILED` and `DELETE_FAILED` absent), `ErrNotFound`, `ErrExists`. Moved from `addon_state.go`. |
+| `domains/eks/addon/store.go` | 237 | resource owner (`addon`) | `Prefix`, `Key`, `ManifestKey`, `Get`, `List`, `ListManifests` (exported) and `put`, `putManifest`, `deleteManifest`, `deleteRecord`, `casUpdate` (private). `put` is unconditional, so create is get-then-put. Moved from `addon_state.go` and the add-on key helpers in `store.go`. |
+| `domains/eks/addon/owner.go` | 205 | resource owner (`addon`) | `Owner` is the sole writer: `Create` (`:48`), `EnsureGPUDevicePlugin` (`:79`), `Update` (`:94`), `Delete` (`:122`), `ApplyReport` (`:140`), `markFailed` (`:171`, always `CREATE_FAILED`), `nextStatus` (`:186`). `Desired` and `Change` are the validated inputs. Moved from `addons.go`, `addon_status_reconciler.go` and the former `markAddonFailed`/`nextAddonStatus`. |
+| `domains/eks/addon/delivery.go` | 77 | resource owner (`addon`) | `Installer` interface, `StagingInstaller` (writes or deletes the manifest sub-key), `Bucket`, and the owner's own `Phase`/`Report` (no version or timestamp). Moved from `addon_installer.go`. |
+| `domains/eks/addon/catalog.go` | 122 | resource owner (`addon`), read-only catalogue | Static bundles `aws-load-balancer-controller` 2.11.0, `argocd` 3.0.23, `aws-ebs-csi-driver` 1.40.1, hidden `nvidia-device-plugin` 0.17.4 and hidden `spinifex-noop` 0.1.0; `Lookup`, `Specs`, `ValidateCatalog`. Moved from `addon_catalog.go`. |
+| `contracts/eks/v1/addon_status.go` (repo root) | 37 | guest/controller wire contract | `AddonStatusSubject`, `AddonDeliveryPhase` (`applied`, `ready`, `failed`), `AddonStatusReport` (`addon`, `version`, `phase`, `message`, `ts`). Moved from `state_report.go`. |
+| `contracts/eks/v1/addon_manifest.go` (repo root) | 18 | guest/controller wire contract | `StagedAddonManifest` and `InternalAddonsResponse`; the deployed HTTP body uses Go field names because the REST-JSON marshaller ignores the `json` tags, which `addon_manifest_test.go` pins. Moved from `addon_installer.go`, `gateway/eks` (`internalAddonsOutput`) and `agents/eks/gatewayfetch` (`stagedAddon`, `internalAddonsResponse`). |
+| `contracts/eks/v1/README.md` | n/a | contract record | Compatibility boundary: a generation-aware protocol needs a successor version, not a v1 edit. |
+
+Guest counterparty: `scripts/images/eks-node/mulga-eks-addon-sync.sh` (417 lines) runs on the primary server only, renders per add-on name, GCs rendered files whose name is no longer staged with `kubectl delete --wait=false`, ignores `configurationValues`, and builds the report with `printf`.
 
 Additional dead code observed in `store.go`: `OIDCProviderKey` (`:95`) and `EventKey` (`:132`) have no production callers.
 
@@ -70,9 +90,9 @@ Additional dead code observed in `store.go`: `OIDCProviderKey` (`:95`) and `Even
 | `gateway/eks/authz.go` | 310 | AWS protocol adapter | Per-action resource ARN derivation (`eksScopes` `:45-109`); imports `handlers_eks.PrincipalARNHash`. |
 | `gateway/eks/cluster.go` | 66 | AWS protocol adapter | Cluster action wrappers. |
 | `gateway/eks/handler.go` | 47 | AWS protocol adapter | JSON response/error writers. |
-| `gateway/eks/internal_addons.go` | 38 | guest/controller wire contract | `GET /clusters/{c}/internal-addons/{acct}` for the addon-sync agent. |
+| `gateway/eks/internal_addons.go` | 33 | guest/controller wire contract | `GET /clusters/{c}/internal-addons/{acct}` for the addon-sync agent; calls `handlers_eks.NewNATSEKSService(...).ListStagedAddonManifests` and wraps the result as `eksv1.InternalAddonsResponse` (at `18794e017`). |
 | `gateway/eks/internal_authz.go` | 129 | AWS protocol adapter + temporary residue | Principal gate for internal routes; `lookupClusterMeta` (`:102-129`) reads `eks-account-*` and `ClusterMeta` directly from the gateway process; removal: owner-published membership query. |
-| `gateway/eks/internal_publish.go` | 91 | guest/controller wire contract | HTTP-to-NATS relay of bootstrap/state/addon channels. |
+| `gateway/eks/internal_publish.go` | 91 | guest/controller wire contract | HTTP-to-NATS relay of bootstrap/state/addon channels; the `addon` channel relays the raw payload to `eksv1.AddonStatusSubject` (`:75-76`, at `18794e017`). |
 | `gateway/eks/internal_recovery.go` | 37 | guest/controller wire contract | `GET .../internal-recovery/{acct}/{instance}`. |
 | `gateway/eks/nodegroup.go` | 65 | AWS protocol adapter | Nodegroup wrappers. |
 | `gateway/eks/oidc.go` | 45 | AWS protocol adapter | IdP-config wrappers (handlers are stubs). |
@@ -99,6 +119,7 @@ Additional dead code observed in `store.go`: `OIDCProviderKey` (`:95`) and `Even
 | `bootstrap/config/config.go:44` | n/a | AWS protocol adapter (config) | `eks` listed in `AWSGWServiceNames`. |
 
 Guest counterparties (not inventoried individually): `agents/eks/{gatewaypublish,gatewayfetch,tokenwebhook,credentialprovider,konnectivitycert,webhookcert}` and `scripts/images/eks-node/*`.
+`agents/eks/gatewayfetch/fetch.go` decodes the internal-addons body through `contracts/eks/v1` `InternalAddonsResponse` (at `18794e017`).
 `agents/eks/tokenwebhook/webhook.go` imports `handlers_eks.WebhookTokenReviewResult`, so a guest binary imports the domain monolith (ADR-0004 S5 debt).
 
 ## 2. Served AWS actions and protocol
@@ -160,8 +181,8 @@ Unregistered AWS EKS operations (InvalidAction today) include Fargate profiles, 
 | `eks-account-{acct}` (history 1, migration v1, `store.go:30-38,235-245`) | `clusters/{c}/meta` | `ClusterMeta` (`cluster_state.go:65`) | cluster | `service_impl.go` create/launch/delete/tags, `cluster_state.go` CAS helpers, `cluster_reconciler.go`, `restore_snapshot.go:150`, `nats_bootstrap.go:297` (CA) | **`gateway/eks/internal_authz.go:110-124`**, **`gateway/oidc_discovery.go:38,60`** |
 | same | `clusters/{c}/nodegroups/{ng}` | `NodegroupRecord` (`types.go:33`) | nodegroup | `nodegroup.go` (claim, CAS, put, delete), `service_impl.go:1964` (tags) | none observed |
 | same | `clusters/{c}/access-entries/{sha256(principalARN)}` | `AccessEntryRecord` (`types.go:93`) | access | `service_impl.go:1548-1785`, creator-admin seed `service_impl.go:994-1001` (cluster launch) | **gateway process via `ResolveTokenReview` (`token_review.go:113`)** |
-| same | `clusters/{c}/addons/{a}` | `AddonRecord` (`addon_state.go:29`) | addon | `addons.go`, `addon_status_reconciler.go`, `nodegroup.go:410` (GPU add-on) | none observed |
-| same | `clusters/{c}/addons/{a}/manifest` | staged manifest descriptor | addon | `addon_installer.go:80-92` | guest via internal-addons route |
+| same | `clusters/{c}/addons/{a}` | `addon.Record` (`domains/eks/addon/record.go`) | addon | `domains/eks/addon/owner.go` only, reached from `addons.go`, `addon_status_reconciler.go` and `nodegroup.go:405-416` (GPU add-on); plus the `DeleteClusterPrefix` sweep (at `18794e017`) | none observed |
+| same | `clusters/{c}/addons/{a}/manifest` | `addon.Manifest` (`domains/eks/addon/record.go`) | addon | `domains/eks/addon/delivery.go` `StagingInstaller`, `Owner.Delete`, the `DeleteClusterPrefix` sweep | guest via internal-addons route, as `contracts/eks/v1` `StagedAddonManifest` |
 | same | `clusters/{c}/oidc-signing-key.pem.enc` | encrypted ECDSA key | cluster | `oidc_keypair.go:86`, zeroized `service_impl.go:1281` | none |
 | same | `clusters/{c}/oidc-jwks.json` | JWKS | cluster | `oidc_keypair.go:94` | **`handlers/sts/oidc_jwks.go:110`**, **`gateway/oidc_discovery.go:93`** |
 | same | `clusters/{c}/oidc-jwks-verified` | marker | cluster | `nats_bootstrap.go:291` | none |
@@ -183,7 +204,7 @@ Hidden realizations outside EKS stores: CP VMs (system account, `ManagedBy=eks`)
 |---|---|---|---|---|
 | cluster | name; `arn:aws:eks:{region}:{acct}:cluster/{name}` (`foundation/aws/arn/eks.go:21`) | tenant account owns the record; CP VMs, CP VPC and NLB are realized in the system account `awsidentifiers.GlobalAccountID` (`service_impl.go:738`, `:2240-2248`); customer-VPC SGs and the private-endpoint ENI in the tenant account | single Region from `deps.Region`; not stored as a field | Regional; HA CP spread over hosts by AZ (`k3s_ha_control_plane.go:528`) |
 | nodegroup | `arn:...:nodegroup/{c}/{ng}/{discriminator}` where the discriminator is derived from (account, cluster, name) (`nodegroup.go:333`), so a recreated nodegroup gets the same ARN, unlike AWS's per-incarnation UUID | tenant | deps.Region | AZs implied by subnets |
-| addon | `arn:...:addon/{c}/{a}` (`arn/eks.go:51`, `addons.go:100`); no per-incarnation suffix (AWS appends one; verify) | tenant | deps.Region | n/a |
+| addon | `arn:...:addon/{c}/{a}` (`arn/eks.go` `FormatEKSAddon`, minted in `domains/eks/addon/owner.go` `Create`; the gateway authorizer derives the same string, `gateway/eks/authz.go` `addonARN`); no per-incarnation suffix, whereas the AWS API reference examples show `addon/{c}/{a}/{uuid}` | tenant | owner `region` from deps.Region | n/a |
 | access | `arn:...:access-entry/{c}/{sha256(principal)}` (`access_entry.go:244`); AWS's shape differs (verify) | tenant | deps.Region | n/a |
 
 Uniqueness is per account bucket and cluster-name prefix; there is no immutable internal UID distinct from the name for any EKS resource.
@@ -210,11 +231,12 @@ Fencing: KV revision CAS; no generation, no lease.
 Idempotency: no `clientRequestToken`; duplicate create loses the claim and gets ResourceInUse.
 
 ### addon
-Create: `CreateAddon` (`addons.go:65-111`) validates against the catalogue, get-then-put (`:88-105`, not CAS-create), stages manifest (`addon_installer.go:62-85`), returns CREATING.
-Readiness: guest addon-sync agent publishes `eks.addon.{acct}.{c}.status` via internal-publish; `applyAddonStatusReport` (`addon_status_reconciler.go:15-47`) maps `ready` to ACTIVE and `failed` to CREATE_FAILED/DEGRADED; `report.Version` is ignored.
-Update: `UpdateAddon` (`addons.go:203-252`) CAS sets UPDATING, restages, returns `Successful` with `Id = rec.Arn`.
-Delete: `DeleteAddon` (`addons.go:254-285`) unstages and deletes the record immediately; the DELETING status is only in the response.
-Fencing: revision CAS on the record; no generation.
+Paths in this subsection are at `18794e017`.
+Create: `CreateAddon` (`addons.go:61`) validates against the catalogue and calls `Owner.Create` (`domains/eks/addon/owner.go:48`), which is get-then-put (not CAS-create) and then stages the manifest (`delivery.go` `StagingInstaller.Install`); a staging failure marks `CREATE_FAILED`; returns CREATING.
+Readiness: guest addon-sync agent publishes `eks.addon.{acct}.{c}.status` via internal-publish; `applyAddonStatusReport` (`addon_status_reconciler.go:22`) relays to `Owner.ApplyReport` (`owner.go:140`), whose `nextStatus` (`:186`) maps `ready` to ACTIVE from any status and `failed` to CREATE_FAILED/DEGRADED; `report.Version` and `report.TS` are dropped before the owner sees them.
+Update: `UpdateAddon` (`addons.go:163`) calls `Owner.Update` (`owner.go:94`), which CAS-sets UPDATING from any status and restages; the handler returns `Successful` with `Id = rec.Arn` (`addons.go:193-194`); a staging failure marks `CREATE_FAILED`.
+Delete: `DeleteAddon` (`addons.go:201`) calls `Owner.Delete` (`owner.go:122`), which unstages and deletes the record and manifest immediately; the DELETING status is only in the response.
+Fencing: revision CAS on the record; no generation or incarnation.
 Idempotency: none (`clientRequestToken` ignored).
 
 ### access
@@ -231,7 +253,7 @@ Idempotency: none (`clientRequestToken` ignored).
 | `eks.<Action>` (38 subjects) | gateway (or teardown/CLI) to daemon | core NATS request/reply, queue `spinifex-workers` | `service_nats.go:30-189`, `daemon/daemon.go:1090-1127` | `EKSServiceImpl` |
 | `eks.bus.{acct}.{c}.{k3s-bootstrap-token,k3s-admin-kubeconfig,k3s-oidc-jwks,k3s-ca}` | CP VM via gateway relay to daemon | core NATS publish/subscribe, at-most-once | `nats_bootstrap.go:47-57`, subscribe `:197` | `NATSBootstrap` persists to KV with `persistWithRetry` (`:32`) |
 | `eks.state.{acct}.{c}.server` | CP VM via relay | core NATS, periodic | `state_report.go:13` | `ClusterReconciler` (`cluster_reconciler.go:432`) |
-| `eks.addon.{acct}.{c}.status` | CP VM via relay | core NATS | `state_report.go:73` | `ClusterReconciler` (`:448`) |
+| `eks.addon.{acct}.{c}.status` | CP VM via relay | core NATS, level-triggered every 30 s per staged add-on | `contracts/eks/v1/addon_status.go:10` (at `18794e017`) | `ClusterReconciler` (`:448`), relayed to `addon.Owner.ApplyReport` |
 | `eks.VerifyToken` | EKS (gateway process) to awsgw STS | request/reply, queue `awsgw-eks-token-verify` | `token_webhook.go:13` | `runtime/roles/awsgw/eks_token_verify.go:30` |
 | `contracts/cluster/v1` `NodeStatusSubject`, `NodeVMsSubject` | EKS to every node | fan-out request | `k3s_ha_control_plane.go:502,579` | daemons |
 | `ec2.RunInstances.{type}.{node}` and `contracts/ec2/v1` instance commands | EKS (daemon binding) to EC2 | request/reply | `daemon/eks_worker_launch.go` | EC2 instance owner |
@@ -255,12 +277,13 @@ SDK retries of `eks.<Action>` land on any node of the queue group; dedup relies 
 - ACM/CA: no import; the platform/NATS CA PEM is passed as `GatewayCACert` from `d.config.NATS.CACert` (`daemon/eks_deps.go:64-71`) and baked into CP user data; the k3s cluster CA is self-generated in the guest and returned on `k3s-ca`.
 - ELBv2: `nlbProvisioner` capability with ELBv2 SDK shapes (`nlb.go:19`), bound to `d.elbv2Service`.
 - Storage/object: `providers/objectstore` (etcd snapshots), Predastore system creds via deps.
-- Contracts: `contracts/cluster/v1`.
+- Contracts: `contracts/cluster/v1`; `contracts/eks/v1` from `addons.go`, `addon_status_reconciler.go`, `state_report.go` and `service_impl.go` (at `18794e017`).
+- EKS add-on owner: `domains/eks/addon` from `addons.go`, `addon_status_reconciler.go`, `service_impl.go` and, through `addons()`, `nodegroup.go` (at `18794e017`; edges in Section 7.1).
 - Foundation: `kvutil`, `kvstore`, `kvlease`, `migrate`, `idempotency`, `reconciler`, `telemetry`, `aws/{arn,errors,tags,identifiers,ami}`, `messaging/nats`.
 - Bootstrap: `bootstrap/config.Config` in `EKSServiceDeps`.
 
 ### Inbound to `handlers/eks`
-- `gateway/eks/*`: `NewNATSEKSService`, input/output types, `PrincipalARNHash`, `ClusterMeta`, `ClusterMetaKey`, `AccountBucketName`, `CPInstanceRoleName`, `ResolveTokenReview`, bootstrap/state/addon subject builders.
+- `gateway/eks/*`: `NewNATSEKSService`, input/output types (including `ListStagedAddonManifestsInput` in `internal_addons.go`), `PrincipalARNHash`, `ClusterMeta`, `ClusterMetaKey`, `AccountBucketName`, `CPInstanceRoleName`, `ResolveTokenReview`, bootstrap/state subject builders; the add-on subject now comes from `contracts/eks/v1` (at `18794e017`).
 - `gateway/oidc_discovery.go`: `AccountBucketName`, `GetClusterMeta`, `OIDCJWKSKey`.
 - `handlers/sts/oidc_jwks.go`: `AccountBucketName`, `OIDCJWKSKey` (STS reads EKS private KV).
 - `runtime/roles/awsgw/eks_token_verify.go`: `TokenVerifySubject`, `TokenVerifyRequest`, `TokenVerifyResponse`.
@@ -272,6 +295,23 @@ SDK retries of `eks.<Action>` land on any node of the queue group; dedup relies 
 ### Reverse knowledge of EKS in other domains (comments or tag conventions, no import)
 `domains/ec2/instance/service_impl.go:394-396` (worker tag comment), `domains/ec2/systeminstance/launcher.go:4,25`, `handlers/elbv2/{launcher.go:5,service_impl.go:1232-1250,service_impl_nlb_sg.go:196}`, `domains/ec2/vpc/eni.go:54`, `domains/ec2/guestmetadata/resolver.go:37`, `domains/dns/{naming.go:118-124,reconcile.go:58,303}`, `handlers/iam/managed_policies.go` (EKS managed policies), `accountteardown/reapers_iam.go:26-33` (OIDC providers).
 
+### 7.1 Add-on boundary edges remaining at `18794e017`
+
+Each edge is temporary unless marked otherwise, and each clears only on its stated condition; moving a file does not clear any of them.
+E1 to E5 match the `handlers/eks` → `domains/eks/addon` debt entry in `docs/PACKAGE_BOUNDARY_MIGRATION.md`; E6 to E9 match the further-edges entry beside it.
+
+| ID | Edge | Kind | Where | Removal condition |
+|---|---|---|---|---|
+| E1 | Cluster delete erases add-on records and manifests | handler → owner state (legacy) | `handlers/eks/cluster_state.go:493` `DeleteClusterPrefix` sweeps `clusters/{c}/` without calling `addon.Owner` | Cluster delete invokes an add-on-owned teardown capability. |
+| E2 | GPU node-group launch stages `nvidia-device-plugin` | node group → add-on orchestration | `handlers/eks/nodegroup.go:405-416` `stageGPUDeviceAddon`, called at `:473`, through `Owner.EnsureGPUDevicePlugin`; best-effort, errors logged and swallowed, never undone on node-group delete, and any existing record (including `CREATE_FAILED`) blocks re-staging | The node-group owner is extracted and the dependency is designed. |
+| E3 | Add-on delivery reports are received by the cluster reconciler | cluster hosts add-on observation | `handlers/eks/cluster_reconciler.go:171-176,264-269,447-458` subscribes; `addon_status_reconciler.go:22` relays through the reconciler-declared `addonReports`; wired in `service_impl.go:2160-2163` | Add-on delivery observation has its own host under the lifecycle correction. |
+| E4 | Cluster existence is checked by the handler | handler admission | `addons.go` actions call `acctKVForCluster`, which reads `ClusterMeta` existence only; cluster status is ignored | Moves into the owner when cluster admission is defined. |
+| E5 | Guest wire types | versioned contract (not debt) | `contracts/eks/v1` imported directly by `handlers/eks` (`addons.go`, `addon_status_reconciler.go`, `state_report.go`, `service_impl.go`), `gateway/eks` (`internal_addons.go`, `internal_publish.go`) and `agents/eks/gatewayfetch` | Permanent while v1 guests exist; v1 is retired only through a successor version and an explicit retirement, never by editing v1. |
+| E6 | The persisted `Record` crosses to the AWS adapter | owner record exposed | `addons.go` `addonRecordToAWS` (`:222`) and `ListAddons`/`DescribeAddon` read `addon.Get`/`addon.List` directly | Replace with an owner-returned view when the add-on AWS adapter moves to `domains/eks/awsapi`. |
+| E7 | The guest route reaches the owner through the monolith RPC | gateway → `handlers/eks` | `gateway/eks/internal_addons.go` uses `handlers_eks.NewNATSEKSService` and `ListStagedAddonManifestsInput`; `handlers/eks/addons.go:117` maps `addon.Manifest` to `eksv1.StagedAddonManifest` | As for `service.go`/`service_nats.go`: per-resource commands behind `domains/eks/awsapi` registration, with the internal request versioned with the add-on contract. |
+| E8 | Owner and contract keep separate shapes | deliberate duplication (not debt) | `addon.Manifest`/`addon.Report` beside `eksv1.StagedAddonManifest`/`eksv1.AddonStatusReport`; the handler maps between them | None: the owner does not import the wire contract. Revisit only if a successor contract makes the mapping lossy. |
+| E9 | The add-on ARN is derived in two places | duplicated identity rule | `domains/eks/addon/owner.go` `Create` and `gateway/eks/authz.go` `addonARN` both call `arn.FormatEKSAddon` from names | Clears when authorization obtains the ARN from the owner, which becomes necessary if an incarnation suffix is adopted. |
+
 ## 8. Known gaps against Q-78 / ADR-0003 (observed)
 
 1. No desired or observed generation for any EKS resource; fencing is leases (cluster) or record-revision CAS (nodegroup, addon, access).
@@ -282,10 +322,10 @@ SDK retries of `eks.<Action>` land on any node of the queue group; dedup relies 
 6. DeleteCluster purges synchronously inside the request (`service_impl.go:1141-1154`) rather than accepting asynchronously as AWS does.
 7. DeleteCluster does not reject a cluster with nodegroups (AWS returns ResourceInUseException) and `DeleteClusterPrefix` erases nodegroup records while their worker instances keep running; `accountteardown/reapers_eks.go:15-18` documents this; workers carry no `ManagedBy` tag (`nodegroup.go:669-670`) and no reaper reclaims them (uncertain whether the e2e suite exercises this order).
 8. DeleteNodegroup is synchronous and removes the record immediately (`nodegroup.go:1145-1157`), so the resource is absent before EC2 termination completes; no durable deletion intent.
-9. UpdateNodegroupConfig and UpdateAddon return `Successful` synchronously (`nodegroup.go:900-906`, `addons.go:246-251`) and `DescribeUpdate`/`ListUpdates` are stubs, so there is no truthful pending update.
-10. CreateAddon and CreateAccessEntry use get-then-put (`addons.go:88-105`, `service_impl.go:1570-1578`), so concurrent creates can both succeed.
-11. Addon status reports are not fenced by version (`addon_status_reconciler.go:15-47` ignores `AddonStatusReport.Version`), so a stale report can flip UPDATING to ACTIVE.
-12. DeleteAddon deletes the record before in-cluster removal is observed (`addons.go:270-285`).
+9. UpdateNodegroupConfig and UpdateAddon return `Successful` synchronously (`nodegroup.go:900-906`; `addons.go:192-197` at `18794e017`) and `DescribeUpdate`/`ListUpdates` are stubs, so there is no truthful pending update.
+10. CreateAddon and CreateAccessEntry use get-then-put (`domains/eks/addon/owner.go` `Owner.Create` at `18794e017`; `service_impl.go:1570-1578`), so concurrent creates can both succeed.
+11. Addon status reports are not fenced by version or incarnation (`addon_status_reconciler.go:22` drops `AddonStatusReport.Version` and `TS` at `18794e017`), so a stale report can flip UPDATING to ACTIVE, or a stale `failed` to CREATE_FAILED.
+12. DeleteAddon deletes the record and manifest before in-cluster removal is observed (`domains/eks/addon/owner.go` `Owner.Delete` at `18794e017`), and the guest sends no removal report.
 13. `clientRequestToken` is honoured only by CreateCluster; CreateNodegroup, CreateAddon, CreateAccessEntry, UpdateNodegroupConfig, UpdateAddon ignore it.
 14. Nodegroup and addon ARNs are deterministic by name, so identifiers are reused across incarnations (Q-78 references Q-43 identifier-reuse rules).
 15. ADR-0004 S3 inventory: EKS has no `Stubbed`/`Unsupported` classification (`gateway/operations.go:34-36`) although nine actions return NotImplemented, and four internal routes are mixed into the AWS action inventory.
@@ -300,7 +340,7 @@ SDK retries of `eks.<Action>` land on any node of the queue group; dedup relies 
 | Rank | Resource | Approx. size | Private state | Dependencies | Tests | Extractable without EKS identity/IAM/Bluebottle? |
 |---|---|---|---|---|---|---|
 | 1 | access | about 670 lines (`access_entry.go` 255, `service_impl.go:1527-1816` about 290, `token_review.go` 128, parts of `types.go`) | `clusters/{c}/access-entries/*` only | cluster existence query (`acctKVForCluster` reads `ClusterMeta`), cluster launch seeds creator admin, gateway authz needs `PrincipalARNHash`, gateway token-review calls `ResolveTokenReview`, STS verify contract | `access_entry_test.go`, `service_impl_test.go` (access cases), `token_review_test.go`, `token_webhook_test.go`, `gateway/eks/authz_test.go`, `gateway/eks/token_review_test.go`, e2e `TestEKS/AccessEntry`, `GetToken` | The record CRUD and policy catalogue are extractable now with a narrow cluster-exists query; the token-review part touches STS identity (`eks.VerifyToken` contract) but not IAM or Bluebottle, so it can stay behind its existing NATS contract. |
-| 2 | addon | about 830 lines (`addons.go`, `addon_state.go`, `addon_installer.go`, `addon_status_reconciler.go`, `addon_catalog.go`) | `clusters/{c}/addons/*` incl. manifests | cluster existence query, cluster reconciler relays `eks.addon.*` reports, guest internal-addons route, nodegroup GPU staging, IRSA role ARN stored only | `addons_test.go`, `addon_state_test.go`, `addon_status_reconciler_test.go`, `addon_catalog_test.go`, `gateway/eks/wrappers_test.go`, e2e `AddonDelivery` | Yes for IAM/Bluebottle; needs a report-relay seam out of `ClusterReconciler` and a guest contract for `StagedAddonManifest`/`AddonStatusReport`. |
+| 2 | addon (owner extracted) | at `18794e017`: owner 693 lines in `domains/eks/addon`, wire contract 55 lines in `contracts/eks/v1`, adapter and relay 319 lines left in `handlers/eks` (`addons.go`, `addon_status_reconciler.go`) | `clusters/{c}/addons/*` incl. manifests | the edges in Section 7.1 | `domains/eks/addon/*_test.go`, `contracts/eks/v1/*_test.go`, `handlers/eks/addon_lifecycle_test.go`, `addons_test.go`, `addon_status_reconciler_test.go`, `gateway/eks_addon_wire_test.go`, `agents/eks/gatewayfetch/addons_wire_test.go`, e2e `AddonDelivery`, `TestEKSGPUPodExposure` | Extracted without IAM or Bluebottle; the report-relay seam (E3) and the guest contract (E5) exist, and every lifecycle gap remains. |
 | 3 | nodegroup | about 1,650 lines (`nodegroup.go`, `nodegroup_userdata.go`, `claim.go`, part of `types.go`, nodegroup SG rules) | `clusters/{c}/nodegroups/*` | cluster meta (ACTIVE, CP ENI IP, VPC, readiness counts), cluster join token decrypt (`handlers_iam.DecryptSecret`), IAM role/profile creation, Bluebottle `ResolveRoleARN`, EC2 worker launch, AMI lookup, cluster SGs, GPU addon | `nodegroup_test.go` (39 tests), `nodegroup_recreate_test.go`, `nodegroup_instance_profile_test.go`, `nodegroup_userdata_test.go`, `daemon/eks_worker_launch_test.go`, e2e IRSA pod path | No; it needs IAM, Bluebottle and cluster secrets capabilities first. |
 | 4 | cluster | about 8,500 lines (remainder of `handlers/eks`) | meta, OIDC material, kubeconfig, join token, recovery directives, leader/token buckets | every external owner (EC2, VPC, ELBv2, DNS, IAM, objectstore, placement, scheduler) and all guest contracts | `create_cluster_test.go`, `delete_cluster_test.go`, `cluster_reconciler*_test.go` (5 files), `lifecycle_invariants_test.go` (RLC1-3), reapers, `nats_bootstrap_test.go`, `oidc_keypair_test.go`, `k3s_*_test.go`, `nlb_test.go`, `security_groups_test.go`, `cp_vpc_test.go`, `restore_snapshot_test.go`, e2e `TestEKS` | No; it is the orchestration hub and depends on identity, Bluebottle and the CA. |
 

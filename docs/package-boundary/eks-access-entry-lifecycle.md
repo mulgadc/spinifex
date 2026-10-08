@@ -1,7 +1,8 @@
 # EKS access entry: lifecycle contract
 
-Present contract under ADR-0003 S1, recorded before the resource moves.
+Present contract under ADR-0003 S1, recorded before the resource moved and updated after the owner extraction.
 It describes the code as it stands, so it claims no conformance; the gaps below are observed behaviour, not targets.
+The extraction establishes resource ownership and dependency direction only; it adds no ADR-0003 evidence for interruption, recovery, fencing or readiness.
 Paths are relative to `spinifex/` unless they start with `tests/`.
 
 ## Scope
@@ -13,9 +14,10 @@ Create, update, delete and policy association complete synchronously within the 
 
 | Item | Present behaviour | Evidence |
 |---|---|---|
-| Identity | Cluster name plus principal ARN. Key and ARN suffix use `sha256hex(principalARN)` (`handlers/eks/store.go` `PrincipalARNHash`). ARN `arn:aws:eks:{region}:{account}:access-entry/{cluster}/{hash}` (`foundation/aws/arn/eks.go`); the AWS ARN shape differs and is not verified. | `handlers/eks/service_impl_test.go` `TestAccessEntry_CreateDescribeListDelete`, `handlers/eks/store_test.go`, `gateway/eks/authz_test.go` `TestResourceARNsAccessEntryMatchesHandler` |
+| Identity | Cluster name plus principal ARN. Key and ARN suffix use `sha256hex(principalARN)` (`domains/eks/access/store.go` `PrincipalARNHash`). ARN `arn:aws:eks:{region}:{account}:access-entry/{cluster}/{hash}` (`foundation/aws/arn/eks.go`); the AWS ARN shape differs and is not verified. | `handlers/eks/service_impl_test.go` `TestAccessEntry_CreateDescribeListDelete`, `domains/eks/access/store_test.go` `TestKeyPaths`, `gateway/eks/authz_test.go` `TestResourceARNsAccessEntryMatchesHandler` |
 | Scope | Account and Region, within one cluster: keys live under `clusters/{cluster}/access-entries/` in the `eks-account-{account}` bucket. | `handlers/eks/access_lifecycle_test.go` `TestAccessEntryPersistedLayout_TopLevelAndNestedFieldNames`, `TestAccessEntryRecord_DecodesHandWrittenJSON`, `handlers/eks/create_cluster_test.go` `TestCreateCluster_SeedsCreatorAdminAccessEntry` |
-| Durable owner and record | `handlers/eks/access_entry.go` writes `AccessEntryRecord` with nested `AssociatedAccessPolicy` and `AccessScope` (`handlers/eks/types.go`). The cluster launch also writes the creator-admin entry, and `DeleteClusterPrefix` (`handlers/eks/cluster_state.go`) erases entries with the cluster. The gateway process reads records directly through `ResolveTokenReview` (`handlers/eks/token_review.go`). | `handlers/eks/access_lifecycle_test.go` `TestAccessEntryPersistedLayout_TopLevelAndNestedFieldNames`, `TestAccessEntryRecord_DecodesHandWrittenJSON`, `handlers/eks/create_cluster_test.go` `TestCreateCluster_SeedsCreatorAdminAccessEntry` |
+| Durable owner and record | `domains/eks/access` (`Owner`) is the only writer of `Record` with nested `AssociatedPolicy` and `Scope`: Create, SeedCreatorAdmin (cluster launch), Update, Associate, Disassociate and Delete. Keys and field names are unchanged by the move. `DeleteClusterPrefix` (`handlers/eks/cluster_state.go`) still erases entries with the cluster, and the gateway process reads records through the exported `access.Get` in `ResolveTokenReview` (`handlers/eks/token_review.go`). | `handlers/eks/access_lifecycle_test.go` `TestAccessEntryPersistedLayout_TopLevelAndNestedFieldNames`, `TestAccessEntryRecord_DecodesHandWrittenJSON`, `domains/eks/access/owner_test.go`, `domains/eks/access/store_test.go`, `handlers/eks/create_cluster_test.go` `TestCreateCluster_SeedsCreatorAdminAccessEntry` |
+| AWS adapter | `handlers/eks` keeps request validation (entry type, supported policy, scope), the cluster existence check (`acctKVForCluster`), awserrors mapping and the AWS projection. `gateway/eks/authz.go` uses `access.PrincipalARNHash`. | `handlers/eks/service_impl_test.go` access cases, `gateway/eks/authz_test.go` `TestResourceARNsAccessEntryMatchesHandler` |
 | Desired state | Principal, Kubernetes username and groups, type (`STANDARD` only), tags (set at create only) and cluster-scoped access policy associations. | `handlers/eks/service_impl_test.go` `TestAccessEntry_RejectsNodeType`, `TestAccessPolicy_AssociateRejectsUnsupportedPolicyAndScope`, `TestAccessPolicy_AssociateRejectsNamespaceScope`, `handlers/eks/access_lifecycle_test.go` `TestAccessEntry_UpdateWithNoFieldsKeepsUsernameAndGroups` |
 | Generation | None. Update, associate and disassociate retry against the KV revision; create and delete do not. | |
 | Observed state | Not tracked; the record is the only state. | |
@@ -34,6 +36,7 @@ Create, update, delete and policy association complete synchronously within the 
 3. Access actions do not check cluster status (see dependencies row), and opening the bucket creates it for an account that has none.
 4. Entries can outlive their cluster (interrupted prefix purge) or carry over to a recreated cluster (reclaim and failed launch keep the meta and do not purge entries separately).
 5. Token review authenticates against an entry without checking the cluster exists or its status.
-6. `ResolveTokenReview` opens the EKS bucket and reads the record in the gateway process, outside the owner.
+6. `ResolveTokenReview` opens the EKS bucket and reads the record in the gateway process through the exported `access.Get`, outside the owner.
 7. List ignores `maxResults` and `nextToken`; tagging an access-entry ARN returns `NotImplemented`.
 8. No ADR-0003 S5 failure or recovery evidence.
+9. Handler code receives the persisted `Record` from the owner, so the storage shape still crosses into the AWS adapter and token review. It is a temporary extraction boundary, not the narrow projection ADR-0004 asks for.

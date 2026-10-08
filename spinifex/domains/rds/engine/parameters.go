@@ -1,4 +1,4 @@
-package handlers_rds
+package engine
 
 import (
 	"errors"
@@ -10,7 +10,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -23,19 +22,6 @@ import (
 const (
 	ApplyTypeStatic  = "static"
 	ApplyTypeDynamic = "dynamic"
-)
-
-// AWS's own ApplyMethod values, echoed back on DescribeDBParameters.
-const (
-	ApplyMethodImmediate     = "immediate"
-	ApplyMethodPendingReboot = "pending-reboot"
-)
-
-// Where a reported value came from. AWS distinguishes these and the Terraform
-// provider reads them, so a computed default must not be reported as user.
-const (
-	ParameterSourceUser          = "user"
-	ParameterSourceEngineDefault = "engine-default"
 )
 
 // The parameter data types the catalog offers. Every one is validated on input,
@@ -213,23 +199,6 @@ func formatBound(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
-// The memory an instance class's guest has, which every size-derived default is
-// computed from. An unknown class is a validation failure upstream, so this is
-// the last line rather than the check.
-func classMemoryMiB(instanceClass string) (int64, error) {
-	instanceType, err := InstanceTypeForClass(instanceClass)
-	if err != nil {
-		return 0, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
-	}
-	memoryMiB, ok := instancetypes.DefaultMemoryMiB(instanceType)
-	if !ok || memoryMiB <= 0 {
-		return 0, awserrors.Errorf(awserrors.ErrorServerInternal,
-			"no memory footprint is known for instance type %s", instanceType)
-	}
-	return memoryMiB, nil
-}
-
 // AWS accepts formulas like {DBInstanceClassMemory/32768} and references like
 // DBInstanceClassMemory from a customer. This platform does not: the catalog
 // validates literals, and a formula that reached the engine unvalidated would be
@@ -243,11 +212,10 @@ func rejectFormulaValue(name, value string) error {
 			"and the size-derived defaults are computed for you", value, name)
 }
 
-// Checks one customer-supplied value against its catalog entry. A parameter the
-// catalog does not hold, one the platform owns, and one outside its own range
-// are all rejected here — at the API, rather than by an engine that then refuses
-// to start with the bad config already on the data volume.
-func (e Engine) validateParameterValue(name, value string) (ParameterSpec, error) {
+// ValidateParameterValue checks one customer-supplied value against its
+// catalog entry, rejecting an unknown name, a platform-owned one, or a value
+// outside its range here rather than at an engine that refuses to start.
+func (e Engine) ValidateParameterValue(name, value string) (ParameterSpec, error) {
 	spec, ok := e.LookupParameter(name)
 	if !ok {
 		return ParameterSpec{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
@@ -351,22 +319,22 @@ func rangeError(spec ParameterSpec, value string) error {
 //
 // Overrides are re-validated rather than trusted: a catalog whose bounds
 // tightened must not keep handing the engine a value it would now reject.
-func (e Engine) ResolveEffectiveParameters(instanceClass string, overrides map[string]string) ([]Parameter, error) {
+func (e Engine) ResolveEffectiveParameters(sizing Sizing, instanceClass string, overrides map[string]string) ([]Setting, error) {
 	if e.validateCombinations == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal,
 			"engine %s registers no parameter combination checks", e.Name)
 	}
-	memoryMiB, err := classMemoryMiB(instanceClass)
+	memoryMiB, err := sizing.ClassMemoryMiB(instanceClass)
 	if err != nil {
 		return nil, err
 	}
 	names := e.CatalogParameterNames()
-	resolved := make([]Parameter, 0, len(names))
+	resolved := make([]Setting, 0, len(names))
 	for _, name := range names {
 		spec := e.catalog[name]
 		value := spec.DefaultAt(memoryMiB)
 		if override, ok := overrides[name]; ok {
-			if _, err := e.validateParameterValue(name, override); err != nil {
+			if _, err := e.ValidateParameterValue(name, override); err != nil {
 				return nil, err
 			}
 			if err := validateClassParameterValue(instanceClass, memoryMiB, spec, override); err != nil {
@@ -381,7 +349,7 @@ func (e Engine) ResolveEffectiveParameters(instanceClass string, overrides map[s
 			}
 			value = canonical
 		}
-		resolved = append(resolved, Parameter{Name: name, Value: value})
+		resolved = append(resolved, Setting{Name: name, Value: value})
 	}
 	if err := e.validateCombinations(resolved); err != nil {
 		return nil, err
@@ -401,10 +369,10 @@ func clampInt64(v, lo, hi int64) int64 {
 // Reads one setting out of a resolved set for a combination check. The set is
 // every catalog name by construction, so an absent one is a catalog bug rather
 // than anything a customer did.
-func resolvedValues(params []Parameter) map[string]string {
-	values := make(map[string]string, len(params))
-	for _, param := range params {
-		values[param.Name] = strings.ToLower(strings.TrimSpace(param.Value))
+func resolvedValues(settings []Setting) map[string]string {
+	values := make(map[string]string, len(settings))
+	for _, setting := range settings {
+		values[setting.Name] = strings.ToLower(strings.TrimSpace(setting.Value))
 	}
 	return values
 }

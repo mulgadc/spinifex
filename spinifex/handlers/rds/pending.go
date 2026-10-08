@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
@@ -73,7 +74,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv *kvstore.Buc
 	}
 	switch {
 	case pending.DBInstanceClass != "":
-		instanceType, err := InstanceTypeForClass(pending.DBInstanceClass)
+		instanceType, err := s.sizing.InstanceTypeForClass(pending.DBInstanceClass)
 		if err != nil {
 			return fmt.Errorf("rds: DBInstanceClass %q is not supported", pending.DBInstanceClass)
 		}
@@ -147,7 +148,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv *kvstore.Buc
 // the new group's overrides, so a parameter the old group set and the new one
 // does not reverts to its default rather than lingering.
 func (s *Service) applyParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, group, instanceClass string, tolerateUnreachableAgent bool) error {
-	engine, err := LookupEngine(rec.Engine)
+	engine, err := rdsengine.LookupEngine(rec.Engine)
 	if err != nil {
 		return err
 	}

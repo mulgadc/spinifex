@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -82,6 +83,9 @@ type Service struct {
 	nc     *nats.Conn
 	region string
 	deps   Deps
+	// The class-to-memory projection size-derived parameter defaults are
+	// computed from. Built once at construction; never mutated.
+	sizing rdsengine.Sizing
 
 	// Heartbeat state that never reaches KV: beats are counted here and
 	// persisted only on change or on the slower floor.
@@ -105,7 +109,7 @@ type agentLiveness struct {
 
 // NewService returns a Service with no Deps; region scopes the ARNs the Service mints.
 func NewService(nc *nats.Conn, region string) *Service {
-	return &Service{nc: nc, region: region, liveness: make(map[string]*agentLiveness)}
+	return &Service{nc: nc, region: region, liveness: make(map[string]*agentLiveness), sizing: InstanceSizing()}
 }
 
 func (s *Service) WithDeps(d Deps) *Service {

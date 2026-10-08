@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,8 +65,8 @@ func classNames(options []*rds.OrderableDBInstanceOption) []string {
 // find one written any other way.
 func TestDispatch_DescribeDBEngineVersionsRendersTheNestedList(t *testing.T) {
 	rows := describeEngineVersions(t, map[string]string{})
-	require.Len(t, rows, len(handlers_rds.SupportedEngines()))
-	assert.Equal(t, handlers_rds.SupportedEngines(), engineNames(rows))
+	require.Len(t, rows, len(rdsengine.SupportedEngines()))
+	assert.Equal(t, rdsengine.SupportedEngines(), engineNames(rows))
 
 	for _, row := range rows {
 		assert.NotEmpty(t, aws.StringValue(row.EngineVersion))
@@ -77,8 +77,8 @@ func TestDispatch_DescribeDBEngineVersionsRendersTheNestedList(t *testing.T) {
 
 func TestDispatch_DescribeOrderableDBInstanceOptionsRendersTheNestedList(t *testing.T) {
 	options := describeOrderable(t, newStubbedNATS(t), map[string]string{"Engine": "postgres"})
-	require.Len(t, options, len(handlers_rds.SupportedInstanceClasses()))
-	assert.Equal(t, handlers_rds.SupportedInstanceClasses(), classNames(options))
+	require.Len(t, options, len(rdsengine.SupportedInstanceClasses()))
+	assert.Equal(t, rdsengine.SupportedInstanceClasses(), classNames(options))
 
 	for _, option := range options {
 		assert.Equal(t, "postgres", aws.StringValue(option.Engine))
@@ -102,7 +102,7 @@ func TestDescribeDBEngineVersions_AppliesTypedParametersAndFilters(t *testing.T)
 			"Filters.Filter.1.Name":           "engine",
 			"Filters.Filter.1.Values.Value.1": "postgres",
 			"Filters.Filter.1.Values.Value.2": "mariadb",
-		}, handlers_rds.SupportedEngines()},
+		}, rdsengine.SupportedEngines()},
 		{"engine version parameter", map[string]string{"EngineVersion": "18"}, []string{"postgres"}},
 		{"parameter group family parameter",
 			map[string]string{"DBParameterGroupFamily": "mariadb11.8"}, []string{"mariadb"}},
@@ -111,7 +111,7 @@ func TestDescribeDBEngineVersions_AppliesTypedParametersAndFilters(t *testing.T)
 		}, []string{"postgres"}},
 		{"status filter", map[string]string{
 			"Filters.Filter.1.Name": "status", "Filters.Filter.1.Values.Value.1": "available",
-		}, handlers_rds.SupportedEngines()},
+		}, rdsengine.SupportedEngines()},
 		// A query for a row that does not exist is empty; only a request to build
 		// something that cannot exist is refused.
 		{"unpinned version", map[string]string{"EngineVersion": "17"}, []string{}},
@@ -127,7 +127,7 @@ func TestDescribeDBEngineVersions_AppliesTypedParametersAndFilters(t *testing.T)
 
 func TestDescribeOrderableDBInstanceOptions_AppliesTypedParametersAndFilters(t *testing.T) {
 	nc := newStubbedNATS(t)
-	all := handlers_rds.SupportedInstanceClasses()
+	all := rdsengine.SupportedInstanceClasses()
 
 	cases := []struct {
 		name  string
@@ -273,7 +273,7 @@ func TestDescribeOrderableDBInstanceOptions_PagesTheCatalog(t *testing.T) {
 			break
 		}
 	}
-	assert.Equal(t, handlers_rds.SupportedInstanceClasses(), classes)
+	assert.Equal(t, rdsengine.SupportedInstanceClasses(), classes)
 }
 
 func TestDescribeCatalogs_RejectAMarkerTheyDidNotIssue(t *testing.T) {

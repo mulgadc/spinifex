@@ -47,7 +47,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv *kvstore.Bucket, acc
 	}
 	instanceType := in.InstanceType
 	if instanceType == "" {
-		resolved, err := InstanceTypeForClass(rec.DBInstanceClass)
+		resolved, err := s.sizing.InstanceTypeForClass(rec.DBInstanceClass)
 		if err != nil {
 			return fmt.Errorf("rds: DB instance %s has an unmapped class %q", rec.DBInstanceIdentifier, rec.DBInstanceClass)
 		}

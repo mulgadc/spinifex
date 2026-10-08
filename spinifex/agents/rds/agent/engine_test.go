@@ -140,9 +140,9 @@ func (r *recordingRunner) run(_ context.Context, c command) (string, error) {
 	return r.out, r.err
 }
 
-func testPostgresEngineMeta(t *testing.T) handlers_rds.Engine {
+func testPostgresEngineMeta(t *testing.T) EngineCatalog {
 	t.Helper()
-	meta, err := handlers_rds.LookupEngine(enginePostgres)
+	meta, err := testEngineCatalogLookup(enginePostgres)
 	if err != nil {
 		t.Fatalf("LookupEngine(%s): %v", enginePostgres, err)
 	}

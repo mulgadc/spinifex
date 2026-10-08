@@ -32,8 +32,9 @@ type parameterStore struct {
 	// The engine parses its own configuration, so a root-owned file would be
 	// unreadable to it.
 	osUser string
-	// Names the engine whose option-file spellings these files are written in.
-	engine string
+	// The engine's own startup spelling for a catalog name, resolved once at
+	// construction from the control plane's own metadata for this engine.
+	optionFileName func(name string) string
 }
 
 func (s parameterStore) installedPath() string { return filepath.Join(s.dir, s.installed) }
@@ -43,7 +44,7 @@ func (s parameterStore) servingPath() string   { return filepath.Join(s.dir, s.s
 // Byte-for-byte what rds-init writes for the same set, so the copies compared
 // against it are comparing values rather than formatting.
 func (s parameterStore) render(params []handlers_rds.Parameter) ([]byte, error) {
-	body, err := renderParameters(s.engine, params)
+	body, err := renderParameters(s.optionFileName, params)
 	if err != nil {
 		return nil, err
 	}

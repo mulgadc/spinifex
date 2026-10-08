@@ -17,7 +17,9 @@ func testLoadConfig(t *testing.T, engine string) Config {
 		t.Fatalf("write the engine stamp: %v", err)
 	}
 	t.Setenv("RDS_ENGINE_FILE", stamp)
-	return LoadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	cfg := LoadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	cfg.EngineCatalog = testEngineCatalogLookup
+	return cfg
 }
 
 func TestLoadConfig_Defaults(t *testing.T) {

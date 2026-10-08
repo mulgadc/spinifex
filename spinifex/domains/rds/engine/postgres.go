@@ -1,4 +1,4 @@
-package handlers_rds
+package engine
 
 import (
 	"strconv"
@@ -460,8 +460,8 @@ func maintenanceWorkMemCeilingFor(memoryMiB int64) int64 {
 	return clampInt64(memoryMiB*1024/2, 16384, 2147483647)
 }
 
-func validatePostgresParameterCombinations(params []Parameter) error {
-	values := resolvedValues(params)
+func validatePostgresParameterCombinations(settings []Setting) error {
+	values := resolvedValues(settings)
 
 	maxWALSenders, err := resolvedInteger(values, "max_wal_senders")
 	if err != nil {

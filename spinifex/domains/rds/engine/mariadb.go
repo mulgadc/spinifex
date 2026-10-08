@@ -1,4 +1,4 @@
-package handlers_rds
+package engine
 
 import (
 	"slices"
@@ -467,8 +467,8 @@ func parseTimeZoneOffset(value string) (int, error) {
 	return offsetSeconds / int(time.Minute/time.Second), nil
 }
 
-func validateMariaDBParameterCombinations(params []Parameter) error {
-	values := resolvedValues(params)
+func validateMariaDBParameterCombinations(settings []Setting) error {
+	values := resolvedValues(settings)
 
 	// A collation outside the server's character set is one of the few settings
 	// mysqld refuses to start under rather than adjusting.

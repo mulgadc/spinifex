@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
@@ -26,25 +27,25 @@ import (
 // prevent.
 func testMariaDBRules() controlPlaneRules {
 	applyTypes := map[string]string{
-		"innodb_buffer_pool_size": handlers_rds.ApplyTypeStatic,
-		"innodb_log_file_size":    handlers_rds.ApplyTypeStatic,
-		"max_connections":         handlers_rds.ApplyTypeDynamic,
-		"long_query_time":         handlers_rds.ApplyTypeDynamic,
-		"time_zone":               handlers_rds.ApplyTypeDynamic,
+		"innodb_buffer_pool_size": rdsengine.ApplyTypeStatic,
+		"innodb_log_file_size":    rdsengine.ApplyTypeStatic,
+		"max_connections":         rdsengine.ApplyTypeDynamic,
+		"long_query_time":         rdsengine.ApplyTypeDynamic,
+		"time_zone":               rdsengine.ApplyTypeDynamic,
 
-		"innodb_adaptive_hash_index": handlers_rds.ApplyTypeDynamic,
-		"log_output":                 handlers_rds.ApplyTypeDynamic,
-		"require_secure_transport":   handlers_rds.ApplyTypeDynamic,
+		"innodb_adaptive_hash_index": rdsengine.ApplyTypeDynamic,
+		"log_output":                 rdsengine.ApplyTypeDynamic,
+		"require_secure_transport":   rdsengine.ApplyTypeDynamic,
 	}
 	dataTypes := map[string]string{
-		"innodb_buffer_pool_size":    handlers_rds.ParamTypeInteger,
-		"innodb_log_file_size":       handlers_rds.ParamTypeInteger,
-		"max_connections":            handlers_rds.ParamTypeInteger,
-		"long_query_time":            handlers_rds.ParamTypeReal,
-		"time_zone":                  handlers_rds.ParamTypeString,
-		"innodb_adaptive_hash_index": handlers_rds.ParamTypeBoolean,
-		"log_output":                 handlers_rds.ParamTypeEnum,
-		"require_secure_transport":   handlers_rds.ParamTypeBoolean,
+		"innodb_buffer_pool_size":    rdsengine.ParamTypeInteger,
+		"innodb_log_file_size":       rdsengine.ParamTypeInteger,
+		"max_connections":            rdsengine.ParamTypeInteger,
+		"long_query_time":            rdsengine.ParamTypeReal,
+		"time_zone":                  rdsengine.ParamTypeString,
+		"innodb_adaptive_hash_index": rdsengine.ParamTypeBoolean,
+		"log_output":                 rdsengine.ParamTypeEnum,
+		"require_secure_transport":   rdsengine.ParamTypeBoolean,
 	}
 	reserved := []string{"root", "mysql", "mariadb.sys", "rdsadmin", "public"}
 
@@ -63,7 +64,7 @@ func testMariaDBRules() controlPlaneRules {
 		},
 		isStatic: func(name string) bool {
 			applyType, ok := applyTypes[name]
-			return !ok || applyType == handlers_rds.ApplyTypeStatic
+			return !ok || applyType == rdsengine.ApplyTypeStatic
 		},
 		catalogName: func(optionFileName string) string {
 			if optionFileName == "default_time_zone" {
@@ -73,6 +74,12 @@ func testMariaDBRules() controlPlaneRules {
 		},
 		dataType:                func(name string) string { return dataTypes[name] },
 		tlsEnforcementParameter: "require_secure_transport",
+		optionFileName: func(name string) string {
+			if name == "time_zone" {
+				return "default_time_zone"
+			}
+			return name
+		},
 	}
 }
 
@@ -137,8 +144,8 @@ func TestControlPlaneRulesFrom_TakesTheClassificationFromTheCatalog(t *testing.T
 		if !ok {
 			t.Fatalf("the catalog no longer carries %s", name)
 		}
-		if (spec.ApplyType == handlers_rds.ApplyTypeStatic) != want {
-			t.Fatalf("%s is %s in the catalog, so this test is asserting the wrong way round", name, spec.ApplyType)
+		if spec.Static != want {
+			t.Fatalf("%s is static=%v in the catalog, so this test is asserting the wrong way round", name, spec.Static)
 		}
 		if got := rules.isStatic(name); got != want {
 			t.Errorf("isStatic(%s) = %v, want %v", name, got, want)
@@ -1122,14 +1129,15 @@ func TestMariaDBEngine_PendingRestartReportsCatalogNames(t *testing.T) {
 // surface as a failed apply on a live instance rather than as a test failure on
 // the change that introduced it.
 func TestMariaDBEngine_EveryResolvedDynamicValueRenders(t *testing.T) {
-	meta, err := handlers_rds.LookupEngine("mariadb")
+	meta, err := rdsengine.LookupEngine("mariadb")
 	if err != nil {
 		t.Fatalf("LookupEngine: %v", err)
 	}
-	rules := controlPlaneRulesFrom(meta)
+	rules := controlPlaneRulesFrom(catalogFromEngine{engine: meta})
+	sizing := handlers_rds.InstanceSizing()
 
-	for _, class := range handlers_rds.SupportedInstanceClasses() {
-		params, err := meta.ResolveEffectiveParameters(class, nil)
+	for _, class := range rdsengine.SupportedInstanceClasses() {
+		params, err := meta.ResolveEffectiveParameters(sizing, class, nil)
 		if err != nil {
 			t.Fatalf("ResolveEffectiveParameters(%s): %v", class, err)
 		}

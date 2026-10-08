@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func TestTLSAvailable_ReportsWhetherTheDeploymentCanServeTLS(t *testing.T) {
 // of its own requires TLS, on both engines, with no customer action.
 func TestCreateDBInstance_EnforcesTLSWithNoParameterGroupOfItsOwn(t *testing.T) {
 	tests := []struct {
-		engine    Engine
+		engine    rdsengine.Engine
 		parameter string
 	}{
 		{enginePostgres, "rds.force_ssl"},
@@ -115,7 +116,7 @@ func TestCreateDBInstance_RefusesEnforcementWithNoClusterCA(t *testing.T) {
 // a modifiable parameter rather than a platform constant.
 func TestCreateDBInstance_AcceptsEnforcementTurnedOffWithNoClusterCA(t *testing.T) {
 	tests := []struct {
-		engine    Engine
+		engine    rdsengine.Engine
 		group     string
 		input     *rds.CreateDBParameterGroupInput
 		parameter string

@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
@@ -19,9 +20,24 @@ import (
 // AWS's cap on one ModifyDBParameterGroup call.
 const maxParametersPerModify = 20
 
-// The prefix AWS reserves for the groups the service itself owns. A group named
-// with it is reported and resolvable but never modifiable or deletable.
+// The prefix AWS reserves for the groups the service itself owns. Duplicated
+// against the engine package's own copy deliberately: that one backs a name
+// this package derives, this one a name a caller recognises, and neither may
+// reach across the boundary to the other.
 const defaultParameterGroupPrefix = "default."
+
+// AWS's own ApplyMethod values, echoed back on DescribeDBParameters.
+const (
+	ApplyMethodImmediate     = "immediate"
+	ApplyMethodPendingReboot = "pending-reboot"
+)
+
+// Where a reported value came from. AWS distinguishes these and the Terraform
+// provider reads them, so a computed default must not be reported as user.
+const (
+	ParameterSourceUser          = "user"
+	ParameterSourceEngineDefault = "engine-default"
+)
 
 // CreateDBParameterGroup creates a customer-owned parameter group. It starts empty: every value is a
 // catalog default until the customer overrides one, so a fresh group and the default group resolve to
@@ -111,7 +127,11 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 	}
 	// The default group is synthesised rather than read, so it appears exactly
 	// once whether or not a prior create persisted it.
-	for _, engine := range engines {
+	for _, name := range rdsengine.SupportedEngines() {
+		engine, err := rdsengine.LookupEngine(name)
+		if err != nil {
+			return nil, err
+		}
 		names = append(names, engine.DefaultParameterGroupName())
 	}
 	slices.Sort(names)
@@ -173,7 +193,7 @@ func (s *Service) ModifyDBParameterGroup(ctx context.Context, input *rds.ModifyD
 	if err != nil {
 		return nil, err
 	}
-	engine, err := engineForFamily(rec.Family)
+	engine, err := rdsengine.EngineForFamily(rec.Family)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +286,7 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	}
 	// The catalog listed is the one the group's family names, so a group of one
 	// engine never reports another engine's settings.
-	engine, err := engineForFamily(rec.Family)
+	engine, err := rdsengine.EngineForFamily(rec.Family)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +294,7 @@ func (s *Service) DescribeDBParameters(ctx context.Context, input *rds.DescribeD
 	if err != nil {
 		return nil, err
 	}
-	memoryMiB, err := classMemoryMiB(SmallestInstanceClass())
+	memoryMiB, err := s.sizing.ClassMemoryMiB(s.sizing.SmallestInstanceClass())
 	if err != nil {
 		return nil, err
 	}
@@ -377,13 +397,13 @@ type parameterUpdate struct {
 
 // Every entry is checked before any is written. A name repeated in one request
 // keeps its last value, as AWS does.
-func validateParameterUpdates(engine Engine, params []*rds.Parameter) ([]parameterUpdate, error) {
+func validateParameterUpdates(engine rdsengine.Engine, params []*rds.Parameter) ([]parameterUpdate, error) {
 	byName := make(map[string]parameterUpdate, len(params))
 	for _, param := range params {
 		if param == nil {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "a parameter entry is empty")
 		}
-		spec, err := engine.validateParameterValue(aws.StringValue(param.ParameterName), aws.StringValue(param.ParameterValue))
+		spec, err := engine.ValidateParameterValue(aws.StringValue(param.ParameterName), aws.StringValue(param.ParameterValue))
 		if err != nil {
 			return nil, err
 		}
@@ -408,18 +428,18 @@ func validateParameterUpdates(engine Engine, params []*rds.Parameter) ([]paramet
 // A static parameter cannot be applied immediately, which AWS rejects rather
 // than silently downgrading — accepting it would tell the customer the change is
 // live when the engine has not adopted it.
-func resolveApplyMethod(spec ParameterSpec, requested string) (string, error) {
+func resolveApplyMethod(spec rdsengine.ParameterSpec, requested string) (string, error) {
 	method := strings.ToLower(strings.TrimSpace(requested))
 	switch method {
 	case "":
-		if spec.ApplyType == ApplyTypeStatic {
+		if spec.ApplyType == rdsengine.ApplyTypeStatic {
 			return ApplyMethodPendingReboot, nil
 		}
 		return ApplyMethodImmediate, nil
 	case ApplyMethodPendingReboot:
 		return ApplyMethodPendingReboot, nil
 	case ApplyMethodImmediate:
-		if spec.ApplyType == ApplyTypeStatic {
+		if spec.ApplyType == rdsengine.ApplyTypeStatic {
 			return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 				"parameter %s is static, so ApplyMethod must be %s", spec.Name, ApplyMethodPendingReboot)
 		}
@@ -443,7 +463,7 @@ func getDBParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID, nam
 	if found {
 		return &rec, rev, nil
 	}
-	if engine, ok := engineForDefaultParameterGroup(name); ok {
+	if engine, ok := rdsengine.EngineForDefaultParameterGroup(name); ok {
 		return defaultParameterGroupRecord(engine, accountID), 0, nil
 	}
 	return nil, 0, awserrors.Errorf(awserrors.ErrorDBParameterGroupNotFound, "DB parameter group %s not found", name)
@@ -451,7 +471,7 @@ func getDBParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID, nam
 
 // The implicit group, identical for every account. It carries no tags and no
 // stored values, so it resolves to the catalog defaults alone.
-func defaultParameterGroupRecord(engine Engine, accountID string) *DBParameterGroupRecord {
+func defaultParameterGroupRecord(engine rdsengine.Engine, accountID string) *DBParameterGroupRecord {
 	return &DBParameterGroupRecord{
 		Name:        engine.DefaultParameterGroupName(),
 		AccountID:   accountID,
@@ -464,25 +484,14 @@ func isDefaultParameterGroupName(name string) bool {
 	return strings.HasPrefix(strings.ToLower(name), defaultParameterGroupPrefix)
 }
 
-// The engine whose implicit default group carries this name, so an unrecognised
-// default.* name is a not-found rather than a group that resolves to nothing.
-func engineForDefaultParameterGroup(name string) (Engine, bool) {
-	for _, engine := range engines {
-		if engine.DefaultParameterGroupName() == name {
-			return engine, true
-		}
-	}
-	return Engine{}, false
-}
-
 // The family is required: defaulting it would create a group for an engine the
 // caller never named, refused only later when another engine tries to attach it.
 func validateParameterGroupFamily(family string) (string, error) {
-	if normaliseFamily(family) == "" {
+	if strings.TrimSpace(family) == "" {
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"The parameter ParameterGroupFamily must be provided and must not be empty.")
 	}
-	engine, err := engineForFamily(family)
+	engine, err := rdsengine.EngineForFamily(family)
 	if err != nil {
 		return "", err
 	}
@@ -498,7 +507,7 @@ func parameterSource(isOverride bool) string {
 
 // A computed default is reported as engine-default with its literal value, never
 // as the formula that produced it.
-func projectParameter(spec ParameterSpec, value, storedApplyMethod string, isOverride bool) *rds.Parameter {
+func projectParameter(spec rdsengine.ParameterSpec, value, storedApplyMethod string, isOverride bool) *rds.Parameter {
 	out := &rds.Parameter{
 		ParameterName:  aws.String(spec.Name),
 		ParameterValue: aws.String(value),
@@ -515,7 +524,7 @@ func projectParameter(spec ParameterSpec, value, storedApplyMethod string, isOve
 	// defaults and records written before ApplyMethod was persisted.
 	if storedApplyMethod != "" {
 		out.ApplyMethod = aws.String(storedApplyMethod)
-	} else if spec.ApplyType == ApplyTypeStatic {
+	} else if spec.ApplyType == rdsengine.ApplyTypeStatic {
 		out.ApplyMethod = aws.String(ApplyMethodPendingReboot)
 	} else {
 		out.ApplyMethod = aws.String(ApplyMethodImmediate)
@@ -543,7 +552,7 @@ func (s *Service) projectParameterGroupRecord(rec *DBParameterGroupRecord) *rds.
 // Every path that binds a group to an instance comes through here — create,
 // modify, restore, the deferred apply and group propagation — so the
 // cross-engine refusal is one check rather than five.
-func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket, accountID string, engine Engine, group, instanceClass string) ([]Parameter, error) {
+func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket, accountID string, engine rdsengine.Engine, group, instanceClass string) ([]Parameter, error) {
 	rec, _, err := getDBParameterGroup(ctx, kv, accountID, group)
 	if err != nil {
 		return nil, err
@@ -561,9 +570,13 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket
 	for name, override := range overrides {
 		values[name] = override.Value
 	}
-	resolved, err := engine.ResolveEffectiveParameters(instanceClass, values)
+	settings, err := engine.ResolveEffectiveParameters(s.sizing, instanceClass, values)
 	if err != nil {
 		return nil, err
+	}
+	resolved := make([]Parameter, len(settings))
+	for i, setting := range settings {
+		resolved[i] = Parameter{Name: setting.Name, Value: setting.Value}
 	}
 	if err := s.checkTLSEnforceable(engine, group, resolved); err != nil {
 		return nil, err
@@ -575,9 +588,9 @@ func (s *Service) resolveGroupParameters(ctx context.Context, kv *kvstore.Bucket
 // serve one, so a binding is refused here rather than at the boot that would
 // otherwise start an instance nothing can reach. A formed deployment always
 // holds a cluster CA, so this is not expected to fire.
-func (s *Service) checkTLSEnforceable(engine Engine, group string, resolved []Parameter) error {
+func (s *Service) checkTLSEnforceable(engine rdsengine.Engine, group string, resolved []Parameter) error {
 	name := engine.TLSEnforcementParameter()
-	if name == "" || resolvedValues(resolved)[name] != "1" {
+	if name == "" || resolvedParameterValues(resolved)[name] != "1" {
 		return nil
 	}
 	available, err := s.tlsAvailable()
@@ -593,4 +606,15 @@ func (s *Service) checkTLSEnforceable(engine Engine, group string, resolved []Pa
 			"and this deployment has no cluster CA configured to serve it; "+
 			"configure the cluster CA, or set %s to 0 in %s",
 		name, group, name, group)
+}
+
+// Reads a resolved parameter set, keyed by name, for the one check above that
+// needs a value out of it. This package's own Parameter, not the engine
+// package's Setting: the conversion happens at resolveGroupParameters.
+func resolvedParameterValues(params []Parameter) map[string]string {
+	values := make(map[string]string, len(params))
+	for _, param := range params {
+		values[param.Name] = strings.ToLower(strings.TrimSpace(param.Value))
+	}
+	return values
 }

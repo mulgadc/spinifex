@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
@@ -25,16 +26,17 @@ const mariadbDefaultParametersFixture = "../../../../scripts/images/rds-mariadb/
 // mariadbd: a catalog that grew a name the server refuses at startup would
 // otherwise reach a customer as an instance that never boots.
 func TestMariaDBDefaultParametersFixture_MatchesTheCatalog(t *testing.T) {
-	engine, err := handlers_rds.LookupEngine("mariadb")
+	engine, err := rdsengine.LookupEngine("mariadb")
 	if err != nil {
 		t.Fatalf("LookupEngine: %v", err)
 	}
-	class := handlers_rds.SmallestInstanceClass()
-	params, err := engine.ResolveEffectiveParameters(class, nil)
+	sizing := handlers_rds.InstanceSizing()
+	class := sizing.SmallestInstanceClass()
+	settings, err := engine.ResolveEffectiveParameters(sizing, class, nil)
 	if err != nil {
 		t.Fatalf("ResolveEffectiveParameters(%s): %v", class, err)
 	}
-	body, err := renderParameters("mariadb", params)
+	body, err := renderParameters(engine.OptionFileName, settingsToParameters(settings))
 	if err != nil {
 		t.Fatalf("renderParameters: %v", err)
 	}

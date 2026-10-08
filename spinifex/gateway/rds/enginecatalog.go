@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
@@ -29,6 +30,10 @@ const (
 	filterNameVpc                  = "vpc"
 )
 
+// rdsSizing is this gateway's composition of the engine package's class-to-
+// memory projection, built once from the platform's instance-type table.
+var rdsSizing = handlers_rds.InstanceSizing()
+
 var (
 	engineVersionFilterNames = []string{
 		filterNameEngine, filterNameEngineVersion, filterNameParameterGroupFamily, filterNameStatus,
@@ -42,7 +47,7 @@ var (
 // rather than a required parameter, and an unknown one is an empty list rather than the rejection
 // create-db-instance gives it.
 func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVersionsInput, _ *nats.Conn, _ Caller) (any, error) {
-	filter := handlers_rds.EngineVersionFilter{}
+	filter := rdsengine.EngineVersionFilter{}
 	filter.Engine.AddParam(aws.StringValue(input.Engine))
 	filter.EngineVersion.AddParam(aws.StringValue(input.EngineVersion))
 	filter.ParameterGroupFamily.AddParam(aws.StringValue(input.DBParameterGroupFamily))
@@ -85,12 +90,12 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 	if strings.TrimSpace(aws.StringValue(input.Engine)) == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorMissingParameter, "Engine is required")
 	}
-	engine, err := handlers_rds.LookupEngine(aws.StringValue(input.Engine))
+	engine, err := rdsengine.LookupEngine(aws.StringValue(input.Engine))
 	if err != nil {
 		return nil, err
 	}
 
-	filter := handlers_rds.OrderableFilter{}
+	filter := rdsengine.OrderableFilter{}
 	filter.Engine.AddParam(engine.Name)
 	filter.EngineVersion.AddParam(aws.StringValue(input.EngineVersion))
 	filter.DBInstanceClass.AddParam(aws.StringValue(input.DBInstanceClass))
@@ -126,7 +131,7 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 	if err != nil {
 		return nil, err
 	}
-	options, marker, err := handlers_rds.Page(handlers_rds.OrderableOptions(filter, runnable),
+	options, marker, err := handlers_rds.Page(handlers_rds.OrderableOptions(filter, rdsSizing, runnable),
 		handlers_rds.OrderableOptionPageKey, input.MaxRecords, input.Marker)
 	if err != nil {
 		return nil, err

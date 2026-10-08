@@ -70,6 +70,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -2085,7 +2086,7 @@ func (d *Daemon) startCluster() error {
 	// whichever node the queue group picks, so a node without it would make the
 	// first boot of a DB instance fail intermittently rather than not at all.
 	d.rdsService, err = initServiceWithRetry("RDS service", func() (*handlers_rds.Service, error) {
-		if registryErr := handlers_rds.ValidateEngineRegistry(); registryErr != nil {
+		if registryErr := rdsengine.ValidateEngineRegistry(); registryErr != nil {
 			return nil, registryErr
 		}
 		deps, depsErr := d.buildRDSDeps()

@@ -92,7 +92,7 @@ const (
 
 // bootstrap.env is written last and renamed into place, so its appearance —
 // which rds-init waits on — means the whole handoff is complete.
-func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) error {
+func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput, optionFileName func(name string) string) error {
 	if cfg.MasterUsername == "" {
 		return fmt.Errorf("bootstrap config carries no master username")
 	}
@@ -114,7 +114,7 @@ func writeHandoff(dir string, cfg *handlers_rds.GetDBBootstrapConfigOutput) erro
 		return fmt.Errorf("secure handoff dir %s: %w", dir, err)
 	}
 
-	params, err := renderParameters(cfg.Engine, cfg.Parameters)
+	params, err := renderParameters(optionFileName, cfg.Parameters)
 	if err != nil {
 		return err
 	}
@@ -193,10 +193,9 @@ func shellQuote(s string) string {
 // postgresql.conf syntax, which MariaDB's option files also parse. Values are
 // quoted so a space or unit suffix survives. Names are the engine's startup
 // spellings, not the customer's: the wrong one leaves the engine unable to boot.
-func renderParameters(engineName string, params []handlers_rds.Parameter) (string, error) {
-	engine, err := handlers_rds.LookupEngine(engineName)
-	if err != nil {
-		return "", fmt.Errorf("render the resolved parameters: %w", err)
+func renderParameters(optionFileName func(name string) string, params []handlers_rds.Parameter) (string, error) {
+	if optionFileName == nil {
+		return "", fmt.Errorf("render the resolved parameters: no engine catalog resolved")
 	}
 	var b strings.Builder
 	b.WriteString("# Resolved parameter group, written by rds-agent.\n")
@@ -204,7 +203,7 @@ func renderParameters(engineName string, params []handlers_rds.Parameter) (strin
 		if p.Name == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s = '%s'\n", engine.OptionFileName(p.Name), strings.ReplaceAll(p.Value, "'", "''"))
+		fmt.Fprintf(&b, "%s = '%s'\n", optionFileName(p.Name), strings.ReplaceAll(p.Value, "'", "''"))
 	}
 	return b.String(), nil
 }

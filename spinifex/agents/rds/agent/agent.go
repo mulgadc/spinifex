@@ -215,13 +215,26 @@ func newAgent(cfg Config, cp controlPlane, probe *engineProbe) (*Agent, error) {
 		AgentVersion:         cfg.AgentVersion,
 		EngineVersion:        cfg.EngineVersion,
 	}
-	a := &Agent{
-		cfg: cfg, id: id, cp: cp, probe: probe,
-		handoffWriter: writeHandoff, dataMountWaiter: waitForDataMount,
-	}
 	eng, err := newEngine(cfg, execCommandRunner, execSessionRunner, probe)
 	if err != nil {
 		return nil, err
+	}
+	// Resolved once here, after the baked engine is known good, so the handoff
+	// renders parameters under the same engine's startup spellings the
+	// implementation above was just built from.
+	if cfg.EngineCatalog == nil {
+		return nil, fmt.Errorf("this build wires no engine catalog lookup")
+	}
+	catalog, err := cfg.EngineCatalog(cfg.BakedEngine)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the engine catalog for the boot handoff: %w", err)
+	}
+	a := &Agent{
+		cfg: cfg, id: id, cp: cp, probe: probe,
+		handoffWriter: func(dir string, bootCfg *handlers_rds.GetDBBootstrapConfigOutput) error {
+			return writeHandoff(dir, bootCfg, catalog.OptionFileName)
+		},
+		dataMountWaiter: waitForDataMount,
 	}
 	a.engine = eng
 	a.hb = newHeartbeater(cp, probe, a.engine, handlers_rds.HeartbeatInterval)

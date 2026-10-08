@@ -1,4 +1,8 @@
-package handlers_rds
+// Package engine owns the RDS engine catalogue: the registry of supported
+// engines, their parameter catalogues, and the size-derived sizing table a
+// parameter default is evaluated against. It is the control-plane half of
+// the engine seam; the in-guest half lives in rds-init and rds-agent.
+package engine
 
 import (
 	"errors"
@@ -8,6 +12,14 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
+
+// Setting is one resolved name/value pair. Separate from any caller's own
+// parameter type, so this package reports a result without depending on how
+// a caller stores or renders it.
+type Setting struct {
+	Name  string
+	Value string
+}
 
 // Engine is the control-plane half of the engine seam: what CreateDBInstance needs to validate a
 // request and assemble a bootstrap config. The in-guest half — initdb, quiesce, live password apply —
@@ -41,7 +53,7 @@ type Engine struct {
 	catalog map[string]ParameterSpec
 	// Cross-parameter checks a resolved set must satisfy, which are the
 	// combinations the engine itself would refuse to start under.
-	validateCombinations func([]Parameter) error
+	validateCombinations func([]Setting) error
 	// The engine's own name for the setting that requires TLS of a client
 	// connection, which is AWS's name for it. Named here so the control plane and
 	// the guest agree on the key without either spelling out an engine.
@@ -64,6 +76,12 @@ var engines = map[string]Engine{
 // only a family string and have no instance to derive an engine from. Family
 // and engine are 1:1 by construction, so one registry serves both.
 var enginesByFamily, engineRegistryValidationErr = indexEnginesByFamily(engines)
+
+// The prefix AWS reserves for the groups the service itself owns. Duplicated
+// against handlers_rds's own copy deliberately: each package's constant backs
+// a different check (this one a name this package derives, that one a name a
+// caller recognises), and neither may reach across the boundary to the other.
+const defaultParameterGroupPrefix = "default."
 
 // ValidateEngineRegistry reports invalid built-in engine metadata before RDS starts.
 func ValidateEngineRegistry() error {
@@ -134,6 +152,18 @@ func (e Engine) ParameterGroupFamily() string {
 	return e.Name + e.MajorVersion
 }
 
+// CrashRecoveryNote returns what a snapshot taken without a quiesce actually
+// recovers on restore, for the event the control plane records alongside it.
+func (e Engine) CrashRecoveryNote() string {
+	return e.crashRecoveryNote
+}
+
+// UncleanStopNote returns the same guarantee stated for the next start rather
+// than for a restore, for the event an unclean stop records.
+func (e Engine) UncleanStopNote() string {
+	return e.uncleanStopNote
+}
+
 // LookupEngine resolves an engine name case-insensitively. An unknown engine is rejected with
 // InvalidParameterValue at validation, before any volume or ENI exists.
 func LookupEngine(name string) (Engine, error) {
@@ -150,10 +180,10 @@ func SupportedEngines() []string {
 	return slices.Sorted(maps.Keys(engines))
 }
 
-// The engine a parameter group's family belongs to, for the paths that hold a
-// group and no instance. A family naming no engine is a group written by a build
-// that offered an engine this one does not.
-func engineForFamily(family string) (Engine, error) {
+// EngineForFamily returns the engine a parameter group's family belongs to, for the paths that hold a
+// group and no instance. A family naming no engine is a group written by a build that offered an
+// engine this one does not.
+func EngineForFamily(family string) (Engine, error) {
 	engine, ok := enginesByFamily[normaliseFamily(family)]
 	if !ok {
 		return Engine{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
@@ -161,6 +191,17 @@ func engineForFamily(family string) (Engine, error) {
 			family, strings.Join(SupportedParameterGroupFamilies(), ", "))
 	}
 	return engine, nil
+}
+
+// EngineForDefaultParameterGroup returns the engine whose implicit default group carries this name, so
+// an unrecognised default.* name is a not-found rather than a group that resolves to nothing.
+func EngineForDefaultParameterGroup(name string) (Engine, bool) {
+	for _, engine := range engines {
+		if engine.DefaultParameterGroupName() == name {
+			return engine, true
+		}
+	}
+	return Engine{}, false
 }
 
 // SupportedParameterGroupFamilies returns every engine's parameter group family name (e.g. postgres18),
@@ -250,37 +291,9 @@ func validateIdentifier(field, value string, maxLen int, allowEmpty bool) error 
 	return nil
 }
 
-// ValidateMasterUserPassword enforces the bounds and printable-ASCII range AWS accepts. The password is
-// never inspected beyond this and never stored in cleartext past the first bootstrap fetch.
-func ValidateMasterUserPassword(password string) error {
-	switch {
-	case password == "":
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUserPassword is required")
-	case len(password) < minMasterPasswordLen || len(password) > maxMasterPasswordLen:
-		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"MasterUserPassword must be between %d and %d characters", minMasterPasswordLen, maxMasterPasswordLen)
-	}
-	for _, r := range password {
-		// A control character would also survive the bootstrap handoff and defeat
-		// the line-oriented redaction that keeps the password off the guest
-		// console, so the range is refused here rather than sanitised there.
-		if r < 0x20 || r > 0x7e {
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"MasterUserPassword may only contain printable ASCII characters")
-		}
-		if r == '/' || r == '"' || r == '@' || r == ' ' {
-			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"MasterUserPassword may not contain '/', '\"', '@' or spaces")
-		}
-	}
-	return nil
-}
-
-const (
-	minMasterPasswordLen = 8
-	maxMasterPasswordLen = 128
-)
-
+// isLetter and isDigit are duplicated against handlers_rds's own copy
+// deliberately: that one backs identifier checks this package does not own,
+// and neither may reach across the boundary to the other.
 func isLetter(r rune) bool {
 	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
 }

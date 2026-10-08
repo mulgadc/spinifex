@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
@@ -214,10 +215,10 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	}
 
 	if class := aws.StringValue(input.DBInstanceClass); class != "" && class != rec.DBInstanceClass {
-		instanceType, err := InstanceTypeForClass(class)
+		instanceType, err := s.sizing.InstanceTypeForClass(class)
 		if err != nil {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"DBInstanceClass %q is not supported; supported classes are %s", class, strings.Join(SupportedInstanceClasses(), ", "))
+				"DBInstanceClass %q is not supported; supported classes are %s", class, strings.Join(rdsengine.SupportedInstanceClasses(), ", "))
 		}
 		plan.InstanceClass, plan.InstanceType = class, instanceType
 	}
@@ -237,7 +238,7 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 		if plan.ParameterGroup != "" {
 			targetGroup = plan.ParameterGroup
 		}
-		engine, err := LookupEngine(rec.Engine)
+		engine, err := rdsengine.LookupEngine(rec.Engine)
 		if err != nil {
 			return nil, err
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
@@ -257,7 +258,7 @@ func (s *Service) stopEngineOrRecordFallback(ctx context.Context, accountID stri
 // MariaDB only its InnoDB ones.
 func uncleanStopMessage(ctx context.Context, engineName, operation string) string {
 	warning := fmt.Sprintf("The database engine could not be shut down cleanly before %s.", operation)
-	engine, err := LookupEngine(engineName)
+	engine, err := rdsengine.LookupEngine(engineName)
 	if err != nil {
 		// The VM is going down either way, so the customer still gets the half of
 		// the warning that does not depend on knowing the engine.
@@ -265,7 +266,7 @@ func uncleanStopMessage(ctx context.Context, engineName, operation string) strin
 			"engine", engineName, "err", err)
 		return warning
 	}
-	return warning + " " + engine.uncleanStopNote
+	return warning + " " + engine.UncleanStopNote()
 }
 
 // Moves the instance into a transitional state under CAS and returns the record

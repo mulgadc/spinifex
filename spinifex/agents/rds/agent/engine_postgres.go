@@ -23,7 +23,7 @@ type postgresEngine struct {
 	// The control plane's own metadata for this engine, resolved once at
 	// startup: the live password apply runs as the cluster superuser, so it
 	// re-checks the role name against the same reserved set the API validates.
-	meta      handlers_rds.Engine
+	meta      EngineCatalog
 	run       commandRunner
 	startSess sessionRunner
 	psql      string
@@ -108,14 +108,17 @@ hostnossl all all ::/0 reject
 
 // The layout's factory resolves the control plane metadata during startup.
 func newPostgresEngineFromCatalog(cfg Config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
-	meta, err := handlers_rds.LookupEngine(enginePostgres)
+	if cfg.EngineCatalog == nil {
+		return nil, fmt.Errorf("this build wires no engine catalog lookup")
+	}
+	meta, err := cfg.EngineCatalog(enginePostgres)
 	if err != nil {
 		return nil, fmt.Errorf("this image bakes %s, which this build's control plane does not offer: %w", enginePostgres, err)
 	}
 	return newPostgresEngine(cfg, meta, run, startSess, probe), nil
 }
 
-func newPostgresEngine(cfg Config, meta handlers_rds.Engine, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
+func newPostgresEngine(cfg Config, meta EngineCatalog, run commandRunner, startSess sessionRunner, probe *engineProbe) *postgresEngine {
 	return &postgresEngine{
 		meta:      meta,
 		run:       run,
@@ -129,11 +132,11 @@ func newPostgresEngine(cfg Config, meta handlers_rds.Engine, run commandRunner, 
 		parameterManager: parameterManager{
 			probe: probe,
 			params: parameterStore{
-				dir:       filepath.Join(cfg.EngineDataDir, "conf.d"),
-				installed: postgresParametersFile,
-				lastGood:  postgresLastGoodFile,
-				osUser:    cfg.EngineUser,
-				engine:    enginePostgres,
+				dir:            filepath.Join(cfg.EngineDataDir, "conf.d"),
+				installed:      postgresParametersFile,
+				lastGood:       postgresLastGoodFile,
+				osUser:         cfg.EngineUser,
+				optionFileName: meta.OptionFileName,
 			},
 			repairTimeout: parameterRepairTimeout,
 			repairPoll:    parameterRepairPoll,

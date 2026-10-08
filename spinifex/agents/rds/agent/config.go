@@ -79,6 +79,11 @@ type Config struct {
 	// AgentVersion is the binary's build version, reported at registration;
 	// the binary sets it, not the env file.
 	AgentVersion string
+
+	// EngineCatalog resolves the control plane's metadata for the engine
+	// this image bakes. Set by the binary's entry point, which is the only
+	// place in this agent that imports the catalog that defines it.
+	EngineCatalog EngineCatalogLookup
 }
 
 // LoadConfig reads the cloud-init env file, then lets real env vars override.

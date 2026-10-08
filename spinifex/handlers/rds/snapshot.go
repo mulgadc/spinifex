@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -190,7 +191,7 @@ const crashConsistentSnapshotWarning = "The database engine could not be quiesce
 	"the snapshot is crash consistent."
 
 func crashConsistentSnapshotMessage(ctx context.Context, engineName string) string {
-	engine, err := LookupEngine(engineName)
+	engine, err := rdsengine.LookupEngine(engineName)
 	if err != nil {
 		// The snapshot has already been taken, so the customer still gets the half
 		// of the warning that does not depend on knowing the engine.
@@ -198,7 +199,7 @@ func crashConsistentSnapshotMessage(ctx context.Context, engineName string) stri
 			"engine", engineName, "err", err)
 		return crashConsistentSnapshotWarning
 	}
-	return crashConsistentSnapshotWarning + " " + engine.crashRecoveryNote
+	return crashConsistentSnapshotWarning + " " + engine.CrashRecoveryNote()
 }
 
 // Releases the quiesce on a context detached from the caller's, so a snapshot

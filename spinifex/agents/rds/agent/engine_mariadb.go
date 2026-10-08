@@ -37,9 +37,13 @@ type controlPlaneRules struct {
 	// connection. Held rather than spelled out here, so the guest derives
 	// enforcement from the same key the control plane resolves it under.
 	tlsEnforcementParameter string
+	// The engine's startup spelling for a catalog name, the forward
+	// direction of catalogName above. Used to render a resolved set rather
+	// than to classify one read back.
+	optionFileName func(name string) string
 }
 
-func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
+func controlPlaneRulesFrom(meta EngineCatalog) controlPlaneRules {
 	// Built once per engine: everything read back out of a generated file has to
 	// return to the catalog's namespace before it is classified or reported, or a
 	// startup spelling would read as an unknown name.
@@ -56,7 +60,7 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 			spec, ok := meta.LookupParameter(name)
 			// A name the catalog does not carry cannot be shown to have been adopted
 			// without a restart, and is never issued as a live SET GLOBAL either.
-			return !ok || spec.ApplyType == handlers_rds.ApplyTypeStatic
+			return !ok || spec.Static
 		},
 		catalogName: func(optionFileName string) string {
 			if name, ok := catalogNames[optionFileName]; ok {
@@ -72,6 +76,7 @@ func controlPlaneRulesFrom(meta handlers_rds.Engine) controlPlaneRules {
 			return spec.DataType
 		},
 		tlsEnforcementParameter: meta.TLSEnforcementParameter(),
+		optionFileName:          meta.OptionFileName,
 	}
 }
 
@@ -127,7 +132,10 @@ const (
 // of this engine, so a build whose control plane does not offer MariaDB refuses
 // to run this implementation rather than inventing a definition for it.
 func newMariaDBEngineFromCatalog(cfg Config, run commandRunner, startSess sessionRunner, probe *engineProbe) (engine, error) {
-	meta, err := handlers_rds.LookupEngine(engineMariaDB)
+	if cfg.EngineCatalog == nil {
+		return nil, fmt.Errorf("this build wires no engine catalog lookup")
+	}
+	meta, err := cfg.EngineCatalog(engineMariaDB)
 	if err != nil {
 		return nil, fmt.Errorf("this image bakes %s, which this build's control plane does not offer: %w", engineMariaDB, err)
 	}
@@ -148,13 +156,13 @@ func newMariaDBEngine(cfg Config, rules controlPlaneRules, run commandRunner, st
 			params: parameterStore{
 				// The mount point rather than the datadir one level inside it: the
 				// include directory has to outlive the sweep a failed bootstrap runs.
-				dir:       filepath.Join(cfg.DataMount, "conf.d"),
-				installed: mariadbParametersFile,
-				lastGood:  mariadbLastGoodFile,
-				serving:   mariadbServingFile,
-				header:    mariadbParametersHeader,
-				osUser:    cfg.EngineUser,
-				engine:    engineMariaDB,
+				dir:            filepath.Join(cfg.DataMount, "conf.d"),
+				installed:      mariadbParametersFile,
+				lastGood:       mariadbLastGoodFile,
+				serving:        mariadbServingFile,
+				header:         mariadbParametersHeader,
+				osUser:         cfg.EngineUser,
+				optionFileName: rules.optionFileName,
 			},
 			repairTimeout: parameterRepairTimeout,
 			repairPoll:    parameterRepairPoll,
@@ -328,24 +336,33 @@ var mariadbBooleanValues = map[string]string{
 	"on": "ON", "off": "OFF", "true": "ON", "false": "OFF", "1": "ON", "0": "OFF",
 }
 
+// Agent-owned data-type spellings, equal in value to the control plane's own
+// so a CatalogParameter crossing the boundary needs no translation, but held
+// here so this file depends on no catalog type for them.
+const (
+	paramTypeInteger = "integer"
+	paramTypeReal    = "real"
+	paramTypeBoolean = "boolean"
+)
+
 // One SET GLOBAL right-hand side. MariaDB refuses a quoted literal for a numeric
 // or boolean with ER_WRONG_TYPE_FOR_VAR, so the catalog's data type picks the
 // form; re-rendering from the parsed value is what keeps it safe to interpolate.
 func mariadbSetValue(dataType, value string) (string, error) {
 	switch dataType {
-	case handlers_rds.ParamTypeInteger:
+	case paramTypeInteger:
 		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 		if err != nil {
 			return "", fmt.Errorf("value %q is not an integer", value)
 		}
 		return strconv.FormatInt(n, 10), nil
-	case handlers_rds.ParamTypeReal:
+	case paramTypeReal:
 		f, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 		if err != nil {
 			return "", fmt.Errorf("value %q is not a real number", value)
 		}
 		return strconv.FormatFloat(f, 'g', -1, 64), nil
-	case handlers_rds.ParamTypeBoolean:
+	case paramTypeBoolean:
 		if literal, ok := mariadbBooleanValues[strings.ToLower(strings.TrimSpace(value))]; ok {
 			return literal, nil
 		}
@@ -536,7 +553,7 @@ func (e *mariadbEngine) setTLSEnforcement(ctx context.Context, enforce bool) err
 	}
 	// Rendered the way the batch renders every other boolean, so the statement the
 	// server sees does not depend on which path issued it.
-	literal, err := mariadbSetValue(handlers_rds.ParamTypeBoolean, value)
+	literal, err := mariadbSetValue(paramTypeBoolean, value)
 	if err != nil {
 		return fmt.Errorf("render %s: %w", name, err)
 	}

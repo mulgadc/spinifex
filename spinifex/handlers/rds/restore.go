@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -162,7 +163,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 func (s *Service) resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord) (*validatedCreate, error) {
 	// The snapshot's engine, never the request's: the datadir is written in one
 	// engine's on-disk format and no other can read it.
-	engine, err := LookupEngine(snapshot.Engine)
+	engine, err := rdsengine.LookupEngine(snapshot.Engine)
 	if err != nil {
 		return nil, err
 	}
@@ -176,10 +177,10 @@ func (s *Service) resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapsh
 	if instanceClass == "" {
 		instanceClass = snapshot.DBInstanceClass
 	}
-	instanceType, err := InstanceTypeForClass(instanceClass)
+	instanceType, err := s.sizing.InstanceTypeForClass(instanceClass)
 	if err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
+			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(rdsengine.SupportedInstanceClasses(), ", "))
 	}
 
 	storage, err := resolveRestoreStorage(input, snapshot)
@@ -280,7 +281,7 @@ func resolveRestoreStorageType(input *rds.RestoreDBInstanceFromDBSnapshotInput, 
 	return storageType, nil
 }
 
-func resolveRestorePort(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord, engine Engine) (int64, error) {
+func resolveRestorePort(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord, engine rdsengine.Engine) (int64, error) {
 	if input.Port != nil {
 		port := aws.Int64Value(input.Port)
 		if port < minDBPort || port > maxDBPort {

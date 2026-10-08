@@ -10,6 +10,17 @@ import (
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
+// testPostgresOptionFileName resolves the real catalog's startup spellings,
+// so a handoff test renders exactly what rds-init would.
+func testPostgresOptionFileName(t *testing.T) func(string) string {
+	t.Helper()
+	catalog, err := testEngineCatalogLookup(enginePostgres)
+	if err != nil {
+		t.Fatalf("testEngineCatalogLookup(%s): %v", enginePostgres, err)
+	}
+	return catalog.OptionFileName
+}
+
 func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
 	password := "s3cret"
@@ -33,7 +44,7 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 		},
 		ServingCertificate: "CERT",
 		ServingPrivateKey:  "KEY",
-	})
+	}, testPostgresOptionFileName(t))
 	if err != nil {
 		t.Fatalf("writeHandoff: %v", err)
 	}
@@ -90,7 +101,7 @@ func TestWriteHandoff_AttachOmitsPassword(t *testing.T) {
 		ListenAddress:  "10.0.1.20",
 		ClientCIDR:     "10.0.0.0/16",
 		Port:           5432,
-	}); err != nil {
+	}, testPostgresOptionFileName(t)); err != nil {
 		t.Fatalf("writeHandoff: %v", err)
 	}
 
@@ -124,7 +135,7 @@ func TestWriteHandoff_QuotesShellMetacharacters(t *testing.T) {
 		ClientCIDR:         "10.0.0.0/16",
 		MasterUserPassword: &password,
 		Port:               5432,
-	}); err != nil {
+	}, testPostgresOptionFileName(t)); err != nil {
 		t.Fatalf("writeHandoff: %v", err)
 	}
 
@@ -147,7 +158,7 @@ func TestWriteHandoff_SkipsHalfATLSPair(t *testing.T) {
 		ClientCIDR:         "10.0.0.0/16",
 		Port:               5432,
 		ServingCertificate: "CERT",
-	}); err != nil {
+	}, testPostgresOptionFileName(t)); err != nil {
 		t.Fatalf("writeHandoff: %v", err)
 	}
 
@@ -164,7 +175,7 @@ func TestWriteHandoff_RejectsConfigWithNoMasterUser(t *testing.T) {
 		Mode:   handlers_rds.BootstrapModeAttach,
 		Engine: "postgres",
 		Port:   5432,
-	})
+	}, testPostgresOptionFileName(t))
 	if err == nil {
 		t.Fatal("writeHandoff accepted a config with no master username, want an error")
 	}
@@ -188,7 +199,7 @@ func TestWriteHandoff_TightensExistingDirectory(t *testing.T) {
 		ListenAddress:  "10.0.1.20",
 		ClientCIDR:     "10.0.0.0/16",
 		Port:           5432,
-	}); err != nil {
+	}, testPostgresOptionFileName(t)); err != nil {
 		t.Fatalf("writeHandoff: %v", err)
 	}
 	if mode := statMode(t, dir); mode != handoffDirMode {
@@ -244,7 +255,11 @@ func TestRenderParameters_UsesTheEngineStartupSpelling(t *testing.T) {
 		{Name: "max_connections", Value: "85"},
 	}
 
-	rendered, err := renderParameters("mariadb", params)
+	catalog, err := testEngineCatalogLookup(engineMariaDB)
+	if err != nil {
+		t.Fatalf("testEngineCatalogLookup(%s): %v", engineMariaDB, err)
+	}
+	rendered, err := renderParameters(catalog.OptionFileName, params)
 	if err != nil {
 		t.Fatalf("renderParameters: %v", err)
 	}
@@ -260,7 +275,7 @@ func TestRenderParameters_UsesTheEngineStartupSpelling(t *testing.T) {
 }
 
 func TestRenderParameters_PostgresKeepsEveryName(t *testing.T) {
-	rendered, err := renderParameters("postgres", []handlers_rds.Parameter{
+	rendered, err := renderParameters(testPostgresOptionFileName(t), []handlers_rds.Parameter{
 		{Name: "shared_buffers", Value: "262144"},
 	})
 	if err != nil {
@@ -274,7 +289,7 @@ func TestRenderParameters_PostgresKeepsEveryName(t *testing.T) {
 // Failing closed beats writing a file the engine may refuse: the bad include
 // would already be on the data volume by the time the server rejected it.
 func TestRenderParameters_RefusesAnUnknownEngine(t *testing.T) {
-	if _, err := renderParameters("", nil); err == nil {
-		t.Fatal("renderParameters accepted a config naming no engine, want an error")
+	if _, err := renderParameters(nil, nil); err == nil {
+		t.Fatal("renderParameters accepted no engine catalog, want an error")
 	}
 }

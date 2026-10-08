@@ -2,6 +2,7 @@
 
 Present contract under ADR-0003 S1, recorded before the resource moves.
 It describes the code as it stands, so it claims no conformance; the gaps below are observed behaviour, not targets.
+The owner extraction proves resource ownership and dependency direction only; it is not ADR-0003 lifecycle evidence for asynchronous realization (interruption, recovery, generation fencing, truthful readiness).
 Paths are relative to `spinifex/` unless they start with `tests/`.
 
 ## Scope
@@ -30,7 +31,7 @@ The group's one external effect is indirect: instance create and restore read it
 ## Gaps
 
 1. Delete is check-then-delete with no fence against a concurrent instance create or restore that has already read the group (`subnetgroup.go` `DeleteDBSubnetGroup`, `network.go` `resolvePlacement`), so an instance can name a deleted group. Its placement is already stored, so the endpoint keeps working; only the name dangles.
-2. Both cross-resource reads now go through consumer-owned capabilities: the owner's `Dependants` for the in-use guard and the instance side's `subnetGroupPlacement` for placement. The `Dependants` binding in `handlers/rds/subnetgroup.go` (`instanceReferences`) still scans instance records directly until instances have their own owner, and `handlers/rds/tags.go` still writes the group's record directly. Both are temporary legacy edges.
+2. Both cross-resource reads now go through consumer-owned capabilities: the owner's `Dependants` for the in-use guard and the instance side's `subnetGroupPlacement` for placement. The `Dependants` binding in `handlers/rds/subnetgroup.go` (`instanceReferences`) still scans instance records directly until instances have their own owner, and `handlers/rds/tags.go` still writes the group's record directly. Both are temporary legacy edges; the tagging edge clears only when tagging invokes a subnet-group-owned tag/untag capability.
 3. `DescribeDBInstances` projects the group from the instance record alone, so its `DBSubnetGroup` carries no description or subnets (`describe.go`). AWS documents both fields on that response; not verified against live AWS.
 4. Member subnets always report `Active`, even after the EC2 subnet is deleted. What AWS reports in that case is not verified.
 5. Modify accepts a new subnet set that drops the subnet a placed instance sits in. Whether AWS refuses this is not verified.

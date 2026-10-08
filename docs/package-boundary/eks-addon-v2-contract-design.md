@@ -12,9 +12,10 @@ Paths are relative to `spinifex/` unless they start with `scripts/`, `contracts/
 
 Q-75 (contract evolution) and Q-76 (asynchronous message semantics) in `docs/specs/requirements/resource-lifecycle.md` (mulga repo) are Decided requirements with human provenance and normative effect (R1); they are not ADRs.
 Q-146 and C-82 (`docs/specs/requirements/managed-services.md`) are open, and this document closes neither.
-The draft proposal PROP-SPINIFEXARCH-007 (`docs/development/proposals/spinifex-architecture/0007-contract-guest-and-persisted-state-evolution.md`, mulga repo) is unaccepted.
-This design is written to be consistent with it (explicit majors, no payload-asserted authority, Prepare/Activate/Finalise, guest legacy mode), but nothing here depends on it being accepted, and nothing here cites it as a decision.
-Where this design needs a mechanism that draft leaves to implementation (the release-membership record, the activation gate), it states the dependency in Section 3.
+ADR-0006 (`docs/adr/0006-contract-guest-and-persisted-state-evolution.md`, mulga repo) is accepted and gives Q-75 and Q-76 their normative shape: S2 for the N/N-1 window on a coordinated Mulga Regional release and the explicit compatibility matrix on an independently released component, S3 for closed majors and the ban on timing heuristics as capability proof, S4 for expand/migrate/contract on persisted formats, S5 for prepare/activate/migrate/finalise on release activation, and S6 for the guest legacy-mode lifecycle.
+This design applies ADR-0006 and cites its clauses as decisions wherever it relies on them.
+Where ADR-0006 leaves a mechanism to implementation (the release-membership record, the activation gate), it states the dependency in Section 3.
+Capability is demonstrated end-to-end only by an accepted, fenced v2 report; a `contractVersion` field, an image tag or a successful fetch alone never proves it (Section 2.3; V8).
 
 ## 1. Purpose and non-goals
 
@@ -24,7 +25,7 @@ Purpose: give the add-on owner reports it can fence by executor, incarnation and
 |---|---|
 | NATS or JetStream redesign | Reports stay on core NATS as notifications (Q-76); correctness rests on durable desired state, level-triggered re-sending and owner deadlines (lifecycle design Section 12). |
 | Changing v1 | `contracts/eks/v1` route, subject, both JSON forms and Go field names stay byte-identical and readable, pinned by `contracts/eks/v1/addon_status_test.go`, `addon_manifest_test.go` and `v1_compat_test.go`. |
-| Timing heuristics | No settle window, poll count, retry budget, credential expiry or deadline is used as a fence, capability proof or completion condition (R2, Q-75). |
+| Timing heuristics | No settle window, poll count, retry budget, credential expiry or deadline is used as a fence, capability proof or completion condition (R2, Q-75, ADR-0006 S3: negotiation is never by timing). |
 | Universal framework | No generic versioning, capability-negotiation or guest-protocol library; every type here is EKS add-on specific (ADR-0003 S2 rules out a shared one without two consumers). |
 | Lifecycle implementation | Owner state machine, deadlines, record migration, token idempotency and agent code are the lifecycle design's slices, not this contract. |
 | Per-incarnation ARN | The external ARN stays name-only (R4); `incarnationId` is internal. |
@@ -35,10 +36,10 @@ Purpose: give the add-on owner reports it can fence by executor, incarnation and
 
 | Item | Rule |
 |---|---|
-| Major | Every v2 body carries `"contractVersion": 2`. A receiver rejects any other value with reason `UnknownContractMajor` and changes no state (Q-75). |
+| Major | Every v2 body carries `"contractVersion": 2`. A receiver rejects any other value with reason `UnknownContractMajor` and changes no state (Q-75, ADR-0006 S3). |
 | Separation | v2 has its own routes and subject (Section 7); no receiver sniffs payloads to tell v1 from v2. |
-| Extensibility | Declared per body below: added optional fields may be ignored; an unknown value of a closed enum (`mode`, `phase`, `reason`, object `state`) is rejected for that entry (Q-75 "reject unknown required semantics or enum values"). |
-| Producer rule | The host never emits a v2 directive to a caller that has not called the v2 route as the authenticated active executor; v1 callers get v1 only (Q-75 "oldest active compatible representation"). |
+| Extensibility | Declared per body below: added optional fields may be ignored; an unknown value of a closed enum (`mode`, `phase`, `reason`, object `state`) is rejected for that entry (Q-75 "reject unknown required semantics or enum values"; ADR-0006 S3). |
+| Producer rule | The host never emits a v2 directive to a caller that has not called the v2 route as the authenticated active executor; v1 callers get v1 only (Q-75 "oldest active compatible representation"; ADR-0006 S3 "the producer emits the oldest active compatible representation unless an authenticated capability exchange proves support for the newer one"). |
 
 ### 2.2 What N and N-1 mean here
 
@@ -47,8 +48,10 @@ Purpose: give the add-on owner reports it can fence by executor, incarnation and
 | Host release (daemon, awsgw, add-on owner, cluster owner) | Today's release: v1 route and subject only. | Serves v1 unchanged plus the v2 routes and subject, the executor record and the v1 compatibility gate. |
 | Guest image (control-plane VM agent) | v1 agent: `mulga-eks-addon-sync.sh` with `eks-gateway-fetch`/`eks-gateway-publish`. | v2 agent shipped in a new EKS node image. |
 
+The host release groups daemon, awsgw, the add-on owner and the cluster owner as one coordinated Mulga Regional release, not as independently released components (ADR-0006 S2): they ship from the same Spinifex build, and `cluster-deploy.yml`'s rolling restart runs the fleet mid-roll on mixed N and N-1 builds (release-and-version-inventory.md Section 2), which is exactly the N/N-1 coexistence S2 describes for a coordinated release.
+ADR-0006 S2's own worked example, that an AWSGW deployment or restart must not force a compatible Predastore deployment to restart, is about awsgw's cross-submodule relationship to Predastore, an independently released product with its own compatibility declaration; this contract does not touch Predastore, so that example does not reclassify awsgw here.
 The host window is N and N-1 in both rollout orders.
-The guest image is a long-lived consumer outside the Regional upgrade (a cluster keeps its image until its control-plane VM is replaced), so the v1 guest mode publishes its own support and retirement lifecycle as Q-75 requires; N+1 does not drop v1 merely because one release passed.
+The guest image is a long-lived consumer outside the Regional upgrade (a cluster keeps its image until its control-plane VM is replaced), so the v1 guest mode publishes its own support and retirement lifecycle as Q-75 and ADR-0006 S6 require; N+1 does not drop v1 merely because one release passed.
 New EKS images are picked newest-AMI-wins (`handlers/eks/k3s_server_vm.go:353-363`, release inventory Section 5), so an N-1 host can launch a v2 image; Section 8 covers that row.
 
 ### 2.3 How capability is established
@@ -57,11 +60,12 @@ Capability is never read from a guest payload, image tag, user-data value or AMI
 
 1. The caller authenticates with the control-plane instance role session that IMDS mints with `RoleSessionName` = instance ID (`handlers/sts/assume_role.go:136-148`); the role trusts only `ec2.amazonaws.com` (`handlers/iam/system_role.go:14`), and the gateway takes the role name from the underlying role ARN, never the session name (`gateway/eks.go:307-320`).
 2. The gateway runs the existing class and membership checks (`gateway/eks/internal_authz.go:44-96`), then the executor check (Section 4.3).
-3. The gateway relays the fetch to the daemon with the derived executor identity attached; the cluster owner re-checks it against the executor record and, in the same CAS, marks that epoch `addonContract: 2` if it is not already marked.
-4. The add-on owner reads capability only through the narrow interface in Section 4.2.
+3. The gateway relays the fetch to the daemon with the derived executor identity attached and lists v2 directives for it; a fetch alone marks no capability (V8).
+4. The gateway relays the first v2 report that passes checks 1 to 6 of Section 4.3; the cluster owner re-checks the epoch against the executor record and, in the same CAS that accepts that report, marks the epoch `addonContract: 2` if it is not already marked.
+5. The add-on owner reads capability only through the narrow interface in Section 4.2.
 
-A new epoch starts unmarked, so the compatibility gate re-closes on every executor change until the new executor fetches v2 (lifecycle design Section 9).
-Marking on fetch rather than on the first accepted report is the lifecycle design's choice; open question 3 asks whether to require the report round trip too.
+A new epoch starts unmarked, so the compatibility gate re-closes on every executor change until the new executor's first valid, fenced v2 report is accepted (lifecycle design Section 9; V8).
+A fetch, or a directive the guest never acts on, may be retained as diagnostic evidence only; it is never sufficient on its own to prove capability (V8).
 
 ## 3. Prerequisites: what must exist before v2 activates
 
@@ -71,7 +75,7 @@ v2 can ship in the Prepare stage without them, but the v2 routes answer `NotActi
 | # | Prerequisite | Gap it closes | Why v2 needs it |
 |---|---|---|---|
 | P1 | An authoritative, cluster-visible record of the release each daemon and awsgw process runs | G1, G10 | Activation must prove no N-1 writer remains: N-1 `casUpdate` writers DROP added record fields and N-1 `Owner.Delete` ERASEs without observed removal (`eks-addon-v1-compatibility.md` "Record and manifest writers"). awsgw processes count, because an N-1 gateway serves v1 membership-only authorization and has no v2 route. |
-| P2 | An operator-visible activation record for the add-on lifecycle change, written only from P1 evidence | G2 | The v2 routes and the v1 compatibility gate key on it. It is narrow and EKS-owned unless a platform gate exists first (lifecycle design open question 4). |
+| P2 | An operator-visible activation record for the add-on lifecycle change, written only from P1 evidence | G2 | The v2 routes and the v1 compatibility gate key on it. It is EKS-add-on-specific for now (V9); the release-membership mechanism (P1) should be reusable by another resource, but this design does not build a platform-wide activation framework, unless a platform gate supersedes it first (lifecycle design open question 4). |
 | P3 | Record expand complete: `schemaVersion`, `incarnationId`, `desired`, `observed` written beside legacy fields by an idempotent, resumable pass | G7, G8 | Directives carry `incarnationId` and `generation`; a record without them cannot be listed in v2 (Section 5.4). |
 | P4 | The cluster-owned executor record and the bound v2 report route (Sections 4 and 7) | executor inventory gaps 2 to 4 | Without it no report can be bound to a caller, cluster or executor. |
 | P5 | A documented controlled-rollback procedure for the activated state | G4 | An N-1 binary that returns after activation must not complete or reinterpret v2 obligations (lifecycle design open question 9). |
@@ -108,7 +112,8 @@ N-1 binaries ignore the key: cluster listing selects only keys ending `/meta` (`
 |---|---|
 | `instanceId` | The internal EC2 instance ID of a current control-plane member; empty means no executor is assigned (an unavailable guest). |
 | `epoch` | Unsigned, starts at 1, advanced by exactly one in the CAS that changes `instanceId`; never decreases while the key exists. |
-| `addonContract` | `0` (unproven) or `2`; reset to `0` in the CAS that advances `epoch`. |
+| `addonContract` | `0` (unproven) or `2`; reset to `0` in the CAS that advances `epoch`; set to `2` only in the CAS that accepts the first valid, fenced v2 report for the epoch, never on a fetch (Section 2.3; V8). |
+| `addonContractProvenAt` | RFC 3339 UTC; set in the same CAS as `addonContract: 2`; diagnostic only. |
 | `fence` | The evidence that let the epoch advance (Section 4.4); absent for epoch 1. |
 
 ### 4.2 Interface the add-on side declares
@@ -148,6 +153,7 @@ Static-credential fallback VMs have no session name and can never be executors (
 | 7 | Body decodes against v2 with `contractVersion == 2` | `UnknownContractMajor` or `MalformedReport` | 400 |
 
 The daemon re-runs checks 4 to 6 against the record it reads, and the owner re-checks the epoch inside its CAS loop (lifecycle design Section 2 rule 1), because the epoch can advance between the gateway check and the write.
+That same CAS marks `addonContract: 2` if unmarked, only for the first report it accepts under the current epoch (Section 4.1; V8).
 
 ### 4.4 Fencing prerequisites and evidence options
 
@@ -164,7 +170,10 @@ The options below come from the executor inventory (`docs/package-boundary/eks-a
 | E. Guest leader election (kube Lease) | Host-visible proof of the guest leader, verified K3s auto-deploy behaviour across servers; reports still need checks 5 and 6 | No |
 | F. Operator assertion | An explicit, audited operator action naming the old instance, recorded as `fence.evidence: "operator-asserted"` | No |
 
-**Recommendation (reviewer decides):** A as the only automatic evidence, F as the manual path when A cannot be obtained, and the guest stand-by rule of Section 6.4 as defence in depth that is never counted as evidence.
+**Approved (V10):** A is the only automatic evidence: an authoritative record that the former instance terminated or no longer exists.
+A lookup error, a network issue or a partition is never evidence of termination, and reassignment is never triggered by a describe error.
+F, an explicit, audited operator assertion, is the alternative when A cannot be obtained.
+The guest stand-by rule of Section 6.4 is defence in depth and is never counted as fence evidence.
 B to E each need new machinery and either prove less than A or prove only liveness.
 Under A, the restore path's successor-first ordering (`restore_snapshot.go:262-336`) and the unreachable etcd prune (executor inventory gap 10) must be resolved before the restore path may advance an epoch.
 
@@ -240,6 +249,8 @@ v2 avoids this by construction:
 | `addonVersion` | In the catalogue. | Same. |
 | `configurationValues` | Never listed (R9). | Stored legacy values stay flagged on the record (lifecycle design Section 3). |
 
+The role-ARN format check at the adapter boundary is a standalone security correction, not v2 lifecycle work: it is being fixed directly on the existing v1 path and applies to v1 and v2 alike, independent of this design.
+v2 adds only the guest-side re-validation below; it is not what closes the adapter-side gap.
 The guest re-validates the role ARN with the same pattern before rendering, because the v1 renderer substitutes it raw into `sed` and YAML (`eks-addon-bundle-inventory.md` X9); a failure is `failed`/`InvalidDirective`.
 
 ### 5.4 Records that cannot be listed
@@ -313,7 +324,8 @@ v1's `printf` (`scripts/images/eks-node/mulga-eks-addon-sync.sh:67-72`) does not
 | `relinquished` | `relinquish` | The rendered file is gone and the agent no longer manages the add-on. |
 
 `degraded` is an addition to the phase list in the lifecycle design Section 2: without it the guest must choose between `applied` (which cannot move `ACTIVE` to `DEGRADED`) and `failed` (which is terminal while `CREATING` or `UPDATING`, R3), and it cannot see the host status to choose.
-With it, the owner maps `ACTIVE` plus `degraded` to `DEGRADED` and records it as a health issue without a transition in `CREATING` or `UPDATING`, where the deadline governs; open question 5.
+`degraded` is approved (V2) as an observed condition for an otherwise `ACTIVE` add-on: the owner maps `ACTIVE` plus `degraded` to `DEGRADED` and records it as a health issue.
+A `degraded` report during `CREATING` or `UPDATING` records the same health issue but does not by itself turn the operation into a terminal failure; the operation's deadline and an explicit terminal report (`failed`, `ready` or `removed`) decide that (V2).
 
 ### 6.3 Reason codes
 
@@ -336,6 +348,9 @@ Reasons are internal contract values, not AWS error codes (R7); the owner maps s
 
 No reason exists for an unreachable apiserver: the guest sends nothing for that add-on, as the lifecycle design specifies, and silence is handled by deadlines.
 The gateway-side rejection reasons of Section 4.3 (`NotActivated`, `NotClusterMember`, `NoActiveExecutor`, `NotActiveExecutor`, `StaleExecutorEpoch`, `UnknownContractMajor`, `MalformedReport`) are response reasons, never report reasons.
+
+The reason table above is the closed set for `contractVersion: 2` (V4; Q-75, ADR-0006 S3).
+A genuinely new wire-level reason has new semantics and therefore requires a new major, never a silent addition to this enum; free-form detail that does not need enum-level routing belongs in `message`, not in an unbounded `reason` value.
 
 ### 6.4 Gateway response and guest stand-by rule
 
@@ -383,12 +398,12 @@ Common rule: every object of the bundle's readiness set is read individually (no
 | `aws-load-balancer-controller` | CRDs `ingressclassparams` and `targetgroupbindings.elbv2.k8s.aws` `Established`; Deployment available equals `spec.replicas`; Service `aws-load-balancer-webhook-service` has at least one ready endpoint (EndpointSlice), because the bundle's six webhooks are `failurePolicy: Fail`; both webhook configurations present. |
 | `nvidia-device-plugin` | DaemonSet `nvidia-device-plugin-daemonset` `numberReady == updatedNumberScheduled == desiredNumberScheduled`; `desiredNumberScheduled == 0` is ready with a no-GPU-node message. |
 
-Not part of any ready definition: IRSA credential success, GPU allocatable exposure and data-path checks; open question 7.
+Not part of any ready definition: IRSA credential success, GPU allocatable exposure and data-path checks; open question 2.
 
 ### 6.7 Removal evidence per bundle
 
 `removed` means every object of the bundle's removal set is observed NotFound by an individual `get` for each object (namespaced and cluster-scoped), not by listing a namespace.
-The removal set is the rendered object list of the last installed spec, minus objects shared with another add-on that is still listed (below).
+The removal set is scoped to add-on-owned Kubernetes objects only (V6): it is the rendered object list of the last installed spec, minus objects shared with another add-on that is still listed (below), and it never includes downstream workloads, PVs or other unrelated resources outside that set.
 `removing` reports carry `objects[]` with `present`, `terminating` or `absent` for every member of the set, so `DescribeAddon` health can show what blocks.
 
 | Bundle | Removal set (all NotFound) | Blockers reported as `FinalizerBlocked` | Residue outside the set |
@@ -400,11 +415,13 @@ The removal set is the rendered object list of the last installed spec, minus ob
 | `nvidia-device-plugin` | 1 DaemonSet | none | host CDI files |
 
 Residue is reported in the final `removed` report's `objects[]` with `state: "residue"` where the guest can see it (PVs with `spec.csi.driver == ebs.csi.aws.com`); out-of-cluster residue is invisible to the guest.
-Whether `removed` must wait for in-cluster residue is a lifecycle decision (open question 8); this contract only carries the observations.
+`removed` does not wait for in-cluster residue outside the removal set (V6): downstream workloads, unreleased PVs and other dependents are reported as residue, not waited on, and the record proceeds once the removal set itself is gone.
+Preserve-mode deletion (`deletion.preserve`) explicitly relinquishes the add-on's ownership of its objects rather than claiming their removal (V6); that obligation is discharged by the `relinquished` phase (Section 6.2), not by `removed`.
 
-Shared `kube-system/spinifex-gateway-ca` Secret (bundle inventory X5): both IRSA bundles render it under one name, so either removal deletes the other's dependency and a NotFound check on it never completes while the other re-creates it.
-The contract rule: an object rendered by more than one listed add-on is excluded from every removal set while more than one `install` directive renders it, and the guest deletes it only with the last one.
-**Recommendation (reviewer decides):** additionally rename it per bundle (`spinifex-gateway-ca-<addon>`) in the v2 image so the overlap disappears for new installs, keeping the shared-object rule for clusters migrating from v1 renders; open question 9.
+Shared `kube-system/spinifex-gateway-ca` Secret (bundle inventory X5): v1 renders it under one shared name for both IRSA bundles, so either removal deletes the other's dependency and a NotFound check on it never completes while the other re-creates it.
+v2 renders a per-bundle name (`spinifex-gateway-ca-<addon>`) for every new install, so the overlap does not recur (V7).
+Compatibility path for a cluster migrating from v1 (V7): while a bundle's rendered objects still carry the old shared name, the shared-object rule applies unchanged, so an object rendered by more than one listed add-on is excluded from every removal set while more than one `install` directive renders it, and the guest deletes it only with the last one.
+A bundle moves to its per-bundle name only on its next v2 install or update, after which the shared-object rule no longer applies to it.
 
 ## 7. Routes, subjects and authorization binding
 
@@ -420,9 +437,11 @@ The contract rule: an object rendered by more than one listed add-on is excluded
 
 Binding finding carried forward: today `PublishInternal` is not gated by `AuthorizeInternal`, so with the role's `Resource: "*"` any control-plane session of any cluster can publish add-on reports for any account and cluster, and the relay attaches no caller identity (executor inventory gaps 2 and 3).
 v2 does not reuse `PublishInternal`; its report route takes the cluster and account from the path, requires membership and the active executor, and attaches identity.
-Binding v1's `PublishInternal` to the caller's cluster is still worth doing as an authorization-only change with unchanged bytes, but v2 does not depend on it, because post-activation v1 reports are diagnostic-only (lifecycle design Section 9).
+Binding v1's `PublishInternal` to the caller's cluster is being fixed directly on the v1 path, as a standalone security correction independent of this design, not as v2 lifecycle work.
+v2 keeps its own binding regardless (Section 4.3, Section 6.5) and neither depends on, nor is credited for, that correction; post-activation v1 reports stay diagnostic-only either way (lifecycle design Section 9).
 
-After an executor is assigned for a cluster (P4), the N gateway also applies check 5 to the v1 fetch route for that cluster, so a v2 agent on a non-executor member cannot fall back to v1 and become a second renderer; v1 bytes are unchanged and the change is authorization-only (open question 4).
+After an executor is assigned for a cluster (P4), the N gateway binds the v1 fetch route to that assigned executor by applying check 5 of Section 4.3 to it, so a v2 agent on a non-executor member cannot fall back to v1 and become a second renderer (V5).
+v1 payload bytes are unchanged by this; before an executor is assigned, the v1 fetch route keeps its existing behaviour unchanged (V5).
 
 ## 8. Compatibility matrix
 
@@ -435,15 +454,16 @@ After an executor is assigned for a cluster (P4), the N gateway also applies che
 | v1 | N, post-activation | v1 projection: records in `install` mode only | v1, recorded diagnostically in `observed`, never complete an operation | Gated (below) | None claimed |
 | v2 | N-1 | v2 answered `InvalidAction` (`gateway/eks.go:196-199`); agent uses legacy v1 mode that tick | v1 | Today's semantics | None claimed |
 | v2 | N, pre-activation | v2 answered `NotActivated`; legacy v1 mode that tick | v1 | Today's semantics | None claimed |
-| v2, active executor | N, post-activation | v2; epoch marked `addonContract: 2` | v2, fenced | Ungated once marked | Q-146 claimed for this cluster only |
+| v2, active executor | N, post-activation | v2 | v2, fenced; the first report accepted for the epoch marks `addonContract: 2` if unmarked (V8) | Ungated once marked | Q-146 claimed for this cluster only |
 | v2, not executor | N, post-activation | `NotActiveExecutor`; stand-by (Section 6.4); v1 fetch also denied | none | n/a | n/a |
 
-Legacy-mode fallback is permitted only on `InvalidAction` from the fetch route or `NotActivated`; any other v2 rejection forbids it, because falling back on `NotActiveExecutor` or `StaleExecutorEpoch` would bypass the fence.
-This is a guest protocol fallback for an N-1 or not-yet-activated host, not a lifecycle fallback, and it never opens the gate; open question 2 asks the reviewer to confirm it does not conflict with R5.
+Legacy-mode fallback is approved only for `InvalidAction` from the fetch route and `NotActivated` (V1).
+The guest never falls back on an authentication, membership, executor, epoch or other fencing failure, including `NotClusterMember`, `NoActiveExecutor`, `NotActiveExecutor` and `StaleExecutorEpoch`, because doing so would bypass the fence.
+This is a guest protocol fallback for an N-1 or not-yet-activated host, not a lifecycle fallback, and it never opens the gate; it does not conflict with R5.
 
 ### 8.1 Gated mutations
 
-Per R5 and the lifecycle design Section 9, on a cluster whose current epoch is not marked `addonContract: 2`:
+Per R5, the lifecycle design Section 9 and ADR-0006 S5 (migration follows activation, never the reverse), on a cluster whose current epoch is not marked `addonContract: 2`:
 
 | Action | Gated | Reason |
 |---|---|---|
@@ -465,7 +485,7 @@ From `docs/package-boundary/eks-addon-v1-compatibility.md`:
 
 | N-1 path | Effect on a v2 record | Why it forces ordering |
 |---|---|---|
-| `Owner.Update`, `Owner.ApplyReport` with a change, `markFailed` via `casUpdate` (`domains/eks/addon/store.go:198-219`) | DROP: re-encodes v1 `Record` and erases `incarnationId`, `desired`, `observed` | Expand must precede activation, and v2 semantics stay off while any N-1 writer can serve the cluster (P1, P2). |
+| `Owner.Update`, `Owner.ApplyReport` with a change, `markFailed` via `casUpdate` (`domains/eks/addon/store.go:198-219`) | DROP: re-encodes v1 `Record` and erases `incarnationId`, `desired`, `observed` | Expand must precede activation, and v2 semantics stay off while any N-1 writer can serve the cluster (P1, P2; ADR-0006 S4 expand/migrate/contract, S5 prepare/activate/migrate/finalise). |
 | `StagingInstaller.Install` | OVERWRITE the manifest from four v1 fields | The manifest key is a projection only until finalisation (R16). |
 | `Owner.Delete`, `DeleteClusterPrefix` | ERASE regardless of content | An N-1 delete would complete a v2 delete without observed removal; only activation prevents it. |
 | Readers (`Get`, `List`, `ListManifests`) | IGNORE added fields; FAIL the whole listing on a type change (`store.go:78,108`) | No existing field may change JSON type. |
@@ -473,7 +493,7 @@ From `docs/package-boundary/eks-addon-v1-compatibility.md`:
 | Bucket stamp | Bumping it makes N-1 refuse the whole account bucket | Use per-record `schemaVersion`, not the stamp. |
 
 Type-change hazard in the lifecycle design's record sketch: today `health` is a string (`domains/eks/addon/record.go:30`), and the sketch shows `health` as an array of issues.
-Writing that would make every N-1 `ListAddons` and `DescribeAddon` on the cluster fail to decode; the issue list needs a new field (for example `healthIssues`) with `health` kept as a string (open question 10).
+Writing that would make every N-1 `ListAddons` and `DescribeAddon` on the cluster fail to decode; `health` stays a string, and the issue list is carried in a new, optional `healthIssues` field for v2, never by changing `health`'s existing type (V3).
 
 ## 9. Compatibility tests the v2 contract needs
 
@@ -494,19 +514,27 @@ Writing that would make every N-1 `ListAddons` and `DescribeAddon` on the cluste
 | T13 | An N-1 decoder (`contracts/eks/v1` types) reading a v2 directive or report body fails or ignores safely, never yields a populated v1 value that would be applied | Mis-routing safety |
 | T14 | Readiness and removal fixtures per bundle: objects with a previous generation annotation never produce `ready`; a shared Secret is excluded while another add-on renders it | Section 6.6 and 6.7 |
 
-## 10. Open questions for the reviewer
+## 10. Review decisions
+
+| # | Decision |
+|---|---|
+| V1 | Legacy-mode fallback is approved only for `InvalidAction` and `NotActivated` (Section 8). The guest never falls back on an authentication, membership, executor, epoch or other fencing failure. |
+| V2 | `DEGRADED` (Section 6.2) is an observed condition for an otherwise `ACTIVE` add-on. A health loss reported during `CREATING` or `UPDATING` records a health issue but does not by itself turn the operation into a terminal failure; the operation's deadline and an explicit terminal report decide that. |
+| V3 | Legacy `health` stays a string (Section 8.2); v2 adds an optional `healthIssues` field. `health`'s type is never changed. |
+| V4 | v2 reason codes (Section 6.3) are a closed enum. A genuinely new wire-level reason has new semantics and requires v3; free-form detail goes in `message`, never in an unbounded `reason` value. |
+| V5 | The v1 fetch route (Section 7) is bound to the assigned executor once one exists, without changing v1 payload bytes; before assignment, existing v1 behaviour is preserved. |
+| V6 | Removal (Section 6.7) means removal of add-on-owned Kubernetes objects only; `removed` does not wait indefinitely for downstream workloads, PVs or unrelated resources. Preserve-mode deletion explicitly relinquishes ownership rather than claiming removal. |
+| V7 | Per-bundle CA-secret names for v2 (Section 6.7), with a deliberate compatibility path for existing v1 shared-secret bundles. |
+| V8 | An executor is not v2-capable merely because it fetched a directive. Capability is marked only after the first valid, fenced v2 report is accepted (Section 2.3, Section 4.1). A fetch may be retained as diagnostic evidence only. |
+| V9 | Activation (Section 3, P2) is EKS-add-on-specific for now. The release-membership mechanism should be reusable, but this design does not build a platform-wide activation framework. |
+| V10 | Automatic executor fencing (Section 4.4) uses only authoritative evidence that the former instance terminated or no longer exists. A lookup error, network issue or partition is never evidence of termination. The alternative is an audited operator assertion. |
+
+The v1 `PublishInternal` authorization-binding gap and the `serviceAccountRoleArn` format-validation gap (Sections 5.3 and 7) are being fixed directly on the v1 path as standalone security corrections, not as v2 lifecycle work; v2 keeps its own binding and its own guest-side validation regardless of either fix's timing.
+
+## 11. Open questions for the reviewer
 
 1. Route and subject names: `internal-addons-v2` and `eks.addon.v2.{account}.{cluster}.status` as proposed, or another spelling?
-2. Guest legacy-mode fallback on `InvalidAction` or `NotActivated` (Section 8): accept as a guest protocol fallback that never opens the gate, or forbid it, in which case a v2 image launched by an N-1 host delivers nothing until the host upgrades (and image import must then be ordered after host activation)?
-3. Mark the epoch v2-capable on the first authenticated v2 fetch (lifecycle design) or only after the first accepted v2 report as well?
-4. Apply the active-executor check to the v1 fetch route once an executor is assigned (authorization-only change, bytes unchanged)?
-5. Add the `degraded` phase (Section 6.2), or encode health loss another way?
-6. Reason codes are a closed enum under Q-75: is adding one a new major, or should the directive response advertise the host's accepted reason set so a newer guest can stay within it?
-7. Should readiness for the IRSA bundles include a credential check, and for `nvidia-device-plugin` a GPU allocatable check, or stay as defined in Section 6.6?
-8. Does `removed` wait for in-cluster residue (PVs, finalizer-held Ingresses and Services), or is residue reported and the record deleted once the removal set is gone?
-9. Shared `spinifex-gateway-ca`: shared-object rule only, or also rename per bundle in the v2 image (recommended)?
-10. Record `health` type: keep it a string and add `healthIssues` (recommended), given the lifecycle design's sketch would break N-1 readers?
-11. Fence evidence: option A plus F (recommended), or another combination from Section 4.4?
-12. Report batching: one batch per tick (proposed) or one POST per add-on as in v1?
-13. Should the directive carry `deadline` at all, given the guest must ignore it for behaviour, or only in diagnostics?
-14. v1 guest support lifecycle: what retirement notice and detection (no cluster fetching the v1 route in the Region) is published, and from which release is it counted?
+2. Should readiness for the IRSA bundles include a credential check, and for `nvidia-device-plugin` a GPU allocatable check, or stay as defined in Section 6.6?
+3. Report batching: one batch per tick (proposed) or one POST per add-on as in v1?
+4. Should the directive carry `deadline` at all, given the guest must ignore it for behaviour, or only in diagnostics?
+5. v1 guest support lifecycle: what retirement notice and detection (no cluster fetching the v1 route in the Region) is published, and from which release is it counted?

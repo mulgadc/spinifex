@@ -101,16 +101,6 @@ func kvKeySegmentIdentifier(segment string) string {
 	return strings.ReplaceAll(segment, kvKeyColon, ":")
 }
 
-// DBSubnetGroupsPrefix returns the per-account key prefix under which each DB subnet group record lives.
-func DBSubnetGroupsPrefix() string {
-	return "db-subnet-groups/"
-}
-
-// DBSubnetGroupKey returns the per-account KV key of a DB subnet group's record.
-func DBSubnetGroupKey(name string) string {
-	return DBSubnetGroupsPrefix() + name
-}
-
 // DBParameterGroupsPrefix returns the parameter group prefix. A group's own record is at .../meta and
 // its values hang off .../params/, so listing groups walks the meta keys.
 func DBParameterGroupsPrefix() string {

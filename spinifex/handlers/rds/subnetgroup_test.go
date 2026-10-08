@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/subnetgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/stretchr/testify/assert"
@@ -61,9 +62,7 @@ func TestCreateDBSubnetGroup_StoresEverySubnetSupplied(t *testing.T) {
 		subnetGroupInput(testSubnetGroup, "subnet-zebra", "subnet-alpha"), testAccountID)
 	require.NoError(t, err)
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
-	rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	rec, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 
 	require.Len(t, rec.Subnets, 2)
@@ -382,16 +381,14 @@ func TestModifyDBSubnetGroup_KeepsTheOmittedDescriptionTagsAndCreatedAt(t *testi
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), create, testAccountID)
 	require.NoError(t, err)
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
-	before, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	before, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 
 	_, err = h.svc.ModifyDBSubnetGroup(t.Context(),
 		modifySubnetGroupInput(testSubnetGroup, "subnet-alpha", "subnet-zebra"), testAccountID)
 	require.NoError(t, err)
 
-	after, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	after, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 	assert.Equal(t, "Database subnets", after.Description)
 	assert.Equal(t, map[string]string{"env": "prod"}, after.Tags)
@@ -419,9 +416,7 @@ func TestModifyDBSubnetGroup_RefusesAMoveToAnotherVPC(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
-	rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	rec, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 	assert.Equal(t, testDefaultVPC, rec.VpcID)
 }
@@ -483,9 +478,7 @@ func TestModifyDBSubnetGroup_RejectsWhatCreateRejects(t *testing.T) {
 			assert.Equal(t, tc.want, awserrors.ValidErrorCodeFromError(err),
 				"the code has to survive resolution or the client sees a 500")
 
-			kv, err := h.svc.bucket(t.Context(), testAccountID)
-			require.NoError(t, err)
-			rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+			rec, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 			require.NoError(t, err)
 			require.Len(t, rec.Subnets, 1)
 			assert.Equal(t, "subnet-alpha", rec.Subnets[0].SubnetID)
@@ -649,7 +642,7 @@ func TestDBSubnetGroupRecord_PersistedFieldNames(t *testing.T) {
 	require.NoError(t, err)
 	js, err := kv.KV(t.Context())
 	require.NoError(t, err)
-	entry, err := js.Get(t.Context(), DBSubnetGroupKey(testSubnetGroup))
+	entry, err := js.Get(t.Context(), subnetgroup.Key(testSubnetGroup))
 	require.NoError(t, err)
 
 	var raw map[string]json.RawMessage

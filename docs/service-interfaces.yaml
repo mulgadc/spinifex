@@ -75,6 +75,7 @@ services:
       - spinifex/domains/acm
       - spinifex/handlers/iam
       - spinifex/handlers/rds
+      - spinifex/domains/rds/subnetgroup
       - spinifex/domains/ochre/vector
     subscribes:
       # EC2 instance lifecycle.

@@ -18,7 +18,6 @@ func TestKeyPaths(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "db-instances/orders-db", DBInstanceKey("orders-db"))
 	assert.Equal(t, "db-snapshots/orders-db-final", DBSnapshotKey("orders-db-final"))
-	assert.Equal(t, "db-subnet-groups/prod-db-subnets", DBSubnetGroupKey("prod-db-subnets"))
 	assert.Equal(t, "db-parameter-groups/pg16/meta", DBParameterGroupMetaKey("pg16"))
 	assert.Equal(t, "db-parameter-groups/pg16/params/shared_buffers",
 		DBParameterGroupParamKey("pg16", "shared_buffers"))
@@ -34,7 +33,6 @@ func TestKeyPathsSitUnderTheirPrefix(t *testing.T) {
 	t.Parallel()
 	assert.True(t, strings.HasPrefix(DBInstanceKey("x"), DBInstancesPrefix()))
 	assert.True(t, strings.HasPrefix(DBSnapshotKey("x"), DBSnapshotsPrefix()))
-	assert.True(t, strings.HasPrefix(DBSubnetGroupKey("x"), DBSubnetGroupsPrefix()))
 	assert.True(t, strings.HasPrefix(DBParameterGroupMetaKey("x"), DBParameterGroupsPrefix()))
 	assert.True(t, strings.HasPrefix(DBParameterGroupParamKey("x", "p"), DBParameterGroupParamsPrefix("x")))
 	assert.True(t, strings.HasPrefix(AutomatedBackupKey("x", "t"), AutomatedBackupsPrefix("x")))

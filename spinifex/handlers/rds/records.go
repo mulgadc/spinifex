@@ -378,39 +378,6 @@ type Parameter struct {
 	Value string `json:"value" locationName:"Value"`
 }
 
-// DBSubnetGroupRecord is the db-subnet-groups/{name} record. The subnet list is stored verbatim rather
-// than reduced to a placement, so when V2 makes AZs real the group needs no migration — only the code
-// that chooses among its subnets changes.
-type DBSubnetGroupRecord struct {
-	Name        string `json:"name"`
-	AccountID   string `json:"accountId"`
-	Description string `json:"description"`
-	// Every subnet the customer supplied, in request order, each with the AZ
-	// recorded on the subnet itself rather than a hardcoded zone.
-	Subnets []DBSubnetGroupSubnet `json:"subnets"`
-	// The one VPC they all share, which is what makes the group usable for a
-	// placement at all.
-	VpcID string `json:"vpcId"`
-
-	Tags map[string]string `json:"tags,omitempty"`
-
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
-}
-
-// DBSubnetGroupSubnet is one subnet of a DB subnet group, with the AZ recorded on the subnet itself;
-// AvailabilityZone is empty when the subnet carries none.
-type DBSubnetGroupSubnet struct {
-	SubnetID         string `json:"subnetId"`
-	AvailabilityZone string `json:"availabilityZone,omitempty"`
-}
-
-var _ TaggedRecord = (*DBSubnetGroupRecord)(nil)
-
-func (r *DBSubnetGroupRecord) GetTags() map[string]string { return r.Tags }
-
-func (r *DBSubnetGroupRecord) SetTags(tags map[string]string) { r.Tags = tags }
-
 // DBParameterGroupRecord is the db-parameter-groups/{name}/meta record. The values themselves live one
 // key each under .../params/, so a modify touching one parameter cannot clobber a concurrent change to
 // another.

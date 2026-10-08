@@ -52,7 +52,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	if err != nil {
 		return nil, err
 	}
-	placement, err := s.resolvePlacement(ctx, kv, accountID, req)
+	placement, err := s.resolvePlacement(ctx, accountID, req)
 	if err != nil {
 		return nil, err
 	}

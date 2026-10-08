@@ -1,0 +1,42 @@
+# RDS DB parameter group: lifecycle contract
+
+Present contract under ADR-0003 S1, recorded before the resource moves.
+It describes the code as it stands, so it claims no conformance; the gaps below are observed behaviour, not targets.
+Paths are relative to `spinifex/` unless they start with `tests/`.
+
+## Scope
+
+The group itself has no realization: create, modify and delete complete as writes to the account's RDS bucket.
+Modify then pushes the group's effective parameters to every attached instance's guest agent inside the same request; that propagation is realization on instance records and guests, owned today by the handler, and is outside the group's own lifecycle.
+
+## Contract
+
+| Item | Present behaviour | Evidence |
+|---|---|---|
+| Identity | Group name, unique per account. Names with the `default.` prefix are reserved. ARN `arn:aws:rds:{region}:{account}:pg:{name}`. | `handlers/rds/parametergroup_test.go` `TestCreateDBParameterGroup_RejectsADuplicateName`, `TestCreateDBParameterGroup_RejectsTheReservedPrefix` |
+| Scope | Account and Region: keys live in the `rds-account-{account}` bucket. | `handlers/rds/parametergroup_lifecycle_test.go` `TestDBParameterGroupRecord_PersistedFieldNames`, `TestDBParameterGroupRecord_DecodesAHandWrittenBlob`, `handlers/rds/store_test.go`, `handlers/rds/parametergroup_test.go` `TestTagActions_ReachBothGroupTypes` |
+| Durable owner and record | `handlers/rds/parametergroup.go` writes `db-parameter-groups/{name}/meta` (`DBParameterGroupRecord`) and one `db-parameter-groups/{name}/params/{key}` (`DBParameterRecord`) per override. `handlers/rds/tags.go` also writes the meta record's tags. | `handlers/rds/parametergroup_lifecycle_test.go` `TestDBParameterGroupRecord_PersistedFieldNames`, `TestDBParameterGroupRecord_DecodesAHandWrittenBlob`, `handlers/rds/store_test.go`, `handlers/rds/parametergroup_test.go` `TestTagActions_ReachBothGroupTypes` |
+| Default groups | One per engine, synthesised on read and never stored; Modify and Delete refuse them, and account teardown skips them. | `handlers/rds/parametergroup_lifecycle_test.go` `TestDescribeDBParameterGroups_TheDefaultGroupIsSynthesisedNotStored`, `handlers/rds/parametergroup_test.go` `TestDescribeDBParameterGroups_ReportsTheImplicitDefault`, `TestModifyDBParameterGroup_RefusesTheDefaultGroup`, `TestDeleteDBParameterGroup_RefusesTheDefaultGroup`, `accountteardown/reapers_rds_test.go` `TestRDSParameterGroupReaperSkipsTheSynthesisedDefaults` |
+| Desired state | Family, description, tags and parameter overrides with their requested apply method. Values are validated against the family's engine catalogue (`domains/rds/engine`); `immediate` on a static parameter is refused. | `handlers/rds/parametergroup_test.go` `TestModifyDBParameterGroup_StoresValidatedOverrides`, `TestModifyDBParameterGroup_WritesNothingWhenOneValueIsBad`, `TestModifyDBParameterGroup_RejectsBadRequests`, `handlers/rds/enginefamily_test.go` |
+| Generation | None. Overrides are written one key at a time with no compare-and-set. | |
+| Observed state | Not tracked on the group. Instances report `ParameterApplyStatus` (failed-to-apply, applying, pending-reboot, in-sync) from their own records. | `handlers/rds/describe_test.go` `TestProjectDBInstance_ReportsTheParameterGroupApplyStatus` |
+| Readiness | Usable for attachment as soon as create returns. | |
+| Idempotency | No client token. A repeated create returns `DBParameterGroupAlreadyExists`; a repeated delete returns not found; a repeated modify rewrites the same values and propagates again. | `handlers/rds/parametergroup_test.go` `TestCreateDBParameterGroup_RejectsADuplicateName`, `handlers/rds/parametergroup_lifecycle_test.go` `TestDeleteDBParameterGroup_ASecondDeleteReturnsNotFound` |
+| Dependencies | Every attached instance (current group) receives the full effective set through the agent `apply-params` command, one instance at a time inside the Modify request; failures are joined into the Modify error after the overrides are stored. Instances attached only through a pending change are skipped and resolve when that change applies. Instance status is not consulted. | `handlers/rds/parametergroup_test.go` `TestModifyDBParameterGroup_PropagatesDynamicParametersToEveryAttachedInstance`, `TestModifyDBParameterGroup_RecordsStaticParametersPendingReboot`, `TestModifyDBParameterGroup_DoesNotPropagateToAPendingAttachment`, `TestModifyDBParameterGroup_ReturnsAPropagationFailure`, `handlers/rds/parametergroup_lifecycle_test.go` `TestModifyDBParameterGroup_SendsADynamicPendingRebootParameterImmediately`, `TestModifyDBParameterGroup_PropagatesToAStoppedInstance` |
+| Authorization | Gateway scope `dbParameterGroupScope` (`gateway/rds/authz.go`) on Modify, DescribeDBParameters and Delete; Create and DescribeDBParameterGroups are unscoped. | `gateway/rds/authz_test.go` |
+| Deletion ordering | Delete refuses with `InvalidDBParameterGroupState` while an instance names the group as current or pending, then deletes every override key and finally the meta key. Snapshots naming the group do not block it. | `handlers/rds/parametergroup_test.go` `TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues`, `TestDeleteDBParameterGroup_RefusesWhileAnInstanceReferencesIt`, `handlers/rds/parametergroup_lifecycle_test.go` `TestDeleteDBParameterGroup_RefusesWhileOnlyPendingAttached` |
+| Restart and interruption | A modify interrupted between override writes leaves a partial batch; a delete interrupted after the overrides leaves an empty group; an interruption during propagation leaves instances on the previous set with nothing to retry it. | none |
+| End-to-end | `tests/e2e/rds/groups_test.go` `TestSubnetAndParameterGroups`, `tests/e2e/rds/lifecycle_test.go`, `tests/e2e/rds/mariadb_test.go`, `tests/e2e/rds/modify_test.go`. No Terraform apply/destroy evidence for `aws_db_parameter_group`. | |
+
+## Gaps
+
+1. Propagation is synchronous fan-out inside the Modify request with no generation, staleness tracking or retry; an instance learns it is behind only through `ParameterApplyFailed`. It is instance-side or orchestration realization, not part of the group, and needs its own design before it can conform.
+2. The gateway's 30 s NATS request timeout is shorter than one instance's 120 s apply, so a Modify over several instances can time out at the gateway while propagation continues.
+3. A dynamic parameter stored with `pending-reboot` is still applied live, because propagation sends the full set and the agent classifies parameters from its own catalogue. AWS defers it to the next reboot; not verified against live AWS.
+4. Propagation does not consult instance status, so stopped or creating instances are targeted.
+5. Overrides are written without batch atomicity or compare-and-set, so concurrent modifies interleave and an interrupted modify leaves a partial batch.
+6. Delete checks for instances and then deletes, with nothing stopping a concurrent create or restore that has already resolved the group.
+7. `ResetDBParameterGroup`, `CopyDBParameterGroup` and `DescribeEngineDefaultParameters` are not in the gateway action table, so they return `InvalidAction` rather than an unsupported-operation error.
+8. The `default.` prefix is defined separately in the handler, the engine catalogue and account teardown.
+9. `handlers/rds/tags.go` writes the meta record directly, bypassing the owner.
+10. No ADR-0003 S5 failure or recovery evidence.

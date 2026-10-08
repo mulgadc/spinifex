@@ -76,7 +76,7 @@ Additional dead code observed in `store.go`: `OIDCProviderKey` (`:95`) and `Even
 | `gateway/eks/internal_recovery.go` | 37 | guest/controller wire contract | `GET .../internal-recovery/{acct}/{instance}`. |
 | `gateway/eks/nodegroup.go` | 65 | AWS protocol adapter | Nodegroup wrappers. |
 | `gateway/eks/oidc.go` | 45 | AWS protocol adapter | IdP-config wrappers (handlers are stubs). |
-| `gateway/eks/passrole.go` | 31 | AWS protocol adapter | Extracts passed role ARNs for CreateCluster/CreateNodegroup only. |
+| `gateway/eks/passrole.go` | 43 | AWS protocol adapter | Extracts passed role ARNs for CreateCluster, CreateNodegroup, CreateAddon and UpdateAddon. |
 | `gateway/eks/tags.go` | 35 | AWS protocol adapter | Tag wrappers. |
 | `gateway/eks/token_review.go` | 51 | guest/controller wire contract | `POST /clusters/{c}/token-review` for the in-VM token webhook. |
 
@@ -151,7 +151,7 @@ Gateway-to-daemon transport: NATS request/reply `eks.<Action>`, queue group `spi
 
 Internal NATS-only methods (no HTTP route): `SetRecoveryDirective`, `RestoreSnapshot`, `ListStagedAddonManifests` (backs ListInternalAddons).
 Unregistered AWS EKS operations (InvalidAction today) include Fargate profiles, pod identity associations, encryption config, insights, `RegisterCluster`/`DeregisterCluster`, `DescribeAddonConfiguration`, `DescribeClusterVersions` and EKS Anywhere subscriptions (list from memory of the EKS API, not verified against the pinned model).
-`iam:PassRole` is enforced for CreateCluster `roleArn` and CreateNodegroup `nodeRole` only (`gateway/eks/passrole.go`); CreateAddon/UpdateAddon `serviceAccountRoleArn` is not PassRole-checked (AWS requires `iam:PassRole` for it; verify before treating as a divergence).
+`iam:PassRole` is enforced for CreateCluster `roleArn`, CreateNodegroup `nodeRole`, and CreateAddon/UpdateAddon `serviceAccountRoleArn` (`gateway/eks/passrole.go`).
 
 ## 3. Durable records and KV buckets
 

@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -81,7 +82,7 @@ func TestAccessEntryPersistedLayout_TopLevelAndNestedFieldNames(t *testing.T) {
 }
 
 // A hand-written blob using exactly the field names above must decode into
-// AccessEntryRecord with the expected values, pinning the wire shape
+// access.Record with the expected values, pinning the wire shape
 // independently of whatever the marshaling code currently does.
 func TestAccessEntryRecord_DecodesHandWrittenJSON(t *testing.T) {
 	t.Parallel()
@@ -105,7 +106,7 @@ func TestAccessEntryRecord_DecodesHandWrittenJSON(t *testing.T) {
 		"modifiedAt": "2024-01-02T00:00:00Z"
 	}`
 
-	var rec AccessEntryRecord
+	var rec access.Record
 	require.NoError(t, json.Unmarshal([]byte(blob), &rec))
 
 	assert.Equal(t, "arn:aws:eks:us-east-1:111122223333:access-entry/c1/abc123", rec.ARN)
@@ -113,11 +114,11 @@ func TestAccessEntryRecord_DecodesHandWrittenJSON(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::111122223333:role/dev", rec.PrincipalARN)
 	assert.Equal(t, "dev-user", rec.KubernetesUsername)
 	assert.Equal(t, []string{"g1", "g2"}, rec.KubernetesGroups)
-	assert.Equal(t, AccessEntryTypeStandard, rec.Type)
+	assert.Equal(t, access.EntryTypeStandard, rec.Type)
 	assert.Equal(t, map[string]string{"env": "prod"}, rec.Tags)
 	require.Len(t, rec.AssociatedPolicies, 1)
 	assert.Equal(t, "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", rec.AssociatedPolicies[0].PolicyARN)
-	assert.Equal(t, AccessScope{Type: "cluster"}, rec.AssociatedPolicies[0].AccessScope)
+	assert.Equal(t, access.Scope{Type: "cluster"}, rec.AssociatedPolicies[0].AccessScope)
 	assert.Equal(t, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), rec.AssociatedPolicies[0].AssociatedAt)
 	assert.Equal(t, time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), rec.AssociatedPolicies[0].ModifiedAt)
 	assert.Equal(t, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), rec.CreatedAt)
@@ -162,7 +163,7 @@ func TestAccessEntryActionsIgnoreClusterLifecycleStatus(t *testing.T) {
 
 // AssociateAccessPolicy on a principal with no AccessEntry today returns the
 // same ResourceNotFoundException code as an unknown cluster, via
-// casUpdateAccessEntry surfacing ErrAccessEntryNotFound.
+// access.CASUpdate surfacing access.ErrNotFound.
 func TestAccessPolicy_AssociateWithNoEntryIsNotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -178,7 +179,7 @@ func TestAccessPolicy_AssociateWithNoEntryIsNotFound(t *testing.T) {
 }
 
 // Disassociating a policy that was never associated succeeds today (the
-// mutate callback returns false, so casUpdateAccessEntry treats it as a
+// mutate callback returns false, so access.CASUpdate treats it as a
 // no-op) and leaves the whole record, including ModifiedAt, untouched.
 func TestAccessPolicy_DisassociateUnassociatedLeavesRecordUnchanged(t *testing.T) {
 	t.Parallel()
@@ -202,7 +203,7 @@ func TestAccessPolicy_DisassociateUnassociatedLeavesRecordUnchanged(t *testing.T
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
-	before, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	before, err := access.Get(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
 
 	_, err = svc.DisassociateAccessPolicy(context.Background(), &eks.DisassociateAccessPolicyInput{
@@ -210,7 +211,7 @@ func TestAccessPolicy_DisassociateUnassociatedLeavesRecordUnchanged(t *testing.T
 	}, testAccountID)
 	require.NoError(t, err)
 
-	after, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	after, err := access.Get(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
 }
@@ -233,7 +234,7 @@ func TestAccessEntry_UpdateWithNoFieldsKeepsUsernameAndGroups(t *testing.T) {
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
-	before, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	before, err := access.Get(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
 
 	time.Sleep(time.Millisecond)
@@ -244,7 +245,7 @@ func TestAccessEntry_UpdateWithNoFieldsKeepsUsernameAndGroups(t *testing.T) {
 	assert.Equal(t, "alice", aws.StringValue(out.AccessEntry.Username))
 	assert.Equal(t, []string{"g1"}, aws.StringValueSlice(out.AccessEntry.KubernetesGroups))
 
-	after, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	after, err := access.Get(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", after.KubernetesUsername)
 	assert.Equal(t, []string{"g1"}, after.KubernetesGroups)
@@ -258,30 +259,22 @@ func TestDeleteClusterPrefix_SweepsAccessEntriesScopedToCluster(t *testing.T) {
 	t.Parallel()
 	kv := newClusterStateTestKV(t)
 
-	now := time.Now().UTC()
-	require.NoError(t, PutAccessEntryRecord(t.Context(), kv, &AccessEntryRecord{
-		ClusterName:        "cluster-a",
-		PrincipalARN:       testPrincipalARN,
-		KubernetesUsername: testPrincipalARN,
-		Type:               AccessEntryTypeStandard,
-		CreatedAt:          now,
-		ModifiedAt:         now,
-	}))
-	require.NoError(t, PutAccessEntryRecord(t.Context(), kv, &AccessEntryRecord{
-		ClusterName:        "cluster-b",
-		PrincipalARN:       testPrincipalARN,
-		KubernetesUsername: testPrincipalARN,
-		Type:               AccessEntryTypeStandard,
-		CreatedAt:          now,
-		ModifiedAt:         now,
-	}))
+	owner := access.New("us-east-1")
+	_, err := owner.Create(t.Context(), kv, testAccountID, access.Spec{
+		Cluster: "cluster-a", PrincipalARN: testPrincipalARN, Type: access.EntryTypeStandard,
+	})
+	require.NoError(t, err)
+	_, err = owner.Create(t.Context(), kv, testAccountID, access.Spec{
+		Cluster: "cluster-b", PrincipalARN: testPrincipalARN, Type: access.EntryTypeStandard,
+	})
+	require.NoError(t, err)
 
 	require.NoError(t, DeleteClusterPrefix(t.Context(), kv, "cluster-a"))
 
-	_, err := GetAccessEntryRecord(t.Context(), kv, "cluster-a", testPrincipalARN)
-	require.ErrorIs(t, err, ErrAccessEntryNotFound)
+	_, err = access.Get(t.Context(), kv, "cluster-a", testPrincipalARN)
+	require.ErrorIs(t, err, access.ErrNotFound)
 
-	survivor, err := GetAccessEntryRecord(t.Context(), kv, "cluster-b", testPrincipalARN)
+	survivor, err := access.Get(t.Context(), kv, "cluster-b", testPrincipalARN)
 	require.NoError(t, err)
 	assert.Equal(t, "cluster-b", survivor.ClusterName)
 }
@@ -294,15 +287,12 @@ func TestResolveTokenReview_AuthenticatesWithoutClusterMeta(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv := seedAccountBucket(t, js, testAccountID)
-	require.NoError(t, PutAccessEntryRecord(t.Context(), kv, &AccessEntryRecord{
-		ClusterName:        "alpha",
-		PrincipalARN:       testARN,
-		KubernetesUsername: testARN,
-		KubernetesGroups:   []string{"system:masters"},
-		Type:               AccessEntryTypeStandard,
-	}))
+	_, err := access.New("us-east-1").Create(t.Context(), kv, testAccountID, access.Spec{
+		Cluster: "alpha", PrincipalARN: testARN, Groups: []string{"system:masters"}, Type: access.EntryTypeStandard,
+	})
+	require.NoError(t, err)
 
-	_, err := GetClusterMeta(t.Context(), kv, "alpha")
+	_, err = GetClusterMeta(t.Context(), kv, "alpha")
 	require.ErrorIs(t, err, ErrClusterNotFound)
 
 	sub, err := nc.Subscribe(TokenVerifySubject, func(m *nats.Msg) {

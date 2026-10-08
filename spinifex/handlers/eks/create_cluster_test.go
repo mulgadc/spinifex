@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
@@ -352,11 +353,11 @@ func TestCreateCluster_SeedsCreatorAdminAccessEntry(t *testing.T) {
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
-	rec, err := GetAccessEntryRecord(t.Context(), f.kv, "alpha", caller)
+	rec, err := access.Get(t.Context(), f.kv, "alpha", caller)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"system:masters"}, rec.KubernetesGroups)
 	assert.Equal(t, caller, rec.KubernetesUsername)
-	assert.Equal(t, AccessEntryTypeStandard, rec.Type)
+	assert.Equal(t, access.EntryTypeStandard, rec.Type)
 }
 
 // With the bootstrap flag explicitly false, no creator-admin entry is minted.
@@ -373,8 +374,8 @@ func TestCreateCluster_SkipsCreatorAdminWhenDisabled(t *testing.T) {
 	require.NoError(t, err)
 	f.svc.WaitLaunches()
 
-	_, err = GetAccessEntryRecord(t.Context(), f.kv, "alpha", caller)
-	assert.ErrorIs(t, err, ErrAccessEntryNotFound)
+	_, err = access.Get(t.Context(), f.kv, "alpha", caller)
+	assert.ErrorIs(t, err, access.ErrNotFound)
 }
 
 // CreateCluster builds the managed control-plane VPC ("Set B") under the system

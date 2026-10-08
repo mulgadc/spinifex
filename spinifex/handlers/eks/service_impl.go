@@ -25,6 +25,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -243,6 +244,7 @@ type EKSServiceImpl struct {
 	deps     EKSServiceDeps
 	leaderKV jetstream.KeyValue
 	registry *ReconcilerRegistry
+	owner    *access.Owner
 
 	mu       sync.Mutex
 	bgCtx    context.Context
@@ -310,6 +312,7 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		deps:                     deps,
 		leaderKV:                 leaderKV,
 		registry:                 NewReconcilerRegistry(),
+		owner:                    access.New(deps.Region),
 		bgCtx:                    ctx,
 		bgCancel:                 cancel,
 		baseDomain:               dns.ResolveBaseDomain(deps.Config),
@@ -994,9 +997,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 
 	// Seed creator system:masters AccessEntry so the token webhook can authenticate the creator immediately.
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
-		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
-			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
-		if err := PutAccessEntryRecord(ctx, acctKV, rec); err != nil {
+		if err := s.owner.SeedCreatorAdmin(ctx, acctKV, accountID, name, callerPrincipalARN); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
 			return
 		}
@@ -1544,9 +1545,9 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 	}
 	entryType := aws.StringValue(input.Type)
 	if entryType == "" {
-		entryType = AccessEntryTypeStandard
+		entryType = access.EntryTypeStandard
 	}
-	if entryType != AccessEntryTypeStandard {
+	if entryType != access.EntryTypeStandard {
 		// Non-standard types (EC2_LINUX etc.) are not yet implemented.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -1554,15 +1555,18 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 	if err != nil {
 		return nil, err
 	}
-	if _, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN); err == nil {
-		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
-	} else if !errors.Is(err, ErrAccessEntryNotFound) {
-		return nil, err
-	}
-	rec := newAccessEntryRecord(s.deps.Region, accountID, cluster, principalARN,
-		aws.StringValue(input.Username), aws.StringValueSlice(input.KubernetesGroups),
-		entryType, aws.StringValueMap(input.Tags), time.Now().UTC())
-	if err := PutAccessEntryRecord(ctx, acctKV, rec); err != nil {
+	rec, err := s.owner.Create(ctx, acctKV, accountID, access.Spec{
+		Cluster:      cluster,
+		PrincipalARN: principalARN,
+		Username:     aws.StringValue(input.Username),
+		Groups:       aws.StringValueSlice(input.KubernetesGroups),
+		Type:         entryType,
+		Tags:         aws.StringValueMap(input.Tags),
+	})
+	if err != nil {
+		if errors.Is(err, access.ErrExists) {
+			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		}
 		return nil, err
 	}
 	return &eks.CreateAccessEntryOutput{AccessEntry: accessEntryRecordToAWS(rec)}, nil
@@ -1578,9 +1582,9 @@ func (s *EKSServiceImpl) DescribeAccessEntry(ctx context.Context, input *eks.Des
 	if err != nil {
 		return nil, err
 	}
-	rec, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN)
+	rec, err := s.owner.Get(ctx, acctKV, cluster, principalARN)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1597,16 +1601,12 @@ func (s *EKSServiceImpl) ListAccessEntries(ctx context.Context, input *eks.ListA
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ListAccessEntryRecords(ctx, acctKV, cluster)
+	recs, err := s.owner.List(ctx, acctKV, cluster, aws.StringValue(input.AssociatedPolicyArn))
 	if err != nil {
 		return nil, err
 	}
-	filter := aws.StringValue(input.AssociatedPolicyArn)
 	arns := make([]string, 0, len(recs))
 	for _, rec := range recs {
-		if filter != "" && !hasAssociatedPolicy(rec, filter) {
-			continue
-		}
 		arns = append(arns, rec.PrincipalARN)
 	}
 	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(arns)}, nil
@@ -1622,19 +1622,10 @@ func (s *EKSServiceImpl) UpdateAccessEntry(ctx context.Context, input *eks.Updat
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	rec, err := casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
-		if input.KubernetesGroups != nil {
-			r.KubernetesGroups = aws.StringValueSlice(input.KubernetesGroups)
-		}
-		if u := aws.StringValue(input.Username); u != "" {
-			r.KubernetesUsername = u
-		}
-		r.ModifiedAt = now
-		return true
-	})
+	rec, err := s.owner.Update(ctx, acctKV, cluster, principalARN,
+		aws.StringValue(input.Username), aws.StringValueSlice(input.KubernetesGroups), input.KubernetesGroups != nil)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1652,8 +1643,8 @@ func (s *EKSServiceImpl) DeleteAccessEntry(ctx context.Context, input *eks.Delet
 	if err != nil {
 		return nil, err
 	}
-	if err := DeleteAccessEntryRecord(ctx, acctKV, cluster, principalARN); err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+	if err := s.owner.Delete(ctx, acctKV, cluster, principalARN); err != nil {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1668,14 +1659,14 @@ func (s *EKSServiceImpl) AssociateAccessPolicy(ctx context.Context, input *eks.A
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
 	policyARN := aws.StringValue(input.PolicyArn)
-	if _, ok := supportedAccessPolicies[policyARN]; !ok {
+	if _, ok := access.SupportedPolicies[policyARN]; !ok {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	scope, err := validateAccessScope(input.AccessScope)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if scope.Type == accessScopeNamespace {
+	if scope.Type == access.ScopeNamespace {
 		return nil, awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
 			"accessScope.type: namespace-scoped access policies are not supported, only cluster is supported")
 	}
@@ -1683,24 +1674,9 @@ func (s *EKSServiceImpl) AssociateAccessPolicy(ctx context.Context, input *eks.A
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	var assoc AssociatedAccessPolicy
-	_, err = casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
-		assoc = AssociatedAccessPolicy{PolicyARN: policyARN, AccessScope: scope, AssociatedAt: now, ModifiedAt: now}
-		for i := range r.AssociatedPolicies {
-			if r.AssociatedPolicies[i].PolicyARN == policyARN {
-				assoc.AssociatedAt = r.AssociatedPolicies[i].AssociatedAt
-				r.AssociatedPolicies[i] = assoc
-				r.ModifiedAt = now
-				return true
-			}
-		}
-		r.AssociatedPolicies = append(r.AssociatedPolicies, assoc)
-		r.ModifiedAt = now
-		return true
-	})
+	assoc, err := s.owner.Associate(ctx, acctKV, cluster, principalARN, policyARN, scope)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1723,19 +1699,8 @@ func (s *EKSServiceImpl) DisassociateAccessPolicy(ctx context.Context, input *ek
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	_, err = casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
-		for i := range r.AssociatedPolicies {
-			if r.AssociatedPolicies[i].PolicyARN == policyARN {
-				r.AssociatedPolicies = append(r.AssociatedPolicies[:i], r.AssociatedPolicies[i+1:]...)
-				r.ModifiedAt = now
-				return true
-			}
-		}
-		return false
-	})
-	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+	if err := s.owner.Disassociate(ctx, acctKV, cluster, principalARN, policyARN); err != nil {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1753,9 +1718,9 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 	if err != nil {
 		return nil, err
 	}
-	rec, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN)
+	rec, err := s.owner.Get(ctx, acctKV, cluster, principalARN)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1772,7 +1737,7 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 }
 
 func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
-	arns := slices.Sorted(maps.Keys(supportedAccessPolicies))
+	arns := slices.Sorted(maps.Keys(access.SupportedPolicies))
 	policies := make([]*eks.AccessPolicy, 0, len(arns))
 	for _, arn := range arns {
 		policies = append(policies, &eks.AccessPolicy{
@@ -1781,13 +1746,6 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 		})
 	}
 	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies}, nil
-}
-
-// hasAssociatedPolicy reports whether the entry has the given policy ARN bound.
-func hasAssociatedPolicy(rec *AccessEntryRecord, policyARN string) bool {
-	return slices.ContainsFunc(rec.AssociatedPolicies, func(p AssociatedAccessPolicy) bool {
-		return p.PolicyARN == policyARN
-	})
 }
 
 // accessPolicyName extracts the policy short name from its ARN

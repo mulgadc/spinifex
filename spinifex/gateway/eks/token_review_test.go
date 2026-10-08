@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
@@ -61,13 +62,10 @@ func TestWebhookTokenReview_ResolvesIdentity(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: handlers_eks.AccountBucketName("111122223333")})
 	require.NoError(t, err)
-	require.NoError(t, handlers_eks.PutAccessEntryRecord(t.Context(), kv, &handlers_eks.AccessEntryRecord{
-		ClusterName:        "alpha",
-		PrincipalARN:       testARN,
-		KubernetesUsername: testARN,
-		KubernetesGroups:   []string{"system:masters"},
-		Type:               handlers_eks.AccessEntryTypeStandard,
-	}))
+	_, err = access.New("us-east-1").Create(t.Context(), kv, "111122223333", access.Spec{
+		Cluster: "alpha", PrincipalARN: testARN, Groups: []string{"system:masters"}, Type: access.EntryTypeStandard,
+	})
+	require.NoError(t, err)
 
 	sub, err := nc.Subscribe(handlers_eks.TokenVerifySubject, func(m *nats.Msg) {
 		resp, _ := json.Marshal(handlers_eks.TokenVerifyResponse{

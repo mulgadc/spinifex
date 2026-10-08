@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
@@ -111,7 +112,7 @@ func TestEKSRequest_CreateClusterScopesFromBody(t *testing.T) {
 // gate builds must be the one the handler's own builder produces.
 func TestEKSRequest_AccessEntryPathIsUnescaped(t *testing.T) {
 	const principal = "arn:aws:iam::123456789012:role/app/admin"
-	entry := arn.FormatEKSAccessEntry(authzRegion, authzAccountID, "prod", handlers_eks.PrincipalARNHash(principal))
+	entry := arn.FormatEKSAccessEntry(authzRegion, authzAccountID, "prod", access.PrincipalARNHash(principal))
 
 	gw := scopedPolicyGateway(
 		statement("Allow", "eks:*", "*"),

@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 )
 
@@ -228,7 +228,7 @@ func accessEntryARN(region, accountID, cluster, principalARN string) string {
 	if region == "" || accountID == "" || cluster == "" || principalARN == "" {
 		return anyResource
 	}
-	return arn.FormatEKSAccessEntry(region, accountID, cluster, handlers_eks.PrincipalARNHash(principalARN))
+	return arn.FormatEKSAccessEntry(region, accountID, cluster, access.PrincipalARNHash(principalARN))
 }
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the

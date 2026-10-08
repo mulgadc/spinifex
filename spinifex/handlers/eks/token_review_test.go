@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -45,9 +46,9 @@ func okVerify(_ string) (*TokenVerifyResponse, error) {
 
 func TestAuthenticate_GrantsWhenEntryExists(t *testing.T) {
 	t.Parallel()
-	lookup := func(arn string) (*AccessEntryRecord, error) {
+	lookup := func(arn string) (*access.Record, error) {
 		assert.Equal(t, testARN, arn)
-		return &AccessEntryRecord{
+		return &access.Record{
 			KubernetesUsername: testARN,
 			KubernetesGroups:   []string{"system:masters"},
 		}, nil
@@ -65,7 +66,7 @@ func TestAuthenticate_DeniesMalformedToken(t *testing.T) {
 	t.Parallel()
 	called := false
 	verify := func(string) (*TokenVerifyResponse, error) { called = true; return nil, nil }
-	lookup := func(string) (*AccessEntryRecord, error) { return nil, nil }
+	lookup := func(string) (*access.Record, error) { return nil, nil }
 
 	res := Authenticate("not-a-k8s-aws-token", verify, lookup)
 
@@ -78,7 +79,7 @@ func TestAuthenticate_DeniesWhenVerifyFails(t *testing.T) {
 	verify := func(string) (*TokenVerifyResponse, error) {
 		return nil, errors.New("signature mismatch")
 	}
-	lookup := func(string) (*AccessEntryRecord, error) {
+	lookup := func(string) (*access.Record, error) {
 		t.Fatal("lookup must not run when verify fails")
 		return nil, nil
 	}
@@ -89,8 +90,8 @@ func TestAuthenticate_DeniesWhenVerifyFails(t *testing.T) {
 
 func TestAuthenticate_DeniesWhenNoAccessEntry(t *testing.T) {
 	t.Parallel()
-	lookup := func(string) (*AccessEntryRecord, error) {
-		return nil, ErrAccessEntryNotFound
+	lookup := func(string) (*access.Record, error) {
+		return nil, access.ErrNotFound
 	}
 
 	res := Authenticate(validToken("https://sts/?x=1"), okVerify, lookup)
@@ -103,8 +104,8 @@ func TestAuthenticate_FallsBackUIDToARN(t *testing.T) {
 	verify := func(string) (*TokenVerifyResponse, error) {
 		return &TokenVerifyResponse{ARN: testARN}, nil // no UserID
 	}
-	lookup := func(string) (*AccessEntryRecord, error) {
-		return &AccessEntryRecord{KubernetesUsername: testARN, KubernetesGroups: []string{"system:masters"}}, nil
+	lookup := func(string) (*access.Record, error) {
+		return &access.Record{KubernetesUsername: testARN, KubernetesGroups: []string{"system:masters"}}, nil
 	}
 
 	res := Authenticate(validToken("https://sts/?x=1"), verify, lookup)
@@ -112,84 +113,15 @@ func TestAuthenticate_FallsBackUIDToARN(t *testing.T) {
 	assert.Equal(t, testARN, res.UID)
 }
 
-func TestEffectiveGroups_EachPolicyProducesItsGroup(t *testing.T) {
-	cases := []struct {
-		policyARN string
-		want      string
-	}{
-		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy", "system:masters"},
-		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy", "mulga:eks-admin"},
-		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy", "mulga:eks-edit"},
-		{"arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", "mulga:eks-view"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
-			rec := &AccessEntryRecord{
-				AssociatedPolicies: []AssociatedAccessPolicy{
-					{PolicyARN: tc.policyARN, AccessScope: AccessScope{Type: accessScopeCluster}},
-				},
-			}
-			assert.Equal(t, []string{tc.want}, effectiveGroups(rec))
-		})
-	}
-}
-
-func TestEffectiveGroups_TwoAssociationsProduceBothGroups(t *testing.T) {
-	t.Parallel()
-	rec := &AccessEntryRecord{
-		AssociatedPolicies: []AssociatedAccessPolicy{
-			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
-			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
-		},
-	}
-	assert.Equal(t, []string{"mulga:eks-edit", "mulga:eks-view"}, effectiveGroups(rec))
-}
-
-// A creator seeded system:masters directly (CreateCluster bootstrap) who is
-// also associated to AmazonEKSClusterAdminPolicy must not see the group twice.
-func TestEffectiveGroups_DedupesSeededAndAssociatedClusterAdmin(t *testing.T) {
-	t.Parallel()
-	rec := &AccessEntryRecord{
-		KubernetesGroups: []string{"system:masters"},
-		AssociatedPolicies: []AssociatedAccessPolicy{
-			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
-		},
-	}
-	assert.Equal(t, []string{"system:masters"}, effectiveGroups(rec))
-}
-
-// Records written before namespace scope was rejected at association time may
-// still carry one; it must not silently widen to a cluster-scope grant.
-func TestEffectiveGroups_NamespaceScopeContributesNothing(t *testing.T) {
-	t.Parallel()
-	rec := &AccessEntryRecord{
-		AssociatedPolicies: []AssociatedAccessPolicy{
-			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeNamespace, Namespaces: []string{"team-a"}}},
-		},
-	}
-	assert.Empty(t, effectiveGroups(rec))
-}
-
-func TestEffectiveGroups_UnrecognizedPolicyDoesNotPanic(t *testing.T) {
-	t.Parallel()
-	rec := &AccessEntryRecord{
-		AssociatedPolicies: []AssociatedAccessPolicy{
-			{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/MadeUpPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
-		},
-	}
-	assert.NotPanics(t, func() { effectiveGroups(rec) })
-	assert.Empty(t, effectiveGroups(rec))
-}
-
 // End-to-end through Authenticate: an associated policy's group must reach the
 // TokenReview result, not just the internal helper.
 func TestAuthenticate_ProjectsAssociatedPolicyGroup(t *testing.T) {
 	t.Parallel()
-	lookup := func(arn string) (*AccessEntryRecord, error) {
-		return &AccessEntryRecord{
+	lookup := func(arn string) (*access.Record, error) {
+		return &access.Record{
 			KubernetesUsername: testARN,
-			AssociatedPolicies: []AssociatedAccessPolicy{
-				{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: AccessScope{Type: accessScopeCluster}},
+			AssociatedPolicies: []access.AssociatedPolicy{
+				{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy", AccessScope: access.Scope{Type: access.ScopeCluster}},
 			},
 		}, nil
 	}
@@ -220,13 +152,10 @@ func TestResolveTokenReview_AuthenticatesViaVerifyAndKV(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv := seedAccountBucket(t, js, "111122223333")
-	require.NoError(t, PutAccessEntryRecord(t.Context(), kv, &AccessEntryRecord{
-		ClusterName:        "alpha",
-		PrincipalARN:       testARN,
-		KubernetesUsername: testARN,
-		KubernetesGroups:   []string{"system:masters"},
-		Type:               AccessEntryTypeStandard,
-	}))
+	_, err := access.New("us-east-1").Create(t.Context(), kv, "111122223333", access.Spec{
+		Cluster: "alpha", PrincipalARN: testARN, Groups: []string{"system:masters"}, Type: access.EntryTypeStandard,
+	})
+	require.NoError(t, err)
 
 	// Stand in for the awsgw-hosted STS verify responder.
 	sub, err := nc.Subscribe(TokenVerifySubject, func(m *nats.Msg) {

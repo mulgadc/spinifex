@@ -37,7 +37,7 @@ The add-on rows below are at `18794e017`.
 | `cluster_reconciler.go` | 1209 | resource owner (`cluster`), mixed | Cluster readiness/health, CP restart, member replacement, etcd reset; also hosts the add-on status subscription for `addon` (`addonReports` field `:171-176`, `WithAddonStatusSource` `:264-269`, plain subscribe `:447-458`), wired in `service_impl.go:2160-2163` (add-on rows at `18794e017`). |
 | `cluster_state.go` | 515 | resource owner (`cluster`) | `ClusterMeta` record, status enum, CAS helpers, delete-reap bookkeeping, `DeleteClusterPrefix` (`:493`, which also erases nodegroup, access and add-on record and manifest keys by prefix without calling the add-on owner). |
 | `cp_vpc.go` | 128 | resource owner (`cluster`) | EKS-specific managed CP VPC realization via `domains/network/systemvpc`. |
-| `eks_billable_reaper.go` | 133 | resource owner (`cluster`) | Node-local GC backstop for CP VMs whose meta is gone; comment at `:3` cites "ADR-0006 §5", which is not an accepted ADR. |
+| `eks_billable_reaper.go` | 133 | resource owner (`cluster`) | Node-local GC backstop for CP VMs whose meta is gone; cites `ADR-0003:S2` as the general lifecycle envelope, while the resource's own contract remains incomplete. |
 | `eks_deleting_reaper.go` | 159 | resource owner (`cluster`) | Re-drives DELETING clusters with backoff and exhaustion. |
 | `igw.go` | 32 | resource owner (`cluster`) | Legacy-topology IGW ensure/delete via `systemvpc`. |
 | `k3s_ha_control_plane.go` | 628 | resource owner (`cluster`), mixed | CP placement, spread, replacement, fresh CP; also contains `natsHostScheduler` (`:461-628`), a NATS fan-out over `contracts/cluster/v1` that is a capability implementation and should move to the composition root or the scheduler owner. |
@@ -333,7 +333,7 @@ E1 to E5 match the `handlers/eks` → `domains/eks/addon` debt entry in `docs/PA
 17. ADR-0004 S3: `daemon/eks_cp_control.go` uses the EC2 AWS adapter package as an internal API.
 18. ADR-0004 S5: guest `agents/eks/tokenwebhook` imports `handlers/eks`.
 19. Observed security risk outside Q-78: plaintext OIDC private key and k3s join token in `ClusterMeta.ControlPlaneTemplate` (Section 3).
-20. Comment hygiene: `eks_billable_reaper.go:3` cites an unaccepted "ADR-0006"; `daemon/daemon.go:1085-1087` is stale.
+20. Comment hygiene: EKS lifecycle evidence now cites `ADR-0003:S2`; `daemon/daemon.go:1085-1087` is stale.
 
 ## 9. First-resource candidates
 

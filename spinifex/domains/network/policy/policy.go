@@ -7,7 +7,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 )
 
-// NATMode selects distributed vs. centralised NAT (ADR-0006 S3). Fixed at
+// NATMode selects distributed vs. centralised NAT (PROP-REGIONLOCAL-006:S3). Fixed at
 // NATManager construction from the L0 uplink mode.
 type NATMode int
 

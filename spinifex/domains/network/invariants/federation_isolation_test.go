@@ -11,14 +11,14 @@ import (
 	"testing"
 )
 
-// TestS6_FederationIsolated enforces ADR-0006 clause S6.
+// TestS6_FederationIsolated pins PROP-REGIONLOCAL-006:S6.
 //
 //	"L4 is the only layer aware of other AZs. No layer below L4 references
 //	 remote AZ identifiers, OVN-IC transit switches, or inter-AZ link state.
 //	 Cross-AZ federation is always mediated by L4."
 func TestS6_FederationIsolated(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S6: "L4 is the only layer aware of other AZs. ` +
+	const clause = `PROP-REGIONLOCAL-006:S6: "L4 is the only layer aware of other AZs. ` +
 		`No layer below L4 references remote AZ identifiers, OVN-IC transit ` +
 		`switches, or inter-AZ link state. Cross-AZ federation is always ` +
 		`mediated by L4."`

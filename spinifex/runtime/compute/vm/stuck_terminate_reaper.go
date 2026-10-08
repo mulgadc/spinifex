@@ -22,7 +22,7 @@ const stuckTerminateTimeout = 10 * time.Minute
 //
 // It is the one reaper explicitly authorized to DELETE volume data, but only for
 // a DeleteOnTermination volume whose instance is already being terminated — a far
-// narrower licence than the one ADR-0005 §3 denies VolumeLeakReaper. VolumeLeakReaper
+// narrower licence than the one ADR-0003:S2 denies VolumeLeakReaper. VolumeLeakReaper
 // stays mark-and-alarm-only for every merely-orphaned volume; this actor only ever
 // finishes an already-decided terminate, never reclaims a volume on its own judgement.
 type StuckTerminateReaper struct {

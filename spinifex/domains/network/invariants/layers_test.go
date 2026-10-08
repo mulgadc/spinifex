@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// TestS1_LayerSkipProhibited enforces ADR-0006 clause S1.
+// TestS1_LayerSkipProhibited pins PROP-REGIONLOCAL-006:S1.
 //
 //	"No code above layer Lk calls through to a layer below Lk's immediate
 //	 interface. Every cross-layer call passes through the typed interface
 //	 of the immediate lower neighbor."
 func TestS1_LayerSkipProhibited(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S1: "No code above layer Lk calls through to a ` +
+	const clause = `PROP-REGIONLOCAL-006:S1: "No code above layer Lk calls through to a ` +
 		`layer below Lk's immediate interface. Every cross-layer call ` +
 		`passes through the typed interface of the immediate lower neighbor."`
 
@@ -92,7 +92,7 @@ func TestS1_LayerSkipProhibited(t *testing.T) {
 	t.Fatalf("%s", b.String())
 }
 
-// packageKind tags a package by its position in the ADR-0006 layer model.
+// packageKind tags a package by its position in the PROP-REGIONLOCAL-006 layer model.
 type packageKind int
 
 const (

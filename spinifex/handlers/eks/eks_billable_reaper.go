@@ -13,8 +13,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// EKSBillableReaper is ADR-0006 §5's meta-independent billable cleanup, built on
-// the 0003 reality→desired GC backstop. A normal DeleteCluster can leave a
+// EKSBillableReaper is ADR-0003:S2's meta-independent billable cleanup, built on
+// the resource lifecycle GC backstop. A normal DeleteCluster can leave a
 // running control-plane VM behind (terminate completes async; a daemon restart
 // re-launches it from saved running-state) after the cluster meta is already
 // swept — a billable orphan with no owner to drive a retry. This reaper finds a

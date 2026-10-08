@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// TestS3_NATModeInitTimeConstant enforces ADR-0006 clause S3.
+// TestS3_NATModeInitTimeConstant pins PROP-REGIONLOCAL-006:S3.
 //
 //	"NAT distribution mode is an init-time constant. Centralised-vs-
 //	 distributed NAT is determined once at startup from L0's UplinkMode()
@@ -19,7 +19,7 @@ import (
 //	 mode dynamically."
 func TestS3_NATModeInitTimeConstant(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S3: "NAT distribution mode is an init-time ` +
+	const clause = `PROP-REGIONLOCAL-006:S3: "NAT distribution mode is an init-time ` +
 		`constant. Centralised-vs-distributed NAT is determined once at ` +
 		`startup from L0's UplinkMode() and never re-evaluated at runtime. ` +
 		`No layer above L0 branches on NAT mode dynamically."`

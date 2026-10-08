@@ -1,6 +1,6 @@
 // Package host is L0 of the spinifex network stack: OVS bridges (br-int,
 // br-ext), uplink port, and external CIDR. Bridge mode resolved here
-// and invisible above L0 (ADR-0006 S2, S3).
+// and invisible above L0 (PROP-REGIONLOCAL-006:S2, S3).
 package host
 
 import (
@@ -52,7 +52,7 @@ type Wiring interface {
 	EnsureUplinkPort(ctx context.Context) (net.HardwareAddr, error)
 
 	// UplinkMode returns the configured mode. L3 reads once at startup
-	// (ADR-0006 S3); never re-reads at runtime.
+	// (PROP-REGIONLOCAL-006:S3); never re-reads at runtime.
 	UplinkMode() UplinkMode
 
 	// ExternalCIDR returns the IPv4 prefix on this node's uplink bridge.

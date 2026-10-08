@@ -86,7 +86,7 @@ func TestFindOrphanVolumes_FindsAVolumeWhoseDocumentIsGone(t *testing.T) {
 	assert.False(t, orphans[0].Derived)
 }
 
-// TestFindOrphanVolumes_NeverDeletes locks ADR-0005 §3 for this tool: an
+// TestFindOrphanVolumes_NeverDeletes exercises ADR-0003:S2 for this tool: an
 // orphan carries data, and the evidence it is still wanted is the very
 // document that is missing. The scan may only report.
 func TestFindOrphanVolumes_NeverDeletes(t *testing.T) {
@@ -100,7 +100,7 @@ func TestFindOrphanVolumes_NeverDeletes(t *testing.T) {
 	got, err := provider.GetVolume(t.Context(), ebsprovider.GetVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-stranded00000",
 	})
-	require.NoErrorf(t, err, "ADR-0005 §3: the orphan scan must never delete the volume it reports")
+	require.NoErrorf(t, err, "ADR-0003:S2: the orphan scan must never delete the volume it reports")
 	assert.Equal(t, "vol-stranded00000", got.ID)
 }
 

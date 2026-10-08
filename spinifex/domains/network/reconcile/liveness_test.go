@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
 
-// TestL1_ReconcilerConverges enforces ADR-0006 L1: while KV and OVN NB are
+// TestL1_ReconcilerConverges pins PROP-REGIONLOCAL-006:L1: while KV and OVN NB are
 // reachable, repeated Reconcile calls converge. Two passes over N={1,3,8} VPCs;
 // state on pass 2 must equal state on pass 1.
 func TestL1_ReconcilerConverges(t *testing.T) {
@@ -35,29 +35,29 @@ func TestL1_ReconcilerConverges(t *testing.T) {
 				t.Fatalf("Reconcile #2: %v", err)
 			}
 			if len(m.Routers) != routers1 {
-				t.Errorf("ADR-0006 L1: convergence violated — routers %d → %d on second pass", routers1, len(m.Routers))
+				t.Errorf("PROP-REGIONLOCAL-006:L1: convergence violated — routers %d → %d on second pass", routers1, len(m.Routers))
 			}
 			if len(m.Switches) != switches1 {
-				t.Errorf("ADR-0006 L1: convergence violated — switches %d → %d on second pass", switches1, len(m.Switches))
+				t.Errorf("PROP-REGIONLOCAL-006:L1: convergence violated — switches %d → %d on second pass", switches1, len(m.Switches))
 			}
 			if len(m.Ports) != ports1 {
-				t.Errorf("ADR-0006 L1: convergence violated — ports %d → %d on second pass", ports1, len(m.Ports))
+				t.Errorf("PROP-REGIONLOCAL-006:L1: convergence violated — ports %d → %d on second pass", ports1, len(m.Ports))
 			}
 			if len(m.PortGroups) != pgs1 {
-				t.Errorf("ADR-0006 L1: convergence violated — port groups %d → %d on second pass", pgs1, len(m.PortGroups))
+				t.Errorf("PROP-REGIONLOCAL-006:L1: convergence violated — port groups %d → %d on second pass", pgs1, len(m.PortGroups))
 			}
 		})
 	}
 }
 
-// TestL2_DriftIntervalBounded enforces ADR-0006 L2 structurally: bounds
+// TestL2_DriftIntervalBounded pins PROP-REGIONLOCAL-006:L2 structurally: bounds
 // DriftInterval to (0, 30m]. Full coverage blocked on a clock-injectable DriftLoop.
 func TestL2_DriftIntervalBounded(t *testing.T) {
 	if DriftInterval <= 0 {
-		t.Fatalf("ADR-0006 L2: DriftInterval must be > 0; got %v", DriftInterval)
+		t.Fatalf("PROP-REGIONLOCAL-006:L2: DriftInterval must be > 0; got %v", DriftInterval)
 	}
 	if DriftInterval > 30*time.Minute {
-		t.Fatalf("ADR-0006 L2: DriftInterval %v exceeds 30m support-window upper bound", DriftInterval)
+		t.Fatalf("PROP-REGIONLOCAL-006:L2: DriftInterval %v exceeds 30m support-window upper bound", DriftInterval)
 	}
 	// TODO: inject a fake clock + fake JetStream into DriftLoop and assert
 	// runDriftCycle is invoked at least twice within ctx.Deadline().

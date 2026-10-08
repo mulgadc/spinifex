@@ -12,14 +12,14 @@ import (
 	"testing"
 )
 
-// TestS9_SingleReconcilerNoRetrofitPasses enforces ADR-0006 clause S9.
+// TestS9_SingleReconcilerNoRetrofitPasses pins PROP-REGIONLOCAL-006:S9.
 //
 //	"On each leader-gated startup, exactly one intent-actual reconciliation
 //	 pass runs against the NATS KV snapshot and OVN NB DB actual state. No
 //	 additional serial retrofit passes exist."
 func TestS9_SingleReconcilerNoRetrofitPasses(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S9: "On each leader-gated startup, exactly one ` +
+	const clause = `PROP-REGIONLOCAL-006:S9: "On each leader-gated startup, exactly one ` +
 		`intent-actual reconciliation pass runs against the NATS KV snapshot ` +
 		`and OVN NB DB actual state. No additional serial retrofit passes exist."`
 

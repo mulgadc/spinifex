@@ -15,7 +15,7 @@ const (
 	orphanInstanceTagKey = "spinifex:orphaned-instance"
 )
 
-// VolumeLeakReaper is ADR-0005's data-safety GC override. The shared GC backstop
+// VolumeLeakReaper is ADR-0003:S2's data-safety GC override. The shared GC backstop
 // reaps actual−desired for every other resource class; for volumes that default
 // is forbidden. This reaper finds a volume left attached to an instance that is
 // definitively gone and MARKS it orphaned + ALARMS — it never issues a delete.
@@ -43,7 +43,7 @@ func (r *VolumeLeakReaper) Scope() vm.ReaperScope { return vm.ScopeNodeLocal }
 
 // Sweep marks every volume attached to a leaked instance as orphaned and alarms.
 // It never deletes — that is the deliberate data-safety exception to the GC's
-// reap-actual−desired default (ADR-0005 §3).
+// reap-actual−desired default (ADR-0003:S2).
 func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 	leaked, err := r.leaked()
 	if err != nil {
@@ -84,7 +84,7 @@ func (r *VolumeLeakReaper) Sweep(ctx context.Context) (int, error) {
 			continue
 		}
 		// ALARM — surface the retained orphan to the operator. NEVER delete:
-		// reclamation is the explicit --purge / operator path (ADR-0005 §3).
+		// reclamation is the explicit --purge / operator path (ADR-0003:S2).
 		slog.Warn("DATA-SAFETY ALARM: orphaned volume retained, not deleted",
 			"volumeId", id, "attachedInstance", attachedInstance, "sizeGiB", sizeGiB)
 

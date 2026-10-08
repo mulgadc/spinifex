@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-// TestS8_IPSecOVNNativeOnly enforces ADR-0006 clause S8.
+// TestS8_IPSecOVNNativeOnly pins PROP-REGIONLOCAL-006:S8.
 //
 //	"IPSec is OVN-native only. No layer implements custom IKEv2, XFRM
 //	 rules, or direct strongSwan management. IPSec SA lifecycle is
 //	 delegated entirely to OVN native IPSec and is invisible above L0."
 func TestS8_IPSecOVNNativeOnly(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S8: "IPSec is OVN-native only. No layer ` +
+	const clause = `PROP-REGIONLOCAL-006:S8: "IPSec is OVN-native only. No layer ` +
 		`implements custom IKEv2, XFRM rules, or direct strongSwan ` +
 		`management. IPSec SA lifecycle is delegated entirely to OVN ` +
 		`native IPSec and is invisible above L0."`

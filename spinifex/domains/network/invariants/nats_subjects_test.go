@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TestS7_NATSSubjectsCarryAZPrefix enforces ADR-0006 clause S7.
+// TestS7_NATSSubjectsCarryAZPrefix pins PROP-REGIONLOCAL-006:S7.
 //
 //	"Every vpcd-originated NATS publication uses a subject prefixed
 //	 vpc.{azID}. A subscription never processes a message whose subject
@@ -23,7 +23,7 @@ import (
 // the rename ships.
 func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S7: "Every vpcd-originated NATS publication ` +
+	const clause = `PROP-REGIONLOCAL-006:S7: "Every vpcd-originated NATS publication ` +
 		`uses a subject prefixed vpc.{azID}. A subscription never processes ` +
 		`a message whose subject AZ prefix does not match the local node's ` +
 		`AZ identifier."`

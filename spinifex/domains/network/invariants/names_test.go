@@ -12,14 +12,14 @@ import (
 	"testing"
 )
 
-// TestS4_OVNNamesL2Owned enforces ADR-0006 clause S4.
+// TestS4_OVNNamesL2Owned pins PROP-REGIONLOCAL-006:S4.
 //
 //	"All OVN NB DB object names are constructed exclusively by L2 using
 //	 the naming contract table. No layer above or below L2 constructs OVN
 //	 object names independently."
 func TestS4_OVNNamesL2Owned(t *testing.T) {
 	t.Parallel()
-	const clause = `ADR-0006 S4: "All OVN NB DB object names are constructed ` +
+	const clause = `PROP-REGIONLOCAL-006:S4: "All OVN NB DB object names are constructed ` +
 		`exclusively by L2 using the naming contract table. No layer above ` +
 		`or below L2 constructs OVN object names independently."`
 
@@ -163,7 +163,7 @@ func TestS4_OVNNamesL2Owned(t *testing.T) {
 	t.Fatalf("%s", b.String())
 }
 
-// ovnNamePrefixes is the ADR-0006 contract table; keep in lockstep with topology/names.go.
+// ovnNamePrefixes is the PROP-REGIONLOCAL-006 contract table; keep in lockstep with topology/names.go.
 var ovnNamePrefixes = []string{
 	"vpc-",
 	"subnet-",

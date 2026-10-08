@@ -37,7 +37,7 @@ func csiClusterOwnerTag(name string) string {
 // there is no safe way to tell from EC2 tags alone whether deleting a given
 // volume is what the customer wanted. Deleting a Retain volume would be
 // unrecoverable data loss, so — mirroring VolumeLeakReaper's mark-and-alarm
-// policy for the identical reason (ADR-0005 §3) — reclamation stays an
+// policy for the identical reason (ADR-0003:S2) — reclamation stays an
 // explicit operator action.
 func (s *EKSServiceImpl) reclaimCSIVolumes(ctx context.Context, accountID, name string) (int, error) {
 	if s.deps.Volume == nil {

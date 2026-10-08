@@ -229,7 +229,7 @@ func unitIsActive(unit string) bool {
 
 // EnableOVNIPSec wires the local IPsec peer cert and flips ipsec_encapsulation=true.
 // Idempotent. Single-node clusters short-circuit (no Geneve tunnels to encrypt).
-// Lives in L0 per ADR-0006 S8 (IPSec is OVN-native only; SA lifecycle invisible above L0).
+// Lives in L0 per PROP-REGIONLOCAL-006:S8 (IPSec is OVN-native only; SA lifecycle invisible above L0).
 func EnableOVNIPSec(ctx context.Context, configPath string, clusterConfig *config.ClusterConfig, barrier IPSecBarrier) error {
 	if configPath == "" {
 		return fmt.Errorf("config path unset")

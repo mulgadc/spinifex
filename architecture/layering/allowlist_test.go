@@ -154,7 +154,7 @@ var allowlist = []allowance{
 	{From: "handlers/elbv2", To: "lbagent", Debt: "handlers/elbv2/{agent_types,haproxy,health_checker,nginx}.go import lbagent", Reason: "health-report and cert/PID-path vocabulary; needs a guest/controller contract"},
 	{From: "handlers/elbv2", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
 
-	{From: "handlers/iam", To: "admin", Debt: "handlers/iam/service_impl.go:30 imports admin", Reason: "credential and account helpers; blocked with admin -> operator/admin"},
+	{From: "handlers/iam", To: "admin", Debt: "handlers/iam/service_impl.go:30 imports admin", Reason: "credential and account helpers; awaits an IAM-credentials owner"},
 
 	{From: "handlers/rds", To: "domains/dns", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 	{From: "handlers/rds", To: "domains/ec2/instance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},

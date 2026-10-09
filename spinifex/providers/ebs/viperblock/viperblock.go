@@ -1,6 +1,6 @@
 // Package viperblock is the Viperblock EBS provider adapter: it serves
 // viperblock volumes through nbdkit and answers the ebs.* NATS topics.
-// services/viperblockd wires this adapter into the runtime role; this package
+// runtime/roles/viperblockd wires this adapter into the runtime role; this package
 // holds no process/role lifecycle of its own.
 package viperblock
 

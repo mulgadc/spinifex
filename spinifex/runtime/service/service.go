@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 )
 

@@ -258,7 +258,7 @@ services:
     depends_on: []
 
   viperblockd:
-    path: spinifex/services/viperblockd
+    path: spinifex/runtime/roles/viperblockd
     # EBS data plane. Backed by the viperblock storage engine in the
     # mulga/viperblock submodule. Submodule pointer bump → selector forces
     # "run all" (contract changes can be invisible at the spinifex source
@@ -269,7 +269,7 @@ services:
     # The dirty-marker JetStream KV bucket VIPERBLOCK_VOLUME_DIRTY is owned
     # by the same contract; not a NATS subject, so not listed below.
     #
-    # Source layout: spinifex/services/viperblockd (role: process lifecycle,
+    # Source layout: spinifex/runtime/roles/viperblockd (role: process lifecycle,
     # NATS subscription wiring) and spinifex/providers/ebs/viperblock (the
     # Viperblock EBS provider adapter the role wires up). Selector treats the
     # adapter path as belonging to this service via `additional_paths`.

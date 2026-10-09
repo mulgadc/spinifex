@@ -819,7 +819,7 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 
 	startTestService(t, cfg)
 
-	// Note: SIGTERM handling lives in the role (services/viperblockd) and is not exercised here
+	// Note: SIGTERM handling lives in the role (runtime/roles/viperblockd) and is not exercised here
 	// to accept a context or shutdown channel. For now, we verify the service
 	// is running and leave full shutdown testing for manual integration tests.
 

@@ -5,12 +5,16 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
@@ -18,6 +22,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -232,4 +237,218 @@ func TestEKSRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	err := gw.EKS_Request(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
+}
+
+// publishFixture seeds two clusters in the caller's account and one in another,
+// each served by its own control-plane VM, and subscribes to every EKS subject.
+type publishFixture struct {
+	gw  *GatewayConfig
+	nc  *nats.Conn
+	sub *nats.Subscription
+}
+
+const (
+	publishCPAlpha    = "i-cp00000000000a1"
+	publishCPBeta     = "i-cp00000000000b1"
+	publishCPGamma    = "i-cp00000000000c1"
+	publishOtherAcct  = "444455556666"
+	publishNoClusters = "999988887777"
+)
+
+func newPublishFixture(t *testing.T) *publishFixture {
+	t.Helper()
+	_, nc, js := testutil.StartTestJetStream(t)
+	for _, c := range []struct{ acct, cluster, member string }{
+		{authzAccountID, "alpha", publishCPAlpha},
+		{authzAccountID, "beta", publishCPBeta},
+		{publishOtherAcct, "gamma", publishCPGamma},
+	} {
+		kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, c.acct)
+		require.NoError(t, err)
+		require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, &handlers_eks.ClusterMeta{
+			Name:              c.cluster,
+			ControlPlaneNodes: []handlers_eks.ControlPlaneNode{{InstanceID: c.member}},
+		}))
+	}
+	sub, err := nc.SubscribeSync("eks.>")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	gw := scopedPolicyGateway(statement("Allow", "eks:*", "*"))
+	gw.NATSConn = nc
+	return &publishFixture{gw: gw, nc: nc, sub: sub}
+}
+
+// publish POSTs body to cluster's internal-publish route under ctx's identity.
+func (f *publishFixture) publish(t *testing.T, ctx context.Context, cluster, body string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/clusters/"+cluster+"/internal-publish", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	return rec, f.gw.EKS_Request(rec, req.WithContext(ctx))
+}
+
+// requireNothingPublished proves a denial stopped the relay, not just the reply.
+func (f *publishFixture) requireNothingPublished(t *testing.T) {
+	t.Helper()
+	require.NoError(t, f.nc.Flush())
+	msg, err := f.sub.NextMsg(100 * time.Millisecond)
+	require.ErrorIs(t, err, nats.ErrTimeout, "relayed onto %v", msg)
+}
+
+// cpAgentContext is the auth context a CP VM's IMDS credentials produce.
+func cpAgentContext(instanceID string) context.Context {
+	roleName := handlers_eks.CPInstanceRoleName
+	ctx := context.WithValue(context.Background(), ctxService, "eks")
+	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
+	ctx = context.WithValue(ctx, ctxIdentity, instanceID)
+	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
+	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN,
+		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/"+roleName)
+	return context.WithValue(ctx, ctxAssumedRoleARN,
+		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+roleName+"/"+instanceID)
+}
+
+func userContext(accountID, name string) context.Context {
+	ctx := context.WithValue(context.Background(), ctxService, "eks")
+	ctx = context.WithValue(ctx, ctxAccountID, accountID)
+	ctx = context.WithValue(ctx, ctxIdentity, name)
+	return context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
+}
+
+// publishChannel is one body shape PublishInternal relays, and where it lands.
+type publishChannel struct {
+	name    string
+	fields  string
+	subject func(accountID, cluster string) string
+}
+
+func publishChannels() []publishChannel {
+	channels := []publishChannel{
+		{"state", `"channel":"state"`, handlers_eks.StateSubject},
+		{"addon", `"channel":"addon"`, eksv1.AddonStatusSubject},
+	}
+	for _, kind := range []string{
+		handlers_eks.BootstrapSubjectToken, handlers_eks.BootstrapSubjectKubeconfig,
+		handlers_eks.BootstrapSubjectJWKS, handlers_eks.BootstrapSubjectCA,
+	} {
+		channels = append(channels, publishChannel{
+			name:   "bootstrap " + kind,
+			fields: `"channel":"bootstrap","kind":"` + kind + `"`,
+			subject: func(accountID, cluster string) string {
+				return handlers_eks.BootstrapSubject(accountID, cluster, kind)
+			},
+		})
+	}
+	return channels
+}
+
+const publishPayload = `{"healthz":"ok", "node_count":1,"ts":42}`
+
+func publishBody(accountID string, ch publishChannel) string {
+	return `{"accountId":"` + accountID + `",` + ch.fields + `,"payload":` + publishPayload + `}`
+}
+
+// A CP VM reporting for the cluster it serves still reaches its subject, with
+// the payload bytes relayed verbatim, on every channel.
+func TestEKSRequest_PublishInternalRelaysForTheCallersOwnCluster(t *testing.T) {
+	f := newPublishFixture(t)
+	for _, ch := range publishChannels() {
+		t.Run(ch.name, func(t *testing.T) {
+			rec, err := f.publish(t, cpAgentContext(publishCPAlpha), "alpha", publishBody(authzAccountID, ch))
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.JSONEq(t, `{}`, rec.Body.String())
+
+			msg, err := f.sub.NextMsg(2 * time.Second)
+			require.NoError(t, err)
+			assert.Equal(t, ch.subject(authzAccountID, "alpha"), msg.Subject)
+			assert.Equal(t, publishPayload, string(msg.Data))
+			f.requireNothingPublished(t)
+		})
+	}
+}
+
+// The bypass this closes: eks:PublishInternal on "*" let a CP VM report for any
+// cluster in any account. Every target it does not serve is the same denial, so
+// the reply cannot tell an existing cluster from an absent one.
+func TestEKSRequest_PublishInternalDeniesAClusterTheCallerDoesNotServe(t *testing.T) {
+	f := newPublishFixture(t)
+	targets := []struct {
+		name, account, cluster string
+	}{
+		{"its own account, another cluster", authzAccountID, "beta"},
+		{"another account's cluster", publishOtherAcct, "gamma"},
+		{"its own cluster's name in another account", publishOtherAcct, "alpha"},
+		{"a cluster that does not exist", authzAccountID, "delta"},
+		{"an account with no clusters", publishNoClusters, "alpha"},
+		{"an account no bucket can be named for", publishOtherAcct + ".gamma", "alpha"},
+		{"a cluster no key can be named for", authzAccountID, "*"},
+	}
+	for _, ch := range publishChannels() {
+		for _, target := range targets {
+			t.Run(ch.name+"/"+target.name, func(t *testing.T) {
+				_, err := f.publish(t, cpAgentContext(publishCPAlpha), url.PathEscape(target.cluster), publishBody(target.account, ch))
+				require.Error(t, err)
+				assert.Equal(t, awserrors.ErrorAccessDenied, awserrors.ValidErrorCodeFromError(err))
+				assert.Equal(t, errors.New(awserrors.ErrorAccessDenied), err)
+				f.requireNothingPublished(t)
+			})
+		}
+	}
+}
+
+// The account the gate binds is the one the subject is built from: a body that
+// spells the account under another key, or adds a cluster field, moves nothing.
+func TestEKSRequest_PublishInternalRedirectionIsDenied(t *testing.T) {
+	f := newPublishFixture(t)
+	state := publishChannels()[0]
+
+	// URL names the caller's cluster, body names another account.
+	_, err := f.publish(t, cpAgentContext(publishCPAlpha), "alpha", publishBody(publishOtherAcct, state))
+	assertDenied(t, err)
+	f.requireNothingPublished(t)
+
+	// encoding/json folds case, so a re-cased key is the account the handler reads.
+	_, err = f.publish(t, cpAgentContext(publishCPAlpha), "gamma",
+		`{"AccountID":"`+publishOtherAcct+`","channel":"state","payload":{"x":1}}`)
+	assertDenied(t, err)
+	f.requireNothingPublished(t)
+
+	// A repeated key decodes to its last value, which is what the gate binds.
+	_, err = f.publish(t, cpAgentContext(publishCPAlpha), "alpha",
+		`{"accountId":"`+authzAccountID+`","accountId":"`+publishOtherAcct+`","channel":"state","payload":{"x":1}}`)
+	assertDenied(t, err)
+	f.requireNothingPublished(t)
+
+	// The body has no cluster field; the route's cluster is the only one used.
+	_, err = f.publish(t, cpAgentContext(publishCPAlpha), "alpha",
+		`{"accountId":"`+authzAccountID+`","clusterName":"beta","channel":"state","payload":{"x":1}}`)
+	require.NoError(t, err)
+	msg, err := f.sub.NextMsg(2 * time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, handlers_eks.StateSubject(authzAccountID, "alpha"), msg.Subject)
+	f.requireNothingPublished(t)
+}
+
+// Only a CP VM's instance-role session may publish: a tenant holding eks:*, and
+// baked static system credentials with no instance identity, are both refused.
+func TestEKSRequest_PublishInternalRejectsNonCPCallers(t *testing.T) {
+	f := newPublishFixture(t)
+	callers := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"tenant user, own account", userContext(authzAccountID, "alice")},
+		{"tenant user, another account", userContext(publishOtherAcct, "mallory")},
+		{"static system credentials", userContext(awsidentifiers.GlobalAccountID, "admin")},
+	}
+	for _, ch := range publishChannels() {
+		for _, caller := range callers {
+			t.Run(ch.name+"/"+caller.name, func(t *testing.T) {
+				_, err := f.publish(t, caller.ctx, "alpha", publishBody(authzAccountID, ch))
+				assertDenied(t, err)
+				f.requireNothingPublished(t)
+			})
+		}
+	}
 }

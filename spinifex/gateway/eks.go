@@ -34,8 +34,9 @@ var eksRoutes = []eksRoute{
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.ListClusters(ctx, gw.NATSConn, acct)
 		}},
-	// Control-plane VM broker: relays bootstrap/state POSTs onto eks.bus.*/eks.state.* NATS subjects.
-	// acct and callerARN are ignored; cluster account comes from the body.
+	// Control-plane VM broker: relays bootstrap/state/addon POSTs onto eks.bus/state/addon subjects.
+	// acct and callerARN are ignored; the cluster account comes from the body, and
+	// AuthorizeInternal binds that account and cluster to the caller's own.
 	{Method: "POST", Pattern: "/clusters/{clusterName}/internal-publish", Action: "PublishInternal",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.PublishInternal(ctx, gw.NATSConn, p[0], b)
@@ -210,15 +211,6 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	// Ahead of the policy check: the internal routes name the target account in
-	// the path, so an eks:* grant evaluates as permitted and only the principal
-	// class plus the caller's own instance say whether that account is its own.
-	if gateway_eks.IsInternalAction(action) {
-		if err := gateway_eks.AuthorizeInternal(r.Context(), gw.NATSConn, action, eksCaller(r), params); err != nil {
-			return err
-		}
-	}
-
 	body, err := readBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "EKS_Request: failed to read body", "err", err)
@@ -236,6 +228,15 @@ func (gw *GatewayConfig) EKS_Request(w http.ResponseWriter, r *http.Request) err
 			if qb, err := json.Marshal(map[string][]string(q)); err == nil {
 				body = qb
 			}
+		}
+	}
+
+	// Ahead of the policy check: the internal routes name the target account in
+	// the path or body, so an eks:* grant evaluates as permitted and only the
+	// principal class plus the caller's own instance say whether it is its own.
+	if gateway_eks.IsInternalAction(action) {
+		if err := gateway_eks.AuthorizeInternal(r.Context(), gw.NATSConn, action, eksCaller(r), params, body); err != nil {
+			return err
 		}
 	}
 

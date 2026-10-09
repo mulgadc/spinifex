@@ -35,7 +35,7 @@ func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 	iam := s.iamEnsurer()
 	if iam == nil {
 		slog.Warn("EKS: IAM service unwired; CP VM falls back to baked static gateway creds and "+
-			"will be denied eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"will be denied eks:PublishInternal, eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
 			"accountID", accountID)
 		return ""
 	}
@@ -43,7 +43,7 @@ func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 		CPInstanceRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
 	if err != nil {
 		slog.Error("EKS: ensure CP instance profile failed; CP VM falls back to baked static gateway creds and "+
-			"will be denied eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
+			"will be denied eks:PublishInternal, eks:ListInternalAddons and eks:GetRecoveryDirective (no instance identity to bind)",
 			"accountID", accountID, "role", CPInstanceRoleName, "err", err)
 		return ""
 	}

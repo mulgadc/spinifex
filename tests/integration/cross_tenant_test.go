@@ -427,13 +427,19 @@ func eksUncased() map[string]string {
 		"TagResource":   sameHelper("ListTagsForResource"),
 		"UntagResource": sameHelper("ListTagsForResource"),
 	}
+	// These name the cluster's account in the path or body. AuthorizeInternal
+	// refuses every tenant principal outright and binds a control-plane VM to
+	// the cluster it serves, so no tenant ARN reaches the evaluator.
+	for _, action := range []string{"GetRecoveryDirective", "ListInternalAddons", "PublishInternal"} {
+		uncased[action] = "internal control-plane route: refused to tenants, bound to the caller's own cluster"
+	}
 	for _, action := range []string{
 		"AssociateAccessPolicy", "CreateAccessEntry", "CreateAddon", "CreateCluster",
 		"CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster", "DeleteNodegroup",
 		"DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions", "DescribeCluster",
-		"DescribeNodegroup", "DisassociateAccessPolicy", "GetRecoveryDirective",
+		"DescribeNodegroup", "DisassociateAccessPolicy",
 		"ListAccessEntries", "ListAccessPolicies", "ListAddons", "ListAssociatedAccessPolicies",
-		"ListClusters", "ListInternalAddons", "ListNodegroups", "PublishInternal",
+		"ListClusters", "ListNodegroups",
 		"UpdateAccessEntry", "UpdateAddon", "UpdateNodegroupConfig", "WebhookTokenReview",
 	} {
 		uncased[action] = byName

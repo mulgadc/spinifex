@@ -35,7 +35,7 @@ updates:
 
   - package-ecosystem: npm
     target-branch: dev
-    directory: /spinifex/services/spinifexui/frontend
+    directory: /spinifex/runtime/roles/spinifexui/frontend
     schedule:
       interval: weekly
       day: sunday

@@ -6,14 +6,14 @@ on:
       - main
       - dev
     paths:
-      - spinifex/services/spinifexui/frontend/**
+      - spinifex/runtime/roles/spinifexui/frontend/**
       - .github/workflows/ui.yml
   pull_request:
     branches:
       - main
       - dev
     paths:
-      - spinifex/services/spinifexui/frontend/**
+      - spinifex/runtime/roles/spinifexui/frontend/**
       - .github/workflows/ui.yml
   workflow_dispatch:
 
@@ -26,25 +26,25 @@ jobs:
     runs-on: ubuntu-26.04
     defaults:
       run:
-        working-directory: spinifex/services/spinifexui/frontend
+        working-directory: spinifex/runtime/roles/spinifexui/frontend
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
         with:
-          sparse-checkout: spinifex/services/spinifexui/frontend
+          sparse-checkout: spinifex/runtime/roles/spinifexui/frontend
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          package_json_file: spinifex/services/spinifexui/frontend/package.json
+          package_json_file: spinifex/runtime/roles/spinifexui/frontend/package.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           cache: "pnpm"
-          cache-dependency-path: spinifex/services/spinifexui/frontend/pnpm-lock.yaml
-          node-version-file: spinifex/services/spinifexui/frontend/.nvmrc
+          cache-dependency-path: spinifex/runtime/roles/spinifexui/frontend/pnpm-lock.yaml
+          node-version-file: spinifex/runtime/roles/spinifexui/frontend/.nvmrc
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile

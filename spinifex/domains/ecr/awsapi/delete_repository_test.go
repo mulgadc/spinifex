@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,7 +14,7 @@ import (
 
 func TestDeleteRepository_RemovesEmptyRepository(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	seedRepositoryForAction(t, nc, "team/app")
 
 	out, err := DeleteRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
@@ -23,14 +23,14 @@ func TestDeleteRepository_RemovesEmptyRepository(t *testing.T) {
 	assert.Equal(t, "team/app", *out.Repository.RepositoryName)
 
 	_, err = store.GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
-	require.ErrorIs(t, err, handlers_ecr.ErrNotFound)
+	require.ErrorIs(t, err, ecr.ErrNotFound)
 }
 
 func TestDeleteRepository_ProtectsNonEmptyRepositoryUnlessForced(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
 	seedRepositoryForAction(t, nc, "team/app")
-	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutManifestMeta(context.Background(), repositoryActionTestAccount, "team/app", handlers_ecr.ManifestMeta{
+	store := ecr.NewNATSMetaStore(nc)
+	require.NoError(t, store.PutManifestMeta(context.Background(), repositoryActionTestAccount, "team/app", ecr.ManifestMeta{
 		Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/json", Size: 7, PushedAt: time.Now(),
 	}))
 
@@ -45,7 +45,7 @@ func TestDeleteRepository_ProtectsNonEmptyRepositoryUnlessForced(t *testing.T) {
 
 func TestDeleteRepository_ValidatesRequest(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	cases := []struct {
 		name string
 		body string

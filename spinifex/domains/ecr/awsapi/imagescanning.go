@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -47,10 +47,10 @@ func PutImageScanningConfiguration(ctx context.Context, nc *nats.Conn, accountID
 		return nil, errors.New(awserrors.ErrorOperationNotSupported)
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecrdomain.NewNATSMetaStore(nc)
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err

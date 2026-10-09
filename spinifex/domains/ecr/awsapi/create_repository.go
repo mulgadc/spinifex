@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -68,12 +68,12 @@ func CreateRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err == nil {
 		return nil, RepositoryAlreadyExistsError(accountID, req.RepositoryName)
-	} else if !errors.Is(err, handlers_ecr.ErrNotFound) {
+	} else if !errors.Is(err, ecrdomain.ErrNotFound) {
 		slog.ErrorContext(ctx, "ECR CreateRepository: get repository failed", "repository", req.RepositoryName, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	meta := handlers_ecr.RepoMeta{
+	meta := ecrdomain.RepoMeta{
 		Name:               req.RepositoryName,
 		CreatedAt:          time.Now().UTC(),
 		ImageTagMutability: mutability,
@@ -113,17 +113,17 @@ func tagMapFromInput(in []*ecr.Tag) (map[string]string, error) {
 // customer-managed key material is implemented.
 func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) {
 	if cfg == nil || cfg.EncryptionType == "" {
-		return handlers_ecr.EncryptionTypeAES256, nil
+		return ecrdomain.EncryptionTypeAES256, nil
 	}
 	switch cfg.EncryptionType {
-	case handlers_ecr.EncryptionTypeAES256:
+	case ecrdomain.EncryptionTypeAES256:
 		return cfg.EncryptionType, nil
-	case handlers_ecr.EncryptionTypeKMS:
+	case ecrdomain.EncryptionTypeKMS:
 		return "", awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
 			"encryptionType KMS is not supported: no customer-managed key is used, and repositories are already encrypted at rest under a server-managed AES-256 key")
 	default:
 		return "", EnumValueError("encryptionConfiguration.encryptionType",
-			handlers_ecr.EncryptionTypeAES256, "KMS_DSSE", handlers_ecr.EncryptionTypeKMS)
+			ecrdomain.EncryptionTypeAES256, "KMS_DSSE", ecrdomain.EncryptionTypeKMS)
 	}
 }
 
@@ -133,8 +133,8 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 func normalizeTagMutability(value string) (string, error) {
 	switch value {
 	case "":
-		return handlers_ecr.TagMutabilityMutable, nil
-	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
+		return ecrdomain.TagMutabilityMutable, nil
+	case ecrdomain.TagMutabilityMutable, ecrdomain.TagMutabilityImmutable:
 		return value, nil
 	default:
 		return "", EnumValueError("imageTagMutability", ImageTagMutabilityValues...)

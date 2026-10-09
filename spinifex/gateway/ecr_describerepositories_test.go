@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -45,14 +45,14 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoList, svc.RepoList)
+	svc := ecr.NewKVMetaService(js)
+	serveECRMeta(t, nc, ecr.SubjectRepoCreate, svc.RepoCreate)
+	serveECRMeta(t, nc, ecr.SubjectRepoDescribe, svc.RepoDescribe)
+	serveECRMeta(t, nc, ecr.SubjectRepoList, svc.RepoList)
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	for _, r := range repos {
-		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
+		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
 	}
 	return withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,

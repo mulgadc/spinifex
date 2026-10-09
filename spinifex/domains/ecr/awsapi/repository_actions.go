@@ -5,7 +5,7 @@ import (
 	"errors"
 	"slices"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -14,9 +14,9 @@ import (
 // operations: this control-plane surface needs only repository records and
 // their manifest inventory.
 type RepositoryStore interface {
-	GetRepo(ctx context.Context, accountID, repo string) (handlers_ecr.RepoMeta, error)
+	GetRepo(ctx context.Context, accountID, repo string) (ecr.RepoMeta, error)
 	ListRepos(ctx context.Context, accountID string) ([]string, error)
-	PutRepo(ctx context.Context, accountID string, meta handlers_ecr.RepoMeta) error
+	PutRepo(ctx context.Context, accountID string, meta ecr.RepoMeta) error
 	ListManifests(ctx context.Context, accountID, repo string) ([]string, error)
 	DeleteRepo(ctx context.Context, accountID, repo string) error
 }

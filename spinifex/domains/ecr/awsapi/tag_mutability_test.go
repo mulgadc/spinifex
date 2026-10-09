@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,9 +22,9 @@ func TestPutImageTagMutability_UpdatesRepository(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "IMMUTABLE", *response.ImageTagMutability)
 
-	meta, err := handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
+	meta, err := ecrdomain.NewNATSMetaStore(nc).GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
 	require.NoError(t, err)
-	assert.Equal(t, handlers_ecr.TagMutabilityImmutable, meta.ImageTagMutability)
+	assert.Equal(t, ecrdomain.TagMutabilityImmutable, meta.ImageTagMutability)
 }
 
 func TestPutImageTagMutability_ValidatesRequest(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +12,7 @@ import (
 
 func TestCreateRepository_PersistsConfiguredMetadata(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	body := []byte(`{"repositoryName":"team/app","imageTagMutability":"IMMUTABLE","tags":[{"Key":"environment","Value":"test"}],"imageScanningConfiguration":{"scanOnPush":true}}`)
 
 	out, err := CreateRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, body)
@@ -24,14 +24,14 @@ func TestCreateRepository_PersistsConfiguredMetadata(t *testing.T) {
 
 	meta, err := store.GetRepo(context.Background(), repositoryActionTestAccount, "team/app")
 	require.NoError(t, err)
-	assert.Equal(t, handlers_ecr.TagMutabilityImmutable, meta.ImageTagMutability)
+	assert.Equal(t, ecr.TagMutabilityImmutable, meta.ImageTagMutability)
 	assert.Equal(t, map[string]string{"environment": "test"}, meta.Tags)
 	assert.True(t, meta.ScanOnPush)
 }
 
 func TestCreateRepository_RejectsInvalidRequestsAndDuplicates(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	_, err := CreateRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"repositoryName":"team/app"}`))
 	require.NoError(t, err)
 

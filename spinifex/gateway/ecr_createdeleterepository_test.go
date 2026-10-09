@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
@@ -24,16 +24,16 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDelete, svc.RepoDelete)
-	serveECRMeta(t, nc, handlers_ecr.SubjectManifestPut, svc.ManifestPut)
-	serveECRMeta(t, nc, handlers_ecr.SubjectManifestList, svc.ManifestList)
+	svc := ecr.NewKVMetaService(js)
+	serveECRMeta(t, nc, ecr.SubjectRepoCreate, svc.RepoCreate)
+	serveECRMeta(t, nc, ecr.SubjectRepoDescribe, svc.RepoDescribe)
+	serveECRMeta(t, nc, ecr.SubjectRepoDelete, svc.RepoDelete)
+	serveECRMeta(t, nc, ecr.SubjectManifestPut, svc.ManifestPut)
+	serveECRMeta(t, nc, ecr.SubjectManifestList, svc.ManifestList)
 	gw := withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
-	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(handlers_ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
 		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 	})})
 	return gw, nc
@@ -99,7 +99,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 	_, err := createRepo(t, gw, `{"repositoryName":"team/tagged","tags":[{"Key":"env","Value":"prod"},{"Key":"team","Value":""}]}`)
 	require.NoError(t, err)
 
-	meta, err := handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/tagged")
+	meta, err := ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/tagged")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"env": "prod", "team": ""}, meta.Tags)
 
@@ -107,7 +107,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 	// one written before tags were accepted here.
 	_, err = createRepo(t, gw, `{"repositoryName":"team/untagged"}`)
 	require.NoError(t, err)
-	meta, err = handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/untagged")
+	meta, err = ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/untagged")
 	require.NoError(t, err)
 	assert.Nil(t, meta.Tags)
 
@@ -258,8 +258,8 @@ func TestDeleteRepository_NotEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	// Seed an image (manifest) so the repo is non-empty.
-	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutManifestMeta(context.Background(), ecrTestAccount, "team/app", handlers_ecr.ManifestMeta{
+	store := ecr.NewNATSMetaStore(nc)
+	require.NoError(t, store.PutManifestMeta(context.Background(), ecrTestAccount, "team/app", ecr.ManifestMeta{
 		Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/json", Size: 7, PushedAt: time.Now(),
 	}))
 

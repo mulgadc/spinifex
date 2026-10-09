@@ -7,7 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -24,7 +24,7 @@ type repoPolicyRequest struct {
 // resolvePolicyRepo parses and validates the request, enforces the registryId
 // cross-account guard, and confirms the repository exists. It returns the parsed
 // request and the NATS-backed MetaStore for the follow-on policy operation.
-func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (repoPolicyRequest, *handlers_ecr.NATSMetaStore, error) {
+func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (repoPolicyRequest, *ecrdomain.NATSMetaStore, error) {
 	var req repoPolicyRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -40,9 +40,9 @@ func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, bod
 		return req, nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecrdomain.NewNATSMetaStore(nc)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return req, nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return req, nil, err
@@ -83,7 +83,7 @@ func GetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, b
 	}
 	policy, err := store.GetRepoPolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, RepositoryPolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
@@ -104,7 +104,7 @@ func DeleteRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string
 	}
 	policy, err := store.DeleteRepoPolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, RepositoryPolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err

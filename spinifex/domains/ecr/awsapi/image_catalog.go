@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
@@ -56,7 +56,7 @@ func listImageRecords(ctx context.Context, catalog ImageCatalog, accountID, repo
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	records, err := catalog.ListImages(ctx, accountID, repository)
-	if errors.Is(err, handlers_ecr.ErrNotFound) {
+	if errors.Is(err, ecr.ErrNotFound) {
 		return nil, RepositoryNotFoundError(accountID, repository)
 	}
 	if err != nil {

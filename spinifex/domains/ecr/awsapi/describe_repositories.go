@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -54,7 +54,7 @@ func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint R
 	for _, name := range names {
 		meta, err := store.GetRepo(ctx, accountID, name)
 		if err != nil {
-			if errors.Is(err, handlers_ecr.ErrNotFound) {
+			if errors.Is(err, ecrdomain.ErrNotFound) {
 				return nil, RepositoryNotFoundError(accountID, name)
 			}
 			slog.ErrorContext(ctx, "ECR DescribeRepositories: get repository failed", "repository", name, "err", err)

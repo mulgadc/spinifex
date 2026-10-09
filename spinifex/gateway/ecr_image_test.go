@@ -11,7 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -24,7 +24,7 @@ import (
 // object store + memory meta) and its composed ECR JSON image-action service.
 func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
-	meta := handlers_ecr.NewMemoryMetaStore()
+	meta := ecrdomain.NewMemoryMetaStore()
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
 	return withECR(&GatewayConfig{
 		ECRRegistry:    reg,
@@ -39,7 +39,7 @@ func newImageGateway(t *testing.T) *GatewayConfig {
 // which require an existing repository — accept writes. Idempotent.
 func seedGatewayRepo(t *testing.T, gw *GatewayConfig, repo string) {
 	t.Helper()
-	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: repo}))
+	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(context.Background(), ecrTestAccount, ecrdomain.RepoMeta{Name: repo}))
 }
 
 // seedTaggedImage stores a layerless manifest under repo:tag, returning its

@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -40,7 +40,7 @@ func DeleteRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "ECR DeleteRepository: get repository failed", "repository", req.RepositoryName, "err", err)
@@ -59,7 +59,7 @@ func DeleteRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 	}
 
 	if err := store.DeleteRepo(ctx, accountID, req.RepositoryName); err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "ECR DeleteRepository: delete repository failed", "repository", req.RepositoryName, "err", err)

@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -23,7 +23,7 @@ type LifecyclePolicyStore interface {
 type LifecyclePreview struct {
 	RepositoryName      string
 	LifecyclePolicyText string
-	Expiries            []handlers_ecr.LifecycleExpiry
+	Expiries            []ecrdomain.LifecycleExpiry
 }
 
 // lifecyclePreviewRequest is the camelCase AWS JSON 1.1 input shared by the
@@ -55,7 +55,7 @@ func EvaluateLifecyclePreview(ctx context.Context, policies LifecyclePolicyStore
 	if policyText == "" {
 		stored, err := policies.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 		if err != nil {
-			if errors.Is(err, handlers_ecr.ErrNotFound) {
+			if errors.Is(err, ecrdomain.ErrNotFound) {
 				return LifecyclePreview{}, LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 			}
 			return LifecyclePreview{}, err
@@ -67,14 +67,14 @@ func EvaluateLifecyclePreview(ctx context.Context, policies LifecyclePolicyStore
 	if err != nil {
 		return LifecyclePreview{}, err
 	}
-	images := make([]handlers_ecr.LifecycleImage, 0, len(records))
+	images := make([]ecrdomain.LifecycleImage, 0, len(records))
 	for _, record := range records {
-		images = append(images, handlers_ecr.LifecycleImage{
+		images = append(images, ecrdomain.LifecycleImage{
 			Digest: record.Digest, Tags: record.Tags, PushedAt: record.PushedAt,
 		})
 	}
 
-	expiries, err := handlers_ecr.EvaluateLifecyclePolicy([]byte(policyText), images, time.Now().UTC())
+	expiries, err := ecrdomain.EvaluateLifecyclePolicy([]byte(policyText), images, time.Now().UTC())
 	if err != nil {
 		return LifecyclePreview{}, InvalidLifecyclePolicyError()
 	}

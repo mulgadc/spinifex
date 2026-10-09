@@ -19,7 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -333,9 +333,9 @@ type recordingRepoStore struct {
 	calls int
 }
 
-func (s *recordingRepoStore) GetRepo(context.Context, string, string) (handlers_ecr.RepoMeta, error) {
+func (s *recordingRepoStore) GetRepo(context.Context, string, string) (ecr.RepoMeta, error) {
 	s.calls++
-	return handlers_ecr.RepoMeta{}, errors.New("recordingRepoStore: unexpected call")
+	return ecr.RepoMeta{}, errors.New("recordingRepoStore: unexpected call")
 }
 
 func (s *recordingRepoStore) ListRepos(context.Context, string) ([]string, error) {
@@ -343,7 +343,7 @@ func (s *recordingRepoStore) ListRepos(context.Context, string) ([]string, error
 	return nil, errors.New("recordingRepoStore: unexpected call")
 }
 
-func (s *recordingRepoStore) PutRepo(context.Context, string, handlers_ecr.RepoMeta) error {
+func (s *recordingRepoStore) PutRepo(context.Context, string, ecr.RepoMeta) error {
 	s.calls++
 	return errors.New("recordingRepoStore: unexpected call")
 }

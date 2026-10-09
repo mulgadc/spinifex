@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -35,17 +35,17 @@ func PutImageTagMutability(ctx context.Context, nc *nats.Conn, accountID string,
 		return nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 	switch req.ImageTagMutability {
-	case handlers_ecr.TagMutabilityMutable, handlers_ecr.TagMutabilityImmutable:
+	case ecrdomain.TagMutabilityMutable, ecrdomain.TagMutabilityImmutable:
 	case "":
 		return nil, RequiredParameterError("imageTagMutability")
 	default:
 		return nil, EnumValueError("imageTagMutability", ImageTagMutabilityValues...)
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecrdomain.NewNATSMetaStore(nc)
 	meta, err := store.GetRepo(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		slog.ErrorContext(ctx, "ECR PutImageTagMutability: get repository failed", "repository", req.RepositoryName, "err", err)

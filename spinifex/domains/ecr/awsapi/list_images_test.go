@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -52,7 +52,7 @@ func TestListImages_ValidatesRequestAndCatalogFailure(t *testing.T) {
 		{"malformed", fakeImageCatalog{}, `{`, awserrors.ErrorECRInvalidParameter},
 		{"missing repository name", fakeImageCatalog{}, `{}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", fakeImageCatalog{}, `{"repositoryName":"team/app","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
-		{"repository missing", fakeImageCatalog{err: handlers_ecr.ErrNotFound}, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryNotFound},
+		{"repository missing", fakeImageCatalog{err: ecr.ErrNotFound}, `{"repositoryName":"team/app"}`, awserrors.ErrorRepositoryNotFound},
 		{"backend failure", fakeImageCatalog{err: errors.New("unavailable")}, `{"repositoryName":"team/app"}`, awserrors.ErrorServerInternal},
 	}
 	for _, tc := range cases {

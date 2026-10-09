@@ -62,7 +62,7 @@ import (
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
@@ -180,7 +180,7 @@ type Daemon struct {
 	ochreVectorService    ochrevector.VectorService
 	ochreAppliance        *ochrevector.Appliance
 	ochreBackupService    *ochrevector.BackupService
-	ecrMetaService        *handlers_ecr.MetaServiceImpl
+	ecrMetaService        *ecr.MetaServiceImpl
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
@@ -1242,28 +1242,28 @@ func (d *Daemon) subscribeAll() error {
 	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
 	if d.ecrMetaService != nil {
 		subs = append(subs,
-			natsSub{handlers_ecr.SubjectRepoCreate, handleNATSRequest(d.node, d.ecrMetaService.RepoCreate), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectRepoDescribe, handleNATSRequest(d.node, d.ecrMetaService.RepoDescribe), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectRepoList, handleNATSRequest(d.node, d.ecrMetaService.RepoList), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectRepoDelete, handleNATSRequest(d.node, d.ecrMetaService.RepoDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectPolicyPut, handleNATSRequest(d.node, d.ecrMetaService.PolicyPut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectPolicyGet, handleNATSRequest(d.node, d.ecrMetaService.PolicyGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectPolicyDelete, handleNATSRequest(d.node, d.ecrMetaService.PolicyDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectLifecyclePut, handleNATSRequest(d.node, d.ecrMetaService.LifecyclePut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectLifecycleGet, handleNATSRequest(d.node, d.ecrMetaService.LifecycleGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectLifecycleDelete, handleNATSRequest(d.node, d.ecrMetaService.LifecycleDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagPut, handleNATSRequest(d.node, d.ecrMetaService.TagPut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagGet, handleNATSRequest(d.node, d.ecrMetaService.TagGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagList, handleNATSRequest(d.node, d.ecrMetaService.TagList), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagDelete, handleNATSRequest(d.node, d.ecrMetaService.TagDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestPut, handleNATSRequest(d.node, d.ecrMetaService.ManifestPut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadDelete, handleNATSRequest(d.node, d.ecrMetaService.UploadDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoCreate, handleNATSRequest(d.node, d.ecrMetaService.RepoCreate), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoDescribe, handleNATSRequest(d.node, d.ecrMetaService.RepoDescribe), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoList, handleNATSRequest(d.node, d.ecrMetaService.RepoList), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoDelete, handleNATSRequest(d.node, d.ecrMetaService.RepoDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyPut, handleNATSRequest(d.node, d.ecrMetaService.PolicyPut), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyGet, handleNATSRequest(d.node, d.ecrMetaService.PolicyGet), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyDelete, handleNATSRequest(d.node, d.ecrMetaService.PolicyDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecyclePut, handleNATSRequest(d.node, d.ecrMetaService.LifecyclePut), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecycleGet, handleNATSRequest(d.node, d.ecrMetaService.LifecycleGet), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecycleDelete, handleNATSRequest(d.node, d.ecrMetaService.LifecycleDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectTagPut, handleNATSRequest(d.node, d.ecrMetaService.TagPut), "spinifex-workers"},
+			natsSub{ecr.SubjectTagGet, handleNATSRequest(d.node, d.ecrMetaService.TagGet), "spinifex-workers"},
+			natsSub{ecr.SubjectTagList, handleNATSRequest(d.node, d.ecrMetaService.TagList), "spinifex-workers"},
+			natsSub{ecr.SubjectTagDelete, handleNATSRequest(d.node, d.ecrMetaService.TagDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestPut, handleNATSRequest(d.node, d.ecrMetaService.ManifestPut), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadDelete, handleNATSRequest(d.node, d.ecrMetaService.UploadDelete), "spinifex-workers"},
 		)
 	}
 
@@ -2203,7 +2203,7 @@ func (d *Daemon) startCluster() error {
 	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
 		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
 	} else {
-		d.ecrMetaService = handlers_ecr.NewKVMetaService(js)
+		d.ecrMetaService = ecr.NewKVMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {

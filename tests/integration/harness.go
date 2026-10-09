@@ -35,7 +35,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
@@ -169,7 +169,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 
 	// ECR's control plane is composed as the awsgw role composes it, sharing
 	// the OCI registry, meta store and token issuer the /v2 data plane uses.
-	ecrMeta := handlers_ecr.NewNATSMetaStore(nc)
+	ecrMeta := ecrdomain.NewNATSMetaStore(nc)
 	ecrRegistry := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), ecrMeta, awsidentifiers.GlobalAccountID)
 	ecrIssuer := ecrauth.NewIssuer(signingKey, testECRAudience)
 	ecrEndpoint := awsapi.RepositoryEndpoint{Region: testRegion, ServicesDomain: testECRServicesDomain}

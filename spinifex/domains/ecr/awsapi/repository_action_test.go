@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -25,13 +25,13 @@ func newRepositoryActionTestConn(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoDelete, svc.RepoDelete)
-	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectRepoList, svc.RepoList)
-	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectManifestPut, svc.ManifestPut)
-	serveRepositoryActionMeta(t, nc, handlers_ecr.SubjectManifestList, svc.ManifestList)
+	svc := ecr.NewKVMetaService(js)
+	serveRepositoryActionMeta(t, nc, ecr.SubjectRepoCreate, svc.RepoCreate)
+	serveRepositoryActionMeta(t, nc, ecr.SubjectRepoDescribe, svc.RepoDescribe)
+	serveRepositoryActionMeta(t, nc, ecr.SubjectRepoDelete, svc.RepoDelete)
+	serveRepositoryActionMeta(t, nc, ecr.SubjectRepoList, svc.RepoList)
+	serveRepositoryActionMeta(t, nc, ecr.SubjectManifestPut, svc.ManifestPut)
+	serveRepositoryActionMeta(t, nc, ecr.SubjectManifestList, svc.ManifestList)
 	return nc
 }
 
@@ -58,8 +58,8 @@ func serveRepositoryActionMeta[I any, O any](t *testing.T, nc *nats.Conn, subjec
 
 func seedRepositoryForAction(t *testing.T, nc *nats.Conn, name string) {
 	t.Helper()
-	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutRepo(context.Background(), repositoryActionTestAccount, handlers_ecr.RepoMeta{
+	store := ecr.NewNATSMetaStore(nc)
+	require.NoError(t, store.PutRepo(context.Background(), repositoryActionTestAccount, ecr.RepoMeta{
 		Name: name, CreatedAt: time.Now(),
 	}))
 }

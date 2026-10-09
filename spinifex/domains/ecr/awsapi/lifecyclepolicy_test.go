@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -23,12 +23,12 @@ func newLifecycleTestConn(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveMeta(t, nc, handlers_ecr.SubjectLifecyclePut, svc.LifecyclePut)
-	serveMeta(t, nc, handlers_ecr.SubjectLifecycleGet, svc.LifecycleGet)
-	serveMeta(t, nc, handlers_ecr.SubjectLifecycleDelete, svc.LifecycleDelete)
+	svc := ecrdomain.NewKVMetaService(js)
+	serveMeta(t, nc, ecrdomain.SubjectRepoCreate, svc.RepoCreate)
+	serveMeta(t, nc, ecrdomain.SubjectRepoDescribe, svc.RepoDescribe)
+	serveMeta(t, nc, ecrdomain.SubjectLifecyclePut, svc.LifecyclePut)
+	serveMeta(t, nc, ecrdomain.SubjectLifecycleGet, svc.LifecycleGet)
+	serveMeta(t, nc, ecrdomain.SubjectLifecycleDelete, svc.LifecycleDelete)
 	return nc
 }
 

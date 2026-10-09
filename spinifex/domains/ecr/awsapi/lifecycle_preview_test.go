@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -68,8 +68,8 @@ func TestEvaluateLifecyclePreview_MapsPolicyAndRepositoryFailures(t *testing.T) 
 		body     string
 		code     string
 	}{
-		{"missing policy", fakeLifecyclePolicyStore{err: handlers_ecr.ErrNotFound}, fakeImageCatalog{}, `{"repositoryName":"team/app"}`, awserrors.ErrorLifecyclePolicyNotFound},
-		{"missing repository", fakeLifecyclePolicyStore{}, fakeImageCatalog{err: handlers_ecr.ErrNotFound}, `{"repositoryName":"team/app","lifecyclePolicyText":"{}"}`, awserrors.ErrorRepositoryNotFound},
+		{"missing policy", fakeLifecyclePolicyStore{err: ecrdomain.ErrNotFound}, fakeImageCatalog{}, `{"repositoryName":"team/app"}`, awserrors.ErrorLifecyclePolicyNotFound},
+		{"missing repository", fakeLifecyclePolicyStore{}, fakeImageCatalog{err: ecrdomain.ErrNotFound}, `{"repositoryName":"team/app","lifecyclePolicyText":"{}"}`, awserrors.ErrorRepositoryNotFound},
 		{"invalid policy", fakeLifecyclePolicyStore{}, fakeImageCatalog{}, `{"repositoryName":"team/app","lifecyclePolicyText":"not-json"}`, awserrors.ErrorECRInvalidParameter},
 	}
 	for _, tc := range cases {

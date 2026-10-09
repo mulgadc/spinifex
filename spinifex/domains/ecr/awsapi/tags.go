@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/nats-io/nats.go"
 )
 
@@ -35,21 +35,21 @@ type listTagsForResourceRequest struct {
 // resolveTaggedRepo parses resourceArn and confirms the repository it names
 // exists in the caller account, returning the repo name, its current meta,
 // and the NATS-backed MetaStore for a follow-on read-modify-write.
-func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceArn string) (string, handlers_ecr.RepoMeta, *handlers_ecr.NATSMetaStore, error) {
+func resolveTaggedRepo(ctx context.Context, nc *nats.Conn, accountID, resourceArn string) (string, ecrdomain.RepoMeta, *ecrdomain.NATSMetaStore, error) {
 	if resourceArn == "" {
-		return "", handlers_ecr.RepoMeta{}, nil, invalidResourceARNError()
+		return "", ecrdomain.RepoMeta{}, nil, invalidResourceARNError()
 	}
 	name, err := RepositoryNameFromResourceARN(resourceArn)
 	if err != nil {
-		return "", handlers_ecr.RepoMeta{}, nil, err
+		return "", ecrdomain.RepoMeta{}, nil, err
 	}
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecrdomain.NewNATSMetaStore(nc)
 	meta, err := store.GetRepo(ctx, accountID, name)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
-			return "", handlers_ecr.RepoMeta{}, nil, RepositoryNotFoundError(accountID, name)
+		if errors.Is(err, ecrdomain.ErrNotFound) {
+			return "", ecrdomain.RepoMeta{}, nil, RepositoryNotFoundError(accountID, name)
 		}
-		return "", handlers_ecr.RepoMeta{}, nil, err
+		return "", ecrdomain.RepoMeta{}, nil, err
 	}
 	return name, meta, store, nil
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +12,7 @@ import (
 
 func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	seedRepositoryForAction(t, nc, "team/app")
 	seedRepositoryForAction(t, nc, "team/web")
 
@@ -32,7 +32,7 @@ func TestDescribeRepositories_ListsAccountScoped(t *testing.T) {
 
 func TestDescribeRepositories_ValidatesRequestAndRepository(t *testing.T) {
 	nc := newRepositoryActionTestConn(t)
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	seedRepositoryForAction(t, nc, "team/app")
 
 	cases := []struct {

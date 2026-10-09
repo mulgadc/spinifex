@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -47,19 +47,19 @@ func newPolicyTestConn(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveMeta(t, nc, handlers_ecr.SubjectPolicyPut, svc.PolicyPut)
-	serveMeta(t, nc, handlers_ecr.SubjectPolicyGet, svc.PolicyGet)
-	serveMeta(t, nc, handlers_ecr.SubjectPolicyDelete, svc.PolicyDelete)
+	svc := ecrdomain.NewKVMetaService(js)
+	serveMeta(t, nc, ecrdomain.SubjectRepoCreate, svc.RepoCreate)
+	serveMeta(t, nc, ecrdomain.SubjectRepoDescribe, svc.RepoDescribe)
+	serveMeta(t, nc, ecrdomain.SubjectPolicyPut, svc.PolicyPut)
+	serveMeta(t, nc, ecrdomain.SubjectPolicyGet, svc.PolicyGet)
+	serveMeta(t, nc, ecrdomain.SubjectPolicyDelete, svc.PolicyDelete)
 	return nc
 }
 
 func seedRepo(t *testing.T, nc *nats.Conn, repo string) {
 	t.Helper()
-	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutRepo(context.Background(), policyTestAccount, handlers_ecr.RepoMeta{Name: repo, CreatedAt: time.Now()}))
+	store := ecrdomain.NewNATSMetaStore(nc)
+	require.NoError(t, store.PutRepo(context.Background(), policyTestAccount, ecrdomain.RepoMeta{Name: repo, CreatedAt: time.Now()}))
 }
 
 func TestRepositoryPolicy_Lifecycle(t *testing.T) {

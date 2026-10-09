@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -25,8 +25,8 @@ func ValidateRepositoryName(name string) error {
 		return ConstraintError("repositoryName", fmt.Sprintf("must have length greater than or equal to %d", minRepositoryNameLength))
 	case len(name) > maxRepositoryNameLength:
 		return ConstraintError("repositoryName", fmt.Sprintf("must have length less than or equal to %d", maxRepositoryNameLength))
-	case handlers_ecr.ValidateRepoName(name) != nil:
-		return ConstraintError("repositoryName", "must satisfy regular expression '"+handlers_ecr.RepoNamePattern+"'")
+	case ecrdomain.ValidateRepoName(name) != nil:
+		return ConstraintError("repositoryName", "must satisfy regular expression '"+ecrdomain.RepoNamePattern+"'")
 	}
 	return nil
 }

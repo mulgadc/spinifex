@@ -11,7 +11,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -66,9 +66,9 @@ func (b *backend) GetLifecyclePolicy(_ context.Context, _, repo string) ([]byte,
 	return nil, errFakeBackend
 }
 
-func (b *backend) GetRepo(_ context.Context, _, repo string) (handlers_ecr.RepoMeta, error) {
+func (b *backend) GetRepo(_ context.Context, _, repo string) (ecr.RepoMeta, error) {
 	b.use(repo)
-	return handlers_ecr.RepoMeta{}, errFakeBackend
+	return ecr.RepoMeta{}, errFakeBackend
 }
 
 func (b *backend) ListRepos(context.Context, string) ([]string, error) {
@@ -76,7 +76,7 @@ func (b *backend) ListRepos(context.Context, string) ([]string, error) {
 	return nil, errFakeBackend
 }
 
-func (b *backend) PutRepo(_ context.Context, _ string, meta handlers_ecr.RepoMeta) error {
+func (b *backend) PutRepo(_ context.Context, _ string, meta ecr.RepoMeta) error {
 	b.use(meta.Name)
 	return errFakeBackend
 }

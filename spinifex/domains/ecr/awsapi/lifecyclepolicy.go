@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -39,7 +39,7 @@ func compactPolicyText(text []byte) string {
 
 // resolveLifecycleRepo parses + validates the request, enforces the registryId
 // cross-account guard, and confirms the repository exists.
-func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (lifecyclePolicyRequest, *handlers_ecr.NATSMetaStore, error) {
+func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (lifecyclePolicyRequest, *ecrdomain.NATSMetaStore, error) {
 	var req lifecyclePolicyRequest
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -53,9 +53,9 @@ func resolveLifecycleRepo(ctx context.Context, nc *nats.Conn, accountID string, 
 		return req, nil, errors.New(awserrors.ErrorAccessDenied)
 	}
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecrdomain.NewNATSMetaStore(nc)
 	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return req, nil, RepositoryNotFoundError(accountID, req.RepositoryName)
 		}
 		return req, nil, err
@@ -71,7 +71,7 @@ func PutLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, bo
 	if err != nil {
 		return nil, err
 	}
-	if _, err := handlers_ecr.ParseLifecyclePolicy([]byte(req.LifecyclePolicyText)); err != nil {
+	if _, err := ecrdomain.ParseLifecyclePolicy([]byte(req.LifecyclePolicyText)); err != nil {
 		return nil, InvalidLifecyclePolicyError()
 	}
 	policy := compactPolicyText([]byte(req.LifecyclePolicyText))
@@ -94,7 +94,7 @@ func GetLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string, bo
 	}
 	policy, err := store.GetLifecyclePolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err
@@ -116,7 +116,7 @@ func DeleteLifecyclePolicy(ctx context.Context, nc *nats.Conn, accountID string,
 	}
 	policy, err := store.DeleteLifecyclePolicy(ctx, accountID, req.RepositoryName)
 	if err != nil {
-		if errors.Is(err, handlers_ecr.ErrNotFound) {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
 			return nil, LifecyclePolicyNotFoundError(accountID, req.RepositoryName)
 		}
 		return nil, err

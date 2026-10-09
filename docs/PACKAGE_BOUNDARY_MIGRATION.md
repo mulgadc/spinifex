@@ -451,6 +451,8 @@ These are security corrections found during discovery, not lifecycle work.
 
 Preflight exception (branch only): from `ee13be950`, full `make preflight` on this branch is red solely because the vulnerability gate reports GO-2026-6599 to GO-2026-6617 against the pinned Go 1.27.0 toolchain. Every other gate passes. This branch is not production. No advisory is accepted or suppressed, and the accepted-advisory list, `go.mod` and the toolchain pins are unchanged; the toolchain is updated through Dependabot. Normal full-preflight enforcement resumes when the toolchain baseline is updated.
 
+Gates outside preflight and CI (follow-up, not merge-blocking): `make test-package-check`, which the `Makefile` keeps out of preflight, reports 87 test files added on this branch in their own package rather than `<pkg>_test`; they include the contract, agent, new-domain, ingress, layering and split-out ECR tests. Converting each to an external test package, or marking it `//test:in-package` with a reason, is follow-up work before that gate returns to preflight. `make nilaway` was killed by the host on both local attempts (15 GB, including `GOGC=25 GOMAXPROCS=2`) before it reported anything, so this branch has no nilaway evidence.
+
 ## ADR-0004 source inventory and first-resource ranking
 
 The per-file inventories for ECS, EKS and RDS are in `docs/package-boundary/adr-0004-inventory-{ecs,eks,rds}.md`.

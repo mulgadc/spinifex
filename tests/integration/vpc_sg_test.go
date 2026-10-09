@@ -14,7 +14,7 @@ import (
 
 // TestVPCD_SecurityGroupReachesOVN asserts the synchronous half of the
 // handler-to-vpcd contract against a real responder. The SG topics use
-// utils.RequestEvent, so unlike the topology events these need no polling: by
+// the network projection client, so unlike the topology events these need no polling: by
 // the time the SDK call returns, vpcd has already committed to OVN.
 //
 // This is the case the tier previously faked outright with a canned

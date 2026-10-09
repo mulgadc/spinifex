@@ -3,8 +3,6 @@ package layering
 import (
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"testing"
 )
 
@@ -34,16 +32,15 @@ var frozenLegacyPackages = []string{
 	"handlers/rds",
 	"handlers/sts",
 	"lbagent",
-	"utils",
 	"vpcd",
 }
 
-// frozenUtilsFiles are the only production files utils may hold; each awaits
-// the owner named in the migration record's close-out table.
-var frozenUtilsFiles = []string{"encryption.go"}
+// retiredLegacyRoots were legacy roots whose every package has moved to its
+// ADR-0001 target; recreating one would reopen a closed migration row.
+var retiredLegacyRoots = []string{"services", "utils"}
 
 // TestADR0001_LegacyRootsFrozen: the current-to-target map gives every legacy
-// root a destination, so none may gain a package and utils no new file.
+// root a destination, so none may gain a package and no retired root may return.
 func TestADR0001_LegacyRootsFrozen(t *testing.T) {
 	root, err := moduleRoot()
 	if err != nil {
@@ -76,36 +73,13 @@ func TestADR0001_LegacyRootsFrozen(t *testing.T) {
 		}
 	}
 
-	entries, err := os.ReadDir(filepath.Join(root, "spinifex", "utils"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var files []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() {
-			t.Errorf("ADR-0001 utils row \"no new utils replacement\": utils/%s is a new directory; give the code a named owner instead", name)
-			continue
+	for _, r := range retiredLegacyRoots {
+		entries, err := os.ReadDir(filepath.Join(root, "spinifex", r))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
 		}
-		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			files = append(files, name)
-		}
-	}
-	sort.Strings(files)
-	allowedFiles := map[string]bool{}
-	for _, f := range frozenUtilsFiles {
-		allowedFiles[f] = true
-	}
-	have := map[string]bool{}
-	for _, f := range files {
-		have[f] = true
-		if !allowedFiles[f] {
-			t.Errorf("ADR-0001 utils row \"dissolve by responsibility; no new utils replacement\": utils/%s is new; move it to its owner", f)
-		}
-	}
-	for _, f := range frozenUtilsFiles {
-		if !have[f] {
-			t.Errorf("utils/%s has moved out; delete it from frozenUtilsFiles", f)
+		if len(entries) > 0 {
+			t.Errorf("ADR-0001 current-to-target map: spinifex/%s is a retired legacy root; give the code its target home instead", r)
 		}
 	}
 }

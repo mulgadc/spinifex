@@ -607,7 +607,7 @@ func TestBuildWeightsImage_CreateFileErrorSkipsRunner(t *testing.T) {
 // fakeClusterConfig returns a minimal single-node ClusterConfig sufficient
 // to drive the ochre weights Run wrappers: all nested config structs are
 // value types defaulting to the zero value, which every collaborator on the
-// refusal paths (LoadViperblockMasterKey, NewS3ObjectStoreFromConfig) treats
+// refusal paths (masterkey.ReadShared, NewS3ObjectStoreFromConfig) treats
 // as "unset", not invalid.
 func fakeClusterConfig() *config.ClusterConfig {
 	return &config.ClusterConfig{

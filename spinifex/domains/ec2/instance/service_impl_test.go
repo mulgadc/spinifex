@@ -4188,7 +4188,7 @@ func TestPrepareRunInstances_PublicIPAllocFailureAbortsLaunch(t *testing.T) {
 	}
 }
 
-// natWirePayload mirrors utils.natEvent for test-side decoding.
+// natWirePayload mirrors networkv1.NATEvent for test-side decoding.
 type natWirePayload struct {
 	VpcId      string `json:"vpc_id"`
 	ExternalIP string `json:"external_ip"`

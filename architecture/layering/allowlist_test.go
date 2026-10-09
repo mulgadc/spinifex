@@ -63,16 +63,12 @@ var allowlist = []allowance{
 	{From: "domains/ec2/guestmetadata", To: "handlers/sts", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
 	{From: "domains/ec2/guestmetadata", To: "runtime/compute/vm", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
 
-	{From: "domains/ec2/image", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
-
 	{From: "domains/ec2/instance", To: "domains/dns", Debt: "domains/ec2/instance", Reason: "cross-domain implementation import of DNS"},
 	{From: "domains/ec2/instance", To: "domains/network/topology", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 	{From: "domains/ec2/instance", To: "runtime/compute/gpu", Debt: "domains/ec2/instance", Reason: "VM/GPU runtime state read directly; needs a domain-owned projection"},
 	{From: "domains/ec2/instance", To: "runtime/compute/vm", Debt: "domains/ec2/instance", Reason: "VM/GPU runtime state read directly; needs a domain-owned projection"},
-	{From: "domains/ec2/instance", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
 
 	{From: "domains/ec2/volume", To: "runtime/compute/vm", Debt: "Domain → runtime", Reason: "VM runtime state read directly; needs a domain-owned projection"},
-	{From: "domains/ec2/volume", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
 
 	{From: "domains/ec2/vpc", To: "domains/network/external", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 	{From: "domains/ec2/vpc", To: "domains/network/external/dhcp", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},

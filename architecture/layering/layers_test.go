@@ -59,7 +59,7 @@ func (c class) isLegacy(roots ...string) bool {
 
 // legacyRoots are pre-ADR-0001 application roots still standing.
 var legacyRoots = map[string]bool{
-	"handlers": true, "gateway": true, "services": true, "utils": true, "daemon": true,
+	"handlers": true, "gateway": true, "daemon": true,
 	"vpcd": true, "admin": true, "accountteardown": true, "lbagent": true,
 }
 
@@ -73,7 +73,7 @@ var gatewayDomains = map[string]string{
 // runtimeLegacy and operatorLegacy are the legacy roots whose ADR-0001 target
 // is runtime/ and operator/ respectively.
 var (
-	runtimeLegacy  = []string{"daemon", "vpcd", "services"}
+	runtimeLegacy  = []string{"daemon", "vpcd"}
 	operatorLegacy = []string{"admin", "accountteardown"}
 )
 

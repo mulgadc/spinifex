@@ -23,6 +23,7 @@ import (
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
@@ -37,7 +38,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -1798,7 +1798,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 
 	// The control plane cannot see how a provider encrypts its volumes, but this
 	// shared config knob is the same one the legacy path derives Encrypted from.
-	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	encrypted, err := ebsencryption.Enabled(s.config.Viperblock.EncryptionKeyFile)
 	if err != nil {
 		slog.ErrorContext(ctx, "Could not load encryption key for root volume", "volumeId", spec.volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
@@ -1834,7 +1834,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		CreatedAt:   time.Now(), AvailabilityZone: s.config.AZ,
 		VolumeType: ebspolicy.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),
 		Throughput: ebspolicy.DefaultGP3Throughput, SnapshotID: amiConfig.SnapshotID,
-		DeleteOnTermination: spec.deleteOnTermination, Encrypted: mkey != nil,
+		DeleteOnTermination: spec.deleteOnTermination, Encrypted: encrypted,
 		Tags:           spec.tags,
 		ProviderHandle: created.Handle,
 	}); err != nil {

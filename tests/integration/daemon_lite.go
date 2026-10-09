@@ -147,11 +147,11 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 	// vpcd (the OVN topology-translation daemon) to provision/tear down each
 	// VPC's default security group (domains/ec2/vpc/security_group.go
 	// createDefaultSecurityGroupInternal/deleteSecurityGroupInternal ->
-	// requestSGEvent -> utils.RequestEvent). vpcd itself is out of scope for
+	// requestSGEvent -> projection.Client). vpcd itself is out of scope for
 	// this tier (it's an external OVN process, not a key/tags/routetable/vpc
 	// service impl), so it is stubbed here exactly like any other
 	// out-of-scope daemon-side responder: a fixed {"success":true} ack on
-	// "vpc.create-sg"/"vpc.delete-sg", satisfying utils.RequestEvent's
+	// "vpc.create-sg"/"vpc.delete-sg", satisfying the projection client's
 	// {success,error} reply contract. The SG record itself is written to the
 	// KV store by the real service impl before this event is even sent, so
 	// stubbing the vpcd ack never substitutes for in-scope logic under test —

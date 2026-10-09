@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
@@ -28,7 +29,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -234,7 +234,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 
 	// The control plane cannot see how a provider encrypts its volumes, but this
 	// shared config knob is the one the provider resolves the same way.
-	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	encrypted, err := ebsencryption.Enabled(s.config.Viperblock.EncryptionKeyFile)
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume: failed to load encryption key", "volumeId", volumeID, "err", err)
 		_ = s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: created.Handle})
@@ -244,7 +244,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 		VolumeID: volumeID, TenantID: accountID, CapacityGiB: uint64(size), State: string(ebsprovider.VolumeStateAvailable),
 		CreatedAt: now, AvailabilityZone: *input.AvailabilityZone, VolumeType: volumeType,
 		IOPS: iops, Throughput: throughput, SnapshotID: snapshotID, Tags: tags, ProviderHandle: created.Handle,
-		Encrypted: mkey != nil,
+		Encrypted: encrypted,
 	}); err != nil {
 		slog.ErrorContext(ctx, "CreateVolume: failed to persist provider metadata", "volumeId", volumeID, "err", err)
 		_ = s.provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: created.Handle})
@@ -255,7 +255,7 @@ func (s *VolumeServiceImpl) CreateVolume(ctx context.Context, input *ec2.CreateV
 
 	return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
 		State: aws.String("available"), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
-		Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(mkey != nil),
+		Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(encrypted),
 		SnapshotId: snapshotIDOrNil(snapshotID), Tags: awstags.MapToEC2(tags)}, nil
 }
 

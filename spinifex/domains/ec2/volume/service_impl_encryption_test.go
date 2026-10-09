@@ -52,7 +52,7 @@ func newTestVolumeServiceWithEncryptionKey(az, keyFile string) *VolumeServiceImp
 }
 
 func TestCreateVolume_EncryptionKeyLoadError(t *testing.T) {
-	// Point EncryptionKeyFile at a non-existent path so LoadViperblockMasterKey
+	// Point EncryptionKeyFile at a non-existent path so ebsencryption.Enabled
 	// fails — CreateVolume must abort with ServerInternal and roll the
 	// provider's allocation back rather than leave an orphaned volume.
 	missing := filepath.Join(t.TempDir(), "absent.key")

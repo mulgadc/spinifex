@@ -121,7 +121,7 @@ var rules = []rule{
 				return false
 			}
 			switch {
-			case t.layer == layerAgents || t.isLegacy("lbagent", "utils"):
+			case t.layer == layerAgents || t.isLegacy("lbagent"):
 				return true
 			case t.layer == layerIngress:
 				return f.kind != domainAWSAPI && f.kind != legacyAdapter

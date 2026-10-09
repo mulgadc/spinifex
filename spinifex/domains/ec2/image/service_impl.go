@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
@@ -25,7 +26,6 @@ import (
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -993,12 +993,12 @@ func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
 	if s.config == nil {
 		return false
 	}
-	mkey, err := utils.LoadViperblockMasterKey(s.config.Viperblock.EncryptionKeyFile)
+	encrypted, err := ebsencryption.Enabled(s.config.Viperblock.EncryptionKeyFile)
 	if err != nil {
 		slog.Warn("clusterEncryptionEnabled: failed to load master key, reporting false", "err", err)
 		return false
 	}
-	return mkey != nil
+	return encrypted
 }
 
 // synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,

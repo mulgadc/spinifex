@@ -1,4 +1,4 @@
-package utils
+package ebsencryption
 
 import (
 	"crypto/rand"
@@ -33,14 +33,14 @@ func resetKeyCache() {
 	viperblockKeyCache = map[string]*masterkey.Key{}
 }
 
-func TestLoadViperblockMasterKey_EmptyPath(t *testing.T) {
+func TestLoadMasterKey_EmptyPath(t *testing.T) {
 	resetKeyCache()
-	k, err := LoadViperblockMasterKey("")
+	k, err := loadViperblockMasterKey("")
 	require.NoError(t, err)
 	assert.Nil(t, k, "empty path must return (nil, nil) — encryption disabled")
 }
 
-func TestLoadViperblockMasterKey_LoadsAndCaches(t *testing.T) {
+func TestLoadMasterKey_LoadsAndCaches(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission semantics not enforced on Windows")
 	}
@@ -48,30 +48,30 @@ func TestLoadViperblockMasterKey_LoadsAndCaches(t *testing.T) {
 
 	path := writeMasterKeyFile(t, "key", 0o640)
 
-	k1, err := LoadViperblockMasterKey(path)
+	k1, err := loadViperblockMasterKey(path)
 	require.NoError(t, err)
 	require.NotNil(t, k1)
 	assert.NotEmpty(t, k1.Fingerprint)
 
 	// Second call must return the cached *Key (pointer-equal), proving
 	// the path is memoised rather than re-stat'd + re-parsed.
-	k2, err := LoadViperblockMasterKey(path)
+	k2, err := loadViperblockMasterKey(path)
 	require.NoError(t, err)
-	assert.Same(t, k1, k2, "second LoadViperblockMasterKey must return cached pointer")
+	assert.Same(t, k1, k2, "second loadViperblockMasterKey must return cached pointer")
 }
 
-func TestLoadViperblockMasterKey_LoadError(t *testing.T) {
+func TestLoadMasterKey_LoadError(t *testing.T) {
 	resetKeyCache()
 
 	missing := filepath.Join(t.TempDir(), "nonexistent.key")
-	k, err := LoadViperblockMasterKey(missing)
+	k, err := loadViperblockMasterKey(missing)
 	require.Error(t, err)
 	assert.Nil(t, k)
 	assert.Contains(t, err.Error(), "load viperblock encryption key")
 	assert.Contains(t, err.Error(), missing)
 }
 
-func TestLoadViperblockMasterKey_FailedLoadNotCached(t *testing.T) {
+func TestLoadMasterKey_FailedLoadNotCached(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission semantics not enforced on Windows")
 	}
@@ -79,13 +79,39 @@ func TestLoadViperblockMasterKey_FailedLoadNotCached(t *testing.T) {
 
 	// 0o644 has the world-read bit set, which masterkey.LoadShared rejects.
 	path := writeMasterKeyFile(t, "loose.key", 0o644)
-	_, err := LoadViperblockMasterKey(path)
+	_, err := loadViperblockMasterKey(path)
 	require.Error(t, err)
 
 	// Fix the permissions; a subsequent call must succeed (proving the
 	// previous failure was not memoised).
 	require.NoError(t, os.Chmod(path, 0o640))
-	k, err := LoadViperblockMasterKey(path)
+	k, err := loadViperblockMasterKey(path)
 	require.NoError(t, err)
 	require.NotNil(t, k)
+}
+
+func TestEnabled_EmptyPathIsUnencrypted(t *testing.T) {
+	resetKeyCache()
+	enabled, err := Enabled("")
+	require.NoError(t, err)
+	assert.False(t, enabled)
+}
+
+func TestEnabled_LoadableKeyIsEncrypted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission semantics not enforced on Windows")
+	}
+	resetKeyCache()
+	enabled, err := Enabled(writeMasterKeyFile(t, "key", 0o640))
+	require.NoError(t, err)
+	assert.True(t, enabled)
+}
+
+func TestEnabled_UnloadableKeyIsAnError(t *testing.T) {
+	resetKeyCache()
+	missing := filepath.Join(t.TempDir(), "nonexistent.key")
+	enabled, err := Enabled(missing)
+	require.Error(t, err)
+	assert.False(t, enabled)
+	assert.Contains(t, err.Error(), "load viperblock encryption key")
 }

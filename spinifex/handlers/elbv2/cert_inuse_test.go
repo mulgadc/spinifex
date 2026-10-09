@@ -399,7 +399,7 @@ func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 }
 
 // genLeafCertPEM returns a self-signed leaf certificate + private key as PEM,
-// mirroring handlers_acm's own test helper (unexported, different package).
+// mirroring domains/acm's own test helper (unexported, different package).
 // dnsNames become SANs, which is how a renderer learns the names a cert serves.
 func genLeafCertPEM(t *testing.T, cn string, dnsNames ...string) (certPEM, keyPEM []byte) {
 	t.Helper()

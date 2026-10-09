@@ -154,7 +154,7 @@ Then set `instance_principal = "adopt"` in your tfvars and pass `--instance-prin
 
 ## The IAM policy
 
-Spinifex calls exactly ten operations, all of them in `spinifex/cloud/oci/client.go`. Grant no more than these:
+Spinifex calls exactly ten operations, all of them in `spinifex/providers/cloud/oci/client.go`. Grant no more than these:
 
 | Operation                                  | Why                                                                              |
 | ------------------------------------------ | -------------------------------------------------------------------------------- |

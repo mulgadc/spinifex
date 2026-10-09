@@ -12,7 +12,7 @@ import (
 )
 
 // AccountInfo is the parsed result of `spx admin account create`. Fields
-// match the lines emitted by cmd/spinifex/cmd/admin.go:runAccountCreate.
+// match the lines emitted by spinifex/operator/cli/admin.go:runAccountCreate.
 type AccountInfo struct {
 	AccountID       string
 	AccountName     string

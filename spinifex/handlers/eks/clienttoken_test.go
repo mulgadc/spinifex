@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The store mechanics are tested in spinifex/idempotency. What is EKS's own is
+// The store mechanics are tested in spinifex/foundation/lifecycle/idempotency. What is EKS's own is
 // the param hash and that the store binds against the cluster-token bucket.
 
 // clusterTokenParamHash ignores ClientRequestToken (same params, different token

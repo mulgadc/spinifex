@@ -66,7 +66,7 @@ const (
 	// block is additionally framed with a 16-byte AES-GCM tag.
 	//
 	// That 1.5x floor is a precondition, not a universal constant. It holds
-	// because this suite provisions RS(2,1): cmd/spinifex/cmd/templates/
+	// because this suite provisions RS(2,1): spinifex/operator/cli/templates/
 	// predastore.toml's [rs] block defaults to data=2, parity=1. The same
 	// template documents RS(3,2) as the production recommendation, whose
 	// floor is 5/3 = ~1.667x and would leave only ~12% headroom under the

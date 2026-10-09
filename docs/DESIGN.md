@@ -274,7 +274,7 @@ storage-provider contract.
 
 ## Configuration
 
-Cluster configuration (`spinifex/config/config.go`):
+Cluster configuration (`spinifex/bootstrap/config/config.go`):
 
 ```go
 type ClusterConfig struct {

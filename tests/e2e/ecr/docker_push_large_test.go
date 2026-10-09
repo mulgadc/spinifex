@@ -23,7 +23,7 @@ import (
 const largeCmdTimeout = 8 * time.Minute
 
 // largeLayerSizesMiB targets getBlob's Content-Length forwarding for a real
-// multi-hundred-MB object (gateway/ecr/registry.go), not a client chunk
+// multi-hundred-MB object (domains/ecr/registry/registry.go), not a client chunk
 // boundary — docker/crane always PATCH/PUT a whole blob in one request.
 var largeLayerSizesMiB = []int{100, 80, 60}
 

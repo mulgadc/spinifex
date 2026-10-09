@@ -48,7 +48,7 @@ func vpcIDs(vpcs []*ec2.Vpc) []string {
 }
 
 // adminAccessPolicyDocument grants unrestricted EC2/IAM/etc. access, mirroring
-// cmd/spinifex/cmd/admin.go's runAccountCreate — a freshly minted IAM user has
+// spinifex/operator/cli/admin.go's runAccountCreate — a freshly minted IAM user has
 // no attached policy, so gateway.evaluatePrincipalPolicy denies every call
 // (AccessDenied) until one is attached; only the harness's seeded root
 // bypasses policy evaluation entirely.
@@ -57,7 +57,7 @@ const adminAccessPolicyDocument = `{"Version":"2012-10-17","Statement":[{"Effect
 // createTenantAccount mints a second real tenant account directly against the
 // gateway's IAMService (IAMServiceImpl.CreateAccount/CreateUser/CreateAccessKey/
 // CreatePolicy/AttachUserPolicy — the same Go calls
-// cmd/spinifex/cmd/admin.go's runAccountCreate makes on top of the spx CLI,
+// spinifex/operator/cli/admin.go's runAccountCreate makes on top of the spx CLI,
 // minus the CLI/stdout round-trip) and returns SDK clients signed with its
 // access key. Used to get two independently-owned accounts without the live
 // tier's SpxAdminAccountCreate, which shells out to a spx binary this tier

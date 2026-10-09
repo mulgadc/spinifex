@@ -22,7 +22,7 @@ func newTestClientTokenStore(t *testing.T) *ClientTokenStore {
 	return store
 }
 
-// The claim/replay/abort mechanics live in spinifex/idempotency and are tested
+// The claim/replay/abort mechanics live in spinifex/foundation/lifecycle/idempotency and are tested
 // there. What is EC2's own is the param hash, the launch orchestration around
 // the store, and the AWS error a mismatch maps onto.
 

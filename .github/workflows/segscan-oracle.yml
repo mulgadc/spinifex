@@ -3,7 +3,7 @@
 #
 # tests/integration/segscan_oracle_test.go needs the mulga umbrella repo's
 # scripts/segscan checked out alongside spinifex (it is a separate Go module,
-# `package main`, and cannot be imported — see spinifex/testutil/segscanoracle).
+# `package main`, and cannot be imported — see internal/testkit/segscanoracle).
 # spinifex.yml's jobs check out only spinifex/viperblock/predastore and run on
 # every PR; adding a second-repo checkout there would make every spinifex PR
 # depend on mulga main being healthy and pay that checkout cost on every run,

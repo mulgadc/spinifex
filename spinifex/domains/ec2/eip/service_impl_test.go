@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -815,7 +816,7 @@ func TestEIP_PublishNATEvent_PortNameHasPortPrefix(t *testing.T) {
 	msg, err := sub.NextMsg(2 * time.Second)
 	require.NoError(t, err)
 
-	var got natEvent
+	var got networkv1.NATEvent
 	require.NoError(t, json.Unmarshal(msg.Data, &got))
 	assert.Equal(t, "port-"+eniID, got.PortName,
 		"PortName must be port-<eni> to match the OVN logical switch port name")

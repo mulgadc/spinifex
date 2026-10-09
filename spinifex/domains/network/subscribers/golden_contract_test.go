@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
@@ -19,11 +19,11 @@ import (
 
 // This file characterizes the vpc.* network-realisation boundary as it exists
 // today: exact subject literals, exact JSON wire shapes, the request/reply ack
-// envelope and the vpcd-workers queue group. It is a pre-refactor pin, not a
-// design — contracts/network/v1 (slice 2) must reproduce these literals
-// exactly, and any future wire change must update both in the same commit.
+// envelope and the vpcd-workers queue group. contracts/network/v1 is now the
+// sole owner of these literals; any future wire change must update both the
+// contract and this pin in the same commit.
 
-// TestGoldenSubjects pins every vpc.* subject literal this package registers.
+// TestGoldenSubjects pins every vpc.* subject literal this boundary carries.
 // A change here is a wire-compatibility break, not a rename.
 func TestGoldenSubjects(t *testing.T) {
 	cases := []struct {
@@ -31,31 +31,28 @@ func TestGoldenSubjects(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"VPCCreate", subscribers.TopicVPCCreate, "vpc.create"},
-		{"VPCDelete", subscribers.TopicVPCDelete, "vpc.delete"},
-		{"SubnetCreate", subscribers.TopicSubnetCreate, "vpc.create-subnet"},
-		{"SubnetDelete", subscribers.TopicSubnetDelete, "vpc.delete-subnet"},
-		{"CreatePort", subscribers.TopicCreatePort, "vpc.create-port"},
-		{"DeletePort", subscribers.TopicDeletePort, "vpc.delete-port"},
-		{"UpdatePortSGs", subscribers.TopicUpdatePortSGs, "vpc.update-port-sgs"},
-		{"IGWAttach", subscribers.TopicIGWAttach, "vpc.igw-attach"},
-		{"IGWDetach", subscribers.TopicIGWDetach, "vpc.igw-detach"},
-		{"AddNAT", subscribers.TopicAddNAT, "vpc.add-nat"},
-		{"DeleteNAT", subscribers.TopicDeleteNAT, "vpc.delete-nat"},
-		{"AddNATGateway", subscribers.TopicAddNATGateway, "vpc.add-nat-gateway"},
-		{"DeleteNATGateway", subscribers.TopicDeleteNATGateway, "vpc.delete-nat-gateway"},
-		{"AddIGWRoute", subscribers.TopicAddIGWRoute, "vpc.add-igw-route"},
-		{"DeleteIGWRoute", subscribers.TopicDeleteIGWRoute, "vpc.delete-igw-route"},
-		{"GateSubnetEgress", subscribers.TopicGateSubnetEgress, "vpc.gate-subnet-egress"},
-		{"UngateSubnetEgress", subscribers.TopicUngateSubnetEgress, "vpc.ungate-subnet-egress"},
-		{"AddSystemEgress", subscribers.TopicAddSystemEgress, "vpc.add-system-egress"},
-		{"DeleteSystemEgress", subscribers.TopicDeleteSystemEgress, "vpc.delete-system-egress"},
-		{"CreateSG", subscribers.TopicCreateSG, "vpc.create-sg"},
-		{"DeleteSG", subscribers.TopicDeleteSG, "vpc.delete-sg"},
-		{"UpdateSG", subscribers.TopicUpdateSG, "vpc.update-sg"},
-		// Owned today by contracts/ec2/v1; aliased here under the same literal.
-		{"IGWAttachSubject (ec2v1)", ec2v1.InternetGatewayAttachSubject, "vpc.igw-attach"},
-		{"IGWDetachSubject (ec2v1)", ec2v1.InternetGatewayDetachSubject, "vpc.igw-detach"},
+		{"VPCCreate", networkv1.VPCCreateSubject, "vpc.create"},
+		{"VPCDelete", networkv1.VPCDeleteSubject, "vpc.delete"},
+		{"SubnetCreate", networkv1.SubnetCreateSubject, "vpc.create-subnet"},
+		{"SubnetDelete", networkv1.SubnetDeleteSubject, "vpc.delete-subnet"},
+		{"CreatePort", networkv1.PortCreateSubject, "vpc.create-port"},
+		{"DeletePort", networkv1.PortDeleteSubject, "vpc.delete-port"},
+		{"UpdatePortSGs", networkv1.PortSecurityGroupsUpdateSubject, "vpc.update-port-sgs"},
+		{"IGWAttach", networkv1.InternetGatewayAttachSubject, "vpc.igw-attach"},
+		{"IGWDetach", networkv1.InternetGatewayDetachSubject, "vpc.igw-detach"},
+		{"AddNAT", networkv1.NATAddSubject, "vpc.add-nat"},
+		{"DeleteNAT", networkv1.NATDeleteSubject, "vpc.delete-nat"},
+		{"AddNATGateway", networkv1.NATGatewayAddSubject, "vpc.add-nat-gateway"},
+		{"DeleteNATGateway", networkv1.NATGatewayDeleteSubject, "vpc.delete-nat-gateway"},
+		{"AddIGWRoute", networkv1.IGWRouteAddSubject, "vpc.add-igw-route"},
+		{"DeleteIGWRoute", networkv1.IGWRouteDeleteSubject, "vpc.delete-igw-route"},
+		{"GateSubnetEgress", networkv1.SubnetEgressGateSubject, "vpc.gate-subnet-egress"},
+		{"UngateSubnetEgress", networkv1.SubnetEgressUngateSubject, "vpc.ungate-subnet-egress"},
+		{"AddSystemEgress", networkv1.SystemEgressAddSubject, "vpc.add-system-egress"},
+		{"DeleteSystemEgress", networkv1.SystemEgressDeleteSubject, "vpc.delete-system-egress"},
+		{"CreateSG", networkv1.SecurityGroupCreateSubject, "vpc.create-sg"},
+		{"DeleteSG", networkv1.SecurityGroupDeleteSubject, "vpc.delete-sg"},
+		{"UpdateSG", networkv1.SecurityGroupUpdateSubject, "vpc.update-sg"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -67,26 +64,26 @@ func TestGoldenSubjects(t *testing.T) {
 // TestGoldenQueueGroup pins the shared queue group every vpcd handler
 // subscribes under, so only one vpcd processes a given event.
 func TestGoldenQueueGroup(t *testing.T) {
-	assert.Equal(t, "vpcd-workers", subscribers.QueueGroup)
+	assert.Equal(t, "vpcd-workers", networkv1.QueueGroup)
 }
 
 // TestGoldenPayloadJSON pins the exact wire JSON for every exported event
-// type in this package against a hand-written golden literal, independent of
+// type on this boundary against a hand-written golden literal, independent of
 // the struct definition, in both directions (marshal and unmarshal).
 func TestGoldenPayloadJSON(t *testing.T) {
 	t.Run("VPCEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","cidr_block":"10.0.0.0/16","vni":42}`
-		evt := subscribers.VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16", VNI: 42}
+		evt := networkv1.VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16", VNI: 42}
 		assertGoldenJSON(t, golden, evt)
 	})
 	t.Run("SubnetEvent", func(t *testing.T) {
 		golden := `{"subnet_id":"subnet-1","vpc_id":"vpc-1","cidr_block":"10.0.1.0/24"}`
-		evt := subscribers.SubnetEvent{SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24"}
+		evt := networkv1.SubnetEvent{SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24"}
 		assertGoldenJSON(t, golden, evt)
 	})
 	t.Run("PortEvent", func(t *testing.T) {
 		golden := `{"network_interface_id":"eni-1","subnet_id":"subnet-1","vpc_id":"vpc-1","private_ip_address":"10.0.1.5","mac_address":"02:00:00:00:00:01","security_group_ids":["sg-1"],"suppress_dhcp":true}`
-		evt := subscribers.PortEvent{
+		evt := networkv1.PortEvent{
 			NetworkInterfaceId: "eni-1", SubnetId: "subnet-1", VpcId: "vpc-1",
 			PrivateIpAddress: "10.0.1.5", MacAddress: "02:00:00:00:00:01",
 			SecurityGroupIds: []string{"sg-1"}, SuppressDHCP: true,
@@ -95,7 +92,7 @@ func TestGoldenPayloadJSON(t *testing.T) {
 	})
 	t.Run("PortEvent_OmitsEmptyFields", func(t *testing.T) {
 		golden := `{"network_interface_id":"eni-1","subnet_id":"subnet-1","vpc_id":"vpc-1","private_ip_address":"10.0.1.5","mac_address":"02:00:00:00:00:01"}`
-		evt := subscribers.PortEvent{
+		evt := networkv1.PortEvent{
 			NetworkInterfaceId: "eni-1", SubnetId: "subnet-1", VpcId: "vpc-1",
 			PrivateIpAddress: "10.0.1.5", MacAddress: "02:00:00:00:00:01",
 		}
@@ -103,9 +100,9 @@ func TestGoldenPayloadJSON(t *testing.T) {
 		require.NoError(t, err)
 		assert.JSONEq(t, golden, string(marshaled))
 	})
-	t.Run("UpdatePortSGsEvent", func(t *testing.T) {
+	t.Run("PortSecurityGroupsUpdateEvent", func(t *testing.T) {
 		golden := `{"network_interface_id":"eni-1","private_ip_address":"10.0.1.5","security_group_ids":["sg-1","sg-2"]}`
-		evt := subscribers.UpdatePortSGsEvent{
+		evt := networkv1.PortSecurityGroupsUpdateEvent{
 			NetworkInterfaceId: "eni-1", PrivateIpAddress: "10.0.1.5",
 			SecurityGroupIds: []string{"sg-1", "sg-2"},
 		}
@@ -113,7 +110,7 @@ func TestGoldenPayloadJSON(t *testing.T) {
 	})
 	t.Run("NATEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","external_ip":"203.0.113.5","logical_ip":"10.0.1.5","port_name":"port-eni-1","mac":"02:00:00:00:00:01"}`
-		evt := subscribers.NATEvent{
+		evt := networkv1.NATEvent{
 			VpcId: "vpc-1", ExternalIP: "203.0.113.5", LogicalIP: "10.0.1.5",
 			PortName: "port-eni-1", MAC: "02:00:00:00:00:01",
 		}
@@ -121,7 +118,7 @@ func TestGoldenPayloadJSON(t *testing.T) {
 	})
 	t.Run("NATGatewayEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","nat_gateway_id":"nat-1","public_ip":"203.0.113.5","subnet_cidr":"10.0.1.0/24","subnet_id":"subnet-1","destination_cidr":"0.0.0.0/0"}`
-		evt := subscribers.NATGatewayEvent{
+		evt := networkv1.NATGatewayEvent{
 			VpcId: "vpc-1", NatGatewayId: "nat-1", PublicIp: "203.0.113.5",
 			SubnetCidr: "10.0.1.0/24", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0",
 		}
@@ -129,44 +126,44 @@ func TestGoldenPayloadJSON(t *testing.T) {
 	})
 	t.Run("IGWRouteEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","subnet_id":"subnet-1","destination_cidr":"0.0.0.0/0","internet_gateway_id":"igw-1"}`
-		evt := subscribers.IGWRouteEvent{
+		evt := networkv1.IGWRouteEvent{
 			VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0", InternetGatewayId: "igw-1",
 		}
 		assertGoldenJSON(t, golden, evt)
 	})
 	t.Run("SubnetEgressGateEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","subnet_id":"subnet-1","destination_cidr":"0.0.0.0/0"}`
-		evt := subscribers.SubnetEgressGateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"}
+		evt := networkv1.SubnetEgressGateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"}
 		assertGoldenJSON(t, golden, evt)
 	})
 	t.Run("SubnetEgressUngateEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","subnet_id":"subnet-1","destination_cidr":"0.0.0.0/0"}`
-		evt := subscribers.SubnetEgressUngateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"}
+		evt := networkv1.SubnetEgressUngateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"}
 		assertGoldenJSON(t, golden, evt)
 	})
 	t.Run("SystemEgressEvent", func(t *testing.T) {
 		golden := `{"vpc_id":"vpc-1","subnet_id":"subnet-1","instance_ip":"10.0.1.5","external_ip":"203.0.113.5"}`
-		evt := subscribers.SystemEgressEvent{
+		evt := networkv1.SystemEgressEvent{
 			VpcId: "vpc-1", SubnetId: "subnet-1", InstanceIp: "10.0.1.5", ExternalIp: "203.0.113.5",
 		}
 		assertGoldenJSON(t, golden, evt)
 	})
-	t.Run("SGEvent", func(t *testing.T) {
-		golden := `{"group_id":"sg-1","vpc_id":"vpc-1","ingress_rules":[{"ip_protocol":"tcp","from_port":22,"to_port":22,"cidr_ip":"0.0.0.0/0"}],"egress_rules":[{"ip_protocol":"-1","from_port":0,"to_port":0,"source_sg":"sg-2"}]}`
-		evt := subscribers.SGEvent{
+	t.Run("SecurityGroupEvent", func(t *testing.T) {
+		golden := `{"group_id":"sg-1","vpc_id":"vpc-1","ingress_rules":[{"rule_id":"","ip_protocol":"tcp","from_port":22,"to_port":22,"cidr_ip":"0.0.0.0/0"}],"egress_rules":[{"rule_id":"","ip_protocol":"-1","from_port":0,"to_port":0,"source_sg":"sg-2"}]}`
+		evt := networkv1.SecurityGroupEvent{
 			GroupId: "sg-1", VpcId: "vpc-1",
-			IngressRules: []subscribers.SGRule{{IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: "0.0.0.0/0"}},
-			EgressRules:  []subscribers.SGRule{{IpProtocol: "-1", SourceSG: "sg-2"}},
+			IngressRules: []networkv1.SecurityGroupRule{{IpProtocol: "tcp", FromPort: 22, ToPort: 22, CidrIp: "0.0.0.0/0"}},
+			EgressRules:  []networkv1.SecurityGroupRule{{IpProtocol: "-1", SourceSG: "sg-2"}},
 		}
 		assertGoldenJSON(t, golden, evt)
 	})
-	t.Run("InternetGatewayEvent_ec2v1", func(t *testing.T) {
+	t.Run("InternetGatewayEvent", func(t *testing.T) {
 		golden := `{"internet_gateway_id":"igw-1","vpc_id":"vpc-1"}`
-		evt := ec2v1.InternetGatewayEvent{InternetGatewayId: "igw-1", VpcId: "vpc-1"}
+		evt := networkv1.InternetGatewayEvent{InternetGatewayId: "igw-1", VpcId: "vpc-1"}
 		marshaled, err := json.Marshal(evt)
 		require.NoError(t, err)
 		assert.JSONEq(t, golden, string(marshaled))
-		var decoded ec2v1.InternetGatewayEvent
+		var decoded networkv1.InternetGatewayEvent
 		require.NoError(t, json.Unmarshal([]byte(golden), &decoded))
 		assert.Equal(t, evt, decoded)
 	})
@@ -224,9 +221,9 @@ func TestGoldenAckEnvelope_Success(t *testing.T) {
 		}
 	})
 
-	payload, err := json.Marshal(subscribers.SGEvent{GroupId: "sg-golden", VpcId: "vpc-1"})
+	payload, err := json.Marshal(networkv1.SecurityGroupEvent{GroupId: "sg-golden", VpcId: "vpc-1"})
 	require.NoError(t, err)
-	resp, err := nc.Request(subscribers.TopicCreateSG, payload, 5*time.Second)
+	resp, err := nc.Request(networkv1.SecurityGroupCreateSubject, payload, 5*time.Second)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"success":true}`, string(resp.Data))
 }
@@ -246,13 +243,10 @@ func TestGoldenAckEnvelope_Error(t *testing.T) {
 		}
 	})
 
-	resp, err := nc.Request(subscribers.TopicCreatePort, []byte("not json"), 5*time.Second)
+	resp, err := nc.Request(networkv1.PortCreateSubject, []byte("not json"), 5*time.Second)
 	require.NoError(t, err)
 
-	var envelope struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error,omitempty"`
-	}
+	var envelope networkv1.AckEnvelope
 	require.NoError(t, json.Unmarshal(resp.Data, &envelope))
 	assert.False(t, envelope.Success)
 	assert.NotEmpty(t, envelope.Error)
@@ -273,10 +267,10 @@ func TestGoldenFireAndForgetRoutes_NoReplyExpected(t *testing.T) {
 		}
 	})
 
-	payload, err := json.Marshal(subscribers.VPCEvent{VpcId: "vpc-golden"})
+	payload, err := json.Marshal(networkv1.VPCEvent{VpcId: "vpc-golden"})
 	require.NoError(t, err)
 	// A bare Publish never sets Reply; the unit under test is that this
 	// returns immediately and nothing panics or blocks waiting for an ack.
-	require.NoError(t, nc.Publish(subscribers.TopicVPCCreate, payload))
+	require.NoError(t, nc.Publish(networkv1.VPCCreateSubject, payload))
 	require.NoError(t, nc.Flush())
 }

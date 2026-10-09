@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
@@ -940,7 +941,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 					slog.ErrorContext(ctx, "PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
 						"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
 					// Neutralise before releasing in case timeout committed the rule.
-					utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+					utils.PublishNATEvent(s.natsConn, networkv1.NATDeleteSubject, *eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
 					s.rollbackAutoAssignedPublicIP(ctx, accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
 					lastRunErr = natErr
 					if reservationID == "" {
@@ -3008,7 +3009,7 @@ func (s *InstanceServiceImpl) reassignAutoAssignedPublicIP(ctx context.Context, 
 	if natErr := utils.AddNAT(s.natsConn, eni.VpcID, publicIP, eni.PrivateIpAddress,
 		topology.Port(instance.ENIId), eni.MacAddress); natErr != nil {
 		// Neutralise before releasing in case the timeout committed the rule.
-		utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", eni.VpcID, publicIP, eni.PrivateIpAddress,
+		utils.PublishNATEvent(s.natsConn, networkv1.NATDeleteSubject, eni.VpcID, publicIP, eni.PrivateIpAddress,
 			topology.Port(instance.ENIId), eni.MacAddress)
 		s.releaseAutoAssignedPublicIP(ctx, instance.AccountID, instance.ENIId, publicIP, poolName)
 		return false, natErr
@@ -3049,7 +3050,7 @@ func (s *InstanceServiceImpl) rollbackStartPublicIP(ctx context.Context, instanc
 		vpcID = aws.StringValue(instance.Instance.VpcId)
 		privateIP = aws.StringValue(instance.Instance.PrivateIpAddress)
 	}
-	utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, privateIP,
+	utils.PublishNATEvent(s.natsConn, networkv1.NATDeleteSubject, vpcID, instance.PublicIP, privateIP,
 		topology.Port(instance.ENIId), instance.ENIMac)
 	s.releaseAutoAssignedPublicIP(ctx, instance.AccountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
 	instance.PublicIP = ""
@@ -3142,7 +3143,7 @@ func (s *InstanceServiceImpl) rollbackPreparedInstance(ctx context.Context, acco
 			vpcID = aws.StringValue(instance.Instance.VpcId)
 			privateIP = aws.StringValue(instance.Instance.PrivateIpAddress)
 		}
-		utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, privateIP,
+		utils.PublishNATEvent(s.natsConn, networkv1.NATDeleteSubject, vpcID, instance.PublicIP, privateIP,
 			topology.Port(instance.ENIId), instance.ENIMac)
 		rolledBack = s.releaseAutoAssignedPublicIP(ctx, accountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
 	}
@@ -3176,7 +3177,7 @@ func (s *InstanceServiceImpl) releaseInstancePublicIP(ctx context.Context, insta
 			logicalIP = *instance.Instance.PrivateIpAddress
 		}
 	}
-	utils.PublishNATEvent(s.natsConn, "vpc.delete-nat", vpcID, instance.PublicIP, logicalIP, portName, "")
+	utils.PublishNATEvent(s.natsConn, networkv1.NATDeleteSubject, vpcID, instance.PublicIP, logicalIP, portName, "")
 
 	if err := s.ipReleaser.ReleaseIP(ctx, instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		slog.WarnContext(ctx, "TerminateStoppedInstance: failed to release public IP", "ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)

@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -97,14 +98,6 @@ func getOrCreateDeletedBucket(ctx context.Context, js jetstream.KeyValueManager)
 		History:     1,
 		TTL:         time.Hour,
 	})
-}
-
-// natGatewayEvent is published on vpc.add-nat-gateway / vpc.delete-nat-gateway topics.
-type natGatewayEvent struct {
-	VpcId        string `json:"vpc_id"`
-	NatGatewayId string `json:"nat_gateway_id"`
-	PublicIp     string `json:"public_ip"`
-	SubnetCidr   string `json:"subnet_cidr"` // private subnet CIDR for SNAT rule
 }
 
 // CreateNatGateway creates a NAT Gateway in a public subnet with an EIP.
@@ -480,7 +473,7 @@ func natgwMatchesFilters(record *NatGatewayRecord, filters map[string][]string) 
 // PublishAddEvent publishes a vpc.add-nat-gateway event for vpcd to create the SNAT rule.
 // Called by the route table service when CreateRoute targets a NAT GW.
 func (s *NatGatewayServiceImpl) PublishAddEvent(vpcId, natGatewayId, publicIp, subnetCidr string) {
-	natsmsg.PublishEvent(s.natsConn, "vpc.add-nat-gateway", natGatewayEvent{
+	natsmsg.PublishEvent(s.natsConn, networkv1.NATGatewayAddSubject, networkv1.NATGatewayEvent{
 		VpcId:        vpcId,
 		NatGatewayId: natGatewayId,
 		PublicIp:     publicIp,
@@ -490,7 +483,7 @@ func (s *NatGatewayServiceImpl) PublishAddEvent(vpcId, natGatewayId, publicIp, s
 
 // PublishDeleteEvent publishes a vpc.delete-nat-gateway event for vpcd to remove the SNAT rule.
 func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp, subnetCidr string) {
-	natsmsg.PublishEvent(s.natsConn, "vpc.delete-nat-gateway", natGatewayEvent{
+	natsmsg.PublishEvent(s.natsConn, networkv1.NATGatewayDeleteSubject, networkv1.NATGatewayEvent{
 		VpcId:        vpcId,
 		NatGatewayId: natGatewayId,
 		PublicIp:     publicIp,

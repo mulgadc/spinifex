@@ -1,8 +1,5 @@
 package networkv1
 
-// Also declared in contracts/ec2/v1 (igw.go), which owns the route for a
-// different purpose. The literal subjects and InternetGatewayEvent's JSON
-// are identical by construction; reconciling into one owner is slice 3/4.
 const (
 	// InternetGatewayAttachSubject asks vpcd to build the OVN external
 	// switch, gateway and SNAT. Fire-and-forget, non-fatal on failure.

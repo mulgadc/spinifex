@@ -32,13 +32,18 @@ func TestNATGatewayEvent_JSON(t *testing.T) {
 
 // TestNATGatewayEvent_NarrowPublisherShapeStillDecodes pins that the
 // narrower 4-field shape one of today's two publishers sends (domains/ec2/
-// natgw) still decodes correctly: the missing fields zero-value, which is
-// what the subscriber's own equivalent type already does today.
+// natgw) round-trips exactly: SubnetId and DestinationCidr stay absent from
+// the wire on both the decode and the re-encode, not merely zero-valued.
 func TestNATGatewayEvent_NarrowPublisherShapeStillDecodes(t *testing.T) {
 	narrow := `{"vpc_id":"vpc-1","nat_gateway_id":"nat-1","public_ip":"203.0.113.5","subnet_cidr":"10.0.1.0/24"}`
 	var decoded networkv1.NATGatewayEvent
 	require.NoError(t, json.Unmarshal([]byte(narrow), &decoded))
-	assert.Equal(t, networkv1.NATGatewayEvent{
+	want := networkv1.NATGatewayEvent{
 		VpcId: "vpc-1", NatGatewayId: "nat-1", PublicIp: "203.0.113.5", SubnetCidr: "10.0.1.0/24",
-	}, decoded)
+	}
+	assert.Equal(t, want, decoded)
+
+	marshaled, err := json.Marshal(decoded)
+	require.NoError(t, err)
+	assert.JSONEq(t, narrow, string(marshaled))
 }

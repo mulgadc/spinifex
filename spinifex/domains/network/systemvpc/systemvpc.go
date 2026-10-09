@@ -24,6 +24,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/nats-io/nats.go"
@@ -677,10 +678,6 @@ func gcTopology(ctx context.Context, nc *nats.Conn, name, vpcID string) {
 	if nc == nil || vpcID == "" {
 		return
 	}
-	natsmsg.PublishEvent(nc, "vpc.delete", struct {
-		VpcId     string `json:"vpc_id"`
-		CidrBlock string `json:"cidr_block"`
-		VNI       int64  `json:"vni"`
-	}{VpcId: vpcID})
+	natsmsg.PublishEvent(nc, networkv1.VPCDeleteSubject, networkv1.VPCEvent{VpcId: vpcID})
 	slog.InfoContext(ctx, "systemvpc Delete: republished vpc.delete for OVN GC", "name", name, "vpc", vpcID)
 }

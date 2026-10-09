@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -84,7 +85,7 @@ func TestEIP_AssociateByNetworkInterfaceID(t *testing.T) {
 
 	msg, err := sub.NextMsg(2 * time.Second)
 	require.NoError(t, err)
-	var got natEvent
+	var got networkv1.NATEvent
 	require.NoError(t, json.Unmarshal(msg.Data, &got))
 	assert.Equal(t, publicIP, got.ExternalIP)
 	assert.Equal(t, *eni.PrivateIpAddress, got.LogicalIP)
@@ -209,7 +210,7 @@ func TestEIP_DisassociateAfterAssociate(t *testing.T) {
 
 	msg, err := sub.NextMsg(2 * time.Second)
 	require.NoError(t, err)
-	var got natEvent
+	var got networkv1.NATEvent
 	require.NoError(t, json.Unmarshal(msg.Data, &got))
 	assert.Equal(t, publicIP, got.ExternalIP)
 	assert.Equal(t, *eni.MacAddress, got.MAC)

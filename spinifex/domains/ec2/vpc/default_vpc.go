@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
@@ -276,7 +277,7 @@ func (s *VPCServiceImpl) buildDefaultVPC(ctx context.Context, accountID string, 
 		return fmt.Errorf("store default VPC: %w", err)
 	}
 	if created {
-		s.publishVPCEvent("vpc.create", claim.VpcId, claim.Cidr, claim.VNI)
+		s.publishVPCEvent(networkv1.VPCCreateSubject, claim.VpcId, claim.Cidr, claim.VNI)
 	}
 
 	az := "us-east-1a"
@@ -297,7 +298,7 @@ func (s *VPCServiceImpl) buildDefaultVPC(ctx context.Context, accountID string, 
 		return fmt.Errorf("store default subnet: %w", err)
 	}
 	if created {
-		s.publishSubnetEvent("vpc.create-subnet", claim.SubnetId, claim.VpcId, claim.SubnetCidr)
+		s.publishSubnetEvent(networkv1.SubnetCreateSubject, claim.SubnetId, claim.VpcId, claim.SubnetCidr)
 	}
 
 	if s.rtbKV != nil {

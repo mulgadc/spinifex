@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
@@ -93,16 +94,16 @@ func TestSubscribe_RegistersAllTopics(t *testing.T) {
 	}()
 
 	wantTopics := []string{
-		TopicVPCCreate, TopicVPCDelete,
-		TopicSubnetCreate, TopicSubnetDelete,
-		TopicCreatePort, TopicDeletePort, TopicUpdatePortSGs,
-		TopicIGWAttach, TopicIGWDetach,
-		TopicAddNAT, TopicDeleteNAT,
-		TopicAddNATGateway, TopicDeleteNATGateway,
-		TopicAddIGWRoute, TopicDeleteIGWRoute,
-		TopicGateSubnetEgress, TopicUngateSubnetEgress,
-		TopicAddSystemEgress, TopicDeleteSystemEgress,
-		TopicCreateSG, TopicDeleteSG, TopicUpdateSG,
+		networkv1.VPCCreateSubject, networkv1.VPCDeleteSubject,
+		networkv1.SubnetCreateSubject, networkv1.SubnetDeleteSubject,
+		networkv1.PortCreateSubject, networkv1.PortDeleteSubject, networkv1.PortSecurityGroupsUpdateSubject,
+		networkv1.InternetGatewayAttachSubject, networkv1.InternetGatewayDetachSubject,
+		networkv1.NATAddSubject, networkv1.NATDeleteSubject,
+		networkv1.NATGatewayAddSubject, networkv1.NATGatewayDeleteSubject,
+		networkv1.IGWRouteAddSubject, networkv1.IGWRouteDeleteSubject,
+		networkv1.SubnetEgressGateSubject, networkv1.SubnetEgressUngateSubject,
+		networkv1.SystemEgressAddSubject, networkv1.SystemEgressDeleteSubject,
+		networkv1.SecurityGroupCreateSubject, networkv1.SecurityGroupDeleteSubject, networkv1.SecurityGroupUpdateSubject,
 	}
 	if len(subs) != len(wantTopics) {
 		t.Fatalf("subscription count: got %d, want %d", len(subs), len(wantTopics))
@@ -140,7 +141,7 @@ func TestHandleAddNATGateway_InstallsPerSubnetEgress(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := NATGatewayEvent{
+	evt := networkv1.NATGatewayEvent{
 		VpcId:           "vpc-1",
 		NatGatewayId:    "nat-1",
 		PublicIp:        "192.168.1.50",
@@ -150,7 +151,7 @@ func TestHandleAddNATGateway_InstallsPerSubnetEgress(t *testing.T) {
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayAddSubject, data))
 
 	require.Eventually(t, func() bool {
 		policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
@@ -167,7 +168,7 @@ func TestHandleAddNATGateway_InstallsPerSubnetEgress(t *testing.T) {
 	assert.Equal(t, topology.GatewayRouterPort("vpc-1"), policies[0].ExternalIDs["spinifex:output_port"])
 
 	// Delete event must remove the policy.
-	require.NoError(t, nc.Publish(TopicDeleteNATGateway, data))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayDeleteSubject, data))
 	require.Eventually(t, func() bool {
 		policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 		return err == nil && len(policies) == 0
@@ -195,7 +196,7 @@ func TestHandleSystemEgress_InstallsAndRemoves(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := SystemEgressEvent{
+	evt := networkv1.SystemEgressEvent{
 		VpcId:      "vpc-1",
 		SubnetId:   "subnet-k3s",
 		InstanceIp: "10.0.4.10",
@@ -203,7 +204,7 @@ func TestHandleSystemEgress_InstallsAndRemoves(t *testing.T) {
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicAddSystemEgress, data))
+	require.NoError(t, nc.Publish(networkv1.SystemEgressAddSubject, data))
 
 	require.Eventually(t, func() bool {
 		policies, perr := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
@@ -223,7 +224,7 @@ func TestHandleSystemEgress_InstallsAndRemoves(t *testing.T) {
 	require.NotNil(t, snat)
 	assert.Equal(t, "10.0.4.10/32", snat.LogicalIP)
 
-	require.NoError(t, nc.Publish(TopicDeleteSystemEgress, data))
+	require.NoError(t, nc.Publish(networkv1.SystemEgressDeleteSubject, data))
 	require.Eventually(t, func() bool {
 		policies, perr := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 		if perr != nil || len(policies) != 0 {
@@ -254,7 +255,7 @@ func TestHandleAddNATGateway_InvalidCIDRSkipsPolicy(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := NATGatewayEvent{
+	evt := networkv1.NATGatewayEvent{
 		VpcId:           "vpc-1",
 		NatGatewayId:    "nat-1",
 		PublicIp:        "192.168.1.50",
@@ -264,7 +265,7 @@ func TestHandleAddNATGateway_InvalidCIDRSkipsPolicy(t *testing.T) {
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayAddSubject, data))
 
 	// SNAT lands eventually.
 	require.Eventually(t, func() bool {
@@ -298,13 +299,13 @@ func TestHandleDeleteNATGateway_InvalidCIDRStillDetaches(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	addEvt := NATGatewayEvent{
+	addEvt := networkv1.NATGatewayEvent{
 		VpcId: "vpc-1", NatGatewayId: "nat-1", PublicIp: "192.168.1.50",
 		SubnetCidr: "10.0.11.0/24", SubnetId: "subnet-priv", DestinationCidr: "0.0.0.0/0",
 	}
 	addData, err := json.Marshal(addEvt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicAddNATGateway, addData))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayAddSubject, addData))
 	require.Eventually(t, func() bool {
 		nat, err := m.FindNATByExternalIP(ctx, "snat", "192.168.1.50")
 		return err == nil && nat != nil
@@ -314,7 +315,7 @@ func TestHandleDeleteNATGateway_InvalidCIDRStillDetaches(t *testing.T) {
 	delEvt.DestinationCidr = "not-a-cidr"
 	delData, err := json.Marshal(delEvt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicDeleteNATGateway, delData))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayDeleteSubject, delData))
 
 	require.Eventually(t, func() bool {
 		nat, err := m.FindNATByExternalIP(ctx, "snat", "192.168.1.50")
@@ -342,13 +343,13 @@ func TestHandleAddNATGateway_NoSubnetIDSkipsPolicy(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := NATGatewayEvent{
+	evt := networkv1.NATGatewayEvent{
 		VpcId: "vpc-1", NatGatewayId: "nat-1", PublicIp: "192.168.1.50",
 		SubnetCidr: "10.0.11.0/24", // SubnetId omitted
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayAddSubject, data))
 
 	require.Eventually(t, func() bool {
 		nat, err := m.FindNATByExternalIP(ctx, "snat", "192.168.1.50")
@@ -380,13 +381,13 @@ func TestHandleAddNATGateway_DefaultsDestinationCidr(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := NATGatewayEvent{
+	evt := networkv1.NATGatewayEvent{
 		VpcId: "vpc-1", NatGatewayId: "nat-1", PublicIp: "192.168.1.50",
 		SubnetCidr: "10.0.11.0/24", SubnetId: "subnet-priv", // DestinationCidr empty
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicAddNATGateway, data))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayAddSubject, data))
 
 	require.Eventually(t, func() bool {
 		policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
@@ -418,14 +419,14 @@ func TestHandleAddIGWRoute_InstallsPolicy(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := IGWRouteEvent{
+	evt := networkv1.IGWRouteEvent{
 		VpcId: "vpc-1", SubnetId: "subnet-pub", DestinationCidr: "0.0.0.0/0", InternetGatewayId: "igw-1",
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	resp, err := nc.Request(TopicAddIGWRoute, data, requestTimeout)
+	resp, err := nc.Request(networkv1.IGWRouteAddSubject, data, requestTimeout)
 	require.NoError(t, err)
-	var env respondResponse
+	var env networkv1.AckEnvelope
 	require.NoError(t, json.Unmarshal(resp.Data, &env))
 	assert.True(t, env.Success)
 
@@ -448,7 +449,7 @@ func TestHandleDeleteNATGateway_MissingRouterStillReturns(t *testing.T) {
 		}
 	}()
 
-	evt := NATGatewayEvent{
+	evt := networkv1.NATGatewayEvent{
 		VpcId:        "vpc-gone",
 		NatGatewayId: "nat-1",
 		PublicIp:     "192.168.1.50",
@@ -458,7 +459,7 @@ func TestHandleDeleteNATGateway_MissingRouterStillReturns(t *testing.T) {
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	require.NoError(t, nc.Publish(TopicDeleteNATGateway, data))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayDeleteSubject, data))
 	time.Sleep(50 * time.Millisecond)
 }
 
@@ -475,8 +476,8 @@ func TestHandleNATGateway_BadJSON(t *testing.T) {
 		}
 	}()
 
-	require.NoError(t, nc.Publish(TopicAddNATGateway, []byte("not json")))
-	require.NoError(t, nc.Publish(TopicDeleteNATGateway, []byte("not json")))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayAddSubject, []byte("not json")))
+	require.NoError(t, nc.Publish(networkv1.NATGatewayDeleteSubject, []byte("not json")))
 	// Give handlers a moment to run — nothing to assert except no panic.
 	time.Sleep(50 * time.Millisecond)
 }
@@ -494,10 +495,10 @@ func TestHandleIGWRoute_BadJSON(t *testing.T) {
 		}
 	}()
 
-	for _, topic := range []string{TopicAddIGWRoute, TopicDeleteIGWRoute} {
+	for _, topic := range []string{networkv1.IGWRouteAddSubject, networkv1.IGWRouteDeleteSubject} {
 		resp, err := nc.Request(topic, []byte("not json"), requestTimeout)
 		require.NoError(t, err)
-		var env respondResponse
+		var env networkv1.AckEnvelope
 		require.NoError(t, json.Unmarshal(resp.Data, &env))
 		assert.False(t, env.Success, "topic %s must return success=false on bad JSON", topic)
 	}
@@ -523,14 +524,14 @@ func TestHandleAddIGWRoute_InvalidCIDR(t *testing.T) {
 	}))
 	require.NoError(t, sub.igw.AttachIGW(ctx, external.IGWSpec{VPCID: "vpc-1", InternetGatewayID: "igw-1"}))
 
-	evt := IGWRouteEvent{
+	evt := networkv1.IGWRouteEvent{
 		VpcId: "vpc-1", SubnetId: "subnet-pub", DestinationCidr: "not-a-cidr", InternetGatewayId: "igw-1",
 	}
 	data, err := json.Marshal(evt)
 	require.NoError(t, err)
-	resp, err := nc.Request(TopicAddIGWRoute, data, requestTimeout)
+	resp, err := nc.Request(networkv1.IGWRouteAddSubject, data, requestTimeout)
 	require.NoError(t, err)
-	var env respondResponse
+	var env networkv1.AckEnvelope
 	require.NoError(t, json.Unmarshal(resp.Data, &env))
 	assert.False(t, env.Success)
 
@@ -554,13 +555,13 @@ func TestBadJSON_AllRequestReplies(t *testing.T) {
 	}()
 
 	topics := []string{
-		TopicVPCCreate, TopicVPCDelete,
-		TopicSubnetCreate, TopicSubnetDelete,
-		TopicCreatePort, TopicDeletePort, TopicUpdatePortSGs,
-		TopicIGWAttach, TopicIGWDetach,
-		TopicAddNAT, TopicDeleteNAT,
-		TopicGateSubnetEgress, TopicUngateSubnetEgress,
-		TopicCreateSG, TopicDeleteSG, TopicUpdateSG,
+		networkv1.VPCCreateSubject, networkv1.VPCDeleteSubject,
+		networkv1.SubnetCreateSubject, networkv1.SubnetDeleteSubject,
+		networkv1.PortCreateSubject, networkv1.PortDeleteSubject, networkv1.PortSecurityGroupsUpdateSubject,
+		networkv1.InternetGatewayAttachSubject, networkv1.InternetGatewayDetachSubject,
+		networkv1.NATAddSubject, networkv1.NATDeleteSubject,
+		networkv1.SubnetEgressGateSubject, networkv1.SubnetEgressUngateSubject,
+		networkv1.SecurityGroupCreateSubject, networkv1.SecurityGroupDeleteSubject, networkv1.SecurityGroupUpdateSubject,
 	}
 	for _, topic := range topics {
 		t.Run(topic, func(t *testing.T) {
@@ -568,7 +569,7 @@ func TestBadJSON_AllRequestReplies(t *testing.T) {
 			if err != nil {
 				t.Fatalf("request %s: %v", topic, err)
 			}
-			var env respondResponse
+			var env networkv1.AckEnvelope
 			if err := json.Unmarshal(resp.Data, &env); err != nil {
 				t.Fatalf("unmarshal envelope: %v", err)
 			}
@@ -657,7 +658,7 @@ func TestHandlePort_FlushesStaleMACBinding(t *testing.T) {
 	require.NoError(t, topo.EnsureSubnet(ctx, topology.SubnetSpec{SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/24")}))
 	require.NoError(t, topo.EnsureSGPortGroup(ctx, "sg-a"))
 
-	evt := PortEvent{
+	evt := networkv1.PortEvent{
 		NetworkInterfaceId: "eni-new", SubnetId: "subnet-a", VpcId: "vpc-a",
 		PrivateIpAddress: "172.31.0.4", MacAddress: "02:00:00:00:00:aa",
 		SecurityGroupIds: []string{"sg-a"},
@@ -678,7 +679,7 @@ func TestHandlePort_NilFlusherIsNoop(t *testing.T) {
 	require.NoError(t, topo.EnsureVPC(ctx, topology.VPCSpec{VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/16")}))
 	require.NoError(t, topo.EnsureSubnet(ctx, topology.SubnetSpec{SubnetID: "subnet-a", VPCID: "vpc-a", CIDR: netip.MustParsePrefix("172.31.0.0/24")}))
 
-	evt := PortEvent{
+	evt := networkv1.PortEvent{
 		NetworkInterfaceId: "eni-new", SubnetId: "subnet-a", VpcId: "vpc-a",
 		PrivateIpAddress: "172.31.0.4", MacAddress: "02:00:00:00:00:aa",
 	}
@@ -692,7 +693,7 @@ func TestHandlePort_NilFlusherIsNoop(t *testing.T) {
 // unspecified rather than narrow.
 func TestToPolicyRules_DropsIPv6(t *testing.T) {
 	t.Parallel()
-	out := toPolicyRules([]SGRule{
+	out := toPolicyRules([]networkv1.SecurityGroupRule{
 		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
 		{IpProtocol: "-1"},
 		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},

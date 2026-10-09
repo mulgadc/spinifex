@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
@@ -20,14 +21,14 @@ func startTestNATSServer(t *testing.T) *server.Server {
 
 // TestAddNAT_Success pins that AddNAT returns nil only when vpcd acks the
 // add-nat request with {"success":true}. The wire payload must match the
-// natEvent shape vpcd unmarshals on the other end.
+// networkv1.NATEvent shape vpcd unmarshals on the other end.
 func TestAddNAT_Success(t *testing.T) {
 	ns := startTestNATSServer(t)
 	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	defer nc.Close()
 
-	var got natEvent
+	var got networkv1.NATEvent
 	_, err = nc.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
 		_ = json.Unmarshal(msg.Data, &got)
 		_ = msg.Respond([]byte(`{"success":true}`))
@@ -88,7 +89,7 @@ func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 	got := make(chan string, 1)
 	time.AfterFunc(deleteNATRetryDelay/2, func() {
 		_, serr := nc.Subscribe("vpc.delete-nat", func(msg *nats.Msg) {
-			var evt natEvent
+			var evt networkv1.NATEvent
 			_ = json.Unmarshal(msg.Data, &evt)
 			got <- evt.ExternalIP
 			_ = msg.Respond([]byte(`{"success":true}`))

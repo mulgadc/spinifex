@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"log/slog"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/nats-io/nats.go"
 )
-
-// QueueGroup ensures one vpcd processes each event (shared OVN NB DB).
-const QueueGroup = "vpcd-workers"
 
 // MACBindingFlusher removes stale SB MAC_Binding rows resolving a private IP so a
 // reused address re-resolves to the new owner's MAC rather than the terminated
@@ -101,33 +99,33 @@ func (s *Subscriber) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 		handler nats.MsgHandler
 	}
 	subs := []sub{
-		{TopicVPCCreate, s.handleVPCCreate},
-		{TopicVPCDelete, s.handleVPCDelete},
-		{TopicSubnetCreate, s.handleSubnetCreate},
-		{TopicSubnetDelete, s.handleSubnetDelete},
-		{TopicCreatePort, s.handleCreatePort},
-		{TopicDeletePort, s.handleDeletePort},
-		{TopicUpdatePortSGs, s.handleUpdatePortSGs},
-		{TopicIGWAttach, s.handleIGWAttach},
-		{TopicIGWDetach, s.handleIGWDetach},
-		{TopicAddNAT, concurrently(addNATConcurrency, s.handleAddNAT)},
-		{TopicDeleteNAT, s.handleDeleteNAT},
-		{TopicAddNATGateway, s.handleAddNATGateway},
-		{TopicDeleteNATGateway, s.handleDeleteNATGateway},
-		{TopicAddIGWRoute, s.handleAddIGWRoute},
-		{TopicDeleteIGWRoute, s.handleDeleteIGWRoute},
-		{TopicGateSubnetEgress, s.handleGateSubnetEgress},
-		{TopicUngateSubnetEgress, s.handleUngateSubnetEgress},
-		{TopicAddSystemEgress, s.handleAddSystemEgress},
-		{TopicDeleteSystemEgress, s.handleDeleteSystemEgress},
-		{TopicCreateSG, s.handleCreateSG},
-		{TopicDeleteSG, s.handleDeleteSG},
-		{TopicUpdateSG, s.handleUpdateSG},
+		{networkv1.VPCCreateSubject, s.handleVPCCreate},
+		{networkv1.VPCDeleteSubject, s.handleVPCDelete},
+		{networkv1.SubnetCreateSubject, s.handleSubnetCreate},
+		{networkv1.SubnetDeleteSubject, s.handleSubnetDelete},
+		{networkv1.PortCreateSubject, s.handleCreatePort},
+		{networkv1.PortDeleteSubject, s.handleDeletePort},
+		{networkv1.PortSecurityGroupsUpdateSubject, s.handleUpdatePortSGs},
+		{networkv1.InternetGatewayAttachSubject, s.handleIGWAttach},
+		{networkv1.InternetGatewayDetachSubject, s.handleIGWDetach},
+		{networkv1.NATAddSubject, concurrently(addNATConcurrency, s.handleAddNAT)},
+		{networkv1.NATDeleteSubject, s.handleDeleteNAT},
+		{networkv1.NATGatewayAddSubject, s.handleAddNATGateway},
+		{networkv1.NATGatewayDeleteSubject, s.handleDeleteNATGateway},
+		{networkv1.IGWRouteAddSubject, s.handleAddIGWRoute},
+		{networkv1.IGWRouteDeleteSubject, s.handleDeleteIGWRoute},
+		{networkv1.SubnetEgressGateSubject, s.handleGateSubnetEgress},
+		{networkv1.SubnetEgressUngateSubject, s.handleUngateSubnetEgress},
+		{networkv1.SystemEgressAddSubject, s.handleAddSystemEgress},
+		{networkv1.SystemEgressDeleteSubject, s.handleDeleteSystemEgress},
+		{networkv1.SecurityGroupCreateSubject, s.handleCreateSG},
+		{networkv1.SecurityGroupDeleteSubject, s.handleDeleteSG},
+		{networkv1.SecurityGroupUpdateSubject, s.handleUpdateSG},
 	}
 
 	var result []*nats.Subscription
 	for _, item := range subs {
-		natsSub, err := nc.QueueSubscribe(item.topic, QueueGroup, item.handler)
+		natsSub, err := nc.QueueSubscribe(item.topic, networkv1.QueueGroup, item.handler)
 		if err != nil {
 			for _, r := range result {
 				_ = r.Unsubscribe()

@@ -31,18 +31,6 @@ domain and its runtime composition.
 Any incompatible subject or payload change requires an explicit versioned
 contract or an approved compatibility plan; it is not a package refactor.
 
-## Internet gateway projection
-
-`InternetGatewayEvent` carries the EC2 domain's authorized projection of an
-internet-gateway attachment or detachment into the network data plane. It is
-published on `vpc.igw-attach` or `vpc.igw-detach`, then consumed by the network
-subscriber to create or remove the OVN gateway realization. The EC2 domain owns
-the AWS-visible attachment semantics; the network domain owns the OVN work.
-
-The event intentionally contains only the gateway and VPC identifiers. It is
-not permission to read EC2's private VPC or IGW state. The JSON and both
-subjects are compatibility-tested in `igw_test.go`.
-
 ## Default VPC request
 
 `EnsureDefaultVpcSubject` (`ec2.EnsureDefaultVpc`) is the request/reply route on which the gateway's account creation asks a daemon in the `spinifex-workers` queue group to build the account's default VPC.

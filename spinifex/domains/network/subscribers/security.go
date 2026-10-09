@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/nats-io/nats.go"
 )
@@ -15,7 +16,7 @@ import (
 // OVN write under raft lag, well under any pathological hang.
 const sgHandlerTimeout = 10 * time.Second
 
-func (e SGEvent) toSpec() policy.SGSpec {
+func toSGSpec(e networkv1.SecurityGroupEvent) policy.SGSpec {
 	return policy.SGSpec{
 		GroupID:      e.GroupId,
 		VPCID:        e.VpcId,
@@ -27,7 +28,7 @@ func (e SGEvent) toSpec() policy.SGSpec {
 // toPolicyRules drops any rule with no IPv4 source. The ACL builder is
 // IPv4-only, and an IPv6 rule reaching it carries an empty CIDR and an empty
 // SourceSG, which is not a narrower ACL but an unspecified one.
-func toPolicyRules(in []SGRule) []policy.Rule {
+func toPolicyRules(in []networkv1.SecurityGroupRule) []policy.Rule {
 	out := make([]policy.Rule, 0, len(in))
 	for _, r := range in {
 		if r.CidrIp == "" && r.SourceSG == "" {
@@ -46,7 +47,7 @@ func toPolicyRules(in []SGRule) []policy.Rule {
 
 // handleCreateSG ensures the PG (L2) then applies the ACL set (L3).
 func (s *Subscriber) handleCreateSG(msg *nats.Msg) {
-	var evt SGEvent
+	var evt networkv1.SecurityGroupEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.create-sg event", "err", err)
 		respond(msg, err)
@@ -59,7 +60,7 @@ func (s *Subscriber) handleCreateSG(msg *nats.Msg) {
 		respond(msg, err)
 		return
 	}
-	if err := s.sg.EnsureSG(ctx, evt.toSpec()); err != nil {
+	if err := s.sg.EnsureSG(ctx, toSGSpec(evt)); err != nil {
 		slog.Error("subscribers: EnsureSG failed", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return
@@ -75,7 +76,7 @@ func (s *Subscriber) handleCreateSG(msg *nats.Msg) {
 
 // handleDeleteSG removes the SG's PG and its ACLs; idempotent.
 func (s *Subscriber) handleDeleteSG(msg *nats.Msg) {
-	var evt SGEvent
+	var evt networkv1.SecurityGroupEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-sg event", "err", err)
 		respond(msg, err)
@@ -94,7 +95,7 @@ func (s *Subscriber) handleDeleteSG(msg *nats.Msg) {
 
 // handleUpdateSG replaces the ACL set; the PG is unaffected.
 func (s *Subscriber) handleUpdateSG(msg *nats.Msg) {
-	var evt SGEvent
+	var evt networkv1.SecurityGroupEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.update-sg event", "err", err)
 		respond(msg, err)
@@ -102,7 +103,7 @@ func (s *Subscriber) handleUpdateSG(msg *nats.Msg) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sgHandlerTimeout)
 	defer cancel()
-	if err := s.sg.UpdateSG(ctx, evt.toSpec()); err != nil {
+	if err := s.sg.UpdateSG(ctx, toSGSpec(evt)); err != nil {
 		slog.Error("subscribers: UpdateSG failed", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return

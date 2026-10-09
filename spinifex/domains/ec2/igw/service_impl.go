@@ -12,7 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -413,14 +413,14 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	// Publish event for vpcd to clean up OVN external switch + gateway + NAT
 	if s.natsConn != nil {
-		event := ec2v1.InternetGatewayEvent{
+		event := networkv1.InternetGatewayEvent{
 			InternetGatewayId: igwID,
 			VpcId:             vpcID,
 		}
 		eventData, err := json.Marshal(event)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to marshal IGW detach event", "error", err)
-		} else if err := s.natsConn.Publish(ec2v1.InternetGatewayDetachSubject, eventData); err != nil {
+		} else if err := s.natsConn.Publish(networkv1.InternetGatewayDetachSubject, eventData); err != nil {
 			slog.WarnContext(ctx, "Failed to publish IGW detach event", "error", err)
 		}
 	}
@@ -443,10 +443,10 @@ func (s *IGWServiceImpl) publishAttach(ctx context.Context, igwID, vpcID string)
 	if s.natsConn == nil {
 		return
 	}
-	eventData, err := json.Marshal(ec2v1.InternetGatewayEvent{InternetGatewayId: igwID, VpcId: vpcID})
+	eventData, err := json.Marshal(networkv1.InternetGatewayEvent{InternetGatewayId: igwID, VpcId: vpcID})
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to marshal IGW attach event", "error", err)
-	} else if err := s.natsConn.Publish(ec2v1.InternetGatewayAttachSubject, eventData); err != nil {
+	} else if err := s.natsConn.Publish(networkv1.InternetGatewayAttachSubject, eventData); err != nil {
 		slog.WarnContext(ctx, "Failed to publish IGW attach event", "error", err)
 	}
 }

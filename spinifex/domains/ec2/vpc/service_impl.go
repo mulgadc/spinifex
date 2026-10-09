@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -326,7 +327,7 @@ func (s *VPCServiceImpl) CreateVpc(ctx context.Context, input *ec2.CreateVpcInpu
 	s.projectRecordTags(ctx, accountID, vpcID, record.Tags)
 
 	// Publish vpc.create event for vpcd topology translation
-	s.publishVPCEvent("vpc.create", record.VpcId, record.CidrBlock, record.VNI)
+	s.publishVPCEvent(networkv1.VPCCreateSubject, record.VpcId, record.CidrBlock, record.VNI)
 
 	// Auto-create main route table with local route (matches AWS behavior)
 	if s.rtbKV != nil {
@@ -532,7 +533,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	slog.InfoContext(ctx, "DeleteVpc completed", "vpcId", vpcID, "accountID", accountID)
 
 	// Publish vpc.delete event for vpcd topology cleanup
-	s.publishVPCEvent("vpc.delete", vpcID, "", 0)
+	s.publishVPCEvent(networkv1.VPCDeleteSubject, vpcID, "", 0)
 
 	return &ec2.DeleteVpcOutput{}, nil
 }
@@ -810,7 +811,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	s.projectRecordTags(ctx, accountID, subnetID, record.Tags)
 
 	// Publish vpc.create-subnet event for vpcd topology translation
-	s.publishSubnetEvent("vpc.create-subnet", record.SubnetId, record.VpcId, record.CidrBlock)
+	s.publishSubnetEvent(networkv1.SubnetCreateSubject, record.SubnetId, record.VpcId, record.CidrBlock)
 
 	return &ec2.CreateSubnetOutput{
 		Subnet: s.subnetRecordToEC2(&record, totalHosts, accountID),
@@ -864,7 +865,7 @@ func (s *VPCServiceImpl) DeleteSubnet(ctx context.Context, input *ec2.DeleteSubn
 	slog.InfoContext(ctx, "DeleteSubnet completed", "subnetId", subnetID, "accountID", accountID)
 
 	// Publish vpc.delete-subnet event for vpcd topology cleanup
-	s.publishSubnetEvent("vpc.delete-subnet", subnetID, subnetRecord.VpcId, subnetRecord.CidrBlock)
+	s.publishSubnetEvent(networkv1.SubnetDeleteSubject, subnetID, subnetRecord.VpcId, subnetRecord.CidrBlock)
 
 	return &ec2.DeleteSubnetOutput{}, nil
 }
@@ -1660,18 +1661,10 @@ func (s *VPCServiceImpl) getSubnet(ctx context.Context, accountID, subnetId stri
 // publishVPCEvent publishes a VPC lifecycle event to NATS for vpcd consumption.
 // This is fire-and-forget; errors are logged but do not fail the API response.
 func (s *VPCServiceImpl) publishVPCEvent(topic, vpcId, cidrBlock string, vni int64) {
-	natsmsg.PublishEvent(s.natsConn, topic, struct {
-		VpcId     string `json:"vpc_id"`
-		CidrBlock string `json:"cidr_block"`
-		VNI       int64  `json:"vni"`
-	}{VpcId: vpcId, CidrBlock: cidrBlock, VNI: vni})
+	natsmsg.PublishEvent(s.natsConn, topic, networkv1.VPCEvent{VpcId: vpcId, CidrBlock: cidrBlock, VNI: vni})
 }
 
 // publishSubnetEvent publishes a subnet lifecycle event to NATS for vpcd consumption.
 func (s *VPCServiceImpl) publishSubnetEvent(topic, subnetId, vpcId, cidrBlock string) {
-	natsmsg.PublishEvent(s.natsConn, topic, struct {
-		SubnetId  string `json:"subnet_id"`
-		VpcId     string `json:"vpc_id"`
-		CidrBlock string `json:"cidr_block"`
-	}{SubnetId: subnetId, VpcId: vpcId, CidrBlock: cidrBlock})
+	natsmsg.PublishEvent(s.natsConn, topic, networkv1.SubnetEvent{SubnetId: subnetId, VpcId: vpcId, CidrBlock: cidrBlock})
 }

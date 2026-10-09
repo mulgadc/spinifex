@@ -1,5 +1,5 @@
-//test:in-package — projects an SGEvent through the unexported toSpec, which is
-//how the vpc.update-sg handler itself reaches policy.UpdateSG.
+//test:in-package — projects a SecurityGroupEvent through the unexported
+//toSGSpec, which is how the vpc.update-sg handler reaches policy.UpdateSG.
 
 package subscribers
 
@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
@@ -22,14 +23,14 @@ import (
 // returns the resulting ACL set as sorted, UUID-free strings.
 func aclFingerprints(t *testing.T, payload string) []string {
 	t.Helper()
-	var evt SGEvent
+	var evt networkv1.SecurityGroupEvent
 	require.NoError(t, json.Unmarshal([]byte(payload), &evt))
 
 	m := mock.New()
 	pg := topology.SecurityGroupPortGroup(evt.GroupId)
 	require.NoError(t, m.CreatePortGroup(context.Background(), pg, nil))
 	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
-	require.NoError(t, sg.UpdateSG(context.Background(), evt.toSpec()))
+	require.NoError(t, sg.UpdateSG(context.Background(), toSGSpec(evt)))
 
 	stored, ok := m.PortGroups[pg]
 	require.True(t, ok)

@@ -4,13 +4,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/nats-io/nats.go"
 )
-
-type respondResponse struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
-}
 
 // respond sends a JSON success/error envelope to a NATS request. Fire-and-
 // forget when no reply is set on msg.
@@ -18,7 +14,7 @@ func respond(msg *nats.Msg, err error) {
 	if msg.Reply == "" {
 		return
 	}
-	resp := respondResponse{Success: true}
+	resp := networkv1.AckEnvelope{Success: true}
 	if err != nil {
 		resp.Success = false
 		resp.Error = err.Error()

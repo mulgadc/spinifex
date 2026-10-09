@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -175,12 +176,39 @@ type SecurityGroupRecord struct {
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
-// SGEvent is published on vpc.create-sg / vpc.delete-sg / vpc.update-sg for vpcd consumption.
-type SGEvent struct {
-	GroupId      string   `json:"group_id"`
-	VpcId        string   `json:"vpc_id"`
-	IngressRules []SGRule `json:"ingress_rules,omitempty"`
-	EgressRules  []SGRule `json:"egress_rules,omitempty"`
+// toNetworkSecurityGroupRules converts stored rules to the wire shape on
+// SecurityGroupCreateSubject/DeleteSubject/UpdateSubject. Field-for-field: the
+// wire carries every stored field, not just the ones network's ACL builder reads.
+func toNetworkSecurityGroupRules(rules []SGRule) []networkv1.SecurityGroupRule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]networkv1.SecurityGroupRule, len(rules))
+	for i, r := range rules {
+		out[i] = networkv1.SecurityGroupRule{
+			RuleId:      r.RuleId,
+			IpProtocol:  r.IpProtocol,
+			FromPort:    r.FromPort,
+			ToPort:      r.ToPort,
+			CidrIp:      r.CidrIp,
+			CidrIpv6:    r.CidrIpv6,
+			SourceSG:    r.SourceSG,
+			Description: r.Description,
+			Tags:        r.Tags,
+		}
+	}
+	return out
+}
+
+// buildSecurityGroupEvent assembles the payload for
+// SecurityGroupCreateSubject/DeleteSubject/UpdateSubject from a stored record.
+func buildSecurityGroupEvent(groupId, vpcId string, ingress, egress []SGRule) networkv1.SecurityGroupEvent {
+	return networkv1.SecurityGroupEvent{
+		GroupId:      groupId,
+		VpcId:        vpcId,
+		IngressRules: toNetworkSecurityGroupRules(ingress),
+		EgressRules:  toNetworkSecurityGroupRules(egress),
+	}
 }
 
 // CreateSecurityGroup creates a new security group in a VPC.
@@ -285,12 +313,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 
 	s.projectRecordTags(ctx, accountID, groupId, record.Tags)
 
-	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        vpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupCreateSubject, buildSecurityGroupEvent(groupId, vpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, "CreateSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -341,10 +364,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 
 	slog.InfoContext(ctx, "DeleteSecurityGroup completed", "groupId", groupId, "accountID", accountID)
 
-	if err := s.requestSGEvent("vpc.delete-sg", SGEvent{
-		GroupId: groupId,
-		VpcId:   record.VpcId,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupDeleteSubject, buildSecurityGroupEvent(groupId, record.VpcId, nil, nil)); err != nil {
 		slog.ErrorContext(ctx, "DeleteSecurityGroup: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -1127,12 +1147,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 
 	slog.InfoContext(ctx, "AuthorizeSecurityGroupIngress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
 
-	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupUpdateSubject, buildSecurityGroupEvent(groupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, "AuthorizeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -1210,12 +1225,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 
 	slog.InfoContext(ctx, "AuthorizeSecurityGroupEgress completed", "groupId", groupId, "newRules", len(newRules), "accountID", accountID)
 
-	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupUpdateSubject, buildSecurityGroupEvent(groupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, "AuthorizeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -1285,12 +1295,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 
 	slog.InfoContext(ctx, "RevokeSecurityGroupIngress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
 
-	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupUpdateSubject, buildSecurityGroupEvent(groupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, "RevokeSecurityGroupIngress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -1355,12 +1360,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 
 	slog.InfoContext(ctx, "RevokeSecurityGroupEgress completed", "groupId", groupId, "revokedRules", len(revokeRules), "accountID", accountID)
 
-	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupUpdateSubject, buildSecurityGroupEvent(groupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, "RevokeSecurityGroupEgress: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -1472,12 +1472,7 @@ func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID
 
 	// The ACL set this rebuilds is byte-identical, because toPolicyRules drops
 	// Description. Publishing anyway keeps every mutating path on one shape.
-	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
-		GroupId:      req.groupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupUpdateSubject, buildSecurityGroupEvent(req.groupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, req.op+": vpcd request failed", "groupId", req.groupId, "err", err)
 		return err
 	}
@@ -1656,12 +1651,7 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 
 	slog.InfoContext(ctx, "ModifySecurityGroupRules completed", "groupId", groupId, "modifiedRules", len(modified), "accountID", accountID)
 
-	if err := s.requestSGEvent("vpc.update-sg", SGEvent{
-		GroupId:      groupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupUpdateSubject, buildSecurityGroupEvent(groupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		slog.ErrorContext(ctx, "ModifySecurityGroupRules: vpcd request failed", "groupId", groupId, "err", err)
 		return nil, err
 	}
@@ -2157,7 +2147,7 @@ const vpcdSGEventTimeout = 5 * time.Second
 
 // requestSGEvent sends a security group lifecycle event to vpcd via
 // request-reply and surfaces vpcd-side failures to the API caller.
-func (s *VPCServiceImpl) requestSGEvent(topic string, evt SGEvent) error {
+func (s *VPCServiceImpl) requestSGEvent(topic string, evt networkv1.SecurityGroupEvent) error {
 	return utils.RequestEvent(s.natsConn, topic, evt, vpcdSGEventTimeout)
 }
 
@@ -2212,12 +2202,7 @@ func (s *VPCServiceImpl) storeDefaultSecurityGroup(ctx context.Context, accountI
 // announceDefaultSecurityGroup asks vpcd to build the port group for a newly
 // stored default SG.
 func (s *VPCServiceImpl) announceDefaultSecurityGroup(record *SecurityGroupRecord) error {
-	if err := s.requestSGEvent("vpc.create-sg", SGEvent{
-		GroupId:      record.GroupId,
-		VpcId:        record.VpcId,
-		IngressRules: record.IngressRules,
-		EgressRules:  record.EgressRules,
-	}); err != nil {
+	if err := s.requestSGEvent(networkv1.SecurityGroupCreateSubject, buildSecurityGroupEvent(record.GroupId, record.VpcId, record.IngressRules, record.EgressRules)); err != nil {
 		return fmt.Errorf("vpcd vpc.create-sg: %w", err)
 	}
 	return nil
@@ -2244,10 +2229,7 @@ func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accoun
 	// that always leaks its tags.
 	s.clearRecordTags(ctx, accountID, groupId)
 
-	return s.requestSGEvent("vpc.delete-sg", SGEvent{
-		GroupId: groupId,
-		VpcId:   record.VpcId,
-	})
+	return s.requestSGEvent(networkv1.SecurityGroupDeleteSubject, buildSecurityGroupEvent(groupId, record.VpcId, nil, nil))
 }
 
 // FindDefaultSGForVPC scans the account's SG bucket for the SG with

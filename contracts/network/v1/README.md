@@ -44,14 +44,11 @@ against.
 | `vpc.update-sg` | `SecurityGroupEvent` | `AckEnvelope` | request/reply, 5s | `vpcd-workers` |
 
 Producer for every route above is the daemon (`spinifex-daemon`), by way of
-`domains/ec2/*`, `handlers/elbv2` or `spinifex/utils`. Consumer for every
-route is `vpcd`, by way of `domains/network/subscribers`. `vpc.igw-attach`
-and `vpc.igw-detach` are the one exception: today they are also declared in
-`contracts/ec2/v1` (`igw.go`), under the identical subject literals and an
-identical `InternetGatewayEvent` shape, because EC2's internet-gateway
-attach/detach handling is both the producer's authority and, by historical
-accident, a second declaration of the same wire type. This package does not
-remove that duplicate; reconciling to one declared owner is a later slice.
+`domains/ec2/*`, `handlers/elbv2`, `handlers/eks` or `spinifex/utils`.
+Consumer for every route is `vpcd`, by way of `domains/network/subscribers`.
+This package is the sole declared owner of every subject and type above,
+including `vpc.igw-attach`/`vpc.igw-detach`, which were previously also
+declared in `contracts/ec2/v1`; that duplicate has been removed.
 
 ## Compatibility rules
 
@@ -67,7 +64,4 @@ test is stale.
 
 It does not move `vpcd` or any subscriber out of its current package. It does
 not change any route's delivery mode, timeout, retry budget, queue group, or
-the NAT add barrier. It does not make `vpc.*` publishers or subscribers
-depend on it yet: that migration, and reconciling the `domains/ec2/vpc`
-NAT/SG duplicates and the `contracts/ec2/v1` internet-gateway duplicate onto
-this package, is slice 3 and slice 4.
+the NAT add barrier.

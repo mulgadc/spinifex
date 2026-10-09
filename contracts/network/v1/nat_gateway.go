@@ -12,13 +12,14 @@ const (
 )
 
 // NATGatewayEvent is the payload on NATGatewayAddSubject and
-// NATGatewayDeleteSubject. SubnetId and DestinationCidr are omitted by one
-// of today's two publishers; see README for that divergence.
+// NATGatewayDeleteSubject. SubnetId and DestinationCidr are omitempty
+// because one of today's two publishers (domains/ec2/natgw) never sets
+// them; omitting matches that publisher's wire bytes exactly. See README.
 type NATGatewayEvent struct {
 	VpcId           string `json:"vpc_id"`
 	NatGatewayId    string `json:"nat_gateway_id"`
 	PublicIp        string `json:"public_ip"`
 	SubnetCidr      string `json:"subnet_cidr"`
-	SubnetId        string `json:"subnet_id"`
-	DestinationCidr string `json:"destination_cidr"`
+	SubnetId        string `json:"subnet_id,omitempty"`
+	DestinationCidr string `json:"destination_cidr,omitempty"`
 }

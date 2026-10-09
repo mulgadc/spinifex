@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
@@ -1828,7 +1829,7 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 	if len(lb.ENIs) > 0 {
 		portName = topology.Port(lb.ENIs[0])
 	}
-	utils.PublishNATEvent(s.nc, "vpc.delete-nat", lb.VpcId, publicIP, lb.VPCIP, portName, "")
+	utils.PublishNATEvent(s.nc, networkv1.NATDeleteSubject, lb.VpcId, publicIP, lb.VPCIP, portName, "")
 	slog.Info("DeleteLoadBalancer: reaped floating-IP NAT",
 		"lbId", lb.LoadBalancerID, "externalIp", publicIP, "logicalIp", lb.VPCIP)
 }

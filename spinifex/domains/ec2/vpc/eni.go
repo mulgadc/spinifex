@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	networkids "github.com/mulgadc/spinifex/spinifex/domains/network/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -216,7 +217,7 @@ func (s *VPCServiceImpl) CreateNetworkInterface(ctx context.Context, input *ec2.
 	// caller. Fire-and-forget would let CreateNetworkInterface return success
 	// while the LSP joins zero port groups (NATS hiccup or vpcd OVSDB error),
 	// leaving the port unrestricted until the 30s reconciler heals it.
-	if err := s.requestPortEvent("vpc.create-port", eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn, record.SuppressDHCP); err != nil {
+	if err := s.requestPortEvent(networkv1.PortCreateSubject, eniId, subnetId, subnet.VpcId, privateIP, macAddr, sgIdsIn, record.SuppressDHCP); err != nil {
 		slog.ErrorContext(ctx, "CreateNetworkInterface: vpcd create-port failed", "eniId", eniId, "err", err)
 		return nil, err
 	}
@@ -294,7 +295,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	// Publish vpc.delete-port event for vpcd topology cleanup. SG IDs are
 	// included for consistency with create-port; vpcd's delete handler reads
 	// current memberships from the libovsdb cache rather than the event.
-	s.publishPortEvent("vpc.delete-port", eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds, false)
+	s.publishPortEvent(networkv1.PortDeleteSubject, eniId, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds, false)
 
 	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
@@ -318,7 +319,7 @@ func (s *VPCServiceImpl) releaseENISideEffects(ctx context.Context, eniId, accou
 			slog.InfoContext(ctx, "releaseENISideEffects: public IP owned by EIP, skipping release", "eniId", eniId, "publicIp", record.PublicIpAddress)
 		} else {
 			portName := topology.Port(eniId)
-			s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
+			s.publishNATEvent(networkv1.NATDeleteSubject, record.VpcId, record.PublicIpAddress, record.PrivateIpAddress, portName, record.MacAddress)
 			if err := s.externalIPAM.ReleaseIP(ctx, record.PublicIpPool, record.PublicIpAddress, eniId); err != nil {
 				slog.WarnContext(ctx, "Failed to release public IP during ENI delete", "eni", eniId, "ip", record.PublicIpAddress, "pool", record.PublicIpPool, "err", err)
 			} else {
@@ -403,7 +404,7 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 		s.releaseENISideEffects(ctx, eniID, accountID, &record)
 
 		slog.InfoContext(ctx, "DetachAndDeleteENI completed", "eniId", eniID, "accountID", accountID, "force", force)
-		s.publishPortEvent("vpc.delete-port", eniID, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds, false)
+		s.publishPortEvent(networkv1.PortDeleteSubject, eniID, record.SubnetId, record.VpcId, record.PrivateIpAddress, record.MacAddress, record.SecurityGroupIds, false)
 		return true, nil
 	}
 
@@ -1103,21 +1104,6 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 	return eni
 }
 
-// portEventPayload is the wire shape for vpc.create-port / vpc.delete-port.
-// Mirrors network/subscribers.PortEvent — duplicated here to avoid a
-// subscribers → handlers import cycle.
-type portEventPayload struct {
-	NetworkInterfaceId string   `json:"network_interface_id"`
-	SubnetId           string   `json:"subnet_id"`
-	VpcId              string   `json:"vpc_id"`
-	PrivateIpAddress   string   `json:"private_ip_address"`
-	MacAddress         string   `json:"mac_address"`
-	SecurityGroupIds   []string `json:"security_group_ids,omitempty"`
-	// SuppressDHCP, set on create, skips attaching the subnet's dhcpv4_options
-	// to this port's LSP. Irrelevant on delete.
-	SuppressDHCP bool `json:"suppress_dhcp,omitempty"`
-}
-
 // publishPortEvent sends vpc.delete-port via request-reply so vpcd confirms
 // the LSP is gone before a same-IP recreate can collide with a stale one.
 // Non-fatal: the ENI KV row is already gone, so a failure is only logged.
@@ -1131,7 +1117,7 @@ func (s *VPCServiceImpl) publishPortEvent(topic, eniId, subnetId, vpcId, private
 // requestPortEvent sends a port lifecycle event via request-reply so vpcd
 // OVSDB failures surface to the caller rather than being swallowed.
 func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, privateIP, macAddr string, sgIds []string, suppressDHCP bool) error {
-	return utils.RequestEvent(s.natsConn, topic, portEventPayload{
+	return utils.RequestEvent(s.natsConn, topic, networkv1.PortEvent{
 		NetworkInterfaceId: eniId,
 		SubnetId:           subnetId,
 		VpcId:              vpcId,
@@ -1145,29 +1131,16 @@ func (s *VPCServiceImpl) requestPortEvent(topic, eniId, subnetId, vpcId, private
 // requestUpdatePortSGsEvent sends a vpc.update-port-sgs event to vpcd via
 // request-reply. Errors surface to the caller; vpcd computes the OVN diff.
 func (s *VPCServiceImpl) requestUpdatePortSGsEvent(eniId, privateIP string, sgIds []string) error {
-	return utils.RequestEvent(s.natsConn, "vpc.update-port-sgs", struct {
-		NetworkInterfaceId string   `json:"network_interface_id"`
-		PrivateIpAddress   string   `json:"private_ip_address"`
-		SecurityGroupIds   []string `json:"security_group_ids"`
-	}{
+	return utils.RequestEvent(s.natsConn, networkv1.PortSecurityGroupsUpdateSubject, networkv1.PortSecurityGroupsUpdateEvent{
 		NetworkInterfaceId: eniId,
 		PrivateIpAddress:   privateIP,
 		SecurityGroupIds:   sgIds,
 	}, vpcdSGEventTimeout)
 }
 
-// NATEvent represents a NAT lifecycle event published to NATS.
-type NATEvent struct {
-	VpcId      string `json:"vpc_id"`
-	ExternalIP string `json:"external_ip"`
-	LogicalIP  string `json:"logical_ip"`
-	PortName   string `json:"port_name"`
-	MAC        string `json:"mac"`
-}
-
 // publishNATEvent publishes a NAT lifecycle event (vpc.add-nat or vpc.delete-nat) to NATS.
 func (s *VPCServiceImpl) publishNATEvent(topic, vpcId, externalIP, logicalIP, portName, mac string) {
-	natsmsg.PublishEvent(s.natsConn, topic, NATEvent{
+	natsmsg.PublishEvent(s.natsConn, topic, networkv1.NATEvent{
 		VpcId: vpcId, ExternalIP: externalIP, LogicalIP: logicalIP, PortName: portName, MAC: mac,
 	})
 }

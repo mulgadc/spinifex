@@ -8,17 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/nats-io/nats.go"
 )
-
-// natEvent is the wire payload for vpc.add-nat / vpc.delete-nat.
-type natEvent struct {
-	VpcId      string `json:"vpc_id"`
-	ExternalIP string `json:"external_ip"`
-	LogicalIP  string `json:"logical_ip"`
-	PortName   string `json:"port_name"`
-	MAC        string `json:"mac"`
-}
 
 // addNATTimeout bounds the vpc.add-nat request-reply. vpcd's handler holds the
 // reply until the flows barrier (ovn-nbctl --wait=hv sync, bounded 30 s) confirms
@@ -31,7 +23,7 @@ const addNATTimeout = 45 * time.Second
 // AddNAT requests vpcd commit the OVN dnat_and_snat rule via NATS request-reply.
 // A non-nil return means the rule may not be committed; callers must roll back and publish vpc.delete-nat.
 func AddNAT(nc *nats.Conn, vpcID, externalIP, logicalIP, portName, mac string) error {
-	return RequestEvent(nc, "vpc.add-nat", natEvent{
+	return RequestEvent(nc, networkv1.NATAddSubject, networkv1.NATEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
 		PortName: portName, MAC: mac,
 	}, addNATTimeout)
@@ -60,18 +52,18 @@ var deleteNATRetryDelay = 500 * time.Millisecond
 // orphan sweep is the backstop. Use AddNAT directly when failure must trigger a
 // rollback.
 func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portName, mac string) {
-	evt := natEvent{
+	evt := networkv1.NATEvent{
 		VpcId: vpcID, ExternalIP: externalIP, LogicalIP: logicalIP,
 		PortName: portName, MAC: mac,
 	}
 
 	switch topic {
-	case "vpc.add-nat":
+	case networkv1.NATAddSubject:
 		if err := RequestEvent(nc, topic, evt, addNATTimeout); err != nil {
 			slog.Warn("PublishNATEvent: failed to add NAT rule — OVN dnat_and_snat rule not created; restart vpcd or re-associate EIP to recover",
 				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
 		}
-	case "vpc.delete-nat":
+	case networkv1.NATDeleteSubject:
 		if err := deleteNAT(nc, evt); err != nil {
 			slog.Error("PublishNATEvent: failed to delete NAT rule — the host route and proxy-ARP for this address may still deliver to its old guest; the reconciler's orphan sweep is the remaining repair",
 				"topic", topic, "externalIP", externalIP, "logicalIP", logicalIP, "err", err)
@@ -82,13 +74,13 @@ func PublishNATEvent(nc *nats.Conn, topic, vpcID, externalIP, logicalIP, portNam
 }
 
 // deleteNAT requests the teardown, retrying only while nothing is subscribed.
-func deleteNAT(nc *nats.Conn, evt natEvent) error {
+func deleteNAT(nc *nats.Conn, evt networkv1.NATEvent) error {
 	var err error
 	for attempt := range deleteNATRetries {
 		if attempt > 0 {
 			time.Sleep(deleteNATRetryDelay)
 		}
-		if err = RequestEvent(nc, "vpc.delete-nat", evt, deleteNATTimeout); err == nil {
+		if err = RequestEvent(nc, networkv1.NATDeleteSubject, evt, deleteNATTimeout); err == nil {
 			return nil
 		}
 		if !errors.Is(err, nats.ErrNoResponders) {
@@ -114,10 +106,7 @@ func RequestEvent(nc *nats.Conn, topic string, event any, timeout time.Duration)
 		return fmt.Errorf("%s request: %w", topic, err)
 	}
 	// vpcd responds with {"success":true} or {"success":false,"error":"..."}.
-	var result struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error,omitempty"`
-	}
+	var result networkv1.AckEnvelope
 	if jsonErr := json.Unmarshal(resp.Data, &result); jsonErr != nil {
 		return fmt.Errorf("%s: unmarshal response: %w", topic, jsonErr)
 	}

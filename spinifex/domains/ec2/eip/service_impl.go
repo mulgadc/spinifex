@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -57,15 +58,6 @@ type ENIPublicIPChanged struct {
 	ENIID      string `json:"eni_id"`
 	PublicIP   string `json:"public_ip"`
 	PoolName   string `json:"pool_name,omitempty"`
-}
-
-// natEvent is the payload published to vpc.add-nat / vpc.delete-nat topics.
-type natEvent struct {
-	VpcId      string `json:"vpc_id"`
-	ExternalIP string `json:"external_ip"`
-	LogicalIP  string `json:"logical_ip"`
-	PortName   string `json:"port_name"`
-	MAC        string `json:"mac"`
 }
 
 // NewEIPServiceImpl creates a new EIP service backed by NATS JetStream KV.
@@ -282,7 +274,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	s.announcePublicIP(ctx, instanceID, eniID, record.PublicIp, record.PoolName)
 
 	// Publish vpc.add-nat event (fire-and-forget).
-	s.publishNATEvent("vpc.add-nat", vpcID, record.PublicIp, privateIP, eniID, macAddr)
+	s.publishNATEvent(networkv1.NATAddSubject, vpcID, record.PublicIp, privateIP, eniID, macAddr)
 
 	slog.InfoContext(ctx, "AssociateAddress completed",
 		"allocationId", allocID,
@@ -319,7 +311,7 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 		if lookupErr == nil {
 			macAddr = eni.MacAddress
 		}
-		s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, record.ENIId, macAddr)
+		s.publishNATEvent(networkv1.NATDeleteSubject, record.VpcId, record.PublicIp, record.PrivateIp, record.ENIId, macAddr)
 	}
 
 	poolName, publicIP := record.PoolName, record.PublicIp
@@ -447,7 +439,7 @@ func (s *EIPServiceImpl) DisassociateByENI(ctx context.Context, accountID, eniID
 
 		// The MAC comes off the record rather than a fresh ENI lookup: this runs
 		// as part of tearing that ENI down, so the interface may already be gone.
-		s.publishNATEvent("vpc.delete-nat", record.VpcId, record.PublicIp, record.PrivateIp, eniID, record.MacAddress)
+		s.publishNATEvent(networkv1.NATDeleteSubject, record.VpcId, record.PublicIp, record.PrivateIp, eniID, record.MacAddress)
 
 		publicIP, allocationID, poolName := record.PublicIp, record.AllocationId, record.PoolName
 		clearAssociation(record)
@@ -907,11 +899,11 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 // and associating an address must not inherit that latency.
 func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, eniID, mac string) {
 	portName := topology.Port(eniID)
-	if topic == "vpc.delete-nat" {
+	if topic == networkv1.NATDeleteSubject {
 		utils.PublishNATEvent(s.natsConn, topic, vpcID, externalIP, logicalIP, portName, mac)
 		return
 	}
-	natsmsg.PublishEvent(s.natsConn, topic, natEvent{
+	natsmsg.PublishEvent(s.natsConn, topic, networkv1.NATEvent{
 		VpcId:      vpcID,
 		ExternalIP: externalIP,
 		LogicalIP:  logicalIP,

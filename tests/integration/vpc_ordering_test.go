@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -65,7 +65,7 @@ func TestVPCD_SubnetBeforeVPCConverges(t *testing.T) {
 	const vpcID, subnetID = "vpc-order-a", "subnet-order-a"
 	router := topology.VPCRouter(vpcID)
 
-	publishEvent(t, nc, subscribers.TopicSubnetCreate, subscribers.SubnetEvent{
+	publishEvent(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId:  subnetID,
 		VpcId:     vpcID,
 		CidrBlock: "10.50.1.0/24",
@@ -76,7 +76,7 @@ func TestVPCD_SubnetBeforeVPCConverges(t *testing.T) {
 		return err
 	})
 
-	publishEvent(t, nc, subscribers.TopicVPCCreate, subscribers.VPCEvent{
+	publishEvent(t, nc, networkv1.VPCCreateSubject, networkv1.VPCEvent{
 		VpcId:     vpcID,
 		CidrBlock: "10.50.0.0/16",
 	})

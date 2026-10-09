@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
@@ -331,20 +332,18 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(ctx context.Cont
 			"vpcId", vpcID, "subnetId", subnetID, "err", err)
 		return
 	}
-	topic := "vpc.gate-subnet-egress"
+	topic := networkv1.SubnetEgressGateSubject
+	var data []byte
 	if hasEgress {
-		topic = "vpc.ungate-subnet-egress"
+		topic = networkv1.SubnetEgressUngateSubject
+		data, err = json.Marshal(networkv1.SubnetEgressUngateEvent{
+			VpcId: vpcID, SubnetId: subnetID, DestinationCidr: destCidr,
+		})
+	} else {
+		data, err = json.Marshal(networkv1.SubnetEgressGateEvent{
+			VpcId: vpcID, SubnetId: subnetID, DestinationCidr: destCidr,
+		})
 	}
-	evt := struct {
-		VpcId           string `json:"vpc_id"`
-		SubnetId        string `json:"subnet_id"`
-		DestinationCidr string `json:"destination_cidr"`
-	}{
-		VpcId:           vpcID,
-		SubnetId:        subnetID,
-		DestinationCidr: destCidr,
-	}
-	data, err := json.Marshal(evt)
 	if err != nil {
 		slog.WarnContext(ctx, "subnet egress gate: marshal failed", "topic", topic, "err", err)
 		return
@@ -777,7 +776,7 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		// Publish vpc.add-igw-route events for each subnet associated with this
 		// route table so the network subscriber installs per-subnet egress policies.
 		publish = func() {
-			s.publishIGWRouteEvents(ctx, accountID, "vpc.add-igw-route", record, igwRecord.VpcId, igwID, destCidr)
+			s.publishIGWRouteEvents(ctx, accountID, networkv1.IGWRouteAddSubject, record, igwRecord.VpcId, igwID, destCidr)
 		}
 
 	case input.NatGatewayId != nil && *input.NatGatewayId != "":
@@ -893,7 +892,7 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 	}
 
 	if departing.GatewayId != "" && strings.HasPrefix(departing.GatewayId, "igw-") {
-		s.publishIGWRouteEvents(ctx, accountID, "vpc.delete-igw-route", record, record.VpcId, departing.GatewayId, departing.DestinationCidrBlock)
+		s.publishIGWRouteEvents(ctx, accountID, networkv1.IGWRouteDeleteSubject, record, record.VpcId, departing.GatewayId, departing.DestinationCidrBlock)
 	}
 
 	if departing.NatGatewayId != "" {
@@ -1046,16 +1045,16 @@ func (s *RouteTableServiceImpl) AssociateRouteTable(ctx context.Context, input *
 		if mainRT, err := s.mainRouteTable(ctx, accountID, record.VpcId); err != nil {
 			slog.WarnContext(ctx, "AssociateRouteTable: main RT lookup failed", "vpcId", record.VpcId, "err", err)
 		} else if mainRT != nil {
-			s.publishNatGatewayEventsForAssociation(ctx, accountID, "vpc.delete-nat-gateway", mainRT, subnetID)
-			s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.delete-igw-route", mainRT, subnetID)
+			s.publishNatGatewayEventsForAssociation(ctx, accountID, networkv1.NATGatewayDeleteSubject, mainRT, subnetID)
+			s.publishIGWRouteEventsForAssociation(ctx, accountID, networkv1.IGWRouteDeleteSubject, mainRT, subnetID)
 		}
 	}
 
 	// Terraform commonly creates the route table + NAT GW route before associating
 	// subnets. CreateRoute runs against a table with zero associations so no SNAT
 	// events fire, so we must emit them here once the subnet joins.
-	s.publishNatGatewayEventsForAssociation(ctx, accountID, "vpc.add-nat-gateway", record, subnetID)
-	s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.add-igw-route", record, subnetID)
+	s.publishNatGatewayEventsForAssociation(ctx, accountID, networkv1.NATGatewayAddSubject, record, subnetID)
+	s.publishIGWRouteEventsForAssociation(ctx, accountID, networkv1.IGWRouteAddSubject, record, subnetID)
 
 	// Subnet's effective RT just changed — recompute gate decision.
 	s.publishSubnetEgressGateDecision(ctx, accountID, record.VpcId, subnetID, "0.0.0.0/0")
@@ -1128,15 +1127,15 @@ func (s *RouteTableServiceImpl) DisassociateRouteTable(ctx context.Context, inpu
 				}
 
 				// Tear down per-subnet SNAT rules for any NAT GW routes on this table.
-				s.publishNatGatewayEventsForAssociation(ctx, accountID, "vpc.delete-nat-gateway", &record, departingSubnetID)
-				s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.delete-igw-route", &record, departingSubnetID)
+				s.publishNatGatewayEventsForAssociation(ctx, accountID, networkv1.NATGatewayDeleteSubject, &record, departingSubnetID)
+				s.publishIGWRouteEventsForAssociation(ctx, accountID, networkv1.IGWRouteDeleteSubject, &record, departingSubnetID)
 
 				// Subnet falls back to implicit main-RT membership: re-install main RT's per-subnet rules.
 				if mainRT, err := s.mainRouteTable(ctx, accountID, record.VpcId); err != nil {
 					slog.WarnContext(ctx, "DisassociateRouteTable: main RT lookup failed", "vpcId", record.VpcId, "err", err)
 				} else if mainRT != nil && mainRT.RouteTableId != record.RouteTableId {
-					s.publishNatGatewayEventsForAssociation(ctx, accountID, "vpc.add-nat-gateway", mainRT, departingSubnetID)
-					s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.add-igw-route", mainRT, departingSubnetID)
+					s.publishNatGatewayEventsForAssociation(ctx, accountID, networkv1.NATGatewayAddSubject, mainRT, departingSubnetID)
+					s.publishIGWRouteEventsForAssociation(ctx, accountID, networkv1.IGWRouteAddSubject, mainRT, departingSubnetID)
 				}
 
 				// Subnet's effective RT just changed — recompute gate decision.
@@ -1221,8 +1220,8 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 			// Tear down SNAT for any NAT GW routes on the old table — the
 			// subnet is leaving so its per-CIDR rules must be removed before
 			// the new table's rules take effect.
-			s.publishNatGatewayEventsForAssociation(ctx, accountID, "vpc.delete-nat-gateway", &oldRecord, assoc.SubnetId)
-			s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.delete-igw-route", &oldRecord, assoc.SubnetId)
+			s.publishNatGatewayEventsForAssociation(ctx, accountID, networkv1.NATGatewayDeleteSubject, &oldRecord, assoc.SubnetId)
+			s.publishIGWRouteEventsForAssociation(ctx, accountID, networkv1.IGWRouteDeleteSubject, &oldRecord, assoc.SubnetId)
 
 			// Add to new table with new ID
 			newAssocID := awsidentifiers.GenerateResourceID("rtbassoc")
@@ -1247,8 +1246,8 @@ func (s *RouteTableServiceImpl) ReplaceRouteTableAssociation(ctx context.Context
 			}
 
 			// Install SNAT for any NAT GW routes on the new table.
-			s.publishNatGatewayEventsForAssociation(ctx, accountID, "vpc.add-nat-gateway", newRecord, assoc.SubnetId)
-			s.publishIGWRouteEventsForAssociation(ctx, accountID, "vpc.add-igw-route", newRecord, assoc.SubnetId)
+			s.publishNatGatewayEventsForAssociation(ctx, accountID, networkv1.NATGatewayAddSubject, newRecord, assoc.SubnetId)
+			s.publishIGWRouteEventsForAssociation(ctx, accountID, networkv1.IGWRouteAddSubject, newRecord, assoc.SubnetId)
 
 			// Subnet's effective RT just changed — recompute gate decision.
 			s.publishSubnetEgressGateDecision(ctx, accountID, newRecord.VpcId, assoc.SubnetId, "0.0.0.0/0")
@@ -1357,21 +1356,21 @@ func (s *RouteTableServiceImpl) publishNatGatewayEvents(ctx context.Context, acc
 			continue
 		}
 		seen[assoc.SubnetId] = true
-		s.publishNatGatewayEventForSubnet(ctx, accountID, "vpc.add-nat-gateway", assoc.SubnetId, vpcID, natgwID, publicIp, destCidr)
+		s.publishNatGatewayEventForSubnet(ctx, accountID, networkv1.NATGatewayAddSubject, assoc.SubnetId, vpcID, natgwID, publicIp, destCidr)
 	}
 	if !record.IsMain {
 		return
 	}
 	implicit, err := s.subnetsImplicitlyOnMainRT(ctx, accountID, vpcID)
 	if err != nil {
-		slog.WarnContext(ctx, "NAT GW event: enumerate implicit main-RT subnets failed", "topic", "vpc.add-nat-gateway", "vpcId", vpcID, "err", err)
+		slog.WarnContext(ctx, "NAT GW event: enumerate implicit main-RT subnets failed", "topic", networkv1.NATGatewayAddSubject, "vpcId", vpcID, "err", err)
 		return
 	}
 	for _, subnetID := range implicit {
 		if seen[subnetID] {
 			continue
 		}
-		s.publishNatGatewayEventForSubnet(ctx, accountID, "vpc.add-nat-gateway", subnetID, vpcID, natgwID, publicIp, destCidr)
+		s.publishNatGatewayEventForSubnet(ctx, accountID, networkv1.NATGatewayAddSubject, subnetID, vpcID, natgwID, publicIp, destCidr)
 	}
 }
 
@@ -1384,7 +1383,7 @@ func (s *RouteTableServiceImpl) publishNatGatewayDeleteEvents(ctx context.Contex
 	}
 	natgwEntry, err := s.natgwKV.Get(ctx, kvutil.AccountKey(accountID, natgwID))
 	if err != nil {
-		slog.WarnContext(ctx, "NAT GW event: natgw lookup failed", "topic", "vpc.delete-nat-gateway", "natGatewayId", natgwID, "err", err)
+		slog.WarnContext(ctx, "NAT GW event: natgw lookup failed", "topic", networkv1.NATGatewayDeleteSubject, "natGatewayId", natgwID, "err", err)
 		return
 	}
 	var natgw struct {
@@ -1393,7 +1392,7 @@ func (s *RouteTableServiceImpl) publishNatGatewayDeleteEvents(ctx context.Contex
 		PublicIp     string `json:"public_ip"`
 	}
 	if err := json.Unmarshal(natgwEntry.Value(), &natgw); err != nil {
-		slog.WarnContext(ctx, "NAT GW event: natgw unmarshal failed", "topic", "vpc.delete-nat-gateway", "natGatewayId", natgwID, "err", err)
+		slog.WarnContext(ctx, "NAT GW event: natgw unmarshal failed", "topic", networkv1.NATGatewayDeleteSubject, "natGatewayId", natgwID, "err", err)
 		return
 	}
 	seen := map[string]bool{}
@@ -1402,21 +1401,21 @@ func (s *RouteTableServiceImpl) publishNatGatewayDeleteEvents(ctx context.Contex
 			continue
 		}
 		seen[assoc.SubnetId] = true
-		s.publishNatGatewayEventForSubnet(ctx, accountID, "vpc.delete-nat-gateway", assoc.SubnetId, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp, destCidr)
+		s.publishNatGatewayEventForSubnet(ctx, accountID, networkv1.NATGatewayDeleteSubject, assoc.SubnetId, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp, destCidr)
 	}
 	if !record.IsMain {
 		return
 	}
 	implicit, err := s.subnetsImplicitlyOnMainRT(ctx, accountID, natgw.VpcId)
 	if err != nil {
-		slog.WarnContext(ctx, "NAT GW event: enumerate implicit main-RT subnets failed", "topic", "vpc.delete-nat-gateway", "vpcId", natgw.VpcId, "err", err)
+		slog.WarnContext(ctx, "NAT GW event: enumerate implicit main-RT subnets failed", "topic", networkv1.NATGatewayDeleteSubject, "vpcId", natgw.VpcId, "err", err)
 		return
 	}
 	for _, subnetID := range implicit {
 		if seen[subnetID] {
 			continue
 		}
-		s.publishNatGatewayEventForSubnet(ctx, accountID, "vpc.delete-nat-gateway", subnetID, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp, destCidr)
+		s.publishNatGatewayEventForSubnet(ctx, accountID, networkv1.NATGatewayDeleteSubject, subnetID, natgw.VpcId, natgw.NatGatewayId, natgw.PublicIp, destCidr)
 	}
 }
 
@@ -1465,22 +1464,14 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(ctx context.Cont
 		slog.WarnContext(ctx, "NAT GW event: subnet unmarshal failed", "topic", topic, "subnetId", subnetID, "err", err)
 		return
 	}
-	evt := struct {
-		VpcId           string `json:"vpc_id"`
-		NatGatewayId    string `json:"nat_gateway_id"`
-		PublicIp        string `json:"public_ip"`
-		SubnetCidr      string `json:"subnet_cidr"`
-		SubnetId        string `json:"subnet_id"`
-		DestinationCidr string `json:"destination_cidr"`
-	}{
+	data, err := json.Marshal(networkv1.NATGatewayEvent{
 		VpcId:           vpcID,
 		NatGatewayId:    natgwID,
 		PublicIp:        publicIp,
 		SubnetCidr:      subnet.CidrBlock,
 		SubnetId:        subnetID,
 		DestinationCidr: destCidr,
-	}
-	data, err := json.Marshal(evt)
+	})
 	if err != nil {
 		slog.WarnContext(ctx, "NAT GW event: marshal failed", "topic", topic, "err", err)
 		return
@@ -1542,18 +1533,12 @@ func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(ctx context.Contex
 	if s.natsConn == nil {
 		return
 	}
-	evt := struct {
-		VpcId             string `json:"vpc_id"`
-		SubnetId          string `json:"subnet_id"`
-		DestinationCidr   string `json:"destination_cidr"`
-		InternetGatewayId string `json:"internet_gateway_id"`
-	}{
+	data, err := json.Marshal(networkv1.IGWRouteEvent{
 		VpcId:             vpcID,
 		SubnetId:          subnetID,
 		DestinationCidr:   destCidr,
 		InternetGatewayId: igwID,
-	}
-	data, err := json.Marshal(evt)
+	})
 	if err != nil {
 		slog.WarnContext(ctx, "IGW route event: marshal failed", "topic", topic, "err", err)
 		return

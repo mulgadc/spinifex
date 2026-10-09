@@ -1,6 +1,6 @@
 //test:in-package — the handlers under test are unexported methods on
-// Subscriber, and the tests reuse newTestSubscriber and the respondResponse
-// envelope, both of which are package-internal.
+// Subscriber, and the tests reuse newTestSubscriber, which is
+// package-internal.
 
 package subscribers
 
@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,7 +46,7 @@ func requestOK(t *testing.T, nc *nats.Conn, topic string, evt any) {
 	require.NoError(t, err)
 	resp, err := nc.Request(topic, data, requestTimeout)
 	require.NoError(t, err)
-	var env respondResponse
+	var env networkv1.AckEnvelope
 	require.NoError(t, json.Unmarshal(resp.Data, &env))
 	require.True(t, env.Success, "%s: %s", topic, env.Error)
 }
@@ -59,7 +59,7 @@ func requestFails(t *testing.T, nc *nats.Conn, topic string, evt any) string {
 	require.NoError(t, err)
 	resp, err := nc.Request(topic, data, requestTimeout)
 	require.NoError(t, err)
-	var env respondResponse
+	var env networkv1.AckEnvelope
 	require.NoError(t, json.Unmarshal(resp.Data, &env))
 	require.False(t, env.Success, "%s must reject the event", topic)
 	return env.Error
@@ -132,14 +132,14 @@ func TestHandleVPC_CreateAndDelete(t *testing.T) {
 	ctx := context.Background()
 	nc, _, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicVPCCreate, VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16", VNI: 7})
+	requestOK(t, nc, networkv1.VPCCreateSubject, networkv1.VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16", VNI: 7})
 
 	lr, err := m.GetLogicalRouter(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
 	require.NotNil(t, lr, "vpc.create must create the VPC logical router")
 	assert.Equal(t, "vpc-1", lr.ExternalIDs["spinifex:vpc_id"])
 
-	requestOK(t, nc, TopicVPCDelete, VPCEvent{VpcId: "vpc-1"})
+	requestOK(t, nc, networkv1.VPCDeleteSubject, networkv1.VPCEvent{VpcId: "vpc-1"})
 
 	assert.False(t, routerExists(t, m, topology.VPCRouter("vpc-1")),
 		"vpc.delete must remove the VPC logical router")
@@ -149,7 +149,7 @@ func TestHandleVPC_CreateAndDelete(t *testing.T) {
 func TestHandleVPCCreate_InvalidCIDR(t *testing.T) {
 	nc, _, m := runningSubscriber(t)
 
-	requestFails(t, nc, TopicVPCCreate, VPCEvent{VpcId: "vpc-1", CidrBlock: "not-a-cidr"})
+	requestFails(t, nc, networkv1.VPCCreateSubject, networkv1.VPCEvent{VpcId: "vpc-1", CidrBlock: "not-a-cidr"})
 
 	assert.False(t, routerExists(t, m, topology.VPCRouter("vpc-1")),
 		"invalid CIDR must not create a router")
@@ -161,7 +161,7 @@ func TestHandleSubnetCreate_PreEnsuresVPCRouter(t *testing.T) {
 	ctx := context.Background()
 	nc, _, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicSubnetCreate, SubnetEvent{
+	requestOK(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24",
 	})
 
@@ -177,7 +177,7 @@ func TestHandleSubnetCreate_PreEnsuresVPCRouter(t *testing.T) {
 	require.NotNil(t, lrp, "subnet create must attach the subnet to its router")
 	assert.Contains(t, lrp.Networks, "10.0.1.1/24", "router port takes the subnet's first usable address")
 
-	requestOK(t, nc, TopicSubnetDelete, SubnetEvent{
+	requestOK(t, nc, networkv1.SubnetDeleteSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24",
 	})
 
@@ -188,7 +188,7 @@ func TestHandleSubnetCreate_PreEnsuresVPCRouter(t *testing.T) {
 func TestHandleSubnetCreate_InvalidCIDR(t *testing.T) {
 	nc, _, m := runningSubscriber(t)
 
-	requestFails(t, nc, TopicSubnetCreate, SubnetEvent{
+	requestFails(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/33",
 	})
 
@@ -200,10 +200,10 @@ func TestHandleSubnetCreate_InvalidCIDR(t *testing.T) {
 func TestHandleSubnetDelete_WithoutCIDR(t *testing.T) {
 	nc, _, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicSubnetCreate, SubnetEvent{
+	requestOK(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24",
 	})
-	requestOK(t, nc, TopicSubnetDelete, SubnetEvent{SubnetId: "subnet-1", VpcId: "vpc-1"})
+	requestOK(t, nc, networkv1.SubnetDeleteSubject, networkv1.SubnetEvent{SubnetId: "subnet-1", VpcId: "vpc-1"})
 
 	assert.False(t, switchExists(t, m, topology.SubnetSwitch("subnet-1")))
 }
@@ -212,12 +212,12 @@ func TestHandlePort_CreateAndDelete(t *testing.T) {
 	ctx := context.Background()
 	nc, sub, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicSubnetCreate, SubnetEvent{
+	requestOK(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24",
 	})
 	require.NoError(t, sub.topology.EnsureSGPortGroup(ctx, "sg-1"))
 
-	requestOK(t, nc, TopicCreatePort, PortEvent{
+	requestOK(t, nc, networkv1.PortCreateSubject, networkv1.PortEvent{
 		NetworkInterfaceId: "eni-1", SubnetId: "subnet-1", VpcId: "vpc-1",
 		PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 		SecurityGroupIds: []string{"sg-1"},
@@ -233,7 +233,7 @@ func TestHandlePort_CreateAndDelete(t *testing.T) {
 	assert.Contains(t, pgs, topology.SecurityGroupPortGroup("sg-1"),
 		"create-port must join the port to its security group")
 
-	requestOK(t, nc, TopicDeletePort, PortEvent{
+	requestOK(t, nc, networkv1.PortDeleteSubject, networkv1.PortEvent{
 		NetworkInterfaceId: "eni-1", SubnetId: "subnet-1", VpcId: "vpc-1",
 	})
 
@@ -246,15 +246,15 @@ func TestHandlePort_CreateAndDelete(t *testing.T) {
 func TestHandleCreatePort_MalformedAddresses(t *testing.T) {
 	nc, _, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicSubnetCreate, SubnetEvent{
+	requestOK(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24",
 	})
 
-	requestFails(t, nc, TopicCreatePort, PortEvent{
+	requestFails(t, nc, networkv1.PortCreateSubject, networkv1.PortEvent{
 		NetworkInterfaceId: "eni-bad-ip", SubnetId: "subnet-1", VpcId: "vpc-1",
 		PrivateIpAddress: "999.0.0.1", MacAddress: "02:00:00:00:00:01",
 	})
-	requestFails(t, nc, TopicCreatePort, PortEvent{
+	requestFails(t, nc, networkv1.PortCreateSubject, networkv1.PortEvent{
 		NetworkInterfaceId: "eni-bad-mac", SubnetId: "subnet-1", VpcId: "vpc-1",
 		PrivateIpAddress: "10.0.1.10", MacAddress: "not-a-mac",
 	})
@@ -270,19 +270,19 @@ func TestHandleUpdatePortSGs_ReplacesMemberships(t *testing.T) {
 	ctx := context.Background()
 	nc, sub, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicSubnetCreate, SubnetEvent{
+	requestOK(t, nc, networkv1.SubnetCreateSubject, networkv1.SubnetEvent{
 		SubnetId: "subnet-1", VpcId: "vpc-1", CidrBlock: "10.0.1.0/24",
 	})
 	for _, sg := range []string{"sg-1", "sg-2"} {
 		require.NoError(t, sub.topology.EnsureSGPortGroup(ctx, sg))
 	}
-	requestOK(t, nc, TopicCreatePort, PortEvent{
+	requestOK(t, nc, networkv1.PortCreateSubject, networkv1.PortEvent{
 		NetworkInterfaceId: "eni-1", SubnetId: "subnet-1", VpcId: "vpc-1",
 		PrivateIpAddress: "10.0.1.10", MacAddress: "02:00:00:00:00:01",
 		SecurityGroupIds: []string{"sg-1"},
 	})
 
-	requestOK(t, nc, TopicUpdatePortSGs, UpdatePortSGsEvent{
+	requestOK(t, nc, networkv1.PortSecurityGroupsUpdateSubject, networkv1.PortSecurityGroupsUpdateEvent{
 		NetworkInterfaceId: "eni-1", PrivateIpAddress: "10.0.1.10",
 		SecurityGroupIds: []string{"sg-2"},
 	})
@@ -297,13 +297,13 @@ func TestHandleUpdatePortSGs_ReplacesMemberships(t *testing.T) {
 func TestHandleIGW_AttachAndDetach(t *testing.T) {
 	nc, _, m := runningSubscriber(t)
 
-	requestOK(t, nc, TopicVPCCreate, VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16"})
-	requestOK(t, nc, TopicIGWAttach, ec2v1.InternetGatewayEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
+	requestOK(t, nc, networkv1.VPCCreateSubject, networkv1.VPCEvent{VpcId: "vpc-1", CidrBlock: "10.0.0.0/16"})
+	requestOK(t, nc, networkv1.InternetGatewayAttachSubject, networkv1.InternetGatewayEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
 
 	require.True(t, routerPortExists(t, m, topology.GatewayRouterPort("vpc-1")),
 		"igw-attach must create the gateway router port")
 
-	requestOK(t, nc, TopicIGWDetach, ec2v1.InternetGatewayEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
+	requestOK(t, nc, networkv1.InternetGatewayDetachSubject, networkv1.InternetGatewayEvent{VpcId: "vpc-1", InternetGatewayId: "igw-1"})
 
 	assert.False(t, routerPortExists(t, m, topology.GatewayRouterPort("vpc-1")),
 		"igw-detach must remove the gateway router port")
@@ -314,18 +314,18 @@ func TestHandleNAT_AddAndDelete(t *testing.T) {
 	nc, sub, m := runningSubscriber(t)
 	seedVPCWithIGW(t, sub, m, "vpc-1")
 
-	evt := NATEvent{
+	evt := networkv1.NATEvent{
 		VpcId: "vpc-1", ExternalIP: "192.168.1.70", LogicalIP: "10.0.1.10",
 		PortName: topology.Port("eni-1"), MAC: "02:00:00:00:00:01",
 	}
-	requestOK(t, nc, TopicAddNAT, evt)
+	requestOK(t, nc, networkv1.NATAddSubject, evt)
 
 	nat, err := m.FindNATByExternalIP(ctx, "dnat_and_snat", "192.168.1.70")
 	require.NoError(t, err)
 	require.NotNil(t, nat, "add-nat must install a dnat_and_snat rule")
 	assert.Equal(t, "10.0.1.10", nat.LogicalIP)
 
-	requestOK(t, nc, TopicDeleteNAT, evt)
+	requestOK(t, nc, networkv1.NATDeleteSubject, evt)
 
 	nat, err = m.FindNATByExternalIP(ctx, "dnat_and_snat", "192.168.1.70")
 	require.NoError(t, err)
@@ -338,17 +338,17 @@ func TestHandleIGWRoute_DeleteRemovesPolicy(t *testing.T) {
 	nc, sub, m := runningSubscriber(t)
 	seedVPCWithIGW(t, sub, m, "vpc-1")
 
-	evt := IGWRouteEvent{
+	evt := networkv1.IGWRouteEvent{
 		VpcId: "vpc-1", SubnetId: "subnet-pub",
 		DestinationCidr: "0.0.0.0/0", InternetGatewayId: "igw-1",
 	}
-	requestOK(t, nc, TopicAddIGWRoute, evt)
+	requestOK(t, nc, networkv1.IGWRouteAddSubject, evt)
 
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
 	require.Len(t, policies, 1)
 
-	requestOK(t, nc, TopicDeleteIGWRoute, evt)
+	requestOK(t, nc, networkv1.IGWRouteDeleteSubject, evt)
 
 	policies, err = m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
@@ -359,7 +359,7 @@ func TestHandleDeleteIGWRoute_InvalidCIDR(t *testing.T) {
 	nc, sub, m := runningSubscriber(t)
 	seedVPCWithIGW(t, sub, m, "vpc-1")
 
-	requestFails(t, nc, TopicDeleteIGWRoute, IGWRouteEvent{
+	requestFails(t, nc, networkv1.IGWRouteDeleteSubject, networkv1.IGWRouteEvent{
 		VpcId: "vpc-1", SubnetId: "subnet-pub", DestinationCidr: "not-a-cidr",
 	})
 }
@@ -370,8 +370,8 @@ func TestHandleSubnetEgress_GateAndUngate(t *testing.T) {
 	nc, sub, m := runningSubscriber(t)
 	seedVPCWithIGW(t, sub, m, "vpc-1")
 
-	gate := SubnetEgressGateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"}
-	requestOK(t, nc, TopicGateSubnetEgress, gate)
+	gate := networkv1.SubnetEgressGateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"}
+	requestOK(t, nc, networkv1.SubnetEgressGateSubject, gate)
 
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
@@ -379,8 +379,8 @@ func TestHandleSubnetEgress_GateAndUngate(t *testing.T) {
 	assert.Equal(t, policy.SubnetEgressPriorityDrop, policies[0].Priority)
 	assert.Contains(t, policies[0].Match, topology.SubnetRouterPort("subnet-1"))
 
-	requestOK(t, nc, TopicUngateSubnetEgress,
-		SubnetEgressUngateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"})
+	requestOK(t, nc, networkv1.SubnetEgressUngateSubject,
+		networkv1.SubnetEgressUngateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "0.0.0.0/0"})
 
 	policies, err = m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)
@@ -392,10 +392,10 @@ func TestHandleSubnetEgress_InvalidCIDR(t *testing.T) {
 	nc, sub, m := runningSubscriber(t)
 	seedVPCWithIGW(t, sub, m, "vpc-1")
 
-	requestFails(t, nc, TopicGateSubnetEgress,
-		SubnetEgressGateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "not-a-cidr"})
-	requestFails(t, nc, TopicUngateSubnetEgress,
-		SubnetEgressUngateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "not-a-cidr"})
+	requestFails(t, nc, networkv1.SubnetEgressGateSubject,
+		networkv1.SubnetEgressGateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "not-a-cidr"})
+	requestFails(t, nc, networkv1.SubnetEgressUngateSubject,
+		networkv1.SubnetEgressUngateEvent{VpcId: "vpc-1", SubnetId: "subnet-1", DestinationCidr: "not-a-cidr"})
 
 	policies, err := m.ListLogicalRouterPolicies(ctx, topology.VPCRouter("vpc-1"))
 	require.NoError(t, err)

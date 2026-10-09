@@ -7,7 +7,7 @@ import (
 	"net"
 	"net/netip"
 
-	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
-	var evt VPCEvent
+	var evt networkv1.VPCEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.create event", "err", err)
 		respond(msg, err)
@@ -41,7 +41,7 @@ func (s *Subscriber) handleVPCCreate(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
-	var evt VPCEvent
+	var evt networkv1.VPCEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete event", "err", err)
 		respond(msg, err)
@@ -57,7 +57,7 @@ func (s *Subscriber) handleVPCDelete(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
-	var evt SubnetEvent
+	var evt networkv1.SubnetEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.create-subnet event", "err", err)
 		respond(msg, err)
@@ -90,7 +90,7 @@ func (s *Subscriber) handleSubnetCreate(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
-	var evt SubnetEvent
+	var evt networkv1.SubnetEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-subnet event", "err", err)
 		respond(msg, err)
@@ -112,7 +112,7 @@ func (s *Subscriber) handleSubnetDelete(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleCreatePort(msg *nats.Msg) {
-	var evt PortEvent
+	var evt networkv1.PortEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.create-port event", "err", err)
 		respond(msg, err)
@@ -161,7 +161,7 @@ func (s *Subscriber) flushMACBinding(eniID, ip string) {
 }
 
 func (s *Subscriber) handleDeletePort(msg *nats.Msg) {
-	var evt PortEvent
+	var evt networkv1.PortEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-port event", "err", err)
 		respond(msg, err)
@@ -185,7 +185,7 @@ func (s *Subscriber) handleDeletePort(msg *nats.Msg) {
 // handleUpdatePortSGs reconciles the LSP's PG memberships against the
 // declarative SG list; the manager computes the diff.
 func (s *Subscriber) handleUpdatePortSGs(msg *nats.Msg) {
-	var evt UpdatePortSGsEvent
+	var evt networkv1.PortSecurityGroupsUpdateEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.update-port-sgs event", "err", err)
 		respond(msg, err)
@@ -201,7 +201,7 @@ func (s *Subscriber) handleUpdatePortSGs(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleIGWAttach(msg *nats.Msg) {
-	var evt ec2v1.InternetGatewayEvent
+	var evt networkv1.InternetGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.igw-attach event", "err", err)
 		respond(msg, err)
@@ -220,7 +220,7 @@ func (s *Subscriber) handleIGWAttach(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleIGWDetach(msg *nats.Msg) {
-	var evt ec2v1.InternetGatewayEvent
+	var evt networkv1.InternetGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.igw-detach event", "err", err)
 		respond(msg, err)
@@ -237,7 +237,7 @@ func (s *Subscriber) handleIGWDetach(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleAddNAT(msg *nats.Msg) {
-	var evt NATEvent
+	var evt networkv1.NATEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.add-nat event", "err", err)
 		respond(msg, err)
@@ -263,7 +263,7 @@ func (s *Subscriber) handleAddNAT(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleDeleteNAT(msg *nats.Msg) {
-	var evt NATEvent
+	var evt networkv1.NATEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-nat event", "err", err)
 		respond(msg, err)
@@ -281,7 +281,7 @@ func (s *Subscriber) handleDeleteNAT(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
-	var evt NATGatewayEvent
+	var evt networkv1.NATGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.add-nat-gateway event", "err", err)
 		return
@@ -328,7 +328,7 @@ func (s *Subscriber) handleAddNATGateway(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleAddSystemEgress(msg *nats.Msg) {
-	var evt SystemEgressEvent
+	var evt networkv1.SystemEgressEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.add-system-egress event", "err", err)
 		return
@@ -346,7 +346,7 @@ func (s *Subscriber) handleAddSystemEgress(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleDeleteSystemEgress(msg *nats.Msg) {
-	var evt SystemEgressEvent
+	var evt networkv1.SystemEgressEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-system-egress event", "err", err)
 		return
@@ -363,7 +363,7 @@ func (s *Subscriber) handleDeleteSystemEgress(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
-	var evt NATGatewayEvent
+	var evt networkv1.NATGatewayEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-nat-gateway event", "err", err)
 		return
@@ -396,7 +396,7 @@ func (s *Subscriber) handleDeleteNATGateway(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleAddIGWRoute(msg *nats.Msg) {
-	var evt IGWRouteEvent
+	var evt networkv1.IGWRouteEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.add-igw-route event", "err", err)
 		respond(msg, err)
@@ -423,7 +423,7 @@ func (s *Subscriber) handleAddIGWRoute(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleDeleteIGWRoute(msg *nats.Msg) {
-	var evt IGWRouteEvent
+	var evt networkv1.IGWRouteEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.delete-igw-route event", "err", err)
 		respond(msg, err)
@@ -448,7 +448,7 @@ func (s *Subscriber) handleDeleteIGWRoute(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleGateSubnetEgress(msg *nats.Msg) {
-	var evt SubnetEgressGateEvent
+	var evt networkv1.SubnetEgressGateEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.gate-subnet-egress event", "err", err)
 		respond(msg, err)
@@ -473,7 +473,7 @@ func (s *Subscriber) handleGateSubnetEgress(msg *nats.Msg) {
 }
 
 func (s *Subscriber) handleUngateSubnetEgress(msg *nats.Msg) {
-	var evt SubnetEgressUngateEvent
+	var evt networkv1.SubnetEgressUngateEvent
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("subscribers: failed to unmarshal vpc.ungate-subnet-egress event", "err", err)
 		respond(msg, err)

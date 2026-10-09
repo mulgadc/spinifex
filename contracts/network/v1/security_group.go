@@ -14,15 +14,19 @@ const (
 	SecurityGroupUpdateSubject = "vpc.update-sg"
 )
 
-// SecurityGroupRule is the subset of a security-group rule network needs to
-// build an OVN ACL. Publishers may send more fields (rule ID, IPv6 CIDR,
-// description, tags); see README for that asymmetry.
+// SecurityGroupRule is a security-group rule as EC2 stores it. Network's ACL
+// builder only reads IpProtocol, FromPort, ToPort, CidrIp and SourceSG; the
+// rest exist so the wire shape matches the publisher's stored record exactly.
 type SecurityGroupRule struct {
-	IpProtocol string `json:"ip_protocol"`
-	FromPort   int64  `json:"from_port"`
-	ToPort     int64  `json:"to_port"`
-	CidrIp     string `json:"cidr_ip,omitempty"`
-	SourceSG   string `json:"source_sg,omitempty"`
+	RuleId      string            `json:"rule_id"`
+	IpProtocol  string            `json:"ip_protocol"`
+	FromPort    int64             `json:"from_port"`
+	ToPort      int64             `json:"to_port"`
+	CidrIp      string            `json:"cidr_ip,omitempty"`
+	CidrIpv6    string            `json:"cidr_ipv6,omitempty"`
+	SourceSG    string            `json:"source_sg,omitempty"`
+	Description string            `json:"description,omitempty"`
+	Tags        map[string]string `json:"tags,omitempty"`
 }
 
 // SecurityGroupEvent is the payload on SecurityGroupCreateSubject,

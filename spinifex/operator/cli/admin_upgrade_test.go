@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/operator/host/systemd"
+	opupgrade "github.com/mulgadc/spinifex/spinifex/operator/upgrade"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,11 +29,11 @@ func TestUpgradeSeesEveryConfigTarget(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"4\"\n"), 0640))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "predastore", "predastore.toml"), []byte("version = 1\n"), 0640))
 
-	versions, err := migrate.DefaultRegistry.ConfigVersions(configDir)
+	versions, err := opupgrade.DefaultRegistry.ConfigVersions(configDir)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]int{"spinifex.toml": 4}, versions)
 
-	pending, err := migrate.DefaultRegistry.PendingConfig(configDir)
+	pending, err := opupgrade.DefaultRegistry.PendingConfig(configDir)
 	require.NoError(t, err)
 	assert.Empty(t, pending)
 }
@@ -127,7 +127,7 @@ func TestReportConfigStatus_NoPendingMigrations(t *testing.T) {
 	configDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "spinifex.toml"), []byte("version = \"4\"\n"), 0640))
 
-	var pending []migrate.PendingMigration
+	var pending []opupgrade.PendingMigration
 	out := captureStdout(t, func() { pending = reportConfigStatus(configDir) })
 
 	assert.Empty(t, pending)

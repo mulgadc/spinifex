@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/migrate"
 	"github.com/mulgadc/spinifex/spinifex/operator/host/systemd"
+	"github.com/mulgadc/spinifex/spinifex/operator/upgrade"
 
 	"github.com/spf13/cobra"
 )
@@ -92,7 +92,7 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 		upgradeExit(1)
 	}
 
-	var pending []migrate.PendingMigration
+	var pending []upgrade.PendingMigration
 	if !unitsOnly {
 		pending = reportConfigStatus(configDir)
 	}
@@ -131,7 +131,7 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 	}
 
 	if hasConfigWork {
-		if err := migrate.DefaultRegistry.RunAllConfig(configDir, dataDir); err != nil {
+		if err := upgrade.DefaultRegistry.RunAllConfig(configDir, dataDir); err != nil {
 			fmt.Fprintf(os.Stderr, "Config migration failed: %v\n", err)
 			upgradeExit(1)
 		}
@@ -155,8 +155,8 @@ func runAdminUpgrade(cmd *cobra.Command, _ []string) {
 
 // reportConfigStatus prints current config versions and pending migrations,
 // mirroring the pre-existing `spx admin upgrade` output.
-func reportConfigStatus(configDir string) []migrate.PendingMigration {
-	versions, err := migrate.DefaultRegistry.ConfigVersions(configDir)
+func reportConfigStatus(configDir string) []upgrade.PendingMigration {
+	versions, err := upgrade.DefaultRegistry.ConfigVersions(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config versions: %v\n", err)
 		upgradeExit(1)
@@ -171,7 +171,7 @@ func reportConfigStatus(configDir string) []migrate.PendingMigration {
 		}
 	}
 
-	pending, err := migrate.DefaultRegistry.PendingConfig(configDir)
+	pending, err := upgrade.DefaultRegistry.PendingConfig(configDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error checking pending migrations: %v\n", err)
 		upgradeExit(1)

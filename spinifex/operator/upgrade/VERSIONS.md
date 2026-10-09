@@ -48,9 +48,9 @@ Every other bucket has no registered migration, so `RunKV` stamps its target ver
 
 ## Where migrations live
 
-Register a `ConfigMigration` against `DefaultRegistry` in a new numbered file under `spinifex/migrate/`, and bump the version in both the template and the table above.
+Register a `ConfigMigration` against `DefaultRegistry` in a new numbered file under `spinifex/operator/upgrade/`, and bump the version in both the template and the table above.
 
-A KV migration goes in the package that owns the bucket instead, next to the constant it bumps — `migrate` cannot import the record types it would have to decode. `daemon/instance_records_migrate.go` is the worked example.
+A KV migration goes in the package that owns the bucket instead, next to the constant it bumps — `operator/upgrade` cannot import the record types it would have to decode. `daemon/instance_records_migrate.go` is the worked example.
 
 For worked examples of the config and object-store kinds, read the deleted files out of git history:
 

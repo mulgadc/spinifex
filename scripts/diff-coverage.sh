@@ -73,7 +73,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # internal/testkit is excluded because it is fakes and harnesses used only from
 # _test.go files. Coverage is recorded per package under test, so a fake another
 # package's tests drive reads as zero-covered however hard it is exercised.
-git diff "${BASE_REF}" HEAD --unified=0 -M -C --diff-filter=AM -- '*.go' ':!*_test.go' ':!spinifex/migrate/*' ':!spinifex/operator/installer/ui/*' ':!internal/testkit/*' | awk '
+git diff "${BASE_REF}" HEAD --unified=0 -M -C --diff-filter=AM -- '*.go' ':!*_test.go' ':!spinifex/operator/upgrade/*' ':!spinifex/operator/installer/ui/*' ':!internal/testkit/*' | awk '
     /^\+\+\+ / {
         file = substr($2, 3)
         next

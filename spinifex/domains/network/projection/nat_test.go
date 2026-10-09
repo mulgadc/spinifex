@@ -1,4 +1,4 @@
-package utils
+package projection
 
 import (
 	"encoding/json"
@@ -35,7 +35,7 @@ func TestAddNAT_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
+	err = New(nc).AddNAT("vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
 	require.NoError(t, err)
 	assert.Equal(t, "vpc-1", got.VpcId)
 	assert.Equal(t, "203.0.113.5", got.ExternalIP)
@@ -57,7 +57,7 @@ func TestAddNAT_NACK(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
+	err = New(nc).AddNAT("vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "northd unavailable")
 }
@@ -70,14 +70,14 @@ func TestAddNAT_NoResponders(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	err = AddNAT(nc, "vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
+	err = New(nc).AddNAT("vpc-1", "203.0.113.5", "10.0.0.5", "port-eni-1", "02:00:00:00:00:01")
 	require.Error(t, err)
 }
 
 // A teardown published into the gap where vpcd has unsubscribed but its
 // replacement has not yet subscribed must be retried, not dropped: the address
 // is released while its host route still delivers to the guest that held it.
-func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
+func TestRemoveNAT_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 	shortenDeleteNATRetryDelay(t)
 	ns := startTestNATSServer(t)
 
@@ -97,7 +97,7 @@ func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 		assert.NoError(t, serr)
 	})
 
-	PublishNATEvent(nc, "vpc.delete-nat", "vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
+	New(nc).RemoveNAT("vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
 
 	select {
 	case eip := <-got:
@@ -109,7 +109,7 @@ func TestPublishNATEvent_DeleteRetriesAcrossSubscriberGap(t *testing.T) {
 
 // The retry is bounded: with nothing ever subscribing it gives up rather than
 // blocking the API call that issued the disassociate.
-func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
+func TestRemoveNAT_DeleteGivesUpWithNoSubscriber(t *testing.T) {
 	shortenDeleteNATRetryDelay(t)
 	ns := startTestNATSServer(t)
 
@@ -118,7 +118,7 @@ func TestPublishNATEvent_DeleteGivesUpWithNoSubscriber(t *testing.T) {
 	defer nc.Close()
 
 	start := time.Now()
-	PublishNATEvent(nc, "vpc.delete-nat", "vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
+	New(nc).RemoveNAT("vpc-a", "192.168.0.73", "172.31.0.4", "port-eni-a", "")
 	elapsed := time.Since(start)
 
 	assert.GreaterOrEqual(t, elapsed, time.Duration(deleteNATRetries-1)*deleteNATRetryDelay,

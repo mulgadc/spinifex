@@ -15,16 +15,15 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // Compile-time check that Daemon implements SystemInstanceLauncher.
@@ -296,11 +295,11 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				vpcID = *result.NetworkInterfaces[0].VpcId
 			}
 			portName := topology.Port(instance.ENIId)
-			if natErr := utils.AddNAT(d.natsConn, vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
+			if natErr := projection.New(d.natsConn).AddNAT(vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
 				slog.Error("LaunchSystemInstance: vpc.add-nat failed for ALB public IP — rolling back to avoid surfacing an unreachable address",
 					"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
 				// Timeout may have committed the rule after our window; neutralise before releasing the IP.
-				utils.PublishNATEvent(d.natsConn, networkv1.NATDeleteSubject, vpcID, publicIP, privateIP, portName, instance.ENIMac)
+				projection.New(d.natsConn).RemoveNAT(vpcID, publicIP, privateIP, portName, instance.ENIMac)
 				if clearErr := d.vpcService.UpdateENIPublicIP(eniAccountID, instance.ENIId, "", ""); clearErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
 						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)

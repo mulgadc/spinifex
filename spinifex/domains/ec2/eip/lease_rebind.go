@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -43,7 +43,7 @@ func (s *EIPServiceImpl) RebindPublicIP(ctx context.Context, allocationID, oldIP
 	// IP is sufficient. Request-reply: a failure here means the instance has no
 	// working ingress, so it must not be swallowed.
 	if record.ENIId != "" && record.PrivateIp != "" {
-		if err := utils.AddNAT(s.natsConn, record.VpcId, newIP, record.PrivateIp,
+		if err := projection.New(s.natsConn).AddNAT(record.VpcId, newIP, record.PrivateIp,
 			topology.Port(record.ENIId), record.MacAddress); err != nil {
 			return fmt.Errorf("rebind EIP %s: commit NAT for %s: %w", allocationID, newIP, err)
 		}

@@ -788,7 +788,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	eniIP := aws.StringValue(eniOut.NetworkInterface.PrivateIpAddress)
 
 	// Stand up a vpcd-shaped NACK responder on the daemon's NATS conn —
-	// utils.AddNAT publishes on d.natsConn, so the responder must live there.
+	// the projection client requests on d.natsConn, so the responder must live there.
 	sub, err := d.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
 		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
 	})

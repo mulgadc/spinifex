@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
@@ -22,7 +22,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -616,7 +615,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 			}
 			if publicIP != "" && vpcID != "" && privateIP != "" {
 				portName := topology.Port(instance.ENIId)
-				utils.PublishNATEvent(d.natsConn, networkv1.NATAddSubject, vpcID, publicIP, privateIP, portName, instance.ENIMac)
+				projection.New(d.natsConn).AddNATBestEffort(vpcID, publicIP, privateIP, portName, instance.ENIMac)
 			}
 		}
 		return nil
@@ -834,7 +833,7 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 			logicalIP = *instance.Instance.PrivateIpAddress
 		}
 	}
-	utils.PublishNATEvent(a.d.natsConn, networkv1.NATDeleteSubject, vpcId, instance.PublicIP, logicalIP, portName, "")
+	projection.New(a.d.natsConn).RemoveNAT(vpcId, instance.PublicIP, logicalIP, portName, "")
 
 	if err := a.d.externalIPAM.ReleaseIP(context.Background(), instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		// An untracked lease is terminal: the local pool slot is already free and

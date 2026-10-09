@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -38,7 +38,7 @@ func (s *VPCServiceImpl) RebindENIPublicIP(ctx context.Context, eniID, oldIP, ne
 	// the new external IP is enough. Request-reply, because a failure leaves the
 	// instance with no working ingress.
 	if record.PrivateIpAddress != "" {
-		if err := utils.AddNAT(s.natsConn, record.VpcId, newIP, record.PrivateIpAddress,
+		if err := projection.New(s.natsConn).AddNAT(record.VpcId, newIP, record.PrivateIpAddress,
 			topology.Port(eniID), record.MacAddress); err != nil {
 			return fmt.Errorf("rebind ENI %s: commit NAT for %s: %w", eniID, newIP, err)
 		}

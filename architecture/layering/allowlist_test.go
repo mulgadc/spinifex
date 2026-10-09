@@ -57,7 +57,6 @@ var allowlist = []allowance{
 	{From: "domains/ec2/awsapi/spotinstance", To: "handlers/iam", Debt: "domains/ec2/awsapi/spotinstance (dependency)", Reason: "RequestSpotInstances.go uses IAMService and quota.Service"},
 
 	{From: "domains/ec2/eip", To: "domains/network/topology", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
-	{From: "domains/ec2/eip", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
 
 	{From: "domains/ec2/guestmetadata", To: "domains/dns", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
 	{From: "domains/ec2/guestmetadata", To: "handlers/iam", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
@@ -79,7 +78,6 @@ var allowlist = []allowance{
 	{From: "domains/ec2/vpc", To: "domains/network/external/dhcp", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 	{From: "domains/ec2/vpc", To: "domains/network/identifiers", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 	{From: "domains/ec2/vpc", To: "domains/network/topology", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
-	{From: "domains/ec2/vpc", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
 
 	{From: "domains/ecr/auth", To: "handlers/iam", Debt: "Cross-domain", Reason: "IAM implementation import; needs an IAM capability"},
 
@@ -152,7 +150,6 @@ var allowlist = []allowance{
 	{From: "handlers/elbv2", To: "domains/network/topology", Debt: "handlers/elbv2 (cross-domain)", Reason: "legacy ELBv2 cross-domain import; clears when ELBv2 is extracted behind consumer-owned capabilities"},
 	{From: "handlers/elbv2", To: "handlers/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "system-instance role ensurer; needs an IAM capability"},
 	{From: "handlers/elbv2", To: "lbagent", Debt: "handlers/elbv2/{agent_types,haproxy,health_checker,nginx}.go import lbagent", Reason: "health-report and cert/PID-path vocabulary; needs a guest/controller contract"},
-	{From: "handlers/elbv2", To: "utils", Debt: "utils", Reason: "consumes a recorded utils residual file awaiting its owner"},
 
 	{From: "handlers/iam", To: "admin", Debt: "handlers/iam/service_impl.go:30 imports admin", Reason: "credential and account helpers; awaits an IAM-credentials owner"},
 

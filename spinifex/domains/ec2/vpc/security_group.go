@@ -17,13 +17,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -2142,13 +2142,18 @@ func resolveRuleIDsToRemove(existing []SGRule, ruleIDs []*string) ([]SGRule, err
 	return out, nil
 }
 
-// vpcdSGEventTimeout bounds the synchronous vpcd round-trip for SG events.
-const vpcdSGEventTimeout = 5 * time.Second
-
 // requestSGEvent sends a security group lifecycle event to vpcd via
 // request-reply and surfaces vpcd-side failures to the API caller.
 func (s *VPCServiceImpl) requestSGEvent(topic string, evt networkv1.SecurityGroupEvent) error {
-	return utils.RequestEvent(s.natsConn, topic, evt, vpcdSGEventTimeout)
+	client := projection.New(s.natsConn)
+	switch topic {
+	case networkv1.SecurityGroupCreateSubject:
+		return client.CreateSecurityGroup(evt)
+	case networkv1.SecurityGroupDeleteSubject:
+		return client.DeleteSecurityGroup(evt)
+	default:
+		return client.UpdateSecurityGroup(evt)
+	}
 }
 
 // createDefaultSecurityGroupInternal provisions the per-VPC default SG with

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
@@ -22,7 +22,6 @@ import (
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/singleflight"
@@ -900,16 +899,10 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, eniID, mac string) {
 	portName := topology.Port(eniID)
 	if topic == networkv1.NATDeleteSubject {
-		utils.PublishNATEvent(s.natsConn, topic, vpcID, externalIP, logicalIP, portName, mac)
+		projection.New(s.natsConn).RemoveNAT(vpcID, externalIP, logicalIP, portName, mac)
 		return
 	}
-	natsmsg.PublishEvent(s.natsConn, topic, networkv1.NATEvent{
-		VpcId:      vpcID,
-		ExternalIP: externalIP,
-		LogicalIP:  logicalIP,
-		PortName:   portName,
-		MAC:        mac,
-	})
+	projection.New(s.natsConn).AnnounceNATAdd(vpcID, externalIP, logicalIP, portName, mac)
 }
 
 // eipRecordToEC2 converts an EIPRecord to an EC2 Address.

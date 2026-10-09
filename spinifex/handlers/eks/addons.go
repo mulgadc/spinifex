@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -56,6 +57,20 @@ func (s *EKSServiceImpl) DescribeAddonVersions(ctx context.Context, input *eks.D
 	return &eks.DescribeAddonVersionsOutput{Addons: out}, nil
 }
 
+// validateAddonServiceAccountRoleArn rejects a non-empty value that is not
+// syntactically an IAM role ARN. iam:PassRole at the gateway remains the
+// permission and existence check.
+func validateAddonServiceAccountRoleArn(roleArn string) error {
+	if roleArn == "" {
+		return nil
+	}
+	if err := arn.ValidateRoleARN(roleArn); err != nil {
+		return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+			"1 validation error detected: Value at 'serviceAccountRoleArn' failed to satisfy constraint: Member must be a valid IAM role ARN")
+	}
+	return nil
+}
+
 // CreateAddon validates, persists a CREATING record, and stages it for delivery.
 // Transitions to ACTIVE once the cluster state report confirms delivery.
 func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddonInput, accountID string) (*eks.CreateAddonOutput, error) {
@@ -66,6 +81,9 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	addonName := aws.StringValue(input.AddonName)
 	if addonName == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if err := validateAddonServiceAccountRoleArn(aws.StringValue(input.ServiceAccountRoleArn)); err != nil {
+		return nil, err
 	}
 	spec, ok := addon.Lookup(addonName)
 	if !ok {
@@ -163,6 +181,11 @@ func (s *EKSServiceImpl) DescribeAddon(ctx context.Context, input *eks.DescribeA
 func (s *EKSServiceImpl) UpdateAddon(ctx context.Context, input *eks.UpdateAddonInput, accountID string) (*eks.UpdateAddonOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.ServiceAccountRoleArn != nil {
+		if err := validateAddonServiceAccountRoleArn(*input.ServiceAccountRoleArn); err != nil {
+			return nil, err
+		}
 	}
 	cluster := aws.StringValue(input.ClusterName)
 	addonName := aws.StringValue(input.AddonName)

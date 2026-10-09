@@ -309,5 +309,150 @@ func TestListStagedAddonManifests(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
+func TestCreateAddon_RejectsMalformedServiceAccountRoleArn(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		arn  string
+	}{
+		{"trailing slash empty name", "arn:aws:iam::123456789012:role/"},
+		{"newline and colon injection", "arn:aws:iam::123456789012:role/x\nkind: Secret"},
+		{"quote and space injection", "arn:aws:iam::123456789012:role/x\" y"},
+		{"missing account", "arn:aws:iam:::role/x"},
+		{"non-12-digit account", "arn:aws:iam::12345:role/x"},
+		{"wrong service s3", "arn:aws:s3:::bucket"},
+		{"wrong resource type iam user", "arn:aws:iam::123456789012:user/x"},
+		{"sts assumed-role", "arn:aws:sts::123456789012:assumed-role/role-name/session-name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			svc, fake := setupAddonService(t)
+			_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
+				ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+				ServiceAccountRoleArn: aws.String(tt.arn),
+			}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+			assert.Empty(t, fake.installs, "a rejected create must not stage anything")
+
+			_, descErr := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
+				ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+			}, testAccountID)
+			require.EqualError(t, descErr, awserrors.ErrorEKSResourceNotFound, "a rejected create must not persist a record")
+		})
+	}
+}
+
+func TestCreateAddon_AcceptsValidServiceAccountRoleArnAndAbsentValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		arn  *string
+	}{
+		{"role without a path", aws.String("arn:aws:iam::123456789012:role/alb")},
+		{"role with a path", aws.String("arn:aws:iam::123456789012:role/service-role/alb")},
+		{"absent value", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _ := setupAddonService(t)
+			out, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
+				ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+				ServiceAccountRoleArn: tt.arn,
+			}, testAccountID)
+			require.NoError(t, err)
+			require.NotNil(t, out.Addon)
+		})
+	}
+}
+
+func TestUpdateAddon_RejectsMalformedServiceAccountRoleArn(t *testing.T) {
+	t.Parallel()
+	svc, fake := setupAddonService(t)
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		ServiceAccountRoleArn: aws.String("arn:aws:iam::123456789012:role/alb"),
+	}, testAccountID)
+	require.NoError(t, err)
+	installsBefore := len(fake.installs)
+
+	_, err = svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		ServiceAccountRoleArn: aws.String("arn:aws:iam::123456789012:role/x\nkind: Secret"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+	assert.Len(t, fake.installs, installsBefore, "a rejected update must not re-stage")
+
+	desc, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/alb", aws.StringValue(desc.Addon.ServiceAccountRoleArn),
+		"a rejected update must not change the stored value")
+}
+
+func TestUpdateAddon_AcceptsValidServiceAccountRoleArn(t *testing.T) {
+	t.Parallel()
+	svc, _ := setupAddonService(t)
+	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		ServiceAccountRoleArn: aws.String("arn:aws:iam::123456789012:role/service-role/alb"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "arn:aws:iam::123456789012:role/service-role/alb", aws.StringValue(desc.Addon.ServiceAccountRoleArn))
+}
+
+// A record written before this check existed may hold a value that is not a
+// well-formed ARN. UpdateAddon only validates the value supplied in the
+// request, so an update that omits serviceAccountRoleArn must still succeed
+// and must not touch the legacy stored value.
+func TestUpdateAddon_LeavesLegacyNonARNValueUntouchedWhenOmitted(t *testing.T) {
+	t.Parallel()
+	svc, fake := setupAddonService(t)
+	acctKV, err := svc.acctKVForCluster(context.Background(), testAccountID, "c1")
+	require.NoError(t, err)
+	_, err = svc.addons().Create(context.Background(), acctKV, testAccountID, addon.Desired{
+		Cluster:               "c1",
+		Name:                  albController,
+		Version:               "1.0",
+		ServiceAccountRoleArn: "legacy-not-an-arn",
+	})
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "legacy-not-an-arn", aws.StringValue(desc.Addon.ServiceAccountRoleArn))
+
+	_, err = svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+		ConfigurationValues: aws.String(`{"replicaCount":2}`),
+	}, testAccountID)
+	require.NoError(t, err, "an update omitting serviceAccountRoleArn must succeed on a legacy non-ARN record")
+	require.Len(t, fake.installs, 2, "create plus the successful update re-stage")
+
+	desc, err = svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
+		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "legacy-not-an-arn", aws.StringValue(desc.Addon.ServiceAccountRoleArn),
+		"the legacy value must survive an update that does not supply the field")
+	assert.Equal(t, `{"replicaCount":2}`, aws.StringValue(desc.Addon.ConfigurationValues))
+}
+
 // Not parallel: it swaps the package-wide catalogue check every service the
 // parallel tests construct runs.

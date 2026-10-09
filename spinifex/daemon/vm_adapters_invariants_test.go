@@ -13,8 +13,8 @@ import (
 
 // TestUnmountNeverReleasesBootVolume locks the stop/crash attachment-persistence
 // contract: Unmount seals the block map but must NOT mark a boot/root volume
-// "available". Unmount is driven by stop (vm/shutdown.go) and crash recovery
-// (vm/crash_recovery.go), where the instance keeps its attachment and restarts —
+// "available". Unmount is driven by stop (runtime/compute/vm/shutdown.go) and crash recovery
+// (runtime/compute/vm/crash_recovery.go), where the instance keeps its attachment and restarts —
 // only DetachVolume and terminate release a boot volume. Releasing it here while
 // the instance still owns it splits the volume-state record (describe-instances
 // "attached" vs describe-volumes "available"). EFI is not a

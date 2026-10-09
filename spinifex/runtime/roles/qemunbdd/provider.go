@@ -402,7 +402,7 @@ func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolum
 	if req.CapacityRange.RequiredBytes < info.VirtualSize {
 		return nil, fmt.Errorf("%w: volume expansion is grow-only", ebsprovider.ErrInvalidArgument)
 	}
-	// ebsprovider/errors.go has no failed-precondition sentinel, so a
+	// providers/ebs/errors.go has no failed-precondition sentinel, so a
 	// published volume this provider cannot expand online is reported as
 	// ErrVolumeInUse, matching memory.go's identical refusal.
 	if _, published := p.published[req.VolumeID]; published && req.CapacityRange.RequiredBytes > info.VirtualSize {

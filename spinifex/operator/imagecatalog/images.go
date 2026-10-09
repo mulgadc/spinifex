@@ -605,7 +605,7 @@ var AvailableImages = map[string]Images{
 		ChecksumType: "sha256",
 		// Ubuntu 26.04 is built GPT/EFI-only; legacy BIOS finds no bootable MBR
 		// bootloader and hangs at firmware with zero serial output (no OVMF/pflash
-		// is attached unless BootMode is uefi/uefi-preferred, see vm/lifecycle.go).
+		// is attached unless BootMode is uefi/uefi-preferred, see runtime/compute/vm/lifecycle.go).
 		BootMode: "uefi",
 		Tags:     map[string]string{"spinifex:managed-by": "eks", "gpu-vendor": "nvidia"},
 	},
@@ -642,7 +642,7 @@ var AvailableImages = map[string]Images{
 		ChecksumType: "sha256",
 		// Ubuntu 26.04 is built GPT/EFI-only; legacy BIOS finds no bootable MBR
 		// bootloader and hangs at firmware with zero serial output (no OVMF/pflash
-		// is attached unless BootMode is uefi/uefi-preferred, see vm/lifecycle.go).
+		// is attached unless BootMode is uefi/uefi-preferred, see runtime/compute/vm/lifecycle.go).
 		BootMode: "uefi",
 		Tags:     map[string]string{"spinifex:managed-by": "ecs", "gpu-vendor": "nvidia"},
 	},

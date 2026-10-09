@@ -2864,7 +2864,7 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 
 	// Tracks whether every DeleteOnTermination volume was actually deleted, so
 	// Teardown[vm.TeardownVolumes] below mirrors markTeardownResult's
-	// done/failed semantics (vm/teardown.go) — the same mark the
+	// done/failed semantics (runtime/compute/vm/teardown.go) — the same mark the
 	// running-instance path already stamps via terminateCleanup. Without this,
 	// TerminateStoppedInstance never touches Teardown at all, so
 	// daemon.leakedVolumeInstances() and VolumeLeakReaper can never see a

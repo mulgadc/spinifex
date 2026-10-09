@@ -1685,7 +1685,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 // go-forward self-heal: a stopped-terminate that stamped
 // Teardown[volumes]=failed on a transient error (deleteInstanceVolumes,
 // domains/ec2/instance/service_impl.go) is retried by
-// TerminatedTeardownReaper.Sweep (vm/teardown_reaper.go) through the real
+// TerminatedTeardownReaper.Sweep (runtime/compute/vm/teardown_reaper.go) through the real
 // instanceCleanerAdapter, which stage 1 rerouted through
 // DeleteVolumeOnTerminate. The retry clears the stale attachment, the delete
 // now succeeds, and the mark flips to done — without abandoning the record.

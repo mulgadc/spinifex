@@ -1384,7 +1384,7 @@ func TestMarkInstanceFailed_AlreadyTerminated(t *testing.T) {
 
 // LaunchTime reset for restored instances (Pending and Provisioning) is
 // covered deterministically by classifyRestoredInstances tests in
-// vm/restore_test.go. The previous daemon-side test went through the full
+// runtime/compute/vm/restore_test.go. The previous daemon-side test went through the full
 // Restore() pipeline including async relaunchAll → MarkFailed cleanup,
 // which made the post-restore state racy: the instance might or might not
 // be in the local map by the time the test ran assertions, and a t.Skip

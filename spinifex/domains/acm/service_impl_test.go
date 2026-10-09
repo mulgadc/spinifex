@@ -320,7 +320,7 @@ func TestDescribeCertificate_DoesNotLeakPrivateKey(t *testing.T) {
 // Precedent: TestSensitiveDataNotLogged_MasterKey in
 // handlers/iam/service_impl_test.go.
 // fakeCertAuthority is a minimal CertAuthority for testing RequestCertificate's
-// PRIVATE_CA path without the real tenant CA implementation (handlers/acm/privateca.go
+// PRIVATE_CA path without the real tenant CA implementation (domains/acm/privateca.go
 // lives on a separate branch).
 type fakeCertAuthority struct {
 	permitted map[string]bool
@@ -465,7 +465,7 @@ func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {
 }
 
 // TestRequestCertificate_PrivateCA_RealTenantCA_IssuesAndChains exercises the
-// PRIVATE_CA path against a real *TenantCA (handlers/acm/privateca.go), not
+// PRIVATE_CA path against a real *TenantCA (domains/acm/privateca.go), not
 // fakeCertAuthority above — this is what daemon wiring actually plugs in, and
 // the daemon-wiring slice adds no coverage for the seam between
 // RequestCertificate and the real implementation without a test like this one.

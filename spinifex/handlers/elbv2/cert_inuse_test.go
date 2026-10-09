@@ -497,7 +497,7 @@ func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 // final set contains exactly all N — lives at the store layer, where the
 // property actually belongs: see
 // TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive in
-// handlers/acm/store_test.go. An earlier version of this test asserted only
+// domains/acm/store_test.go. An earlier version of this test asserted only
 // "no errors/panics" across a concurrent re-import/ModifyListener race,
 // which cannot detect a lost index entry: a dropped update produces a
 // correct-looking record with a missing entry, not an error, so that

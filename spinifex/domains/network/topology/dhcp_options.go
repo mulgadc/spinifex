@@ -52,7 +52,7 @@ func SubnetMTU(underlayMTU int, ipsecEnabled bool) int {
 // by the live manager and reconciler to prevent dns_server drift. IMDS is not
 // steered via option 121: a guest either routes to it via the gateway, where the
 // br-imds ingress demux catches it, or resolves it on-link, where the per-tap ARP
-// responder answers. Both live in network/host/imds_datapath.go.
+// responder answers. Both live in domains/network/host/imds_datapath.go.
 func BuildSubnetDHCPOptions(gwIP, routerMAC, dnsServer string, underlayMTU int, ipsecEnabled bool) map[string]string {
 	return map[string]string{
 		"server_id":  gwIP,

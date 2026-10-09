@@ -1,7 +1,7 @@
 import type { ApplyMethod } from "@aws-sdk/client-rds"
 import { z } from "zod"
 
-// Mirrors handlers/rds/validate.go and handlers/rds/engine.go so the form
+// Mirrors handlers/rds/validate.go and domains/rds/engine/engine.go so the form
 // rejects what the backend would reject, before the round trip. Engines,
 // versions and instance classes are deliberately absent: those are read from
 // DescribeDBEngineVersions and DescribeOrderableDBInstanceOptions.
@@ -554,7 +554,7 @@ export type CreateDBParameterGroupFormData = z.infer<
   typeof createDBParameterGroupSchema
 >
 
-// handlers/rds/paramcatalog.go. A static parameter is adopted by a restart; a
+// domains/rds/engine/parameters.go. A static parameter is adopted by a restart; a
 // dynamic one by a reload.
 export const APPLY_TYPE_STATIC = "static"
 export const APPLY_METHOD_IMMEDIATE = "immediate" satisfies ApplyMethod

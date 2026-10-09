@@ -27,7 +27,7 @@ const stateAccountID = "000000000042"
 // that does not exist and leaves the attachment record stranded. These tests
 // are the only thing asserting that argument.
 
-// TestAttachVolume_KeysStateOnTheInstanceAccount covers vm/volumes.go:190.
+// TestAttachVolume_KeysStateOnTheInstanceAccount covers runtime/compute/vm/volumes.go:190.
 func TestAttachVolume_KeysStateOnTheInstanceAccount(t *testing.T) {
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any { return nil })
 	defer cancel()
@@ -51,7 +51,7 @@ func TestAttachVolume_KeysStateOnTheInstanceAccount(t *testing.T) {
 }
 
 // TestAttachVolume_RollbackKeysStateOnTheInstanceAccount covers the rollback at
-// vm/volumes.go:213, which runs after device_add fails and is the path that
+// runtime/compute/vm/volumes.go:213, which runs after device_add fails and is the path that
 // would silently leave a volume stuck in-use if it wrote to the wrong key.
 func TestAttachVolume_RollbackKeysStateOnTheInstanceAccount(t *testing.T) {
 	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
@@ -85,7 +85,7 @@ func TestAttachVolume_RollbackKeysStateOnTheInstanceAccount(t *testing.T) {
 	assert.Equal(t, "available", calls[1].State)
 }
 
-// TestDetachVolume_KeysStateOnTheInstanceAccount covers vm/volumes.go:444.
+// TestDetachVolume_KeysStateOnTheInstanceAccount covers runtime/compute/vm/volumes.go:444.
 // Detach only logs an UpdateVolumeState failure, so a wrong account here leaves
 // the document reading in-use with no disk in the guest and no error anywhere.
 func TestDetachVolume_KeysStateOnTheInstanceAccount(t *testing.T) {

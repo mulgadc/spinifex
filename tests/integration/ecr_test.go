@@ -23,7 +23,7 @@ func uniqueRepo(prefix string) string {
 
 // TestECRControlPlane round-trips the ECR control-plane surface: repository
 // CRUD, repository policy, and lifecycle policy. All of it dispatches to
-// ECRRegistry.Meta over NATS (gateway/ecr_createrepository.go and friends), so
+// ECRRegistry.Meta over NATS (domains/ecr/awsapi/create_repository.go and friends), so
 // this needs StartECRDaemonLite subscribed before any call.
 func TestECRControlPlane(t *testing.T) {
 	gw := StartGateway(t)

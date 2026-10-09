@@ -1986,7 +1986,7 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 // TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the
 // fix: TerminateStoppedInstance must stamp Teardown[vm.TeardownVolumes] on
 // success, mirroring the running-instance path's markTeardownResult
-// (vm/shutdown.go). Without this, daemon.leakedVolumeInstances() and
+// (runtime/compute/vm/shutdown.go). Without this, daemon.leakedVolumeInstances() and
 // VolumeLeakReaper can never see a stopped-path leak because
 // TerminateStoppedInstance previously never touched Teardown at all.
 func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
 	"strconv"
@@ -17,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
@@ -1661,10 +1661,22 @@ func (s *VPCServiceImpl) getSubnet(ctx context.Context, accountID, subnetId stri
 // publishVPCEvent publishes a VPC lifecycle event to NATS for vpcd consumption.
 // This is fire-and-forget; errors are logged but do not fail the API response.
 func (s *VPCServiceImpl) publishVPCEvent(topic, vpcId, cidrBlock string, vni int64) {
-	natsmsg.PublishEvent(s.natsConn, topic, networkv1.VPCEvent{VpcId: vpcId, CidrBlock: cidrBlock, VNI: vni})
+	evt := networkv1.VPCEvent{VpcId: vpcId, CidrBlock: cidrBlock, VNI: vni}
+	client := projection.New(s.natsConn)
+	if topic == networkv1.VPCDeleteSubject {
+		client.DeleteVPC(evt)
+		return
+	}
+	client.CreateVPC(evt)
 }
 
 // publishSubnetEvent publishes a subnet lifecycle event to NATS for vpcd consumption.
 func (s *VPCServiceImpl) publishSubnetEvent(topic, subnetId, vpcId, cidrBlock string) {
-	natsmsg.PublishEvent(s.natsConn, topic, networkv1.SubnetEvent{SubnetId: subnetId, VpcId: vpcId, CidrBlock: cidrBlock})
+	evt := networkv1.SubnetEvent{SubnetId: subnetId, VpcId: vpcId, CidrBlock: cidrBlock}
+	client := projection.New(s.natsConn)
+	if topic == networkv1.SubnetDeleteSubject {
+		client.DeleteSubnet(evt)
+		return
+	}
+	client.CreateSubnet(evt)
 }

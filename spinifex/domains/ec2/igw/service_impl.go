@@ -15,6 +15,7 @@ import (
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -412,18 +413,10 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	}
 
 	// Publish event for vpcd to clean up OVN external switch + gateway + NAT
-	if s.natsConn != nil {
-		event := networkv1.InternetGatewayEvent{
-			InternetGatewayId: igwID,
-			VpcId:             vpcID,
-		}
-		eventData, err := json.Marshal(event)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to marshal IGW detach event", "error", err)
-		} else if err := s.natsConn.Publish(networkv1.InternetGatewayDetachSubject, eventData); err != nil {
-			slog.WarnContext(ctx, "Failed to publish IGW detach event", "error", err)
-		}
-	}
+	projection.New(s.natsConn).DetachInternetGateway(networkv1.InternetGatewayEvent{
+		InternetGatewayId: igwID,
+		VpcId:             vpcID,
+	})
 
 	// After detach the VPC's LR external gateway and router-wide default
 	// route are removed; any subnet whose effective RT still points at the
@@ -440,15 +433,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 // publishAttach asks vpcd to create the OVN external switch, gateway and SNAT.
 func (s *IGWServiceImpl) publishAttach(ctx context.Context, igwID, vpcID string) {
-	if s.natsConn == nil {
-		return
-	}
-	eventData, err := json.Marshal(networkv1.InternetGatewayEvent{InternetGatewayId: igwID, VpcId: vpcID})
-	if err != nil {
-		slog.WarnContext(ctx, "Failed to marshal IGW attach event", "error", err)
-	} else if err := s.natsConn.Publish(networkv1.InternetGatewayAttachSubject, eventData); err != nil {
-		slog.WarnContext(ctx, "Failed to publish IGW attach event", "error", err)
-	}
+	projection.New(s.natsConn).AttachInternetGateway(networkv1.InternetGatewayEvent{InternetGatewayId: igwID, VpcId: vpcID})
 }
 
 // CreateAttachedInternetGateway creates igwID already attached to vpcID, for a

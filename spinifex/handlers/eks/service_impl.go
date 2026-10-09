@@ -8,7 +8,6 @@ import (
 	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"maps"
 	"net"
@@ -29,6 +28,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
@@ -1318,7 +1318,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 			if len(meta.ResourcesVpcConfig.SubnetIds) > 0 {
 				subnetID = meta.ResourcesVpcConfig.SubnetIds[0]
 			}
-			natsmsg.PublishEvent(s.deps.NATSConn, networkv1.SystemEgressDeleteSubject, networkv1.SystemEgressEvent{
+			projection.New(s.deps.NATSConn).RemoveSystemEgress(networkv1.SystemEgressEvent{
 				VpcId:      meta.ResourcesVpcConfig.VpcId,
 				SubnetId:   subnetID,
 				InstanceIp: meta.ControlPlaneENIIP,

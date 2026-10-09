@@ -19,6 +19,7 @@ import (
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -332,25 +333,17 @@ func (s *RouteTableServiceImpl) publishSubnetEgressGateDecision(ctx context.Cont
 			"vpcId", vpcID, "subnetId", subnetID, "err", err)
 		return
 	}
+	client := projection.New(s.natsConn)
 	topic := networkv1.SubnetEgressGateSubject
-	var data []byte
 	if hasEgress {
 		topic = networkv1.SubnetEgressUngateSubject
-		data, err = json.Marshal(networkv1.SubnetEgressUngateEvent{
+		client.UngateSubnetEgress(networkv1.SubnetEgressUngateEvent{
 			VpcId: vpcID, SubnetId: subnetID, DestinationCidr: destCidr,
 		})
 	} else {
-		data, err = json.Marshal(networkv1.SubnetEgressGateEvent{
+		client.GateSubnetEgress(networkv1.SubnetEgressGateEvent{
 			VpcId: vpcID, SubnetId: subnetID, DestinationCidr: destCidr,
 		})
-	}
-	if err != nil {
-		slog.WarnContext(ctx, "subnet egress gate: marshal failed", "topic", topic, "err", err)
-		return
-	}
-	if err := s.natsConn.Publish(topic, data); err != nil {
-		slog.WarnContext(ctx, "subnet egress gate: publish failed", "topic", topic, "subnetId", subnetID, "err", err)
-		return
 	}
 	slog.InfoContext(ctx, "subnet egress gate decision published",
 		"topic", topic, "vpcId", vpcID, "subnetId", subnetID, "destinationCidr", destCidr)
@@ -1464,21 +1457,19 @@ func (s *RouteTableServiceImpl) publishNatGatewayEventForSubnet(ctx context.Cont
 		slog.WarnContext(ctx, "NAT GW event: subnet unmarshal failed", "topic", topic, "subnetId", subnetID, "err", err)
 		return
 	}
-	data, err := json.Marshal(networkv1.NATGatewayEvent{
+	evt := networkv1.NATGatewayEvent{
 		VpcId:           vpcID,
 		NatGatewayId:    natgwID,
 		PublicIp:        publicIp,
 		SubnetCidr:      subnet.CidrBlock,
 		SubnetId:        subnetID,
 		DestinationCidr: destCidr,
-	})
-	if err != nil {
-		slog.WarnContext(ctx, "NAT GW event: marshal failed", "topic", topic, "err", err)
-		return
 	}
-	if err := s.natsConn.Publish(topic, data); err != nil {
-		slog.WarnContext(ctx, "NAT GW event: publish failed", "topic", topic, "subnetId", subnetID, "err", err)
-		return
+	client := projection.New(s.natsConn)
+	if topic == networkv1.NATGatewayDeleteSubject {
+		client.RemoveNATGateway(evt)
+	} else {
+		client.AddNATGateway(evt)
 	}
 	slog.InfoContext(ctx, "NAT GW event published", "topic", topic, "subnetCidr", subnet.CidrBlock, "publicIp", publicIp, "subnetId", subnetID, "destinationCidr", destCidr)
 }
@@ -1533,19 +1524,17 @@ func (s *RouteTableServiceImpl) publishIGWRouteEventForSubnet(ctx context.Contex
 	if s.natsConn == nil {
 		return
 	}
-	data, err := json.Marshal(networkv1.IGWRouteEvent{
+	evt := networkv1.IGWRouteEvent{
 		VpcId:             vpcID,
 		SubnetId:          subnetID,
 		DestinationCidr:   destCidr,
 		InternetGatewayId: igwID,
-	})
-	if err != nil {
-		slog.WarnContext(ctx, "IGW route event: marshal failed", "topic", topic, "err", err)
-		return
 	}
-	if err := s.natsConn.Publish(topic, data); err != nil {
-		slog.WarnContext(ctx, "IGW route event: publish failed", "topic", topic, "subnetId", subnetID, "err", err)
-		return
+	client := projection.New(s.natsConn)
+	if topic == networkv1.IGWRouteDeleteSubject {
+		client.RemoveIGWRoute(evt)
+	} else {
+		client.AddIGWRoute(evt)
 	}
 	slog.InfoContext(ctx, "IGW route event published", "topic", topic, "subnetId", subnetID, "destinationCidr", destCidr, "igwId", igwID)
 }

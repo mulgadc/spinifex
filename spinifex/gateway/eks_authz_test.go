@@ -5,6 +5,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http"
@@ -451,4 +453,190 @@ func TestEKSRequest_PublishInternalRejectsNonCPCallers(t *testing.T) {
 			})
 		}
 	}
+}
+
+// tokenReviewFixture is publishFixture's clusters with an access entry on each,
+// granting one principal a group named for its cluster, and a stand-in STS
+// verifier that records which cluster each review was pinned to.
+type tokenReviewFixture struct {
+	gw       *GatewayConfig
+	verified chan string
+}
+
+const tokenReviewPrincipal = "arn:aws:iam::" + authzAccountID + ":role/admin"
+
+var tokenReviewToken = "k8s-aws-v1." + base64.RawURLEncoding.EncodeToString([]byte("https://sts/?Action=GetCallerIdentity"))
+
+func newTokenReviewFixture(t *testing.T) *tokenReviewFixture {
+	t.Helper()
+	f := newPublishFixture(t)
+	js, err := jetstream.New(f.nc)
+	require.NoError(t, err)
+	for _, c := range []struct{ acct, cluster string }{
+		{authzAccountID, "alpha"}, {authzAccountID, "beta"}, {publishOtherAcct, "gamma"},
+	} {
+		kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, c.acct)
+		require.NoError(t, err)
+		_, err = access.New(authzRegion).Create(t.Context(), kv, c.acct, access.Spec{
+			Cluster: c.cluster, PrincipalARN: tokenReviewPrincipal,
+			Groups: []string{"group-" + c.cluster}, Type: access.EntryTypeStandard,
+		})
+		require.NoError(t, err)
+	}
+
+	verified := make(chan string, 16)
+	sub, err := f.nc.Subscribe(handlers_eks.TokenVerifySubject, func(m *nats.Msg) {
+		var req handlers_eks.TokenVerifyRequest
+		_ = json.Unmarshal(m.Data, &req)
+		verified <- req.ClusterName
+		resp, _ := json.Marshal(handlers_eks.TokenVerifyResponse{
+			AccountID: authzAccountID, ARN: tokenReviewPrincipal, UserID: "AROAEXAMPLE:session",
+		})
+		_ = m.Respond(resp)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	return &tokenReviewFixture{gw: f.gw, verified: verified}
+}
+
+func tokenReviewBody(accountID string) string {
+	return `{"accountId":"` + accountID + `","token":"` + tokenReviewToken + `"}`
+}
+
+func (f *tokenReviewFixture) review(t *testing.T, ctx context.Context, cluster, body string) (*httptest.ResponseRecorder, error) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/clusters/"+cluster+"/token-review", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	return rec, f.gw.EKS_Request(rec, req.WithContext(ctx))
+}
+
+func (f *tokenReviewFixture) nextVerified(t *testing.T) string {
+	t.Helper()
+	select {
+	case cluster := <-f.verified:
+		return cluster
+	case <-time.After(2 * time.Second):
+		t.Fatal("token was never verified")
+		return ""
+	}
+}
+
+// requireNothingVerified proves a denial stopped the review before STS, not
+// just the reply.
+func (f *tokenReviewFixture) requireNothingVerified(t *testing.T) {
+	t.Helper()
+	select {
+	case cluster := <-f.verified:
+		t.Fatalf("token verified against cluster %q", cluster)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A denial that differs by target would tell the caller which clusters exist.
+func requireIndistinguishableDenial(t *testing.T, rec *httptest.ResponseRecorder, err error) {
+	t.Helper()
+	assert.Equal(t, errors.New(awserrors.ErrorAccessDenied), err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, awserrors.ValidErrorCodeFromError(err))
+	assert.Empty(t, rec.Body.String())
+}
+
+// The CP VM's webhook reviewing a token for the cluster it serves gets the same
+// identity it always did, verified against that cluster.
+func TestEKSRequest_WebhookTokenReviewResolvesForTheCallersOwnCluster(t *testing.T) {
+	f := newTokenReviewFixture(t)
+	rec, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha", tokenReviewBody(authzAccountID))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.JSONEq(t, `{"authenticated":true,"username":"`+tokenReviewPrincipal+`",`+
+		`"uid":"AROAEXAMPLE:session","groups":["group-alpha"]}`, rec.Body.String())
+	assert.Equal(t, "alpha", f.nextVerified(t))
+	f.requireNothingVerified(t)
+}
+
+// The bypass this closes: eks:WebhookTokenReview on "*" let a CP VM resolve a
+// token against any cluster in any account, reading the identities and groups
+// mapped there. Every target it does not serve is the same denial.
+func TestEKSRequest_WebhookTokenReviewDeniesAClusterTheCallerDoesNotServe(t *testing.T) {
+	f := newTokenReviewFixture(t)
+	targets := []struct {
+		name, account, cluster string
+	}{
+		{"its own account, another cluster", authzAccountID, "beta"},
+		{"another account's cluster", publishOtherAcct, "gamma"},
+		{"its own cluster's name in another account", publishOtherAcct, "alpha"},
+		{"a cluster that does not exist", authzAccountID, "delta"},
+		{"an account with no clusters", publishNoClusters, "alpha"},
+		{"an account no bucket can be named for", publishOtherAcct + ".gamma", "alpha"},
+		{"a cluster no key can be named for", authzAccountID, "*"},
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			rec, err := f.review(t, cpAgentContext(publishCPAlpha), url.PathEscape(target.cluster), tokenReviewBody(target.account))
+			requireIndistinguishableDenial(t, rec, err)
+			f.requireNothingVerified(t)
+		})
+	}
+}
+
+// The account the gate binds is the one the review reads access entries from,
+// and the route's cluster is the only cluster: the body cannot name another.
+func TestEKSRequest_WebhookTokenReviewRedirectionIsDenied(t *testing.T) {
+	f := newTokenReviewFixture(t)
+	cases := []struct{ name, cluster, body string }{
+		{"URL names its cluster, body another account", "alpha", tokenReviewBody(publishOtherAcct)},
+		{"re-cased key the handler folds onto accountId", "gamma",
+			`{"AccountID":"` + publishOtherAcct + `","token":"` + tokenReviewToken + `"}`},
+		{"repeated key, whose last value the handler reads", "gamma",
+			`{"accountId":"` + authzAccountID + `","accountId":"` + publishOtherAcct + `","token":"` + tokenReviewToken + `"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, err := f.review(t, cpAgentContext(publishCPAlpha), tc.cluster, tc.body)
+			requireIndistinguishableDenial(t, rec, err)
+			f.requireNothingVerified(t)
+		})
+	}
+
+	rec, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha",
+		`{"accountId":"`+authzAccountID+`","clusterName":"beta","token":"`+tokenReviewToken+`"}`)
+	require.NoError(t, err)
+	assert.Contains(t, rec.Body.String(), `"group-alpha"`)
+	assert.Equal(t, "alpha", f.nextVerified(t))
+}
+
+// Only a CP VM's instance-role session may review: a tenant holding eks:*, and
+// baked static system credentials with no instance identity, are both refused.
+func TestEKSRequest_WebhookTokenReviewRejectsNonCPCallers(t *testing.T) {
+	f := newTokenReviewFixture(t)
+	cases := []struct {
+		name, cluster, account string
+		ctx                    context.Context
+	}{
+		{"tenant, its own cluster", "alpha", authzAccountID, userContext(authzAccountID, "alice")},
+		{"tenant, another account's cluster", "gamma", publishOtherAcct, userContext(authzAccountID, "alice")},
+		{"other account's tenant, this cluster", "alpha", authzAccountID, userContext(publishOtherAcct, "mallory")},
+		{"static system credentials", "alpha", authzAccountID, userContext(awsidentifiers.GlobalAccountID, "admin")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, err := f.review(t, tc.ctx, tc.cluster, tokenReviewBody(tc.account))
+			requireIndistinguishableDenial(t, rec, err)
+			f.requireNothingVerified(t)
+		})
+	}
+}
+
+// A body the handler cannot read stays the CP agent's validation fault; a
+// tenant sending one is refused on its class before the body matters.
+func TestEKSRequest_WebhookTokenReviewMalformedBody(t *testing.T) {
+	f := newTokenReviewFixture(t)
+	for _, body := range []string{`{not-json`, `{"token":"` + tokenReviewToken + `"}`, `{"accountId":"` + authzAccountID + `","token":""}`} {
+		_, err := f.review(t, cpAgentContext(publishCPAlpha), "alpha", body)
+		require.Error(t, err)
+		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err), "body %q", body)
+
+		rec, err := f.review(t, userContext(authzAccountID, "alice"), "alpha", body)
+		requireIndistinguishableDenial(t, rec, err)
+	}
+	f.requireNothingVerified(t)
 }

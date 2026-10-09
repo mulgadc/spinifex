@@ -16,15 +16,30 @@ import (
 const tokenReviewVerifyTimeout = 5 * time.Second
 
 // webhookTokenReviewRequest is the body POSTed to /clusters/{name}/token-review.
-// The webhook uses system SigV4 creds, so AccountID names the cluster account explicitly.
+// The webhook signs as the CP VM's system-account instance role, so AccountID
+// names the cluster account explicitly.
 type webhookTokenReviewRequest struct {
 	AccountID string `json:"accountId"`
 	Token     string `json:"token"`
 }
 
+// decodeWebhookTokenReview is the one reading of the body that both
+// AuthorizeInternal and WebhookTokenReview use, so the account the gate binds
+// is the account whose access entries the review reads.
+func decodeWebhookTokenReview(body []byte) (webhookTokenReviewRequest, error) {
+	var req webhookTokenReviewRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return webhookTokenReviewRequest{}, err
+	}
+	if req.AccountID == "" {
+		return webhookTokenReviewRequest{}, errors.New("accountId is required")
+	}
+	return req, nil
+}
+
 // WebhookTokenReview — POST /clusters/{name}/token-review. Resolves an
-// `aws eks get-token` bearer token to a K8s identity (STS verify + AccessEntry
-// lookup) via the AWSGW, keeping STS/KV access cluster-internal.
+// `aws eks get-token` bearer token to a K8s identity via the AWSGW, once
+// AuthorizeInternal has bound the caller to this cluster and account.
 func WebhookTokenReview(ctx context.Context, natsConn *nats.Conn, clusterName string, body []byte) (*handlers_eks.WebhookTokenReviewResult, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -33,12 +48,12 @@ func WebhookTokenReview(ctx context.Context, natsConn *nats.Conn, clusterName st
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	var req webhookTokenReviewRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	req, err := decodeWebhookTokenReview(body)
+	if err != nil {
 		slog.DebugContext(ctx, "WebhookTokenReview: bad body", "cluster", clusterName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if req.AccountID == "" || req.Token == "" {
+	if req.Token == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 

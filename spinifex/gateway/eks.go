@@ -41,8 +41,9 @@ var eksRoutes = []eksRoute{
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.PublishInternal(ctx, gw.NATSConn, p[0], b)
 		}},
-	// Token review broker: the eks-token-webhook POSTs bearer tokens here;
-	// the gateway resolves them host-side (STS verify + AccessEntry lookup).
+	// Token review broker: the eks-token-webhook POSTs bearer tokens here and the
+	// gateway resolves them host-side. The account comes from the body, and
+	// AuthorizeInternal binds that account and cluster to the caller's own.
 	{Method: "POST", Pattern: "/clusters/{clusterName}/token-review", Action: "WebhookTokenReview",
 		Handler: func(ctx context.Context, gw *GatewayConfig, acct, callerARN string, p []string, b []byte) (any, error) {
 			return gateway_eks.WebhookTokenReview(ctx, gw.NATSConn, p[0], b)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -85,4 +86,17 @@ func TestWebhookTokenReview_ResolvesIdentity(t *testing.T) {
 	assert.True(t, out.Authenticated)
 	assert.Equal(t, testARN, out.Username)
 	assert.Equal(t, []string{"system:masters"}, out.Groups)
+}
+
+// A body-scoped internal route without a reader would fail every call closed;
+// this catches one added to eksScopes before it ships unusable.
+func TestInternalBodyAccounts_CoverEveryBodyScopedRoute(t *testing.T) {
+	for action, sources := range eksScopes {
+		if slices.Contains(sources, sourceInternalBodyCluster) {
+			assert.Contains(t, internalBodyAccounts, action)
+		}
+	}
+	for action := range internalBodyAccounts {
+		assert.Contains(t, eksScopes[action], sourceInternalBodyCluster, action)
+	}
 }

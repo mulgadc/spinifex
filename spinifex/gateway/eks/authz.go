@@ -30,7 +30,6 @@ const (
 	sourceClusterFromBody
 	sourceInternalCluster
 	sourceInternalBodyCluster
-	sourceBodyAccountCluster
 	sourceNodegroup
 	sourceNodegroupFromBody
 	sourceAddon
@@ -58,7 +57,7 @@ var eksScopes = map[string][]resourceSource{
 	// The owning account arrives in the body on these two, and the ARN names
 	// that account for the same reason: it is the account the handler acts in.
 	"PublishInternal":    {sourceInternalBodyCluster},
-	"WebhookTokenReview": {sourceBodyAccountCluster},
+	"WebhookTokenReview": {sourceInternalBodyCluster},
 
 	// Nodegroups. Create evaluates the cluster and the nodegroup it is about
 	// to create, matching AWS.
@@ -153,7 +152,7 @@ func resolve(source resourceSource, action, region, accountID string, params []s
 	case sourceInternalCluster:
 		return clusterARN(region, param(params, 1), param(params, 0)), nil
 
-	case sourceInternalBodyCluster, sourceBodyAccountCluster:
+	case sourceInternalBodyCluster:
 		scope, err := bodyscope.Parse(action, body)
 		if err != nil {
 			return "", errors.New(awserrors.ErrorInvalidParameterValue)

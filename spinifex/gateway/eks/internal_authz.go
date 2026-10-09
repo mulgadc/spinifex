@@ -43,7 +43,8 @@ func IsInternalAction(action string) bool {
 // AuthorizeInternal is the principal gate for the internal CP-VM routes, run
 // ahead of the policy check. params are the route captures: cluster name,
 // account ID, and for GetRecoveryDirective the member's instance ID. body is
-// the request body the handler will read; PublishInternal names its account there.
+// the request body the handler will read; PublishInternal and WebhookTokenReview
+// name their account there.
 func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, caller Caller, params []string, body []byte) error {
 	if !IsInternalAction(action) {
 		return nil
@@ -88,16 +89,34 @@ func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, 
 func internalTarget(action string, params []string, body []byte) (clusterName, accountID string, err error) {
 	clusterName, accountID = param(params, 0), param(params, 1)
 	if slices.Contains(eksScopes[action], sourceInternalBodyCluster) {
-		req, decodeErr := decodeInternalPublish(body)
+		readAccount, ok := internalBodyAccounts[action]
+		if !ok {
+			slog.Error("EKS: internal route has no body account reader", "action", action)
+			return "", "", errors.New(awserrors.ErrorServerInternal)
+		}
+		bodyAccount, decodeErr := readAccount(body)
 		if decodeErr != nil {
 			return "", "", errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		accountID = req.AccountID
+		accountID = bodyAccount
 	}
 	if clusterName == "" || accountID == "" {
 		return "", "", errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	return clusterName, accountID, nil
+}
+
+// internalBodyAccounts reads the owning account of each body-scoped internal
+// route through the same decoder its handler uses.
+var internalBodyAccounts = map[string]func(body []byte) (string, error){
+	"PublishInternal": func(body []byte) (string, error) {
+		req, err := decodeInternalPublish(body)
+		return req.AccountID, err
+	},
+	"WebhookTokenReview": func(body []byte) (string, error) {
+		req, err := decodeWebhookTokenReview(body)
+		return req.AccountID, err
+	},
 }
 
 // The class check on its own: a session assumed from the CP VM's instance role

@@ -51,6 +51,10 @@ func publishBody(accountID string) []byte {
 	return []byte(`{"accountId":"` + accountID + `","channel":"state","payload":{"healthz":"ok"}}`)
 }
 
+func tokenReviewBody(accountID string) []byte {
+	return []byte(`{"accountId":"` + accountID + `","token":"k8s-aws-v1.dGVzdA"}`)
+}
+
 func assertDenied(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)
@@ -97,6 +101,8 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 				tc.caller, []string{"alpha", tenantAccount, cpInstanceID}, nil))
 			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "PublishInternal",
 				tc.caller, []string{"alpha"}, publishBody(tenantAccount)))
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "WebhookTokenReview",
+				tc.caller, []string{"alpha"}, tokenReviewBody(tenantAccount)))
 		})
 	}
 }
@@ -122,6 +128,8 @@ func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, cpInstanceID}, nil))
 	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "PublishInternal",
 		cpAgent(cpInstanceID), []string{"alpha"}, publishBody(tenantAccount)))
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "WebhookTokenReview",
+		cpAgent(cpInstanceID), []string{"alpha"}, tokenReviewBody(tenantAccount)))
 }
 
 // Clusters persisted before ControlPlaneNodes existed carry the member in the
@@ -165,6 +173,8 @@ func TestAuthorizeInternal_RejectsClusterTheCallerDoesNotServe(t *testing.T) {
 				cpAgent(cpInstanceID), []string{tc.cluster, tc.account}, nil))
 			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "PublishInternal",
 				cpAgent(cpInstanceID), []string{tc.cluster}, publishBody(tc.account)))
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "WebhookTokenReview",
+				cpAgent(cpInstanceID), []string{tc.cluster}, tokenReviewBody(tc.account)))
 		})
 	}
 }
@@ -182,14 +192,18 @@ func TestAuthorizeInternal_RecoveryIsSelfOnly(t *testing.T) {
 		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, otherInstance}, nil))
 }
 
-// PublishInternal names its account in the body; one the handler could not read
-// is the caller's validation fault, as an empty path segment is.
-func TestAuthorizeInternal_RejectsUnreadablePublishBody(t *testing.T) {
-	for _, body := range []string{``, `{not-json`, `{"channel":"state"}`, `{"accountId":7}`} {
-		err := gateway_eks.AuthorizeInternal(t.Context(), nil, "PublishInternal", cpAgent(cpInstanceID),
-			[]string{"alpha"}, []byte(body))
-		require.Error(t, err)
-		assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err), "body %q", body)
+// PublishInternal and WebhookTokenReview name their account in the body; one
+// the handler could not read is the caller's validation fault, as an empty
+// path segment is.
+func TestAuthorizeInternal_RejectsUnreadableBody(t *testing.T) {
+	for _, action := range []string{"PublishInternal", "WebhookTokenReview"} {
+		for _, body := range []string{``, `{not-json`, `{"channel":"state","token":"t"}`, `{"accountId":7}`} {
+			err := gateway_eks.AuthorizeInternal(t.Context(), nil, action, cpAgent(cpInstanceID),
+				[]string{"alpha"}, []byte(body))
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+				"%s body %q", action, body)
+		}
 	}
 }
 

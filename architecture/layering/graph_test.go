@@ -55,13 +55,13 @@ func moduleRoot() (string, error) {
 	if !ok {
 		return "", errors.New("cannot locate test source")
 	}
-	// spinifex/spinifex/architecture/layering/graph_test.go -> module root.
-	return filepath.Abs(filepath.Join(filepath.Dir(file), "..", "..", ".."))
+	// architecture/layering/graph_test.go -> module root.
+	return filepath.Abs(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
-// excludedTopDirs hold no production code: tests/ is test-only and docs/ only
-// embeds documentation; neither is mapped to a layer.
-var excludedTopDirs = map[string]bool{"tests": true, "docs": true}
+// excludedTopDirs hold no production code: tests/ is test-only, docs/ only
+// embeds documentation and architecture/ is repository governance tooling.
+var excludedTopDirs = map[string]bool{"tests": true, "docs": true, "architecture": true}
 
 // loadGraph parses the imports of every non-test Go file under root, so it
 // sees every build-tag variant and needs no Go toolchain or workspace.

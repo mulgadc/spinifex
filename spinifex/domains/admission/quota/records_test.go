@@ -1,4 +1,4 @@
-package handlers_quota_test
+package quota_test
 
 import (
 	"context"
@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +43,7 @@ func TestRecordVCPULister_TotalsPerAccount(t *testing.T) {
 	putRecord(t, store, "i-2", a, "t3.micro", vm.StateRunning)  // 2
 	putRecord(t, store, "i-3", b, "m5.xlarge", vm.StateRunning) // 4
 
-	totals, complete, err := handlers_quota.RecordVCPULister(store, recordPrefix)(t.Context())
+	totals, complete, err := quota.RecordVCPULister(store, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Equal(t, map[string]int{a: 6, b: 4}, totals)
@@ -60,7 +60,7 @@ func TestRecordVCPULister_ChargesStoppedButNotTerminal(t *testing.T) {
 	putRecord(t, store, "i-4", account, "m5.xlarge", vm.StateShuttingDown) // excluded
 	putRecord(t, store, "i-5", account, "m5.xlarge", vm.StateTerminated)   // excluded
 
-	totals, _, err := handlers_quota.RecordVCPULister(store, recordPrefix)(t.Context())
+	totals, _, err := quota.RecordVCPULister(store, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, map[string]int{account: 6}, totals)
 }
@@ -71,7 +71,7 @@ func TestRecordVCPULister_SkipsSystemAccountAndReportsNothingAsAbsent(t *testing
 	store := recordStore(t)
 	putRecord(t, store, "i-1", awsidentifiers.GlobalAccountID, "m5.xlarge", vm.StateRunning)
 
-	totals, complete, err := handlers_quota.RecordVCPULister(store, recordPrefix)(t.Context())
+	totals, complete, err := quota.RecordVCPULister(store, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Empty(t, totals)
@@ -85,7 +85,7 @@ func TestRecordVCPULister_UnknownInstanceTypeContributesNothing(t *testing.T) {
 	putRecord(t, store, "i-1", account, "not-a-real-type", vm.StateRunning)
 	putRecord(t, store, "i-2", account, "t3.micro", vm.StateRunning)
 
-	totals, _, err := handlers_quota.RecordVCPULister(store, recordPrefix)(t.Context())
+	totals, _, err := quota.RecordVCPULister(store, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, map[string]int{account: 2}, totals)
 }
@@ -131,7 +131,7 @@ func TestRecordVCPULister_CompleteWhenTheSnapshotReachesTheWatermark(t *testing.
 		watermark: 12,
 	}
 
-	totals, complete, err := handlers_quota.RecordVCPULister(source, recordPrefix)(t.Context())
+	totals, complete, err := quota.RecordVCPULister(source, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Equal(t, map[string]int{account: 4}, totals)
@@ -149,7 +149,7 @@ func TestRecordVCPULister_IncompleteWhenTheSnapshotIsBehindTheWatermark(t *testi
 		watermark: 12,
 	}
 
-	totals, complete, err := handlers_quota.RecordVCPULister(source, recordPrefix)(t.Context())
+	totals, complete, err := quota.RecordVCPULister(source, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.False(t, complete)
 	require.Equal(t, map[string]int{account: 4}, totals)
@@ -165,7 +165,7 @@ func TestRecordVCPULister_IncompleteWhenTheWatermarkIsUnavailable(t *testing.T) 
 		watermarkErr: errors.New("stream leader unavailable"),
 	}
 
-	totals, complete, err := handlers_quota.RecordVCPULister(source, recordPrefix)(t.Context())
+	totals, complete, err := quota.RecordVCPULister(source, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.False(t, complete)
 	require.Equal(t, map[string]int{account: 2}, totals)
@@ -181,7 +181,7 @@ func TestRecordVCPULister_CompleteAgainstALiveBucketAfterADelete(t *testing.T) {
 	putRecord(t, store, "i-2", account, "t3.micro", vm.StateRunning)
 	require.NoError(t, store.Delete(t.Context(), recordPrefix+"i-2"))
 
-	totals, complete, err := handlers_quota.RecordVCPULister(store, recordPrefix)(t.Context())
+	totals, complete, err := quota.RecordVCPULister(store, recordPrefix)(t.Context())
 	require.NoError(t, err)
 	require.True(t, complete)
 	require.Equal(t, map[string]int{account: 4}, totals)
@@ -216,7 +216,7 @@ func TestAccountForRecord(t *testing.T) {
 		{"a corrupt value cannot be attributed", []byte("{not json"), "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := handlers_quota.AccountForRecord(tc.value)
+			got, ok := quota.AccountForRecord(tc.value)
 			require.Equal(t, tc.wantOK, ok)
 			require.Equal(t, tc.want, got)
 		})

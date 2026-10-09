@@ -1,8 +1,8 @@
-// Package handlers_quota enforces per-account service quotas in the AWS gateway.
+// Package quota enforces per-account service quotas in the AWS gateway.
 // It caps how much standing infrastructure a single account can hold (vCPUs,
 // VPCs, subnets, Elastic IPs, EBS storage). Limits are a single config-tunable
 // tier; the system account and disabled configs bypass every check.
-package handlers_quota
+package quota
 
 import (
 	"fmt"

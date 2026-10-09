@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -19,7 +19,7 @@ func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
-		Bucket:  handlers_quota.KVBucketAccountUsage,
+		Bucket:  admissionquota.KVBucketAccountUsage,
 		History: 5,
 	})
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
-	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
+	quota := admissionquota.New(admissionquota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
 	const account = "123456789012"
 	records := instanceRecordBucket(t, js)
@@ -101,7 +101,7 @@ func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
-	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
+	quota := admissionquota.New(admissionquota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
 	const account = "123456789012"
 	records := instanceRecordBucket(t, js)
@@ -137,7 +137,7 @@ func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
 	js := testutil.NewJetStream(t, nc)
 	bucket, err := openAccountUsageBucket(t.Context(), js)
 	require.NoError(t, err)
-	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 100}, bucket)
+	quota := admissionquota.New(admissionquota.Limits{Enabled: true, VCPUs: 100}, bucket)
 
 	const changed, untouched = "111111111111", "222222222222"
 	records := instanceRecordBucket(t, js)

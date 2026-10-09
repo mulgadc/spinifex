@@ -4,8 +4,8 @@ package cli
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -75,7 +75,7 @@ func TestQuotaOverridesFromFlagsUnlimited(t *testing.T) {
 	over, _, err := quotaOverridesFromFlags(cmd)
 	require.NoError(t, err)
 	require.NotNil(t, over.VCPUs)
-	require.Equal(t, handlers_quota.Unlimited, *over.VCPUs)
+	require.Equal(t, quota.Unlimited, *over.VCPUs)
 }
 
 // Anything below the Unlimited sentinel is a typo, not a smaller limit.
@@ -104,9 +104,9 @@ func TestQuotaOverridesFromFlagsNoneChanged(t *testing.T) {
 func TestPrintAccountQuota(t *testing.T) {
 	resp := &gateway.AccountQuotaResponse{
 		AccountID: "000000000042",
-		Limits:    map[string]int{"vcpus": 32, "vpcs": handlers_quota.Unlimited, "eips": 4},
+		Limits:    map[string]int{"vcpus": 32, "vpcs": quota.Unlimited, "eips": 4},
 		Source:    map[string]string{"vcpus": "override", "vpcs": "override", "eips": "config"},
-		Overrides: handlers_quota.Overrides{UpdatedBy: "operator", UpdatedAt: "2026-08-20T01:00:00Z"},
+		Overrides: quota.Overrides{UpdatedBy: "operator", UpdatedAt: "2026-08-20T01:00:00Z"},
 	}
 
 	out := captureStdout(t, func() { printAccountQuota(resp) })
@@ -124,7 +124,7 @@ func TestPrintAccountQuota(t *testing.T) {
 // Every dimension the override record carries must be reachable from the CLI,
 // or a limit exists that an operator cannot set.
 func TestQuotaDimensionsCoverEveryOverrideField(t *testing.T) {
-	var over handlers_quota.Overrides
+	var over quota.Overrides
 	for _, d := range quotaDimensions {
 		v := 1
 		*d.field(&over) = &v

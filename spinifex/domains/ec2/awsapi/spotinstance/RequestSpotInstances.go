@@ -14,13 +14,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/nats-io/nats.go"
 )
 
@@ -64,7 +64,7 @@ func ValidateRequestSpotInstancesInput(input *ec2.RequestSpotInstancesInput) err
 // ClientToken passed through, same vCPU quota gate), then builds and persists one
 // active/fulfilled SpotInstanceRequest per launched instance. On a launch failure
 // (including InsufficientInstanceCapacity) it returns the error and persists nothing.
-func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID, az string, passRoleCheck ec2instanceapi.PassRoleChecker, quota *handlers_quota.Service, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
+func RequestSpotInstances(ctx context.Context, input *ec2.RequestSpotInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID, az string, passRoleCheck ec2instanceapi.PassRoleChecker, quota *admissionquota.Service, expectedNodes int) (ec2.RequestSpotInstancesOutput, error) {
 	var output ec2.RequestSpotInstancesOutput
 
 	if err := ValidateRequestSpotInstancesInput(input); err != nil {

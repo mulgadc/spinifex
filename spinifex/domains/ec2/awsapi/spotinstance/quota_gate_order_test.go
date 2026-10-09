@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -71,13 +71,13 @@ func TestRequestSpotInstances_QuotaGateRunsBeforeDispatchAndLaunch(t *testing.T)
 	_, nc, js := testutil.StartTestJetStream(t)
 
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
-		Bucket:  handlers_quota.KVBucketAccountUsage,
+		Bucket:  admissionquota.KVBucketAccountUsage,
 		History: 1,
 	})
 	require.NoError(t, err)
 
 	order := &callOrder{}
-	quota := handlers_quota.New(handlers_quota.Limits{Enabled: true, VCPUs: 1000}, &recordingKV{KeyValue: kv, order: order})
+	quota := admissionquota.New(admissionquota.Limits{Enabled: true, VCPUs: 1000}, &recordingKV{KeyValue: kv, order: order})
 
 	const instanceType = "t3.micro"
 	const node = "node-1"

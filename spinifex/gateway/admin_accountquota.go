@@ -6,25 +6,25 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 )
 
 // AccountQuotaRequest addresses one account. PutAccountQuota also carries the
 // overrides; GetAccountQuota ignores them.
 type AccountQuotaRequest struct {
-	AccountID string                   `json:"accountId"`
-	Overrides handlers_quota.Overrides `json:"overrides,omitzero"`
+	AccountID string          `json:"accountId"`
+	Overrides quota.Overrides `json:"overrides,omitzero"`
 }
 
 // AccountQuotaResponse reports the limits in force for an account and where
 // each came from. The source map is what makes a surprising number debuggable:
 // a bare limit cannot say whether it was inherited or set.
 type AccountQuotaResponse struct {
-	AccountID string                   `json:"accountId"`
-	Limits    map[string]int           `json:"limits"`
-	Source    map[string]string        `json:"source"`
-	Overrides handlers_quota.Overrides `json:"overrides"`
+	AccountID string            `json:"accountId"`
+	Limits    map[string]int    `json:"limits"`
+	Source    map[string]string `json:"source"`
+	Overrides quota.Overrides   `json:"overrides"`
 }
 
 // sourceConfig and sourceOverride name where a resolved limit came from.
@@ -78,27 +78,27 @@ func (gw *GatewayConfig) adminPutAccountQuota(ctx context.Context, body []byte) 
 // parseAccountQuotaRequest decodes and validates a quota request. The account
 // must exist: silently accepting an override for a typo'd ID would store a
 // record that never applies to anything.
-func (gw *GatewayConfig) parseAccountQuotaRequest(body []byte) (string, handlers_quota.Overrides, error) {
+func (gw *GatewayConfig) parseAccountQuotaRequest(body []byte) (string, quota.Overrides, error) {
 	if gw.Quota == nil || gw.IAMService == nil {
 		slog.Error("AccountQuota: quota or IAM service not available")
-		return "", handlers_quota.Overrides{}, errors.New(awserrors.ErrorInternalError)
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInternalError)
 	}
 
 	var req AccountQuotaRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return "", handlers_quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	if !accountIDRE.MatchString(req.AccountID) {
-		return "", handlers_quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	if _, err := gw.IAMService.GetAccount(req.AccountID); err != nil {
-		return "", handlers_quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
+		return "", quota.Overrides{}, errors.New(awserrors.ErrorInvalidRequest)
 	}
 	return req.AccountID, req.Overrides, nil
 }
 
 // accountQuotaResponse pairs each resolved limit with the layer it came from.
-func accountQuotaResponse(accountID string, over handlers_quota.Overrides, limits handlers_quota.Limits) *AccountQuotaResponse {
+func accountQuotaResponse(accountID string, over quota.Overrides, limits quota.Limits) *AccountQuotaResponse {
 	dimensions := []struct {
 		name     string
 		value    int

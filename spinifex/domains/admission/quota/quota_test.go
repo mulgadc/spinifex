@@ -1,4 +1,4 @@
-package handlers_quota
+package quota
 
 import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"

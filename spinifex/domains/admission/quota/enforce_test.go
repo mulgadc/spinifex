@@ -1,4 +1,4 @@
-package handlers_quota_test
+package quota_test
 
 import (
 	"encoding/json"
@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -32,8 +32,8 @@ func stubDescribe(t *testing.T, nc *nats.Conn, subject string, reply any) {
 
 // enforceService builds an enabled Service with per-dimension caps low enough
 // that a handful of resources crosses them.
-func enforceService(limits handlers_quota.Limits) *handlers_quota.Service {
-	return handlers_quota.New(limits, nil)
+func enforceService(limits quota.Limits) *quota.Service {
+	return quota.New(limits, nil)
 }
 
 func vpcList(n int) *ec2.DescribeVpcsOutput {
@@ -48,7 +48,7 @@ func vpcList(n int) *ec2.DescribeVpcsOutput {
 func TestEnforceVPCsAtBoundary(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeVpcs", vpcList(3))
-	svc := enforceService(handlers_quota.Limits{Enabled: true, VPCs: 4})
+	svc := enforceService(quota.Limits{Enabled: true, VPCs: 4})
 
 	require.NoError(t, svc.EnforceVPCs(t.Context(), nc, "000000000002", 1))
 
@@ -61,7 +61,7 @@ func TestEnforceVPCsAtBoundary(t *testing.T) {
 func TestEnforceVPCsAtCap(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubDescribe(t, nc, "ec2.DescribeVpcs", vpcList(4))
-	svc := enforceService(handlers_quota.Limits{Enabled: true, VPCs: 4})
+	svc := enforceService(quota.Limits{Enabled: true, VPCs: 4})
 
 	err := svc.EnforceVPCs(t.Context(), nc, "000000000002", 1)
 	require.Error(t, err)
@@ -73,7 +73,7 @@ func TestEnforceSubnets(t *testing.T) {
 	stubDescribe(t, nc, "ec2.DescribeSubnets", &ec2.DescribeSubnetsOutput{
 		Subnets: []*ec2.Subnet{{SubnetId: aws.String("subnet-a")}, {SubnetId: aws.String("subnet-b")}},
 	})
-	svc := enforceService(handlers_quota.Limits{Enabled: true, Subnets: 2})
+	svc := enforceService(quota.Limits{Enabled: true, Subnets: 2})
 
 	require.Error(t, svc.EnforceSubnets(t.Context(), nc, "000000000002", 1))
 }
@@ -83,7 +83,7 @@ func TestEnforceEIPs(t *testing.T) {
 	stubDescribe(t, nc, "ec2.DescribeAddresses", &ec2.DescribeAddressesOutput{
 		Addresses: []*ec2.Address{{PublicIp: aws.String("203.0.113.1")}},
 	})
-	svc := enforceService(handlers_quota.Limits{Enabled: true, EIPs: 4})
+	svc := enforceService(quota.Limits{Enabled: true, EIPs: 4})
 
 	require.NoError(t, svc.EnforceEIPs(t.Context(), nc, "000000000002", 3))
 	require.Error(t, svc.EnforceEIPs(t.Context(), nc, "000000000002", 4))
@@ -94,7 +94,7 @@ func TestEnforceLoadBalancers(t *testing.T) {
 	stubDescribe(t, nc, "elbv2.DescribeLoadBalancers", &elbv2.DescribeLoadBalancersOutput{
 		LoadBalancers: []*elbv2.LoadBalancer{{LoadBalancerArn: aws.String("arn:a")}, {LoadBalancerArn: aws.String("arn:b")}},
 	})
-	svc := enforceService(handlers_quota.Limits{Enabled: true, LoadBalancers: 2})
+	svc := enforceService(quota.Limits{Enabled: true, LoadBalancers: 2})
 
 	err := svc.EnforceLoadBalancers(t.Context(), nc, "000000000002", 1)
 	require.Error(t, err)
@@ -106,7 +106,7 @@ func TestEnforceRDSInstances(t *testing.T) {
 	stubDescribe(t, nc, "rds.DescribeDBInstances", &rds.DescribeDBInstancesOutput{
 		DBInstances: []*rds.DBInstance{{DBInstanceIdentifier: aws.String("db-a")}},
 	})
-	svc := enforceService(handlers_quota.Limits{Enabled: true, RDSInstances: 2})
+	svc := enforceService(quota.Limits{Enabled: true, RDSInstances: 2})
 
 	require.NoError(t, svc.EnforceRDSInstances(t.Context(), nc, "000000000002", 1))
 	require.Error(t, svc.EnforceRDSInstances(t.Context(), nc, "000000000002", 2))
@@ -123,12 +123,12 @@ func TestEnforceVolumeCreateCountAndCapacity(t *testing.T) {
 		},
 	})
 
-	countBound := enforceService(handlers_quota.Limits{Enabled: true, Volumes: 2, VolumesGiB: 1000})
+	countBound := enforceService(quota.Limits{Enabled: true, Volumes: 2, VolumesGiB: 1000})
 	err := countBound.EnforceVolumeCreate(t.Context(), nc, "000000000002", 1)
 	require.Error(t, err, "the count cap must refuse even a tiny volume")
 	require.Equal(t, awserrors.ErrorResourceLimitExceeded, err.Error())
 
-	capacityBound := enforceService(handlers_quota.Limits{Enabled: true, Volumes: 16, VolumesGiB: 25})
+	capacityBound := enforceService(quota.Limits{Enabled: true, Volumes: 16, VolumesGiB: 25})
 	require.NoError(t, capacityBound.EnforceVolumeCreate(t.Context(), nc, "000000000002", 5))
 	require.Error(t, capacityBound.EnforceVolumeCreate(t.Context(), nc, "000000000002", 6))
 }
@@ -141,7 +141,7 @@ func TestEnforceVolumeModify(t *testing.T) {
 			{VolumeId: aws.String("vol-b"), Size: aws.Int64(10)},
 		},
 	})
-	svc := enforceService(handlers_quota.Limits{Enabled: true, Volumes: 16, VolumesGiB: 40})
+	svc := enforceService(quota.Limits{Enabled: true, Volumes: 16, VolumesGiB: 40})
 
 	require.NoError(t, svc.EnforceVolumeModify(t.Context(), nc, "000000000002", "vol-a", 30))
 	require.Error(t, svc.EnforceVolumeModify(t.Context(), nc, "000000000002", "vol-a", 31))
@@ -151,7 +151,7 @@ func TestEnforceVolumeModify(t *testing.T) {
 // "the account holds nothing", which would wave every create past the cap.
 func TestEnforceFailsWhenDescribeFails(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	svc := enforceService(handlers_quota.Limits{Enabled: true, VPCs: 4, EIPs: 4, Subnets: 4, LoadBalancers: 2, RDSInstances: 2, Volumes: 4})
+	svc := enforceService(quota.Limits{Enabled: true, VPCs: 4, EIPs: 4, Subnets: 4, LoadBalancers: 2, RDSInstances: 2, Volumes: 4})
 
 	require.Error(t, svc.EnforceVPCs(t.Context(), nc, "000000000002", 1))
 	require.Error(t, svc.EnforceSubnets(t.Context(), nc, "000000000002", 1))

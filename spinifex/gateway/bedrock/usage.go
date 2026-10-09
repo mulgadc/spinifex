@@ -32,7 +32,7 @@ const (
 	bedrockUsageDedupeHistory = 1
 
 	// usageCASRetries bounds Apply's retry on a revision conflict, mirroring
-	// handlers_quota's vcpuCASRetries.
+	// quota's vcpuCASRetries.
 	usageCASRetries = 100
 
 	// UsageConsumerName is this package's durable pull consumer for usage and
@@ -80,7 +80,7 @@ type UsageCounters struct {
 // UsageReader resolves accountID's total token usage (input+output, across
 // every model) for the current billing period. Satisfied by UsageStore; the
 // quota package depends on this shape without importing this package (see
-// handlers_quota.BedrockUsageReader).
+// quota.BedrockUsageReader).
 type UsageReader interface {
 	TokensThisPeriod(ctx context.Context, accountID string) (int64, error)
 }
@@ -188,7 +188,7 @@ func (s *UsageStore) Apply(ctx context.Context, rec InvocationRecord, price Pric
 // TokensThisPeriod sums accountID's input+output tokens across every model
 // for the current billing period, for the tokens-per-month quota dimension.
 // A few seconds of staleness against the usage consumer is acceptable for a
-// monthly cap (see handlers_quota.CheckBedrockTokens).
+// monthly cap (see quota.CheckBedrockTokens).
 // It stays on the raw handle rather than Store.List because the period is
 // matched on the key's suffix, which List does not surface.
 func (s *UsageStore) TokensThisPeriod(ctx context.Context, accountID string) (int64, error) {

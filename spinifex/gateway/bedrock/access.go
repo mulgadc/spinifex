@@ -75,7 +75,7 @@ func NewModelAccessStore(js jetstream.JetStream) *ModelAccessStore {
 }
 
 // Granted reports whether accountID holds a grant on modelID. The system
-// account bypasses grants entirely, matching how handlers_quota exempts it
+// account bypasses grants entirely, matching how the quota package exempts it
 // from every quota dimension.
 func (s *ModelAccessStore) Granted(ctx context.Context, accountID, modelID string) (bool, error) {
 	if accountID == awsidentifiers.GlobalAccountID {

@@ -1,5 +1,5 @@
 //test:in-package — exercises the unexported resolver (apply, limitsFor) and the shared exceeds comparison.
-package handlers_quota
+package quota
 
 import (
 	"encoding/json"

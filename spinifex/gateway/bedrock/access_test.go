@@ -151,7 +151,7 @@ func TestModelAccessStore_ListEmptyAccount(t *testing.T) {
 }
 
 // TestModelAccessStore_SystemAccountBypassesGrants mirrors how
-// handlers_quota exempts the system account from every quota dimension.
+// the quota package exempts the system account from every quota dimension.
 func TestModelAccessStore_SystemAccountBypassesGrants(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)

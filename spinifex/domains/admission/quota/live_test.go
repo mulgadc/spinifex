@@ -1,4 +1,4 @@
-package handlers_quota
+package quota
 
 import (
 	"context"

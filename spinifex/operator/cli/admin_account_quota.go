@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/spf13/cobra"
 )
 
@@ -18,16 +18,16 @@ import (
 var quotaDimensions = []struct {
 	flag  string
 	usage string
-	field func(*handlers_quota.Overrides) **int
+	field func(*quota.Overrides) **int
 }{
-	{"vcpus", "Total vCPUs across running and stopped instances", func(o *handlers_quota.Overrides) **int { return &o.VCPUs }},
-	{"vpcs", "VPCs", func(o *handlers_quota.Overrides) **int { return &o.VPCs }},
-	{"subnets", "Subnets, counted per account rather than per VPC", func(o *handlers_quota.Overrides) **int { return &o.Subnets }},
-	{"eips", "Elastic IP addresses", func(o *handlers_quota.Overrides) **int { return &o.EIPs }},
-	{"volumes", "EBS volumes", func(o *handlers_quota.Overrides) **int { return &o.Volumes }},
-	{"volumes-gib", "Total EBS capacity in GiB", func(o *handlers_quota.Overrides) **int { return &o.VolumesGiB }},
-	{"rds-instances", "RDS database instances", func(o *handlers_quota.Overrides) **int { return &o.RDSInstances }},
-	{"load-balancers", "Load balancers, ALB and NLB together", func(o *handlers_quota.Overrides) **int { return &o.LoadBalancers }},
+	{"vcpus", "Total vCPUs across running and stopped instances", func(o *quota.Overrides) **int { return &o.VCPUs }},
+	{"vpcs", "VPCs", func(o *quota.Overrides) **int { return &o.VPCs }},
+	{"subnets", "Subnets, counted per account rather than per VPC", func(o *quota.Overrides) **int { return &o.Subnets }},
+	{"eips", "Elastic IP addresses", func(o *quota.Overrides) **int { return &o.EIPs }},
+	{"volumes", "EBS volumes", func(o *quota.Overrides) **int { return &o.Volumes }},
+	{"volumes-gib", "Total EBS capacity in GiB", func(o *quota.Overrides) **int { return &o.VolumesGiB }},
+	{"rds-instances", "RDS database instances", func(o *quota.Overrides) **int { return &o.RDSInstances }},
+	{"load-balancers", "Load balancers, ALB and NLB together", func(o *quota.Overrides) **int { return &o.LoadBalancers }},
 }
 
 var accountQuotaCmd = &cobra.Command{
@@ -124,7 +124,7 @@ func runAccountQuotaSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no dimension given; pass at least one limit flag, or --clear to remove every override")
 	}
 	if clearAll {
-		over = handlers_quota.Overrides{}
+		over = quota.Overrides{}
 	}
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), adminRequestTimeout)
@@ -142,8 +142,8 @@ func runAccountQuotaSet(cmd *cobra.Command, args []string) error {
 // quotaOverridesFromFlags builds the override set from the flags the caller
 // actually passed. An unset flag is left nil so the dimension keeps inheriting,
 // which is why Changed is consulted rather than the flag's value.
-func quotaOverridesFromFlags(cmd *cobra.Command) (handlers_quota.Overrides, bool, error) {
-	var over handlers_quota.Overrides
+func quotaOverridesFromFlags(cmd *cobra.Command) (quota.Overrides, bool, error) {
+	var over quota.Overrides
 	changed := false
 	for _, d := range quotaDimensions {
 		if !cmd.Flags().Changed(d.flag) {
@@ -153,8 +153,8 @@ func quotaOverridesFromFlags(cmd *cobra.Command) (handlers_quota.Overrides, bool
 		if err != nil {
 			return over, false, err
 		}
-		if value < handlers_quota.Unlimited {
-			return over, false, fmt.Errorf("--%s must be 0 or greater, or %d for no limit", d.flag, handlers_quota.Unlimited)
+		if value < quota.Unlimited {
+			return over, false, fmt.Errorf("--%s must be 0 or greater, or %d for no limit", d.flag, quota.Unlimited)
 		}
 		*d.field(&over) = &value
 		changed = true
@@ -170,7 +170,7 @@ func printAccountQuota(resp *gateway.AccountQuotaResponse) {
 	names := slices.Sorted(maps.Keys(resp.Limits))
 	for _, name := range names {
 		limit := strconv.Itoa(resp.Limits[name])
-		if resp.Limits[name] == handlers_quota.Unlimited {
+		if resp.Limits[name] == quota.Unlimited {
 			limit = "unlimited"
 		}
 		fmt.Printf("%-16s %10s  %s\n", name, limit, resp.Source[name])

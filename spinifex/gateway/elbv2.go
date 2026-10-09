@@ -177,7 +177,7 @@ var elbv2Actions = map[string]elbv2Action{
 
 // accountLoadBalancerLimit resolves the load balancer cap DescribeAccountLimits
 // reports. It is read here rather than in the operation file because
-// handlers/quota imports gateway/elbv2 to count live load balancers, so the
+// domains/admission/quota imports gateway/elbv2 to count live load balancers, so the
 // operation file cannot import it back.
 func accountLoadBalancerLimit(ctx context.Context, gw *GatewayConfig, accountID string) (int, error) {
 	// An exempt account has no cap enforced against it, so the AWS default is a

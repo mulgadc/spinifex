@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
@@ -42,7 +43,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -106,7 +106,7 @@ func (svc *Service) Start() (int, error) {
 // debug).
 type awsgwTOML struct {
 	Ratelimit ratelimit.Config      `toml:"ratelimit"`
-	Quota     handlers_quota.Limits `toml:"quota"`
+	Quota     admissionquota.Limits `toml:"quota"`
 	Signup    signupConfig          `toml:"signup"`
 }
 
@@ -163,14 +163,14 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 // per-account vCPU usage bucket. History is 1: each account key holds a single
 // CAS-updated integer counter, so no revision beyond the latest is worth keeping.
 func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucket(ctx, js, handlers_quota.KVBucketAccountUsage, 1)
+	return kvutil.GetOrCreateBucket(ctx, js, admissionquota.KVBucketAccountUsage, 1)
 }
 
 // openAccountQuotaBucket opens (or idempotently creates) the per-account quota
 // override bucket. History is 1: each key holds the current override set, and
 // no earlier revision of a limit is worth keeping.
 func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucket(ctx, js, handlers_quota.KVBucketAccountQuota, 1)
+	return kvutil.GetOrCreateBucket(ctx, js, admissionquota.KVBucketAccountQuota, 1)
 }
 
 func launchService(config *config.ClusterConfig) error {
@@ -545,7 +545,7 @@ func launchService(config *config.ClusterConfig) error {
 			return fmt.Errorf("init account quota bucket: %w", err)
 		}
 	}
-	gw.Quota = handlers_quota.New(quotaCfg, usageBucket)
+	gw.Quota = admissionquota.New(quotaCfg, usageBucket)
 	gw.Quota.SetOverrides(quotaOverrides)
 
 	// Bedrock token quota reads the stream-fed usage counters built above,
@@ -625,18 +625,18 @@ func launchService(config *config.ClusterConfig) error {
 // so exactly one gateway sweeps at a time across a multi-gateway deployment.
 // The lock is distinct from vpcd's network-reconcile lock so the two loops
 // never block each other. It runs until ctx is cancelled.
-func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsConn *nats.Conn,
-	js jetstream.JetStream, accounts handlers_quota.AccountLister, replicas int) {
+func runQuotaReconcile(ctx context.Context, quota *admissionquota.Service, natsConn *nats.Conn,
+	js jetstream.JetStream, accounts admissionquota.AccountLister, replicas int) {
 	holder, _ := os.Hostname()
 	cfg := kvstore.Config{Name: daemon.InstanceStateBucket, History: 1}
-	list := handlers_quota.RecordVCPULister(
+	list := admissionquota.RecordVCPULister(
 		kvstore.New[vm.InstanceRecord](js, cfg), daemon.InstanceRecordPrefix)
 
 	// Leadership is taken per pass rather than held, matching the other
 	// reconcile loops: the lock keeps two gateways off the same counters, it is
 	// not what keeps this loop alive.
 	underLeader := func(run func() error) error {
-		release, elected := reconcile.AcquireLeader(ctx, natsConn, handlers_quota.KVBucketQuotaReconcile, holder)
+		release, elected := reconcile.AcquireLeader(ctx, natsConn, admissionquota.KVBucketQuotaReconcile, holder)
 		if !elected {
 			return nil
 		}
@@ -656,7 +656,7 @@ func runQuotaReconcile(ctx context.Context, quota *handlers_quota.Service, natsC
 			return 0, underLeader(func() error { return quota.ReconcileAccount(ctx, accountID, list) })
 		},
 		KeyFor: quotaKeyFor,
-		Resync: handlers_quota.ReconcileInterval,
+		Resync: admissionquota.ReconcileInterval,
 	})
 }
 
@@ -669,7 +669,7 @@ func quotaKeyFor(entry jetstream.KeyValueEntry) ([]string, bool) {
 	if entry.Operation() != jetstream.KeyValuePut {
 		return nil, false
 	}
-	accountID, ok := handlers_quota.AccountForRecord(entry.Value())
+	accountID, ok := admissionquota.AccountForRecord(entry.Value())
 	if !ok {
 		return nil, false
 	}

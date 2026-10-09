@@ -583,13 +583,15 @@ else
 fi
 
 # Compute nodes: no database of their own, pointed at every database node.
-for i in $(seq "$DB_NODES" $((N - 1))); do
-    on "${HOSTS[$i]}" "sudo $SETUP_OVN \
-        --node-name=${NODE_NAMES[$i]} \
-        --ovn-remote=$OVN_REMOTE $OVN_UPLINK_ARGS \
-        --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: setup-ovn.sh failed"
-    log "  ${HOSTS[$i]} attached as a compute node"
-done
+if [ "$N" -gt "$DB_NODES" ]; then
+    for i in $(seq "$DB_NODES" $((N - 1))); do
+        on "${HOSTS[$i]}" "sudo $SETUP_OVN \
+            --node-name=${NODE_NAMES[$i]} \
+            --ovn-remote=$OVN_REMOTE $OVN_UPLINK_ARGS \
+            --encap-ip=${VPC_IPS[$i]}" || fail "${HOSTS[$i]}: setup-ovn.sh failed"
+        log "  ${HOSTS[$i]} attached as a compute node"
+    done
+fi
 
 # --- Form the cluster ------------------------------------------------------
 

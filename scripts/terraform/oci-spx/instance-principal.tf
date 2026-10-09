@@ -19,6 +19,13 @@ resource "oci_identity_dynamic_group" "nodes" {
   # Scoped to the compartment, not to instance OCIDs: nodes are replaced, and a
   # rule listing them by OCID goes stale the first time one is.
   matching_rule = "ALL {instance.compartment.id = '${var.compartment_ocid}'}"
+
+  lifecycle {
+    precondition {
+      condition     = local.tenancy_home_region != ""
+      error_message = "OCI did not report a tenancy home region; cannot create instance-principal IAM resources."
+    }
+  }
 }
 
 # Narrower than it looks. The allocator creates, moves and deletes secondary
@@ -41,4 +48,10 @@ resource "oci_identity_policy" "nodes" {
     # is refused as a 404, which reads as a missing resource rather than a missing grant.
     "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to use subnets in compartment id ${var.compartment_ocid}",
   ]
+    lifecycle {
+    precondition {
+      condition     = local.tenancy_home_region != ""
+      error_message = "OCI did not report a tenancy home region; cannot create instance-principal IAM resources."
+    }
+  }
 }

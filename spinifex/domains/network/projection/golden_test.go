@@ -10,8 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// This file characterizes the vpc.add-nat / vpc.delete-nat wire behaviour
-// that spinifex/utils/vpcd_event.go pinned before this package replaced it:
+// This file characterizes the vpc.add-nat / vpc.delete-nat wire behaviour:
 // the exact JSON AddNAT/RemoveNAT put on the wire, the {success,error} ack
 // envelope the internal request helper expects, and the delete-nat
 // retry-on-ErrNoResponders behaviour. in-package because request is

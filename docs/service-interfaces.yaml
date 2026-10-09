@@ -206,9 +206,9 @@ services:
       - "vpc.delete-igw-route"
       - "vpc.gate-subnet-egress"
       - "vpc.ungate-subnet-egress"
-      # Egress-only reroute for a single system instance (handlers/eks and,
-      # historically, domains/ec2/eip). Fire-and-forget.
-      - "vpc.add-system-egress"
+      # Egress-only reroute removal for a single system instance
+      # (handlers/eks). Fire-and-forget. vpc.add-system-egress has no
+      # current producer.
       - "vpc.delete-system-egress"
       # → viperblockd
       # The migrated legacy ebs.config and ebs.sync payloads and routes are

@@ -1,12 +1,7 @@
 // Package projection is network's authorised view onto the vpc.* NATS
-// realisation boundary described by contracts/network/v1. It wraps every
-// subject in an operation-specific method so callers never pass a subject
-// string or a bare event value: the method name states the delivery mode
-// (strict, best-effort, unacknowledged) that today's call sites rely on.
-//
-// This package moves no behaviour: every timeout, retry and barrier here is
-// the one spinifex/utils/vpcd_event.go and each call site already had. It
-// replaces spinifex/utils/vpcd_event.go, which no longer exists.
+// realisation boundary described by contracts/network/v1. Each subject has
+// operation-specific methods, so callers never pass a subject string, and the
+// method name states the delivery mode (strict, best-effort, unacknowledged).
 package projection
 
 import (

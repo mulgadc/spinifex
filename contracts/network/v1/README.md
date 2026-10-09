@@ -43,8 +43,9 @@ against.
 | `vpc.delete-sg` | `SecurityGroupEvent` | `AckEnvelope` | request/reply, 5s, idempotent | `vpcd-workers` |
 | `vpc.update-sg` | `SecurityGroupEvent` | `AckEnvelope` | request/reply, 5s | `vpcd-workers` |
 
-Producer for every route above is the daemon (`spinifex-daemon`), by way of
-`domains/ec2/*`, `handlers/elbv2`, `handlers/eks` or `spinifex/utils`.
+Producer for every route above is the daemon (`spinifex-daemon`), through the
+typed client in `domains/network/projection`; `vpc.add-system-egress` has no
+current producer.
 Consumer for every route is `vpcd`, by way of `domains/network/subscribers`.
 This package is the sole declared owner of every subject and type above,
 including `vpc.igw-attach`/`vpc.igw-detach`, which were previously also

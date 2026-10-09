@@ -410,6 +410,18 @@ These residuals were recorded by individual slices and must be resolved once the
 - `docs/service-interfaces.yaml` (coverage gap): no `ecs.*` subjects are listed and the manifest lint does not cover them, so ECS publisher/subscriber edges play no part in suite selection. Add them only after tracing the actual publishers and subscribers.
 - Merge-time follow-up in the umbrella repository: the `Makefile` `invariants-check` target, the `docs-pr.yml` clause cross-check, `.claude/hooks/architecture-traps.sh` and a `check-invariants.sh` comment hard-code `spinifex/spinifex/network/invariants`. They must change with the pointer bump that brings in this branch, or the docs-pr cross-check silently skips. Live specs and proposals citing `spinifex/network/` will report unresolved citations until updated.
 
+### Security corrections and branch preflight exception
+
+These are security corrections found during discovery, not lifecycle work.
+
+- `ee13be950`: `PublishInternal` required only the IAM policy, built from the body account and URL cluster, and the control-plane role grants it on `*`. Any control-plane VM session, any tenant holding `eks:*`, or static system credentials could publish cluster state, bootstrap and add-on reports for another cluster or account. It now passes the internal-route membership gate, with one body decoder shared by the gate and the handler. Evidence: `gateway/eks_authz_test.go` `TestEKSRequest_PublishInternal*`.
+- `a23e1ccf5`: `WebhookTokenReview` had the same flaw and could reveal another cluster's Kubernetes group mappings. It now passes the same gate, and every unauthorised target returns the same `AccessDenied` without reaching STS. Evidence: `TestEKSRequest_WebhookTokenReview*`, `gateway/eks/internal_authz_test.go` `TestInternalBodyAccounts_CoverEveryBodyScopedRoute`.
+- `642cb4889`: `serviceAccountRoleArn` on CreateAddon and UpdateAddon must be syntactically an IAM role ARN (`foundation/aws/arn.ValidateRoleARN`), returning `InvalidParameterException`; `iam:PassRole` remains the permission and existence check. Evidence: `handlers/eks/addons_test.go` `TestCreateAddon_RejectsMalformedServiceAccountRoleArn`, `TestUpdateAddon_*ServiceAccountRoleArn*`.
+- Remaining render gap: IAM's path grammar permits `"`, `&`, `\` and `|`, which the guest's `sed` replacement and double-quoted YAML value in `mulga-eks-addon-sync.sh` do not escape. A role whose path contains them must also exist and pass `iam:PassRole`. Removal condition: the guest renders the role ARN with escaping for both `sed` and YAML (or a structured renderer), with a test rendering such a path verbatim.
+- Static-credential control-plane VMs (IAM wiring failed) are now denied every internal route and cannot bootstrap; that fallback is unsupported.
+
+Preflight exception (branch only): from `ee13be950`, full `make preflight` on this branch is red solely because the vulnerability gate reports GO-2026-6599 to GO-2026-6617 against the pinned Go 1.27.0 toolchain. Every other gate passes. This branch is not production. No advisory is accepted or suppressed, and the accepted-advisory list, `go.mod` and the toolchain pins are unchanged; the toolchain is updated through Dependabot. Normal full-preflight enforcement resumes when the toolchain baseline is updated.
+
 ## ADR-0004 source inventory and first-resource ranking
 
 The per-file inventories for ECS, EKS and RDS are in `docs/package-boundary/adr-0004-inventory-{ecs,eks,rds}.md`.

@@ -21,7 +21,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -284,20 +283,20 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 
 	var errs []error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		payload, err := json.Marshal(vbwire.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
+		payload, err := json.Marshal(viperblocklegacyv1.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("marshal abandon request for %s: %w", ebsRequest.Name, err))
 			continue
 		}
 
 		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID,
-			vbwire.VolumeAbandonSubject(a.node), payload, abandonTimeout)
+			viperblocklegacyv1.VolumeAbandonSubject(a.node), payload, abandonTimeout)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("abandon %s: %w", ebsRequest.Name, err))
 			continue
 		}
 
-		var resp vbwire.VolumeAbandonResponse
+		var resp viperblocklegacyv1.VolumeAbandonResponse
 		if err := json.Unmarshal(msg.Data, &resp); err != nil {
 			errs = append(errs, fmt.Errorf("unmarshal abandon response for %s: %w", ebsRequest.Name, err))
 			continue

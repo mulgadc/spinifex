@@ -8,10 +8,10 @@ import (
 	"log/slog"
 	"time"
 
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -37,7 +37,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
 	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
-		Name:        vbwire.DirtyBucket,
+		Name:        viperblocklegacyv1.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,
 	})
@@ -51,7 +51,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 // same reason as newVolumeLeasesWaiting: a cold cluster has no stream leader
 // yet, and one refused open must not decide that this node has no storage.
 func newVolumeDirtyWaiting(ctx context.Context, nc *nats.Conn, owner string) (*volumeDirty, error) {
-	return kvstore.OpenWithRetry(ctx, vbwire.DirtyBucket, kvstore.DefaultOpenWindow,
+	return kvstore.OpenWithRetry(ctx, viperblocklegacyv1.DirtyBucket, kvstore.DefaultOpenWindow,
 		func(ctx context.Context) (*volumeDirty, error) { return newVolumeDirty(ctx, nc, owner) })
 }
 
@@ -63,10 +63,10 @@ func newVolumeDirtyWaiting(ctx context.Context, nc *nats.Conn, owner string) (*v
 // Writing at the same generation is the ordinary case — every open marks, and a
 // later failed seal on the same open refines the reason.
 func (d *volumeDirty) mark(ctx context.Context, volumeName string, generation uint64, reason string) error {
-	if !volumeLeaseKeyPattern.MatchString(volumeName) {
+	if !viperblocklegacyv1.VolumeKeyPattern.MatchString(volumeName) {
 		return fmt.Errorf("volume name %q cannot be a dirty key", volumeName)
 	}
-	payload, err := json.Marshal(vbwire.DirtyRecord{
+	payload, err := json.Marshal(viperblocklegacyv1.DirtyRecord{
 		Owner:      d.owner,
 		Generation: generation,
 		Since:      time.Now().UTC(),
@@ -87,7 +87,7 @@ func (d *volumeDirty) mark(ctx context.Context, volumeName string, generation ui
 		return fmt.Errorf("read dirty mark on %s: %w", volumeName, err)
 	}
 
-	var current vbwire.DirtyRecord
+	var current viperblocklegacyv1.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &current); err == nil && current.Generation > generation {
 		return fmt.Errorf("%w: %s holds generation %d, this node has %d",
 			errDirtyMarkerSuperseded, current.Owner, current.Generation, generation)
@@ -117,7 +117,7 @@ func (d *volumeDirty) clear(ctx context.Context, volumeName string, generation u
 		return fmt.Errorf("read dirty mark on %s: %w", volumeName, err)
 	}
 
-	var current vbwire.DirtyRecord
+	var current viperblocklegacyv1.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &current); err != nil {
 		return fmt.Errorf("unreadable dirty mark on %s: %w", volumeName, err)
 	}
@@ -148,18 +148,18 @@ func (d *volumeDirty) purge(ctx context.Context, volumeName string) error {
 // holder returns the record for volumeName and whether one exists. An entry
 // that cannot be read is reported as absent: refusing every mount because the
 // bucket is unreadable would convert a degraded cluster into a stopped one.
-func (d *volumeDirty) holder(ctx context.Context, volumeName string) (vbwire.DirtyRecord, bool) {
+func (d *volumeDirty) holder(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool) {
 	entry, err := d.kv.Get(ctx, volumeName)
 	if err != nil {
 		if !errors.Is(err, jetstream.ErrKeyNotFound) {
 			slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
 		}
-		return vbwire.DirtyRecord{}, false
+		return viperblocklegacyv1.DirtyRecord{}, false
 	}
-	var record vbwire.DirtyRecord
+	var record viperblocklegacyv1.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
 		slog.Warn("volume dirty: unreadable marker", "volume", volumeName, "err", err)
-		return vbwire.DirtyRecord{}, false
+		return viperblocklegacyv1.DirtyRecord{}, false
 	}
 	return record, true
 }

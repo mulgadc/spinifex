@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"log/slog"
-	"regexp"
 	"sync"
 	"time"
 
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
@@ -103,11 +103,6 @@ var errVolumeLeaseHeld = errors.New("volume is leased by another owner")
 // at all. Distinguishable from a refusal so a caller can tell "somebody else
 // holds this" from "nobody can say who does".
 var errNoVolumeLeaseStore = errors.New("no volume lease store")
-
-// volumeLeaseKeyPattern is what JetStream KV accepts as a key. Volume names
-// reach here from the wire, and a name carrying "." or ">" would address
-// somebody else's key.
-var volumeLeaseKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // volumeLeaseRecord is what a holder publishes about itself. Generation is the
 // revision that won the race: monotonic across the bucket, so a later opener
@@ -224,7 +219,7 @@ type volumeLease struct {
 // acquisitions on this node share one lease: cross-node exclusion is what the
 // lease is for, and the per-node case is already held by the volume flock.
 func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeLease, error) {
-	if !volumeLeaseKeyPattern.MatchString(volumeName) {
+	if !viperblocklegacyv1.VolumeKeyPattern.MatchString(volumeName) {
 		return nil, fmt.Errorf("volume name %q cannot be a lease key", volumeName)
 	}
 

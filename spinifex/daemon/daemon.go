@@ -40,6 +40,7 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
@@ -85,7 +86,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1285,7 +1285,7 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
 		// Node-addressed with no queue group: the fenced guest is on this host,
 		// so a worker on another node would find nothing to stop.
-		natsSub{vbwire.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
+		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
 
 	return d.registerNatsSubs(subs)

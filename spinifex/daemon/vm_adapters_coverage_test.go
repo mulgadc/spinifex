@@ -29,7 +29,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -248,14 +247,14 @@ func TestVolumeMounterAdapter_Abandon(t *testing.T) {
 	nc := connectAdapterTestNATS(t, sharedNATSURL)
 
 	// abandonResponder answers per volume so one request can mix outcomes.
-	abandonResponder := func(t *testing.T, node string, replies map[string][]byte) *[]vbwire.VolumeAbandonRequest {
+	abandonResponder := func(t *testing.T, node string, replies map[string][]byte) *[]viperblocklegacyv1.VolumeAbandonRequest {
 		t.Helper()
 		var (
 			mu   sync.Mutex
-			seen []vbwire.VolumeAbandonRequest
+			seen []viperblocklegacyv1.VolumeAbandonRequest
 		)
-		sub, err := nc.Subscribe(vbwire.VolumeAbandonSubject(node), func(msg *nats.Msg) {
-			var req vbwire.VolumeAbandonRequest
+		sub, err := nc.Subscribe(viperblocklegacyv1.VolumeAbandonSubject(node), func(msg *nats.Msg) {
+			var req viperblocklegacyv1.VolumeAbandonRequest
 			_ = json.Unmarshal(msg.Data, &req)
 			mu.Lock()
 			seen = append(seen, req)
@@ -291,7 +290,7 @@ func TestVolumeMounterAdapter_Abandon(t *testing.T) {
 		require.NoError(t, adapter.Abandon(t.Context(), instanceWith("vol-abandoned", "vol-absent"), "superseded"),
 			"a volume not exported here is the ordinary case, not a failure")
 		require.Len(t, *seen, 2)
-		assert.Equal(t, vbwire.VolumeAbandonRequest{Volume: "vol-abandoned", Reason: "superseded"}, (*seen)[0])
+		assert.Equal(t, viperblocklegacyv1.VolumeAbandonRequest{Volume: "vol-abandoned", Reason: "superseded"}, (*seen)[0])
 	})
 
 	t.Run("failures are joined and do not stop the sweep", func(t *testing.T) {

@@ -172,6 +172,11 @@ services:
       - "ochre.vector.query"
       - "ochre.vector.listJobs"
       - "ochre.vector.stopJob"
+      # Fence route owned by contracts/viperblockd/legacy/v1: viperblockd
+      # announces a torn-down export so this node stops the guest that was
+      # using it. "ebs.fenced" is the single-node form; a named node is
+      # addressed as "ebs.<node>.fenced".
+      - "ebs.fenced"
     publishes:
       # → vpcd
       - "vpc.create"
@@ -206,6 +211,10 @@ services:
       - "ebs.snapshot.*"
       - "ebs.config"
       - "ebs.config.*"
+      # Abandon route owned by contracts/viperblockd/legacy/v1: the daemon
+      # asks viperblockd to tear an export down without sealing. "ebs.abandon"
+      # is the single-node form; a named node addresses "ebs.<node>.abandon".
+      - "ebs.abandon"
       # → predastore (S3 / AMI / keypair store)
       - "s3.*"
       # → every daemon, so the one holding the instance reports the new address
@@ -257,6 +266,8 @@ services:
     # The migrated legacy ebs.config and ebs.sync routes are versioned by
     # contracts/viperblockd/legacy/v1, not by providers/ebs. Other legacy
     # ebs.* routes remain to be migrated separately.
+    # The dirty-marker JetStream KV bucket VIPERBLOCK_VOLUME_DIRTY is owned
+    # by the same contract; not a NATS subject, so not listed below.
     subscribes:
       - "ebs.mount"
       - "ebs.unmount"
@@ -265,8 +276,14 @@ services:
       - "ebs.snapshot.*"
       - "ebs.config"
       - "ebs.config.*"
+      # Abandon route (contracts/viperblockd/legacy/v1): request/reply from
+      # the daemon, answered by the Viperblock adapter on the named node.
+      - "ebs.abandon"
     publishes:
       - "ebs.mount.response"
+      # Fence route (contracts/viperblockd/legacy/v1): announced after the
+      # Viperblock adapter tears an export down because its lease moved.
+      - "ebs.fenced"
       - "ebs.unmount.response"
     depends_on: []
 

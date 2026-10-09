@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -292,7 +292,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 	if cfg.nc == nil {
 		return
 	}
-	event := vbwire.VolumeFencedEvent{
+	event := viperblocklegacyv1.VolumeFencedEvent{
 		Volume: volumeName,
 		Node:   cfg.leaseOwner(),
 		Winner: winner,
@@ -303,7 +303,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 		slog.ErrorContext(ctx, "fence: marshal fenced event", "volume", volumeName, "err", err)
 		return
 	}
-	subject := vbwire.VolumeFencedSubject(cfg.NodeName)
+	subject := viperblocklegacyv1.VolumeFencedSubject(cfg.NodeName)
 	if err := cfg.nc.Publish(subject, payload); err != nil {
 		slog.ErrorContext(ctx, "fence: could not announce the fenced volume, the guest will be left with dead I/O",
 			"volume", volumeName, "subject", subject, "err", err)

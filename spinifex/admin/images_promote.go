@@ -46,7 +46,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	meta, err := readAMI(store, bucket, opts.ImageID)
+	meta, err := ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), opts.ImageID)
 	switch {
 	case err == nil:
 		// ok
@@ -130,7 +130,7 @@ func readPromotedSnapshot(store *ebsmetadata.Store, owner, snapshotID string) (e
 // GetAMIMetadata reads and returns the control-plane document for the given
 // image ID. Returns ErrorInvalidAMIIDNotFound for missing or corrupt documents.
 func GetAMIMetadata(store objectstore.ObjectStore, bucket, imageID string) (ebsmetadata.AMI, error) {
-	meta, err := readAMI(store, bucket, imageID)
+	meta, err := ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
 	switch {
 	case err == nil:
 		return meta, nil

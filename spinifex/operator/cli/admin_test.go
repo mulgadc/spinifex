@@ -15,11 +15,11 @@ import (
 
 	"github.com/mulgadc/northstar/pkg/backend"
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"

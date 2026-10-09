@@ -14,7 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/installer/branding"
 	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
 	"github.com/mulgadc/spinifex/spinifex/operator/installer/netprobe"

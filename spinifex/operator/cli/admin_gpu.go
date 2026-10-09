@@ -11,8 +11,8 @@ import (
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"

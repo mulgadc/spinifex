@@ -606,33 +606,6 @@ func saveAWSINIFile(cfg *ini.File, path string) error {
 	return nil
 }
 
-// GenerateAWSAccessKey generates an AWS-style access key (AKIA + 16 random alphanumeric chars).
-func GenerateAWSAccessKey() (string, error) {
-	const prefix = "AKIA"
-	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	const length = 16
-
-	result := make([]byte, length)
-	for i := range result {
-		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			return "", fmt.Errorf("crypto/rand failure: %w", err)
-		}
-		result[i] = charset[num.Int64()]
-	}
-
-	return prefix + string(result), nil
-}
-
-// GenerateAWSSecretKey generates a 40-character base64-encoded AWS-style secret key.
-func GenerateAWSSecretKey() (string, error) {
-	bytes := make([]byte, 30) // 30 bytes = 40 chars in base64
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("crypto/rand failure: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(bytes), nil
-}
-
 // Northstar DNS defaults baked into config files at init time.
 const (
 	// NorthstarBucketName is the S3 bucket holding DNS zone files.
@@ -655,17 +628,6 @@ type NorthstarCredentials struct {
 	AccessKey string
 	SecretKey string
 	Bucket    string
-}
-
-// DefaultAccountID returns the default admin account ID (000000000001).
-// This is the first human-facing account created during bootstrap.
-func DefaultAccountID() string {
-	return "000000000001"
-}
-
-// DefaultAccountName returns the default admin account name ("spinifex").
-func DefaultAccountName() string {
-	return "spinifex"
 }
 
 // GenerateNATSToken generates a secure random token for NATS.

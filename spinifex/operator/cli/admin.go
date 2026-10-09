@@ -29,7 +29,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	legacyadmin "github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -37,6 +37,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -1121,7 +1122,7 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	bucket := node.Predastore.Bucket
 
 	// Read current metadata for the confirmation prompt.
-	meta, err := admin.GetAMIMetadata(store, bucket, imageID)
+	meta, err := legacyadmin.GetAMIMetadata(store, bucket, imageID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
 		os.Exit(1)
@@ -1132,7 +1133,7 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Image ID:       %s\n", imageID)
 	fmt.Printf("  Name:           %s\n", meta.Name)
 	fmt.Printf("  Current owner:  %s\n", meta.ImageOwnerAlias)
-	fmt.Printf("  New owner:      %s\n", admin.SystemOwnerAlias)
+	fmt.Printf("  New owner:      %s\n", legacyadmin.SystemOwnerAlias)
 	if !meta.CreationDate.IsZero() {
 		fmt.Printf("  Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
 	}
@@ -1149,12 +1150,12 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	if _, err := admin.PromoteSystemImage(store, bucket, admin.PromoteImageOpts{ImageID: imageID}); err != nil {
+	if _, err := legacyadmin.PromoteSystemImage(store, bucket, legacyadmin.PromoteImageOpts{ImageID: imageID}); err != nil {
 		fmt.Fprintln(os.Stderr, "Promote failed:", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, admin.SystemOwnerAlias)
+	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, legacyadmin.SystemOwnerAlias)
 }
 
 func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
@@ -1179,7 +1180,7 @@ func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
 		node.Predastore.SecretKey,
 	)
 
-	meta, err := admin.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
+	meta, err := legacyadmin.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to describe AMI:", err)
 		os.Exit(1)
@@ -1632,12 +1633,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Printf("   Admin credentials reissued in %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
 	} else {
 		// Fresh install: mint system + admin credentials and seed the bootstrap files.
-		accessKey, err = admin.GenerateAWSAccessKey()
+		accessKey, err = legacyadmin.GenerateAWSAccessKey()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
 			os.Exit(1)
 		}
-		secretKey, err = admin.GenerateAWSSecretKey()
+		secretKey, err = legacyadmin.GenerateAWSSecretKey()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
 			os.Exit(1)
@@ -1685,7 +1686,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		// which persists them for the life of the node. They are recoverable from
 		// bootstrap.json and ~/.aws/credentials.
 		fmt.Printf("\n🔑 Generated admin credentials (written to ~/.aws/credentials)\n")
-		fmt.Printf("   Account:     %s (%s)\n", admin.DefaultAccountName(), admin.DefaultAccountID())
+		fmt.Printf("   Account:     %s (%s)\n", legacyadmin.DefaultAccountName(), legacyadmin.DefaultAccountID())
 		fmt.Printf("   AWS Profile: spinifex\n")
 	}
 
@@ -1727,12 +1728,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Generated above the multi-node dispatch because the pair is cluster-wide:
 	// a node's predastore only honours the keys rendered into its own config, so
 	// every node must present this same pair to read the distributed zone bucket.
-	northstarAccessKey, err := admin.GenerateAWSAccessKey()
+	northstarAccessKey, err := legacyadmin.GenerateAWSAccessKey()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
 		os.Exit(1)
 	}
-	northstarSecretKey, err := admin.GenerateAWSSecretKey()
+	northstarSecretKey, err := legacyadmin.GenerateAWSSecretKey()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
 		os.Exit(1)
@@ -1761,7 +1762,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			networkConfig.ExternalMode = externalMode
 			networkConfig.Pools = externalPools
 			networkConfig.PoolDNSServers = dnsServers
-			networkConfig.BootstrapAccountId = admin.DefaultAccountID()
+			networkConfig.BootstrapAccountId = legacyadmin.DefaultAccountID()
 			networkConfig.BootstrapVpcId = bootstrapVpcId
 			networkConfig.BootstrapSubnetId = bootstrapSubnetId
 			networkConfig.BootstrapIgwId = bootstrapIgwId
@@ -1881,7 +1882,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		Pools:         externalPools,
 
 		OperatorEmail:       email,
-		BootstrapAccountId:  admin.DefaultAccountID(),
+		BootstrapAccountId:  legacyadmin.DefaultAccountID(),
 		BootstrapVpcId:      bootstrapVpcId,
 		BootstrapSubnetId:   bootstrapSubnetId,
 		BootstrapIgwId:      bootstrapIgwId,
@@ -3345,11 +3346,11 @@ func loadSystemCredentials(configDir string) (accessKey, secretKey string, err e
 // files (master.key to configDir, bootstrap.json to bootstrapDir).
 // Used by init flows (single and multi-node).
 func writeBootstrapFiles(configDir, bootstrapDir string, masterKey []byte, accessKey, secretKey, accountID string) (*writeBootstrapResult, error) {
-	adminAccessKey, err := admin.GenerateAWSAccessKey()
+	adminAccessKey, err := legacyadmin.GenerateAWSAccessKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate admin access key: %w", err)
 	}
-	adminSecretKey, err := admin.GenerateAWSSecretKey()
+	adminSecretKey, err := legacyadmin.GenerateAWSSecretKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate admin secret key: %w", err)
 	}
@@ -3474,8 +3475,8 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 		EncryptedSecret: encryptedSecret,
 		AccountID:       accountID,
 		Admin: &handlers_iam.AdminBootstrapData{
-			AccountID:       admin.DefaultAccountID(),
-			AccountName:     admin.DefaultAccountName(),
+			AccountID:       legacyadmin.DefaultAccountID(),
+			AccountName:     legacyadmin.DefaultAccountName(),
 			UserName:        "admin",
 			AccessKeyID:     adminAccessKey,
 			EncryptedSecret: adminEncryptedSecret,

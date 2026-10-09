@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
@@ -13,6 +14,55 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const (
+	testRemoveBucket    = "test-bucket"
+	testRemoveAccountID = "000000000001"
+)
+
+// putAMI, putCorruptAMI and putSnapMetadata are duplicated from
+// operator/admin/images_remove_test.go: that package now owns removal, and
+// this one cannot import its _test.go fixtures across the package split.
+
+// putAMI registers an AMI the only way the control plane knows one: as an
+// ebsmetadata document.
+func putAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutAMI(t.Context(), ebsmetadata.AMI{
+		ImageID:         imageID,
+		Name:            name,
+		ImageOwnerAlias: owner,
+		SnapshotID:      snapshotID,
+		VolumeSizeGiB:   8,
+	}))
+}
+
+// putCorruptAMI writes an undecodable document at the AMI's key: present, so
+// not not-found, but unreadable.
+func putCorruptAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID string) {
+	t.Helper()
+	key, err := ebsmetadata.AMIKey(imageID)
+	require.NoError(t, err)
+	_, err = store.PutObject(t.Context(), &awss3.PutObjectInput{
+		Bucket: aws.String(testRemoveBucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader([]byte("{not valid json")),
+	})
+	require.NoError(t, err)
+}
+
+// putSnapMetadata writes a CopyImage-derived EC2 snapshot metadata that
+// points VolumeID back at an admin-imported AMI's ID.
+func putSnapMetadata(t *testing.T, store *objectstore.MemoryObjectStore, snapID, volumeID string) {
+	t.Helper()
+	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutSnapshot(t.Context(), ebsmetadata.Snapshot{
+		SnapshotID: snapID,
+		VolumeID:   volumeID,
+		VolumeSize: 8,
+		State:      "completed",
+		OwnerID:    testRemoveAccountID,
+	}))
+}
 
 func TestPromoteSystemImage_HappyPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
@@ -35,7 +85,7 @@ func TestPromoteSystemImage_HappyPath(t *testing.T) {
 	assert.Equal(t, testRemoveAccountID, result.PreviousOwner)
 
 	// Verify the persisted document now carries the system alias.
-	meta, err := readAMI(store, testRemoveBucket, id)
+	meta, err := ebsmetadata.NewStore(store, testRemoveBucket).GetAMI(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, SystemOwnerAlias, meta.ImageOwnerAlias)
 	// Other fields must be preserved.
@@ -78,7 +128,7 @@ func TestPromoteSystemImage_NoSnapshotDocument_Promotes(t *testing.T) {
 	_, err := PromoteSystemImage(store, testRemoveBucket, PromoteImageOpts{ImageID: id})
 	require.NoError(t, err)
 
-	meta, err := readAMI(store, testRemoveBucket, id)
+	meta, err := ebsmetadata.NewStore(store, testRemoveBucket).GetAMI(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, SystemOwnerAlias, meta.ImageOwnerAlias)
 }
@@ -103,7 +153,7 @@ func TestPromoteSystemImage_CorruptSnapshotDocument_Refused(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "corrupt")
 
-	meta, err := readAMI(store, testRemoveBucket, id)
+	meta, err := ebsmetadata.NewStore(store, testRemoveBucket).GetAMI(context.Background(), id)
 	require.NoError(t, err)
 	assert.Equal(t, testRemoveAccountID, meta.ImageOwnerAlias, "the alias must not move without its snapshot")
 }

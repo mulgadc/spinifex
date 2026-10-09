@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	pds "github.com/mulgadc/predastore"
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

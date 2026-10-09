@@ -177,6 +177,4 @@ var allowlist = []allowance{
 	{From: "operator/cli", To: "services/viperblockd", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "services/viperblockd/vbwire", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "vpcd", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
-
-	{From: "operator/installer/ui", To: "admin", Debt: "operator/installer/ui → admin", Reason: "ValidateEmail; clears with the admin -> operator/admin blocker"},
 }

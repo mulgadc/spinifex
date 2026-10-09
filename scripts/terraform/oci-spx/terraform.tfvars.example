@@ -1,12 +1,35 @@
 # Example non-secret overrides. Copy to the untracked terraform.auto.tfvars.
 
-# Restrict who may reach a node's SSH and Spinifex service ports from the internet.
-node_client_cidr_allow_list = ["203.0.113.10/32"]
+# Existing OCI compartment where every POC resource is created. Required.
+compartment_ocid = "ocid1.compartment.oc1.."
 
-# 1 for the single-node replica, 3 for a cluster.
-node_count = 1
+# Number of Spinifex nodes. Keep this aligned with --topology: 1 for vm-single
+# or bm, and 3 for vm-multi. Omit it to use the topology's default.
+node_count = 3
 
-# Bare metal is preferred; this is what we test on until the quota is raised.
-compute_shape         = "VM.Standard.E6.Flex"
-compute_ocpus         = 8
+# OCI Flex VM shape. Use a fixed BM.* shape for a bare-metal deployment.
+compute_shape = "VM.Standard.E6.Flex"
+
+# CPU allocation per Flex VM, measured in OCI OCPUs (one OCPU is two vCPUs).
+# Ignored by fixed-shape bare-metal instances.
+compute_ocpus = 8
+
+# Memory allocation per Flex VM in GiB. Ignored by fixed-shape bare-metal instances.
 compute_memory_in_gbs = 32
+
+# Persistent block-volume capacity, in GiB, mounted as /var/lib/spinifex on each node.
+data_volume_size_in_gbs = 1024
+
+# Block-volume performance setting, in VPUs per GiB. Higher values cost more and
+# provide more IOPS. Consult OCI volume-performance limits before increasing it.
+data_volume_vpus_per_gb = 60
+
+# OCI authentication mode used by the Spinifex public-IP allocator. "adopt" means
+# the Dynamic Group and policy already exist. The driver's --instance-principal
+# flag enforces this mode; do not set this to "create" in a normal deployment state.
+instance_principal = "adopt"
+
+# OCI security-list sources allowed to reach the public subnet. These rules also
+# affect guests with public OCI addresses, so keep 0.0.0.0/0 for a public POC and
+# use the Spinifex host firewall to restrict node SSH/console access instead.
+node_client_cidr_allow_list = ["0.0.0.0/0"]

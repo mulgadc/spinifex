@@ -2,7 +2,7 @@
 
 Terraform configuration that builds the OCI infrastructure a Spinifex cluster runs on: a VCN with its gateways and subnets, one to N nodes with two VNICs each, and a data volume per node. No DRG, remote peering, local peering gateway, RZG, or other external network attachment is created.
 
-**This is a local fork of [`aszynkow/oci_mulgadc`](https://github.com/aszynkow/oci_mulgadc), modified for Spinifex.** It builds infrastructure only; Spinifex itself is installed afterwards by the existing deploy path (`update-nodes.sh`, `install-node.sh`), the same scripts that serve prod and dev-prod. The operator guide that wraps it is [`docs/oci-integration`](../../../docs/oci-integration/README.md); the plan is `docs/development/feature/oci-terraform-provisioning.md` in the mulga monorepo.
+**This is a local fork of [`aszynkow/oci_mulgadc`](https://github.com/aszynkow/oci_mulgadc), modified for Spinifex.** It builds OCI infrastructure only. Run `validate-topology.sh` afterwards to install Spinifex, form the cluster, configure the OCI allocator, and validate it; the driver can either build new infrastructure itself or use this Terraform state through `--existing-state-file`. It invokes `install-node.sh` internally for multi-node formation. See [Deploy and validate Spinifex on OCI](../../../docs/oci-integration/README.md#5-deploy) for the driver commands, including the existing-infrastructure path. The operator guide is [`docs/oci-integration`](../../../docs/oci-integration/README.md); the plan is `docs/development/feature/oci-terraform-provisioning.md` in the mulga monorepo.
 
 ## What This Repository Adds
 
@@ -257,7 +257,7 @@ Either way, Terraform stages the matching pool block at `/etc/spinifex/oci/exter
 
 ## Validating a topology end to end
 
-`validate-topology.sh` builds one topology from nothing, installs the published Spinifex release, forms the cluster, runs a Terraform workbook against it, proves the workbook serves traffic, and destroys everything. Three topologies, because each breaks differently — bare metal presents VNICs unlike a VM, a single node has no Geneve underlay to get wrong, and only a cluster exercises RAFT, the gateway chassis and cross-node allocation.
+`validate-topology.sh` has two modes. By default it builds a topology from nothing, installs the published Spinifex release, forms the cluster, runs a Terraform workbook against it, proves the workbook serves traffic, and destroys everything. In existing-infrastructure mode, it reads an already-applied Terraform state and installs/validates Spinifex without applying or destroying OCI infrastructure. Three topologies exist because each breaks differently — bare metal presents VNICs unlike a VM, a single node has no Geneve underlay to get wrong, and only a cluster exercises RAFT, the gateway chassis and cross-node allocation.
 
 ```bash
 ./validate-topology.sh --topology bm        --dry-run
@@ -276,6 +276,46 @@ The count that later gates read is the number of addresses the `hosts_file` outp
 **A clean teardown can still leave public IPs behind, and they count against the tenancy.** The addresses Spinifex allocates for guests are created by the running node, so they are in no Terraform state and `destroy` neither sees nor removes them. The node's own reconcile collects detached ones every ten minutes, which is exactly the sweep a destroy takes away. Twenty accumulated in `spxbm` over four runs and exhausted the tenancy's 50 reserved-public-IP limit, at which point every later launch in every compartment failed. [Check for leftover public IPs afterwards](../../../docs/oci-integration/README.md#check-for-leftover-public-ips-afterwards) has the query and the rule for reading it.
 
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
+
+### Validate infrastructure Terraform already created
+
+Use this after you have completed the Terraform-only [Quick Start](#quick-start). The default state file contains the `hosts_file`, `compute_shape`, and `instance_principal` outputs the driver needs.
+
+For infrastructure configured with `instance_principal = "adopt"` and an existing Dynamic Group/policy, run from this directory:
+
+```bash
+./validate-topology.sh \
+  --topology vm-multi \
+  --existing-state-file "$PWD/terraform.tfstate" \
+  --instance-principal \
+  --oci-profile <compartment-deployer-profile> \
+  --ssh-public-key ~/.ssh/oci-spx.pub \
+  --ssh-private-key ~/.ssh/oci-spx \
+  --skip-workload
+```
+
+If the Dynamic Group and policy do not exist, add both of these options to the same command:
+
+```text
+--setup-instance-principal --identity-oci-profile <tenancy-admin-profile>
+```
+
+The Terraform-only apply still creates no identity resources. The optional validation-driver flag is the action that creates the Dynamic Group/policy, using a separate `.identity/terraform.tfstate`.
+
+For infrastructure configured with `instance_principal = "off"`, supply the API-key handoff hook instead of `--instance-principal`:
+
+```bash
+./validate-topology.sh \
+  --topology vm-multi \
+  --existing-state-file "$PWD/terraform.tfstate" \
+  --oci-profile <compartment-deployer-profile> \
+  --credential-hook ./spx-oci-config.sh \
+  --ssh-public-key ~/.ssh/oci-spx.pub \
+  --ssh-private-key ~/.ssh/oci-spx \
+  --skip-workload
+```
+
+`--existing-state-file` skips Terraform apply and destroy, and automatically keeps the hosts. If state is unavailable, replace it with `--existing-hosts-file /path/to/hosts`, containing one public SSH IP address per line. A hosts file carries no authentication metadata, so pass either `--instance-principal` or `--credential-hook` explicitly.
 
 ## Common Commands
 

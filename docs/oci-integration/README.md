@@ -31,12 +31,13 @@ resources:
 - [1. Clone the Spinifex repository](#1-clone-the-spinifex-repository)
 - [2. OCI Credentials for Spinifex](#2-oci-credentials-for-spinifex)
   - [2.1 Instance principal (preferred)](#21-instance-principal-preferred)
-  - [2.2 OCI IAM user with scoped permissions](#22-oci-iam-user-with-scoped-permissions)
+  - [2.2 Advanced: OCI IAM user with scoped permissions](#22-advanced-oci-iam-user-with-scoped-permissions)
 - [3. Choose deployment method](#3-choose-deployment-method)
 - [4. Write your Terraform inputs](#4-write-your-terraform-inputs)
 - [5. Deploy](#5-deploy)
 - [6. Check it worked](#6-check-it-worked)
-- [7. Set up your cluster](#7-set-up-your-cluster)
+- [7. Obtain AWS credentials](#7-obtain-aws-credentials)
+- [8. Set up your cluster](#8-set-up-your-cluster)
 - [Harden it before production](#harden-it-before-production)
 - [Next steps](#next-steps)
 - [Removing the deployment](#removing-the-deployment)
@@ -68,7 +69,7 @@ This guide installs Spinifex on Oracle Cloud Infrastructure, on one instance or 
 
 Nodes run **Ubuntu 26.04**, resolved at plan time as the newest Canonical platform image for your shape and region. Oracle Linux support as the host OS to run Spinifex is under active development.
 
-**Terraform does the whole deployment:** the VCN, the block volumes, both VNICs per node, the Spinifex install, the cluster formation and the allocator. Six steps below, one command, about ten minutes for a single node.
+**Terraform creates the OCI infrastructure:** the VCN, block volumes and both VNICs per node. The `validate-topology.sh` driver then waits for cloud-init, installs Spinifex, forms the cluster, configures the allocator and verifies it. That separation matters when a run needs to resume after a host-side failure.
 
 What sits underneath is in [Architecture and Operations](../oci-architecture/README.md), which also carries the IAM policy, the quotas, every variable and the troubleshooting.
 
@@ -82,6 +83,8 @@ What sits underneath is in [Architecture and Operations](../oci-architecture/REA
 | **Terraform or OpenTofu, `git`, Python 3** | On your workstation. The Python helper is standard library only, so there is nothing to `pip install`                                                                                      |
 
 Check two quotas before you start, because both refuse at apply time rather than at plan time. **Reserved public IPs** are capped at 50 per region across the whole tenancy, and the **compute limit for your shape** starts at zero for bare metal on many new tenancies. [Quotas](../oci-architecture/README.md#quotas) has the commands.
+
+An instance-principal deployment also needs capacity for **one additional OCI Dynamic Group**. Dynamic Groups are tenancy-wide Identity objects; the first-run command creates one named `<deployment_name>-nodes` and its policy.
 
 For the workstation (Linux, MacOS, Windows [WSL]) that will be used to deploy Spinifex on OCI the following prerequisites are required.
 
@@ -99,7 +102,7 @@ That writes a `[DEFAULT]` profile, which every command below reads with no flag.
 export OCI_CLI_PROFILE=my-profile
 ```
 
-Spinifex's Terraform helper reads the same variable, so this one export covers the CLI commands here and the deployment in step 5.
+The driver also accepts explicit `--oci-profile` and `--identity-oci-profile` arguments. Prefer those in the commands below when using named profiles: they make the infrastructure profile and tenancy-admin identity profile unambiguous.
 
 ### OCI Compartment
 
@@ -194,7 +197,7 @@ There are two ways to provide OCI API access to Spinifex, and they differ in who
 | **Key material**   | None. Each node authenticates as itself                    | A private key on every node, at `/etc/spinifex/oci/`         |
 | **Who can set up** | A tenancy admin, once per tenancy                          | Anyone with identity rights in the tenancy                   |
 | **Rotation**       | Nothing to rotate                                          | Yours to rotate and redistribute                             |
-| **What you set**   | `export SPX_PRINCIPAL=adopt`, read by step 4               | Nothing extra; step 5 installs the key for you               |
+| **What you set**   | Pass `--instance-principal`; add `--setup-instance-principal` on the first deployment | Nothing extra; step 5 installs the key for you |
 
 **Use 2.1 if you are a tenancy admin.** It is the better of the two because there is no key to leak, rotate or forget about, and a replaced node needs no handoff. Use 2.2 when your compartment was allocated to you inside someone else's tenancy, which is the common case and the reason 2.2 exists at all.
 
@@ -204,32 +207,22 @@ Both routes below need `$CID` from the prerequisites step, so confirm it is stil
 echo "${CID:?set it as shown under OCI CLI tool}"
 ```
 
-Do one of the two authentication methods below, not both, then continue to step 3.
+Choose one authentication method below. The deployment commands in step 5 make the choice explicit.
 
 ### 2.1 Instance principal (preferred)
 
-Each node authenticates with the certificate its own metadata service serves at `/opc/v2/identity/cert.pem`, so no key is written anywhere. Authorising that takes a dynamic group and a policy, and **both are tenancy-root resources** — a compartment-scoped user cannot create them, and the attempt fails with `404-NotAuthorizedOrNotFound` on `CreateDynamicGroup`, which reads like a misconfiguration and is not one.
+Each node authenticates with the certificate its own metadata service serves at `/opc/v2/identity/cert.pem`, so no key is written to a host. Authorising that needs a Dynamic Group and policy, both of which are tenancy-root resources.
 
-Create them once, with a tenancy-admin OCI profile, then set one variable:
+The deployment command in [step 5](#5-deploy) creates these resources on a first run when given `--setup-instance-principal`. It needs a tenancy-admin profile for that one action; later deployments use the existing group with `--instance-principal` only.
 
-```bash
-./setup-identity.sh --dry-run     # always first
-./setup-identity.sh
+The Dynamic Group matches the target compartment, so it covers replacement nodes automatically. Its independent Terraform state is stored in `.identity/`; retain that directory until the Dynamic Group and policy are intentionally removed.
 
-export SPX_PRINCIPAL=adopt
-```
+> [!WARNING]
+> A tenancy at its Dynamic Group object limit rejects the first-run command with `DynamicResourceGroups` quota errors. Free capacity or request a quota increase before retrying; do not delete an unfamiliar Dynamic Group.
 
-**That is all of it.** Step 4 writes `SPX_PRINCIPAL` into your Terraform inputs and step 5 reads it back from there, so neither step needs anything extra from you. Keep the same shell for both, as with `$CID`.
+### 2.2 Advanced: OCI IAM user with scoped permissions
 
-The dynamic group matches on the compartment, so it covers every node you build there and needs no update when a node is replaced. Its Terraform state goes in `.identity/`, separate from the deployment's — keep that directory, as it is the only record of what was created.
-
-Only `setup-identity.sh` needs tenancy-admin rights. Every deployment afterwards runs as your ordinary compartment user.
-
-To remove the group and policy again, `./setup-identity.sh --destroy`. Every node configured for `adopt` loses its credential the moment you do.
-
-### 2.2 OCI IAM user with scoped permissions
-
-This route creates a dedicated OCI user holding only the three permissions Spinifex needs, and installs its key on each node. It needs identity rights in the tenancy but no tenancy-root rights, so it works in an allocated compartment.
+This route creates a dedicated OCI user holding only the four permissions Spinifex needs, and installs its key on each node. It needs identity rights in the tenancy but no tenancy-root rights, so it works in an allocated compartment.
 
 Skip this section if you have enabled the instance principal authentication path.
 
@@ -391,7 +384,7 @@ Choose how to deploy Spinifex on OCI, either as a single node, or at minimum a t
 
 ## 4. Write your Terraform inputs
 
-The next step is to define a `terraform.auto.tfvars` configuration file with your desired deployment method for Spinifex on OCI.
+The driver supplies safe defaults for each topology. For a first deployment, provide only the target compartment; add the optional overrides after the cluster works.
 
 Recommended compute shapes for a VM deployment:
 
@@ -406,28 +399,38 @@ Recommended bare metal shapes, preferred for large-scale production workloads:
 
 ```bash
 cat > terraform.auto.tfvars <<EOF
-compartment_ocid        = "$CID"
-deployment_name         = "spinifex"
+# Existing OCI compartment where every POC resource is created. Required.
+compartment_ocid = "$CID"
 
-# How the nodes authenticate to OCI, from step 2. "off" is an API key, which is
-# what step 2.2 installs; "adopt" is the instance principal from step 2.1.
-instance_principal      = "${SPX_PRINCIPAL:-off}"
+# Number of Spinifex nodes. Keep this aligned with --topology: 1 for vm-single
+# or bm, and 3 for vm-multi. Omit it to use the topology's default.
+node_count = 3
 
-# Shape and size.
-# Bare metal is preferred for large scale production usage.
-compute_shape           = "VM.Standard.E5.Flex"
-compute_ocpus           = 8          # OCI counts an OCPU as a full core, 1 OCPU = 2vCPU
-compute_memory_in_gbs   = 32
+# OCI Flex VM shape. Use a fixed BM.* shape for a bare-metal deployment.
+compute_shape = "VM.Standard.E6.Flex"
 
-# 1 for a single node, 3 required for a cluster.
-node_count              = 1
+# CPU allocation per Flex VM, measured in OCI OCPUs (one OCPU is two vCPUs).
+# Ignored by fixed-shape bare-metal instances.
+compute_ocpus = 8
 
-# The block volume behind /var/lib/spinifex, attached over iSCSI.
-data_volume_size_in_gbs = 256
-data_volume_vpus_per_gb = 120        # 120 = Ultra High Performance
+# Memory allocation per Flex VM in GiB. Ignored by fixed-shape bare-metal instances.
+compute_memory_in_gbs = 32
 
-# Firewall. A list, so it can hold several ranges. Read the note below before
-# narrowing it.
+# Persistent block-volume capacity, in GiB, mounted as /var/lib/spinifex on each node.
+data_volume_size_in_gbs = 1024
+
+# Block-volume performance setting, in VPUs per GiB. Higher values cost more and
+# provide more IOPS. Consult OCI volume-performance limits before increasing it.
+data_volume_vpus_per_gb = 60
+
+# OCI authentication mode used by the Spinifex public-IP allocator. "adopt" means
+# the Dynamic Group and policy already exist. The driver's --instance-principal
+# flag enforces this mode; do not set this to "create" in a normal deployment state.
+instance_principal = "adopt"
+
+# OCI security-list sources allowed to reach the public subnet. These rules also
+# affect guests with public OCI addresses, so keep 0.0.0.0/0 for a public POC and
+# use the Spinifex host firewall to restrict node SSH/console access instead.
 node_client_cidr_allow_list = ["0.0.0.0/0"]
 EOF
 ```
@@ -438,7 +441,7 @@ The heredoc delimiter is unquoted, which is what lets `$CID` expand from the var
 grep compartment_ocid terraform.auto.tfvars
 ```
 
-**This file is what decides the deployment.** `compute_ocpus` and `compute_memory_in_gbs` size a VM flex shape and are ignored on a fixed bare-metal one, which comes at one fixed size with all available OCPU/memory.
+`--topology vm-single`, `vm-multi`, and `bm` select the default node count and compute shape. Values in `terraform.auto.tfvars` intentionally override those defaults. `compute_ocpus` and `compute_memory_in_gbs` size a VM flex shape and are ignored on a fixed bare-metal one.
 
 [Every Terraform variable](../oci-architecture/README.md#every-terraform-variable) has the full list.
 
@@ -447,35 +450,100 @@ grep compartment_ocid terraform.auto.tfvars
 
 ## 5. Deploy
 
-Choose the deployment method below:
+Choose `vm-single` for an evaluation, `vm-multi` for the recommended three-node cluster, or `bm` for a bare-metal host.
 
-- `vm-single` - Single node instance (best for testing/development)
-- `vm-multi` - A recommended 3-node cluster (production)
-- `bm` - Bare metal for larger scale production use.
+### First instance-principal deployment
 
-```bash
-export TOPOLOGY=vm-single
-```
-
-Next deploy Spinifex on OCI:
+This command creates the tenancy-wide Dynamic Group/policy, provisions the OCI infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies the allocator:
 
 ```bash
 ./validate-topology.sh \
-    --topology "$TOPOLOGY" \
-    --credential-hook ./spx-oci-config.sh \
+    --topology vm-multi \
+    --instance-principal \
+    --setup-instance-principal \
+    --oci-profile <compartment-deployer-profile> \
+    --identity-oci-profile <tenancy-admin-profile> \
+    --ssh-public-key ~/.ssh/oci-spx.pub \
+    --ssh-private-key ~/.ssh/oci-spx \
     --skip-workload \
     --keep
 ```
 
-The same command covers both credential routes. It reads `instance_principal` from the tfvars you wrote in step 4, so an instance-principal deployment needs no extra argument and `--credential-hook` is simply ignored.
+If one profile has both tenancy and compartment permissions, use its name for both profile arguments. `--keep` leaves the POC running when validation completes.
 
-One command builds the infrastructure, installs Spinifex, forms the cluster, configures OCI public addressing and verifies that the address allocator came up.
+### Later instance-principal deployments
+
+After the Dynamic Group and policy exist, omit `--setup-instance-principal`:
+
+```bash
+./validate-topology.sh \
+    --topology vm-multi \
+    --instance-principal \
+    --oci-profile <compartment-deployer-profile> \
+    --ssh-public-key ~/.ssh/oci-spx.pub \
+    --ssh-private-key ~/.ssh/oci-spx \
+    --skip-workload \
+    --keep
+```
+
+### Advanced: OCI API-key deployment
+
+For the API-key path from [section 2.2](#22-advanced-oci-iam-user-with-scoped-permissions), use the credential hook instead of `--instance-principal`:
+
+```bash
+./validate-topology.sh \
+    --topology vm-multi \
+    --oci-profile <compartment-deployer-profile> \
+    --credential-hook ./spx-oci-config.sh \
+    --ssh-public-key ~/.ssh/oci-spx.pub \
+    --ssh-private-key ~/.ssh/oci-spx \
+    --skip-workload \
+    --keep
+```
+
+### Install Spinifex on existing OCI infrastructure
+
+Use this path when your team has already applied the [Terraform-only OCI configuration](../../scripts/terraform/oci-spx/README.md) and wants the validation driver to install and verify Spinifex without creating, changing, or destroying the OCI infrastructure.
+
+The Terraform apply must have produced its normal `hosts_file`, `compute_shape`, and `instance_principal` outputs. Its default local state file is `scripts/terraform/oci-spx/terraform.tfstate`.
+
+For existing infrastructure that uses an already-created instance principal (`instance_principal = "adopt"` in the Terraform inputs), run:
+
+```bash
+./validate-topology.sh \
+    --topology vm-multi \
+    --existing-state-file "$PWD/terraform.tfstate" \
+    --instance-principal \
+    --oci-profile <compartment-deployer-profile> \
+    --ssh-public-key ~/.ssh/oci-spx.pub \
+    --ssh-private-key ~/.ssh/oci-spx \
+    --skip-workload
+```
+
+If the Dynamic Group and policy do not exist yet, add `--setup-instance-principal` and `--identity-oci-profile <tenancy-admin-profile>` to that command. The driver creates only those identity resources; it still leaves the existing OCI infrastructure untouched.
+
+For existing infrastructure using the API-key path (`instance_principal = "off"`), use the credential hook instead:
+
+```bash
+./validate-topology.sh \
+    --topology vm-multi \
+    --existing-state-file "$PWD/terraform.tfstate" \
+    --oci-profile <compartment-deployer-profile> \
+    --credential-hook ./spx-oci-config.sh \
+    --ssh-public-key ~/.ssh/oci-spx.pub \
+    --ssh-private-key ~/.ssh/oci-spx \
+    --skip-workload
+```
+
+`--existing-state-file` puts the driver in existing-infrastructure mode: Terraform apply and destroy are skipped, and the hosts are always kept. Pass `--existing-hosts-file /path/to/hosts` instead when Terraform state is unavailable; the file must contain one public SSH IP address per line. With a hosts file, explicitly pass either `--instance-principal` or `--credential-hook` because the driver cannot infer the credential mode.
 
 | Argument            | What to pass                                                                                                                                                                                                                            |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and a node count only where your tfvars is silent |
+| `--topology`        | `vm-single` for one VM, `vm-multi` for three, `bm` for one bare-metal host. Required, with no default, so a command cannot be aimed at the wrong one by omission. It supplies a shape and node count only where your tfvars is silent |
+| `--instance-principal` | Authenticate Spinifex nodes through their OCI instance identity. This is the recommended route. |
+| `--setup-instance-principal` | First deployment only: create the tenancy-wide Dynamic Group and policy. Needs `--identity-oci-profile` when the tenancy admin uses a different profile. |
 | `--channel`         | Nothing, normally. It defaults to `latest`, the published release. Pass `dev` to install the newest pre-release instead, or `--version <tag>` to pin an exact build                                                                     |
-| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Not used when your tfvars set `instance_principal`, because there is then no key to install                                                                |
+| `--credential-hook` | `./spx-oci-config.sh`, which installs the step 2.2 credential on every node. Do not pass it with `--instance-principal`, because there is then no key to install. |
 | `--skip-workload`   | Stop once the cluster is verified. Drop it and the driver also runs the published Terraform workbooks on the node, which launches real guests on public addresses and tears each one down again                                         |
 | `--keep`            | **This is what makes it a deployment rather than a test.** Without it the driver destroys everything at the end, which is right for CI and testing a deployment                                                                         |
 
@@ -488,27 +556,14 @@ Add `--dry-run` to print the plan and change nothing.
 
 ## 6. Check it worked
 
-The stages print as they finish, and all of these have to appear:
+For an instance-principal deployment, the decisive lines on **each node** are:
 
 ```text
-[validate-vm-single] building
-[validate-vm-single] VM.Standard.E5.Flex, 1 node(s), oci_auth from a key file
-[validate-vm-single] waiting for cloud-init on each node
-[validate-vm-single] installing Spinifex on each node
-[validate-vm-single] initializing the single node
-[validate-vm-single] running the credential hook
-[validate-vm-single] credential hook ok
-[validate-vm-single] configuring the IMDS remap and the external pool
-[validate-vm-single] checking the allocator came up
-[validate-vm-single] 150.230.13.131 allocator ready
-[validate-vm-single] cluster membership
-[validate-vm-single] --skip-workload: stopping before the workbook
-[validate-vm-single] --keep: leaving the infrastructure up, no verdict recorded
-[validate-vm-single] ssh in with: ssh -i ~/.ssh/oci-spx ubuntu@public.ip
-[validate-vm-single] destroy it with: ./validate-topology.sh --topology vm-single --destroy-only
+ocinet resolved the external VNIC from its interface
+OCI allocator ready
 ```
 
-**`allocator ready` is the line to look for.** Every line above it also prints on a node that cannot allocate a public address, and that failure stays silent until a guest asks for one.
+`OCI allocator ready` is the line to look for. It proves that the node resolved its OCI VNIC and authenticated to OCI, which is what allows a guest to receive a public address.
 
 `running the credential hook` is `spx-oci-config.sh`, and its own output is captured rather than printed. If the deploy stops there, read `credential-hook.log` in the state directory the driver names at startup — its `credential:` line says which credential went onto the nodes. On the instance-principal route those two lines are absent, because there is no handoff to make.
 
@@ -517,50 +572,65 @@ The stages print as they finish, and all of these have to appear:
 The deploy's last line is the command to get in, so you can paste it straight back. The addresses are also on disk, one per line, which is what to read from a script:
 
 ```bash
-cat ".validate-$TOPOLOGY/hosts"
+cat .validate-vm-multi/hosts
 
-ssh -i ~/.ssh/oci-spx ubuntu@"$(head -1 ".validate-$TOPOLOGY/hosts")"
+ssh -i ~/.ssh/oci-spx ubuntu@"$(head -1 .validate-vm-multi/hosts)"
 ```
 
-`$TOPOLOGY` is the variable you exported in step 5, so this is the same command whether you deployed one VM, three, or bare metal. The first line is the node the cluster formed on.
-
-Then call the AWS surface with the `[spinifex]` profile that `spx admin init` wrote into `~/.aws/credentials`:
+Replace `vm-multi` with the topology you deployed. The first address is the node the cluster formed on. For a three-node cluster, verify membership directly:
 
 ```bash
-export AWS_PROFILE=spinifex
-aws ec2 describe-instance-types
+ssh -i ~/.ssh/oci-spx ubuntu@"$(head -1 .validate-vm-multi/hosts)" \
+  'sudo spx get nodes'
 ```
 
-```text
-{
-    "InstanceTypes": [
-        {
-            "InstanceType": "c7a.12xlarge",
-            "CurrentGeneration": true,
-        ...
-        }
-    ]
-}
+Expect three nodes with `Ready` status.
+
+## 7. Obtain AWS credentials
+
+The driver can display the AWS access key and secret generated on node 1. Run this **locally and interactively** after a kept instance-principal deployment:
+
+```bash
+./validate-topology.sh \
+  --topology vm-multi \
+  --instance-principal \
+  --oci-profile <compartment-deployer-profile> \
+  --ssh-public-key ~/.ssh/oci-spx.pub \
+  --ssh-private-key ~/.ssh/oci-spx \
+  --skip-workload \
+  --keep \
+  --show-aws-credentials
+```
+
+This safely resumes the deployment workflow: it checks the existing OCI infrastructure and cluster, then prints node 1's `~/.aws/credentials` to your terminal after all nodes are Ready. Do **not** include `--setup-instance-principal` here; the Dynamic Group/policy already exists.
+
+> [!WARNING]
+> `--show-aws-credentials` reveals an AWS secret. Do not use it in CI, redirect its output, or paste the credentials into chat, tickets, source control, or logs.
+
+The output has this shape:
+
+```ini
+[spinifex]
+aws_access_key_id     = <access-key>
+aws_secret_access_key = <secret-key>
+```
+
+Use the displayed values to sign into the console at:
+
+```bash
+echo "https://$(head -1 .validate-vm-multi/hosts):3000/"
+```
+
+Replace `vm-multi` if you deployed another topology. The console uses the same access key and secret shown by the deployment command.
+
+To call the AWS surface from node 1, its generated `[spinifex]` AWS profile is already available:
+
+```bash
+ssh -i ~/.ssh/oci-spx ubuntu@"$(head -1 .validate-vm-multi/hosts)" \
+  'export AWS_PROFILE=spinifex; aws ec2 describe-instance-types'
 ```
 
 If this returns a list of available instance types, your installation is working.
-
-### Console access
-
-Next login to the Spinifex console at:
-
-```
-https://YOURIP:3000/
-```
-
-Fetch your generated AWS credentials via SSH and login to the console using your new Spinifex account.
-
-```bash
-ubuntu@spinifexnode01:~$ cat ~/.aws/credentials
-[spinifex]
-aws_access_key_id     = XXXX
-aws_secret_access_key = XXXX
-```
 
 <p align="center">
   <img src="../../.github/assets/spinifex-ui.jpg" alt="Spinifex Web UI" width="900">
@@ -569,7 +639,7 @@ aws_secret_access_key = XXXX
 
 **Congratulations! Spinifex is installed.**
 
-## 7. Set up your cluster
+## 8. Set up your cluster
 
 Spinifex is running, but it holds nothing yet — no machine images, no networks, no instances.
 
@@ -644,10 +714,30 @@ The four are `oracle-10.1-x86_64`, `oracle-10.1-arm64`, `oracle-9.8-x86_64` and 
 ## Removing the deployment
 
 ```bash
-./validate-topology.sh --topology vm-single --destroy-only
+./validate-topology.sh \
+  --topology vm-multi \
+  --oci-profile <compartment-deployer-profile> \
+  --ssh-public-key ~/.ssh/oci-spx.pub \
+  --ssh-private-key ~/.ssh/oci-spx \
+  --destroy-only
 ```
 
 It destroys whatever that topology's Terraform state holds, so it can only remove what this configuration created.
+
+If this was the only Spinifex cluster using the instance-principal Dynamic Group and policy, remove those tenancy-wide resources as well:
+
+```bash
+./validate-topology.sh \
+  --topology vm-multi \
+  --oci-profile <compartment-deployer-profile> \
+  --identity-oci-profile <tenancy-admin-profile> \
+  --ssh-public-key ~/.ssh/oci-spx.pub \
+  --ssh-private-key ~/.ssh/oci-spx \
+  --destroy-only \
+  --destroy-identity
+```
+
+Do not use `--destroy-identity` if another Spinifex cluster uses the same Dynamic Group.
 
 ### Check for leftover public IPs afterwards
 

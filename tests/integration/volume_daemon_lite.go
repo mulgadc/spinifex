@@ -10,8 +10,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/require"
 )
@@ -76,7 +76,7 @@ func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *ec2volume.VolumeServiceIm
 	// The control plane no longer builds volumes itself; it asks a provider.
 	// Serve the provider contract from viperblockd against the same fixture,
 	// so the blocks are still written by real viperblock to real predastore.
-	require.NoError(t, viperblockd.RegisterProviderSubjects(&viperblockd.Config{
+	require.NoError(t, viperblock.RegisterProviderSubjects(&viperblock.Config{
 		S3Host:    "https://" + fixture.Host,
 		Bucket:    testVolumeBucket,
 		Region:    fixture.Region,

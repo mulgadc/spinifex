@@ -50,7 +50,7 @@ RFC2-18 (`mulga/docs/specs/spinifex/rfc2-18_operator-lifecycle.md:34-53,88-104,1
 
 | Mechanism | Evidence | Scope | Shape |
 |---|---|---|---|
-| EBS provider capabilities | `spinifex/providers/ebs/provider.go:55-70`, `spinifex/services/viperblockd/provider_handlers.go:236-262`, `spinifex/daemon/daemon.go:2397` | Spinifex ↔ block provider | Boolean feature set fetched at runtime; the only real capability exchange found |
+| EBS provider capabilities | `spinifex/providers/ebs/provider.go:55-70`, `spinifex/providers/ebs/viperblock/provider_handlers.go:236-262`, `spinifex/daemon/daemon.go:2397` | Spinifex ↔ block provider | Boolean feature set fetched at runtime; the only real capability exchange found |
 | EBS provider wire version | `spinifex/providers/ebs/provider.go:13-25`, `spinifex/providers/ebs/errors.go:90-95`, `spinifex/providers/ebs/nats.go:212-316` | Every provider request/response | **Exact match** (`!= SchemaVersion` → `ErrUnsupportedVersion`); no N-1 window |
 | RDS data-volume contract image tag | `scripts/images/rds-postgres/manifest.conf:49-51`, `scripts/images/rds-mariadb/manifest.conf:59`, `spinifex/handlers/rds/launch.go:39-45,532`, `spinifex/operator/imagecatalog/images.go:666,686` | Control plane → guest image | AMI filter `rds-data-volume-contract=format-auth-v1` excludes older images; a static image-tag capability, not a runtime proof |
 | RDS bootstrap envelope | `spinifex/handlers/rds/bootstrap.go:23-36,190-192,212` | Host ↔ RDS guest | `envelopeVersion` exact match |

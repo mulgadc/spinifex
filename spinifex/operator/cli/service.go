@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/northstar"
@@ -21,7 +22,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/runtime/service"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -336,7 +336,7 @@ var viperblockStartCmd = &cobra.Command{
 
 		defer initTelemetry("viperblockd", debug)()
 
-		service, err := service.New("viperblock", &viperblockd.Config{
+		service, err := service.New("viperblock", &viperblock.Config{
 			NatsHost:          nodeConfig.NATS.Host,
 			NatsToken:         nodeConfig.NATS.ACL.Token,
 			NatsCACert:        nodeConfig.NATS.CACert,

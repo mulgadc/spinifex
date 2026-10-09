@@ -268,6 +268,13 @@ services:
     # ebs.* routes remain to be migrated separately.
     # The dirty-marker JetStream KV bucket VIPERBLOCK_VOLUME_DIRTY is owned
     # by the same contract; not a NATS subject, so not listed below.
+    #
+    # Source layout: spinifex/services/viperblockd (role: process lifecycle,
+    # NATS subscription wiring) and spinifex/providers/ebs/viperblock (the
+    # Viperblock EBS provider adapter the role wires up). Selector treats the
+    # adapter path as belonging to this service via `additional_paths`.
+    additional_paths:
+      - spinifex/providers/ebs/viperblock
     subscribes:
       - "ebs.mount"
       - "ebs.unmount"

@@ -4,10 +4,10 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
 	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/stretchr/testify/assert"
 )
@@ -28,7 +28,7 @@ func TestNew(t *testing.T) {
 			svc, err = New(s, &predastore.Config{})
 			// No special setup needed
 		case "viperblock":
-			svc, err = New(s, &viperblockd.Config{})
+			svc, err = New(s, &viperblock.Config{})
 		case "spinifex":
 			svc, err = New(s, &config.ClusterConfig{})
 		case "awsgw":

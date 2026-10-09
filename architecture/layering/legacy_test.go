@@ -35,7 +35,6 @@ var frozenLegacyPackages = []string{
 	"handlers/sts",
 	"lbagent",
 	"services/viperblockd",
-	"services/viperblockd/vbwire",
 	"utils",
 	"vpcd",
 }

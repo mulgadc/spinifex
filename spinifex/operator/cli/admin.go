@@ -41,12 +41,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock/dirty"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
@@ -3995,7 +3995,7 @@ func runVolumesUnsealedCmd(_ *cobra.Command, _ []string) {
 	}
 	defer nc.Close()
 
-	unsealed, err := vbwire.ListUnsealedVolumes(context.Background(), nc)
+	unsealed, err := dirty.ListUnsealedVolumes(context.Background(), nc)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Could not read the unsealed volumes:", err)
 		os.Exit(1)

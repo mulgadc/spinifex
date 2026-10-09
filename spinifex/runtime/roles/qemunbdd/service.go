@@ -17,8 +17,8 @@ import (
 // serviceName roots this daemon's PID file: baseDir/qemunbd.pid.
 var serviceName = "qemunbd"
 
-// Config is the qemunbdd service's startup configuration, mirroring
-// viperblockd.Config's NATS and base-directory fields. NodeName scopes the
+// Config is the qemunbdd service's startup configuration, mirroring the
+// Viperblock adapter's NATS and base-directory fields. NodeName scopes the
 // natsserve PublishVolume/UnpublishVolume subjects to this node.
 type Config struct {
 	BaseDir    string

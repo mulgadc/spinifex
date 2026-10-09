@@ -42,3 +42,9 @@ the AWS-visible attachment semantics; the network domain owns the OVN work.
 The event intentionally contains only the gateway and VPC identifiers. It is
 not permission to read EC2's private VPC or IGW state. The JSON and both
 subjects are compatibility-tested in `igw_test.go`.
+
+## Default VPC request
+
+`EnsureDefaultVpcSubject` (`ec2.EnsureDefaultVpc`) is the request/reply route on which the gateway's account creation asks a daemon in the `spinifex-workers` queue group to build the account's default VPC.
+Only the subject is owned here today.
+The request (`account_id`) and reply (`vpc_id`, `error`) bodies are still declared as anonymous structs on each side; moving them into this package is a contract change that needs its own characterization first.

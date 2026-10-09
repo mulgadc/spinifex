@@ -42,7 +42,7 @@ var frozenLegacyPackages = []string{
 
 // frozenUtilsFiles are the only production files utils may hold; each awaits
 // the owner named in the migration record's close-out table.
-var frozenUtilsFiles = []string{"ec2_subject.go", "encryption.go", "vpcd_event.go"}
+var frozenUtilsFiles = []string{"encryption.go", "vpcd_event.go"}
 
 // TestADR0001_LegacyRootsFrozen: the current-to-target map gives every legacy
 // root a destination, so none may gain a package and utils no new file.

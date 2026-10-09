@@ -86,7 +86,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -1035,7 +1034,7 @@ func (d *Daemon) subscribeAll() error {
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account
 		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},
-		{utils.SubjectEnsureDefaultVpc, d.handleEnsureDefaultVpc, "spinifex-workers"},
+		{ec2v1.EnsureDefaultVpcSubject, d.handleEnsureDefaultVpc, "spinifex-workers"},
 		// Coordinated cluster shutdown phases (fan-out, no queue group)
 		{"spinifex.cluster.shutdown.gate", d.handleShutdownGate, ""},
 		{"spinifex.cluster.shutdown.drain", d.handleShutdownDrain, ""},

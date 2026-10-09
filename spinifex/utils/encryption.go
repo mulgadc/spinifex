@@ -1,3 +1,5 @@
+// Package utils holds the helpers still shared across Spinifex services: the
+// Viperblock master key loader and vpcd events.
 package utils
 
 import (

@@ -199,6 +199,17 @@ services:
       - "vpc.delete-nat"
       - "vpc.dhcp.acquire"
       - "vpc.dhcp.release"
+      # Per-subnet route-table projections owned by domains/ec2/routetable:
+      # IGW default-route reachability and the egress gate/ungate decision it
+      # implies, published fire-and-forget on every route-table mutation.
+      - "vpc.add-igw-route"
+      - "vpc.delete-igw-route"
+      - "vpc.gate-subnet-egress"
+      - "vpc.ungate-subnet-egress"
+      # Egress-only reroute for a single system instance (handlers/eks and,
+      # historically, domains/ec2/eip). Fire-and-forget.
+      - "vpc.add-system-egress"
+      - "vpc.delete-system-egress"
       # → viperblockd
       # The migrated legacy ebs.config and ebs.sync payloads and routes are
       # owned by contracts/viperblockd/legacy/v1. They are transitional and
@@ -251,6 +262,12 @@ services:
       - "vpc.delete-nat"
       - "vpc.dhcp.acquire"
       - "vpc.dhcp.release"
+      - "vpc.add-igw-route"
+      - "vpc.delete-igw-route"
+      - "vpc.gate-subnet-egress"
+      - "vpc.ungate-subnet-egress"
+      - "vpc.add-system-egress"
+      - "vpc.delete-system-egress"
     publishes:
       - "vpc.port-status"
       - "vpc.dhcp.lease-changed"

@@ -136,10 +136,11 @@ On re-activation, no earlier `addonContract: 2` marking counts until a fresh fen
 |---|---|
 | Every daemon and awsgw slot capable; no legacy observation since activation | No N-1 host remains |
 | Every record migrated; every awsgw and daemon projects the v1 listing from records | Manifest keys stop being written |
-| Every non-deleting cluster's current executor epoch proven v2 under the current activation generation; no executor, or a `FAILED` cluster with running VMs, refuses | A v1 guest served from manifest keys would remove every add-on (`handlers/eks/addons.go:132-134`) |
+| Every cluster explicitly activated onto v2 has current proof: its executor epoch proven v2 under the current activation generation; such a cluster with no executor, or `FAILED` with running VMs, refuses | A v1 guest served from manifest keys would remove every add-on (`handlers/eks/addons.go:132-134`) |
+| Every cluster still on v1 is enumerated as legacy in the finalisation output and audit entry | v1 clusters are visible, never silently treated as compatible |
 | Explicit `--confirm eks-addon-lifecycle/2` | Q-75, ADR-0006:S5 step 4 |
 
-Finalisation permits stopping, then removing, the manifest key and legacy top-level fields; it makes deactivation and any N-1 rejoin impossible; it does not retire the v1 routes or v1 guest mode, which stay an ADR-0006:S6 retirement.
+Finalisation permits stopping, then removing, the manifest key and legacy top-level fields; it makes deactivation and any N-1 rejoin impossible; it ends rollback for the activated v2 track only, and does not retire the v1 routes or v1 guest mode or permit removing their support, which stay an ADR-0006:S6 retirement.
 
 ### 3.6 Coverage
 
@@ -194,8 +195,11 @@ Future service work can reuse or challenge the generic concepts in Section 2; th
 9. Not every reader of `spinifex-cluster-state` was confirmed (`operator/cli/admin_jsprobe.go:82` opens it).
 10. The restore path's successor-first ordering still blocks automatic epoch advance after re-activation (v2 design Section 4.4).
 
-## 7. Open questions for the reviewer
+## 7. Review decisions
 
-1. Finalisation: require every cluster to prove v2 (as written), or allow it once the v1 listing is projected from records and leave v1 guests wholly to ADR-0006:S6 retirement?
-2. Should a post-activation legacy observation freeze add-on mutations Region-wide (as written) or only alarm?
-3. For an unreadable activation record, add a new v2 response reason or reuse `NotActivated` with HTTP 503?
+| # | Decision |
+|---|---|
+| M1 | Finalisation requires current v2 proof only for clusters explicitly activated onto v2. Clusters remaining on v1 are enumerated as legacy, never treated as compatible. Finalisation ends rollback for the activated v2 track; it does not retire v1 or permit removing its support (Section 3.5). |
+| M2 | An older relevant binary detected after activation freezes EKS add-on mutations Region-wide. Reads continue; create, update, delete, activation and executor reassignment fail closed until an operator upgrades or removes the incompatible writer or performs an explicit controlled rollback. The freeze covers the add-on contract only, not the platform. |
+| M3 | An unreadable, invalid or unavailable activation record returns the retryable v2 reason `ActivationStateUnavailable` (HTTP 503), defined in v2 from the outset. Only an absent record is `NotActivated`, the sole case eligible for the bounded v2-to-v1 fallback (v2 design V1, V11). |
+| M4 | The old-writer gap (Section 6 items 2 and 3), the unenrolled-node gap (items 7 and 8) and restore-before-fencing (item 10) are explicit prerequisites for eventual activation, recorded as design debt. They are not package-boundary work and do not extend it. |

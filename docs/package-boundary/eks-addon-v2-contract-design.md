@@ -145,7 +145,7 @@ Static-credential fallback VMs have no session name and can never be executors (
 | Order | Check | v2 reason | HTTP |
 |---|---|---|---|
 | 1 | SigV4, IAM policy, CP-agent class | existing gateway envelope (`AccessDenied`); these run before the v2 handler | 403 |
-| 2 | Activation record present (P2) | `NotActivated` | 503 |
+| 2 | Activation record present (P2) | `NotActivated` if the record is absent; `ActivationStateUnavailable` if it is unreadable, invalid or unavailable | 503 |
 | 3 | Caller is a member of the named cluster in the named account (`IsControlPlaneMember`, `internal_authz.go:74`) | `NotClusterMember` | 403 |
 | 4 | Executor record names an instance | `NoActiveExecutor` | 503 |
 | 5 | `Caller.SessionName == executor.instanceId` | `NotActiveExecutor` | 403 |
@@ -347,7 +347,7 @@ Reasons are internal contract values, not AWS error codes (R7); the owner maps s
 | `DeletePending` | `removing` | none | Delete issued; objects still present without a finalizer cause. |
 
 No reason exists for an unreachable apiserver: the guest sends nothing for that add-on, as the lifecycle design specifies, and silence is handled by deadlines.
-The gateway-side rejection reasons of Section 4.3 (`NotActivated`, `NotClusterMember`, `NoActiveExecutor`, `NotActiveExecutor`, `StaleExecutorEpoch`, `UnknownContractMajor`, `MalformedReport`) are response reasons, never report reasons.
+The gateway-side rejection reasons of Section 4.3 (`NotActivated`, `ActivationStateUnavailable`, `NotClusterMember`, `NoActiveExecutor`, `NotActiveExecutor`, `StaleExecutorEpoch`, `UnknownContractMajor`, `MalformedReport`) are response reasons, never report reasons.
 
 The reason table above is the closed set for `contractVersion: 2` (V4; Q-75, ADR-0006 S3).
 A genuinely new wire-level reason has new semantics and therefore requires a new major, never a silent addition to this enum; free-form detail that does not need enum-level routing belongs in `message`, not in an unbounded `reason` value.
@@ -528,6 +528,7 @@ Writing that would make every N-1 `ListAddons` and `DescribeAddon` on the cluste
 | V8 | An executor is not v2-capable merely because it fetched a directive. Capability is marked only after the first valid, fenced v2 report is accepted (Section 2.3, Section 4.1). A fetch may be retained as diagnostic evidence only. |
 | V9 | Activation (Section 3, P2) is EKS-add-on-specific for now. The release-membership mechanism should be reusable, but this design does not build a platform-wide activation framework. |
 | V10 | Automatic executor fencing (Section 4.4) uses only authoritative evidence that the former instance terminated or no longer exists. A lookup error, network issue or partition is never evidence of termination. The alternative is an audited operator assertion. |
+| V11 | `ActivationStateUnavailable` (HTTP 503, retryable) is defined in v2 from the outset for an unreadable, invalid or unavailable activation record. Only an absent record is `NotActivated`, and only `NotActivated` is eligible for the bounded fallback (V1); `ActivationStateUnavailable` never triggers fallback, because it is not evidence that v2 is inactive. |
 
 The v1 `PublishInternal` authorization-binding gap and the `serviceAccountRoleArn` format-validation gap (Sections 5.3 and 7) are being fixed directly on the v1 path as standalone security corrections, not as v2 lifecycle work; v2 keeps its own binding and its own guest-side validation regardless of either fix's timing.
 

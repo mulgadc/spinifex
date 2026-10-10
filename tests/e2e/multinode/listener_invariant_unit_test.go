@@ -5,7 +5,7 @@ package multinode
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
+	"github.com/mulgadc/spinifex/internal/testkit/listenerinventory"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 

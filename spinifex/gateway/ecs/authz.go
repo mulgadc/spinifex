@@ -2,14 +2,15 @@ package gateway_ecs
 
 import (
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"maps"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // The resource a policy check evaluates against when the request names nothing
@@ -164,7 +165,7 @@ func ResourceARNs(action, region, accountID string, body []byte) ([]string, erro
 			if _, duplicate := seen[resource]; duplicate {
 				continue
 			}
-			if len(resources) >= awsec2query.MaxSliceLen {
+			if len(resources) >= query.MaxSliceLen {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			seen[resource] = struct{}{}
@@ -266,7 +267,7 @@ func one(resource string) []string {
 // each builds one ARN per reference, capped so a body-supplied list cannot make
 // the gate do unbounded work ahead of the authorization decision.
 func each(refs []string, build func(string) string) ([]string, error) {
-	if len(refs) > awsec2query.MaxSliceLen {
+	if len(refs) > query.MaxSliceLen {
 		return nil, errors.New(awserrors.ErrorMalformedQueryString)
 	}
 	out := make([]string, 0, len(refs))
@@ -323,14 +324,14 @@ func taskDefARN(region, accountID, ref string) string {
 	if ref == "" || region == "" || accountID == "" {
 		return anyResource
 	}
-	family, rev := handlers_ecs.ParseTaskDefRef(ref)
+	family, rev := taskdefinition.ParseRef(ref)
 	if family == "" {
 		return anyResource
 	}
 	if rev <= 0 {
-		return handlers_ecs.TaskDefRefARN(region, accountID, family, anyRevision)
+		return taskdefinition.RefARN(region, accountID, family, anyRevision)
 	}
-	return handlers_ecs.TaskDefARN(region, accountID, family, rev)
+	return taskdefinition.ARN(region, accountID, family, rev)
 }
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the

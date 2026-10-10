@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +25,7 @@ type stubEndpointProvisioner struct {
 
 	// state maps "accountID/modelID" to the endpoint state EndpointState
 	// reports; an absent entry reports "" (ABSENT), matching
-	// handlers_bedrock.StateAbsent's zero-value shape.
+	// ochre.StateAbsent's zero-value shape.
 	state map[string]string
 
 	ensureErr error
@@ -331,7 +331,7 @@ func TestDeleteProvisionedModelThroughput_RemovesEndpointAndRecord(t *testing.T)
 }
 
 // TestDeleteProvisionedModelThroughput_AbsentIsNoop mirrors
-// handlers_bedrock.Service.Delete's own idempotence: deleting an
+// ochre.Service.Delete's own idempotence: deleting an
 // already-absent commitment must succeed, not error.
 func TestDeleteProvisionedModelThroughput_AbsentIsNoop(t *testing.T) {
 	stub := newStubEndpointProvisioner()

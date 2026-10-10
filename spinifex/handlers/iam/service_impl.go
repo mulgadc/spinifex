@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"maps"
 	"net/netip"
@@ -27,11 +28,10 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 )
 
 const (
@@ -529,7 +529,7 @@ func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) 
 	// element at all rather than an empty one.
 	users := []*iam.User{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -856,7 +856,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	ctx := context.Background()
 	// --- Seed system account (000000000000) ---
 	systemAccount := Account{
-		AccountID:   utils.GlobalAccountID,
+		AccountID:   awsidentifiers.GlobalAccountID,
 		AccountName: "system",
 		Status:      AccountStatusActive,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -865,16 +865,16 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	if err != nil {
 		return fmt.Errorf("marshal system account: %w", err)
 	}
-	if _, err := s.accountsBucket.Create(ctx, utils.GlobalAccountID, accountData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
+	if _, err := s.accountsBucket.Create(ctx, awsidentifiers.GlobalAccountID, accountData); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
 		return fmt.Errorf("seed system account: %w", err)
 	}
 
-	kvKey := utils.GlobalAccountID + ".root"
+	kvKey := awsidentifiers.GlobalAccountID + ".root"
 	rootUser := User{
 		UserName:         "root",
 		UserID:           "AIDAAAAAAAAAAAAAAAAA",
-		AccountID:        utils.GlobalAccountID,
-		ARN:              arn.FormatIAMRoot(utils.GlobalAccountID),
+		AccountID:        awsidentifiers.GlobalAccountID,
+		ARN:              arn.FormatIAMRoot(awsidentifiers.GlobalAccountID),
 		Path:             "/",
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
 		AccessKeys:       []string{data.AccessKeyID},
@@ -901,7 +901,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 		AccessKeyID:     data.AccessKeyID,
 		SecretAccessKey: data.EncryptedSecret,
 		UserName:        "root",
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 		Status:          AccessKeyStatusActive,
 		CreatedAt:       rootUser.CreatedAt,
 	}
@@ -917,7 +917,7 @@ func (s *IAMServiceImpl) SeedBootstrap(data *BootstrapData) error {
 	} else if err != nil {
 		return fmt.Errorf("seed root access key: %w", err)
 	} else {
-		slog.Info("System root user seeded", "accountID", utils.GlobalAccountID, "accessKeyID", data.AccessKeyID)
+		slog.Info("System root user seeded", "accountID", awsidentifiers.GlobalAccountID, "accessKeyID", data.AccessKeyID)
 	}
 
 	// --- Seed admin account (000000000001) if present ---
@@ -1068,7 +1068,7 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 		return false, fmt.Errorf("check users bucket: %w", err)
 	}
 	for _, key := range keys {
-		if key != utils.VersionKey {
+		if key != kvutil.VersionKey {
 			return false, nil
 		}
 	}
@@ -1184,7 +1184,7 @@ func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 
 	accounts := make([]*Account, 0, len(keys))
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		entry, err := s.accountsBucket.Get(ctx, key)
@@ -1413,7 +1413,7 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	onlyAttached := aws.BoolValue(input.OnlyAttached)
 	policies := []*iam.Policy{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -2163,7 +2163,7 @@ func (s *IAMServiceImpl) buildPolicyAttachments(ctx context.Context, accountID s
 		}
 
 		for _, key := range keys {
-			if key == utils.VersionKey {
+			if key == kvutil.VersionKey {
 				continue
 			}
 			if !strings.HasPrefix(key, keyPrefix) {
@@ -2661,7 +2661,7 @@ func countBucket(ctx context.Context, bucket jetstream.KeyValue, prefix string) 
 
 	var count int64
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if strings.HasPrefix(key, prefix) {

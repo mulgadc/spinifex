@@ -3,7 +3,7 @@ package gateway_iam
 import (
 	"regexp"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 const maxPathPrefixLength = 512

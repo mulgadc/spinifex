@@ -19,17 +19,18 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -103,9 +104,9 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 type ELBv2ServiceImpl struct {
 	config           *config.Config
 	store            *Store
-	acmStore         *handlers_acm.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
+	acmStore         *acmdomain.Store                       // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
 	nc               *nats.Conn                             // NATS connection for JetStream KV store
-	VPCService       *handlers_ec2_vpc.VPCServiceImpl       // nil-safe: ENI ops skipped when nil (e.g. in tests)
+	VPCService       *ec2vpc.VPCServiceImpl                 // nil-safe: ENI ops skipped when nil (e.g. in tests)
 	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
 	IAM              handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
 	// IAMProvider lazily resolves the IAM ensurer at launch time so it cannot
@@ -173,7 +174,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 	// found" everywhere it is consulted (resolveCertPEM, validateListenerCerts),
 	// so a construction failure here must fail the whole service rather than
 	// silently degrade every HTTPS listener.
-	acmStore, acmErr := handlers_acm.NewStore(ctx, nc, masterKey)
+	acmStore, acmErr := acmdomain.NewStore(ctx, nc, masterKey)
 	if acmErr != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create ELBv2 ACM store: %w", acmErr)
@@ -188,7 +189,7 @@ func NewELBv2ServiceImplWithNATS(cfg *config.Config, nc *nats.Conn, masterKey []
 		nc:             nc,
 		nodeID:         nodeID,
 		region:         region,
-		dnsBaseDomain:  handlers_dns.ResolveBaseDomain(cfg),
+		dnsBaseDomain:  dns.ResolveBaseDomain(cfg),
 		ctx:            ctx,
 		cancel:         cancel,
 		hc:             hc,
@@ -502,7 +503,7 @@ func (s *ELBv2ServiceImpl) launchLBVM(ctx context.Context, lbID, scheme string, 
 	// secret rides in fw_cfg. Falls back to baked system keys when IAM is unwired.
 	// The role lives in the system account because the LB VM (and its ENI) run
 	// there — IMDS resolves the profile under the instance's account.
-	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+	profileARN := s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
 
 	nics := s.buildMicrovmNICs(primaryIP, primaryMAC, subnets[0], eniIDs[0], scheme, extraENIInputs, accountID)
 	launchInput := &SystemInstanceInput{
@@ -609,7 +610,7 @@ func (s *ELBv2ServiceImpl) RebuildSystemInstanceInput(rc RecoveryContext) (*Syst
 	// Re-ensure the instance profile so a recovered LB VM keeps IMDS creds; the
 	// ensure is idempotent and converges on the existing role/profile. The role
 	// lives in the system account where the LB VM runs, not the LB owner account.
-	profileARN := s.ensureLBInstanceProfile(utils.GlobalAccountID)
+	profileARN := s.ensureLBInstanceProfile(awsidentifiers.GlobalAccountID)
 
 	return &SystemInstanceInput{
 		InstanceType:          rc.InstanceType,
@@ -1046,7 +1047,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 		slog.ErrorContext(ctx, "LBAgentHeartbeat: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+	if lb == nil || (lb.AccountID != accountID && accountID != awsidentifiers.GlobalAccountID) {
 		// Log to distinguish a stuck-in-provisioning LB from one whose heartbeat never arrived.
 		slog.WarnContext(ctx, "LBAgentHeartbeat: LB not found or account mismatch",
 			"lbId", lbID, "accountId", accountID, "found", lb != nil)
@@ -1105,7 +1106,7 @@ func (s *ELBv2ServiceImpl) GetLBConfig(ctx context.Context, input *GetLBConfigIn
 		slog.ErrorContext(ctx, "GetLBConfig: failed to get LB", "lbId", lbID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if lb == nil || (lb.AccountID != accountID && accountID != utils.GlobalAccountID) {
+	if lb == nil || (lb.AccountID != accountID && accountID != awsidentifiers.GlobalAccountID) {
 		return nil, errors.New(awserrors.ErrorELBv2LoadBalancerNotFound)
 	}
 
@@ -1296,7 +1297,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		}
 	}
 
-	lbID := utils.GenerateResourceID("lb")
+	lbID := awsidentifiers.GenerateResourceID("lb")
 	lbArn := resourcearn.FormatELBv2LoadBalancer(s.region, accountID, name, lbID, lbType)
 	arnPathSegment := resourcearn.ELBv2LBPathSegment(lbType)
 	dnsPrefix := ""
@@ -1309,7 +1310,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	if elbZone == "" {
 		elbZone = "spinifex.local"
 	}
-	dnsName := handlers_dns.ELBName(dnsPrefix, name, lbID, s.region, elbZone)
+	dnsName := dns.ELBName(dnsPrefix, name, lbID, s.region, elbZone)
 
 	// Atomically claim the name before ENI/VM work. SDK retries lose the claim;
 	// orphaned claims from crashed creates are reclaimed. Every failure releases it.
@@ -1585,7 +1586,7 @@ func (s *ELBv2ServiceImpl) DNSWatchBucket() *kvstore.Bucket {
 //
 // The daemon's reconcile loop calls this without a context, so the read runs on
 // the service lifetime context: the sweep should stop once the service closes.
-func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 	if s == nil || s.store == nil || s.dnsBaseDomain == "" {
 		return nil, false
 	}
@@ -1598,8 +1599,8 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, o
 			lb.DNSName == "" || lbFrontendIP(lb) == "" {
 			continue
 		}
-		changes = append(changes, handlers_dns.ELBChanges(
-			handlers_dns.ActionUpsert, lb.DNSName, s.dnsBaseDomain, lbFrontendIP(lb),
+		changes = append(changes, dns.ELBChanges(
+			dns.ActionUpsert, lb.DNSName, s.dnsBaseDomain, lbFrontendIP(lb),
 		)...)
 	}
 	return changes, true
@@ -1827,7 +1828,7 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 	if len(lb.ENIs) > 0 {
 		portName = topology.Port(lb.ENIs[0])
 	}
-	utils.PublishNATEvent(s.nc, "vpc.delete-nat", lb.VpcId, publicIP, lb.VPCIP, portName, "")
+	projection.New(s.nc).RemoveNAT(lb.VpcId, publicIP, lb.VPCIP, portName, "")
 	slog.Info("DeleteLoadBalancer: reaped floating-IP NAT",
 		"lbId", lb.LoadBalancerID, "externalIp", publicIP, "logicalIp", lb.VPCIP)
 }
@@ -1982,7 +1983,7 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		hc.Matcher = *input.Matcher.HttpCode
 	}
 
-	tgID := utils.GenerateResourceID("tg")
+	tgID := awsidentifiers.GenerateResourceID("tg")
 	tgArn := resourcearn.FormatELBv2TargetGroup(s.region, accountID, name, tgID)
 
 	tags := tagsFromSDK(input.Tags)
@@ -2669,7 +2670,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		return nil, err
 	}
 
-	listenerID := utils.GenerateResourceID("lst")
+	listenerID := awsidentifiers.GenerateResourceID("lst")
 	listenerArn := resourcearn.FormatELBv2Listener(s.region, accountID, lb.Name, lb.LoadBalancerID, listenerID, lb.Type)
 
 	var actions []ListenerAction

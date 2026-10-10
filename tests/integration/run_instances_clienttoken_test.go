@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +19,7 @@ import (
 var clientTokenRun atomic.Int64
 
 // TestRunInstances_ClientTokenIdempotency proves ClientToken dedup
-// (gateway/ec2/instance/RunInstances.go's ClientTokenStore wrapping) runs for
+// (domains/ec2/awsapi/instance/RunInstances.go's ClientTokenStore wrapping) runs for
 // real through the full gateway: a replayed token must not reach the daemon a
 // second time, and a different token must launch again.
 //

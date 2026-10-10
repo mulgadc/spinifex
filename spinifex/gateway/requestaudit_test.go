@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
@@ -75,7 +76,7 @@ func TestRequestAuditCarriesNoSecret(t *testing.T) {
 func auditRouter(t *testing.T, keys map[string]*handlers_iam.AccessKey) (http.Handler, func() *requestAudit) {
 	t.Helper()
 
-	rl := NewAuthRateLimiter()
+	rl := authlimit.NewAuthRateLimiter()
 	t.Cleanup(rl.Stop)
 
 	gw := &GatewayConfig{
@@ -165,7 +166,7 @@ func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
 		return w.Code
 	}
 
-	for i := range maxFailures {
+	for i := range authlimit.MaxFailures {
 		send(fmt.Sprintf("AKIAGUESS%011d", i))
 	}
 	assert.Equal(t, http.StatusServiceUnavailable, send("AKIAINVALIDKEY000000"))

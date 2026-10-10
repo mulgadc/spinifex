@@ -4,18 +4,18 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 )
 
 // daemonGPUClaimer adapts the daemon's gpu.Manager + GPUModelOverrides config to
-// the transport-neutral handlers_ec2_instance.GPUClaimer surface. Keeps the gpu
+// the transport-neutral ec2instance.GPUClaimer surface. Keeps the gpu
 // package out of the instance service.
 type daemonGPUClaimer struct {
 	d *Daemon
 }
 
-var _ handlers_ec2_instance.GPUClaimer = (*daemonGPUClaimer)(nil)
+var _ ec2instance.GPUClaimer = (*daemonGPUClaimer)(nil)
 
 func (g *daemonGPUClaimer) manager() *gpu.Manager {
 	g.d.mu.Lock()

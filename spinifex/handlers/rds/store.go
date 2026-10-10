@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvlease"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -99,38 +99,6 @@ func kvKeySegment(identifier string) string {
 
 func kvKeySegmentIdentifier(segment string) string {
 	return strings.ReplaceAll(segment, kvKeyColon, ":")
-}
-
-// DBSubnetGroupsPrefix returns the per-account key prefix under which each DB subnet group record lives.
-func DBSubnetGroupsPrefix() string {
-	return "db-subnet-groups/"
-}
-
-// DBSubnetGroupKey returns the per-account KV key of a DB subnet group's record.
-func DBSubnetGroupKey(name string) string {
-	return DBSubnetGroupsPrefix() + name
-}
-
-// DBParameterGroupsPrefix returns the parameter group prefix. A group's own record is at .../meta and
-// its values hang off .../params/, so listing groups walks the meta keys.
-func DBParameterGroupsPrefix() string {
-	return "db-parameter-groups/"
-}
-
-// DBParameterGroupMetaKey returns the KV key of a DB parameter group's own record.
-func DBParameterGroupMetaKey(name string) string {
-	return fmt.Sprintf("%s%s/meta", DBParameterGroupsPrefix(), name)
-}
-
-// DBParameterGroupParamsPrefix returns the prefix holding one key per parameter value rather than one
-// blob, so a ModifyDBParameterGroup touching a single parameter cannot clobber a concurrent change to another.
-func DBParameterGroupParamsPrefix(name string) string {
-	return fmt.Sprintf("%s%s/params/", DBParameterGroupsPrefix(), name)
-}
-
-// DBParameterGroupParamKey returns the KV key of one parameter override in a DB parameter group.
-func DBParameterGroupParamKey(name, param string) string {
-	return DBParameterGroupParamsPrefix(name) + param
 }
 
 // AutomatedBackupsRootPrefix returns the automated-backup index prefix, kept separate from db-snapshots/
@@ -339,52 +307,6 @@ func ListDBSnapshotIDs(ctx context.Context, kv *kvstore.Bucket) ([]string, error
 		names[i] = kvKeySegmentIdentifier(name)
 	}
 	return names, nil
-}
-
-// ListDBParameterGroupNames walks the .../meta keys, which is what makes a group's own record findable
-// among the per-parameter keys hanging off the same prefix.
-func ListDBParameterGroupNames(ctx context.Context, kv *kvstore.Bucket) ([]string, error) {
-	keys, err := bucketKeys(ctx, kv)
-	if err != nil {
-		return nil, err
-	}
-	prefix := DBParameterGroupsPrefix()
-	names := make([]string, 0, len(keys))
-	for _, key := range keys {
-		rest, prefixed := strings.CutPrefix(key, prefix)
-		name, suffixed := strings.CutSuffix(rest, "/meta")
-		if !prefixed || !suffixed {
-			continue
-		}
-		if name == "" || strings.Contains(name, "/") {
-			continue
-		}
-		names = append(names, name)
-	}
-	return names, nil
-}
-
-// ListDBParameterOverrides returns the stored overrides of one parameter group, keyed by parameter name.
-func ListDBParameterOverrides(ctx context.Context, kv *kvstore.Bucket, group string) (map[string]DBParameterRecord, error) {
-	prefix := DBParameterGroupParamsPrefix(group)
-	names, err := listNames(ctx, kv, prefix)
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]DBParameterRecord, len(names))
-	for _, name := range names {
-		var rec DBParameterRecord
-		found, err := getJSON(ctx, kv, prefix+name, &rec)
-		if err != nil {
-			return nil, err
-		}
-		// A parameter reset between the listing and this read is simply gone,
-		// which is the answer a resolve one tick later would give too.
-		if found {
-			out[name] = rec
-		}
-	}
-	return out, nil
 }
 
 // ListAutomatedBackups returns the automated-backup timestamps grouped by DB instance from one bucket

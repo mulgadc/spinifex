@@ -16,9 +16,9 @@ import (
 func TestEKSScopeTableIsExhaustive(t *testing.T) {
 	served := make(map[string]bool, len(eksRoutes))
 	for _, route := range eksRoutes {
-		served[route.action] = true
-		assert.True(t, gateway_eks.HasScope(route.action),
-			"eks action %q has no resource scope entry: add one to eksScopes in gateway/eks/authz.go", route.action)
+		served[route.Action] = true
+		assert.True(t, gateway_eks.HasScope(route.Action),
+			"eks action %q has no resource scope entry: add one to eksScopes in gateway/eks/authz.go", route.Action)
 	}
 
 	for _, action := range gateway_eks.ScopedActions() {

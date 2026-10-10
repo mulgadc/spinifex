@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
 )
 
 // A launch can only arrive over the gateway, long after service init, so unlike
@@ -20,7 +20,7 @@ import (
 func (d *Daemon) buildRDSLaunchDeps() handlers_rds.LaunchDeps {
 	return handlers_rds.LaunchDeps{
 		Config: d.config,
-		SystemVPC: handlers_systemvpc.Deps{
+		SystemVPC: systemvpc.Deps{
 			VPC:      d.vpcService,
 			SG:       d.vpcService,
 			IGW:      d.igwService,
@@ -94,5 +94,5 @@ func (d *Daemon) describeInstancesFanOut(input *ec2.DescribeInstancesInput, acco
 	if d.clusterConfig != nil && len(d.clusterConfig.Nodes) > 0 {
 		expected = len(d.clusterConfig.Nodes)
 	}
-	return gateway_ec2_instance.DescribeInstances(context.Background(), input, d.natsConn, expected, accountID)
+	return ec2instanceapi.DescribeInstances(context.Background(), input, d.natsConn, expected, accountID)
 }

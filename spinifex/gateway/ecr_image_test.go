@@ -11,28 +11,35 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecr"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // newImageGateway wires a GatewayConfig with an in-memory OCI registry (memory
-// object store + memory meta) so the inline image handlers exercise the real
-// Registry helpers without NATS.
+// object store + memory meta) and its composed ECR JSON image-action service.
 func newImageGateway(t *testing.T) *GatewayConfig {
 	t.Helper()
-	reg := gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewMemoryMetaStore(), ecrTestAccount)
-	return &GatewayConfig{ECRRegistry: reg, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true, IAMService: allowAllIAMService()}
+	meta := ecrdomain.NewMemoryMetaStore()
+	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
+	return withECR(&GatewayConfig{
+		ECRRegistry:    reg,
+		Region:         ecrTestRegion,
+		InternalSuffix: ecrTestSuffix,
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
+	}, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 }
 
 // seedGatewayRepo creates the repository metadata so push/PutImage handlers —
 // which require an existing repository — accept writes. Idempotent.
 func seedGatewayRepo(t *testing.T, gw *GatewayConfig, repo string) {
 	t.Helper()
-	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: repo}))
+	require.NoError(t, gw.ECRRegistry.Meta.PutRepo(context.Background(), ecrTestAccount, ecrdomain.RepoMeta{Name: repo}))
 }
 
 // seedTaggedImage stores a layerless manifest under repo:tag, returning its
@@ -47,16 +54,16 @@ func seedTaggedImage(t *testing.T, gw *GatewayConfig, repo, tag string) string {
 	return digest
 }
 
-func imageReq(t *testing.T, body string) *http.Request {
+func imageReq(t *testing.T, action, body string) *http.Request {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
 	return req.WithContext(context.WithValue(req.Context(), ctxAccountID, ecrTestAccount))
 }
 
-func callImage(t *testing.T, gw *GatewayConfig, h func(*GatewayConfig, http.ResponseWriter, *http.Request) error, body string) (*httptest.ResponseRecorder, error) {
+func callImage(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
 	w := httptest.NewRecorder()
-	return w, h(gw, w, imageReq(t, body))
+	return w, gw.serveECR(w, imageReq(t, action, body))
 }
 
 func TestListImages_TaggedUntaggedFilter(t *testing.T) {
@@ -64,7 +71,7 @@ func TestListImages_TaggedUntaggedFilter(t *testing.T) {
 	seedTaggedImage(t, gw, "team/app", "v1")
 	seedTaggedImage(t, gw, "team/app", "v2")
 
-	w, err := callImage(t, gw, (*GatewayConfig).handleListImages, `{"repositoryName":"team/app"}`)
+	w, err := callImage(t, gw, "ListImages", `{"repositoryName":"team/app"}`)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 	var out ecr.ListImagesOutput
@@ -72,7 +79,7 @@ func TestListImages_TaggedUntaggedFilter(t *testing.T) {
 	assert.Len(t, out.ImageIds, 2)
 
 	// TAGGED filter keeps both; UNTAGGED filter drops both.
-	w, err = callImage(t, gw, (*GatewayConfig).handleListImages, `{"repositoryName":"team/app","filter":{"tagStatus":"UNTAGGED"}}`)
+	w, err = callImage(t, gw, "ListImages", `{"repositoryName":"team/app","filter":{"tagStatus":"UNTAGGED"}}`)
 	require.NoError(t, err)
 	var untagged ecr.ListImagesOutput
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &untagged))
@@ -81,7 +88,7 @@ func TestListImages_TaggedUntaggedFilter(t *testing.T) {
 
 func TestListImages_MissingRepo(t *testing.T) {
 	gw := newImageGateway(t)
-	_, err := callImage(t, gw, (*GatewayConfig).handleListImages, `{"repositoryName":"team/ghost"}`)
+	_, err := callImage(t, gw, "ListImages", `{"repositoryName":"team/ghost"}`)
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
@@ -90,7 +97,7 @@ func TestDescribeImages_HappyAndNotFound(t *testing.T) {
 	gw := newImageGateway(t)
 	digest := seedTaggedImage(t, gw, "team/app", "v1")
 
-	w, err := callImage(t, gw, (*GatewayConfig).handleDescribeImages, `{"repositoryName":"team/app"}`)
+	w, err := callImage(t, gw, "DescribeImages", `{"repositoryName":"team/app"}`)
 	require.NoError(t, err)
 	// AWS jsonutil emits imagePushedAt as an epoch float, which encoding/json
 	// cannot decode into the SDK struct's *time.Time, so assert via a local view.
@@ -110,7 +117,7 @@ func TestDescribeImages_HappyAndNotFound(t *testing.T) {
 	assert.Positive(t, out.ImageDetails[0].ImagePushedAt)
 
 	// Asking for an absent imageId -> ImageNotFound, naming it as AWS does.
-	_, err = callImage(t, gw, (*GatewayConfig).handleDescribeImages, `{"repositoryName":"team/app","imageIds":[{"imageTag":"ghost"}]}`)
+	_, err = callImage(t, gw, "DescribeImages", `{"repositoryName":"team/app","imageIds":[{"imageTag":"ghost"}]}`)
 	require.Error(t, err)
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
@@ -124,7 +131,7 @@ func TestBatchGetImage_AllMissing(t *testing.T) {
 	gw := newImageGateway(t)
 	seedTaggedImage(t, gw, "team/app", "v1")
 
-	w, err := callImage(t, gw, (*GatewayConfig).handleBatchGetImage, `{"repositoryName":"team/app","imageIds":[{"imageTag":"nope"}]}`)
+	w, err := callImage(t, gw, "BatchGetImage", `{"repositoryName":"team/app","imageIds":[{"imageTag":"nope"}]}`)
 	require.NoError(t, err)
 	var out struct {
 		Images   []json.RawMessage `json:"images"`
@@ -146,7 +153,7 @@ func TestBatchGetImage_PartialAndDigestWins(t *testing.T) {
 	digest := seedTaggedImage(t, gw, "team/app", "v1")
 
 	body := fmt.Sprintf(`{"repositoryName":"team/app","imageIds":[{"imageDigest":"%s","imageTag":"v1"},{"imageTag":"ghost"},{}]}`, digest)
-	w, err := callImage(t, gw, (*GatewayConfig).handleBatchGetImage, body)
+	w, err := callImage(t, gw, "BatchGetImage", body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -172,7 +179,7 @@ func TestBatchGetImage_CapExceeded(t *testing.T) {
 		ids[i] = `{"imageTag":"t"}`
 	}
 	body := `{"repositoryName":"team/app","imageIds":[` + strings.Join(ids, ",") + `]}`
-	_, err := callImage(t, gw, (*GatewayConfig).handleBatchGetImage, body)
+	_, err := callImage(t, gw, "BatchGetImage", body)
 	require.Error(t, err)
 	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
@@ -187,7 +194,7 @@ func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 		"imageManifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
 		"imageTag":               "v1",
 	})
-	w, err := callImage(t, gw, (*GatewayConfig).handlePutImage, string(body))
+	w, err := callImage(t, gw, "PutImage", string(body))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 	var out ecr.PutImageOutput
@@ -196,14 +203,14 @@ func TestPutImage_HappyAndMissingManifest(t *testing.T) {
 	assert.True(t, strings.HasPrefix(*out.Image.ImageId.ImageDigest, "sha256:"))
 
 	// It is now listable.
-	w, err = callImage(t, gw, (*GatewayConfig).handleListImages, `{"repositoryName":"team/app"}`)
+	w, err = callImage(t, gw, "ListImages", `{"repositoryName":"team/app"}`)
 	require.NoError(t, err)
 	var list ecr.ListImagesOutput
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
 	assert.Len(t, list.ImageIds, 1)
 
 	// Missing manifest -> InvalidParameterException.
-	_, err = callImage(t, gw, (*GatewayConfig).handlePutImage, `{"repositoryName":"team/app","imageTag":"v2"}`)
+	_, err = callImage(t, gw, "PutImage", `{"repositoryName":"team/app","imageTag":"v2"}`)
 	require.Error(t, err)
 	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
 }
@@ -218,7 +225,7 @@ func TestPutImage_RepoNotCreated(t *testing.T) {
 		"imageManifestMediaType": "application/vnd.docker.distribution.manifest.v2+json",
 		"imageTag":               "v1",
 	})
-	_, err := callImage(t, gw, (*GatewayConfig).handlePutImage, string(body))
+	_, err := callImage(t, gw, "PutImage", string(body))
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
@@ -228,7 +235,7 @@ func TestBatchDeleteImage_Partial(t *testing.T) {
 	digest := seedTaggedImage(t, gw, "team/app", "v1")
 
 	body := fmt.Sprintf(`{"repositoryName":"team/app","imageIds":[{"imageDigest":"%s"},{"imageTag":"ghost"},{}]}`, digest)
-	w, err := callImage(t, gw, (*GatewayConfig).handleBatchDeleteImage, body)
+	w, err := callImage(t, gw, "BatchDeleteImage", body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 
@@ -250,7 +257,7 @@ func TestBatchDeleteImage_Partial(t *testing.T) {
 	}
 
 	// The image is gone.
-	w, err = callImage(t, gw, (*GatewayConfig).handleListImages, `{"repositoryName":"team/app"}`)
+	w, err = callImage(t, gw, "ListImages", `{"repositoryName":"team/app"}`)
 	require.NoError(t, err)
 	var list ecr.ListImagesOutput
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
@@ -263,14 +270,14 @@ func TestBatchDeleteImage_EmptyArraysSerialised(t *testing.T) {
 	gw := newImageGateway(t)
 	digest := seedTaggedImage(t, gw, "team/app", "v1")
 
-	w, err := callImage(t, gw, (*GatewayConfig).handleBatchDeleteImage, `{"repositoryName":"team/app","imageIds":[{"imageTag":"ghost"}]}`)
+	w, err := callImage(t, gw, "BatchDeleteImage", `{"repositoryName":"team/app","imageIds":[{"imageTag":"ghost"}]}`)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"imageIds":[]`)
 	assert.Contains(t, w.Body.String(), `"failureCode":"ImageNotFound"`)
 
 	body := fmt.Sprintf(`{"repositoryName":"team/app","imageIds":[{"imageDigest":"%s"}]}`, digest)
-	w, err = callImage(t, gw, (*GatewayConfig).handleBatchDeleteImage, body)
+	w, err = callImage(t, gw, "BatchDeleteImage", body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"failures":[]`)
@@ -280,19 +287,21 @@ func TestImageHandlers_GuardRails(t *testing.T) {
 	gw := newImageGateway(t)
 
 	// Cross-account registryId -> AccessDenied.
-	_, err := callImage(t, gw, (*GatewayConfig).handleListImages, `{"repositoryName":"team/app","registryId":"999999999999"}`)
+	_, err := callImage(t, gw, "ListImages", `{"repositoryName":"team/app","registryId":"999999999999"}`)
 	require.Error(t, err)
 	assert.Equal(t, "AccessDenied", err.Error())
 
-	// No auth account -> ServerInternal.
+	// No auth account -> InternalError at the generic ECR gateway boundary.
 	w := httptest.NewRecorder()
-	err = gw.handleListImages(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repositoryName":"team/app"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repositoryName":"team/app"}`))
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListImages")
+	err = gw.serveECR(w, req)
 	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
+	assert.Equal(t, "InternalError", err.Error())
 
-	// Nil registry -> ServerInternal.
+	// A missing registry-action composition -> ServerInternal.
 	bare := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err = bare.handleListImages(httptest.NewRecorder(), imageReq(t, `{"repositoryName":"team/app"}`))
+	err = bare.serveECR(httptest.NewRecorder(), imageReq(t, "ListImages", `{"repositoryName":"team/app"}`))
 	require.Error(t, err)
 	assert.Equal(t, "ServerInternal", err.Error())
 }

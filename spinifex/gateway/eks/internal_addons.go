@@ -4,16 +4,11 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/nats-io/nats.go"
 )
-
-// internalAddonsOutput is the body returned to the on-VM addon-sync agent: the
-// set of add-on manifests currently staged for the cluster.
-type internalAddonsOutput struct {
-	Addons []handlers_eks.StagedAddonManifest `json:"addons"`
-}
 
 // ListInternalAddons — GET /clusters/{name}/internal-addons?accountId={acct}.
 // Internal control-plane VM route (not an AWS-SDK action): the CP VM holds
@@ -22,7 +17,7 @@ type internalAddonsOutput struct {
 // only a CP agent serving that account's cluster. Returns every staged manifest so
 // the VM can render the baked bundles into the K3s auto-deploy dir and GC the
 // locally-rendered manifests for add-ons no longer staged.
-func ListInternalAddons(ctx context.Context, natsConn *nats.Conn, clusterName, accountID string) (*internalAddonsOutput, error) {
+func ListInternalAddons(ctx context.Context, natsConn *nats.Conn, clusterName, accountID string) (*eksv1.InternalAddonsResponse, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -34,5 +29,5 @@ func ListInternalAddons(ctx context.Context, natsConn *nats.Conn, clusterName, a
 	if err != nil {
 		return nil, err
 	}
-	return &internalAddonsOutput{Addons: out.Manifests}, nil
+	return &eksv1.InternalAddonsResponse{Addons: out.Manifests}, nil
 }

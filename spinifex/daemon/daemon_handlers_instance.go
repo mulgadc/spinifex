@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -31,7 +31,7 @@ var startStoppedForwardTimeout = 30 * time.Second
 // instance: central store first, then the record under the manager lock, so a
 // failed S3 write leaves both stores untouched, matching the stopped path.
 // Ownership is checked by checkInstanceOwnership before dispatch.
-func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	remove := command.Attributes.RemoveInstanceTags
 	data := command.InstanceTagsData
 	if data == nil || (!remove && len(data.Tags) == 0) {
@@ -45,14 +45,14 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 			missingRecord = true
 			return
 		}
-		newTags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		newTags = ec2instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 	})
 	if missingRecord {
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
-	accountID := utils.AccountIDFromMsg(msg)
-	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, handlers_ec2_instance.TagsToMap(newTags)); err != nil {
+	accountID := natsmsg.AccountIDFromMsg(msg)
+	if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID, ec2instance.TagsToMap(newTags)); err != nil {
 		slog.ErrorContext(ctx, "SetInstanceTags: central tag store write failed",
 			"instanceId", instance.ID, "err", err)
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
@@ -62,7 +62,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 		if v.Instance == nil {
 			return false
 		}
-		v.Instance.Tags = handlers_ec2_instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
+		v.Instance.Tags = ec2instance.ApplyInstanceTagMutation(v.Instance.Tags, data, remove)
 		return true
 	})
 	if err != nil {
@@ -82,7 +82,7 @@ func (d *Daemon) handleSetInstanceTags(ctx context.Context, msg *nats.Msg, comma
 // and rewrites its collector discovery file, so the poller resets its interval
 // without a restart. Ownership is checked by checkInstanceOwnership before
 // dispatch.
-func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	data := command.InstanceMonitoringData
 	if data == nil {
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorMissingParameter)
@@ -122,11 +122,11 @@ func (d *Daemon) handleSetInstanceMonitoring(ctx context.Context, msg *nats.Msg,
 // preserves the original respond-then-launch timing — AWS gets a reservation
 // before the launch loop starts.
 func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 	slog.DebugContext(ctx, "Received message on subject", "subject", msg.Subject)
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 	if accountID == "" {
 		slog.Error("handleEC2RunInstances: missing account ID in NATS header")
 		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
@@ -134,7 +134,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	}
 
 	input := &ec2.RunInstancesInput{}
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
@@ -167,7 +167,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	// A multi-node spread carries the reservation ID the gateway minted once
 	// for the whole call. reservation is the same pointer every instance
 	// holds, so this override reaches all of them.
-	if gatewayReservationID := utils.ReservationIDFromMsg(msg); gatewayReservationID != "" {
+	if gatewayReservationID := natsmsg.ReservationIDFromMsg(msg); gatewayReservationID != "" {
 		reservation.SetReservationId(gatewayReservationID)
 	}
 
@@ -231,7 +231,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 			continue
 		}
 		if err := d.tagsService.PutResourceTags(ctx, accountID, instance.ID,
-			handlers_ec2_instance.TagsToMap(instance.Instance.Tags)); err != nil {
+			ec2instance.TagsToMap(instance.Instance.Tags)); err != nil {
 			slog.Error("handleEC2RunInstances: launch tag central store write failed",
 				"instanceId", instance.ID, "err", err)
 		}
@@ -242,7 +242,7 @@ func (d *Daemon) handleEC2RunInstances(msg *nats.Msg) string {
 	// than finding no responder. LaunchInstance replaces these on success.
 	d.mu.Lock()
 	for _, instance := range instances {
-		sub, subErr := d.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events)
+		sub, subErr := d.natsConn.Subscribe(ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events)
 		if subErr != nil {
 			slog.Error("Failed to early-subscribe to per-instance topic", "instanceId", instance.ID, "err", subErr)
 		} else {
@@ -296,7 +296,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 		targetTopic := fmt.Sprintf("ec2.start.%s", lastNode)
 		forwardMsg := nats.NewMsg(targetTopic)
 		forwardMsg.Data = msg.Data
-		forwardMsg.Header.Set(utils.AccountIDHeader, utils.AccountIDFromMsg(msg))
+		forwardMsg.Header.Set(natsmsg.AccountIDHeader, natsmsg.AccountIDFromMsg(msg))
 
 		slog.Info("ec2.start: forwarding to original node",
 			"instanceId", peek.InstanceID, "lastNode", lastNode)
@@ -304,7 +304,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 		if err == nil {
 			// ValidateErrorPayload returns a non-nil error when the payload IS an
 			// AWS error response; nil means it is a success payload.
-			errPayload, isErrPayload := utils.ValidateErrorPayload(resp.Data)
+			errPayload, isErrPayload := awserrors.ValidateErrorPayload(resp.Data)
 			isCapacity := isErrPayload != nil &&
 				errPayload.Code != nil &&
 				*errPayload.Code == awserrors.ErrorInsufficientInstanceCapacity

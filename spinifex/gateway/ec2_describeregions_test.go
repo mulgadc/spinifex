@@ -10,7 +10,8 @@ import (
 
 // TestAdvertisedEndpoint_ResolvesFromRegistryHost asserts DescribeRegions'
 // endpoint tracks this gateway's own reachable host:port (the same
-// RegistryHost/RegistryPort precedence ecrRegistryHost already applies),
+// RegistryHost/RegistryPort precedence the ECR repository endpoint also
+// applies),
 // rather than a literal that never changes with deployment.
 func TestAdvertisedEndpoint_ResolvesFromRegistryHost(t *testing.T) {
 	cases := []struct {

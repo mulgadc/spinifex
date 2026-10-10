@@ -7,10 +7,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -40,12 +40,12 @@ func quotaTestGateway(t *testing.T) (*GatewayConfig, string) {
 
 	_, _, js := testutil.StartTestJetStream(t)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{
-		Bucket:  handlers_quota.KVBucketAccountQuota,
+		Bucket:  admissionquota.KVBucketAccountQuota,
 		History: 1,
 	})
 	require.NoError(t, err)
 
-	quota := handlers_quota.New(handlers_quota.Limits{
+	quota := admissionquota.New(admissionquota.Limits{
 		Enabled: true, VCPUs: 16, VPCs: 4, Subnets: 16, EIPs: 4,
 		Volumes: 16, VolumesGiB: 200, RDSInstances: 2, LoadBalancers: 2,
 	}, nil)
@@ -87,7 +87,7 @@ func TestAdminPutThenGetAccountQuota(t *testing.T) {
 
 	output, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
-		Overrides: handlers_quota.Overrides{VCPUs: quotaPtr(32)},
+		Overrides: admissionquota.Overrides{VCPUs: quotaPtr(32)},
 	}))
 	require.NoError(t, err)
 
@@ -113,7 +113,7 @@ func TestAdminPutAccountQuotaClears(t *testing.T) {
 
 	_, err := gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
 		AccountID: account,
-		Overrides: handlers_quota.Overrides{VCPUs: quotaPtr(32)},
+		Overrides: admissionquota.Overrides{VCPUs: quotaPtr(32)},
 	}))
 	require.NoError(t, err)
 
@@ -166,11 +166,11 @@ func TestAdminAccountQuotaWithoutQuotaService(t *testing.T) {
 // Every dimension must appear in the response, and each must be labelled with
 // the layer it came from: a limit with no provenance cannot be debugged.
 func TestAccountQuotaResponseReportsSource(t *testing.T) {
-	limits := handlers_quota.Limits{
+	limits := admissionquota.Limits{
 		Enabled: true, VCPUs: 32, VPCs: 4, Subnets: 16, EIPs: 4,
 		Volumes: 16, VolumesGiB: 200, RDSInstances: 2, LoadBalancers: 2,
 	}
-	over := handlers_quota.Overrides{VCPUs: quotaPtr(32)}
+	over := admissionquota.Overrides{VCPUs: quotaPtr(32)}
 
 	resp := accountQuotaResponse("000000000002", over, limits)
 
@@ -189,8 +189,8 @@ func TestAccountQuotaResponseReportsSource(t *testing.T) {
 // as one rather than looking like an inherited limit that happens to be zero.
 func TestAccountQuotaResponseExplicitZeroIsAnOverride(t *testing.T) {
 	resp := accountQuotaResponse("000000000002",
-		handlers_quota.Overrides{VPCs: quotaPtr(0)},
-		handlers_quota.Limits{VPCs: 0, VCPUs: 16})
+		admissionquota.Overrides{VPCs: quotaPtr(0)},
+		admissionquota.Limits{VPCs: 0, VCPUs: 16})
 
 	require.Equal(t, 0, resp.Limits["vpcs"])
 	require.Equal(t, sourceOverride, resp.Source["vpcs"])

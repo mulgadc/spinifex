@@ -21,7 +21,7 @@ func TestLookupBedrockAction_ResolvesKnownRoutes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+"_"+tc.path, func(t *testing.T) {
-			action, params, handler, ok := bedrockRouter.lookup(tc.method, tc.path)
+			action, params, handler, ok := bedrockRouter.Lookup(tc.method, tc.path)
 			require.True(t, ok, "expected route to match for %s %s", tc.method, tc.path)
 			require.NotNil(t, handler)
 			assert.Equal(t, tc.wantAction, action)
@@ -31,13 +31,13 @@ func TestLookupBedrockAction_ResolvesKnownRoutes(t *testing.T) {
 }
 
 func TestLookupBedrockAction_UnknownReturnsFalse(t *testing.T) {
-	_, _, handler, ok := bedrockRouter.lookup("DELETE", "/foundation-models")
+	_, _, handler, ok := bedrockRouter.Lookup("DELETE", "/foundation-models")
 	assert.False(t, ok)
 	assert.Nil(t, handler)
 }
 
 func TestLookupBedrockRuntimeAction_ResolvesConverse(t *testing.T) {
-	action, params, handler, ok := bedrockRuntimeRouter.lookup("POST", "/model/meta.llama3-70b-instruct-v1:0/converse")
+	action, params, handler, ok := bedrockRuntimeRouter.Lookup("POST", "/model/meta.llama3-70b-instruct-v1:0/converse")
 	require.True(t, ok)
 	require.NotNil(t, handler)
 	assert.Equal(t, "Converse", action)
@@ -45,7 +45,7 @@ func TestLookupBedrockRuntimeAction_ResolvesConverse(t *testing.T) {
 }
 
 func TestLookupBedrockRuntimeAction_UnknownReturnsFalse(t *testing.T) {
-	_, _, handler, ok := bedrockRuntimeRouter.lookup("GET", "/model/foo/converse")
+	_, _, handler, ok := bedrockRuntimeRouter.Lookup("GET", "/model/foo/converse")
 	assert.False(t, ok)
 	assert.Nil(t, handler)
 }

@@ -10,7 +10,7 @@ import (
 
 // embedderHealthPath is the readiness route embeddingsProvider's warm-up
 // probe polls -- TEI has no other health route, mirroring
-// handlers/bedrock/readiness.go's default (non-vLLM) family selection.
+// domains/ochre/readiness.go's default (non-vLLM) family selection.
 const embedderHealthPath = "/health"
 
 // embedderWarmupPollInterval spaces the background warm-up probe's checks,
@@ -91,8 +91,8 @@ func (p *warmupProbe) Ready() bool {
 // embedderHealthPath and reports whether it returned HTTP 200. Any
 // transport error (connection refused while TEI is still starting) or
 // non-200 status counts as not-yet-ready, mirroring
-// handlers/bedrock/readiness.go's probeOnce -- duplicated rather than
-// imported, since handlers_bedrock already imports gateway_bedrock and Go
+// domains/ochre/readiness.go's probeOnce -- duplicated rather than
+// imported, since domains/ochre already imports gateway_bedrock and Go
 // forbids the reverse.
 func probeEmbedderHealth(client *http.Client, baseURL string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), embedderWarmupProbeTimeout)

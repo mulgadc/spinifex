@@ -1,0 +1,548 @@
+package vm
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"os"
+	"runtime/debug"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
+)
+
+// maxConcurrentRecovery bounds the recovery fan-out; cold-AMI clones are I/O-heavy.
+const maxConcurrentRecovery = 2
+
+// relaunchMaxAttempts bounds the retry loop a recovery relaunch runs against
+// ErrMountRetryable. relaunchBackoffBase/relaunchBackoffCap are package vars
+// (not consts) so tests can shrink them to avoid sleeping real seconds.
+const relaunchMaxAttempts = 5
+
+var (
+	relaunchBackoffBase = 2 * time.Second
+	relaunchBackoffCap  = 30 * time.Second
+)
+
+// errRelaunchAborted signals relaunchWithRetry stopped because the daemon
+// began shutting down, not because attempts were exhausted or the failure
+// was permanent. The caller must not mark the instance terminal.
+var errRelaunchAborted = errors.New("relaunch retry aborted by shutdown")
+
+// runForRelaunch is a test seam over (*Manager).Run, mirroring
+// attachQMPForReconnect below: it lets tests stub a full launch attempt
+// (success or failure) without spinning up a real QEMU process.
+var runForRelaunch = (*Manager).Run
+
+// Restore loads persisted VM state and re-launches instances that are neither
+// terminated nor user-stopped. Terminated/stopped instances migrate to shared KV;
+// running instances with live QEMU reconnect via QMP; others relaunch via Run.
+// All errors are logged; Restore never fails fatally.
+func (m *Manager) Restore() {
+	cleanShutdown := false
+	if m.deps.ConsumeCleanShutdownMarker != nil {
+		cleanShutdown = m.deps.ConsumeCleanShutdownMarker()
+	}
+	if !cleanShutdown {
+		slog.Warn("No clean shutdown marker — possible crash recovery, validating QEMU PIDs carefully")
+		time.Sleep(3 * time.Second)
+	}
+
+	if err := m.loadRunningState(); err != nil {
+		slog.Warn("Failed to load state, continuing with empty state", "error", err)
+		return
+	}
+
+	slog.Info("Loaded state", "instance count", m.Count())
+
+	toLaunch := m.classifyRestoredInstances()
+
+	if len(toLaunch) > 0 {
+		m.relaunchAll(toLaunch)
+	}
+
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("Failed to persist state after restore", "error", err)
+	}
+
+	// Every known instance is classified and relaunched by this point, so a
+	// live qemu-system process still unaccounted for genuinely has no record.
+	m.reportRecordlessQEMUOrphans()
+}
+
+// loadRunningState folds the cluster's snapshot into the running set, which by
+// this point already holds whatever the node's own state file carried in. With
+// no cluster record at all there is nothing to fold and the local set stands.
+func (m *Manager) loadRunningState() error {
+	if m.deps.StateStore == nil {
+		return fmt.Errorf("StateStore not wired")
+	}
+	loaded, found, err := m.deps.StateStore.LoadRunningState(m.deps.NodeID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		slog.Warn("No cluster record for this node, keeping local instance state",
+			"node", m.deps.NodeID, "instances", m.Count())
+		return nil
+	}
+	m.AdoptClusterState(loaded)
+	return nil
+}
+
+// classifyRestoredInstances routes each VM: stopped/terminated migrate to KV;
+// running with live QEMU+NBD reconnects; transitional states finalize;
+// the remainder is returned for relaunch via Manager.Run.
+func (m *Manager) classifyRestoredInstances() []*VM {
+	var toLaunch []*VM
+
+	for _, instance := range m.Snapshot() {
+		instance.EBSRequests.Mu = sync.Mutex{}
+		instance.ENIRequests.Mu = sync.Mutex{}
+		instance.QMPClient = &qmp.QMPClient{}
+
+		if instance.Status == StateTerminated {
+			if !m.MigrateTerminatedToKV(instance) {
+				// KV write failed — keep in local state so the next restart
+				// retries the migration. Deleting here would create a "void":
+				// the instance disappears from both local state and the
+				// terminated KV, making it invisible to DescribeInstances.
+				slog.Warn("Terminated instance KV migration failed, will retry on next restart",
+					"instance", instance.ID)
+			}
+			continue
+		}
+
+		if instance.Status == StateStopped {
+			if instance.DesiredState == DesiredStopped {
+				if !m.MigrateStoppedToSharedKV(instance) {
+					// KV write failed — keep in local state so the next restart
+					// retries the migration. Deleting here would create a "void":
+					// the instance disappears from both local state and the
+					// stopped KV, making it invisible to DescribeStoppedInstances.
+					slog.Warn("Stopped instance KV migration failed, will retry on next restart",
+						"instance", instance.ID)
+				}
+				continue
+			}
+
+			// StateStopped that nobody asked for means the
+			// host DRAIN sequence stopped it for a coordinated reboot/shutdown,
+			// not the operator. Treat it like a running instance whose QEMU
+			// exited: reset to Pending and relaunch.
+			slog.Info("Instance was drain-stopped (not operator-stopped), relaunching", "instance", instance.ID)
+			instance.Status = StatePending
+		}
+
+		// A recovery-failed instance is retried while its restart window still
+		// allows one: the usual cause is a dependency that was not ready at
+		// boot, which is over by the next attempt. Once the budget is spent it
+		// stays in StateError for the operator. Either way the per-instance
+		// command topic is bound, because an operator who cannot reach the
+		// instance cannot retry or terminate it either.
+		if instance.Status == StateError && !m.resumeRecoveryFailed(instance) {
+			slog.Warn("Instance in error state and out of restart budget; skipping recovery relaunch (operator must retry or terminate)",
+				"instance", instance.ID, "managedBy", instance.ManagedBy, "instanceType", instance.InstanceType)
+			if m.deps.Hooks.OnInstanceRecovering != nil {
+				m.deps.Hooks.OnInstanceRecovering(instance)
+			}
+			continue
+		}
+
+		typeKnown := true
+		if m.deps.InstanceTypes != nil {
+			_, typeKnown = m.deps.InstanceTypes.Resolve(instance.InstanceType)
+		}
+		if !typeKnown && instance.InstanceType != "" {
+			slog.Warn("Instance type not available on this node, moving to stopped",
+				"instanceId", instance.ID, "instanceType", instance.InstanceType)
+			markUnschedulable(instance,
+				fmt.Sprintf("instance type %s is not available on this node", instance.InstanceType))
+			m.MigrateStoppedToSharedKV(instance)
+			continue
+		}
+
+		if typeKnown && m.deps.Resources != nil && instance.InstanceType != "" {
+			slog.Info("Re-allocating resources for instance", "instanceId", instance.ID, "type", instance.InstanceType)
+			if err := m.deps.Resources.Allocate(instance.InstanceType); err != nil {
+				slog.Error("Failed to re-allocate resources for instance on startup, moving to stopped",
+					"instanceId", instance.ID, "err", err)
+				markUnschedulable(instance,
+					fmt.Sprintf("insufficient resources to restore instance: %v", err))
+				m.MigrateStoppedToSharedKV(instance)
+				continue
+			}
+		}
+
+		// A stop or terminate acknowledged before the restart outranks a
+		// surviving QEMU: finish what the caller asked for rather than
+		// re-advertising the instance as running.
+		if instance.Status == StateStopping || instance.Status == StateShuttingDown {
+			if isInstanceProcessRunning(instance) {
+				slog.Warn("QEMU outlived an in-flight transition, killing it to finish",
+					"instance", instance.ID, "status", instance.Status)
+				if !killOrphanedQEMU(instance) {
+					continue
+				}
+			}
+			m.finalizeTransitionalRestore(instance)
+			continue
+		}
+
+		if isInstanceProcessRunning(instance) {
+			socketsValid := AreVolumeSocketsValid(instance)
+			if !socketsValid && m.backingStoreReady() {
+				// Sockets are genuinely stale under a healthy store: a real
+				// orphan, so reap it and relaunch below.
+				slog.Warn("QEMU alive but NBD sockets are stale, killing orphaned process for relaunch",
+					"instance", instance.ID)
+				if !killOrphanedQEMU(instance) {
+					continue
+				}
+			} else {
+				// Sockets valid, or the backing store is not yet ready. The
+				// latter makes an unreachable socket a transient dependency
+				// gap, never grounds to destroy a running VM: keep it and
+				// reconnect QMP, which needs neither predastore nor viperblock.
+				if socketsValid {
+					slog.Info("Instance QEMU process still alive, reconnecting", "instance", instance.ID)
+				} else {
+					slog.Warn("NBD sockets unreachable but backing store not ready; reconnecting instead of killing running QEMU",
+						"instance", instance.ID)
+				}
+				if err := m.reconnectInstance(instance); err != nil {
+					slog.Error("Failed to reconnect to running instance, marking recovery-failed to preserve user data",
+						"instanceId", instance.ID, "err", err)
+					m.MarkRecoveryFailed(instance, "reconnect_failed")
+				}
+				continue
+			}
+		}
+
+		// QEMU is not running -- an instance that was up relaunches from scratch.
+		if instance.Status == StateRunning {
+			instance.Status = StatePending
+			slog.Info("Instance was running but QEMU exited, relaunching", "instance", instance.ID)
+		}
+
+		// Reset LaunchTime so the pending watchdog gives a fresh timeout window.
+		// Without this, the stale LaunchTime from the original launch causes the
+		// watchdog to immediately mark the instance as failed after a prolonged outage.
+		now := time.Now()
+		if instance.Instance != nil {
+			instance.Instance.LaunchTime = &now
+		}
+		toLaunch = append(toLaunch, instance)
+	}
+
+	return toLaunch
+}
+
+// resumeRecoveryFailed returns an instance in StateError to Pending so this
+// restore relaunches it, spending one restart from the same window a crash
+// restart spends. Returns false when the window has run out, which is what
+// keeps a genuinely broken instance from relaunching on every daemon start.
+//
+// A fenced instance is refused outright rather than budgeted. The window
+// forgives on a clock, so days after a fence it reports a full budget and would
+// relaunch a guest against volumes nothing has shown are mountable.
+func (m *Manager) resumeRecoveryFailed(instance *VM) bool {
+	if VolumeFenced(instance.Instance) {
+		slog.Warn("Instance was fenced, so this restore leaves it alone (operator must retry or terminate)",
+			"instance", instance.ID, "lastNode", instance.LastNode)
+		return false
+	}
+	if !rollRestartWindow(instance, time.Now()) {
+		return false
+	}
+	instance.Health.RestartCount++
+	instance.Status = StatePending
+	slog.Info("Retrying recovery-failed instance",
+		"instance", instance.ID, "restartCount", instance.Health.RestartCount,
+		"failures", instance.Health.CrashCount, "lastReason", instance.Health.LastCrashReason)
+	return true
+}
+
+// markUnschedulable flips an instance to Stopped with InsufficientInstanceCapacity
+// so DescribeInstances reports a useful error when the node can no longer host the type.
+// DesiredStopped is stamped so a future restore's drain-relaunch path (which
+// resumes a StateStopped nobody asked for) does not try to relaunch it.
+func markUnschedulable(instance *VM, reason string) {
+	instance.Status = StateStopped
+	instance.DesiredState = DesiredStopped
+	if instance.Instance != nil {
+		instance.Instance.StateReason = &ec2.StateReason{}
+		instance.Instance.StateReason.SetCode("Server.InsufficientInstanceCapacity")
+		instance.Instance.StateReason.SetMessage(reason)
+	}
+}
+
+// killOrphanedQEMU SIGKILLs a QEMU whose NBD storage is no longer reachable.
+// Returns true when the process is gone and classification can proceed.
+// SIGKILL is used directly to avoid the 120s SIGTERM timeout blocking startup.
+func killOrphanedQEMU(instance *VM) bool {
+	pid, pidErr := hostprocess.ReadPidFile(instance.ID)
+	if pidErr != nil || pid <= 0 {
+		slog.Error("Cannot read PID for orphaned QEMU, skipping relaunch",
+			"instanceId", instance.ID, "err", pidErr)
+		return false
+	}
+	if proc, err := os.FindProcess(pid); err == nil {
+		_ = proc.Signal(syscall.SIGKILL)
+	}
+	// SIGKILL cannot be caught; QEMU never runs its cleanup so the PID
+	// file stays on disk. Wait for the process to die, then remove it.
+	if err := hostprocess.WaitForProcessExit(pid, 10*time.Second); err != nil {
+		slog.Error("Orphaned QEMU did not exit after SIGKILL, skipping relaunch",
+			"instanceId", instance.ID, "pid", pid, "err", err)
+		return false
+	}
+	_ = hostprocess.RemovePidFile(instance.ID)
+	return true
+}
+
+// finalizeTransitionalRestore advances a Stopping/ShuttingDown instance (whose
+// QEMU is gone) to its stable state and migrates it to the appropriate KV bucket.
+// Returns true on success; false signals the caller to retry on next restart.
+func (m *Manager) finalizeTransitionalRestore(instance *VM) bool {
+	prevStatus := instance.Status
+	if instance.Status == StateStopping {
+		instance.Status = StateStopped
+	} else {
+		instance.Status = StateTerminated
+	}
+	slog.Info("QEMU exited during transition, finalizing state",
+		"instance", instance.ID, "from", prevStatus, "to", instance.Status)
+
+	if instance.Status == StateStopped && m.MigrateStoppedToSharedKV(instance) {
+		return true
+	}
+	if instance.Status == StateTerminated && m.MigrateTerminatedToKV(instance) {
+		return true
+	}
+
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("Failed to persist state, will retry on next restart",
+			"instance", instance.ID, "error", err)
+		instance.Status = prevStatus // revert so next restart retries
+	}
+	return true
+}
+
+// relaunchAll fires OnInstanceRecovering for each instance (for early
+// ec2.cmd.<id> subscription) then fans out Manager.Run under a semaphore.
+func (m *Manager) relaunchAll(toLaunch []*VM) {
+	if m.deps.Hooks.OnInstanceRecovering != nil {
+		for _, instance := range toLaunch {
+			m.deps.Hooks.OnInstanceRecovering(instance)
+		}
+	}
+
+	slog.Info("Launching instances (recovery)", "count", len(toLaunch), "maxConcurrent", maxConcurrentRecovery)
+	sem := make(chan struct{}, maxConcurrentRecovery)
+	var wg sync.WaitGroup
+
+	for _, instance := range toLaunch {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(inst *VM) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("Panic during instance recovery",
+						"instanceId", inst.ID, "panic", r, "stack", string(debug.Stack()))
+				}
+			}()
+
+			status := m.Status(inst)
+			if status != StatePending && status != StateProvisioning {
+				slog.Info("Instance state changed during recovery, skipping launch",
+					"instanceId", inst.ID, "status", string(status))
+				return
+			}
+			if err := m.PrepareRelaunch(inst); err != nil {
+				slog.Error("Pre-relaunch hook failed",
+					"instanceId", inst.ID, "managedBy", inst.ManagedBy,
+					"instanceType", inst.InstanceType, "err", err)
+				m.MarkRecoveryFailed(inst, "pre_relaunch_hook_failed")
+				return
+			}
+			slog.Info("Launching instance (recovery)",
+				"instance", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType)
+			// Restore runs at daemon start with no request context.
+			if err := m.relaunchWithRetry(context.Background(), inst); err != nil {
+				if errors.Is(err, errRelaunchAborted) {
+					slog.Info("Recovery relaunch aborted by shutdown signal", "instanceId", inst.ID)
+					return
+				}
+				if errors.Is(err, ErrMountRetryable) {
+					slog.Error("Recovery relaunch exhausted retries against a not-yet-ready backing store",
+						"instanceId", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType, "err", err)
+					m.MarkRecoveryFailed(inst, "recovery_mount_state_unavailable")
+					return
+				}
+				slog.Error("Failed to launch instance during recovery",
+					"instanceId", inst.ID, "managedBy", inst.ManagedBy, "instanceType", inst.InstanceType, "err", err)
+				m.MarkRecoveryFailed(inst, "recovery_launch_failed")
+			}
+		}(instance)
+	}
+	wg.Wait()
+}
+
+// PrepareRelaunch rebuilds whatever on-host state an instance's record only
+// names, for a launch driven by that record rather than by a request.
+//
+// Every such launch needs it, not only the same-node one. A system instance's
+// boot configuration is a set of files under the runtime directory, and the
+// record holds their paths — so a host reboot and a move to another node leave
+// the record saying exactly the same wrong thing. Recovery onto a survivor is
+// the case where nobody notices, because the guest simply never comes up and the
+// service it was providing has no other symptom.
+//
+// Exported so the cross-node claim path can call it. Nothing about this is
+// specific to Restore, and the hook being reachable only from there is what made
+// a recovered load balancer boot with no network configuration.
+func (m *Manager) PrepareRelaunch(inst *VM) error {
+	if m.deps.Hooks.BeforeInstanceRelaunch == nil {
+		return nil
+	}
+	return m.deps.Hooks.BeforeInstanceRelaunch(inst)
+}
+
+// relaunchWithRetry calls m.Run, retrying only when the failure is
+// ErrMountRetryable (the backing store is not yet ready). Any other error
+// returns immediately after a single attempt. Bounded by relaunchMaxAttempts
+// with exponential backoff (relaunchBackoffBase, capped at
+// relaunchBackoffCap). Checks the shutdown signal before every attempt and
+// before every sleep so a coordinated shutdown is never delayed by backoff.
+func (m *Manager) relaunchWithRetry(ctx context.Context, inst *VM) error {
+	var err error
+	delay := relaunchBackoffBase
+
+	for attempt := 1; attempt <= relaunchMaxAttempts; attempt++ {
+		if m.deps.ShutdownSignal != nil && m.deps.ShutdownSignal() {
+			return errRelaunchAborted
+		}
+
+		err = runForRelaunch(m, ctx, inst)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrMountRetryable) {
+			return err
+		}
+		if attempt == relaunchMaxAttempts {
+			break
+		}
+
+		slog.Warn("Recovery relaunch mount not ready, retrying",
+			"instanceId", inst.ID, "attempt", attempt, "err", err)
+
+		if m.deps.ShutdownSignal != nil && m.deps.ShutdownSignal() {
+			return errRelaunchAborted
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, relaunchBackoffCap)
+	}
+
+	return err
+}
+
+// attachQMPForReconnect is a test seam over (*Manager).AttachQMP so tests can
+// drive reconnectInstance without spawning the 30s heartbeat goroutine (goleak).
+var attachQMPForReconnect = (*Manager).AttachQMP
+
+// reconnectInstance re-establishes QMP for a surviving QEMU, fires OnInstanceUp
+// to reinstall NATS subscriptions, and persists running state. Subscribe failure
+// closes QMP and propagates the error; status is only set to Running after
+// subscriptions are confirmed live to avoid advertising a broken instance.
+func (m *Manager) reconnectInstance(instance *VM) error {
+	// Promoting a transitional instance to Running would silently discard a
+	// stop or terminate the caller already had acknowledged. Callers resolve
+	// those before reconnecting, so reaching here is a bug, not a state.
+	if instance.Status == StateStopping || instance.Status == StateShuttingDown {
+		return fmt.Errorf("refusing to reconnect instance in transitional state %s", instance.Status)
+	}
+
+	if err := attachQMPForReconnect(m, instance); err != nil {
+		return fmt.Errorf("failed to reconnect QMP: %w", err)
+	}
+
+	if m.deps.Hooks.OnInstanceUp != nil {
+		if err := m.deps.Hooks.OnInstanceUp(instance); err != nil {
+			if instance.QMPClient != nil && instance.QMPClient.Conn != nil {
+				_ = instance.QMPClient.Conn.Close()
+				instance.QMPClient = nil
+			}
+			return fmt.Errorf("failed to reinstall per-instance NATS subscriptions: %w", err)
+		}
+	}
+
+	// Re-assert in-use state before advertising the surviving QEMU as running.
+	// A failed write leaves snapshot routing ambiguous, so recovery must fail
+	// closed rather than continue with a guest-writable available volume.
+	if err := m.markAttachedVolumesInUse(instance); err != nil {
+		if instance.QMPClient != nil && instance.QMPClient.Conn != nil {
+			_ = instance.QMPClient.Conn.Close()
+			instance.QMPClient = nil
+		}
+		return fmt.Errorf("persist attached volume state during reconnect: %w", err)
+	}
+
+	instance.Status = StateRunning
+
+	if err := m.writeRunningState(); err != nil {
+		return fmt.Errorf("failed to persist reconnected instance state: %w", err)
+	}
+
+	slog.Info("Successfully reconnected to running instance", "instance", instance.ID)
+	return nil
+}
+
+// isInstanceProcessRunning reports whether the QEMU process in the PID file
+// is still alive. Returns false on any failure (missing file, dead PID).
+func isInstanceProcessRunning(instance *VM) bool {
+	pid, err := hostprocess.ReadPidFile(instance.ID)
+	if err != nil || pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// AreVolumeSocketsValid dials each NBD Unix socket to confirm viperblock is
+// still listening. A stat-only check is insufficient since viperblock may restart
+// leaving stale socket files. TCP and unparseable URIs are treated as valid.
+func AreVolumeSocketsValid(instance *VM) bool {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	for _, req := range instance.EBSRequests.Requests {
+		if req.NBDURI == "" {
+			continue
+		}
+		serverType, sockPath, _, _, err := nbd.ParseNBDURI(req.NBDURI)
+		if err != nil || serverType != "unix" {
+			continue
+		}
+		conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+		if err != nil {
+			slog.Debug("NBD socket unreachable", "volume", req.Name, "socket", sockPath, "err", err)
+			return false
+		}
+		_ = conn.Close()
+	}
+	return true
+}

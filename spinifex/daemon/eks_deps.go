@@ -8,11 +8,11 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
 // systemRoleEnsurer lazily builds — and memoizes — the KV-backed IAM service
@@ -99,7 +99,7 @@ func (d *Daemon) buildEKSServiceDeps() handlers_eks.EKSServiceDeps {
 		VPCMgr:         d.vpcService,
 		NATGW:          d.natGatewayService,
 		RouteTable:     d.routeTableService,
-		PlacementGroup: handlers_ec2_placementgroup.NewNATSPlacementGroupService(d.natsConn),
+		PlacementGroup: ec2placementgroup.NewNATSPlacementGroupService(d.natsConn),
 		Scheduler:      handlers_eks.NewNATSHostScheduler(d.natsConn),
 		CPControl:      d.newEKSCPControl(),
 	}

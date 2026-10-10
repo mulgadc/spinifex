@@ -3,7 +3,7 @@ package gateway_bedrock
 import (
 	"net/http"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // mapUpstreamStatus maps an upstream provider HTTP status to a bedrock

@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/nats-io/nats.go"
 )
 
@@ -40,7 +40,7 @@ func (d *Daemon) newEKSCPControl() *eksCPControl {
 // DescribeInstances fans out to every node and aggregates, so the reconciler
 // sees the control-plane VM regardless of which host it runs on.
 func (c *eksCPControl) DescribeInstances(input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
-	return gateway_ec2_instance.DescribeInstances(context.Background(), input, c.natsConn, c.expectedNodes(), accountID)
+	return ec2instanceapi.DescribeInstances(context.Background(), input, c.natsConn, c.expectedNodes(), accountID)
 }
 
 // RecoverInstance restarts the control-plane VM on its owning node. The gateway
@@ -48,7 +48,7 @@ func (c *eksCPControl) DescribeInstances(input *ec2.DescribeInstancesInput, acco
 // a crashed error-state CP in place, re-mounting its etcd root volume — then
 // falls back to the shared-KV rehydration path (ec2.start) for a stopped CP.
 func (c *eksCPControl) RecoverInstance(instanceID, accountID string) error {
-	_, err := gateway_ec2_instance.StartInstances(context.Background(), &ec2.StartInstancesInput{
+	_, err := ec2instanceapi.StartInstances(context.Background(), &ec2.StartInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
 	}, c.natsConn, accountID)
 	return err
@@ -60,7 +60,7 @@ func (c *eksCPControl) RecoverInstance(instanceID, accountID string) error {
 // k3s-recovery agent applies its pending directive; a hard reboot would corrupt the
 // member's filesystem before recovery runs.
 func (c *eksCPControl) StopInstance(instanceID, accountID string) error {
-	_, err := gateway_ec2_instance.StopInstances(context.Background(), &ec2.StopInstancesInput{
+	_, err := ec2instanceapi.StopInstances(context.Background(), &ec2.StopInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
 	}, c.natsConn, accountID)
 	return err

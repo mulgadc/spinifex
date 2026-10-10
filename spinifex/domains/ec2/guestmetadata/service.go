@@ -1,0 +1,271 @@
+// Package guestmetadata is the EC2 Instance Metadata Service that vpcd serves
+// at 169.254.169.254: one responder per local instance tap, IMDSv2 tokens,
+// instance-role credentials minted through STS, and the guest DNS forwarder.
+package guestmetadata
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// tokenSweepInterval is how often abandoned/expired IMDSv2 tokens are swept.
+const tokenSweepInterval = time.Minute
+
+// tapReconcileInterval is how often vpcd reconciles its per-tap responders against
+// the live OVS tap set. It bounds the post-boot window before a freshly launched
+// guest's responder begins serving; cloud-init's IMDS retries absorb that gap.
+const tapReconcileInterval = 15 * time.Second
+
+// listTapsFunc enumerates the local primary-ENI IMDS taps as eniID → endpoint,
+// injected (like the veth hooks) to keep domains/ec2/guestmetadata free of a network/host
+// import cycle. Backed by host.ListIMDSTaps in vpcd.
+type listTapsFunc func(ctx context.Context) (map[string]string, error)
+
+// profileLookup is the IAMService slice needed for credential + iam/* paths.
+type profileLookup interface {
+	ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
+	GetRole(ctx context.Context, accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
+}
+
+// publicKeyLookup fetches the SSH public key material for the public-keys path.
+type publicKeyLookup interface {
+	GetPublicKey(ctx context.Context, accountID, keyName string) (string, error)
+}
+
+// IMDSService is the host-served EC2 Instance Metadata Service (169.254.169.254).
+type IMDSService interface {
+	Run(ctx context.Context) error
+}
+
+var _ IMDSService = (*IMDSServiceImpl)(nil)
+
+// eniResolver maps a tap's ENI ID to ENI + instance facts.
+type eniResolver interface {
+	resolveENIByID(ctx context.Context, eniID string) (*eniFacts, error)
+	resolveInstance(ctx context.Context, eni *eniFacts) (*instanceFacts, error)
+	resolveSGNames(ctx context.Context, accountID string, sgIDs []string) []string
+	resolveSubnetCIDR(ctx context.Context, accountID, subnetID string) (string, error)
+	resolveVPCCIDR(ctx context.Context, accountID, vpcID string) (string, error)
+}
+
+// IMDSServiceImpl is the in-process IMDS implementation. It runs one per-tap
+// responder per local primary-ENI tap, each serving the shared mux with the
+// tap's ENI identity.
+type IMDSServiceImpl struct {
+	resolver       eniResolver
+	tokens         *tokenStore
+	v1Allow        *v1AllowCache
+	creds          *credCache
+	iam            profileLookup
+	roleMiss       *roleMissLogger
+	pubKeys        publicKeyLookup
+	tapResp        *tapResponderManager
+	listTaps       listTapsFunc
+	now            func() time.Time
+	baseDomain     string
+	internalDomain string
+	servicesDomain string
+	caCert         *caCertCache
+}
+
+// NewIMDSServiceImpl wires the IMDS service. listTaps is injected to avoid a
+// network/host import cycle. baseDomain and internalDomain are the cluster's
+// authoritative public and private (AWS-parity) DNS domains, used for
+// public-hostname and local-hostname so IMDS matches the records the DNS writer
+// publishes. servicesDomain is the cluster's configured AWS.ServicesDomain,
+// served at services/domain: the slot an AWS SDK substitutes into
+// {service}.{region}.{domain} for default endpoint resolution. It must never
+// fall back to the literal amazonaws.com — see serveServicesDomain.
+// resolverIPs are the WAN IPs of nodes running northstar: when non-empty,
+// each per-tap responder also serves the VPC DNS shim on 169.254.169.253:53,
+// relaying to northstar's unprivileged wildcard listener.
+// caCertPath is the deployment CA served at /spinifex/ca.pem; empty 404s it.
+// localState and records back the local-first instance lookup: localState
+// reads this node's own VM state, records falls back to the shared instance
+// record space for an instance that has moved off this node. Either may be
+// nil, degrading that source to a miss rather than failing IMDS to start —
+// the caller (vpcd) owns their construction and availability.
+// ctx bounds the bucket opens only; each served request carries its own.
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
+	if bind.Meta == "" || bind.DNS == "" {
+		return nil, errors.New("IMDS host bind addresses required (use NewHostBindAddrs)")
+	}
+	if natsConn == nil {
+		return nil, errors.New("nil NATS connection")
+	}
+	if sts == nil {
+		return nil, errors.New("nil STS service")
+	}
+	if iamSvc == nil {
+		return nil, errors.New("nil IAM service")
+	}
+	if pubKeys == nil {
+		return nil, errors.New("nil public key service")
+	}
+	if listTaps == nil {
+		return nil, errors.New("nil tap enumerator")
+	}
+
+	js, err := jetstream.New(natsConn)
+	if err != nil {
+		return nil, fmt.Errorf("get JetStream context: %w", err)
+	}
+
+	// Every bucket below is retried for the same window before its policy
+	// applies. vpcd starts alongside NATS, so a bucket that is merely not ready
+	// yet must not decide how this node serves metadata for its whole lifetime.
+	openBucket := func(name string) (jetstream.KeyValue, error) {
+		return kvstore.OpenWithRetry(ctx, name, kvstore.DefaultOpenWindow,
+			func(ctx context.Context) (jetstream.KeyValue, error) { return js.KeyValue(ctx, name) })
+	}
+
+	eniKV, err := openBucket(kvBucketENIs)
+	if err != nil {
+		return nil, fmt.Errorf("open %s bucket: %w", kvBucketENIs, err)
+	}
+
+	// Open SG bucket best-effort; IMDS starts fine without it, degrading to raw IDs.
+	sgKV, err := openBucket(kvBucketSecurityGroups)
+	if err != nil {
+		slog.Warn("IMDS: security-group bucket unavailable, /security-groups will serve IDs", "bucket", kvBucketSecurityGroups, "err", err)
+		sgKV = nil
+	}
+
+	// Open subnet/VPC buckets best-effort; the network-interfaces CIDR leaves 404
+	// (and drop from the listing) when a bucket is unavailable, IMDS still starts.
+	subnetKV, err := openBucket(kvBucketSubnets)
+	if err != nil {
+		slog.Warn("IMDS: subnet bucket unavailable, network-interfaces subnet CIDR will 404", "bucket", kvBucketSubnets, "err", err)
+		subnetKV = nil
+	}
+	vpcKV, err := openBucket(kvBucketVPCs)
+	if err != nil {
+		slog.Warn("IMDS: vpc bucket unavailable, network-interfaces VPC CIDR will 404", "bucket", kvBucketVPCs, "err", err)
+		vpcKV = nil
+	}
+
+	svc := &IMDSServiceImpl{
+		resolver: &metadataResolver{
+			eniKV:    eniKV,
+			sgKV:     sgKV,
+			subnetKV: subnetKV,
+			vpcKV:    vpcKV,
+			lookup:   &localInstanceLookup{local: localState, records: records},
+		},
+		tokens:         newTokenStore(),
+		v1Allow:        newV1AllowCache(),
+		creds:          newCredCache(sts),
+		iam:            iamSvc,
+		roleMiss:       newRoleMissLogger(time.Now),
+		pubKeys:        pubKeys,
+		listTaps:       listTaps,
+		now:            time.Now,
+		baseDomain:     baseDomain,
+		internalDomain: internalDomain,
+		servicesDomain: servicesDomain,
+		caCert:         newCACertCache(caCertPath),
+	}
+	// Each per-tap responder serves the shared mux, threading its tap's ENI
+	// identity into every request via BaseContext.
+	svc.tapResp = newTapResponderManager(svc.httpHandler(), svc.resolver.resolveENIByID, tapListenerBinder(bind.Meta))
+	if len(resolverIPs) > 0 {
+		targets := make([]string, 0, len(resolverIPs))
+		for _, ip := range resolverIPs {
+			targets = append(targets, net.JoinHostPort(ip, northstarResolverPort))
+		}
+		svc.tapResp.enableDNS(tapDNSBinder(bind.DNS), newDNSForwarder(targets))
+		slog.Info("IMDS: VPC DNS shim enabled", "addr", bind.DNS, "backends", targets)
+	}
+	if bind.Remapped() {
+		slog.Info("IMDS: serving on remapped host addresses; guests still address the standard ones",
+			"meta_bind", bind.Meta, "dns_bind", bind.DNS,
+			"guest_meta", MetaDataServerIP, "guest_dns", VPCDNSServerIP)
+	}
+
+	slog.Info("IMDS service initialized", "eni_bucket", kvBucketENIs)
+	return svc, nil
+}
+
+// httpHandler builds the shared mux for every per-tap responder. Tracing wraps
+// outermost (mirrors daemon.go/gateway.go/spinifexui.go: HTTPMiddleware
+// outside, security/routing logic inside) so a rejectForwarded 403 is still
+// captured as a root span for the fan-out it prevented, but the span itself
+// is passive instrumentation — it cannot alter or bypass rejectForwarded's
+// decision, which still runs first inside the traced handler chain.
+func (s *IMDSServiceImpl) httpHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathToken, s.handleToken)
+	mux.HandleFunc(pathSpinifexCACert, s.handleCACert)
+	mux.HandleFunc("/", s.handleMetadata)
+	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(nameAction(mux))))
+}
+
+// Run starts the per-tap reconcile loop and the token-sweep ticker, then blocks
+// until ctx is done. Initial failures are non-fatal; vpcd readiness must not be
+// gated on IMDS.
+func (s *IMDSServiceImpl) Run(ctx context.Context) error {
+	go s.reconcileTaps(ctx)
+	go s.sweepExpired(ctx)
+
+	<-ctx.Done()
+	s.tapResp.shutdown()
+	return ctx.Err()
+}
+
+// reconcileTaps reconciles the per-tap responders against the live OVS tap set on a
+// ticker (plus once at start), so a freshly launched guest serves within one interval
+// and a vpcd restart re-binds every tap. The daemon installs the datapath; this serves.
+func (s *IMDSServiceImpl) reconcileTaps(ctx context.Context) {
+	s.reconcileTapsOnce(ctx)
+	ticker := time.NewTicker(tapReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.reconcileTapsOnce(ctx)
+		}
+	}
+}
+
+// reconcileTapsOnce enumerates the local IMDS taps and converges the responders
+// to them. A list error is logged and skipped so the next tick retries.
+func (s *IMDSServiceImpl) reconcileTapsOnce(ctx context.Context) {
+	live, err := s.listTaps(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "IMDS: list taps during reconcile failed, retrying next tick", "err", err)
+		return
+	}
+	s.tapResp.reconcile(ctx, live)
+}
+
+// sweepExpired evicts expired tokens and stale credential-cache entries on a ticker.
+func (s *IMDSServiceImpl) sweepExpired(ctx context.Context) {
+	ticker := time.NewTicker(tokenSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := s.now()
+			s.tokens.sweep(now)
+			s.creds.sweep(now)
+			s.v1Allow.sweep(now)
+			s.roleMiss.sweep(now)
+		}
+	}
+}

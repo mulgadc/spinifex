@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"

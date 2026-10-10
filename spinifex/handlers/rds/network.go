@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/subnetgroup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // The customer-account VPC surface CreateDBInstance reads to place the endpoint
@@ -18,6 +18,14 @@ type networkResolver interface {
 	DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, accountID string) (*ec2.DescribeSubnetsOutput, error)
 	DescribeSecurityGroups(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, accountID string) (*ec2.DescribeSecurityGroupsOutput, error)
 }
+
+// The subnet group's answer to where an endpoint may land: its VPC and member
+// subnet IDs, or the group's own not-found fault.
+type subnetGroupPlacement interface {
+	Placement(ctx context.Context, accountID, name string) (vpcID string, subnetIDs []string, err error)
+}
+
+var _ subnetGroupPlacement = (*subnetgroup.Owner)(nil)
 
 // Where the customer-facing ENI lands.
 type endpointPlacement struct {
@@ -33,22 +41,23 @@ type endpointPlacement struct {
 // back to the account's default VPC, mirroring AWS's own behaviour. The security
 // groups are validated against whichever VPC that resolved to, because an ENI
 // cannot carry a group from another one.
-func (s *Service) resolvePlacement(ctx context.Context, kv *kvstore.Bucket, accountID string, req *validatedCreate) (*endpointPlacement, error) {
+func (s *Service) resolvePlacement(ctx context.Context, accountID string, req *validatedCreate) (*endpointPlacement, error) {
 	if s.deps.Network == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "RDS networking is not wired on this node")
 	}
 
 	var vpcID, subnetID string
 	if req.DBSubnetGroupName != "" {
-		group, _, err := getDBSubnetGroup(ctx, kv, req.DBSubnetGroupName)
+		var groups subnetGroupPlacement = s.subnetGroups()
+		groupVPC, groupSubnets, err := groups.Placement(ctx, accountID, req.DBSubnetGroupName)
 		if err != nil {
 			return nil, err
 		}
-		subnetID, err = subnetFromGroup(group)
+		subnetID, err = subnetFromGroup(req.DBSubnetGroupName, groupSubnets)
 		if err != nil {
 			return nil, err
 		}
-		vpcID = group.VpcID
+		vpcID = groupVPC
 	} else {
 		var err error
 		if vpcID, err = s.defaultVPCID(ctx, accountID); err != nil {
@@ -98,16 +107,16 @@ func (s *Service) vpcCIDR(ctx context.Context, accountID, vpcID string) (string,
 // two instances created against the same group land the same way regardless of
 // the order the subnets were supplied in. Single-AZ makes the choice arbitrary
 // today; when V2 makes AZs real this is the one function that changes.
-func subnetFromGroup(group *DBSubnetGroupRecord) (string, error) {
-	ids := make([]string, 0, len(group.Subnets))
-	for _, subnet := range group.Subnets {
-		if subnet.SubnetID != "" {
-			ids = append(ids, subnet.SubnetID)
+func subnetFromGroup(name string, subnetIDs []string) (string, error) {
+	ids := make([]string, 0, len(subnetIDs))
+	for _, id := range subnetIDs {
+		if id != "" {
+			ids = append(ids, id)
 		}
 	}
 	if len(ids) == 0 {
 		return "", awserrors.Errorf(awserrors.ErrorDBInvalidVPCNetworkState,
-			"DB subnet group %s holds no subnet to place the DB endpoint in", group.Name)
+			"DB subnet group %s holds no subnet to place the DB endpoint in", name)
 	}
 	slices.Sort(ids)
 	return ids[0], nil

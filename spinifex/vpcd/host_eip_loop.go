@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // Host EIP pass cadence. Shorter than the drift interval because the state it

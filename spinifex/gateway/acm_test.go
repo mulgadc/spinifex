@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,35 +22,10 @@ func setupACMRequest(target, body string) *http.Request {
 	return withTestIdentity(req.WithContext(ctx))
 }
 
-func TestACMActionFromTarget(t *testing.T) {
-	assert.Equal(t, "ImportCertificate", acmActionFromTarget("CertificateManager.ImportCertificate"))
-	assert.Equal(t, "ListCertificates", acmActionFromTarget("ListCertificates"))
-	assert.Empty(t, acmActionFromTarget(""))
-}
-
-func TestACMActionsMap_AllActionsRegistered(t *testing.T) {
-	expected := []string{
-		"ImportCertificate",
-		"DescribeCertificate",
-		"GetCertificate",
-		"ListCertificates",
-		"DeleteCertificate",
-		"ListTagsForCertificate",
-		"AddTagsToCertificate",
-		"RemoveTagsFromCertificate",
-		"RequestCertificate",
-	}
-	for _, action := range expected {
-		_, ok := acmActions[action]
-		assert.True(t, ok, "action %q should be registered in acmActions", action)
-	}
-	assert.Len(t, acmActions, len(expected))
-}
-
 func TestACMRequest_MissingTarget(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
-	err := gw.ACM_Request(w, setupACMRequest("", ""))
+	err := gw.serveACM(w, setupACMRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
@@ -58,7 +33,7 @@ func TestACMRequest_MissingTarget(t *testing.T) {
 func TestACMRequest_UnknownAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
-	err := gw.ACM_Request(w, setupACMRequest("CertificateManager.BogusAction", "{}"))
+	err := gw.serveACM(w, setupACMRequest("CertificateManager.BogusAction", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
@@ -68,7 +43,7 @@ func TestACMRequest_UnknownAction(t *testing.T) {
 func TestACMRequest_KnownActionNoNATS(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	w := httptest.NewRecorder()
-	err := gw.ACM_Request(w, setupACMRequest("CertificateManager.ListCertificates", "{}"))
+	err := gw.serveACM(w, setupACMRequest("CertificateManager.ListCertificates", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

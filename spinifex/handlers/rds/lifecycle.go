@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"slices"
 	"strings"
@@ -11,11 +13,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 )
 
@@ -256,7 +258,7 @@ func (s *Service) stopEngineOrRecordFallback(ctx context.Context, accountID stri
 // MariaDB only its InnoDB ones.
 func uncleanStopMessage(ctx context.Context, engineName, operation string) string {
 	warning := fmt.Sprintf("The database engine could not be shut down cleanly before %s.", operation)
-	engine, err := LookupEngine(engineName)
+	engine, err := rdsengine.LookupEngine(engineName)
 	if err != nil {
 		// The VM is going down either way, so the customer still gets the half of
 		// the warning that does not depend on knowing the engine.
@@ -264,7 +266,7 @@ func uncleanStopMessage(ctx context.Context, engineName, operation string) strin
 			"engine", engineName, "err", err)
 		return warning
 	}
-	return warning + " " + engine.uncleanStopNote
+	return warning + " " + engine.UncleanStopNote()
 }
 
 // Moves the instance into a transitional state under CAS and returns the record
@@ -416,22 +418,22 @@ func NewNATSInstanceCommander(nc *nats.Conn) instanceCommander {
 }
 
 func (c *natsInstanceCommander) StopInstance(ctx context.Context, instanceID string) error {
-	return c.send(ctx, instanceID, types.EC2CommandAttributes{StopInstance: true})
+	return c.send(ctx, instanceID, ec2v1.EC2CommandAttributes{StopInstance: true})
 }
 
 func (c *natsInstanceCommander) StartInstance(ctx context.Context, instanceID string) error {
-	return c.send(ctx, instanceID, types.EC2CommandAttributes{StartInstance: true})
+	return c.send(ctx, instanceID, ec2v1.EC2CommandAttributes{StartInstance: true})
 }
 
 func (c *natsInstanceCommander) RebootInstance(ctx context.Context, instanceID string) error {
-	return c.send(ctx, instanceID, types.EC2CommandAttributes{RebootInstance: true})
+	return c.send(ctx, instanceID, ec2v1.EC2CommandAttributes{RebootInstance: true})
 }
 
 // The VM runs in the system account, so every command is issued there — the
 // ownership check on the far side compares against that same account.
-func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, attrs types.EC2CommandAttributes) error {
-	cmd := types.EC2InstanceCommand{ID: instanceID, Attributes: attrs}
-	_, err := utils.NATSRequest[struct{}](ctx, c.nc, "ec2.cmd."+instanceID, cmd, c.timeout, utils.GlobalAccountID)
+func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, attrs ec2v1.EC2CommandAttributes) error {
+	cmd := ec2v1.EC2InstanceCommand{ID: instanceID, Attributes: attrs}
+	_, err := natsmsg.NATSRequest[struct{}](ctx, c.nc, ec2v1.InstanceCommandSubject(instanceID), cmd, c.timeout, awsidentifiers.GlobalAccountID)
 	if err == nil {
 		return nil
 	}
@@ -448,7 +450,7 @@ func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, att
 }
 
 func (c *natsInstanceCommander) StartStoppedInstance(ctx context.Context, instanceID string) error {
-	_, err := utils.NATSRequest[handlers_ec2_instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
-		handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, utils.GlobalAccountID)
+	_, err := natsmsg.NATSRequest[ec2instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
+		ec2instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
 	return err
 }

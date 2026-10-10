@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"maps"
 	"net"
@@ -14,14 +15,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/formation"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -54,7 +56,7 @@ func respondNATSMsg(nodeID string, msg *nats.Msg, data []byte) {
 	reply := nats.NewMsg("")
 	reply.Data = data
 	if nodeID != "" {
-		reply.Header.Set(utils.NodeIDHeader, nodeID)
+		reply.Header.Set(natsmsg.NodeIDHeader, nodeID)
 	}
 	if err := msg.RespondMsg(reply); err != nil {
 		slog.Error("Failed to respond to NATS request", "err", err)
@@ -63,7 +65,7 @@ func respondNATSMsg(nodeID string, msg *nats.Msg, data []byte) {
 
 // respondWithError sends an error payload for the given error code on the NATS message.
 func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
-	respondNATSMsg(nodeID, msg, utils.GenerateErrorPayload(errCode))
+	respondNATSMsg(nodeID, msg, awserrors.GenerateErrorPayload(errCode))
 }
 
 // respondWithServiceError sends the sanitized error code AND the handler's
@@ -71,10 +73,10 @@ func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
 // it for any error originating in a service call: the code alone collapses a
 // specific refusal ("only PRIVATE_CA certificates can be force-renewed") into
 // an opaque ServerInternal, leaving the reason visible only in the daemon log.
-// Mirrors utils.ServeNATSRequestCtx, which has always preserved the message.
+// Mirrors natsmsg.ServeNATSRequestCtx, which has always preserved the message.
 func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
 	_, message, _ := awserrors.ResolveErrorDetail(err)
-	payload := utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
+	payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
 	respondNATSMsg(nodeID, msg, payload)
 }
 
@@ -111,16 +113,16 @@ func respondWithJSON(nodeID string, msg *nats.Msg, data any) {
 // unmarshal-failure branch — so a fan-out can attribute this daemon's frame by identity.
 func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Context, *I, string) (*O, error)) natsHandler {
 	return func(msg *nats.Msg) string {
-		ctx, span := utils.StartConsumerSpan(msg)
+		ctx, span := natsmsg.StartConsumerSpan(msg)
 		defer span.End()
 
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		// Carried in ctx rather than the service signature so only the handlers
 		// that must deduplicate a retry have to look for it.
-		ctx = utils.WithIdempotencyKey(ctx, utils.IdempotencyKeyFromMsg(msg))
+		ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 		input := new(I)
-		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
-			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
+		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+			natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 			respondNATSMsg(nodeID, msg, errResp)
 			// A payload the daemon cannot parse is the caller's mistake, not a
 			// fault of its own.
@@ -132,7 +134,7 @@ func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Conte
 			// without a trace backend, so it is logged here too — at a level
 			// that says whether the daemon or its caller was at fault.
 			logHandlerError(ctx, "handleNATSRequest: service call failed", msg.Subject, err)
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			respondWithServiceError(nodeID, msg, err)
 			return outcomeForError(err)
 		}
@@ -147,21 +149,21 @@ func handleNATSRequest[I any, O any](nodeID string, serviceFn func(context.Conte
 // caller.
 func handleNATSRequestWithPrincipal[I any, O any](nodeID string, serviceFn func(context.Context, *I, string, string) (*O, error)) natsHandler {
 	return func(msg *nats.Msg) string {
-		ctx, span := utils.StartConsumerSpan(msg)
+		ctx, span := natsmsg.StartConsumerSpan(msg)
 		defer span.End()
 
-		accountID := utils.AccountIDFromMsg(msg)
-		principalARN := utils.PrincipalARNFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
+		principalARN := natsmsg.PrincipalARNFromMsg(msg)
 		input := new(I)
-		if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
-			utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
+		if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+			natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 			respondNATSMsg(nodeID, msg, errResp)
 			return outcomeClientError
 		}
 		output, err := serviceFn(ctx, input, accountID, principalARN)
 		if err != nil {
 			logHandlerError(ctx, "handleNATSRequestWithPrincipal: service call failed", msg.Subject, err)
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			respondWithServiceError(nodeID, msg, err)
 			return outcomeForError(err)
 		}
@@ -187,14 +189,14 @@ func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 // name and how it answered. A command that reaches no case is named rather than
 // dropped, so an attribute nothing handles is visible in the metric.
 func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
-	var command types.EC2InstanceCommand
+	var command ec2v1.EC2InstanceCommand
 
 	if err := json.Unmarshal(msg.Data, &command); err != nil {
 		slog.ErrorContext(ctx, "Error unmarshaling EC2 instance command", "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		respondWithError(d.node, msg, awserrors.ErrorServerInternal)
 		return "unknown", outcomeError
 	}
@@ -251,7 +253,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		err := d.instanceService.StartInstance(opCtx, instance, command)
 		endOpSpan(opSpan, err)
 		if err != nil {
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","instanceId":"%s"}`, instance.ID)); err != nil {
@@ -263,7 +265,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		err := d.instanceService.RebootInstance(opCtx, instance, command)
 		endOpSpan(opSpan, err)
 		if err != nil {
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
@@ -279,7 +281,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		err := d.instanceService.StopOrTerminateInstance(opCtx, instance, command)
 		endOpSpan(opSpan, err)
 		if err != nil {
-			utils.MarkSpanError(span, err)
+			natsmsg.MarkSpanError(span, err)
 			return name, respondServiceErrorOutcome(d.node, msg, err)
 		}
 		if err := msg.Respond([]byte(`{}`)); err != nil {
@@ -294,7 +296,7 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 
 // ec2CommandName names the command an EC2InstanceCommand carries, for the
 // metric action. Order matches the dispatch switch.
-func ec2CommandName(command types.EC2InstanceCommand) string {
+func ec2CommandName(command ec2v1.EC2InstanceCommand) string {
 	switch {
 	case command.Attributes.AttachVolume:
 		return "AttachVolume"
@@ -344,7 +346,7 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) string {
 		status = "starting"
 	}
 
-	response := types.NodeHealthResponse{
+	response := clusterv1.NodeHealthResponse{
 		Node:       d.node,
 		Status:     status,
 		ConfigHash: configHash,
@@ -360,7 +362,7 @@ func (d *Daemon) handleHealthCheck(msg *nats.Msg) string {
 // handleNodeDiscover responds to node discovery requests with this node's ID
 // Used by the gateway to dynamically discover active spinifex nodes in the cluster.
 func (d *Daemon) handleNodeDiscover(msg *nats.Msg) string {
-	response := types.NodeDiscoverResponse{
+	response := clusterv1.NodeDiscoverResponse{
 		Node: d.node,
 	}
 
@@ -406,12 +408,12 @@ func (d *Daemon) handleNodeStatus(msg *nats.Msg) string {
 		gpuModelNames = append(gpuModelNames, dev.Model)
 	}
 
-	var gpuInventory []types.GPUInfo
+	var gpuInventory []clusterv1.GPUInfo
 	if d.gpuManager != nil {
 		gpuInventory = buildGPUInventory(d.gpuManager.Snapshot())
 	}
 
-	resp := types.NodeStatusResponse{
+	resp := clusterv1.NodeStatusResponse{
 		Node:           d.node,
 		Status:         "Ready",
 		Host:           d.daemonIP(),
@@ -516,14 +518,14 @@ func fetchNATSRole(url string, client *http.Client) string {
 // buildGPUInventory converts a pool snapshot into per-physical-GPU GPUInfo
 // records suitable for the NodeStatusResponse. Entries are ordered by first
 // appearance of each PCI address in the snapshot.
-func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
-	byPCI := make(map[string]*types.GPUInfo, len(snapshot))
+func buildGPUInventory(snapshot []gpu.PoolEntry) []clusterv1.GPUInfo {
+	byPCI := make(map[string]*clusterv1.GPUInfo, len(snapshot))
 	var order []string
 
 	for _, e := range snapshot {
 		pci := e.Device.PCIAddress
 		if _, ok := byPCI[pci]; !ok {
-			byPCI[pci] = &types.GPUInfo{
+			byPCI[pci] = &clusterv1.GPUInfo{
 				PCIAddress: pci,
 				Model:      e.Device.Model,
 				VRAMMiB:    e.Device.MemoryMiB,
@@ -534,7 +536,7 @@ func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
 		if e.MIGInstance != nil {
 			g.MIGEnabled = true
 			g.MIGProfile = e.MIGInstance.Profile.Name
-			g.Slices = append(g.Slices, types.GPUSliceInfo{
+			g.Slices = append(g.Slices, clusterv1.GPUSliceInfo{
 				GIID:       e.MIGInstance.GIID,
 				Profile:    e.MIGInstance.Profile.Name,
 				VRAMMiB:    e.MIGInstance.Profile.MemoryMiB,
@@ -546,7 +548,7 @@ func buildGPUInventory(snapshot []gpu.PoolEntry) []types.GPUInfo {
 		}
 	}
 
-	gpus := make([]types.GPUInfo, 0, len(order))
+	gpus := make([]clusterv1.GPUInfo, 0, len(order))
 	for _, pci := range order {
 		gpus = append(gpus, *byPCI[pci])
 	}
@@ -576,10 +578,10 @@ func buildPoolLookup(mgr *gpu.Manager) (byMdev, byPCI map[string]gpu.PoolEntry) 
 // resolveVMGPU maps a single GPUAttachment to a VMGPUInfo using the pool
 // lookup tables built by buildPoolLookup. Returns nil if the attachment cannot
 // be matched (e.g. daemon restart before pool is fully restored).
-func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) *types.VMGPUInfo {
+func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) *clusterv1.VMGPUInfo {
 	if att.MdevPath != "" {
 		if e, ok := byMdev[att.MdevPath]; ok && e.MIGInstance != nil {
-			return &types.VMGPUInfo{
+			return &clusterv1.VMGPUInfo{
 				Model:    e.Device.Model,
 				VRAMMiB:  e.MIGInstance.Profile.MemoryMiB,
 				Profile:  e.MIGInstance.Profile.Name,
@@ -590,7 +592,7 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 	}
 	if att.PCIAddress != "" {
 		if e, ok := byPCI[att.PCIAddress]; ok {
-			return &types.VMGPUInfo{
+			return &clusterv1.VMGPUInfo{
 				Model:      e.Device.Model,
 				VRAMMiB:    e.Device.MemoryMiB,
 				PCIAddress: att.PCIAddress,
@@ -603,8 +605,8 @@ func resolveVMGPU(att gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry)
 // resolveVMGPUs resolves every attachment it can, reporting a short list rather
 // than passing it off as complete. One unresolved attachment used to read as no
 // GPU at all; eight make a shortened list a plausible wrong answer.
-func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []types.VMGPUInfo {
-	gpus := make([]types.VMGPUInfo, 0, len(attachments))
+func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, byPCI map[string]gpu.PoolEntry) []clusterv1.VMGPUInfo {
+	gpus := make([]clusterv1.VMGPUInfo, 0, len(attachments))
 	for _, attachment := range attachments {
 		if info := resolveVMGPU(attachment, byMdev, byPCI); info != nil {
 			gpus = append(gpus, *info)
@@ -625,9 +627,9 @@ func resolveVMGPUs(instanceID string, attachments []gpu.GPUAttachment, byMdev, b
 func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 	poolByMdev, poolByPCI := buildPoolLookup(d.gpuManager)
 
-	vms := make([]types.VMInfo, 0, d.vmMgr.Count())
+	vms := make([]clusterv1.VMInfo, 0, d.vmMgr.Count())
 	d.vmMgr.ForEach(func(v *vm.VM) {
-		info := types.VMInfo{
+		info := clusterv1.VMInfo{
 			InstanceID:   v.ID,
 			Status:       string(v.Status),
 			InstanceType: v.InstanceType,
@@ -646,7 +648,7 @@ func (d *Daemon) handleNodeVMs(msg *nats.Msg) string {
 		vms = append(vms, info)
 	})
 
-	resp := types.NodeVMsResponse{
+	resp := clusterv1.NodeVMsResponse{
 		Node: d.node,
 		Host: d.daemonIP(),
 		VMs:  vms,

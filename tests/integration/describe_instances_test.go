@@ -10,8 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,7 +72,7 @@ func TestDescribeInstances_ErrorPath(t *testing.T) {
 	gw := StartGateway(t)
 	stubEmptyInstanceBuckets(t, gw)
 
-	gw.StubSubject(t, "ec2.DescribeInstances", utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+	gw.StubSubject(t, "ec2.DescribeInstances", awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 
 	_, err := gw.EC2Client(t).DescribeInstances(&ec2.DescribeInstancesInput{})
 	require.Error(t, err)

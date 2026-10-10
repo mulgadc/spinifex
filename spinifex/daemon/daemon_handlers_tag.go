@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -108,7 +108,7 @@ func (d *Daemon) createTags(ctx context.Context, input *ec2.CreateTagsInput, acc
 		}
 	}
 
-	data := &types.InstanceTagsData{Tags: make(map[string]string, len(input.Tags))}
+	data := &ec2v1.InstanceTagsData{Tags: make(map[string]string, len(input.Tags))}
 	for _, tag := range input.Tags {
 		if tag != nil && tag.Key != nil && tag.Value != nil {
 			data.Tags[*tag.Key] = *tag.Value
@@ -146,7 +146,7 @@ func (d *Daemon) deleteTags(ctx context.Context, input *ec2.DeleteTagsInput, acc
 
 	// Keys without a value delete unconditionally; keys with a value delete
 	// only on match; an empty input.Tags clears every tag.
-	data := &types.InstanceTagsData{}
+	data := &ec2v1.InstanceTagsData{}
 	for _, tag := range input.Tags {
 		if tag == nil || tag.Key == nil {
 			continue
@@ -169,7 +169,7 @@ func (d *Daemon) deleteTags(ctx context.Context, input *ec2.DeleteTagsInput, acc
 // tagInstances sends the tag mutation to each instance's owner concurrently,
 // so a many-instance call costs one owner timeout rather than one per
 // instance. The first failure in input order is returned.
-func (d *Daemon) tagInstances(ctx context.Context, instanceIDs []string, data *types.InstanceTagsData, remove bool, accountID string) error {
+func (d *Daemon) tagInstances(ctx context.Context, instanceIDs []string, data *ec2v1.InstanceTagsData, remove bool, accountID string) error {
 	errs := make([]error, len(instanceIDs))
 	var wg sync.WaitGroup
 	for i, id := range instanceIDs {
@@ -191,10 +191,10 @@ func (d *Daemon) tagInstances(ctx context.Context, instanceIDs []string, data *t
 // No responders means the instance isn't running, so the mutation falls back
 // to the shared stopped store; a timeout (partitioned-but-subscribed owner)
 // surfaces InvalidID.NotFound and writes nothing.
-func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *types.InstanceTagsData, remove bool, accountID string) error {
-	command := types.EC2InstanceCommand{
+func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *ec2v1.InstanceTagsData, remove bool, accountID string) error {
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			SetInstanceTags:    !remove,
 			RemoveInstanceTags: remove,
 		},
@@ -206,9 +206,9 @@ func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *types
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	reqMsg := nats.NewMsg("ec2.cmd." + instanceID)
+	reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 	reqMsg.Data = body
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
 
 	msg, err := d.natsConn.RequestMsg(reqMsg, instanceOwnerCommandTimeout)
 	switch {
@@ -221,7 +221,7 @@ func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *types
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		return errors.New(*responseError.Code)
 	}
 	return nil

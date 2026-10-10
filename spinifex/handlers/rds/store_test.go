@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,10 +18,6 @@ func TestKeyPaths(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "db-instances/orders-db", DBInstanceKey("orders-db"))
 	assert.Equal(t, "db-snapshots/orders-db-final", DBSnapshotKey("orders-db-final"))
-	assert.Equal(t, "db-subnet-groups/prod-db-subnets", DBSubnetGroupKey("prod-db-subnets"))
-	assert.Equal(t, "db-parameter-groups/pg16/meta", DBParameterGroupMetaKey("pg16"))
-	assert.Equal(t, "db-parameter-groups/pg16/params/shared_buffers",
-		DBParameterGroupParamKey("pg16", "shared_buffers"))
 	assert.Equal(t, "backups/orders-db/automated/20260724T170000Z",
 		AutomatedBackupKey("orders-db", "20260724T170000Z"))
 	assert.Equal(t, "retained-volumes/vol-abc123", RetainedVolumeKey("vol-abc123"))
@@ -34,16 +30,9 @@ func TestKeyPathsSitUnderTheirPrefix(t *testing.T) {
 	t.Parallel()
 	assert.True(t, strings.HasPrefix(DBInstanceKey("x"), DBInstancesPrefix()))
 	assert.True(t, strings.HasPrefix(DBSnapshotKey("x"), DBSnapshotsPrefix()))
-	assert.True(t, strings.HasPrefix(DBSubnetGroupKey("x"), DBSubnetGroupsPrefix()))
-	assert.True(t, strings.HasPrefix(DBParameterGroupMetaKey("x"), DBParameterGroupsPrefix()))
-	assert.True(t, strings.HasPrefix(DBParameterGroupParamKey("x", "p"), DBParameterGroupParamsPrefix("x")))
 	assert.True(t, strings.HasPrefix(AutomatedBackupKey("x", "t"), AutomatedBackupsPrefix("x")))
 	assert.True(t, strings.HasPrefix(RetainedVolumeKey("v"), RetainedVolumesPrefix()))
 	assert.True(t, strings.HasPrefix(InstanceIndexKey("i"), InstanceIndexPrefix()))
-
-	// A parameter group's values must not be reachable by listing groups' meta
-	// records, or DescribeDBParameterGroups would report one group per parameter.
-	assert.False(t, strings.HasPrefix(DBParameterGroupParamKey("x", "p"), DBParameterGroupMetaKey("x")))
 }
 
 func TestNewStore_NilConn(t *testing.T) {

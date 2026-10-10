@@ -1,0 +1,234 @@
+package dns
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+)
+
+// InstanceRetainsRecords reports whether an instance in this state still owns
+// its A records. Stop and start retain the addresses, so they retain the names;
+// anything past stopped no longer resolves and its records are withdrawn.
+func InstanceRetainsRecords(status vm.InstanceState) bool {
+	return status == vm.StateRunning || status == vm.StateStopping || status == vm.StateStopped
+}
+
+// dashIP renders an IP for AWS-style hostnames (1.2.3.4 → 1-2-3-4).
+func dashIP(ip string) string {
+	return strings.ReplaceAll(ip, ".", "-")
+}
+
+const (
+	// ec2PublicLabelPrefix and ec2PrivateLabelPrefix open every instance record
+	// name. The reconcile matches on them to recognise a record as an instance
+	// record, so they are defined alongside the names they build.
+	ec2PublicLabelPrefix  = "ec2-"
+	ec2PrivateLabelPrefix = "ip-"
+)
+
+// EC2PublicName is the public AWS-shaped name for an instance:
+// ec2-{dashed-public-ip}.{region}.compute.{baseDomain}.
+func EC2PublicName(publicIP, region, baseDomain string) string {
+	return fmt.Sprintf("%s%s.%s.compute.%s", ec2PublicLabelPrefix, dashIP(publicIP), region, baseDomain)
+}
+
+// EC2PrivateName is the private AWS-parity name for an instance:
+// ip-{dashed-private-ip}.{region}.{internalDomain} (IMDS synthHostname). The
+// internal domain defaults to PrivateZone when empty.
+func EC2PrivateName(privateIP, region, internalDomain string) string {
+	return fmt.Sprintf("%s%s.%s.%s", ec2PrivateLabelPrefix, dashIP(privateIP), region,
+		privateZoneOrDefault(internalDomain))
+}
+
+// EC2DNSNames returns the public and private AWS-shaped DNS names for an
+// instance. Each is empty when its inputs are unavailable: the public name needs
+// a public IP and base domain, the private name needs a private IP. region is
+// required for both.
+func EC2DNSNames(region, baseDomain, internalDomain, publicIP, privateIP string) (public, private string) {
+	if region == "" {
+		return "", ""
+	}
+	if publicIP != "" && baseDomain != "" {
+		public = EC2PublicName(publicIP, region, baseDomain)
+	}
+	if privateIP != "" {
+		private = EC2PrivateName(privateIP, region, internalDomain)
+	}
+	return public, private
+}
+
+// EC2Changes builds the record-set changes for one instance's public and
+// private addresses. Empty IPs are skipped (e.g. no public IP assigned). The
+// private record lands in internalDomain (default compute.internal).
+func EC2Changes(action Action, region, baseDomain, internalDomain, publicIP, privateIP string) []Change {
+	var changes []Change
+	if region == "" {
+		return changes
+	}
+	if publicIP != "" && baseDomain != "" {
+		changes = append(changes, Change{
+			Action: action,
+			Zone:   baseDomain,
+			Name:   EC2PublicName(publicIP, region, baseDomain),
+			Type:   "A",
+			Value:  publicIP,
+		})
+	}
+	if privateIP != "" {
+		zone := privateZoneOrDefault(internalDomain)
+		changes = append(changes, Change{
+			Action: action,
+			Zone:   zone,
+			Name:   EC2PrivateName(privateIP, region, zone),
+			Type:   "A",
+			Value:  privateIP,
+		})
+	}
+	return changes
+}
+
+// ELBName is the AWS-shaped DNS name for a load balancer's frontend:
+// {prefix}{name}-{lbID}.{region}.elb.{baseDomain}. prefix is "internal-" for
+// internal-scheme balancers (AWS convention), "" for internet-facing.
+func ELBName(prefix, name, lbID, region, baseDomain string) string {
+	return fmt.Sprintf("%s%s-%s.%s.elb.%s", prefix, name, lbID, region, baseDomain)
+}
+
+// ELBChanges builds the record-set change for a load balancer's frontend
+// address. Returns no change when the name, zone, or IP is unavailable (e.g. a
+// launcher-less LB with no allocated frontend IP).
+func ELBChanges(action Action, dnsName, baseDomain, frontendIP string) []Change {
+	if dnsName == "" || baseDomain == "" || frontendIP == "" {
+		return nil
+	}
+	return []Change{{
+		Action: action,
+		Zone:   baseDomain,
+		Name:   dnsName,
+		Type:   "A",
+		Value:  frontendIP,
+	}}
+}
+
+// EKSName is the account-qualified DNS name for a cluster's apiserver endpoint:
+// {cluster}.{accountID}.{region}.eks.{baseDomain}. Cluster names are only unique
+// within an account, so the account label prevents cross-tenant RRset collisions.
+func EKSName(cluster, accountID, region, baseDomain string) string {
+	return fmt.Sprintf("%s.%s.%s.eks.%s", cluster, accountID, region, baseDomain)
+}
+
+// EKSChanges builds the record-set change for a cluster's apiserver endpoint.
+// Returns no change when the name, zone, or IP is unavailable.
+func EKSChanges(action Action, dnsName, baseDomain, endpointIP string) []Change {
+	if dnsName == "" || baseDomain == "" || endpointIP == "" {
+		return nil
+	}
+	return []Change{{
+		Action: action,
+		Zone:   baseDomain,
+		Name:   dnsName,
+		Type:   "A",
+		Value:  endpointIP,
+	}}
+}
+
+// RDSName is the account-qualified DNS name for a DB instance's endpoint:
+// {dbInstanceIdentifier}.{accountID}.{region}.rds.{baseDomain}. DB instance
+// identifiers are only unique within an account, so the account label prevents
+// cross-tenant RRset collisions.
+func RDSName(dbInstanceIdentifier, accountID, region, baseDomain string) string {
+	return fmt.Sprintf("%s.%s.%s.rds.%s", dbInstanceIdentifier, accountID, region, baseDomain)
+}
+
+// RDSChanges builds the record-set change for a DB instance's endpoint. The
+// target is the customer ENI's private IP, which survives a VM replace, so the
+// record does not have to be rewritten when the instance is rebuilt. Returns no
+// change when the name, zone, or IP is unavailable.
+func RDSChanges(action Action, dnsName, baseDomain, eniIP string) []Change {
+	if dnsName == "" || baseDomain == "" || eniIP == "" {
+		return nil
+	}
+	return []Change{{
+		Action: action,
+		Zone:   baseDomain,
+		Name:   dnsName,
+		Type:   "A",
+		Value:  eniIP,
+	}}
+}
+
+// serviceEndpointECRName is ecr's own service-endpoint entry. It is not part
+// of config.AWSGWServiceNames because it also carries a wildcard registry SAN
+// that the other services don't share (admin.AWSGWServiceDNSNames), but it
+// shares this class's plain {service}.{region}.{suffix} shape for DNS.
+const serviceEndpointECRName = "ecr"
+
+// ServiceEndpointNames returns the {service}.{region}.{suffix} names for every
+// AWS service published in DNS under the internal suffix, sharing
+// config.AWSGWServiceNames with admin.AWSGWServiceDNSNames so the DNS records
+// and the cert SANs can never drift apart. Returns nil when region or suffix
+// is unavailable.
+func ServiceEndpointNames(region, suffix string) []string {
+	if region == "" || suffix == "" {
+		return nil
+	}
+	names := make([]string, 0, len(config.AWSGWServiceNames)+1)
+	names = append(names, serviceEndpointECRName+"."+region+"."+suffix)
+	for _, svc := range config.AWSGWServiceNames {
+		names = append(names, svc+"."+region+"."+suffix)
+	}
+	return names
+}
+
+// ServiceEndpointChanges builds the set-valued record-set changes publishing
+// every AWS service endpoint name to the given addresses. Unlike
+// ELBChanges/EKSChanges/RDSChanges, whose target is a single resource address
+// that answers the same from anywhere, a service endpoint's natural target is
+// every reachable cluster node's own gateway, so this emits ActionUpsertSet
+// rather than ActionUpsert. Returns no changes when region, suffix, or
+// addresses is unavailable.
+func ServiceEndpointChanges(region, suffix string, addresses []string) []Change {
+	if region == "" || suffix == "" || len(addresses) == 0 {
+		return nil
+	}
+	names := ServiceEndpointNames(region, suffix)
+	changes := make([]Change, 0, len(names))
+	for _, name := range names {
+		changes = append(changes, Change{
+			Action: ActionUpsertSet,
+			Zone:   suffix,
+			Name:   name,
+			Type:   "A",
+			Values: addresses,
+		})
+	}
+	return changes
+}
+
+// privateZoneOrDefault returns the configured internal domain or the
+// compute.internal default when unset.
+func privateZoneOrDefault(internalDomain string) string {
+	if d := strings.TrimSpace(internalDomain); d != "" {
+		return d
+	}
+	return PrivateZone
+}
+
+// relativeLabel converts a fully-qualified name to a zone-relative label in the
+// form Northstar's reader expects (label + zone + "." = FQDN). The zone apex
+// returns "". Names not under the zone are returned as a trailing-dot label
+// defensively.
+func relativeLabel(fqdn, zone string) string {
+	name := strings.TrimSuffix(strings.ToLower(fqdn), ".")
+	z := strings.TrimSuffix(strings.ToLower(zone), ".")
+	if name == z {
+		return ""
+	}
+	suffix := "." + z
+	if strings.HasSuffix(name, suffix) {
+		return name[:len(name)-len(suffix)] + "."
+	}
+	return name + "."
+}

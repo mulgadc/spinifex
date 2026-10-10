@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 )
 
 func TestSelectExternalPools(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

@@ -37,7 +37,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/loadgen"
+	"github.com/mulgadc/spinifex/internal/testkit/loadgen"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
 )

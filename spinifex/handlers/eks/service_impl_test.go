@@ -7,9 +7,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -255,7 +256,7 @@ func TestAccessEntry_CreateDescribeListDelete(t *testing.T) {
 	require.NotNil(t, out.AccessEntry)
 	// Username defaults to the principal ARN; type defaults to STANDARD.
 	assert.Equal(t, testPrincipalARN, aws.StringValue(out.AccessEntry.Username))
-	assert.Equal(t, AccessEntryTypeStandard, aws.StringValue(out.AccessEntry.Type))
+	assert.Equal(t, access.EntryTypeStandard, aws.StringValue(out.AccessEntry.Type))
 	assert.Contains(t, aws.StringValue(out.AccessEntry.AccessEntryArn), ":access-entry/c1/")
 
 	// Duplicate Create → ResourceInUseException.
@@ -426,18 +427,18 @@ func TestAccessPolicy_DisassociateRemovesProjectedGroup(t *testing.T) {
 	js := testutil.NewJetStream(t, svc.deps.NATSConn)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
-	rec, err := GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	rec, err := access.Get(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"mulga:eks-view"}, effectiveGroups(rec))
+	assert.Equal(t, []string{"mulga:eks-view"}, access.EffectiveGroups(rec))
 
 	_, err = svc.DisassociateAccessPolicy(context.Background(), &eks.DisassociateAccessPolicyInput{
 		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN), PolicyArn: aws.String(viewPolicy),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	rec, err = GetAccessEntryRecord(t.Context(), kv, "c1", testPrincipalARN)
+	rec, err = access.Get(t.Context(), kv, "c1", testPrincipalARN)
 	require.NoError(t, err)
-	assert.Empty(t, effectiveGroups(rec))
+	assert.Empty(t, access.EffectiveGroups(rec))
 }
 
 func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
@@ -445,9 +446,9 @@ func TestListAccessPolicies_ReturnsSupportedCatalogue(t *testing.T) {
 	svc := setupTestService(t)
 	out, err := svc.ListAccessPolicies(context.Background(), &eks.ListAccessPoliciesInput{}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, out.AccessPolicies, len(supportedAccessPolicies))
+	require.Len(t, out.AccessPolicies, len(access.SupportedPolicies))
 	for _, p := range out.AccessPolicies {
-		_, ok := supportedAccessPolicies[aws.StringValue(p.Arn)]
+		_, ok := access.SupportedPolicies[aws.StringValue(p.Arn)]
 		assert.True(t, ok, "unexpected policy %s", aws.StringValue(p.Arn))
 		assert.NotEmpty(t, aws.StringValue(p.Name))
 	}

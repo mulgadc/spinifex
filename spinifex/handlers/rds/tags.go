@@ -10,8 +10,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/parametergroup"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/subnetgroup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // AWS's own tag limits. The reserved prefix is refused rather than dropped: a
@@ -48,6 +50,9 @@ type taggableResource struct {
 // resource. A default parameter group is deliberately absent: it has no stored
 // record, so a tag written to it would have nowhere to live and would read back
 // as absent on the next apply.
+var _ TaggedRecord = (*subnetgroup.Record)(nil)
+var _ TaggedRecord = (*parametergroup.Record)(nil)
+
 var taggableResources = map[ResourceKind]taggableResource{
 	ResourceKindDBInstance: {
 		key:       DBInstanceKey,
@@ -60,13 +65,13 @@ var taggableResources = map[ResourceKind]taggableResource{
 		notFound:  awserrors.ErrorDBSnapshotNotFound,
 	},
 	ResourceKindDBSubnetGroup: {
-		key:       DBSubnetGroupKey,
-		newRecord: func() TaggedRecord { return &DBSubnetGroupRecord{} },
+		key:       subnetgroup.Key,
+		newRecord: func() TaggedRecord { return &subnetgroup.Record{} },
 		notFound:  awserrors.ErrorDBSubnetGroupNotFound,
 	},
 	ResourceKindDBParameterGroup: {
-		key:       DBParameterGroupMetaKey,
-		newRecord: func() TaggedRecord { return &DBParameterGroupRecord{} },
+		key:       parametergroup.MetaKey,
+		newRecord: func() TaggedRecord { return &parametergroup.Record{} },
 		notFound:  awserrors.ErrorDBParameterGroupNotFound,
 	},
 }

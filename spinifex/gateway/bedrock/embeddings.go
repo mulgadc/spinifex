@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 const (

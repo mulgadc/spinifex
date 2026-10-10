@@ -2,18 +2,18 @@ package daemon
 
 import (
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -51,15 +51,15 @@ func createDefaultVPCTestDaemons(t *testing.T, n int) []*Daemon {
 func wireDefaultVPCServices(t *testing.T, daemon *Daemon, nc *nats.Conn) *Daemon {
 	t.Helper()
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
+	igwSvc, err := ec2igw.NewIGWServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.igwService = igwSvc
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
+	rtbSvc, err := ec2routetable.NewRouteTableServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.routeTableService = rtbSvc
 
@@ -262,7 +262,7 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 	daemon, _ := createDefaultVPCTestDaemon(t)
 
 	adminAccount := admin.DefaultAccountID()
-	for _, accountID := range []string{utils.GlobalAccountID, adminAccount} {
+	for _, accountID := range []string{awsidentifiers.GlobalAccountID, adminAccount} {
 		_, err := daemon.vpcService.EnsureDefaultVPC(accountID)
 		require.NoError(t, err)
 	}
@@ -274,7 +274,7 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, skipped.InternetGateways, "a skipped account must not have infrastructure attached")
 
-	built, err := daemon.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, utils.GlobalAccountID)
+	built, err := daemon.igwService.DescribeInternetGateways(t.Context(), &ec2.DescribeInternetGatewaysInput{}, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 	assert.Len(t, built.InternetGateways, 1)
 
@@ -290,7 +290,7 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 // handlers must say so rather than reply with an empty ID.
 func TestDefaultVPCHandlers_NoPersistence(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
-	d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{}
+	d.vpcService = &ec2vpc.VPCServiceImpl{}
 
 	msg, sub := syncReply(t, d.natsConn, "ec2.test.EnsureDefaultVpc.nopersist", []byte(`{"account_id":"000000000771"}`))
 	assert.Equal(t, outcomeError, d.handleEnsureDefaultVpc(msg))
@@ -307,7 +307,7 @@ func TestDefaultVPCHandlers_UnreadableClaim(t *testing.T) {
 	const account = "000000000772"
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	defaults, err := js.KeyValue(t.Context(), handlers_ec2_vpc.KVBucketDefaultVPCs)
+	defaults, err := js.KeyValue(t.Context(), ec2vpc.KVBucketDefaultVPCs)
 	require.NoError(t, err)
 	_, err = defaults.Put(t.Context(), account, []byte("{"))
 	require.NoError(t, err)

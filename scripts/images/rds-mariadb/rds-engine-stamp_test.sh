@@ -13,7 +13,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH='' cd -- "${SCRIPT_DIR}/../../.." && pwd)
 ENGINE="mariadb"
-ENGINE_GO="${REPO_ROOT}/spinifex/handlers/rds/engine_mariadb.go"
+ENGINE_GO="${REPO_ROOT}/spinifex/domains/rds/engine/mariadb.go"
 
 FAILS=0
 fail() { echo "FAIL: $*" >&2; FAILS=$((FAILS + 1)); }

@@ -26,8 +26,8 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
 	"github.com/mulgadc/spinifex/internal/gwsign"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 const (

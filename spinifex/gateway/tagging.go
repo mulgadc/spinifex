@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_tagging "github.com/mulgadc/spinifex/spinifex/gateway/tagging"
 )
 

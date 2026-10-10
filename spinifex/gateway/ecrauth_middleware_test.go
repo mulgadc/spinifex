@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,13 +30,13 @@ func ecrTestMasterKey(t *testing.T) []byte {
 }
 
 // newECRAuth builds a wired issuer+verifier over a freshly generated signing key.
-func newECRAuth(t *testing.T) (*gateway_ecrauth.Issuer, *gateway_ecrauth.Verifier) {
+func newECRAuth(t *testing.T) (*ecrauth.Issuer, *ecrauth.Verifier) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	key, verify, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, ecrTestMasterKey(t))
+	key, verify, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, ecrTestMasterKey(t))
 	require.NoError(t, err)
-	return gateway_ecrauth.NewIssuer(key, ecrTestAudience), gateway_ecrauth.NewVerifier(verify, ecrTestAudience)
+	return ecrauth.NewIssuer(key, ecrTestAudience), ecrauth.NewVerifier(verify, ecrTestAudience)
 }
 
 // mintBasic mints a token for account/"dev" using ecrBridgeTestAKID as its
@@ -45,9 +45,9 @@ func newECRAuth(t *testing.T) (*gateway_ecrauth.Issuer, *gateway_ecrauth.Verifie
 // active "dev" user in account (see ecrBridgeTestIAM), since the bridge now
 // rehydrates every token against current IAM state rather than trusting the
 // claims outright.
-func mintBasic(t *testing.T, iss *gateway_ecrauth.Issuer, account string) string {
+func mintBasic(t *testing.T, iss *ecrauth.Issuer, account string) string {
 	t.Helper()
-	tok, _, err := iss.Mint(gateway_ecrauth.Principal{
+	tok, _, err := iss.Mint(ecrauth.Principal{
 		AccountID:   account,
 		ARN:         "arn:aws:iam::" + account + ":user/dev",
 		Type:        principalTypeUser,

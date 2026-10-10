@@ -16,10 +16,10 @@ import (
 // fails too.
 func TestBedrockScopeTablesAreExhaustive(t *testing.T) {
 	served := map[string][]string{
-		"bedrock":               actionsOf(bedrockRoutes, func(r bedrockRoute) string { return r.action }),
-		"bedrock-runtime":       actionsOf(bedrockRuntimeRoutes, func(r bedrockRuntimeRoute) string { return r.action }),
-		"bedrock-agent":         actionsOf(bedrockAgentRoutes, func(r bedrockAgentRoute) string { return r.action }),
-		"bedrock-agent-runtime": actionsOf(bedrockAgentRuntimeRoutes, func(r bedrockAgentRuntimeRoute) string { return r.action }),
+		"bedrock":               actionsOf(bedrockRoutes, func(r bedrockRoute) string { return r.Action }),
+		"bedrock-runtime":       actionsOf(bedrockRuntimeRoutes, func(r bedrockRuntimeRoute) string { return r.Action }),
+		"bedrock-agent":         actionsOf(bedrockAgentRoutes, func(r bedrockAgentRoute) string { return r.Action }),
+		"bedrock-agent-runtime": actionsOf(bedrockAgentRuntimeRoutes, func(r bedrockAgentRuntimeRoute) string { return r.Action }),
 	}
 
 	for service, actions := range served {

@@ -11,11 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -242,7 +241,7 @@ func (s *STSServiceImpl) deleteSessions(ctx context.Context, match func(*Session
 	var deleted int
 	var errs []error
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		entry, err := bucket.Get(ctx, key)

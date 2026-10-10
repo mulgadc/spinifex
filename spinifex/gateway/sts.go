@@ -2,17 +2,18 @@ package gateway
 
 import (
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
-	spxarn "github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	spxarn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // stsCaller bundles the SigV4-derived caller fields that any STS action may
@@ -36,8 +37,8 @@ type STSHandler func(action string, q map[string]string, gw *GatewayConfig, c st
 func stsHandler[In any](handler func(c stsCaller, input *In, gw *GatewayConfig) (any, error)) STSHandler {
 	return func(action string, q map[string]string, gw *GatewayConfig, c stsCaller) ([]byte, error) {
 		input := new(In)
-		if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-			if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+		if err := query.QueryParamsToStruct(q, input); err != nil {
+			if errors.Is(err, query.ErrSliceTooLarge) {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			return nil, errors.New(awserrors.ErrorValidationError)
@@ -46,8 +47,8 @@ func stsHandler[In any](handler func(c stsCaller, input *In, gw *GatewayConfig) 
 		if err != nil {
 			return nil, err
 		}
-		payload := utils.GenerateIAMXMLPayload(action, output)
-		xmlOutput, err := utils.MarshalToXML(payload)
+		payload := awsxml.QueryResponsePayload(action, output)
+		xmlOutput, err := awsxml.Marshal(payload)
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorInternalError)
 		}
@@ -226,7 +227,7 @@ func buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN 
 	case principalTypeRoot:
 		return spxarn.FormatIAMRoot(accountID), nil
 	case principalTypeUser:
-		if identity == "root" && accountID == utils.GlobalAccountID {
+		if identity == "root" && accountID == awsidentifiers.GlobalAccountID {
 			return spxarn.FormatIAMRoot(accountID), nil
 		}
 		if identity == "" {

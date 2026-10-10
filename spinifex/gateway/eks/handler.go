@@ -4,44 +4,16 @@
 package gateway_eks
 
 import (
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // JSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect.
 const JSONContentType = "application/x-amz-json-1.1"
-
-// EKSJSONError is the AWS REST-JSON error envelope. SDKs key off __type for
-// awserr.Code() and message for awserr.Message().
-type EKSJSONError struct {
-	Type    string `json:"__type"`
-	Message string `json:"message"`
-}
-
-// GenerateEKSErrorResponse marshals the AWS REST-JSON error envelope.
-// The suffix "Exception" is appended idempotently — codes that already end in
-// it (e.g. "ResourceNotFoundException") are left unchanged to avoid the double
-// "ExceptionException" the SDK rejects.
-func GenerateEKSErrorResponse(code, message string) []byte {
-	if !strings.HasSuffix(code, "Exception") {
-		code += "Exception"
-	}
-	body, err := json.Marshal(EKSJSONError{
-		Type:    code,
-		Message: message,
-	})
-	if err != nil {
-		slog.Error("Failed to marshal EKS error JSON", "code", code, "err", err)
-		return fmt.Appendf(nil, `{"__type":"InternalErrorException","message":%q}`, message)
-	}
-	return body
-}
 
 // WriteJSONResponse serializes obj as AWS REST-JSON and writes a 200 response.
 // Uses jsonutil.BuildJSON (the SDK's own restjson marshaler) to honour
@@ -63,7 +35,7 @@ func WriteJSONResponse(w http.ResponseWriter, obj any) {
 // WriteJSONError emits the AWS REST-JSON error envelope with the given code,
 // message, and HTTP status.
 func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int) {
-	body := GenerateEKSErrorResponse(code, message)
+	body := envelope.JSONBody(code, message)
 	w.Header().Set("Content-Type", JSONContentType)
 	if httpStatus == 0 {
 		httpStatus = http.StatusInternalServerError

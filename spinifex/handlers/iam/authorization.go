@@ -11,8 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // canonicalARNAttempts bounds retries of a transient JetStream fault. This read

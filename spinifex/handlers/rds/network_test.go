@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestDefaultVPCID_SendsFilterNamesTheEC2SurfaceAccepts(t *testing.T) {
 	require.NotEmpty(t, h.network.vpcFilters, "the default-placement path must filter the describe")
 	for _, filter := range h.network.vpcFilters {
 		name := aws.StringValue(filter.Name)
-		assert.True(t, handlers_ec2_vpc.SupportsDescribeVpcsFilter(name),
+		assert.True(t, ec2vpc.SupportsDescribeVpcsFilter(name),
 			"DescribeVpcs rejects the filter %q; use the name the EC2 surface accepts", name)
 	}
 }

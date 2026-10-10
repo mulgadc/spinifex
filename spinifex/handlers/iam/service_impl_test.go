@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 	"testing"
@@ -12,10 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ import (
 // Interface compliance check.
 var _ IAMService = (*IAMServiceImpl)(nil)
 
-const testAccountID = utils.GlobalAccountID
+const testAccountID = awsidentifiers.GlobalAccountID
 
 func setupTestIAMService(t *testing.T) *IAMServiceImpl {
 	t.Helper()
@@ -849,24 +849,24 @@ func TestSeedBootstrap(t *testing.T) {
 	err = svc.SeedBootstrap(&BootstrapData{
 		AccessKeyID:     "AKIAEXAMPLE123456789",
 		EncryptedSecret: encryptedSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 	})
 	require.NoError(t, err)
 
 	// Verify root user exists at account-scoped key
-	out, err := svc.GetUser(utils.GlobalAccountID, &iam.GetUserInput{
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "root", *out.User.UserName)
-	assert.Contains(t, *out.User.Arn, utils.GlobalAccountID)
+	assert.Contains(t, *out.User.Arn, awsidentifiers.GlobalAccountID)
 	assert.Contains(t, *out.User.Arn, "root")
 
 	// Verify access key exists with AccountID
 	ak, err := svc.LookupAccessKey("AKIAEXAMPLE123456789")
 	require.NoError(t, err)
 	assert.Equal(t, "root", ak.UserName)
-	assert.Equal(t, utils.GlobalAccountID, ak.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, ak.AccountID)
 	assert.Equal(t, "Active", ak.Status)
 
 	// Verify secret is decryptable
@@ -875,9 +875,9 @@ func TestSeedBootstrap(t *testing.T) {
 	assert.Equal(t, "test-secret-key", decrypted)
 
 	// Verify global account record was created
-	account, err := svc.GetAccount(utils.GlobalAccountID)
+	account, err := svc.GetAccount(awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, utils.GlobalAccountID, account.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, account.AccountID)
 	assert.Equal(t, "system", account.AccountName)
 	assert.Equal(t, "ACTIVE", account.Status)
 }
@@ -890,7 +890,7 @@ func TestSeedBootstrap_Idempotent(t *testing.T) {
 	data := &BootstrapData{
 		AccessKeyID:     "AKIAEXAMPLE123456789",
 		EncryptedSecret: encryptedSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 	}
 
 	// First call seeds
@@ -902,7 +902,7 @@ func TestSeedBootstrap_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 
 	// Root user should still exist with original data
-	out, err := svc.GetUser(utils.GlobalAccountID, &iam.GetUserInput{
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err)
@@ -921,7 +921,7 @@ func TestSeedBootstrap_WithAdmin(t *testing.T) {
 	err = svc.SeedBootstrap(&BootstrapData{
 		AccessKeyID:     "AKIASYSTEM1234567890",
 		EncryptedSecret: systemSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 		Admin: &AdminBootstrapData{
 			AccountID:       "000000000001",
 			AccountName:     "spinifex",
@@ -933,7 +933,7 @@ func TestSeedBootstrap_WithAdmin(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify system root user exists
-	out, err := svc.GetUser(utils.GlobalAccountID, &iam.GetUserInput{
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err)
@@ -989,12 +989,12 @@ func TestSeedBootstrap_AdminNil_BackwardCompat(t *testing.T) {
 	err = svc.SeedBootstrap(&BootstrapData{
 		AccessKeyID:     "AKIAEXAMPLE123456789",
 		EncryptedSecret: encryptedSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 	})
 	require.NoError(t, err)
 
 	// Root user should exist
-	out, err := svc.GetUser(utils.GlobalAccountID, &iam.GetUserInput{
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
 		UserName: aws.String("root"),
 	})
 	require.NoError(t, err)

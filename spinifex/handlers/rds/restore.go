@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // RestoreDBInstanceFromDBSnapshot builds a new DB instance on a volume created from the snapshot. It is
@@ -52,19 +53,19 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 	if err != nil {
 		return nil, err
 	}
-	placement, err := s.resolvePlacement(ctx, kv, accountID, req)
+	placement, err := s.resolvePlacement(ctx, accountID, req)
 	if err != nil {
 		return nil, err
 	}
 	// resolveRestoreRequest forces the engine to the snapshot's, so a group of
 	// another engine is refused here however the request named it.
-	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.Engine, req.DBParameterGroupName, req.InstanceClass)
+	parameters, err := s.resolveGroupParameters(ctx, accountID, req.Engine, req.DBParameterGroupName, req.InstanceClass)
 	if err != nil {
 		return nil, err
 	}
 	// The agent cannot bootstrap without this profile, so resolve it before the
 	// identifier reservation or restored-volume creation.
-	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +163,7 @@ func (s *Service) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rd
 func (s *Service) resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord) (*validatedCreate, error) {
 	// The snapshot's engine, never the request's: the datadir is written in one
 	// engine's on-disk format and no other can read it.
-	engine, err := LookupEngine(snapshot.Engine)
+	engine, err := rdsengine.LookupEngine(snapshot.Engine)
 	if err != nil {
 		return nil, err
 	}
@@ -176,10 +177,10 @@ func (s *Service) resolveRestoreRequest(input *rds.RestoreDBInstanceFromDBSnapsh
 	if instanceClass == "" {
 		instanceClass = snapshot.DBInstanceClass
 	}
-	instanceType, err := InstanceTypeForClass(instanceClass)
+	instanceType, err := s.sizing.InstanceTypeForClass(instanceClass)
 	if err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
+			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(rdsengine.SupportedInstanceClasses(), ", "))
 	}
 
 	storage, err := resolveRestoreStorage(input, snapshot)
@@ -280,7 +281,7 @@ func resolveRestoreStorageType(input *rds.RestoreDBInstanceFromDBSnapshotInput, 
 	return storageType, nil
 }
 
-func resolveRestorePort(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord, engine Engine) (int64, error) {
+func resolveRestorePort(input *rds.RestoreDBInstanceFromDBSnapshotInput, snapshot *DBSnapshotRecord, engine rdsengine.Engine) (int64, error) {
 	if input.Port != nil {
 		port := aws.Int64Value(input.Port)
 		if port < minDBPort || port > maxDBPort {
@@ -383,7 +384,7 @@ func (s *Service) createRestoreVolume(ctx context.Context, req *validatedCreate,
 				{Key: aws.String(rdsInstanceTagKey), Value: aws.String(req.Identifier)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, fmt.Errorf("rds: create the data volume for %s from %s: %w",
 			req.Identifier, snapshot.DBSnapshotIdentifier, err)
@@ -403,7 +404,7 @@ func (s *Service) discardRestoreVolume(ctx context.Context, volumeID string) {
 	defer cancel()
 	if _, err := s.deps.Launch.Volume.DeleteVolume(rbCtx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
-	}, utils.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
+	}, awsidentifiers.GlobalAccountID); err != nil && !awserrors.IsNotFound(err) {
 		slog.WarnContext(rbCtx, "rds: rollback delete of a restored data volume failed",
 			"volumeId", volumeID, "err", err)
 	}

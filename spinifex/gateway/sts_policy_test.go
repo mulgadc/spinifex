@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,9 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -102,7 +102,7 @@ func stsPolicyRequest(t *testing.T, iamSvc handlers_iam.IAMService, stsSvc *flex
 		stsSvc = deniedSTSService(t)
 	}
 	return stsPolicyRequestAs(t, stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
@@ -168,7 +168,7 @@ func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
 	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
 	params := func(iamSvc handlers_iam.IAMService, stsSvc *flexMockSTSService) stsRequestParams {
 		return stsRequestParams{
-			accountID:         utils.GlobalAccountID,
+			accountID:         awsidentifiers.GlobalAccountID,
 			identity:          "s1",
 			principalType:     principalTypeAssumedRole,
 			accessKey:         "ASIAEXAMPLE",

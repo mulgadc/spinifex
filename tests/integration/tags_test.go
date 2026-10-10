@@ -20,7 +20,7 @@ import (
 // in for the same two-resource-isolation shape: a scratch VPC (stand-in for
 // "instance") and its own auto-created main route table (stand-in for "root
 // volume"). CreateTags/DescribeTags/DeleteTags never inspect resource
-// existence or type beyond the ID string (handlers/ec2/tags/service_impl.go
+// existence or type beyond the ID string (domains/ec2/tags/service_impl.go
 // getResourceType), so every assertion below — per-resource tag counts,
 // resource-id/resource-type/key filtering, Name overwrite-on-recreate,
 // unconditional vs. value-scoped delete-tags, cross-resource isolation —

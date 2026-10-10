@@ -7,8 +7,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 )
 
 // The resource a policy check evaluates against when the request names nothing

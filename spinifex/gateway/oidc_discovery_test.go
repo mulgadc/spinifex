@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 )
 
 const (

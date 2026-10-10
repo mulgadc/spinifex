@@ -5,12 +5,12 @@ package spx
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/nats-io/nats.go"
 )
 
@@ -40,21 +40,21 @@ func GetVersion(version, commit string) (*VersionOutput, error) {
 
 // GetNodesOutput is the response for GetNodes.
 type GetNodesOutput struct {
-	Nodes       []types.NodeStatusResponse `json:"nodes"`
-	ClusterMode string                     `json:"cluster_mode"`
+	Nodes       []clusterv1.NodeStatusResponse `json:"nodes"`
+	ClusterMode string                         `json:"cluster_mode"`
 }
 
 // GetNodes queries all daemon nodes via NATS fan-out and returns their status.
 func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesOutput, error) {
-	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.status", []byte("{}"),
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
+	frames, _, err := natsmsg.Gather(ctx, nc, clusterv1.NodeStatusSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}
 
-	nodes := make([]types.NodeStatusResponse, 0, len(frames))
+	nodes := make([]clusterv1.NodeStatusResponse, 0, len(frames))
 	for _, frame := range frames {
-		var node types.NodeStatusResponse
+		var node clusterv1.NodeStatusResponse
 		if json.Unmarshal(frame.Data, &node) == nil {
 			nodes = append(nodes, node)
 		}
@@ -73,7 +73,7 @@ func GetNodes(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetNodesO
 
 // VMInfoWithNode extends the daemon's VMInfo with node attribution.
 type VMInfoWithNode struct {
-	types.VMInfo
+	clusterv1.VMInfo
 
 	Node string `json:"node"`
 }
@@ -85,15 +85,15 @@ type GetVMsOutput struct {
 
 // GetVMs queries all daemon nodes via NATS fan-out and returns their VMs.
 func GetVMs(ctx context.Context, nc *nats.Conn, expectedNodes int) (*GetVMsOutput, error) {
-	frames, _, err := utils.Gather(ctx, nc, "spinifex.node.vms", []byte("{}"),
-		utils.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
+	frames, _, err := natsmsg.Gather(ctx, nc, clusterv1.NodeVMsSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedNodes: expectedNodes})
 	if err != nil {
 		return nil, err
 	}
 
 	allVMs := make([]VMInfoWithNode, 0)
 	for _, frame := range frames {
-		var nodeResp types.NodeVMsResponse
+		var nodeResp clusterv1.NodeVMsResponse
 		if json.Unmarshal(frame.Data, &nodeResp) != nil {
 			continue
 		}

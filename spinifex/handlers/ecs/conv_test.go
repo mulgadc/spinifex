@@ -1,6 +1,7 @@
 package handlers_ecs
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,7 +14,7 @@ func TestARNBuilders(t *testing.T) {
 	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:cluster/web",
 		ClusterARN("ap-southeast-2", "123456789012", "web"))
 	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:task-definition/nginx:3",
-		TaskDefARN("ap-southeast-2", "123456789012", "nginx", 3))
+		taskdefinition.ARN("ap-southeast-2", "123456789012", "nginx", 3))
 	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:task/web/t-1",
 		TaskARN("ap-southeast-2", "123456789012", "web", "t-1"))
 	assert.Equal(t, "arn:aws:ecs:ap-southeast-2:123456789012:container-instance/web/i-1",
@@ -21,12 +22,12 @@ func TestARNBuilders(t *testing.T) {
 }
 
 func TestTaskDefReservedSums(t *testing.T) {
-	td := &TaskDefRecord{Containers: []ContainerDef{
+	td := &taskdefinition.Record{Containers: []taskdefinition.Container{
 		{CPU: 128, MemoryMiB: 256},
 		{CPU: 64, MemoryMiB: 128},
 	}}
-	assert.Equal(t, 192, td.reservedCPU())
-	assert.Equal(t, 384, td.reservedMemory())
+	assert.Equal(t, 192, td.ReservedCPU())
+	assert.Equal(t, 384, td.ReservedMemory())
 }
 
 func TestClusterShortName(t *testing.T) {
@@ -69,12 +70,12 @@ func TestContainerDefRoundTrip(t *testing.T) {
 	assert.Equal(t, 8080, d.PortMappings[0].HostPort)
 	assert.Equal(t, "http", d.PortMappings[0].Name)
 
-	back := d.toAWS()
+	back := containerToAWS(d)
 	assert.Equal(t, "registry/web:1", aws.StringValue(back.Image))
 	assert.Equal(t, int64(80), aws.Int64Value(back.PortMappings[0].ContainerPort))
 	assert.Equal(t, "http", aws.StringValue(back.PortMappings[0].Name))
 
-	ac := d.toAssignContainer()
+	ac := containerToAssign(d)
 	assert.Equal(t, "web", ac.Name)
 	assert.Equal(t, "registry/web:1", ac.Image)
 	assert.Equal(t, "bar", ac.Environment["FOO"])
@@ -90,7 +91,7 @@ func TestContainerDefRoundTrip_PortNameOmittedWhenUnset(t *testing.T) {
 	defs := containerDefsFromAWS(in)
 	require.Len(t, defs, 1)
 	assert.Empty(t, defs[0].PortMappings[0].Name)
-	back := defs[0].toAWS()
+	back := containerToAWS(defs[0])
 	assert.Nil(t, back.PortMappings[0].Name)
 }
 
@@ -100,7 +101,7 @@ func TestContainerDefsFromAWS_SkipsNil(t *testing.T) {
 
 // TestContainerDefsFromAWS_GPU verifies that a
 // resourceRequirements entry of type=GPU is parsed as a whole-GPU count and
-// carried onto ContainerDef, its AWS round trip, and the bus AssignContainer.
+// carried onto taskdefinition.Container, its AWS round trip, and the bus AssignContainer.
 func TestContainerDefsFromAWS_GPU(t *testing.T) {
 	in := []*ecs.ContainerDefinition{{
 		Name: aws.String("gpu-app"), Image: aws.String("registry/gpu-app:1"), Essential: aws.Bool(true),
@@ -112,12 +113,12 @@ func TestContainerDefsFromAWS_GPU(t *testing.T) {
 	require.Len(t, defs, 1)
 	assert.Equal(t, 2, defs[0].GPU)
 
-	back := defs[0].toAWS()
+	back := containerToAWS(defs[0])
 	require.Len(t, back.ResourceRequirements, 1)
 	assert.Equal(t, ecs.ResourceTypeGpu, aws.StringValue(back.ResourceRequirements[0].Type))
 	assert.Equal(t, "2", aws.StringValue(back.ResourceRequirements[0].Value))
 
-	ac := defs[0].toAssignContainer()
+	ac := containerToAssign(defs[0])
 	assert.Equal(t, 2, ac.GPU)
 }
 
@@ -128,8 +129,8 @@ func TestContainerDefsFromAWS_NoGPU_Regression(t *testing.T) {
 	defs := containerDefsFromAWS(in)
 	require.Len(t, defs, 1)
 	assert.Zero(t, defs[0].GPU)
-	assert.Empty(t, defs[0].toAWS().ResourceRequirements)
-	assert.Zero(t, defs[0].toAssignContainer().GPU)
+	assert.Empty(t, containerToAWS(defs[0]).ResourceRequirements)
+	assert.Zero(t, containerToAssign(defs[0]).GPU)
 }
 
 // TestGPUCountFromResourceRequirements covers the extraction edge cases: nil
@@ -156,9 +157,9 @@ func TestGPUCountFromResourceRequirements(t *testing.T) {
 // TestTaskDefReservedGPU covers the task-level GPU aggregate (sum across
 // container defs), mirroring TestTaskDefReservedSums for CPU/memory.
 func TestTaskDefReservedGPU(t *testing.T) {
-	td := &TaskDefRecord{Containers: []ContainerDef{{GPU: 1}, {GPU: 3}}}
-	assert.Equal(t, 4, td.reservedGPU())
+	td := &taskdefinition.Record{Containers: []taskdefinition.Container{{GPU: 1}, {GPU: 3}}}
+	assert.Equal(t, 4, td.ReservedGPU())
 
-	empty := &TaskDefRecord{Containers: []ContainerDef{{CPU: 128}}}
-	assert.Zero(t, empty.reservedGPU())
+	empty := &taskdefinition.Record{Containers: []taskdefinition.Container{{CPU: 128}}}
+	assert.Zero(t, empty.ReservedGPU())
 }

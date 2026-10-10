@@ -3,9 +3,9 @@ package gateway_eks_test
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -98,7 +98,7 @@ func TestResourceARNsFidelity(t *testing.T) {
 // Deny naming the entry fences an ARN no object ever carries.
 func TestResourceARNsAccessEntryMatchesHandler(t *testing.T) {
 	const principal = "arn:aws:iam::123456789012:role/app/admin"
-	want := handlers_eks.PrincipalARNHash(principal)
+	want := access.PrincipalARNHash(principal)
 
 	resources := resolveARNs(t, "DeleteAccessEntry", []string{"prod", principal}, "")
 	assert.Equal(t,

@@ -3,11 +3,11 @@ package gateway_bedrock
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,12 +151,12 @@ func TestModelAccessStore_ListEmptyAccount(t *testing.T) {
 }
 
 // TestModelAccessStore_SystemAccountBypassesGrants mirrors how
-// handlers_quota exempts the system account from every quota dimension.
+// the quota package exempts the system account from every quota dimension.
 func TestModelAccessStore_SystemAccountBypassesGrants(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 
-	granted, err := store.Granted(context.Background(), utils.GlobalAccountID, selfHostTestModel)
+	granted, err := store.Granted(context.Background(), awsidentifiers.GlobalAccountID, selfHostTestModel)
 	require.NoError(t, err)
 	assert.True(t, granted, "the system account must bypass grants")
 }

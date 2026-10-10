@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"maps"
 	"net"
@@ -20,17 +23,18 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/admin"
-	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/idempotency"
-	"github.com/mulgadc/spinifex/spinifex/kvlease"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -112,7 +116,7 @@ type EKSServiceDeps struct {
 	Scheduler      HostScheduler
 
 	// AddonInstaller delivers managed-addon manifests; nil defaults to the KV staging installer.
-	AddonInstaller AddonInstaller
+	AddonInstaller addon.Installer
 
 	// CPControl lets the reconciler recover a wedged control-plane VM: describe
 	// its state and restart it. Nil disables auto-restart (health is still
@@ -243,6 +247,7 @@ type EKSServiceImpl struct {
 	deps     EKSServiceDeps
 	leaderKV jetstream.KeyValue
 	registry *ReconcilerRegistry
+	owner    *access.Owner
 
 	mu       sync.Mutex
 	bgCtx    context.Context
@@ -288,7 +293,7 @@ const defaultK8sVersion = "1.32"
 
 // NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
-	if err := validateAddonCatalog(addonCatalog); err != nil {
+	if err := addon.ValidateCatalog(); err != nil {
 		return nil, fmt.Errorf("eks: validate add-on catalog: %w", err)
 	}
 	if deps.NATSConn == nil {
@@ -310,9 +315,10 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 		deps:                     deps,
 		leaderKV:                 leaderKV,
 		registry:                 NewReconcilerRegistry(),
+		owner:                    access.New(deps.Region),
 		bgCtx:                    ctx,
 		bgCancel:                 cancel,
-		baseDomain:               handlers_dns.ResolveBaseDomain(deps.Config),
+		baseDomain:               dns.ResolveBaseDomain(deps.Config),
 		nodegroupReadyTimeout:    defaultNodegroupReadyTimeout,
 		nodegroupReadyPoll:       defaultNodegroupReadyPoll,
 		workerLaunchRetryTimeout: defaultWorkerLaunchRetryTimeout,
@@ -734,7 +740,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// private-subnet egress drop) and the private CP egresses via the NAT gateway
 	// (DNS + docker.io image pulls). Composed from the real EC2 VPC-family APIs,
 	// so the per-subnet egress policies are wired by the topology subscribers.
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	cpRefs, err := EnsureClusterCPVPC(ctx, s.cpVPCDeps(), sysAcct, name, region, cpVPCPrivateSubnetCount)
 	if err != nil {
 		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure managed CP VPC", err)
@@ -792,7 +798,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// extra NIC. Persist its refs immediately so teardown reclaims them on any later
 	// failure. nginx(L4) on the LB VM binds all addresses, so it answers the Set A
 	// NIC and proxies to the CP target group with no data-plane change.
-	var crossAccountENIs []sysinstance.ExtraENIInput
+	var crossAccountENIs []systeminstance.ExtraENIInput
 	if privateAccess {
 		pe, perr := EnsurePrivateEndpointENI(ctx, s.deps.VPCK3s, s.deps.VPCSG, s.deps.VPCSubnet, accountID, name, lc.subnetIDs[0], lc.vpcID)
 		if perr != nil {
@@ -805,7 +811,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "persist private endpoint refs", err)
 			return
 		}
-		crossAccountENIs = []sysinstance.ExtraENIInput{{
+		crossAccountENIs = []systeminstance.ExtraENIInput{{
 			ENIID:     pe.ENIID,
 			ENIMac:    pe.ENIMac,
 			ENIIP:     pe.ENIIP,
@@ -840,7 +846,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// only external SDK/kubectl clients use the name.
 	meta.EndpointDNSName = ""
 	if s.baseDomain != "" {
-		meta.EndpointDNSName = handlers_dns.EKSName(name, accountID, region, s.baseDomain)
+		meta.EndpointDNSName = dns.EKSName(name, accountID, region, s.baseDomain)
 	}
 	endpointHost := meta.EndpointIP
 	if meta.EndpointDNSName != "" {
@@ -994,9 +1000,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 
 	// Seed creator system:masters AccessEntry so the token webhook can authenticate the creator immediately.
 	if bootstrapCreatorAdmin(input) && callerPrincipalARN != "" {
-		rec := newAccessEntryRecord(region, accountID, name, callerPrincipalARN, "",
-			[]string{"system:masters"}, AccessEntryTypeStandard, nil, time.Now().UTC())
-		if err := PutAccessEntryRecord(ctx, acctKV, rec); err != nil {
+		if err := s.owner.SeedCreatorAdmin(ctx, acctKV, accountID, name, callerPrincipalARN); err != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "seed cluster-creator admin access entry", err)
 			return
 		}
@@ -1026,16 +1030,6 @@ func requestedAuthenticationMode(input *eks.CreateClusterInput) string {
 		return eks.AuthenticationModeApi
 	}
 	return deref(input.AccessConfig.AuthenticationMode, eks.AuthenticationModeApi)
-}
-
-// systemEgressEvent is the wire shape for vpc.add-system-egress /
-// vpc.delete-system-egress (mirrors network/subscribers.SystemEgressEvent;
-// kept local to avoid importing the network layer from a handler).
-type systemEgressEvent struct {
-	VpcId      string `json:"vpc_id"`
-	SubnetId   string `json:"subnet_id"`
-	InstanceIp string `json:"instance_ip"`
-	ExternalIp string `json:"external_ip"`
 }
 
 func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.DescribeClusterInput, accountID string) (*eks.DescribeClusterOutput, error) {
@@ -1273,7 +1267,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 	// (ManagedCPVPC nil) under the customer account, matching how they launched.
 	infraAcct := accountID
 	if meta.ManagedCPVPC != nil {
-		infraAcct = admin.SystemAccountID()
+		infraAcct = awsidentifiers.GlobalAccountID
 	}
 
 	var teardownErrs []error
@@ -1324,7 +1318,7 @@ func (s *EKSServiceImpl) purgeClusterInfra(ctx context.Context, accountID, name 
 			if len(meta.ResourcesVpcConfig.SubnetIds) > 0 {
 				subnetID = meta.ResourcesVpcConfig.SubnetIds[0]
 			}
-			utils.PublishEvent(s.deps.NATSConn, "vpc.delete-system-egress", systemEgressEvent{
+			projection.New(s.deps.NATSConn).RemoveSystemEgress(networkv1.SystemEgressEvent{
 				VpcId:      meta.ResourcesVpcConfig.VpcId,
 				SubnetId:   subnetID,
 				InstanceIp: meta.ControlPlaneENIIP,
@@ -1544,9 +1538,9 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 	}
 	entryType := aws.StringValue(input.Type)
 	if entryType == "" {
-		entryType = AccessEntryTypeStandard
+		entryType = access.EntryTypeStandard
 	}
-	if entryType != AccessEntryTypeStandard {
+	if entryType != access.EntryTypeStandard {
 		// Non-standard types (EC2_LINUX etc.) are not yet implemented.
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -1554,15 +1548,18 @@ func (s *EKSServiceImpl) CreateAccessEntry(ctx context.Context, input *eks.Creat
 	if err != nil {
 		return nil, err
 	}
-	if _, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN); err == nil {
-		return nil, errors.New(awserrors.ErrorEKSResourceInUse)
-	} else if !errors.Is(err, ErrAccessEntryNotFound) {
-		return nil, err
-	}
-	rec := newAccessEntryRecord(s.deps.Region, accountID, cluster, principalARN,
-		aws.StringValue(input.Username), aws.StringValueSlice(input.KubernetesGroups),
-		entryType, aws.StringValueMap(input.Tags), time.Now().UTC())
-	if err := PutAccessEntryRecord(ctx, acctKV, rec); err != nil {
+	rec, err := s.owner.Create(ctx, acctKV, accountID, access.Spec{
+		Cluster:      cluster,
+		PrincipalARN: principalARN,
+		Username:     aws.StringValue(input.Username),
+		Groups:       aws.StringValueSlice(input.KubernetesGroups),
+		Type:         entryType,
+		Tags:         aws.StringValueMap(input.Tags),
+	})
+	if err != nil {
+		if errors.Is(err, access.ErrExists) {
+			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		}
 		return nil, err
 	}
 	return &eks.CreateAccessEntryOutput{AccessEntry: accessEntryRecordToAWS(rec)}, nil
@@ -1578,9 +1575,9 @@ func (s *EKSServiceImpl) DescribeAccessEntry(ctx context.Context, input *eks.Des
 	if err != nil {
 		return nil, err
 	}
-	rec, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN)
+	rec, err := s.owner.Get(ctx, acctKV, cluster, principalARN)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1597,16 +1594,12 @@ func (s *EKSServiceImpl) ListAccessEntries(ctx context.Context, input *eks.ListA
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ListAccessEntryRecords(ctx, acctKV, cluster)
+	recs, err := s.owner.List(ctx, acctKV, cluster, aws.StringValue(input.AssociatedPolicyArn))
 	if err != nil {
 		return nil, err
 	}
-	filter := aws.StringValue(input.AssociatedPolicyArn)
 	arns := make([]string, 0, len(recs))
 	for _, rec := range recs {
-		if filter != "" && !hasAssociatedPolicy(rec, filter) {
-			continue
-		}
 		arns = append(arns, rec.PrincipalARN)
 	}
 	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(arns)}, nil
@@ -1622,19 +1615,10 @@ func (s *EKSServiceImpl) UpdateAccessEntry(ctx context.Context, input *eks.Updat
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	rec, err := casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
-		if input.KubernetesGroups != nil {
-			r.KubernetesGroups = aws.StringValueSlice(input.KubernetesGroups)
-		}
-		if u := aws.StringValue(input.Username); u != "" {
-			r.KubernetesUsername = u
-		}
-		r.ModifiedAt = now
-		return true
-	})
+	rec, err := s.owner.Update(ctx, acctKV, cluster, principalARN,
+		aws.StringValue(input.Username), aws.StringValueSlice(input.KubernetesGroups), input.KubernetesGroups != nil)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1652,8 +1636,8 @@ func (s *EKSServiceImpl) DeleteAccessEntry(ctx context.Context, input *eks.Delet
 	if err != nil {
 		return nil, err
 	}
-	if err := DeleteAccessEntryRecord(ctx, acctKV, cluster, principalARN); err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+	if err := s.owner.Delete(ctx, acctKV, cluster, principalARN); err != nil {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1668,14 +1652,14 @@ func (s *EKSServiceImpl) AssociateAccessPolicy(ctx context.Context, input *eks.A
 	cluster := aws.StringValue(input.ClusterName)
 	principalARN := aws.StringValue(input.PrincipalArn)
 	policyARN := aws.StringValue(input.PolicyArn)
-	if _, ok := supportedAccessPolicies[policyARN]; !ok {
+	if _, ok := access.SupportedPolicies[policyARN]; !ok {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	scope, err := validateAccessScope(input.AccessScope)
 	if err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if scope.Type == accessScopeNamespace {
+	if scope.Type == access.ScopeNamespace {
 		return nil, awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
 			"accessScope.type: namespace-scoped access policies are not supported, only cluster is supported")
 	}
@@ -1683,24 +1667,9 @@ func (s *EKSServiceImpl) AssociateAccessPolicy(ctx context.Context, input *eks.A
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	var assoc AssociatedAccessPolicy
-	_, err = casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
-		assoc = AssociatedAccessPolicy{PolicyARN: policyARN, AccessScope: scope, AssociatedAt: now, ModifiedAt: now}
-		for i := range r.AssociatedPolicies {
-			if r.AssociatedPolicies[i].PolicyARN == policyARN {
-				assoc.AssociatedAt = r.AssociatedPolicies[i].AssociatedAt
-				r.AssociatedPolicies[i] = assoc
-				r.ModifiedAt = now
-				return true
-			}
-		}
-		r.AssociatedPolicies = append(r.AssociatedPolicies, assoc)
-		r.ModifiedAt = now
-		return true
-	})
+	assoc, err := s.owner.Associate(ctx, acctKV, cluster, principalARN, policyARN, scope)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1723,19 +1692,8 @@ func (s *EKSServiceImpl) DisassociateAccessPolicy(ctx context.Context, input *ek
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	_, err = casUpdateAccessEntry(ctx, acctKV, cluster, principalARN, func(r *AccessEntryRecord) bool {
-		for i := range r.AssociatedPolicies {
-			if r.AssociatedPolicies[i].PolicyARN == policyARN {
-				r.AssociatedPolicies = append(r.AssociatedPolicies[:i], r.AssociatedPolicies[i+1:]...)
-				r.ModifiedAt = now
-				return true
-			}
-		}
-		return false
-	})
-	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+	if err := s.owner.Disassociate(ctx, acctKV, cluster, principalARN, policyARN); err != nil {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1753,9 +1711,9 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 	if err != nil {
 		return nil, err
 	}
-	rec, err := GetAccessEntryRecord(ctx, acctKV, cluster, principalARN)
+	rec, err := s.owner.Get(ctx, acctKV, cluster, principalARN)
 	if err != nil {
-		if errors.Is(err, ErrAccessEntryNotFound) {
+		if errors.Is(err, access.ErrNotFound) {
 			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
 		}
 		return nil, err
@@ -1772,7 +1730,7 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 }
 
 func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
-	arns := slices.Sorted(maps.Keys(supportedAccessPolicies))
+	arns := slices.Sorted(maps.Keys(access.SupportedPolicies))
 	policies := make([]*eks.AccessPolicy, 0, len(arns))
 	for _, arn := range arns {
 		policies = append(policies, &eks.AccessPolicy{
@@ -1781,13 +1739,6 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 		})
 	}
 	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies}, nil
-}
-
-// hasAssociatedPolicy reports whether the entry has the given policy ARN bound.
-func hasAssociatedPolicy(rec *AccessEntryRecord, policyARN string) bool {
-	return slices.ContainsFunc(rec.AssociatedPolicies, func(p AssociatedAccessPolicy) bool {
-		return p.PolicyARN == policyARN
-	})
 }
 
 // accessPolicyName extracts the policy short name from its ARN
@@ -2110,7 +2061,7 @@ func clusterJoinEndpoint(meta *ClusterMeta) string {
 // live in per-account KV buckets, so a complete cross-tenant view requires
 // reading every one: any bucket-read failure yields ok=false so the reconcile
 // suppresses EKS pruning rather than delete a tenant's endpoint on a partial view.
-func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok bool) {
+func (s *EKSServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 	if s == nil || s.baseDomain == "" {
 		return nil, false
 	}
@@ -2142,8 +2093,8 @@ func (s *EKSServiceImpl) DesiredDNSChanges() (changes []handlers_dns.Change, ok 
 				meta.EndpointDNSName == "" || meta.EndpointIP == "" {
 				continue
 			}
-			changes = append(changes, handlers_dns.EKSChanges(
-				handlers_dns.ActionUpsert, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP,
+			changes = append(changes, dns.EKSChanges(
+				dns.ActionUpsert, meta.EndpointDNSName, s.baseDomain, meta.EndpointIP,
 			)...)
 		}
 	}
@@ -2197,17 +2148,17 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 	// k3s binds the apiserver to the VPC node-ip, unreachable from the host. The
 	// CP publishes {healthz,node_count} on the mgmt bus the daemon already shares.
 	stateSubject := StateSubject(accountID, clusterName)
-	addonStatusSubject := AddonStatusSubject(accountID, clusterName)
+	addonStatusSubject := eksv1.AddonStatusSubject(accountID, clusterName)
 	opts := []ReconcilerOption{
 		WithStateSource(s.deps.NATSConn, stateSubject),
-		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject),
+		WithAddonStatusSource(s.deps.NATSConn, addonStatusSubject, s.addons()),
 	}
 	if s.deps.CPControl != nil {
 		// The control-plane VMs are launched under the system account (see
 		// placeControlPlane), not the customer account that owns the cluster
 		// record. CP describe/recover must therefore run as the system account —
 		// the customer account cannot see or own its own cluster's CP VMs.
-		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: admin.SystemAccountID()}))
+		opts = append(opts, WithCPInstanceControl(cpControlAdapter{ctl: s.deps.CPControl, accountID: awsidentifiers.GlobalAccountID}))
 		// Member-count reconcile: replace a terminated/gone CP member with a fresh
 		// one that joins the surviving quorum. The service replays the persisted
 		// create template; gated on CPControl since replacement needs member describe.

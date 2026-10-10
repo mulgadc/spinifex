@@ -7,7 +7,7 @@ set -euo pipefail
 # qcow2, writes a .sha256 sidecar (coreutils format, matched by the spx catalog
 # checksum verifier), and uploads both to the R2 bucket that backs
 # iso.mulgadc.com/system-ami/. The matching catalog entry in
-# spinifex/spinifex/utils/images.go then lets operators run:
+# spinifex/spinifex/operator/imagecatalog/images.go then lets operators run:
 #
 #   spx admin images import --name <catalog-key>
 #

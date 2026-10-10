@@ -7,11 +7,11 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // iamAction parses once so authorization and dispatch share one typed input.
@@ -26,8 +26,8 @@ func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) 
 	return iamAction{
 		parse: func(q map[string]string) (any, error) {
 			input := new(In)
-			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
-				if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+			if err := query.QueryParamsToStruct(q, input); err != nil {
+				if errors.Is(err, query.ErrSliceTooLarge) {
 					return nil, errors.New(awserrors.ErrorMalformedQueryString)
 				}
 				return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput, "The request parameters are invalid: %v", err)
@@ -43,8 +43,8 @@ func iamHandler[In any](handler func(string, *In, *GatewayConfig) (any, error)) 
 			if err != nil {
 				return nil, err
 			}
-			payload := utils.GenerateIAMXMLPayload(action, output)
-			xmlOutput, err := utils.MarshalToXML(payload)
+			payload := awsxml.QueryResponsePayload(action, output)
+			xmlOutput, err := awsxml.Marshal(payload)
 			if err != nil {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}
@@ -195,7 +195,7 @@ var iamActions = map[string]iamAction{
 	"DeleteInstanceProfile": iamHandler(func(accountID string, input *iam.DeleteInstanceProfileInput, gw *GatewayConfig) (any, error) {
 		countLive := func(profileARN string) (int, error) {
 			ctx := context.Background()
-			return gateway_ec2_instance.CountInstanceProfileAssociations(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, profileARN)
 		}
 		return gateway_iam.DeleteInstanceProfile(accountID, input, gw.IAMService, countLive)
 	}),

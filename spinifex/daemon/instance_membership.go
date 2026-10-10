@@ -1,6 +1,6 @@
 package daemon
 
-import "github.com/mulgadc/spinifex/spinifex/vm"
+import "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 
 // One key now holds an instance for its whole life, so which set it belongs to
 // is a predicate over the record rather than the prefix it sits under. Before

@@ -7,11 +7,11 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // elbv2Action parses once so authorization and dispatch share one typed input.
@@ -27,7 +27,7 @@ func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, str
 	return elbv2Action{
 		parse: func(q map[string]string) (any, error) {
 			input := new(In)
-			if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+			if err := query.QueryParamsToStruct(q, input); err != nil {
 				return nil, err
 			}
 			return input, nil
@@ -41,8 +41,8 @@ func elbv2Handler[In any](handler func(context.Context, *In, *GatewayConfig, str
 			if err != nil {
 				return nil, err
 			}
-			payload := utils.GenerateIAMXMLPayload(action, output)
-			xmlOutput, err := utils.MarshalToXML(payload)
+			payload := awsxml.QueryResponsePayload(action, output)
+			xmlOutput, err := awsxml.Marshal(payload)
 			if err != nil {
 				return nil, errors.New("failed to marshal response to XML")
 			}
@@ -177,7 +177,7 @@ var elbv2Actions = map[string]elbv2Action{
 
 // accountLoadBalancerLimit resolves the load balancer cap DescribeAccountLimits
 // reports. It is read here rather than in the operation file because
-// handlers/quota imports gateway/elbv2 to count live load balancers, so the
+// domains/admission/quota imports gateway/elbv2 to count live load balancers, so the
 // operation file cannot import it back.
 func accountLoadBalancerLimit(ctx context.Context, gw *GatewayConfig, accountID string) (int, error) {
 	// An exempt account has no cap enforced against it, so the AWS default is a
@@ -222,7 +222,7 @@ func (gw *GatewayConfig) ELBv2_Request(w http.ResponseWriter, r *http.Request) e
 
 	input, err := handler.parse(queryArgs)
 	if err != nil {
-		if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+		if errors.Is(err, query.ErrSliceTooLarge) {
 			return errors.New(awserrors.ErrorMalformedQueryString)
 		}
 		return err

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
-	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -12,10 +12,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1288,8 +1288,8 @@ func TestAreVolumeSocketsValid_ValidSocket(t *testing.T) {
 
 	instance := &vm.VM{
 		ID: "i-valid-sock",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-1", NBDURI: "nbd:unix:" + sockPath},
 			},
 		},
@@ -1300,8 +1300,8 @@ func TestAreVolumeSocketsValid_ValidSocket(t *testing.T) {
 func TestAreVolumeSocketsValid_MissingSocket(t *testing.T) {
 	instance := &vm.VM{
 		ID: "i-missing-sock",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-1", NBDURI: "nbd:unix:/nonexistent/path.sock"},
 			},
 		},
@@ -1319,8 +1319,8 @@ func TestAreVolumeSocketsValid_StaleSocketFile(t *testing.T) {
 
 	instance := &vm.VM{
 		ID: "i-stale-sock",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-1", NBDURI: "nbd:unix:" + sockPath},
 			},
 		},
@@ -1331,7 +1331,7 @@ func TestAreVolumeSocketsValid_StaleSocketFile(t *testing.T) {
 func TestAreVolumeSocketsValid_EmptyRequests(t *testing.T) {
 	instance := &vm.VM{
 		ID:          "i-no-vols",
-		EBSRequests: types.EBSRequests{},
+		EBSRequests: vm.EBSRequests{},
 	}
 	assert.True(t, vm.AreVolumeSocketsValid(instance))
 }
@@ -1340,8 +1340,8 @@ func TestAreVolumeSocketsValid_TCPTransport(t *testing.T) {
 	// TCP transport can't be validated locally — should return true.
 	instance := &vm.VM{
 		ID: "i-tcp",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-tcp", NBDURI: "nbd://192.168.1.1:10809"},
 			},
 		},
@@ -1384,7 +1384,7 @@ func TestMarkInstanceFailed_AlreadyTerminated(t *testing.T) {
 
 // LaunchTime reset for restored instances (Pending and Provisioning) is
 // covered deterministically by classifyRestoredInstances tests in
-// vm/restore_test.go. The previous daemon-side test went through the full
+// runtime/compute/vm/restore_test.go. The previous daemon-side test went through the full
 // Restore() pipeline including async relaunchAll → MarkFailed cleanup,
 // which made the post-restore state racy: the instance might or might not
 // be in the local map by the time the test ran assertions, and a t.Skip

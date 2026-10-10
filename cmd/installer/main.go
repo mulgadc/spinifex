@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	_ "github.com/mulgadc/bluebottle/pkg/fipsboot"
-	"github.com/mulgadc/spinifex/cmd/installer/autoinstall"
-	"github.com/mulgadc/spinifex/cmd/installer/install"
-	"github.com/mulgadc/spinifex/cmd/installer/ui"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/autoinstall"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/install"
+	"github.com/mulgadc/spinifex/spinifex/operator/installer/ui"
 )
 
 func main() {

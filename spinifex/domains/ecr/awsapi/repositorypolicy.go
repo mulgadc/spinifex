@@ -1,0 +1,117 @@
+package awsapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ecr"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// repoPolicyRequest is the shared input shape for the three repository-policy
+// actions. The AWS JSON 1.1 wire keys are camelCase locationNames; the SDK
+// input structs carry no json tags, so the fields are decoded explicitly.
+type repoPolicyRequest struct {
+	RepositoryName string `json:"repositoryName"`
+	RegistryID     string `json:"registryId"`
+	PolicyText     string `json:"policyText"`
+}
+
+// resolvePolicyRepo parses and validates the request, enforces the registryId
+// cross-account guard, and confirms the repository exists. It returns the parsed
+// request and the NATS-backed MetaStore for the follow-on policy operation.
+func resolvePolicyRepo(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (repoPolicyRequest, *ecrdomain.NATSMetaStore, error) {
+	var req repoPolicyRequest
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return req, nil, MalformedBodyError()
+		}
+	}
+	if err := ValidateRepositoryName(req.RepositoryName); err != nil {
+		return req, nil, err
+	}
+	// Cross-account registry access is the Q8 parity gap pending registry-policy
+	// v2; a registryId naming a different account is denied.
+	if req.RegistryID != "" && req.RegistryID != accountID {
+		return req, nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+
+	store := ecrdomain.NewNATSMetaStore(nc)
+	if _, err := store.GetRepo(ctx, accountID, req.RepositoryName); err != nil {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
+			return req, nil, RepositoryNotFoundError(accountID, req.RepositoryName)
+		}
+		return req, nil, err
+	}
+	return req, store, nil
+}
+
+// SetRepositoryPolicy stores the JSON IAM policy document for a repository. The
+// policy is passthrough metadata in v1: it is persisted and returned but not
+// evaluated for cross-account access (Q8; registry-policy evaluator is v2).
+func SetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	req, store, err := resolvePolicyRepo(ctx, nc, accountID, body)
+	if err != nil {
+		return nil, err
+	}
+	if req.PolicyText == "" {
+		return nil, ConstraintError("PolicyText", "Cannot be null")
+	}
+	if !json.Valid([]byte(req.PolicyText)) {
+		return nil, ConstraintError("policyText", "Invalid repository policy provided")
+	}
+	if err := store.PutRepoPolicy(ctx, accountID, req.RepositoryName, []byte(req.PolicyText)); err != nil {
+		return nil, err
+	}
+	return &ecr.SetRepositoryPolicyOutput{
+		RegistryId:     aws.String(accountID),
+		RepositoryName: aws.String(req.RepositoryName),
+		PolicyText:     aws.String(req.PolicyText),
+	}, nil
+}
+
+// GetRepositoryPolicy returns the stored policy document, or
+// RepositoryPolicyNotFoundException when none is set.
+func GetRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	req, store, err := resolvePolicyRepo(ctx, nc, accountID, body)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := store.GetRepoPolicy(ctx, accountID, req.RepositoryName)
+	if err != nil {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
+			return nil, RepositoryPolicyNotFoundError(accountID, req.RepositoryName)
+		}
+		return nil, err
+	}
+	return &ecr.GetRepositoryPolicyOutput{
+		RegistryId:     aws.String(accountID),
+		RepositoryName: aws.String(req.RepositoryName),
+		PolicyText:     aws.String(string(policy)),
+	}, nil
+}
+
+// DeleteRepositoryPolicy removes and returns the stored policy document, or
+// RepositoryPolicyNotFoundException when none is set.
+func DeleteRepositoryPolicy(ctx context.Context, nc *nats.Conn, accountID string, body []byte) (any, error) {
+	req, store, err := resolvePolicyRepo(ctx, nc, accountID, body)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := store.DeleteRepoPolicy(ctx, accountID, req.RepositoryName)
+	if err != nil {
+		if errors.Is(err, ecrdomain.ErrNotFound) {
+			return nil, RepositoryPolicyNotFoundError(accountID, req.RepositoryName)
+		}
+		return nil, err
+	}
+	return &ecr.DeleteRepositoryPolicyOutput{
+		RegistryId:     aws.String(accountID),
+		RepositoryName: aws.String(req.RepositoryName),
+		PolicyText:     aws.String(string(policy)),
+	}, nil
+}

@@ -16,10 +16,9 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 )
 
 const (
@@ -150,7 +149,7 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 	// element at all rather than an empty one.
 	roles := []*iam.Role{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -669,7 +668,7 @@ func (s *IAMServiceImpl) findInstanceProfilesForRole(ctx context.Context, accoun
 	keyPrefix := accountID + "."
 	var profiles []*InstanceProfile
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {

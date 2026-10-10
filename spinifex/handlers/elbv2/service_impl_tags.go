@@ -7,8 +7,8 @@ import (
 	"maps"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	resourcearn "github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // taggable bundles a resource's current tags with a persist closure so the

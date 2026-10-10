@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 )
 
 // ecrAuthBridge authenticates /v2/* requests with an ECR token. It accepts a
@@ -30,7 +30,7 @@ func (gw *GatewayConfig) ecrAuthBridge(next http.Handler) http.Handler {
 
 		authz := r.Header.Values("Authorization")
 		if len(authz) > 1 {
-			gateway_ecr.WriteError(w, http.StatusBadRequest, "UNAUTHORIZED", "multiple Authorization headers")
+			ecrregistry.WriteError(w, http.StatusBadRequest, "UNAUTHORIZED", "multiple Authorization headers")
 			return
 		}
 		raw := ""
@@ -53,7 +53,7 @@ func (gw *GatewayConfig) ecrAuthBridge(next http.Handler) http.Handler {
 		// Cross-account guard: a token is account-scoped, so it must match the
 		// account in the registry host it is presented against.
 		if target, _ := r.Context().Value(ctxTargetAccount).(string); target != "" && target != claims.AccountID {
-			gateway_ecr.WriteError(w, http.StatusForbidden, "DENIED", "token account does not match registry host")
+			ecrregistry.WriteError(w, http.StatusForbidden, "DENIED", "token account does not match registry host")
 			return
 		}
 
@@ -65,7 +65,7 @@ func (gw *GatewayConfig) ecrAuthBridge(next http.Handler) http.Handler {
 		if err != nil {
 			if isECRDependencyFailure(err) {
 				slog.Error("ECR auth bridge: principal rehydration dependency failure", "err", err)
-				gateway_ecr.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
+				ecrregistry.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
 				return
 			}
 			slog.Warn("ECR auth bridge: principal rehydration rejected token", "err", err)
@@ -73,7 +73,7 @@ func (gw *GatewayConfig) ecrAuthBridge(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := gateway_ecr.WithAuthAccount(r.Context(), claims.AccountID)
+		ctx := ecrregistry.WithAuthAccount(r.Context(), claims.AccountID)
 		ctx = context.WithValue(ctx, ctxAuthPrincipal, claims.Subject)
 		ctx = context.WithValue(ctx, ctxECRPrincipal, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -116,5 +116,5 @@ func extractECRToken(authz string) (string, bool) {
 func (gw *GatewayConfig) writeECRChallenge(w http.ResponseWriter, r *http.Request) {
 	realm := "https://" + r.Host + "/v2/token"
 	w.Header().Set("WWW-Authenticate", `Bearer realm="`+realm+`",service="`+r.Host+`"`)
-	gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+	ecrregistry.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 }

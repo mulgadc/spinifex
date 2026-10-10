@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/network/ovn"
-	"github.com/mulgadc/spinifex/spinifex/network/ovn/ovntest"
-	"github.com/mulgadc/spinifex/spinifex/network/policy"
-	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/ovntest"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
 
 // connectTimeout bounds the initial OVSDB handshake. The server is in-process

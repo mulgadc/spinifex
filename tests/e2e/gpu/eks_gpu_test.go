@@ -36,7 +36,7 @@ const (
 	eksGPUClusterPfx       = "eks-gpu-e2e"
 
 	// eksNodeAMIName / eksNodeGPUAMIName are the registered EKS node AMI
-	// names (see spinifex/spinifex/utils/images.go). Both must be imported —
+	// names (see spinifex/spinifex/operator/imagecatalog/images.go). Both must be imported —
 	// the base image for control-plane parity checks, the GPU variant for
 	// resolveWorkerAMI's GPU branch.
 	eksNodeAMIName    = "spinifex-eks-node"

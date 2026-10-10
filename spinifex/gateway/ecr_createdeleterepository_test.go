@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,33 +24,35 @@ func newRepoLifecycleGateway(t *testing.T) (*GatewayConfig, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDelete, svc.RepoDelete)
-	serveECRMeta(t, nc, handlers_ecr.SubjectManifestPut, svc.ManifestPut)
-	serveECRMeta(t, nc, handlers_ecr.SubjectManifestList, svc.ManifestList)
-	gw := &GatewayConfig{
+	svc := ecr.NewKVMetaService(js)
+	serveECRMeta(t, nc, ecr.SubjectRepoCreate, svc.RepoCreate)
+	serveECRMeta(t, nc, ecr.SubjectRepoDescribe, svc.RepoDescribe)
+	serveECRMeta(t, nc, ecr.SubjectRepoDelete, svc.RepoDelete)
+	serveECRMeta(t, nc, ecr.SubjectManifestPut, svc.ManifestPut)
+	serveECRMeta(t, nc, ecr.SubjectManifestList, svc.ManifestList)
+	gw := withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
-	}
+	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(ecr.NewNATSMetaStore(nc), awsapi.RepositoryEndpoint{
+		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+	})})
 	return gw, nc
 }
 
-func ecrLifecycleRequest(t *testing.T, gw *GatewayConfig, handler func(*GatewayConfig, http.ResponseWriter, *http.Request) error, body string) (*httptest.ResponseRecorder, error) {
+func ecrRepositoryRequest(t *testing.T, gw *GatewayConfig, action, body string) (*httptest.ResponseRecorder, error) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := setupECRRequest(awsapi.TargetPrefix+"."+action, body)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	return w, handler(gw, w, req.WithContext(ctx))
+	return w, gw.serveECR(w, req.WithContext(ctx))
 }
 
 func createRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
-	return ecrLifecycleRequest(t, gw, (*GatewayConfig).handleCreateRepository, body)
+	return ecrRepositoryRequest(t, gw, "CreateRepository", body)
 }
 
 func deleteRepo(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
-	return ecrLifecycleRequest(t, gw, (*GatewayConfig).handleDeleteRepository, body)
+	return ecrRepositoryRequest(t, gw, "DeleteRepository", body)
 }
 
 type repoOut struct {
@@ -96,7 +99,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 	_, err := createRepo(t, gw, `{"repositoryName":"team/tagged","tags":[{"Key":"env","Value":"prod"},{"Key":"team","Value":""}]}`)
 	require.NoError(t, err)
 
-	meta, err := handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/tagged")
+	meta, err := ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/tagged")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"env": "prod", "team": ""}, meta.Tags)
 
@@ -104,7 +107,7 @@ func TestCreateRepository_Tags(t *testing.T) {
 	// one written before tags were accepted here.
 	_, err = createRepo(t, gw, `{"repositoryName":"team/untagged"}`)
 	require.NoError(t, err)
-	meta, err = handlers_ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/untagged")
+	meta, err = ecr.NewNATSMetaStore(nc).GetRepo(context.Background(), ecrTestAccount, "team/untagged")
 	require.NoError(t, err)
 	assert.Nil(t, meta.Tags)
 
@@ -189,7 +192,7 @@ func TestCreateRepository_BadNameCarriesAWSMessage(t *testing.T) {
 }
 
 // noAccountRequest builds a request without the auth-context account ID, which
-// both handlers reject with ServerInternal before touching the store.
+// generic ECR dispatch rejects with InternalError before touching the store.
 func noAccountRequest(body string) *http.Request {
 	return httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 }
@@ -197,9 +200,11 @@ func noAccountRequest(body string) *http.Request {
 func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
-	err := gw.handleCreateRepository(httptest.NewRecorder(), noAccountRequest(`{"repositoryName":"team/app"}`))
+	req := noAccountRequest(`{"repositoryName":"team/app"}`)
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".CreateRepository")
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
+	assert.Equal(t, "InternalError", err.Error())
 
 	_, err = createRepo(t, gw, `{`)
 	require.Error(t, err)
@@ -209,9 +214,11 @@ func TestCreateRepository_NoAccountAndMalformed(t *testing.T) {
 func TestDeleteRepository_NoAccountAndMalformed(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 
-	err := gw.handleDeleteRepository(httptest.NewRecorder(), noAccountRequest(`{"repositoryName":"team/app"}`))
+	req := noAccountRequest(`{"repositoryName":"team/app"}`)
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".DeleteRepository")
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
+	assert.Equal(t, "InternalError", err.Error())
 
 	_, err = deleteRepo(t, gw, `{`)
 	require.Error(t, err)
@@ -251,8 +258,8 @@ func TestDeleteRepository_NotEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	// Seed an image (manifest) so the repo is non-empty.
-	store := handlers_ecr.NewNATSMetaStore(nc)
-	require.NoError(t, store.PutManifestMeta(context.Background(), ecrTestAccount, "team/app", handlers_ecr.ManifestMeta{
+	store := ecr.NewNATSMetaStore(nc)
+	require.NoError(t, store.PutManifestMeta(context.Background(), ecrTestAccount, "team/app", ecr.ManifestMeta{
 		Digest: "sha256:" + strings.Repeat("a", 64), MediaType: "application/json", Size: 7, PushedAt: time.Now(),
 	}))
 
@@ -282,12 +289,24 @@ func TestECRRequest_CreateDeleteDispatched(t *testing.T) {
 	create := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.CreateRepository", `{"repositoryName":"team/app"}`)
 	create = create.WithContext(context.WithValue(create.Context(), ctxAccountID, ecrTestAccount))
 	wc := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(wc, create))
+	require.NoError(t, gw.serveECR(wc, create))
 	assert.Equal(t, http.StatusOK, wc.Code)
 
 	del := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DeleteRepository", `{"repositoryName":"team/app"}`)
 	del = del.WithContext(context.WithValue(del.Context(), ctxAccountID, ecrTestAccount))
 	wd := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(wd, del))
+	require.NoError(t, gw.serveECR(wd, del))
 	assert.Equal(t, http.StatusOK, wd.Code)
+}
+
+func TestRepositoryActions_MissingComposition(t *testing.T) {
+	gw := &GatewayConfig{
+		Region:         ecrTestRegion,
+		DisableLogging: true,
+		IAMService:     allowAllIAMService(),
+	}
+
+	_, err := ecrRepositoryRequest(t, gw, "CreateRepository", `{"repositoryName":"team/app"}`)
+	require.Error(t, err)
+	assert.Equal(t, "ServerInternal", err.Error())
 }

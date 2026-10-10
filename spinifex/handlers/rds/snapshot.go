@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"slices"
 	"strings"
@@ -12,10 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The EC2 snapshot surface the RDS control plane drives. A DB snapshot is an
@@ -173,7 +174,7 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 				{Key: aws.String(rdsSnapshotAccountTagKey), Value: aws.String(accountID)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: %w", rec.DBInstanceIdentifier, err)
 	}
@@ -190,7 +191,7 @@ const crashConsistentSnapshotWarning = "The database engine could not be quiesce
 	"the snapshot is crash consistent."
 
 func crashConsistentSnapshotMessage(ctx context.Context, engineName string) string {
-	engine, err := LookupEngine(engineName)
+	engine, err := rdsengine.LookupEngine(engineName)
 	if err != nil {
 		// The snapshot has already been taken, so the customer still gets the half
 		// of the warning that does not depend on knowing the engine.
@@ -198,7 +199,7 @@ func crashConsistentSnapshotMessage(ctx context.Context, engineName string) stri
 			"engine", engineName, "err", err)
 		return crashConsistentSnapshotWarning
 	}
-	return crashConsistentSnapshotWarning + " " + engine.crashRecoveryNote
+	return crashConsistentSnapshotWarning + " " + engine.CrashRecoveryNote()
 }
 
 // Releases the quiesce on a context detached from the caller's, so a snapshot
@@ -365,7 +366,7 @@ func (s *Service) deleteEC2Snapshot(ctx context.Context, kv *kvstore.Bucket, acc
 	}
 	_, err := s.deps.Snapshots.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{
 		SnapshotId: aws.String(rec.SnapshotID),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	switch {
 	case err == nil || awserrors.IsNotFound(err):
 		return nil
@@ -441,7 +442,7 @@ func (s *Service) reclaimRetainedVolume(ctx context.Context, kv *kvstore.Bucket,
 	}
 	_, err = s.deps.Launch.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(retained.VolumeID),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	switch {
 	case err == nil || awserrors.IsNotFound(err):
 	case awserrors.IsErrorCode(err, awserrors.ErrorVolumeInUse):

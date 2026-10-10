@@ -6,21 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -113,13 +114,9 @@ func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeState
 	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
 }
 
-func (a *volumeMounterAdapter) topic(action string) string {
-	return fmt.Sprintf("ebs.%s.%s", a.node, action)
-}
-
 // ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
 // ctx and injecting it into the message headers so viperblockd's consumer span
-// (utils.StartConsumerSpan) joins this trace instead of rooting a new one.
+// (natsmsg.StartConsumerSpan) joins this trace instead of rooting a new one.
 //
 // accountID names the owner on the span and on the header viperblockd reads,
 // so block-storage work is attributable to a tenant. Empty is left off: a
@@ -131,7 +128,7 @@ func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject 
 		attribute.String("messaging.destination.name", subject),
 	}
 	if accountID != "" {
-		attrs = append(attrs, attribute.String(utils.AttrAccountID, accountID))
+		attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, accountID))
 	}
 
 	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "NATS "+subject,
@@ -147,9 +144,9 @@ func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject 
 
 	reqMsg := nats.NewMsg(subject)
 	reqMsg.Data = data
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	if accountID != "" {
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
 	}
 
 	msg, err = nc.RequestMsg(reqMsg, timeout)
@@ -184,7 +181,7 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 			return rollback(err)
 		}
 
-		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("mount"), ebsMountRequest, 30*time.Second)
+		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.MountSubject(a.node), ebsMountRequest, 30*time.Second)
 
 		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
 
@@ -198,7 +195,7 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 			return rollback(err)
 		}
 
-		var ebsMountResponse types.EBSMountResponse
+		var ebsMountResponse viperblocklegacyv1.EBSMountResponse
 		if err := json.Unmarshal(reply.Data, &ebsMountResponse); err != nil {
 			slog.Error("Failed to unmarshal volume response:", "err", err)
 			return rollback(err)
@@ -238,7 +235,7 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		// volume must NOT go available, because a reattach on a node without
 		// the local WAL would find no checkpoint (bad superblock).
 		sealed := true
-		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, a.topic("unmount"), ebsUnMountRequest, unmountSealTimeout)
+		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.UnmountSubject(a.node), ebsUnMountRequest, unmountSealTimeout)
 		if err != nil {
 			slog.Error("Failed to unmount volume",
 				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
@@ -286,20 +283,20 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 
 	var errs []error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		payload, err := json.Marshal(vbwire.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
+		payload, err := json.Marshal(viperblocklegacyv1.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("marshal abandon request for %s: %w", ebsRequest.Name, err))
 			continue
 		}
 
 		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID,
-			vbwire.VolumeAbandonSubject(a.node), payload, abandonTimeout)
+			viperblocklegacyv1.VolumeAbandonSubject(a.node), payload, abandonTimeout)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("abandon %s: %w", ebsRequest.Name, err))
 			continue
 		}
 
-		var resp vbwire.VolumeAbandonResponse
+		var resp viperblocklegacyv1.VolumeAbandonResponse
 		if err := json.Unmarshal(msg.Data, &resp); err != nil {
 			errs = append(errs, fmt.Errorf("unmarshal abandon response for %s: %w", ebsRequest.Name, err))
 			continue
@@ -319,18 +316,18 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 
 // MountOne sends ebs.mount for a single request and writes the resolved
 // NBDURI back into req.NBDURI. Used by hot-attach (Manager.AttachVolume).
-func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *types.EBSRequest) error {
+func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal ebs.mount request: %w", err)
 	}
 
-	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, a.topic("mount"), payload, 30*time.Second)
+	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.MountSubject(a.node), payload, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("ebs.mount NATS request: %w", err)
 	}
 
-	var resp types.EBSMountResponse
+	var resp viperblocklegacyv1.EBSMountResponse
 	if err := json.Unmarshal(reply.Data, &resp); err != nil {
 		return fmt.Errorf("unmarshal ebs.mount response: %w", err)
 	}
@@ -348,7 +345,7 @@ func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, r
 // UnmountOne sends ebs.unmount and returns any error. The handler seals the
 // volume's block map to predastore, so the caller decides whether a failure
 // blocks the volume's available transition.
-func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req types.EBSRequest) error {
+func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
 	if err := a.unmountOne(ctx, accountID, req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return err
@@ -358,12 +355,12 @@ func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string,
 }
 
 // unmountOne sends ebs.unmount and returns any error.
-func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req types.EBSRequest) error {
+func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal unmount request: %w", err)
 	}
-	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, a.topic("unmount"), payload, unmountSealTimeout)
+	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.UnmountSubject(a.node), payload, unmountSealTimeout)
 	if err != nil {
 		return fmt.Errorf("ebs.unmount NATS request: %w", err)
 	}
@@ -377,7 +374,7 @@ func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string,
 // reports NotFound once the seal itself has completed, so a retry landing
 // here is an idempotent success, not a failure.
 func unmountResponseError(data []byte) error {
-	var resp types.EBSUnMountResponse
+	var resp viperblocklegacyv1.EBSUnMountResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return fmt.Errorf("unmarshal unmount response: %w", err)
 	}
@@ -474,7 +471,7 @@ func (d *Daemon) onInstanceRecoveringHook() func(*vm.VM) {
 		if _, ok := d.natsSubscriptions[instance.ID]; ok {
 			return
 		}
-		sub, err := d.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events)
+		sub, err := d.natsConn.Subscribe(ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events)
 		if err != nil {
 			slog.Error("OnInstanceRecovering: failed to early-subscribe per-instance topic",
 				"instanceId", instance.ID, "err", err)
@@ -525,7 +522,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 			subject string
 			handler nats.MsgHandler
 		}{
-			{instance.ID, fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events},
+			{instance.ID, ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events},
 			{consoleSubKey, fmt.Sprintf("ec2.%s.GetConsoleOutput", instance.ID), d.handleEC2GetConsoleOutput},
 			{passwordSubKey, fmt.Sprintf("ec2.%s.GetPasswordData", instance.ID), d.handleEC2GetPasswordData},
 		}
@@ -618,7 +615,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 			}
 			if publicIP != "" && vpcID != "" && privateIP != "" {
 				portName := topology.Port(instance.ENIId)
-				utils.PublishNATEvent(d.natsConn, "vpc.add-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+				projection.New(d.natsConn).AddNATBestEffort(vpcID, publicIP, privateIP, portName, instance.ENIMac)
 			}
 		}
 		return nil
@@ -729,7 +726,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 		// viperblockd processes. S3 data is cleaned up via the parent root
 		// volume's DeleteVolume (which removes the -efi/ prefix).
 		if ebsRequest.EFI {
-			ebsDeleteData, err := json.Marshal(types.EBSDeleteRequest{Volume: ebsRequest.Name})
+			ebsDeleteData, err := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ebsRequest.Name})
 			if err != nil {
 				slog.Error("Failed to marshal ebs.delete request for internal volume",
 					"name", ebsRequest.Name, "err", err)
@@ -740,7 +737,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 			// of which has a caller to inherit a trace from. The account still
 			// comes off the instance, so the work stays attributable.
 			deleteMsg, err := ebsRequestWithTrace(context.Background(), a.d.natsConn, instance.AccountID,
-				"ebs.delete", ebsDeleteData, 30*time.Second)
+				viperblocklegacyv1.DeleteSubject, ebsDeleteData, 30*time.Second)
 			if err != nil {
 				slog.Warn("Failed to send ebs.delete for internal volume",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)
@@ -836,7 +833,7 @@ func (a *instanceCleanerAdapter) ReleasePublicIP(instance *vm.VM) error {
 			logicalIP = *instance.Instance.PrivateIpAddress
 		}
 	}
-	utils.PublishNATEvent(a.d.natsConn, "vpc.delete-nat", vpcId, instance.PublicIP, logicalIP, portName, "")
+	projection.New(a.d.natsConn).RemoveNAT(vpcId, instance.PublicIP, logicalIP, portName, "")
 
 	if err := a.d.externalIPAM.ReleaseIP(context.Background(), instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
 		// An untracked lease is terminal: the local pool slot is already free and
@@ -1022,7 +1019,7 @@ func (a *instanceCleanerAdapter) RemoveFromPlacementGroup(instance *vm.VM) error
 	if instance.PlacementGroupName == "" || a.d.placementGroupService == nil {
 		return nil
 	}
-	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &handlers_ec2_placementgroup.RemoveInstanceInput{
+	if _, err := a.d.placementGroupService.RemoveInstance(context.Background(), &ec2placementgroup.RemoveInstanceInput{
 		GroupName:  instance.PlacementGroupName,
 		NodeName:   instance.PlacementGroupNode,
 		InstanceID: instance.ID,

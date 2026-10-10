@@ -135,7 +135,7 @@ fi
 # characters, so `qemu-system-x86_64` is stored as `qemu-system-x86` and an -x
 # match on the full name can never fire. Match the prefix instead: it is 11
 # characters, well under the limit, and covers both x86_64 and aarch64. This is
-# the same rule qemuProcessPrefix applies in spinifex/vm/orphan_scan.go.
+# the same rule qemuProcessPrefix applies in spinifex/runtime/compute/vm/orphan_scan.go.
 #
 # Deliberately not -f. That matches the whole command line, where argv[0] may
 # carry a path, so an anchored pattern misses the process it was written for.

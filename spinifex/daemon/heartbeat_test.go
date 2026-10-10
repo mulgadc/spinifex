@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/instancecache"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"

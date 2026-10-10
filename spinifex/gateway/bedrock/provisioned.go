@@ -9,25 +9,25 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // EndpointProvisioner is the narrow surface the provisioned-throughput ops
-// need from the daemon's endpoint lifecycle (handlers_bedrock.EndpointService):
+// need from the daemon's endpoint lifecycle (ochre.EndpointService):
 // launch a pinned endpoint, read its state, and tear it down. It is declared
 // here with primitive-typed methods rather than that package's input/output
-// structs because handlers_bedrock already imports this package
+// structs because domains/ochre already imports this package
 // (LookupServingSpec), so importing it back here would cycle. See
-// handlers_bedrock.ProvisionedEndpointAdapter for the real implementation
+// ochre.ProvisionedEndpointAdapter for the real implementation
 // over EndpointService; tests in this package use a stub instead.
 type EndpointProvisioner interface {
 	// EnsurePinned requests a pinned, account-scoped endpoint for modelID.
 	EnsurePinned(ctx context.Context, accountID, modelID string) error
 	// EndpointState reports (accountID, modelID)'s current endpoint state:
 	// one of the endpointState* constants below, mirroring
-	// handlers_bedrock.EndpointState's string values.
+	// ochre.EndpointState's string values.
 	EndpointState(ctx context.Context, accountID, modelID string) (state string, err error)
 	// DeletePinned tears down (accountID, modelID)'s pinned endpoint.
 	// Idempotent: an already-absent endpoint is a success.
@@ -35,7 +35,7 @@ type EndpointProvisioner interface {
 }
 
 // Endpoint state strings EndpointProvisioner.EndpointState returns, mirroring
-// handlers_bedrock.EndpointState's string values without importing that
+// ochre.EndpointState's string values without importing that
 // package back.
 const (
 	endpointStateStarting = "STARTING"
@@ -51,7 +51,7 @@ const bedrockProvisionedBucket = "bedrock-provisioned"
 const bedrockProvisionedHistory = 1
 
 // ProvisionedModelRecord is the gateway control-plane state for one
-// commitment. The VM it pins is daemon-owned (handlers_bedrock.EndpointRecord);
+// commitment. The VM it pins is daemon-owned (ochre.EndpointRecord);
 // this record is the AWS-shaped metadata layered on top of it.
 type ProvisionedModelRecord struct {
 	ARN                  string `json:"arn"`
@@ -355,7 +355,7 @@ func UpdateProvisionedModelThroughput(ctx context.Context, accountID string, sto
 
 // DeleteProvisionedModelThroughput tears down the pinned endpoint for
 // input.ProvisionedModelId's model, then removes the record. An already-absent
-// commitment is a no-op success, matching handlers_bedrock.Service.Delete's
+// commitment is a no-op success, matching ochre.Service.Delete's
 // own idempotence.
 func DeleteProvisionedModelThroughput(ctx context.Context, accountID string, store *ProvisionedStore, input *bedrock.DeleteProvisionedModelThroughputInput) (*bedrock.DeleteProvisionedModelThroughputOutput, error) {
 	if input == nil || aws.StringValue(input.ProvisionedModelId) == "" {

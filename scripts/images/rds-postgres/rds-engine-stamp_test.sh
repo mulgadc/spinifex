@@ -23,7 +23,7 @@ if ! grep -q "engine=${ENGINE} " "${SCRIPT_DIR}/manifest.conf"; then
     exit 1
 fi
 
-if ! grep -q "enginePostgres = \"${ENGINE}\"" "${REPO_ROOT}/cmd/rds-agent/engine.go"; then
+if ! grep -q "enginePostgres = \"${ENGINE}\"" "${REPO_ROOT}/spinifex/agents/rds/agent/engine.go"; then
     echo "FAIL: rds-agent does not implement an engine named ${ENGINE}" >&2
     exit 1
 fi

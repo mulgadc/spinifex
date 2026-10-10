@@ -1,0 +1,224 @@
+// Package ebsmetadata owns Spinifex's control-plane view of EBS resources.
+// These documents deliberately do not mirror viperblock's VBState schema.
+package ebsmetadata
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"strings"
+	"time"
+)
+
+// SchemaVersion is the document's field generation, and moves independently of
+// the key layout's v2 prefix. They start aligned on a fresh install and are not
+// promised to stay so: adding a field bumps this without re-keying anything.
+const SchemaVersion uint16 = 2
+
+// ErrCorruptDocument wraps decode and schema-version failures so callers can
+// tell a document that exists but cannot be read from one that is absent. The
+// two deserve different answers: salvage versus not-found.
+var ErrCorruptDocument = errors.New("corrupt EBS metadata document")
+
+// Volume is the control-plane record used for EC2 Describe/Modify/attachment
+// operations. ProviderHandle is opaque and is never decoded by the API layer.
+type Volume struct {
+	SchemaVersion       uint16              `json:"schema_version"`
+	VolumeID            string              `json:"volume_id"`
+	VolumeName          string              `json:"volume_name,omitempty"`
+	TenantID            string              `json:"tenant_id"`
+	CapacityGiB         uint64              `json:"capacity_gib"`
+	State               string              `json:"state"`
+	CreatedAt           time.Time           `json:"created_at"`
+	AttachedAt          time.Time           `json:"attached_at,omitzero"`
+	AvailabilityZone    string              `json:"availability_zone"`
+	AttachedInstance    string              `json:"attached_instance,omitempty"`
+	DeviceName          string              `json:"device_name,omitempty"`
+	VolumeType          string              `json:"volume_type"`
+	IOPS                int                 `json:"iops"`
+	Throughput          int                 `json:"throughput,omitempty"`
+	Tags                map[string]string   `json:"tags,omitempty"`
+	SnapshotID          string              `json:"snapshot_id,omitempty"`
+	DeleteOnTermination bool                `json:"delete_on_termination,omitempty"`
+	Encrypted           bool                `json:"encrypted,omitempty"`
+	ProviderHandle      string              `json:"provider_handle,omitempty"`
+	Modification        *VolumeModification `json:"modification,omitempty"`
+}
+
+// VolumeModification is the control-plane record of a completed or in-flight
+// ModifyVolume operation, read back by DescribeVolumesModifications. It owns
+// its own fields rather than reusing viperblock.VolumeModification: this
+// package must stay free of viperblock types. VolumeID is deliberately not
+// duplicated here — callers have it from the owning Volume.
+type VolumeModification struct {
+	ModificationState  string    `json:"modification_state"`
+	Progress           int64     `json:"progress"`
+	StatusMessage      string    `json:"status_message,omitempty"`
+	OriginalSize       int64     `json:"original_size"`
+	OriginalIOPS       int64     `json:"original_iops"`
+	OriginalVolumeType string    `json:"original_volume_type"`
+	TargetSize         int64     `json:"target_size"`
+	TargetIOPS         int64     `json:"target_iops"`
+	TargetVolumeType   string    `json:"target_volume_type"`
+	StartTime          time.Time `json:"start_time"`
+	EndTime            time.Time `json:"end_time,omitzero"`
+}
+
+// Snapshot is the control-plane record used for EC2 snapshot operations. It
+// deliberately excludes viperblock's own half of the snapshot prefix — the
+// block checkpoint and config.json — which stays at the bucket root.
+type Snapshot struct {
+	SchemaVersion    uint16            `json:"schema_version"`
+	SnapshotID       string            `json:"snapshot_id"`
+	VolumeID         string            `json:"volume_id"`
+	VolumeSize       int64             `json:"volume_size"`
+	State            string            `json:"state"`
+	Progress         string            `json:"progress"`
+	StartTime        time.Time         `json:"start_time"`
+	Description      string            `json:"description"`
+	Encrypted        bool              `json:"encrypted"`
+	OwnerID          string            `json:"owner_id"`
+	AvailabilityZone string            `json:"availability_zone"`
+	Tags             map[string]string `json:"tags,omitempty"`
+	ProviderHandle   string            `json:"provider_handle,omitempty"`
+}
+
+// RootDeviceName is the device every image this platform serves reports as its
+// root. DescribeImages returns it, so it is also the name a caller's root block
+// device mapping carries, and the name that says which mapping is the root.
+const RootDeviceName = "/dev/sda1"
+
+// AMI is the control-plane record used for EC2 image operations.
+type AMI struct {
+	SchemaVersion   uint16            `json:"schema_version"`
+	ImageID         string            `json:"image_id"`
+	Name            string            `json:"name"`
+	Description     string            `json:"description,omitempty"`
+	Architecture    string            `json:"architecture"`
+	PlatformDetails string            `json:"platform_details"`
+	CreationDate    time.Time         `json:"creation_date"`
+	RootDeviceType  string            `json:"root_device_type"`
+	Virtualization  string            `json:"virtualization"`
+	ImageOwnerAlias string            `json:"image_owner_alias"`
+	VolumeSizeGiB   uint64            `json:"volume_size_gib"`
+	SnapshotID      string            `json:"snapshot_id,omitempty"`
+	BootMode        string            `json:"boot_mode,omitempty"`
+	Distro          string            `json:"distro,omitempty"`
+	DistroFamily    string            `json:"distro_family,omitempty"`
+	Tags            map[string]string `json:"tags,omitempty"`
+	SourceDigest    *ImageDigest      `json:"source_digest,omitempty"`
+	State           string            `json:"state,omitempty"`
+}
+
+// ImageDigest identifies the artifact an AMI was imported from, not the
+// volume's current bytes; Verification says who vouched for it.
+type ImageDigest struct {
+	Algorithm    string `json:"algorithm"`
+	Value        string `json:"value"`
+	Verification string `json:"verification"`
+	Source       string `json:"source,omitempty"`
+	Filename     string `json:"filename"`
+}
+
+// ImageDigest.Verification values.
+const (
+	DigestOperator   = "operator"
+	DigestCatalog    = "catalog"
+	DigestUnverified = "unverified"
+)
+
+// VolumeKey keys a volume document under its owning account, so a listing of
+// one account's prefix cannot reach another account's document. accountID comes
+// from the document's own TenantID, never from the caller.
+func VolumeKey(accountID, volumeID string) (string, error) {
+	return partitionedKey("volumes", accountID, volumeID)
+}
+
+// SnapshotKey keys a snapshot document under its owning account, taken from the
+// document's own OwnerID rather than from the caller.
+func SnapshotKey(accountID, snapshotID string) (string, error) {
+	return partitionedKey("snapshots", accountID, snapshotID)
+}
+
+// AMIKey is unpartitioned: an AMI's owner is an alias rather than an account,
+// and system images are visible to every account.
+func AMIKey(imageID string) (string, error) { return key("amis", imageID) }
+
+// partitionedKey refuses an owning account that is not an account ID, so an
+// untenanted document cannot be written, cannot exist, and never has to be
+// read. A transposed (id, account) pair fails here too.
+func partitionedKey(kind, accountID, id string) (string, error) {
+	if !awsidentifiers.IsAccountID(accountID) {
+		return "", fmt.Errorf("invalid EBS metadata account ID %q", accountID)
+	}
+	return key(kind+"/"+accountID, id)
+}
+
+// key rejects an ID that would escape or rename its own path segment.
+func key(kind, id string) (string, error) {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\") {
+		return "", fmt.Errorf("invalid EBS metadata ID %q", id)
+	}
+	return "spinifex/ebsmetadata/v2/" + kind + "/" + id + ".json", nil
+}
+
+// MarshalVolume encodes volume as JSON, stamping the current SchemaVersion over
+// whatever the caller set.
+func MarshalVolume(volume Volume) ([]byte, error) {
+	volume.SchemaVersion = SchemaVersion
+	return json.Marshal(volume)
+}
+
+// UnmarshalVolume decodes a stored volume document. Malformed JSON or a schema
+// version other than SchemaVersion returns an error wrapping ErrCorruptDocument.
+func UnmarshalVolume(data []byte) (Volume, error) {
+	var volume Volume
+	if err := json.Unmarshal(data, &volume); err != nil {
+		return Volume{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
+	}
+	if volume.SchemaVersion != SchemaVersion {
+		return Volume{}, fmt.Errorf("%w: unsupported volume metadata schema version %d", ErrCorruptDocument, volume.SchemaVersion)
+	}
+	return volume, nil
+}
+
+// MarshalSnapshot encodes snapshot as JSON, stamping the current SchemaVersion over
+// whatever the caller set.
+func MarshalSnapshot(snapshot Snapshot) ([]byte, error) {
+	snapshot.SchemaVersion = SchemaVersion
+	return json.Marshal(snapshot)
+}
+
+// UnmarshalSnapshot decodes a stored snapshot document. Malformed JSON or a schema
+// version other than SchemaVersion returns an error wrapping ErrCorruptDocument.
+func UnmarshalSnapshot(data []byte) (Snapshot, error) {
+	var snapshot Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return Snapshot{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
+	}
+	if snapshot.SchemaVersion != SchemaVersion {
+		return Snapshot{}, fmt.Errorf("%w: unsupported snapshot metadata schema version %d", ErrCorruptDocument, snapshot.SchemaVersion)
+	}
+	return snapshot, nil
+}
+
+// MarshalAMI encodes ami as JSON, stamping the current SchemaVersion over
+// whatever the caller set.
+func MarshalAMI(ami AMI) ([]byte, error) {
+	ami.SchemaVersion = SchemaVersion
+	return json.Marshal(ami)
+}
+
+// UnmarshalAMI decodes a stored AMI document. Malformed JSON or a schema
+// version other than SchemaVersion returns an error wrapping ErrCorruptDocument.
+func UnmarshalAMI(data []byte) (AMI, error) {
+	var ami AMI
+	if err := json.Unmarshal(data, &ami); err != nil {
+		return AMI{}, fmt.Errorf("%w: %w", ErrCorruptDocument, err)
+	}
+	if ami.SchemaVersion != SchemaVersion {
+		return AMI{}, fmt.Errorf("%w: unsupported AMI metadata schema version %d", ErrCorruptDocument, ami.SchemaVersion)
+	}
+	return ami, nil
+}

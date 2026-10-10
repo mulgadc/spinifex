@@ -14,12 +14,12 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/instancecache"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -135,7 +135,7 @@ func TestRecoveryStartsAndStopsOnContext(t *testing.T) {
 			node:            "node-1",
 			clusterConfig:   threeNodes(),
 			jsManager:       m,
-			instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
+			instanceService: &ec2instance.InstanceServiceImpl{},
 			ctx:             ctx,
 			cancel:          cancel,
 		}

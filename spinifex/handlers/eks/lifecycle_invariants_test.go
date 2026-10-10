@@ -12,7 +12,7 @@ import (
 )
 
 // TestRLC1_EKSDeleteClusterIdempotentOnAbsent enforces the Common Resource
-// Lifecycle Contract rule #1 (idempotent delete), ADR-0006 §1: DeleteCluster of
+// Lifecycle Contract rule #1 (idempotent delete), ADR-0003:S2: DeleteCluster of
 // a cluster already swept from KV returns success, not ResourceNotFound, so a
 // tofu destroy retry / double-targeted graph node converges instead of failing
 // the run. The live-reference teardown is unaffected — only true absence is
@@ -22,12 +22,12 @@ func TestRLC1_EKSDeleteClusterIdempotentOnAbsent(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
 	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("absent"), testAccountID)
-	require.NoErrorf(t, err, "ADR-0006 §1: DeleteCluster on an absent cluster must return success, not ResourceNotFound (RLC rule #1)")
-	require.NotNil(t, out, "ADR-0006 §1: DeleteCluster must return a non-nil output on absent")
+	require.NoErrorf(t, err, "ADR-0003:S2: DeleteCluster on an absent cluster must return success, not ResourceNotFound (RLC rule #1)")
+	require.NotNil(t, out, "ADR-0003:S2: DeleteCluster must return a non-nil output on absent")
 	assert.Empty(t, f.inst.terminateCalls, "an absent cluster must trigger no billable teardown")
 }
 
-// TestRLC2_EKSBillableTeardownBeforeKVSweep enforces ADR-0006 §6 billable-before-
+// TestRLC2_EKSBillableTeardownBeforeKVSweep exercises ADR-0003:S2's billable-before-
 // sweep ordering: the KV sweep (DeleteClusterPrefix) must NOT run while any
 // billable teardown (OIDC / NLB / VM / EIP) returned an error. A failed VM
 // terminate must leave the cluster meta in DELETING — its resource ARNs/IDs
@@ -39,16 +39,16 @@ func TestRLC2_EKSBillableTeardownBeforeKVSweep(t *testing.T) {
 	f.inst.terminateErr = errors.New("hypervisor unreachable")
 
 	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
-	require.Error(t, err, "ADR-0006 §6: a failed billable teardown must surface, not be swallowed")
+	require.Error(t, err, "ADR-0003:S2: a failed billable teardown must surface, not be swallowed")
 
 	require.Len(t, f.inst.terminateCalls, 1, "the VM teardown must have been attempted")
 	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoErrorf(t, getErr, "ADR-0006 §6 billable-before-sweep: the KV sweep must NOT run while a billable teardown is failing — the meta must survive for retry")
+	require.NoErrorf(t, getErr, "ADR-0003:S2 billable-before-sweep: the KV sweep must NOT run while a billable teardown is failing — the meta must survive for retry")
 	assert.Equal(t, ClusterStatusDeleting, meta.Status, "a cluster with failed teardown must stay DELETING")
 }
 
-// TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete enforces ADR-0006 §6 NLB
-// no-orphan (riding ADR-0002 cascade composition): after a
+// TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete exercises ADR-0003:S2's NLB
+// no-orphan (riding historic PROP-LIFECYCLE-002 cascade composition): after a
 // successful DeleteCluster, the eks-{cluster}-cp target group must be gone — an
 // orphaned EKS NLB target group would pin itself as ResourceInUse exactly as a
 // user target group does.
@@ -73,5 +73,5 @@ func TestRLC3_EKSNLBNoOrphanTargetGroupAfterDelete(t *testing.T) {
 	_, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
 	require.ErrorIs(t, getErr, ErrClusterNotFound, "a fully torn-down cluster must be swept")
 	assert.NotContainsf(t, f.nlb.tgByName, tgName,
-		"ADR-0006 §6 NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides ADR-0002/172)")
+		"ADR-0003:S2 NLB no-orphan: the eks-{cluster}-cp target group must not survive DeleteCluster (rides historic PROP-LIFECYCLE-002 / mulga-siv-172)")
 }

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // gatewayStub captures the request the client sent and replies with the body a
@@ -65,7 +65,7 @@ func newTestClient(t *testing.T, stub *gatewayStub) *Client {
 // test exercises the real envelope rather than a hand-written approximation.
 func xmlResult(t *testing.T, action string, payload any) []byte {
 	t.Helper()
-	body, err := utils.MarshalToXML(utils.GenerateIAMXMLPayload(action, payload))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload(action, payload))
 	if err != nil {
 		t.Fatalf("marshal %s result: %v", action, err)
 	}

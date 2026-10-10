@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -75,10 +75,10 @@ func NewModelAccessStore(js jetstream.JetStream) *ModelAccessStore {
 }
 
 // Granted reports whether accountID holds a grant on modelID. The system
-// account bypasses grants entirely, matching how handlers_quota exempts it
+// account bypasses grants entirely, matching how the quota package exempts it
 // from every quota dimension.
 func (s *ModelAccessStore) Granted(ctx context.Context, accountID, modelID string) (bool, error) {
-	if accountID == utils.GlobalAccountID {
+	if accountID == awsidentifiers.GlobalAccountID {
 		return true, nil
 	}
 	kv, err := s.bucket.KV(ctx)

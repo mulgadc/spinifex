@@ -362,9 +362,11 @@ func TestApplyPendingModifications_ReResolvesTheParametersForTheNewClass(t *test
 	for _, param := range issued[0].Parameters {
 		applied[param.Name] = param.Value
 	}
-	memoryMiB, err := classMemoryMiB("db.m5.xlarge")
+	memoryMiB, err := InstanceSizing().ClassMemoryMiB("db.m5.xlarge")
 	require.NoError(t, err)
-	assert.Equal(t, sharedBuffersFor(memoryMiB), applied["shared_buffers"],
+	spec, ok := enginePostgres.LookupParameter("shared_buffers")
+	require.True(t, ok)
+	assert.Equal(t, spec.DefaultAt(memoryMiB), applied["shared_buffers"],
 		"the set was resolved against the class the instance is becoming")
 
 	stored := h.record(t)
@@ -467,9 +469,11 @@ func TestApplyPendingModifications_ClassChangeSurvivesAnUnreachableAgent(t *test
 	assert.False(t, stored.ParameterApplyFailed)
 	assert.Empty(t, stored.PendingRebootParameters)
 
-	memoryMiB, err := classMemoryMiB("db.m5.xlarge")
+	memoryMiB, err := InstanceSizing().ClassMemoryMiB("db.m5.xlarge")
 	require.NoError(t, err)
-	assert.Equal(t, sharedBuffersFor(memoryMiB), parameterValue(stored.Bootstrap.ResolvedParameters, "shared_buffers"),
+	spec, ok := enginePostgres.LookupParameter("shared_buffers")
+	require.True(t, ok)
+	assert.Equal(t, spec.DefaultAt(memoryMiB), parameterValue(stored.Bootstrap.ResolvedParameters, "shared_buffers"),
 		"the stored set was resolved against the class the instance is becoming, for the replacement to boot on")
 }
 

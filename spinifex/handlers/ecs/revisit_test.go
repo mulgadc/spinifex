@@ -12,8 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/mulgadc/spinifex/spinifex/reconciler"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"

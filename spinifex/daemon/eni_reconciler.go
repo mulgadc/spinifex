@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // eniStaleThreshold is the minimum age of an AttachmentStatus transition before
@@ -20,7 +20,7 @@ const eniStaleThreshold = 30 * time.Second
 // It is a node-local vm.Reaper run by the GarbageCollector backstop.
 type eniReconciler struct {
 	vmMgr *vm.Manager
-	vpc   *handlers_ec2_vpc.VPCServiceImpl
+	vpc   *ec2vpc.VPCServiceImpl
 	stale time.Duration
 }
 
@@ -96,7 +96,7 @@ func (r *eniReconciler) reconcileInstance(instance *vm.VM) int {
 // slotFor resolves the PCIe slot for a record: the persisted HotPlugSlot, or
 // the in-memory map when a crash interrupted the attach before HotPlugSlot was
 // written.
-func (r *eniReconciler) slotFor(instance *vm.VM, rec *handlers_ec2_vpc.ENIRecord) int {
+func (r *eniReconciler) slotFor(instance *vm.VM, rec *ec2vpc.ENIRecord) int {
 	if rec.HotPlugSlot > 0 {
 		return rec.HotPlugSlot
 	}
@@ -105,7 +105,7 @@ func (r *eniReconciler) slotFor(instance *vm.VM, rec *handlers_ec2_vpc.ENIRecord
 
 // reconcileENI applies matrix rows 1–6 for one ENI record. Returns true when it
 // reaped (mutated state toward convergence).
-func (r *eniReconciler) reconcileENI(instance *vm.VM, rec *handlers_ec2_vpc.ENIRecord, slot int, live map[int]string) bool {
+func (r *eniReconciler) reconcileENI(instance *vm.VM, rec *ec2vpc.ENIRecord, slot int, live map[int]string) bool {
 	present := slot > 0 && live[slot] != ""
 	acct := instance.AccountID
 	eniID := rec.NetworkInterfaceId
@@ -197,7 +197,7 @@ func (r *eniReconciler) finalizeDetached(instance *vm.VM, accountID, eniID strin
 	if err := r.vpc.DetachENI(context.Background(), accountID, eniID); err != nil {
 		slog.Warn("eni-reconciler: KV detach failed", "eniId", eniID, "err", err)
 	}
-	_ = r.vpc.UpdateENI(accountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {
+	_ = r.vpc.UpdateENI(accountID, eniID, func(rec *ec2vpc.ENIRecord) {
 		rec.AttachmentStatus = ""
 		rec.HotPlugSlot = 0
 		rec.DetachInFlight = false
@@ -210,14 +210,14 @@ func (r *eniReconciler) finalizeDetached(instance *vm.VM, accountID, eniID strin
 
 // markAttached promotes a record to the attached terminal state.
 func (r *eniReconciler) markAttached(accountID, eniID string, slot int) {
-	_ = r.vpc.UpdateENI(accountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {
+	_ = r.vpc.UpdateENI(accountID, eniID, func(rec *ec2vpc.ENIRecord) {
 		rec.AttachmentStatus = "attached"
 		rec.HotPlugSlot = slot
 		rec.AttachmentStateAt = time.Now()
 	})
 }
 
-func (r *eniReconciler) isStale(rec *handlers_ec2_vpc.ENIRecord) bool {
+func (r *eniReconciler) isStale(rec *ec2vpc.ENIRecord) bool {
 	// A zero timestamp pre-dates the field (Sprint 3d) — treat as stale so
 	// records stuck before the upgrade still converge.
 	if rec.AttachmentStateAt.IsZero() {

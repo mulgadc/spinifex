@@ -1,0 +1,135 @@
+// Package process starts, signals and waits on host processes, and manages
+// the PID files that track them.
+package process
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"runtime"
+	"strconv"
+	"syscall"
+	"time"
+)
+
+// SetOOMScore sets the OOM score adjustment for a process.
+// Score range: -1000 (never kill) to 1000 (always kill first).
+// Linux-only; returns an error on non-Linux systems.
+func SetOOMScore(pid int, score int) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("OOM score adjustment is only supported on Linux")
+	}
+	path := fmt.Sprintf("/proc/%d/oom_score_adj", pid)
+	return os.WriteFile(path, []byte(strconv.Itoa(score)), 0600)
+}
+
+// ProcessAlive reports whether the process is still running, via a
+// signal-0 liveness probe. A PID file going missing does NOT imply the
+// process exited, so callers that must reap a process check this directly.
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// ForceKillProcess SIGKILLs a process immediately and waits up to timeout for
+// it to exit. Used to reap a known-orphan (e.g. a QEMU for an
+// already-terminated instance) where the graceful SIGTERM grace period is not
+// warranted. SIGKILL cannot be caught, so the process never removes its own PID
+// file — callers should RemovePidFile after this returns.
+func ForceKillProcess(pid int, timeout time.Duration) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	// A process that has already exited is the outcome asked for, not a failure.
+	// Callers use this to establish that a writer is gone, and one that died on
+	// its own is as gone as one this killed.
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	return WaitForProcessExit(pid, timeout)
+}
+
+// TerminateProcess SIGTERMs a process and waits up to grace for it to exit,
+// reporting whether it did. It never escalates: callers that must establish
+// the process is gone follow it with ForceKillProcess, which is where the
+// SIGKILL and the exit confirmation belong.
+func TerminateProcess(pid int, grace time.Duration) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// Already gone is the outcome asked for, so report it as one.
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
+	}
+	return WaitForProcessExit(pid, grace) == nil
+}
+
+// killProcessPollInterval and killProcessGracePeriod drive KillProcess's
+// liveness poll: check every pollInterval instead of blocking for the full
+// gracePeriod, so a process that dies quickly is detected almost immediately.
+const (
+	killProcessPollInterval = 50 * time.Millisecond
+	killProcessGracePeriod  = 120 * time.Second
+)
+
+// KillProcess sends SIGTERM to pid and waits up to 120s for it to exit before
+// sending SIGKILL. It errors if the process cannot be signaled, including one
+// that has already exited.
+func KillProcess(pid int) error {
+	return killProcessWithTiming(pid, killProcessPollInterval, killProcessGracePeriod)
+}
+
+// killProcessWithTiming implements KillProcess with an injectable poll
+// interval and grace period so tests can exercise the SIGKILL escalation
+// path without waiting out the full production grace period.
+func killProcessWithTiming(pid int, pollInterval, gracePeriod time.Duration) error {
+	process, err := os.FindProcess(pid)
+
+	if err != nil {
+		return err
+	}
+
+	err = process.Signal(syscall.SIGTERM) // graceful shutdown
+	if err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(gracePeriod)
+	for {
+		if !ProcessAlive(pid) {
+			return nil // process has terminated
+		}
+
+		if time.Now().After(deadline) {
+			process, err = os.FindProcess(pid)
+			if err != nil {
+				return err
+			}
+
+			if err := process.Kill(); err != nil { // SIGKILL after grace period
+				return err
+			}
+
+			return nil
+		}
+
+		time.Sleep(pollInterval)
+	}
+}

@@ -9,7 +9,7 @@ import (
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // JSONContentType is the AWS JSON 1.1 content type tagging clients expect.

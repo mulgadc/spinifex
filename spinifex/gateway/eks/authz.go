@@ -10,10 +10,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/gateway/bodyscope"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
 )
 
 // The resource a policy check evaluates against when the request names nothing
@@ -29,7 +29,7 @@ const (
 	sourceCluster
 	sourceClusterFromBody
 	sourceInternalCluster
-	sourceBodyAccountCluster
+	sourceInternalBodyCluster
 	sourceNodegroup
 	sourceNodegroupFromBody
 	sourceAddon
@@ -56,8 +56,8 @@ var eksScopes = map[string][]resourceSource{
 	"GetRecoveryDirective": {sourceInternalCluster},
 	// The owning account arrives in the body on these two, and the ARN names
 	// that account for the same reason: it is the account the handler acts in.
-	"PublishInternal":    {sourceBodyAccountCluster},
-	"WebhookTokenReview": {sourceBodyAccountCluster},
+	"PublishInternal":    {sourceInternalBodyCluster},
+	"WebhookTokenReview": {sourceInternalBodyCluster},
 
 	// Nodegroups. Create evaluates the cluster and the nodegroup it is about
 	// to create, matching AWS.
@@ -152,7 +152,7 @@ func resolve(source resourceSource, action, region, accountID string, params []s
 	case sourceInternalCluster:
 		return clusterARN(region, param(params, 1), param(params, 0)), nil
 
-	case sourceBodyAccountCluster:
+	case sourceInternalBodyCluster:
 		scope, err := bodyscope.Parse(action, body)
 		if err != nil {
 			return "", errors.New(awserrors.ErrorInvalidParameterValue)
@@ -228,7 +228,7 @@ func accessEntryARN(region, accountID, cluster, principalARN string) string {
 	if region == "" || accountID == "" || cluster == "" || principalARN == "" {
 		return anyResource
 	}
-	return arn.FormatEKSAccessEntry(region, accountID, cluster, handlers_eks.PrincipalARNHash(principalARN))
+	return arn.FormatEKSAccessEntry(region, accountID, cluster, access.PrincipalARNHash(principalARN))
 }
 
 // tagARN re-anchors the caller-supplied resource ARN on gw.Region and the

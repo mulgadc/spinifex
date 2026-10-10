@@ -2,7 +2,6 @@ package handlers_ecs
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 	"uuid"
@@ -18,9 +17,6 @@ const (
 
 	InstanceStatusActive   = "ACTIVE"
 	InstanceStatusDraining = "DRAINING"
-
-	TaskDefStatusActive   = "ACTIVE"
-	TaskDefStatusInactive = "INACTIVE"
 
 	TaskStatusPending = bus.TaskStatusPending
 	TaskStatusRunning = bus.TaskStatusRunning
@@ -105,17 +101,6 @@ type ServiceEvent struct {
 // ECS ARN; the partition is fixed to "aws" to match the rest of the stack.
 func ClusterARN(region, accountID, name string) string {
 	return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", region, accountID, name)
-}
-
-// TaskDefARN returns the task-definition ARN for a resolved numeric revision, family:rev.
-func TaskDefARN(region, accountID, family string, rev int) string {
-	return TaskDefRefARN(region, accountID, family, strconv.Itoa(rev))
-}
-
-// TaskDefRefARN spells the revision verbatim, so a reference whose revision is
-// not yet resolved can render it as a wildcard.
-func TaskDefRefARN(region, accountID, family, revision string) string {
-	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%s", region, accountID, family, revision)
 }
 
 // TaskARN returns the long-format task ARN, arn:aws:ecs:{region}:{account}:task/{cluster}/{taskID}.
@@ -210,126 +195,9 @@ type CapacityProviderRecord struct {
 	CreatedAt                time.Time                      `json:"createdAt"`
 }
 
-// ContainerDef is the persisted subset of an ecs.ContainerDefinition needed to
-// pull and run a container (bridge mode v1).
-type ContainerDef struct {
-	Name      string `json:"name"`
-	Image     string `json:"image"`
-	CPU       int    `json:"cpu,omitempty"`
-	MemoryMiB int    `json:"memoryMiB,omitempty"`
-	// GPU is the whole-GPU count from a resourceRequirements entry of type GPU
-	// (AWS ECS semantics; the value is a stringified integer). Device pinning and
-	// placement accounting land in later Epic C tasks.
-	GPU       int      `json:"gpu,omitempty"`
-	Essential bool     `json:"essential"`
-	Command   []string `json:"command,omitempty"`
-	// Environment carries no omitempty so a caller-supplied empty collection
-	// stays distinguishable from an absent one: nil marshals to null and empty
-	// to {}, and describe re-emits whichever was stored.
-	Environment  map[string]string `json:"environment"`
-	PortMappings []bus.PortMapping `json:"portMappings,omitempty"`
-	// LogDriver / LogOptions capture the container's logConfiguration. Only the
-	// host-side json-file default is honored; any other driver is accepted for
-	// parity but warned at register time (logs are discarded).
-	LogDriver  string            `json:"logDriver,omitempty"`
-	LogOptions map[string]string `json:"logOptions,omitempty"`
-	// User is enforced via oci.WithUser. Empty is indistinguishable from unset
-	// (both mean "run as the image's default user"), so a plain string is enough.
-	User string `json:"user,omitempty"`
-	// ReadonlyRootFilesystem, Privileged, PseudoTerminal and Interactive are
-	// pointers because the per-value fail-open test requires telling "caller
-	// said false" from "caller said nothing" apart: a nil field is omitted on
-	// describe (unchanged from before this fix), a non-nil field is echoed and
-	// enforced exactly as submitted, true or false.
-	ReadonlyRootFilesystem *bool `json:"readonlyRootFilesystem,omitempty"`
-	Privileged             *bool `json:"privileged,omitempty"`
-	PseudoTerminal         *bool `json:"pseudoTerminal,omitempty"`
-	Interactive            *bool `json:"interactive,omitempty"`
-	// SystemControls are sysctl namespace/value pairs applied to the OCI spec.
-	// No omitempty, for the same presence reason as Environment.
-	SystemControls []bus.SystemControl `json:"systemControls"`
-	// MountPointsSet and VolumesFromSet record that the caller supplied an empty
-	// collection. A non-empty one is refused at registration, so only presence
-	// needs storing for describe to return [] instead of omitting the field.
-	MountPointsSet bool `json:"mountPointsSet,omitempty"`
-	VolumesFromSet bool `json:"volumesFromSet,omitempty"`
-	// InitProcessEnabled is stored only when supplied false; true is refused at
-	// registration, so a stored value is always false.
-	InitProcessEnabled *bool `json:"initProcessEnabled,omitempty"`
-	// CapAdd / CapDrop are linuxParameters.capabilities.add/drop. The rest of
-	// linuxParameters (devices, sharedMemorySize, tmpfs) is refused at
-	// registration rather than stored, see validateContainerDefs.
-	CapAdd  []string `json:"capAdd,omitempty"`
-	CapDrop []string `json:"capDrop,omitempty"`
-	// StartTimeout / StopTimeout are pointers because zero is a meaningful value
-	// distinct from unset on the AWS shape; enforcement lives in the agent's
-	// task lifecycle, not in the OCI spec.
-	StartTimeout *int64 `json:"startTimeout,omitempty"`
-	StopTimeout  *int64 `json:"stopTimeout,omitempty"`
-}
-
 // LogDriverJSONFile is the only log driver the agent honors: containerd's task IO
 // lands in the host journal/file, retrievable per ecs-logging.md.
 const LogDriverJSONFile = "json-file"
-
-// RuntimePlatformRecord is the persisted subset of an ecs.RuntimePlatform.
-// Pure echo, same as RequiresCompatibilities: nothing selects capacity by CPU
-// architecture or OS family, but a caller that sets it must read it back.
-type RuntimePlatformRecord struct {
-	CPUArchitecture       string `json:"cpuArchitecture,omitempty"`
-	OperatingSystemFamily string `json:"operatingSystemFamily,omitempty"`
-}
-
-// TaskDefRecord is the persisted task definition revision at TaskDefRevKey.
-type TaskDefRecord struct {
-	Family           string `json:"family"`
-	Revision         int    `json:"revision"`
-	ARN              string `json:"arn"`
-	NetworkMode      string `json:"networkMode,omitempty"`
-	CPU              string `json:"cpu,omitempty"`
-	Memory           string `json:"memory,omitempty"`
-	TaskRoleArn      string `json:"taskRoleArn,omitempty"`
-	ExecutionRoleArn string `json:"executionRoleArn,omitempty"`
-	// Persisted purely so Describe echoes back what Register was given. Only
-	// the EC2 launch type is implemented, but a client that sets this and
-	// reads back an empty list sees permanent drift.
-	RequiresCompatibilities []string               `json:"requiresCompatibilities,omitempty"`
-	RuntimePlatform         *RuntimePlatformRecord `json:"runtimePlatform,omitempty"`
-	Containers              []ContainerDef         `json:"containers"`
-	Status                  string                 `json:"status"`
-	Tags                    map[string]string      `json:"tags,omitempty"`
-	RegisteredAt            time.Time              `json:"registeredAt"`
-}
-
-// reservedCPU/reservedMemory sum the task definition's per-container reservations
-// used for bin-pack placement. A taskdef-level cpu/memory is not modelled in v1;
-// placement uses the container sums.
-func (t *TaskDefRecord) reservedCPU() int {
-	total := 0
-	for _, c := range t.Containers {
-		total += c.CPU
-	}
-	return total
-}
-
-func (t *TaskDefRecord) reservedMemory() int {
-	total := 0
-	for _, c := range t.Containers {
-		total += c.MemoryMiB
-	}
-	return total
-}
-
-// reservedGPU sums the task definition's per-container whole-GPU counts.
-// Placement/reservation against instance capacity is a later Epic C task; this
-// is the task-level total carried onto the task record and the bus assign.
-func (t *TaskDefRecord) reservedGPU() int {
-	total := 0
-	for _, c := range t.Containers {
-		total += c.GPU
-	}
-	return total
-}
 
 // InstanceRecord is the persisted container-instance state at InstanceKey. The
 // scheduler writes it from the Layer-2 bus (register/heartbeat) and reserves

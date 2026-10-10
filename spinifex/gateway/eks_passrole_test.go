@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,4 +159,50 @@ func TestEKSCreateCluster_PassRole(t *testing.T) {
 		statement("Allow", "iam:PassRole", eksNodeRoleARN),
 	)
 	assertPermitted(t, dispatchEKS(t, allowed, http.MethodPost, "/clusters", body))
+}
+
+func createAddonBody(roleARN string) string {
+	return `{"addonName":"aws-load-balancer-controller","serviceAccountRoleArn":"` + roleARN + `"}`
+}
+
+func updateAddonBody(roleARN string) string {
+	return `{"serviceAccountRoleArn":"` + roleARN + `"}`
+}
+
+func TestEKSCreateAddon_PassRole(t *testing.T) {
+	body := createAddonBody(eksNodeRoleARN)
+
+	denied := eksPassRoleGateway(statement("Allow", "eks:*", "*"))
+	assertDenied(t, dispatchEKS(t, denied, http.MethodPost, "/clusters/prod/addons", body))
+
+	allowed := eksPassRoleGateway(
+		statement("Allow", "eks:*", "*"),
+		statement("Allow", "iam:PassRole", eksNodeRoleARN),
+	)
+	assertPermitted(t, dispatchEKS(t, allowed, http.MethodPost, "/clusters/prod/addons", body))
+}
+
+func TestEKSCreateAddon_NoRoleSkipsPassRole(t *testing.T) {
+	gw := eksPassRoleGateway(statement("Allow", "eks:*", "*"))
+	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost, "/clusters/prod/addons", createAddonBody("")))
+}
+
+func TestEKSUpdateAddon_PassRole(t *testing.T) {
+	body := updateAddonBody(eksNodeRoleARN)
+	const path = "/clusters/prod/addons/aws-load-balancer-controller/update"
+
+	denied := eksPassRoleGateway(statement("Allow", "eks:*", "*"))
+	assertDenied(t, dispatchEKS(t, denied, http.MethodPost, path, body))
+
+	allowed := eksPassRoleGateway(
+		statement("Allow", "eks:*", "*"),
+		statement("Allow", "iam:PassRole", eksNodeRoleARN),
+	)
+	assertPermitted(t, dispatchEKS(t, allowed, http.MethodPost, path, body))
+}
+
+func TestEKSUpdateAddon_NoRoleSkipsPassRole(t *testing.T) {
+	gw := eksPassRoleGateway(statement("Allow", "eks:*", "*"))
+	assertPermitted(t, dispatchEKS(t, gw, http.MethodPost,
+		"/clusters/prod/addons/aws-load-balancer-controller/update", updateAddonBody("")))
 }

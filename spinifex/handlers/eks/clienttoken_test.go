@@ -5,13 +5,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// The store mechanics are tested in spinifex/idempotency. What is EKS's own is
+// The store mechanics are tested in spinifex/foundation/lifecycle/idempotency. What is EKS's own is
 // the param hash and that the store binds against the cluster-token bucket.
 
 // clusterTokenParamHash ignores ClientRequestToken (same params, different token

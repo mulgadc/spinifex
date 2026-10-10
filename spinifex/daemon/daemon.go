@@ -11,6 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"maps"
 	"net"
@@ -34,52 +37,55 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
-	handlers_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/handlers/ec2/launchtemplate"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
-	"github.com/mulgadc/spinifex/spinifex/network/external/exonet"
-	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/preflight"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -131,7 +137,7 @@ type ResourceManager struct {
 
 // Compile-time guarantee that the RouteTable service satisfies the IGW
 // handler's GatePublisher hook — the two services are wired together below.
-var _ handlers_ec2_igw.GatePublisher = (*handlers_ec2_routetable.RouteTableServiceImpl)(nil)
+var _ ec2igw.GatePublisher = (*ec2routetable.RouteTableServiceImpl)(nil)
 
 // Daemon represents the main daemon service.
 type Daemon struct {
@@ -140,43 +146,43 @@ type Daemon struct {
 	config            *config.Config
 	natsConn          *nats.Conn
 	resourceMgr       *ResourceManager
-	instanceService   *handlers_ec2_instance.InstanceServiceImpl
-	dnsWriter         *handlers_dns.Writer
-	dnsReconciler     *handlers_dns.Reconciler
+	instanceService   *ec2instance.InstanceServiceImpl
+	dnsWriter         *dns.Writer
+	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
 	dnsInternalDomain string
-	keyService        *handlers_ec2_key.KeyServiceImpl
-	imageService      *handlers_ec2_image.ImageServiceImpl
-	volumeService     *handlers_ec2_volume.VolumeServiceImpl
+	keyService        *ec2key.KeyServiceImpl
+	imageService      *ec2image.ImageServiceImpl
+	volumeService     *ec2volume.VolumeServiceImpl
 	// ebsProvider is the sole EBS backend, set once during startup.
 	ebsProvider           ebsprovider.EBSProvider
-	accountService        *handlers_ec2_account.AccountSettingsServiceImpl
-	snapshotService       *handlers_ec2_snapshot.SnapshotServiceImpl
-	tagsService           *handlers_ec2_tags.TagsServiceImpl
-	eigwService           *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
-	igwService            *handlers_ec2_igw.IGWServiceImpl
-	placementGroupService *handlers_ec2_placementgroup.PlacementGroupServiceImpl
-	launchTemplateService *handlers_ec2_launchtemplate.LaunchTemplateServiceImpl
-	spotInstanceService   *handlers_ec2_spotinstance.SpotInstanceServiceImpl
-	vpcService            *handlers_ec2_vpc.VPCServiceImpl
-	eipService            handlers_ec2_eip.EIPService
+	accountService        *ec2account.AccountSettingsServiceImpl
+	snapshotService       *ec2snapshot.SnapshotServiceImpl
+	tagsService           *ec2tags.TagsServiceImpl
+	eigwService           *ec2eigw.EgressOnlyIGWServiceImpl
+	igwService            *ec2igw.IGWServiceImpl
+	placementGroupService *ec2placementgroup.PlacementGroupServiceImpl
+	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
+	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
+	vpcService            *ec2vpc.VPCServiceImpl
+	eipService            ec2eip.EIPService
 	elbv2Service          *handlers_elbv2.ELBv2ServiceImpl
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
 	rdsService            *handlers_rds.Service
 	rdsReconciler         *handlers_rds.Reconciler
-	bedrockService        *handlers_bedrock.Service
-	bedrockReaper         *handlers_bedrock.Reaper
-	acmService            *handlers_acm.ACMServiceImpl
-	acmRenewalWorker      *handlers_acm.Worker
-	ochreVectorService    handlers_ochrevector.VectorService
-	ochreAppliance        *handlers_ochrevector.Appliance
-	ochreBackupService    *handlers_ochrevector.BackupService
-	ecrMetaService        *handlers_ecr.MetaServiceImpl
-	routeTableService     *handlers_ec2_routetable.RouteTableServiceImpl
-	natGatewayService     *handlers_ec2_natgw.NatGatewayServiceImpl
-	externalIPAM          *handlers_ec2_vpc.ExternalIPAM
+	bedrockService        *ochre.Service
+	bedrockReaper         *ochre.Reaper
+	acmService            *acmdomain.ACMServiceImpl
+	acmRenewalWorker      *acmdomain.Worker
+	ochreVectorService    ochrevector.VectorService
+	ochreAppliance        *ochrevector.Appliance
+	ochreBackupService    *ochrevector.BackupService
+	ecrMetaService        *ecr.MetaServiceImpl
+	routeTableService     *ec2routetable.RouteTableServiceImpl
+	natGatewayService     *ec2natgw.NatGatewayServiceImpl
+	externalIPAM          *ec2vpc.ExternalIPAM
 	// ociAllocators is every source="oci" pool on this node. Written once during
 	// startup, before anything reads it.
 	ociAllocators []ociPool
@@ -228,7 +234,7 @@ type Daemon struct {
 	deviceDeletedTimeout time.Duration
 
 	// NATS connect retry options (nil uses defaults: 5min max, 500ms initial delay)
-	natsRetryOpts []utils.RetryOption
+	natsRetryOpts []natsmsg.RetryOption
 
 	// requireNATSTimeout caps the first connectNATS attempt under
 	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
@@ -668,7 +674,7 @@ func (rm *ResourceManager) GetSupportedInstanceTypeInfos() []*ec2.InstanceTypeIn
 
 // GetResourceStats returns host resource figures, reservation, allocation, and
 // per-type capacity caps for the node status response.
-func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64, reservedVCPU int, reservedMemGB float64, allocVCPU int, allocMemGB float64, caps []types.InstanceTypeCap) {
+func (rm *ResourceManager) GetResourceStats() (totalVCPU int, totalMemGB float64, reservedVCPU int, reservedMemGB float64, allocVCPU int, allocMemGB float64, caps []clusterv1.InstanceTypeCap) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
@@ -824,7 +830,7 @@ func outcomeForCode(errCode string) string {
 // carries the instance id, so the action is built from the command: an instance
 // id in a metric dimension would make one series per instance.
 func ec2CmdAction(command string) string {
-	return "ec2.cmd." + command
+	return ec2v1.InstanceCommandSubjectPrefix + command
 }
 
 // logHandlerError reports a handler failure at a level matching its
@@ -1020,15 +1026,15 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.GetSerialConsoleAccessStatus", handleNATSRequest(d.node, d.accountService.GetSerialConsoleAccessStatus), "spinifex-workers"},
 		{"ec2.EnableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.EnableSerialConsoleAccess), "spinifex-workers"},
 		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
-		{fmt.Sprintf("spinifex.admin.%s.health", d.node), d.handleHealthCheck, ""},
-		{"spinifex.nodes.discover", d.handleNodeDiscover, ""},
-		{"spinifex.node.status", d.handleNodeStatus, ""},
-		{"spinifex.node.vms", d.handleNodeVMs, ""},
-		{"spinifex.storage.config", d.handleStorageConfig, ""},
+		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
+		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
+		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
+		{clusterv1.NodeVMsSubject, d.handleNodeVMs, ""},
+		{operatorv1.StorageConfigSubject, d.handleStorageConfig, ""},
 		{"spinifex.image.promote", d.handleSpinifexPromoteImage, "spinifex-workers"},
 		// Account creation → create default VPC for new account
 		{"iam.account.created", d.handleAccountCreated, "spinifex-workers"},
-		{utils.SubjectEnsureDefaultVpc, d.handleEnsureDefaultVpc, "spinifex-workers"},
+		{ec2v1.EnsureDefaultVpcSubject, d.handleEnsureDefaultVpc, "spinifex-workers"},
 		// Coordinated cluster shutdown phases (fan-out, no queue group)
 		{"spinifex.cluster.shutdown.gate", d.handleShutdownGate, ""},
 		{"spinifex.cluster.shutdown.drain", d.handleShutdownDrain, ""},
@@ -1197,10 +1203,10 @@ func (d *Daemon) subscribeAll() error {
 	// touching JetStream directly).
 	if d.bedrockService != nil {
 		subs = append(subs,
-			natsSub{handlers_bedrock.SubjectEnsureEndpoint, handleNATSRequest(d.node, d.bedrockService.Ensure), "spinifex-workers"},
-			natsSub{handlers_bedrock.SubjectDescribeEndpoint, handleNATSRequest(d.node, d.bedrockService.Describe), "spinifex-workers"},
-			natsSub{handlers_bedrock.SubjectListEndpoints, handleNATSRequest(d.node, d.bedrockService.List), "spinifex-workers"},
-			natsSub{handlers_bedrock.SubjectDeleteEndpoint, handleNATSRequest(d.node, d.bedrockService.Delete), "spinifex-workers"},
+			natsSub{ochre.SubjectEnsureEndpoint, handleNATSRequest(d.node, d.bedrockService.Ensure), "spinifex-workers"},
+			natsSub{ochre.SubjectDescribeEndpoint, handleNATSRequest(d.node, d.bedrockService.Describe), "spinifex-workers"},
+			natsSub{ochre.SubjectListEndpoints, handleNATSRequest(d.node, d.bedrockService.List), "spinifex-workers"},
+			natsSub{ochre.SubjectDeleteEndpoint, handleNATSRequest(d.node, d.bedrockService.Delete), "spinifex-workers"},
 		)
 	}
 
@@ -1235,28 +1241,28 @@ func (d *Daemon) subscribeAll() error {
 	// JetStream KV metadata; blob/manifest bytes never traverse these subjects.
 	if d.ecrMetaService != nil {
 		subs = append(subs,
-			natsSub{handlers_ecr.SubjectRepoCreate, handleNATSRequest(d.node, d.ecrMetaService.RepoCreate), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectRepoDescribe, handleNATSRequest(d.node, d.ecrMetaService.RepoDescribe), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectRepoList, handleNATSRequest(d.node, d.ecrMetaService.RepoList), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectRepoDelete, handleNATSRequest(d.node, d.ecrMetaService.RepoDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectPolicyPut, handleNATSRequest(d.node, d.ecrMetaService.PolicyPut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectPolicyGet, handleNATSRequest(d.node, d.ecrMetaService.PolicyGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectPolicyDelete, handleNATSRequest(d.node, d.ecrMetaService.PolicyDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectLifecyclePut, handleNATSRequest(d.node, d.ecrMetaService.LifecyclePut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectLifecycleGet, handleNATSRequest(d.node, d.ecrMetaService.LifecycleGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectLifecycleDelete, handleNATSRequest(d.node, d.ecrMetaService.LifecycleDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagPut, handleNATSRequest(d.node, d.ecrMetaService.TagPut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagGet, handleNATSRequest(d.node, d.ecrMetaService.TagGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagList, handleNATSRequest(d.node, d.ecrMetaService.TagList), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectTagDelete, handleNATSRequest(d.node, d.ecrMetaService.TagDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestPut, handleNATSRequest(d.node, d.ecrMetaService.ManifestPut), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
-			natsSub{handlers_ecr.SubjectUploadDelete, handleNATSRequest(d.node, d.ecrMetaService.UploadDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoCreate, handleNATSRequest(d.node, d.ecrMetaService.RepoCreate), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoDescribe, handleNATSRequest(d.node, d.ecrMetaService.RepoDescribe), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoList, handleNATSRequest(d.node, d.ecrMetaService.RepoList), "spinifex-workers"},
+			natsSub{ecr.SubjectRepoDelete, handleNATSRequest(d.node, d.ecrMetaService.RepoDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyPut, handleNATSRequest(d.node, d.ecrMetaService.PolicyPut), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyGet, handleNATSRequest(d.node, d.ecrMetaService.PolicyGet), "spinifex-workers"},
+			natsSub{ecr.SubjectPolicyDelete, handleNATSRequest(d.node, d.ecrMetaService.PolicyDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecyclePut, handleNATSRequest(d.node, d.ecrMetaService.LifecyclePut), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecycleGet, handleNATSRequest(d.node, d.ecrMetaService.LifecycleGet), "spinifex-workers"},
+			natsSub{ecr.SubjectLifecycleDelete, handleNATSRequest(d.node, d.ecrMetaService.LifecycleDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectTagPut, handleNATSRequest(d.node, d.ecrMetaService.TagPut), "spinifex-workers"},
+			natsSub{ecr.SubjectTagGet, handleNATSRequest(d.node, d.ecrMetaService.TagGet), "spinifex-workers"},
+			natsSub{ecr.SubjectTagList, handleNATSRequest(d.node, d.ecrMetaService.TagList), "spinifex-workers"},
+			natsSub{ecr.SubjectTagDelete, handleNATSRequest(d.node, d.ecrMetaService.TagDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestPut, handleNATSRequest(d.node, d.ecrMetaService.ManifestPut), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestDescribe, handleNATSRequest(d.node, d.ecrMetaService.ManifestDescribe), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestList, handleNATSRequest(d.node, d.ecrMetaService.ManifestList), "spinifex-workers"},
+			natsSub{ecr.SubjectManifestDelete, handleNATSRequest(d.node, d.ecrMetaService.ManifestDelete), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadCreate, handleNATSRequest(d.node, d.ecrMetaService.UploadCreate), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadGet, handleNATSRequest(d.node, d.ecrMetaService.UploadGet), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadUpdate, handleNATSRequest(d.node, d.ecrMetaService.UploadUpdate), "spinifex-workers"},
+			natsSub{ecr.SubjectUploadDelete, handleNATSRequest(d.node, d.ecrMetaService.UploadDelete), "spinifex-workers"},
 		)
 	}
 
@@ -1272,14 +1278,14 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{"ec2.DescribeAddressesAttribute", handleNATSRequest(d.node, d.eipService.DescribeAddressesAttribute), "spinifex-workers"},
 		// Fan-out, no queue group: the association has to reach the node running
 		// the instance, which is rarely the one that served the request.
-		natsSub{handlers_ec2_eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
+		natsSub{ec2eip.SubjectENIPublicIPChanged, d.handleENIPublicIPChanged, ""},
 		// vpcd holds the leases, but the records naming those addresses live
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
 		// Node-addressed with no queue group: the fenced guest is on this host,
 		// so a worker on another node would find nothing to stop.
-		natsSub{vbwire.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
+		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
 
 	return d.registerNatsSubs(subs)
@@ -1375,7 +1381,7 @@ func (d *Daemon) startLocal() error {
 	}
 
 	// Protect daemon from OOM killer (prefer killing QEMU VMs instead).
-	if err := utils.SetOOMScore(os.Getpid(), -500); err != nil {
+	if err := hostprocess.SetOOMScore(os.Getpid(), -500); err != nil {
 		slog.Warn("Failed to set daemon OOM score", "err", err)
 	}
 
@@ -1485,7 +1491,7 @@ func (d *Daemon) ovnSBAddr() string {
 // record, so a crash in between leaves a reserved public IP that bills and
 // holds one of the 50 per-region slots with nothing referencing it, and this
 // pass is the only thing that ever finds it.
-func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
 	for _, p := range ipam.PoolsWithSource(external.SourceOCI) {
 		alloc, err := ocinet.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
 		if err != nil {
@@ -1519,7 +1525,7 @@ func (d *Daemon) installOCIAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js je
 // and reconciles it before it serves. As with OCI, Allocate creates the EIP
 // before recording it, and this pass is the only thing that finds one a crash
 // left behind — on a five-EIP quota, one leak is a fifth of the capacity.
-func (d *Daemon) installExoscaleAllocators(ipam *handlers_ec2_vpc.ExternalIPAM, js jetstream.JetStream) error {
+func (d *Daemon) installExoscaleAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
 	for _, p := range ipam.PoolsWithSource(external.SourceExoscale) {
 		alloc, err := exonet.FromPoolConfig(d.ctx, js, p)
 		if err != nil {
@@ -1725,7 +1731,7 @@ func (d *Daemon) startCluster() error {
 		// the pre-DDIL fail-fast UX for dev/test/single-node deploys without
 		// flipping the prod default (which would re-introduce the SPOF that 1d
 		// removed).
-		if err := d.connectNATS(utils.WithMaxWait(d.requireNATSTimeout)); err != nil {
+		if err := d.connectNATS(natsmsg.WithMaxWait(d.requireNATSTimeout)); err != nil {
 			slog.Error("SPINIFEX_REQUIRE_NATS=1 set, NATS connect failed within 30s, aborting", "err", err, "timeout_ms", otelsetup.Millis(d.requireNATSTimeout))
 			d.exitFunc(1)
 			return fmt.Errorf("connect NATS (strict): %w", err)
@@ -1774,29 +1780,29 @@ func (d *Daemon) startCluster() error {
 		if err := d.jsManager.WriteServiceManifest(
 			d.node,
 			d.config.GetServices(),
-			admin.DialTarget(d.config.NATS.Host),
-			admin.DialTarget(d.config.Predastore.Host),
+			netaddr.DialTarget(d.config.NATS.Host),
+			netaddr.DialTarget(d.config.Predastore.Host),
 		); err != nil {
 			slog.Warn("Failed to write service manifest", "error", err)
 		}
 	}
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
-	store := objectstore.NewS3ObjectStoreFromConfig(admin.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
-	d.dnsWriter = handlers_dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
-	d.dnsReconciler = handlers_dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
-	d.dnsBaseDomain = handlers_dns.ResolveBaseDomain(d.config)
-	d.dnsInternalDomain = handlers_dns.ResolveInternalDomain(d.config)
-	d.keyService = handlers_ec2_key.NewKeyServiceImpl(d.config)
-	d.imageService = handlers_ec2_image.NewImageServiceImpl(d.config, d.natsConn)
+	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
+	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
+	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
+	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
+	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
+	d.keyService = ec2key.NewKeyServiceImpl(d.config)
+	d.imageService = ec2image.NewImageServiceImpl(d.config, d.natsConn)
 
 	type snapResult struct {
-		svc *handlers_ec2_snapshot.SnapshotServiceImpl
+		svc *ec2snapshot.SnapshotServiceImpl
 		kv  jetstream.KeyValue
 	}
 	snap, err := initServiceWithRetry("snapshot service", func() (snapResult, error) {
-		svc, kv, err := handlers_ec2_snapshot.NewSnapshotServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+		svc, kv, err := ec2snapshot.NewSnapshotServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 		return snapResult{svc, kv}, err
 	})
 	if err != nil {
@@ -1804,7 +1810,7 @@ func (d *Daemon) startCluster() error {
 	}
 	d.snapshotService = snap.svc
 
-	d.volumeService = handlers_ec2_volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
+	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
 	if err := d.configureEBSProvider(); err != nil {
 		return fmt.Errorf("configure EBS provider: %w", err)
 	}
@@ -1813,53 +1819,53 @@ func (d *Daemon) startCluster() error {
 		if jsErr != nil {
 			return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 		}
-		return handlers_ec2_tags.GetOrCreateTagsBucket(d.ctx, tagsJS)
+		return ec2tags.GetOrCreateTagsBucket(d.ctx, tagsJS)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
-	d.tagsService = handlers_ec2_tags.NewTagsServiceImpl(d.config, tagsKV)
+	d.tagsService = ec2tags.NewTagsServiceImpl(d.config, tagsKV)
 	// Key pairs keep their creation tags in their own metadata; project them so
 	// describe-tags sees them, and clear them when the key pair is deleted.
 	d.keyService.SetCentralTagStore(d.tagsService)
 
-	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*handlers_ec2_eigw.EgressOnlyIGWServiceImpl, error) {
-		return handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*ec2eigw.EgressOnlyIGWServiceImpl, error) {
+		return ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize EIGW service: %w", err)
 	}
 
-	d.igwService, err = initServiceWithRetry("IGW service", func() (*handlers_ec2_igw.IGWServiceImpl, error) {
-		return handlers_ec2_igw.NewIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.igwService, err = initServiceWithRetry("IGW service", func() (*ec2igw.IGWServiceImpl, error) {
+		return ec2igw.NewIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize IGW service: %w", err)
 	}
 
-	d.placementGroupService, err = initServiceWithRetry("placement group service", func() (*handlers_ec2_placementgroup.PlacementGroupServiceImpl, error) {
-		return handlers_ec2_placementgroup.NewPlacementGroupServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.placementGroupService, err = initServiceWithRetry("placement group service", func() (*ec2placementgroup.PlacementGroupServiceImpl, error) {
+		return ec2placementgroup.NewPlacementGroupServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize placement group service: %w", err)
 	}
 
-	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*handlers_ec2_launchtemplate.LaunchTemplateServiceImpl, error) {
-		return handlers_ec2_launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.launchTemplateService, err = initServiceWithRetry("launch template service", func() (*ec2launchtemplate.LaunchTemplateServiceImpl, error) {
+		return ec2launchtemplate.NewLaunchTemplateServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize launch template service: %w", err)
 	}
 
-	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*handlers_ec2_spotinstance.SpotInstanceServiceImpl, error) {
-		return handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*ec2spotinstance.SpotInstanceServiceImpl, error) {
+		return ec2spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize spot instance service: %w", err)
 	}
 
-	d.vpcService, err = initServiceWithRetry("VPC service", func() (*handlers_ec2_vpc.VPCServiceImpl, error) {
-		return handlers_ec2_vpc.NewVPCServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.vpcService, err = initServiceWithRetry("VPC service", func() (*ec2vpc.VPCServiceImpl, error) {
+		return ec2vpc.NewVPCServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC service: %w", err)
@@ -1873,14 +1879,14 @@ func (d *Daemon) startCluster() error {
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
 	// Name interfaces as their instances are named, so the two agree.
-	region, internalDomain := d.config.Region, handlers_dns.ResolveInternalDomain(d.config)
+	region, internalDomain := d.config.Region, dns.ResolveInternalDomain(d.config)
 	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {
-		_, private := handlers_dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
+		_, private := dns.EC2DNSNames(region, "", internalDomain, "", privateIP)
 		return private
 	})
 
-	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*handlers_ec2_routetable.RouteTableServiceImpl, error) {
-		return handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.routeTableService, err = initServiceWithRetry("RouteTable service", func() (*ec2routetable.RouteTableServiceImpl, error) {
+		return ec2routetable.NewRouteTableServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize RouteTable service: %w", err)
@@ -1889,8 +1895,8 @@ func (d *Daemon) startCluster() error {
 	// Wire IGW attach/detach to RT-aware per-subnet egress gate fan-out.
 	d.igwService.SetGatePublisher(d.routeTableService)
 
-	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*handlers_ec2_natgw.NatGatewayServiceImpl, error) {
-		return handlers_ec2_natgw.NewNatGatewayServiceImplWithNATS(d.ctx, d.natsConn)
+	d.natGatewayService, err = initServiceWithRetry("NatGateway service", func() (*ec2natgw.NatGatewayServiceImpl, error) {
+		return ec2natgw.NewNatGatewayServiceImplWithNATS(d.ctx, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
@@ -1901,12 +1907,12 @@ func (d *Daemon) startCluster() error {
 	// answers cluster-wide with an empty address list on the requests it wins.
 	if d.hasPublicIPPools() {
 		pools, anyDHCP := d.externalPoolConfigs()
-		d.externalIPAM, err = initServiceWithRetry("external IPAM", func() (*handlers_ec2_vpc.ExternalIPAM, error) {
+		d.externalIPAM, err = initServiceWithRetry("external IPAM", func() (*ec2vpc.ExternalIPAM, error) {
 			js, jsErr := jetstream.New(d.natsConn)
 			if jsErr != nil {
 				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
-			ipam, ipamErr := handlers_ec2_vpc.NewExternalIPAM(d.ctx, js, pools)
+			ipam, ipamErr := ec2vpc.NewExternalIPAM(d.ctx, js, pools)
 			if ipamErr != nil {
 				return nil, ipamErr
 			}
@@ -1931,8 +1937,8 @@ func (d *Daemon) startCluster() error {
 
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
-		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*handlers_ec2_eip.EIPServiceImpl, error) {
-			return handlers_ec2_eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
 		})
 		if eipErr != nil {
 			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
@@ -1947,7 +1953,7 @@ func (d *Daemon) startCluster() error {
 			if jsErr != nil {
 				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
-			return kvutil.GetOrCreateBucket(d.ctx, eipJS, handlers_ec2_eip.KVBucketEIPs, 10)
+			return kvutil.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
 		})
 		if eipKVErr != nil {
 			return fmt.Errorf("failed to get EIP KV bucket for VPC service: %w", eipKVErr)
@@ -1958,7 +1964,7 @@ func (d *Daemon) startCluster() error {
 	// Without external IPAM (nat mode or external disabled) serve EIP requests
 	// from the disabled stub so the API surface stays registered.
 	if d.eipService == nil {
-		d.eipService = handlers_ec2_eip.NewDisabledEIPService()
+		d.eipService = ec2eip.NewDisabledEIPService()
 		slog.Info("EIP service disabled — no external IPAM; serving empty/unsupported responses")
 	}
 
@@ -1966,8 +1972,8 @@ func (d *Daemon) startCluster() error {
 	// the concrete value over only once init succeeded — otherwise the service's
 	// own nil checks pass and the allocate path derefs a nil receiver.
 	var (
-		ipAllocator handlers_ec2_instance.PublicIPAllocator
-		ipReleaser  handlers_ec2_instance.PublicIPReleaser
+		ipAllocator ec2instance.PublicIPAllocator
+		ipReleaser  ec2instance.PublicIPReleaser
 	)
 	if d.externalIPAM != nil {
 		ipAllocator = d.externalIPAM
@@ -1982,8 +1988,8 @@ func (d *Daemon) startCluster() error {
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})
 	}
 
-	d.accountService, err = initServiceWithRetry("account settings service", func() (*handlers_ec2_account.AccountSettingsServiceImpl, error) {
-		return handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(d.ctx, d.config, d.natsConn)
+	d.accountService, err = initServiceWithRetry("account settings service", func() (*ec2account.AccountSettingsServiceImpl, error) {
+		return ec2account.NewAccountSettingsServiceImplWithNATS(d.ctx, d.config, d.natsConn)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
@@ -2079,7 +2085,7 @@ func (d *Daemon) startCluster() error {
 	// whichever node the queue group picks, so a node without it would make the
 	// first boot of a DB instance fail intermittently rather than not at all.
 	d.rdsService, err = initServiceWithRetry("RDS service", func() (*handlers_rds.Service, error) {
-		if registryErr := handlers_rds.ValidateEngineRegistry(); registryErr != nil {
+		if registryErr := rdsengine.ValidateEngineRegistry(); registryErr != nil {
 			return nil, registryErr
 		}
 		deps, depsErr := d.buildRDSDeps()
@@ -2107,12 +2113,12 @@ func (d *Daemon) startCluster() error {
 	// Bedrock serving-endpoint lifecycle: the request-driven
 	// ensure/describe/list/delete surface, constructed synchronously since it
 	// touches no JetStream KV until its first request.
-	d.bedrockService = handlers_bedrock.NewService(d.natsConn, d.buildBedrockServiceDeps())
+	d.bedrockService = ochre.NewService(d.natsConn, d.buildBedrockServiceDeps())
 
 	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
 	// and hands an idle GPU back; every node keeps serving the API. Without it a
 	// launched model owns its device until an operator deletes the endpoint.
-	d.bedrockReaper = handlers_bedrock.NewReaper(d.bedrockService, d.node, handlers_bedrock.ReaperDeps{})
+	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.node, ochre.ReaperDeps{})
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2129,12 +2135,12 @@ func (d *Daemon) startCluster() error {
 	// backoff — the key file can legitimately not be written yet during a
 	// concurrent boot — but a master key that never arrives fails startCluster
 	// after the retry window instead of leaving acmService permanently nil.
-	d.acmService, err = initServiceWithRetry("ACM service", func() (*handlers_acm.ACMServiceImpl, error) {
+	d.acmService, err = initServiceWithRetry("ACM service", func() (*acmdomain.ACMServiceImpl, error) {
 		masterKey, mkErr := masterkey.ReadShared(filepath.Join(filepath.Dir(d.configPath), "master.key"))
 		if mkErr != nil {
 			return nil, fmt.Errorf("load ACM master key: %w", mkErr)
 		}
-		return handlers_acm.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
+		return acmdomain.NewACMServiceImplWithNATS(d.ctx, d.config, d.natsConn, masterKey)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize ACM service: %w", err)
@@ -2145,12 +2151,12 @@ func (d *Daemon) startCluster() error {
 	d.acmService.CertMaterialUpdated = d.elbv2Service.UpdateStoredConfigForCert
 
 	// deriveValidationMode needs to know whether northstar hosts a zone for a
-	// requested domain. handlers/acm deliberately does not import handlers/dns
+	// requested domain. handlers/acm deliberately does not import domains/dns
 	// (which would pull its S3/northstar-config dependencies into every acm
 	// test) — wired as a func field instead, the same pattern CertMaterialUpdated
 	// uses above to keep acm decoupled from elbv2.
 	d.acmService.NorthstarHostsZone = func(domain string) bool {
-		return handlers_dns.HostsZone(d.config, domain)
+		return dns.HostsZone(d.config, domain)
 	}
 
 	// The tenant private CA is optional, unlike the master key above: a
@@ -2164,7 +2170,7 @@ func (d *Daemon) startCluster() error {
 	// operator can tell at a glance, from daemon startup logs alone, which one
 	// they are in.
 	configDir := filepath.Dir(d.configPath)
-	tenantCA, tenantCAErr := handlers_acm.LoadTenantCA(admin.TenantCACertPath(configDir), admin.TenantCAKeyPath(configDir))
+	tenantCA, tenantCAErr := acmdomain.LoadTenantCA(acmdomain.TenantCACertPath(configDir), acmdomain.TenantCAKeyPath(configDir))
 	if tenantCAErr != nil {
 		slog.Warn("ACM: tenant private CA not found; PRIVATE_CA certificate requests will fail until one is created",
 			"err", tenantCAErr)
@@ -2180,7 +2186,7 @@ func (d *Daemon) startCluster() error {
 	// tenant CA loaded later (or never, on a public-certificates-only
 	// deployment) is not a startup dependency — the worker just finds
 	// nothing to renew until one is wired.
-	d.acmRenewalWorker = handlers_acm.NewWorker(d.acmService, d.node)
+	d.acmRenewalWorker = acmdomain.NewWorker(d.acmService, d.node)
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2196,7 +2202,7 @@ func (d *Daemon) startCluster() error {
 	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
 		slog.Warn("ECR metadata service disabled: JetStream unavailable", "err", jsErr)
 	} else {
-		d.ecrMetaService = handlers_ecr.NewKVMetaService(js)
+		d.ecrMetaService = ecr.NewKVMetaService(js)
 	}
 
 	if err := d.eksService.SpawnRegisteredReconcilers(); err != nil {
@@ -2207,12 +2213,12 @@ func (d *Daemon) startCluster() error {
 	// (matches AWS: every account has a default VPC with IGW + default SG)
 	if d.vpcService != nil {
 		failedDefaultVPCs := map[string]struct{}{}
-		for _, accountID := range []string{utils.GlobalAccountID, admin.DefaultAccountID()} {
+		for _, accountID := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
 			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
 			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
-			var opts []handlers_ec2_vpc.BootstrapIDs
+			var opts []ec2vpc.BootstrapIDs
 			if accountID == admin.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.VpcId != "" {
-				opts = append(opts, handlers_ec2_vpc.BootstrapIDs{
+				opts = append(opts, ec2vpc.BootstrapIDs{
 					VpcId:    d.clusterConfig.Bootstrap.VpcId,
 					SubnetId: d.clusterConfig.Bootstrap.SubnetId,
 					IgwId:    d.clusterConfig.Bootstrap.IgwId,
@@ -2293,7 +2299,7 @@ func (d *Daemon) startCluster() error {
 	// zone. No-op when northstar is not configured.
 	if d.dnsReconciler.Enabled() {
 		go d.dnsReconciler.Run(d.ctx)
-		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(handlers_dns.DefaultReconcileInterval))
+		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(dns.DefaultReconcileInterval))
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
@@ -2306,7 +2312,7 @@ func (d *Daemon) startCluster() error {
 
 	// Reality→desired GC backstop (ADR-0003 §3): finish teardown interrupted by
 	// a node-down mid-cascade and purge completed terminated records. The volume
-	// data-safety reaper (ADR-0005 §3) rides the same backstop but only marks +
+	// data-safety reaper (ADR-0003:S2) rides the same backstop but only marks +
 	// alarms — it never deletes volume data.
 	if d.jsManager != nil {
 		reapers := []vm.Reaper{
@@ -2444,19 +2450,19 @@ func (d *Daemon) nodeRunningVMs() ([]*vm.VM, error) {
 
 // connectNATS connects to NATS with infinite retry (cap 60s backoff). Tests
 // override d.natsRetryOpts; extraOpts override any conflicting fields.
-func (d *Daemon) connectNATS(extraOpts ...utils.RetryOption) error {
-	opts := append([]utils.RetryOption{
-		utils.WithMaxWait(0), // infinite retry; cancelled via d.ctx
-		utils.WithMaxRetryDelay(60 * time.Second),
-		utils.WithContext(d.ctx),
-		utils.WithDisconnectHandler(d.onNATSDisconnect),
-		utils.WithReconnectHandler(d.onNATSReconnect),
-		utils.WithAttemptErrHandler(func(_ error, _ int) {
+func (d *Daemon) connectNATS(extraOpts ...natsmsg.RetryOption) error {
+	opts := append([]natsmsg.RetryOption{
+		natsmsg.WithMaxWait(0), // infinite retry; cancelled via d.ctx
+		natsmsg.WithMaxRetryDelay(60 * time.Second),
+		natsmsg.WithContext(d.ctx),
+		natsmsg.WithDisconnectHandler(d.onNATSDisconnect),
+		natsmsg.WithReconnectHandler(d.onNATSReconnect),
+		natsmsg.WithAttemptErrHandler(func(_ error, _ int) {
 			d.natsRetryCount.Add(1)
 		}),
 	}, d.natsRetryOpts...)
 	opts = append(opts, extraOpts...)
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
+	nc, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(d.config.NATS.Host), d.config.NATS.ACL.Token, d.config.NATS.CACert, opts...)
 	if err != nil {
 		return err
 	}
@@ -2646,7 +2652,7 @@ func (d *Daemon) checkViperblockReady() bool {
 // listening. Any response counts as ready, including the 401/403 an S3
 // endpoint returns for this deliberately unsigned request.
 func (d *Daemon) checkPredastoreReady() bool {
-	host := admin.DialTarget(d.config.Predastore.Host)
+	host := netaddr.DialTarget(d.config.Predastore.Host)
 	if host == "" {
 		return true // no predastore configured, skip check
 	}
@@ -2735,7 +2741,7 @@ func (d *Daemon) awaitShutdown() {
 
 // computeConfigHash computes a SHA256 hash of the shared cluster config.
 func (d *Daemon) computeConfigHash() (string, error) {
-	sharedData := types.SharedClusterData{
+	sharedData := sharedClusterData{
 		Epoch:   d.clusterConfig.Epoch,
 		Version: d.clusterConfig.Version,
 		Nodes:   d.clusterConfig.Nodes,
@@ -2808,7 +2814,7 @@ func (d *Daemon) ClusterManager() error {
 			status = "starting"
 		}
 
-		response := types.NodeHealthResponse{
+		response := clusterv1.NodeHealthResponse{
 			Node:          d.node,
 			Status:        status,
 			ConfigHash:    configHash,
@@ -3245,11 +3251,11 @@ func (rm *ResourceManager) deallocate(instanceType *ec2.InstanceTypeInfo) {
 	rm.updateInstanceSubscriptions()
 }
 
-var _ handlers_ec2_instance.InstanceTypeAllocator = (*ResourceManager)(nil)
+var _ ec2instance.InstanceTypeAllocator = (*ResourceManager)(nil)
 
 // Allocate reserves host capacity for one instance of type it, erroring when
 // the node lacks room. With Deallocate and CanAllocate it satisfies
-// handlers_ec2_instance.InstanceTypeAllocator.
+// ec2instance.InstanceTypeAllocator.
 func (rm *ResourceManager) Allocate(it *ec2.InstanceTypeInfo) error { return rm.allocate(it) }
 func (rm *ResourceManager) Deallocate(it *ec2.InstanceTypeInfo)     { rm.deallocate(it) }
 func (rm *ResourceManager) CanAllocate(it *ec2.InstanceTypeInfo, count int) int {

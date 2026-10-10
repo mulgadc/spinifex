@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"regexp"
 	"slices"
@@ -20,11 +21,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 const (
@@ -438,7 +438,7 @@ func matchAWSPrincipalEntry(clause, callerARN string) bool {
 	if clause == globalWildcard {
 		return true
 	}
-	if utils.IsAccountID(clause) {
+	if awsidentifiers.IsAccountID(clause) {
 		clause = arn.FormatIAMRoot(clause)
 	}
 	if clause == callerARN {

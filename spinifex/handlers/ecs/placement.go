@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 )
 
 // Placement strategy identifiers (ecs-v1.md Q15). Default is binpack:memory.

@@ -3,14 +3,14 @@ package handlers_ecs
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/nats-io/nats.go"
 )
 
@@ -61,7 +61,7 @@ func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID st
 		Groups:      securityGroups,
 		Description: aws.String("ecs-awsvpc-task"),
 	}
-	out, err := utils.NATSRequest[ec2.CreateNetworkInterfaceOutput](ctx, c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
+	out, err := natsmsg.NATSRequest[ec2.CreateNetworkInterfaceOutput](ctx, c.nc, "ec2.CreateNetworkInterface", in, c.timeout, accountID)
 	if err != nil {
 		return eniAllocation{}, fmt.Errorf("create task ENI: %w", err)
 	}
@@ -79,15 +79,15 @@ func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID st
 
 // Attach hot-plugs eniID onto instanceID and returns the attachment ID.
 func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, eniID string) (string, error) {
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{AttachENI: true},
-		AttachENIData: &types.AttachENIData{
+		Attributes: ec2v1.EC2CommandAttributes{AttachENI: true},
+		AttachENIData: &ec2v1.AttachENIData{
 			NetworkInterfaceID: eniID,
 			DeviceIndex:        taskENIDeviceIndex,
 		},
 	}
-	out, err := utils.NATSRequest[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
+	out, err := natsmsg.NATSRequest[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)
 	if err != nil {
 		return "", fmt.Errorf("attach task ENI %s -> %s: %w", eniID, instanceID, err)
 	}
@@ -101,22 +101,22 @@ func (c *natsENIController) Release(ctx context.Context, accountID string, rec *
 		return nil
 	}
 	if rec.ENIAttachmentID != "" && rec.ContainerInstanceID != "" {
-		cmd := types.EC2InstanceCommand{
+		cmd := ec2v1.EC2InstanceCommand{
 			ID:         rec.ContainerInstanceID,
-			Attributes: types.EC2CommandAttributes{DetachENI: true},
-			DetachENIData: &types.DetachENIData{
+			Attributes: ec2v1.EC2CommandAttributes{DetachENI: true},
+			DetachENIData: &ec2v1.DetachENIData{
 				AttachmentID: rec.ENIAttachmentID,
 				Force:        true,
 			},
 		}
-		_, err := utils.NATSRequest[ec2.DetachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
+		_, err := natsmsg.NATSRequest[ec2.DetachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(rec.ContainerInstanceID), cmd, c.timeout, accountID)
 		if err != nil && !isENINotFound(err) {
 			return fmt.Errorf("detach task ENI %s: %w", rec.ENIID, err)
 		}
 	}
 
 	del := &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(rec.ENIID)}
-	_, err := utils.NATSRequest[ec2.DeleteNetworkInterfaceOutput](ctx, c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
+	_, err := natsmsg.NATSRequest[ec2.DeleteNetworkInterfaceOutput](ctx, c.nc, "ec2.DeleteNetworkInterface", del, c.timeout, accountID)
 	if err != nil && !isENINotFound(err) {
 		return fmt.Errorf("delete task ENI %s: %w", rec.ENIID, err)
 	}
@@ -124,7 +124,7 @@ func (c *natsENIController) Release(ctx context.Context, accountID string, rec *
 }
 
 func eniCmdSubject(instanceID string) string {
-	return fmt.Sprintf("ec2.cmd.%s", instanceID)
+	return ec2v1.InstanceCommandSubject(instanceID)
 }
 
 // reclaimTaskENI releases an awsvpc task's ENI on the single-writer teardown

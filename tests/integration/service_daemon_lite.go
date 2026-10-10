@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
@@ -26,12 +26,12 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
 
-	acm, err := handlers_acm.NewACMServiceImplWithNATS(t.Context(), cfg, nc, masterKey)
+	acm, err := acmdomain.NewACMServiceImplWithNATS(t.Context(), cfg, nc, masterKey)
 	require.NoError(t, err, "construct ACM service")
 	// Without a tenant CA no mode can issue, so every RequestCertificate would
 	// be refused. The generated requests name example.com domains.
 	caDir := t.TempDir()
-	acm.TenantCA, err = handlers_acm.LoadOrCreateTenantCA(filepath.Join(caDir, "ca.pem"), filepath.Join(caDir, "ca.key"), []string{"example.com"})
+	acm.TenantCA, err = acmdomain.LoadOrCreateTenantCA(filepath.Join(caDir, "ca.pem"), filepath.Join(caDir, "ca.key"), []string{"example.com"})
 	require.NoError(t, err, "create ACM tenant CA")
 	subscribeServiceMethods(t, nc, "acm", acm)
 

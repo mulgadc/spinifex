@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -86,10 +86,10 @@ func (d *Daemon) setInstanceMonitoring(ctx context.Context, instanceIDs []*strin
 // isn't running, so it falls back to the shared stopped store; a timeout
 // (partitioned-but-subscribed owner) surfaces InvalidID.NotFound.
 func (d *Daemon) setOneInstanceMonitoring(ctx context.Context, instanceID string, enabled bool, accountID string) error {
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID:                     instanceID,
-		Attributes:             types.EC2CommandAttributes{SetInstanceMonitoring: true},
-		InstanceMonitoringData: &types.InstanceMonitoringData{Enabled: enabled},
+		Attributes:             ec2v1.EC2CommandAttributes{SetInstanceMonitoring: true},
+		InstanceMonitoringData: &ec2v1.InstanceMonitoringData{Enabled: enabled},
 	}
 	body, err := json.Marshal(command)
 	if err != nil {
@@ -97,10 +97,10 @@ func (d *Daemon) setOneInstanceMonitoring(ctx context.Context, instanceID string
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	reqMsg := nats.NewMsg("ec2.cmd." + instanceID)
+	reqMsg := nats.NewMsg(ec2v1.InstanceCommandSubject(instanceID))
 	reqMsg.Data = body
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 
 	msg, err := d.natsConn.RequestMsg(reqMsg, instanceOwnerCommandTimeout)
 	switch {
@@ -113,7 +113,7 @@ func (d *Daemon) setOneInstanceMonitoring(ctx context.Context, instanceID string
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		return errors.New(*responseError.Code)
 	}
 	return nil

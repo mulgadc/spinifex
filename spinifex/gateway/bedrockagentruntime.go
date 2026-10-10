@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -13,9 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagentruntime"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 )
 
 // converseFn is gateway_bedrock.Converse partially applied over the request's
@@ -27,7 +28,7 @@ type converseFn func(ctx context.Context, accountID, modelID string, input *bedr
 
 // bedrockAgentRuntimeRoute maps one HTTP method + chi path pattern to an AWS
 // action and handler, mirroring bedrockAgentRoute.
-type bedrockAgentRuntimeRoute = restRoute[bedrockAgentRuntimeRouteHandler]
+type bedrockAgentRuntimeRoute = rest.Route[bedrockAgentRuntimeRouteHandler]
 
 // bedrockAgentRuntimeRouteHandler invokes a per-action bedrock-agent-runtime
 // (data-plane) gateway function. params holds the path params,
@@ -37,14 +38,14 @@ type bedrockAgentRuntimeRoute = restRoute[bedrockAgentRuntimeRouteHandler]
 // gw.BedrockAgentVector, the same stores bedrock-agent's control plane uses.
 // converse reaches gateway_bedrock.Converse for RetrieveAndGenerate's
 // generation step.
-type bedrockAgentRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, kb *handlers_ochrevector.KBStore, vector handlers_ochrevector.VectorService, converse converseFn) (any, error)
+type bedrockAgentRuntimeRouteHandler func(ctx context.Context, accountID string, params []string, body []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn) (any, error)
 
 // bedrockAgentRuntimeRoutes is the dispatch table. Real AWS HTTP paths/methods,
 // verified against the vendored aws-sdk-go bedrockagentruntime request
 // definitions (opRetrieve/opRetrieveAndGenerate).
 var bedrockAgentRuntimeRoutes = []bedrockAgentRuntimeRoute{
-	{"POST", "/knowledgebases/{knowledgeBaseId}/retrieve", "Retrieve",
-		func(ctx context.Context, acct string, p []string, b []byte, kb *handlers_ochrevector.KBStore, vector handlers_ochrevector.VectorService, _ converseFn) (any, error) {
+	{Method: "POST", Pattern: "/knowledgebases/{knowledgeBaseId}/retrieve", Action: "Retrieve",
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, _ converseFn) (any, error) {
 			input := new(bedrockagentruntime.RetrieveInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -54,8 +55,8 @@ var bedrockAgentRuntimeRoutes = []bedrockAgentRuntimeRoute{
 			input.KnowledgeBaseId = aws.String(p[0])
 			return Retrieve(ctx, acct, kb, vector, b, input)
 		}},
-	{"POST", "/retrieveAndGenerate", "RetrieveAndGenerate",
-		func(ctx context.Context, acct string, _ []string, b []byte, kb *handlers_ochrevector.KBStore, vector handlers_ochrevector.VectorService, converse converseFn) (any, error) {
+	{Method: "POST", Pattern: "/retrieveAndGenerate", Action: "RetrieveAndGenerate",
+		Handler: func(ctx context.Context, acct string, _ []string, b []byte, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn) (any, error) {
 			input := new(bedrockagentruntime.RetrieveAndGenerateInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -67,7 +68,7 @@ var bedrockAgentRuntimeRoutes = []bedrockAgentRuntimeRoute{
 }
 
 // bedrockAgentRuntimeRouter matches an escaped request path against bedrockAgentRuntimeRoutes.
-var bedrockAgentRuntimeRouter = newRESTRouter("bedrock-agent-runtime", bedrockAgentRuntimeRoutes)
+var bedrockAgentRuntimeRouter = rest.NewRouter("bedrock-agent-runtime", bedrockAgentRuntimeRoutes)
 
 // BedrockAgentRuntime_Request dispatches bedrock-agent-runtime (data-plane)
 // REST-JSON requests: resolves method+path to an action, reads the body,
@@ -76,7 +77,7 @@ var bedrockAgentRuntimeRouter = newRESTRouter("bedrock-agent-runtime", bedrockAg
 // is on bedrock-runtime (it ends up calling gateway_bedrock.Converse
 // in-process); Retrieve never reaches a model, so it is not metered.
 func (gw *GatewayConfig) BedrockAgentRuntime_Request(w http.ResponseWriter, r *http.Request) error {
-	action, params, handler, ok := bedrockAgentRuntimeRouter.lookup(r.Method, r.URL.EscapedPath())
+	action, params, handler, ok := bedrockAgentRuntimeRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-agent-runtime: no route for request", "method", r.Method, "path", r.URL.Path)
 		return errors.New(awserrors.ErrorInvalidAction)
@@ -187,73 +188,73 @@ func (f *wireFilter) isZero() bool {
 // one operator per node); an over-specified node resolves the first non-nil
 // field in the fixed order below rather than erroring, consistent with how
 // the rest of this gateway treats an over-specified request as best-effort.
-func (f *wireFilter) toFilter() (*handlers_ochrevector.Filter, error) {
+func (f *wireFilter) toFilter() (*ochrevector.Filter, error) {
 	if f.isZero() {
 		return nil, nil
 	}
 	switch {
 	case f.Equals != nil:
-		return handlers_ochrevector.Equals(f.Equals.Key, f.Equals.Value), nil
+		return ochrevector.Equals(f.Equals.Key, f.Equals.Value), nil
 	case f.NotEquals != nil:
-		return handlers_ochrevector.NotEquals(f.NotEquals.Key, f.NotEquals.Value), nil
+		return ochrevector.NotEquals(f.NotEquals.Key, f.NotEquals.Value), nil
 	case f.GreaterThan != nil:
-		return handlers_ochrevector.GreaterThan(f.GreaterThan.Key, f.GreaterThan.Value), nil
+		return ochrevector.GreaterThan(f.GreaterThan.Key, f.GreaterThan.Value), nil
 	case f.GreaterThanOrEquals != nil:
-		return handlers_ochrevector.GreaterThanOrEquals(f.GreaterThanOrEquals.Key, f.GreaterThanOrEquals.Value), nil
+		return ochrevector.GreaterThanOrEquals(f.GreaterThanOrEquals.Key, f.GreaterThanOrEquals.Value), nil
 	case f.LessThan != nil:
-		return handlers_ochrevector.LessThan(f.LessThan.Key, f.LessThan.Value), nil
+		return ochrevector.LessThan(f.LessThan.Key, f.LessThan.Value), nil
 	case f.LessThanOrEquals != nil:
-		return handlers_ochrevector.LessThanOrEquals(f.LessThanOrEquals.Key, f.LessThanOrEquals.Value), nil
+		return ochrevector.LessThanOrEquals(f.LessThanOrEquals.Key, f.LessThanOrEquals.Value), nil
 	case f.In != nil:
 		values, err := wireFilterStringSlice(f.In.Value)
 		if err != nil {
 			return nil, fmt.Errorf("bedrock-agent-runtime: filter \"in\" on %q: %w", f.In.Key, err)
 		}
-		return handlers_ochrevector.In(f.In.Key, values), nil
+		return ochrevector.In(f.In.Key, values), nil
 	case f.NotIn != nil:
 		values, err := wireFilterStringSlice(f.NotIn.Value)
 		if err != nil {
 			return nil, fmt.Errorf("bedrock-agent-runtime: filter \"notIn\" on %q: %w", f.NotIn.Key, err)
 		}
-		return handlers_ochrevector.NotIn(f.NotIn.Key, values), nil
+		return ochrevector.NotIn(f.NotIn.Key, values), nil
 	case f.StartsWith != nil:
 		prefix, ok := f.StartsWith.Value.(string)
 		if !ok {
 			return nil, fmt.Errorf("bedrock-agent-runtime: filter \"startsWith\" on %q requires a string value", f.StartsWith.Key)
 		}
-		return handlers_ochrevector.StartsWith(f.StartsWith.Key, prefix), nil
+		return ochrevector.StartsWith(f.StartsWith.Key, prefix), nil
 	case f.StringContains != nil:
 		substr, ok := f.StringContains.Value.(string)
 		if !ok {
 			return nil, fmt.Errorf("bedrock-agent-runtime: filter \"stringContains\" on %q requires a string value", f.StringContains.Key)
 		}
-		return handlers_ochrevector.StringContains(f.StringContains.Key, substr), nil
+		return ochrevector.StringContains(f.StringContains.Key, substr), nil
 	case f.ListContains != nil:
 		value, ok := f.ListContains.Value.(string)
 		if !ok {
 			return nil, fmt.Errorf("bedrock-agent-runtime: filter \"listContains\" on %q requires a string value", f.ListContains.Key)
 		}
-		return handlers_ochrevector.ListContains(f.ListContains.Key, value), nil
+		return ochrevector.ListContains(f.ListContains.Key, value), nil
 	case len(f.AndAll) > 0:
 		children, err := wireFiltersToChildren(f.AndAll)
 		if err != nil {
 			return nil, err
 		}
-		return handlers_ochrevector.AndAll(children...), nil
+		return ochrevector.AndAll(children...), nil
 	default: // len(f.OrAll) > 0, the only remaining non-zero case.
 		children, err := wireFiltersToChildren(f.OrAll)
 		if err != nil {
 			return nil, err
 		}
-		return handlers_ochrevector.OrAll(children...), nil
+		return ochrevector.OrAll(children...), nil
 	}
 }
 
 // wireFiltersToChildren translates a combinator's child list, rejecting any
 // child that itself carries no operator (a malformed request, not a filter
 // that matches nothing).
-func wireFiltersToChildren(fs []wireFilter) ([]*handlers_ochrevector.Filter, error) {
-	children := make([]*handlers_ochrevector.Filter, 0, len(fs))
+func wireFiltersToChildren(fs []wireFilter) ([]*ochrevector.Filter, error) {
+	children := make([]*ochrevector.Filter, 0, len(fs))
 	for i := range fs {
 		child, err := fs[i].toFilter()
 		if err != nil {
@@ -299,7 +300,7 @@ type retrieveFilterEnvelope struct {
 
 // decodeRetrieveFilter extracts and translates Retrieve's filter from the raw
 // request body, returning (nil, nil) when no filter was sent.
-func decodeRetrieveFilter(body []byte) (*handlers_ochrevector.Filter, error) {
+func decodeRetrieveFilter(body []byte) (*ochrevector.Filter, error) {
 	if len(body) == 0 {
 		return nil, nil
 	}
@@ -331,7 +332,7 @@ type retrieveAndGenerateFilterEnvelope struct {
 
 // decodeRetrieveAndGenerateFilter is decodeRetrieveFilter's sibling for
 // RetrieveAndGenerate.
-func decodeRetrieveAndGenerateFilter(body []byte) (*handlers_ochrevector.Filter, error) {
+func decodeRetrieveAndGenerateFilter(body []byte) (*ochrevector.Filter, error) {
 	if len(body) == 0 {
 		return nil, nil
 	}
@@ -355,7 +356,7 @@ func decodeRetrieveAndGenerateFilter(body []byte) (*handlers_ochrevector.Filter,
 // to put it in (same SDK-vintage gap as wireFilter, but here it only drops an
 // echo of already-visible data rather than silently changing behaviour, so it
 // is left unset rather than worked around).
-func queryResultToRetrievalResult(r handlers_ochrevector.QueryResult) *bedrockagentruntime.KnowledgeBaseRetrievalResult {
+func queryResultToRetrievalResult(r ochrevector.QueryResult) *bedrockagentruntime.KnowledgeBaseRetrievalResult {
 	return &bedrockagentruntime.KnowledgeBaseRetrievalResult{
 		Content: &bedrockagentruntime.RetrievalResultContent{Text: aws.String(r.Chunk)},
 		Location: &bedrockagentruntime.RetrievalResultLocation{
@@ -377,7 +378,7 @@ const defaultRetrieveResults = 5
 // response, and an incoming NextToken is accepted and ignored rather than
 // rejected, matching how storageConfiguration/roleArn are accepted-and-
 // stubbed elsewhere in this gateway.
-func Retrieve(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, vector handlers_ochrevector.VectorService, body []byte, input *bedrockagentruntime.RetrieveInput) (*bedrockagentruntime.RetrieveOutput, error) {
+func Retrieve(ctx context.Context, accountID string, kb *ochrevector.KBStore, vector ochrevector.VectorService, body []byte, input *bedrockagentruntime.RetrieveInput) (*bedrockagentruntime.RetrieveOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || input.RetrievalQuery == nil || aws.StringValue(input.RetrievalQuery.Text) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -403,7 +404,7 @@ func Retrieve(ctx context.Context, accountID string, kb *handlers_ochrevector.KB
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
 
-	resp, err := vector.Query(ctx, &handlers_ochrevector.QueryRequest{
+	resp, err := vector.Query(ctx, &ochrevector.QueryRequest{
 		IndexID: kbRec.IndexID,
 		Text:    aws.StringValue(input.RetrievalQuery.Text),
 		K:       numResults,
@@ -468,7 +469,7 @@ func converseOutputText(out *bedrockruntime.ConverseOutput) string {
 // the retrieved chunks. D6: sessionId is server-generated when the caller
 // omits it, and echoed either way -- no conversational memory is persisted,
 // so a reused sessionId has no effect on this or any later call.
-func RetrieveAndGenerate(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, vector handlers_ochrevector.VectorService, converse converseFn, body []byte, input *bedrockagentruntime.RetrieveAndGenerateInput) (*bedrockagentruntime.RetrieveAndGenerateOutput, error) {
+func RetrieveAndGenerate(ctx context.Context, accountID string, kb *ochrevector.KBStore, vector ochrevector.VectorService, converse converseFn, body []byte, input *bedrockagentruntime.RetrieveAndGenerateInput) (*bedrockagentruntime.RetrieveAndGenerateOutput, error) {
 	if input == nil || input.Input == nil || aws.StringValue(input.Input.Text) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -505,7 +506,7 @@ func RetrieveAndGenerate(ctx context.Context, accountID string, kb *handlers_och
 	}
 
 	queryText := aws.StringValue(input.Input.Text)
-	queryResp, err := vector.Query(ctx, &handlers_ochrevector.QueryRequest{
+	queryResp, err := vector.Query(ctx, &ochrevector.QueryRequest{
 		IndexID: kbRec.IndexID,
 		Text:    queryText,
 		K:       numResults,

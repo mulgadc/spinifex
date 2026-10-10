@@ -54,12 +54,12 @@ build: go_build build-installer build-lb-agent generate-aws-model-coverage
 # Build spinifex-ui frontend (requires pnpm)
 build-ui:
 	@echo -e "\n....Building spinifex-ui frontend...."
-	cd spinifex/services/spinifexui/frontend && pnpm build
+	cd spinifex/runtime/roles/spinifexui/frontend && pnpm build
 
 # GO commands
 VERSION ?= $(shell git describe --tags --always --dirty --exclude '*-dev')
 COMMIT  ?= $(shell git rev-parse --short HEAD)
-LDFLAGS := -s -w -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Version=$(VERSION) -X github.com/mulgadc/spinifex/cmd/spinifex/cmd.Commit=$(COMMIT)
+LDFLAGS := -s -w -X github.com/mulgadc/spinifex/spinifex/operator/cli.Version=$(VERSION) -X github.com/mulgadc/spinifex/spinifex/operator/cli.Commit=$(COMMIT)
 
 go_build:
 	@echo -e "\n....Building $(GO_PROJECT_NAME)"
@@ -220,7 +220,7 @@ aws-model-coverage: generate-aws-model-coverage
 	@go run ./cmd/aws-model-coverage
 
 # Segscan storage oracle: needs the mulga umbrella repo's scripts/segscan
-# checked out alongside spinifex (see spinifex/testutil/segscanoracle), which
+# checked out alongside spinifex (see internal/testkit/segscanoracle), which
 # is not the default local or CI layout, so this is a separate target from
 # test-integration rather than folded into it. Skips itself when segscan's
 # source isn't found.
@@ -248,7 +248,7 @@ manifest-lint-update:
 # Run unit tests
 test:
 	@echo -e "\n....Running tests for $(GO_PROJECT_NAME)...."
-	LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/...
+	LOG_IGNORE=1 go test -timeout 180s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/...
 
 # Empty locally, where reusing a cached result between runs is the point.
 # CI passes -count=1 so a green run means the suite executed against that commit
@@ -259,7 +259,7 @@ GOTESTFLAGS ?=
 COVERPROFILE ?= coverage.out
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... $(_COVQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
 
 # Refresh the README coverage badge. Measured as awesome-go documents
@@ -276,7 +276,7 @@ coverage-badge:
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
@@ -376,7 +376,7 @@ reinstall:
 
 clean:
 	rm -f ./bin/$(GO_PROJECT_NAME)
-	rm -rf spinifex/services/spinifexui/frontend/dist
+	rm -rf spinifex/runtime/roles/spinifexui/frontend/dist
 
 install-system:
 	@echo -e "\n....Installing system dependencies for $(ARCH)...."
@@ -423,7 +423,7 @@ fix:
 
 govulncheck:
 	@echo "Running govulncheck..."
-	$(_Q)scripts/run-gate.sh govulncheck go tool govulncheck ./...
+	$(_Q)scripts/run-gate.sh govulncheck scripts/govulncheck-gate.sh
 	@echo "  govulncheck ok"
 
 # NilAway — advisory nil-panic analysis. Not in preflight due to false positives

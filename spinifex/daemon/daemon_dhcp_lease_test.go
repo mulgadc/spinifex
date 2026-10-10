@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,12 +19,12 @@ import (
 // stubEIPService stands in for the EIP service without implementing either
 // optional interface, so it exercises the "external IPAM disabled" paths.
 type stubEIPService struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 }
 
 // stubEIPChecker answers allocation lookups only.
 type stubEIPChecker struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	exists bool
 	err    error
@@ -36,7 +36,7 @@ func (s *stubEIPChecker) AllocationExists(context.Context, string) (bool, error)
 
 // stubEIPRebinder records the address move it was asked to make.
 type stubEIPRebinder struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	oldIP, newIP string
 	err          error

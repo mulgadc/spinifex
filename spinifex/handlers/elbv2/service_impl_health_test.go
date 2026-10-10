@@ -7,21 +7,21 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // setupTestServiceWithInstance creates an ELBv2 + VPC service with a VPC, subnet,
 // and a simulated instance ENI (attached to an instance ID).
-func setupTestServiceWithInstance(t *testing.T, instanceID, instanceIP string) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl, string) {
+func setupTestServiceWithInstance(t *testing.T, instanceID, instanceIP string) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl, string) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	masterKey, err := handlers_iam.GenerateMasterKey()

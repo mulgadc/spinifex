@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 )
 
 const (
@@ -55,12 +55,12 @@ func NorthstarBaseDomain(env *Env) string {
 	// The local node's stanza is authoritative; fall back to any node carrying a
 	// domain, since the zone is cluster-wide.
 	if n, ok := cc.Nodes[cc.Node]; ok {
-		if d := handlers_dns.ResolveBaseDomain(&n); d != "" {
+		if d := dns.ResolveBaseDomain(&n); d != "" {
 			return d
 		}
 	}
 	for _, n := range cc.Nodes {
-		if d := handlers_dns.ResolveBaseDomain(&n); d != "" {
+		if d := dns.ResolveBaseDomain(&n); d != "" {
 			return d
 		}
 	}
@@ -78,12 +78,12 @@ func NorthstarInternalDomain(env *Env) string {
 		return ""
 	}
 	if n, ok := cc.Nodes[cc.Node]; ok {
-		if d := handlers_dns.ResolveInternalDomain(&n); d != "" {
+		if d := dns.ResolveInternalDomain(&n); d != "" {
 			return d
 		}
 	}
 	for _, n := range cc.Nodes {
-		if d := handlers_dns.ResolveInternalDomain(&n); d != "" {
+		if d := dns.ResolveInternalDomain(&n); d != "" {
 			return d
 		}
 	}
@@ -211,9 +211,9 @@ func AssertGuestResolver(t *testing.T, target SSHTarget) {
 		if err != nil {
 			return err
 		}
-		if !slices.Contains(resolvers, handlers_imds.VPCDNSServerIP) {
+		if !slices.Contains(resolvers, guestmetadata.VPCDNSServerIP) {
 			return fmt.Errorf("guest forwards DNS to %v, want the VPC resolver %s",
-				resolvers, handlers_imds.VPCDNSServerIP)
+				resolvers, guestmetadata.VPCDNSServerIP)
 		}
 		return nil
 	}, 30*time.Second, 3*time.Second)

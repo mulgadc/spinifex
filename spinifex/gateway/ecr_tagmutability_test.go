@@ -7,13 +7,17 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func putTagMutability(t *testing.T, gw *GatewayConfig, body string) (*httptest.ResponseRecorder, error) {
-	return ecrLifecycleRequest(t, gw, (*GatewayConfig).handlePutImageTagMutability, body)
+	t.Helper()
+	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.PutImageTagMutability", body)
+	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
+	w := httptest.NewRecorder()
+	return w, gw.serveECR(w, req.WithContext(ctx))
 }
 
 type tagMutabilityOut struct {
@@ -97,18 +101,6 @@ func TestPutImageTagMutability_Errors(t *testing.T) {
 	}
 }
 
-func TestPutImageTagMutability_NoAccountAndMalformed(t *testing.T) {
-	gw, _ := newRepoLifecycleGateway(t)
-
-	err := gw.handlePutImageTagMutability(httptest.NewRecorder(), noAccountRequest(`{"repositoryName":"team/app","imageTagMutability":"IMMUTABLE"}`))
-	require.Error(t, err)
-	assert.Equal(t, "ServerInternal", err.Error())
-
-	_, err = putTagMutability(t, gw, `{`)
-	require.Error(t, err)
-	assert.Equal(t, "InvalidParameterException", awserrors.ValidErrorCodeFromError(err))
-}
-
 func TestECRRequest_PutImageTagMutabilityDispatched(t *testing.T) {
 	gw, _ := newRepoLifecycleGateway(t)
 	_, err := createRepo(t, gw, `{"repositoryName":"team/app"}`)
@@ -117,6 +109,6 @@ func TestECRRequest_PutImageTagMutabilityDispatched(t *testing.T) {
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.PutImageTagMutability", `{"repositoryName":"team/app","imageTagMutability":"IMMUTABLE"}`)
 	req = req.WithContext(context.WithValue(req.Context(), ctxAccountID, ecrTestAccount))
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(w, req))
+	require.NoError(t, gw.serveECR(w, req))
 	assert.Equal(t, http.StatusOK, w.Code)
 }

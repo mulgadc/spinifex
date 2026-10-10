@@ -12,8 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The resolved effect of a ModifyDBInstance request: what changes now and what
@@ -214,10 +215,10 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 	}
 
 	if class := aws.StringValue(input.DBInstanceClass); class != "" && class != rec.DBInstanceClass {
-		instanceType, err := InstanceTypeForClass(class)
+		instanceType, err := s.sizing.InstanceTypeForClass(class)
 		if err != nil {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-				"DBInstanceClass %q is not supported; supported classes are %s", class, strings.Join(SupportedInstanceClasses(), ", "))
+				"DBInstanceClass %q is not supported; supported classes are %s", class, strings.Join(rdsengine.SupportedInstanceClasses(), ", "))
 		}
 		plan.InstanceClass, plan.InstanceType = class, instanceType
 	}
@@ -237,15 +238,11 @@ func (s *Service) planModify(ctx context.Context, input *rds.ModifyDBInstanceInp
 		if plan.ParameterGroup != "" {
 			targetGroup = plan.ParameterGroup
 		}
-		engine, err := LookupEngine(rec.Engine)
+		engine, err := rdsengine.LookupEngine(rec.Engine)
 		if err != nil {
 			return nil, err
 		}
-		kv, err := s.bucket(ctx, accountID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := s.resolveGroupParameters(ctx, kv, accountID, engine, targetGroup, targetClass); err != nil {
+		if _, err := s.resolveGroupParameters(ctx, accountID, engine, targetGroup, targetClass); err != nil {
 			return nil, err
 		}
 	}

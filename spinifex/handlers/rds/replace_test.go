@@ -3,10 +3,10 @@ package handlers_rds
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -351,5 +351,5 @@ func TestReplaceInstanceVM_LaunchesWithTheInstancesOwnIdentity(t *testing.T) {
 	assert.Equal(t, testAccountID, h.launch.launcher.input.ExtraENIs[0].AccountID)
 	assert.NotEqual(t, testAccountID, h.launch.launcher.input.AccountID,
 		"the VM and its management NIC live in the system account")
-	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(awsidentifiers.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }

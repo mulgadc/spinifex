@@ -3,12 +3,12 @@ package daemon
 import (
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_bedrock "github.com/mulgadc/spinifex/spinifex/handlers/bedrock"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -16,7 +16,7 @@ import (
 // plumbing mirrors buildRDSLaunchDeps exactly (same underlying EC2 handler
 // set), plus the weights snapshot resolver the RDS launcher has no equivalent
 // of.
-func (d *Daemon) buildBedrockLaunchDeps() handlers_bedrock.LaunchDeps {
+func (d *Daemon) buildBedrockLaunchDeps() ochre.LaunchDeps {
 	js, err := jetstream.New(d.natsConn)
 	var weights = gateway_bedrock.NoopWeightsResolver
 	if err != nil {
@@ -25,9 +25,9 @@ func (d *Daemon) buildBedrockLaunchDeps() handlers_bedrock.LaunchDeps {
 		weights = gateway_bedrock.NewWeightsStore(js)
 	}
 
-	return handlers_bedrock.LaunchDeps{
+	return ochre.LaunchDeps{
 		Config: d.config,
-		SystemVPC: handlers_systemvpc.Deps{
+		SystemVPC: systemvpc.Deps{
 			VPC:      d.vpcService,
 			SG:       d.vpcService,
 			IGW:      d.igwService,
@@ -54,12 +54,12 @@ func (d *Daemon) buildBedrockLaunchDeps() handlers_bedrock.LaunchDeps {
 // interface) when no GPU manager is present: assigning a typed nil
 // *daemonGPUSnapshotter instead would produce a non-nil interface wrapping a
 // nil pointer, defeating admitCapacity's own "snapshotter == nil" check.
-func (d *Daemon) buildBedrockServiceDeps() handlers_bedrock.ServiceDeps {
+func (d *Daemon) buildBedrockServiceDeps() ochre.ServiceDeps {
 	clusterSize := 1
 	if d.clusterConfig != nil {
 		clusterSize = len(d.clusterConfig.Nodes)
 	}
-	deps := handlers_bedrock.ServiceDeps{
+	deps := ochre.ServiceDeps{
 		Config:   d.config,
 		Launch:   d.buildBedrockLaunchDeps(),
 		NodeID:   d.node,
@@ -71,9 +71,9 @@ func (d *Daemon) buildBedrockServiceDeps() handlers_bedrock.ServiceDeps {
 	return deps
 }
 
-// daemonGPUSnapshotter adapts *gpu.Manager to handlers_bedrock's Snapshot-only
+// daemonGPUSnapshotter adapts *gpu.Manager to domains/ochre's Snapshot-only
 // capacity-check surface, keeping the gpu package out of that handler package
-// the same way daemonGPUClaimer keeps it out of handlers_ec2_instance.
+// the same way daemonGPUClaimer keeps it out of ec2instance.
 //
 // It holds the daemon rather than the manager because applyGPUConfig swaps
 // d.gpuManager on a passthrough toggle. Capturing the pointer here would leave

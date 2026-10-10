@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
@@ -223,7 +223,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 		// A pool-mode fixture provides Northstar, so the responder must serve the
 		// AWS-shaped EC2 name built from the ENI's public IP and its AZ's region.
 		base := harness.RequireDNSEnabled(t, fix.Env)
-		want := handlers_dns.EC2PublicName(pubIP, imdsRegionFromAZ(azX), base)
+		want := dns.EC2PublicName(pubIP, imdsRegionFromAZ(azX), base)
 		require.Equal(t, want, gotHost,
 			"public-hostname must be the AWS-shaped EC2 name for public-ipv4")
 

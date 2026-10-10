@@ -1,16 +1,16 @@
 package handlers_rds
 
 import (
-	"slices"
-	"strconv"
-	"strings"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 )
 
 // The status every offered version carries. One version per engine and it is
 // the one the AMI ships, so nothing is ever deprecated, pending or beta.
+//
+// Duplicated against the engine package's own copy deliberately: that one
+// backs the selection filter there, this one backs the SDK projection here.
 const engineVersionStatusAvailable = "available"
 
 // The only network type offered. Advertising DUAL would promise an address
@@ -18,120 +18,29 @@ const engineVersionStatusAvailable = "available"
 const networkTypeIPv4 = "IPV4"
 
 // Every endpoint is a private VPC address, so a vpc=false filter matches
-// nothing. Named once so the filter and the reported field cannot drift apart.
+// nothing. Duplicated against the engine package's own copy for the same
+// reason as engineVersionStatusAvailable above.
 const orderableVpc = true
 
-// ValueSets is a conjunction of accepted-value sets, one per source: the typed
-// parameter and each Filters entry that names the same field. A row must satisfy
-// every set, so naming two different engines matches nothing rather than both.
-type ValueSets [][]string
-
-// AddParam constrains by a typed parameter. An omitted one narrows nothing,
-// which is why an empty value is not recorded as a set that matches nothing.
-func (v *ValueSets) AddParam(value string) {
-	if strings.TrimSpace(value) == "" {
-		return
-	}
-	*v = append(*v, []string{normaliseFilterValue(value)})
-}
-
-// AddFilter constrains by one Filters entry. Unlike AddParam an empty or
-// unmatchable value is kept, because the caller wrote the filter deliberately.
-func (v *ValueSets) AddFilter(values []string) {
-	set := make([]string, 0, len(values))
-	for _, value := range values {
-		set = append(set, normaliseFilterValue(value))
-	}
-	*v = append(*v, set)
-}
-
-// A free function rather than a method, so ValueSets keeps the pointer receivers
-// its two mutators need without mixing the two receiver kinds on one type.
-func accepts(sets ValueSets, value string) bool {
-	value = normaliseFilterValue(value)
-	for _, set := range sets {
-		if !slices.Contains(set, value) {
-			return false
-		}
-	}
-	return true
-}
-
-// Every value either side of the comparison is a lowercase identifier already,
-// so folding here only makes a shouted filter work rather than widening a match.
-func normaliseFilterValue(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
-}
-
-// EngineVersionFilter narrows the engine-version catalog. Every field is
-// optional; a zero filter returns every row.
-type EngineVersionFilter struct {
-	Engine               ValueSets
-	EngineVersion        ValueSets
-	ParameterGroupFamily ValueSets
-	Status               ValueSets
-}
-
-func (f EngineVersionFilter) matches(e Engine) bool {
-	return accepts(f.Engine, e.Name) &&
-		accepts(f.EngineVersion, e.EngineVersion()) &&
-		accepts(f.ParameterGroupFamily, e.ParameterGroupFamily()) &&
-		accepts(f.Status, engineVersionStatusAvailable)
-}
-
-// OrderableFilter narrows the orderable-option catalog. Vpc is a value set like
-// the rest, holding "true" or "false", so an unset filter stays distinct from
-// one asking for non-VPC options.
-type OrderableFilter struct {
-	Engine          ValueSets
-	EngineVersion   ValueSets
-	DBInstanceClass ValueSets
-	LicenseModel    ValueSets
-	Vpc             ValueSets
-}
-
-func (f OrderableFilter) matchesEngine(e Engine) bool {
-	return accepts(f.Engine, e.Name) &&
-		accepts(f.EngineVersion, e.EngineVersion()) &&
-		accepts(f.LicenseModel, e.licenseModel) &&
-		accepts(f.Vpc, strconv.FormatBool(orderableVpc))
-}
-
-// EngineVersions is the engine half of the catalog: one row per engine, since
-// v1 pins a single major each and that pin is the only version an AMI serves.
-func EngineVersions(filter EngineVersionFilter) []*rds.DBEngineVersion {
+// EngineVersions is the AWS SDK projection of the engine package's own
+// selection: it builds the DBEngineVersion rows this handler reports, from the
+// engine-owned result the selection itself does not depend on the SDK for.
+func EngineVersions(filter rdsengine.EngineVersionFilter) []*rds.DBEngineVersion {
+	engines := rdsengine.EngineVersions(filter)
 	out := make([]*rds.DBEngineVersion, 0, len(engines))
-	for _, name := range SupportedEngines() {
-		engine := engines[name]
-		if !filter.matches(engine) {
-			continue
-		}
-		out = append(out, engine.describeVersion())
+	for _, e := range engines {
+		out = append(out, describeVersion(e))
 	}
 	return out
 }
 
-// OrderableOptions is the cross product of the engines, their pinned version and
-// the db.* classes, minus every class whose EC2 instance type runnable rejects.
-// runnable is the cluster's own answer to "can a node run this", which is the
-// difference between a class that validates and one that can actually launch.
-func OrderableOptions(filter OrderableFilter, runnable func(instanceType string) bool) []*rds.OrderableDBInstanceOption {
-	out := make([]*rds.OrderableDBInstanceOption, 0, len(engines)*len(dbInstanceClasses))
-	for _, name := range SupportedEngines() {
-		engine := engines[name]
-		if !filter.matchesEngine(engine) {
-			continue
-		}
-		for _, class := range SupportedInstanceClasses() {
-			if !accepts(filter.DBInstanceClass, class) {
-				continue
-			}
-			instanceType, err := InstanceTypeForClass(class)
-			if err != nil || !runnable(instanceType) {
-				continue
-			}
-			out = append(out, engine.orderableOption(class))
-		}
+// OrderableOptions is the AWS SDK projection of the engine package's own
+// selection, for the same reason as EngineVersions above.
+func OrderableOptions(filter rdsengine.OrderableFilter, sizing rdsengine.Sizing, runnable func(instanceType string) bool) []*rds.OrderableDBInstanceOption {
+	options := rdsengine.OrderableOptions(filter, sizing, runnable)
+	out := make([]*rds.OrderableDBInstanceOption, 0, len(options))
+	for _, option := range options {
+		out = append(out, orderableOption(option.Engine, option.DBInstanceClass))
 	}
 	return out
 }
@@ -139,14 +48,14 @@ func OrderableOptions(filter OrderableFilter, runnable func(instanceType string)
 // Everything the platform has a truth for. Fields the SDK struct carries that
 // nothing here answers — the custom-engine manifest, the CA identifiers, the
 // installation-file locations — are left nil rather than guessed at.
-func (e Engine) describeVersion() *rds.DBEngineVersion {
+func describeVersion(e rdsengine.Engine) *rds.DBEngineVersion {
 	return &rds.DBEngineVersion{
 		Engine:                     aws.String(e.Name),
 		EngineVersion:              aws.String(e.EngineVersion()),
 		MajorEngineVersion:         aws.String(e.MajorVersion),
 		DBParameterGroupFamily:     aws.String(e.ParameterGroupFamily()),
-		DBEngineDescription:        aws.String(e.description),
-		DBEngineVersionDescription: aws.String(e.description + " " + e.MajorVersion),
+		DBEngineDescription:        aws.String(e.Description()),
+		DBEngineVersionDescription: aws.String(e.Description() + " " + e.MajorVersion),
 		Status:                     aws.String(engineVersionStatusAvailable),
 
 		// Empty rather than absent: there is no in-place upgrade to target, no log
@@ -175,12 +84,12 @@ func (e Engine) describeVersion() *rds.DBEngineVersion {
 // Every false below restates a line of rejectUnimplemented or of the
 // accepted-but-inert set, so an option cannot advertise a capability the create
 // path refuses.
-func (e Engine) orderableOption(class string) *rds.OrderableDBInstanceOption {
+func orderableOption(e rdsengine.Engine, class string) *rds.OrderableDBInstanceOption {
 	return &rds.OrderableDBInstanceOption{
 		Engine:          aws.String(e.Name),
 		EngineVersion:   aws.String(e.EngineVersion()),
 		DBInstanceClass: aws.String(class),
-		LicenseModel:    aws.String(e.licenseModel),
+		LicenseModel:    aws.String(e.LicenseModel()),
 
 		StorageType:               aws.String(storageTypeGP3),
 		MinStorageSize:            aws.Int64(minAllocatedStorageGiB),

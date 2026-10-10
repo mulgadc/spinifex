@@ -3,14 +3,14 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -98,7 +98,7 @@ func TestHandleShutdownStorage(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(runtimeDir, "nbdkit-vol-a.pid"), []byte("4242"), 0o600))
 
 		d, pidDir := shutdownTestDaemon(t, "viperblock")
-		require.NoError(t, utils.WritePidFileTo(pidDir, "viperblock", deadPID))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "viperblock", deadPID))
 
 		ack, outcome := shutdownPhaseReply(t, d.handleShutdownStorage, []byte(`{"phase":"storage"}`))
 		assert.Equal(t, outcomeSuccess, outcome)
@@ -114,7 +114,7 @@ func TestHandleShutdownStorage(t *testing.T) {
 		signalled := stubNBDKitProcs(t, nil)
 
 		d, pidDir := shutdownTestDaemon(t, "daemon")
-		require.NoError(t, utils.WritePidFileTo(pidDir, "viperblock", deadPID))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "viperblock", deadPID))
 
 		ack, outcome := shutdownPhaseReply(t, d.handleShutdownStorage, []byte(`{"phase":"storage"}`))
 		assert.Equal(t, outcomeSuccess, outcome)
@@ -127,7 +127,7 @@ func TestHandleShutdownStorage(t *testing.T) {
 func TestHandleShutdownPersist(t *testing.T) {
 	t.Run("a predastore already gone is not reported stopped", func(t *testing.T) {
 		d, pidDir := shutdownTestDaemon(t, "predastore")
-		require.NoError(t, utils.WritePidFileTo(pidDir, "predastore", deadPID))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "predastore", deadPID))
 
 		ack, outcome := shutdownPhaseReply(t, d.handleShutdownPersist, []byte(`{"phase":"persist"}`))
 		assert.Equal(t, outcomeSuccess, outcome)
@@ -139,7 +139,7 @@ func TestHandleShutdownPersist(t *testing.T) {
 
 	t.Run("an unconfigured predastore is left alone", func(t *testing.T) {
 		d, pidDir := shutdownTestDaemon(t, "daemon")
-		require.NoError(t, utils.WritePidFileTo(pidDir, "predastore", deadPID))
+		require.NoError(t, hostprocess.WritePidFileTo(pidDir, "predastore", deadPID))
 
 		ack, outcome := shutdownPhaseReply(t, d.handleShutdownPersist, []byte(`{"phase":"persist"}`))
 		assert.Equal(t, outcomeSuccess, outcome)
@@ -152,8 +152,8 @@ func TestHandleShutdownPersist(t *testing.T) {
 // stops taking work either way, and only real stops are reported.
 func TestHandleShutdownGate_DeadServices(t *testing.T) {
 	d, pidDir := shutdownTestDaemon(t, "ui", "vpcd")
-	require.NoError(t, utils.WritePidFileTo(pidDir, "spinifex-ui", deadPID))
-	require.NoError(t, utils.WritePidFileTo(pidDir, "vpcd", deadPID))
+	require.NoError(t, hostprocess.WritePidFileTo(pidDir, "spinifex-ui", deadPID))
+	require.NoError(t, hostprocess.WritePidFileTo(pidDir, "vpcd", deadPID))
 
 	ack, outcome := shutdownPhaseReply(t, d.handleShutdownGate, []byte(`{"phase":"gate"}`))
 	assert.Equal(t, outcomeSuccess, outcome)

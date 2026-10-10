@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -15,21 +16,19 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -196,7 +195,7 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 func TestVolumeMounterAdapter_Mount_ClosedConnIsNotRetryable(t *testing.T) {
 	adapter := newVolumeMounterAdapter(closedAdapterTestConn(t), "node-closed", nil)
 	instance := &vm.VM{ID: "i-mount-closed"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-closed"}}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-closed"}}
 
 	err := adapter.Mount(t.Context(), instance)
 	require.ErrorIs(t, err, nats.ErrConnectionClosed)
@@ -222,7 +221,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		volState := &recordingVolumeState{}
 		adapter := newVolumeMounterAdapter(nc, uniqueAdapterID("node-unmount"), volState)
 		instance := &vm.VM{ID: "i-unmount-none"}
-		instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
+		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
 
 		err := adapter.Unmount(t.Context(), instance)
 		require.ErrorIs(t, err, nats.ErrNoResponders)
@@ -233,11 +232,11 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 
 	t.Run("state update failure does not fail the unmount", func(t *testing.T) {
 		node := uniqueAdapterID("node-unmount")
-		respondJSON(t, nc, "ebs."+node+".unmount", types.EBSUnMountResponse{Volume: "vol-a"})
+		respondJSON(t, nc, "ebs."+node+".unmount", viperblocklegacyv1.EBSUnMountResponse{Volume: "vol-a"})
 		volState := &recordingVolumeState{err: errInjected}
 		adapter := newVolumeMounterAdapter(nc, node, volState)
 		instance := &vm.VM{ID: "i-unmount-state"}
-		instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-a"}}
+		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}}
 
 		require.NoError(t, adapter.Unmount(t.Context(), instance))
 		assert.Equal(t, []string{"vol-a=available"}, volState.updated)
@@ -248,14 +247,14 @@ func TestVolumeMounterAdapter_Abandon(t *testing.T) {
 	nc := connectAdapterTestNATS(t, sharedNATSURL)
 
 	// abandonResponder answers per volume so one request can mix outcomes.
-	abandonResponder := func(t *testing.T, node string, replies map[string][]byte) *[]vbwire.VolumeAbandonRequest {
+	abandonResponder := func(t *testing.T, node string, replies map[string][]byte) *[]viperblocklegacyv1.VolumeAbandonRequest {
 		t.Helper()
 		var (
 			mu   sync.Mutex
-			seen []vbwire.VolumeAbandonRequest
+			seen []viperblocklegacyv1.VolumeAbandonRequest
 		)
-		sub, err := nc.Subscribe(vbwire.VolumeAbandonSubject(node), func(msg *nats.Msg) {
-			var req vbwire.VolumeAbandonRequest
+		sub, err := nc.Subscribe(viperblocklegacyv1.VolumeAbandonSubject(node), func(msg *nats.Msg) {
+			var req viperblocklegacyv1.VolumeAbandonRequest
 			_ = json.Unmarshal(msg.Data, &req)
 			mu.Lock()
 			seen = append(seen, req)
@@ -269,7 +268,7 @@ func TestVolumeMounterAdapter_Abandon(t *testing.T) {
 	instanceWith := func(volumes ...string) *vm.VM {
 		v := &vm.VM{ID: "i-abandon", AccountID: testAccountID}
 		for _, name := range volumes {
-			v.EBSRequests.Requests = append(v.EBSRequests.Requests, types.EBSRequest{Name: name})
+			v.EBSRequests.Requests = append(v.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: name})
 		}
 		return v
 	}
@@ -291,7 +290,7 @@ func TestVolumeMounterAdapter_Abandon(t *testing.T) {
 		require.NoError(t, adapter.Abandon(t.Context(), instanceWith("vol-abandoned", "vol-absent"), "superseded"),
 			"a volume not exported here is the ordinary case, not a failure")
 		require.Len(t, *seen, 2)
-		assert.Equal(t, vbwire.VolumeAbandonRequest{Volume: "vol-abandoned", Reason: "superseded"}, (*seen)[0])
+		assert.Equal(t, viperblocklegacyv1.VolumeAbandonRequest{Volume: "vol-abandoned", Reason: "superseded"}, (*seen)[0])
 	})
 
 	t.Run("failures are joined and do not stop the sweep", func(t *testing.T) {
@@ -375,7 +374,7 @@ func TestOnInstanceUpHook_SubscribeFailureReturnsError(t *testing.T) {
 
 // natEIPResolver answers the associated-EIP lookup the up hook makes.
 type natEIPResolver struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	ip string
 }
@@ -496,7 +495,7 @@ func (getFailingStore) GetObject(context.Context, *s3.GetObjectInput) (*s3.GetOb
 }
 
 func TestInstanceCleaner_DeleteVolumes_Errors(t *testing.T) {
-	instanceWith := func(reqs ...types.EBSRequest) *vm.VM {
+	instanceWith := func(reqs ...viperblocklegacyv1.EBSRequest) *vm.VM {
 		v := &vm.VM{ID: "i-delvol", AccountID: testAccountID}
 		v.EBSRequests.Requests = reqs
 		return v
@@ -504,26 +503,26 @@ func TestInstanceCleaner_DeleteVolumes_Errors(t *testing.T) {
 
 	t.Run("EFI delete with no responder", func(t *testing.T) {
 		a := newInstanceCleanerAdapter(&Daemon{natsConn: connectAdapterTestNATS(t, sharedNATSURL)})
-		err := a.DeleteVolumes(instanceWith(types.EBSRequest{Name: "vol-efi-" + uniqueAdapterID("x"), EFI: true}))
+		err := a.DeleteVolumes(instanceWith(viperblocklegacyv1.EBSRequest{Name: "vol-efi-" + uniqueAdapterID("x"), EFI: true}))
 		assert.ErrorIs(t, err, nats.ErrNoResponders)
 	})
 
 	t.Run("no volume service skips both kinds", func(t *testing.T) {
 		a := newInstanceCleanerAdapter(&Daemon{})
 		require.NoError(t, a.DeleteVolumes(instanceWith(
-			types.EBSRequest{Name: "vol-keep", DeleteOnTermination: false},
-			types.EBSRequest{Name: "vol-delete", DeleteOnTermination: true},
+			viperblocklegacyv1.EBSRequest{Name: "vol-keep", DeleteOnTermination: false},
+			viperblocklegacyv1.EBSRequest{Name: "vol-delete", DeleteOnTermination: true},
 		)))
 	})
 
 	t.Run("volume service errors are reported", func(t *testing.T) {
-		svc := handlers_ec2_volume.NewVolumeServiceImplWithStore(&config.Config{}, getFailingStore{objectstore.NewMemoryObjectStore()}, nil)
+		svc := ec2volume.NewVolumeServiceImplWithStore(&config.Config{}, getFailingStore{objectstore.NewMemoryObjectStore()}, nil)
 		a := newInstanceCleanerAdapter(&Daemon{volumeService: svc})
 
-		err := a.DeleteVolumes(instanceWith(types.EBSRequest{Name: "vol-keep", DeleteOnTermination: false}))
+		err := a.DeleteVolumes(instanceWith(viperblocklegacyv1.EBSRequest{Name: "vol-keep", DeleteOnTermination: false}))
 		require.ErrorIs(t, err, errInjected, "a failed detach must surface")
 
-		err = a.DeleteVolumes(instanceWith(types.EBSRequest{Name: "vol-delete", DeleteOnTermination: true}))
+		err = a.DeleteVolumes(instanceWith(viperblocklegacyv1.EBSRequest{Name: "vol-delete", DeleteOnTermination: true}))
 		require.ErrorIs(t, err, errInjected, "a failed delete must surface")
 	})
 }
@@ -559,7 +558,7 @@ func TestInstanceCleaner_ReleasePublicIP(t *testing.T) {
 	const pool = "wan-fake"
 	newCleaner := func(t *testing.T, releaseErr error, nc *nats.Conn) (*instanceCleanerAdapter, *fakeAllocator) {
 		t.Helper()
-		ipam := handlers_ec2_vpc.NewExternalIPAMWithKV(nil, nil)
+		ipam := ec2vpc.NewExternalIPAMWithKV(nil, nil)
 		alloc := &fakeAllocator{releaseErr: releaseErr}
 		require.NoError(t, ipam.InstallAllocator(pool, alloc))
 		return newInstanceCleanerAdapter(&Daemon{externalIPAM: ipam, natsConn: nc}), alloc
@@ -615,7 +614,7 @@ type adapterVPCFixture struct {
 	url   string
 	nc    *nats.Conn
 	js    jetstream.JetStream
-	vpc   *handlers_ec2_vpc.VPCServiceImpl
+	vpc   *ec2vpc.VPCServiceImpl
 	eniID string
 }
 
@@ -624,7 +623,7 @@ func newAdapterVPCFixture(t *testing.T) *adapterVPCFixture {
 	ns, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), &config.Config{}, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), &config.Config{}, nc)
 	require.NoError(t, err)
 	vpcOut, err := vpcSvc.CreateVpc(t.Context(), &ec2.CreateVpcInput{CidrBlock: aws.String("10.0.0.0/16")}, testAccountID)
 	require.NoError(t, err)
@@ -655,7 +654,7 @@ func TestInstanceCleaner_ReleaseAutoAssignedPublicIP(t *testing.T) {
 
 	newCleaner := func(t *testing.T, releaseErr error) (*instanceCleanerAdapter, *fakeAllocator) {
 		t.Helper()
-		ipam := handlers_ec2_vpc.NewExternalIPAMWithKV(nil, nil)
+		ipam := ec2vpc.NewExternalIPAMWithKV(nil, nil)
 		alloc := &fakeAllocator{releaseErr: releaseErr}
 		require.NoError(t, ipam.InstallAllocator(pool, alloc))
 		return newInstanceCleanerAdapter(&Daemon{externalIPAM: ipam, vpcService: f.vpc}), alloc
@@ -731,7 +730,7 @@ func TestInstanceCleaner_ReleaseAutoAssignedPublicIP(t *testing.T) {
 	t.Run("primary ENI delete failure is returned", func(t *testing.T) {
 		nc, err := nats.Connect(f.url)
 		require.NoError(t, err)
-		vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), &config.Config{}, nc)
+		vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), &config.Config{}, nc)
 		require.NoError(t, err)
 		nc.Close()
 
@@ -743,7 +742,7 @@ func TestInstanceCleaner_ReleaseAutoAssignedPublicIP(t *testing.T) {
 	t.Run("spot close failure is returned", func(t *testing.T) {
 		nc, err := nats.Connect(f.url)
 		require.NoError(t, err)
-		spotSvc, err := handlers_ec2_spotinstance.NewSpotInstanceServiceImplWithNATS(t.Context(), &config.Config{}, nc)
+		spotSvc, err := ec2spotinstance.NewSpotInstanceServiceImplWithNATS(t.Context(), &config.Config{}, nc)
 		require.NoError(t, err)
 
 		a := newInstanceCleanerAdapter(&Daemon{spotInstanceService: spotSvc})
@@ -758,7 +757,7 @@ func TestInstanceCleaner_ReleaseAutoAssignedPublicIP(t *testing.T) {
 
 // failingEIPDisassociator fails every disassociation.
 type failingEIPDisassociator struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	calls int
 }
@@ -785,7 +784,7 @@ func TestInstanceCleaner_RemoveFromPlacementGroup(t *testing.T) {
 	require.NoError(t, newInstanceCleanerAdapter(&Daemon{}).RemoveFromPlacementGroup(inGroup),
 		"no placement group service is a no-op")
 
-	a := newInstanceCleanerAdapter(&Daemon{placementGroupService: &handlers_ec2_placementgroup.PlacementGroupServiceImpl{}})
+	a := newInstanceCleanerAdapter(&Daemon{placementGroupService: &ec2placementgroup.PlacementGroupServiceImpl{}})
 	require.NoError(t, a.RemoveFromPlacementGroup(&vm.VM{ID: "i-pg"}), "an ungrouped instance is a no-op")
 
 	assert.EqualError(t, a.RemoveFromPlacementGroup(inGroup), awserrors.ErrorMissingParameter,

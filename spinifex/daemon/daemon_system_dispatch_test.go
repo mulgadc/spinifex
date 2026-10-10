@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -382,7 +382,7 @@ func TestTerminateSystemInstanceRemote_NoResponders(t *testing.T) {
 
 	err = d.terminateSystemInstanceRemote("i-orphan")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound,
+	assert.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound,
 		"no owner means the VM is gone — caller must see idempotent NotFound, not a hang")
 }
 
@@ -398,7 +398,7 @@ func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
 
 	sub, err := nc.Subscribe("system.TerminateInstance.i-gone", func(msg *nats.Msg) {
 		payload, _ := json.Marshal(systemInstanceTerminateEnvelope{
-			Error: sysinstance.ErrSystemInstanceNotFound.Error() + ": i-gone",
+			Error: systeminstance.ErrSystemInstanceNotFound.Error() + ": i-gone",
 		})
 		_ = msg.Respond(payload)
 	})
@@ -407,7 +407,7 @@ func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
 
 	err = d.terminateSystemInstanceRemote("i-gone")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+	assert.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 }
 
 // TestTerminateSystemInstanceRemote_ErrorPropagated: a real teardown failure on
@@ -430,7 +430,7 @@ func TestTerminateSystemInstanceRemote_ErrorPropagated(t *testing.T) {
 	err = d.terminateSystemInstanceRemote("i-stuck")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "volume detach timed out")
-	assert.NotErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound,
+	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound,
 		"a real failure must not be misreported as idempotent NotFound")
 }
 
@@ -440,7 +440,7 @@ func TestTerminateSystemInstanceRemote_WithoutConn(t *testing.T) {
 	d := &Daemon{node: "node-a"}
 	err := d.terminateSystemInstanceRemote("i-x")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+	assert.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 }
 
 // TestHandleSystemLaunchInstance_PanicRecovered drives a valid launch against a
@@ -643,7 +643,7 @@ func TestTerminateSystemInstanceRemote_TransportFailures(t *testing.T) {
 
 		err = (&Daemon{natsConn: nc}).terminateSystemInstanceRemote("i-closed")
 		require.ErrorContains(t, err, "route terminate i-closed")
-		assert.NotErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+		assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 	})
 
 	t.Run("undecodable reply", func(t *testing.T) {
@@ -682,7 +682,7 @@ func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
 		d := &Daemon{natsConn: nc, vmMgr: vm.NewManager(), natsSubscriptions: make(map[string]*nats.Subscription)}
 		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-unknown", nil)
 		d.serveSystemTerminateInstance(msg)
-		assert.Contains(t, nextEnvelopeError(t, sub), sysinstance.ErrSystemInstanceNotFound.Error())
+		assert.Contains(t, nextEnvelopeError(t, sub), systeminstance.ErrSystemInstanceNotFound.Error())
 	})
 
 	// No VM manager makes the terminate nil-deref; the dispatch goroutine must

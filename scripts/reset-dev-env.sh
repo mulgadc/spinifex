@@ -273,7 +273,7 @@ if [ "$DEV_BIND_PLANES" = "1" ]; then
     # Pinning --bind moves every service rendered as {{.BindIP}} onto the lan
     # plane. awsgw and predastore must be on the wildcard first, or the public
     # AWS API and S3 endpoint leave the wan plane with them.
-    TEMPLATE="$PROJECT_ROOT/cmd/spinifex/cmd/templates/spinifex.toml"
+    TEMPLATE="$PROJECT_ROOT/spinifex/operator/cli/templates/spinifex.toml"
     if [ -f "$TEMPLATE" ] && ! grep -q '^host = "0.0.0.0:9999"' "$TEMPLATE"; then
         fail "DEV_BIND_PLANES=1 but $TEMPLATE still renders awsgw on {{.BindIP}}. This branch predates the wildcard public listeners — rebase, or set DEV_BIND_PLANES=0."
     fi

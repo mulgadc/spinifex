@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
@@ -21,7 +22,7 @@ import (
 // QMP/state-machine pipeline to vm.Manager.AttachVolume. The manager owns
 // every QMP and persistence side-effect; the daemon only emits the AWS API
 // response.
-func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Attaching volume to instance", "instanceId", command.ID)
 
 	if command.AttachVolumeData == nil || command.AttachVolumeData.VolumeID == "" {
@@ -42,7 +43,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 	// The caller's account is a key segment, so it is needed before the read
 	// rather than after it.
-	callerAccountID := utils.AccountIDFromMsg(msg)
+	callerAccountID := natsmsg.AccountIDFromMsg(msg)
 
 	volMeta, err := d.volumeService.GetVolumeMetadata(callerAccountID, volumeID)
 	if err != nil {
@@ -115,7 +116,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 // handleDetachVolume dispatches the QMP/state-machine pipeline to
 // vm.Manager.DetachVolume and emits the AWS API response.
-func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	slog.InfoContext(ctx, "Detaching volume from instance", "instanceId", command.ID)
 
 	if command.DetachVolumeData == nil || command.DetachVolumeData.VolumeID == "" {
@@ -145,7 +146,7 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 //
 // Runs on its own goroutine (see handleEC2Events) so a long flush cannot hold
 // the instance's command subscription.
-func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command types.EC2InstanceCommand, instance *vm.VM) string {
+func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
 	ctx, span := startOpSpan(ctx, "ec2.DrainVolume", command.ID)
 	var err error
 	defer func() { endOpSpan(span, err) }()
@@ -164,7 +165,7 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	if status == vm.StateStopped || status == vm.StateTerminated {
 		slog.InfoContext(ctx, "DrainVolume: instance teardown is complete, nothing to drain",
 			"volumeId", volumeID, "instanceId", command.ID, "status", status)
-		respondWithJSON(d.node, msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusNotRunning})
+		respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusNotRunning})
 		return outcomeSuccess
 	}
 
@@ -173,12 +174,12 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command t
 	// A missing or unresponsive socket under a running instance means the writes
 	// cannot be made current, so the caller must fail its snapshot rather than
 	// read a stale checkpoint.
-	if err = handlers_ec2_snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
+	if err = ec2snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
 		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
 	}
 
-	respondWithJSON(d.node, msg, types.DrainVolumeResponse{VolumeID: volumeID, Status: types.DrainVolumeStatusDrained})
+	respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
 	return outcomeSuccess
 }
 
@@ -205,19 +206,19 @@ func attachDetachErrorCode(err error) string {
 
 // handleEC2ModifyVolume processes incoming EC2 ModifyVolume requests.
 func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
 	slog.DebugContext(ctx, "Received message", "subject", msg.Subject)
 	slog.DebugContext(ctx, "Message data", "data", string(msg.Data))
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	modifyVolumeInput := &ec2.ModifyVolumeInput{}
-	errResp := utils.UnmarshalJsonPayload(modifyVolumeInput, msg.Data)
+	errResp := awserrors.UnmarshalJsonPayload(modifyVolumeInput, msg.Data)
 
 	if errResp != nil {
-		utils.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
+		natsmsg.MarkSpanError(span, errors.New(awserrors.ErrorInvalidParameterValue))
 		if err := msg.Respond(errResp); err != nil {
 			slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
 		}
@@ -231,7 +232,7 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 
 	if err != nil {
 		slog.ErrorContext(ctx, "handleEC2ModifyVolume service.ModifyVolume failed", "err", err)
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		respondWithServiceError(d.node, msg, err)
 		return outcomeError
 	}
@@ -240,11 +241,11 @@ func (d *Daemon) handleEC2ModifyVolume(msg *nats.Msg) string {
 
 	// Notify viperblockd to reload state after volume modification (e.g. resize)
 	if modifyVolumeInput.VolumeId != nil {
-		syncData, err := json.Marshal(types.EBSSyncRequest{Volume: *modifyVolumeInput.VolumeId})
+		syncData, err := json.Marshal(viperblocklegacyv1.EBSSyncRequest{Volume: *modifyVolumeInput.VolumeId})
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to marshal ebs.sync request", "volumeId", *modifyVolumeInput.VolumeId, "err", err)
 		} else {
-			_, syncErr := d.natsConn.Request("ebs.sync", syncData, 5*time.Second)
+			_, syncErr := d.natsConn.Request(viperblocklegacyv1.SyncSubject, syncData, 5*time.Second)
 			if syncErr != nil {
 				slog.WarnContext(ctx, "ebs.sync notification failed (volume may not be mounted)",
 					"volumeId", *modifyVolumeInput.VolumeId, "err", syncErr)

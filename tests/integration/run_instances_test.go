@@ -9,7 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +17,7 @@ import (
 // TestRunInstances_MultiCountExpansion asserts that a RunInstances call with
 // MinCount=MaxCount=2 returns 2 instances with non-empty InstanceIds. That
 // expansion is gateway-side logic — distributeInstances in
-// spinifex/gateway/ec2/instance/placement.go queries node capacity over NATS,
+// spinifex/domains/ec2/awsapi/instance/placement.go queries node capacity over NATS,
 // computes how many instances to launch, and dispatches a single targeted
 // launch per node — resolved entirely before the daemon-facing NATS hop, so a
 // static stub of the daemon side is sufficient; no real guest is needed.

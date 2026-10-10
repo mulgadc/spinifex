@@ -3,11 +3,11 @@ package gateway_rds
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // The resource a policy check evaluates against when the request names nothing
@@ -51,7 +51,7 @@ func AuthorizeCaller(ctx context.Context, action string, caller Caller) error {
 // binding to a specific DB instance is authorizeAgent's, and needs NATS.
 func requireAgentPrincipal(ctx context.Context, caller Caller) error {
 	if caller.PrincipalType != principalTypeAssumedRole ||
-		caller.AccountID != utils.GlobalAccountID ||
+		caller.AccountID != awsidentifiers.GlobalAccountID ||
 		caller.RoleName != handlers_rds.InstanceRoleName ||
 		caller.SessionName == "" {
 		slog.DebugContext(ctx, "RDS: internal action rejected for non-agent caller",

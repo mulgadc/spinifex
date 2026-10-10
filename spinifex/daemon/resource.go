@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 )
 
 // errInsufficientCapacity is returned by allocateForLaunch when MinCount
@@ -237,7 +237,7 @@ func nbdkitChargeMiB(mainVols, auxVols, mainMiB, auxMiB int) int64 {
 
 // resourceStatsForType computes the InstanceTypeCap for a single type given
 // remaining resources. Clamps negative capacity to zero without logging.
-func resourceStatsForType(remainVCPU int, remainMem float64, it *ec2.InstanceTypeInfo) types.InstanceTypeCap {
+func resourceStatsForType(remainVCPU int, remainMem float64, it *ec2.InstanceTypeInfo) clusterv1.InstanceTypeCap {
 	vCPUs := instanceTypeVCPUs(it)
 	memGB := float64(instanceTypeMemoryMiB(it)) / 1024.0
 
@@ -253,7 +253,7 @@ func resourceStatsForType(remainVCPU int, remainMem float64, it *ec2.InstanceTyp
 		name = *it.InstanceType
 	}
 
-	return types.InstanceTypeCap{
+	return clusterv1.InstanceTypeCap{
 		Name:      name,
 		VCPU:      int(vCPUs),
 		MemoryGB:  memGB,

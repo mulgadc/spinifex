@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,13 +20,13 @@ import (
 
 // setupTestServiceWithVPC creates an ELBv2 service wired to a real VPC service
 // with a pre-created VPC and subnet for ENI allocation testing.
-func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc.VPCServiceImpl) {
+func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServiceImpl) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
 	// Create VPC service
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	// Create ELBv2 service with VPC wired in.
@@ -55,7 +55,7 @@ func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *handlers_ec2_vpc
 }
 
 // getTestSubnetID creates a fresh subnet and returns its ID.
-func getTestSubnetID(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl, vpcID, cidr, az string) string {
+func getTestSubnetID(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl, vpcID, cidr, az string) string {
 	t.Helper()
 	out, err := vpcSvc.CreateSubnet(context.Background(), &ec2.CreateSubnetInput{
 		VpcId:            aws.String(vpcID),
@@ -273,7 +273,7 @@ func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *te
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 
 	cfg := &config.Config{Daemon: config.DaemonConfig{DevNetworking: true}}
@@ -308,7 +308,7 @@ func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *te
 
 	// Corrupt the ENI record so every DetachAndDeleteENI read fails closed —
 	// a persistent failure, not a one-shot race.
-	eniKV, err := js.KeyValue(context.Background(), handlers_ec2_vpc.KVBucketENIs)
+	eniKV, err := js.KeyValue(context.Background(), ec2vpc.KVBucketENIs)
 	require.NoError(t, err)
 	_, err = eniKV.Put(context.Background(), testAccountID+"."+eniID, []byte("{not json"))
 	require.NoError(t, err)

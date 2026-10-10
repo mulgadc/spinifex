@@ -15,9 +15,9 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/bedrockagentruntime"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,13 +27,13 @@ import (
 // stores, allow-everything IAMService) plus newBedrockRequestGateway's vLLM
 // routing (BedrockEndpoints/BedrockAccess), since RetrieveAndGenerate's
 // generation step reaches gateway_bedrock.Converse in-process.
-func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector handlers_ochrevector.VectorService, vllmURL string) *GatewayConfig {
+func newBedrockAgentRuntimeRequestGateway(t *testing.T, vector ochrevector.VectorService, vllmURL string) *GatewayConfig {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 	return &GatewayConfig{
 		IAMService:              allowAllIAMService(),
-		BedrockAgentKB:          handlers_ochrevector.NewKBStore(js),
-		BedrockAgentDataSources: handlers_ochrevector.NewDataSourceStore(js),
+		BedrockAgentKB:          ochrevector.NewKBStore(js),
+		BedrockAgentDataSources: ochrevector.NewDataSourceStore(js),
 		BedrockAgentVector:      vector,
 		BedrockEndpoints: map[string]string{
 			bedrockTestLlamaModelID: vllmURL,
@@ -52,16 +52,16 @@ func bedrockAgentRuntimeRequestWithAccount(method, path, body string) *http.Requ
 
 func newTestKnowledgeBaseRecord(t *testing.T, gw *GatewayConfig, kbID, indexID string) {
 	t.Helper()
-	require.NoError(t, gw.BedrockAgentKB.Create(context.Background(), bedrockAgentTestAccount, handlers_ochrevector.KBRecord{
-		ID: kbID, Name: "docs", Status: handlers_ochrevector.StateReady,
+	require.NoError(t, gw.BedrockAgentKB.Create(context.Background(), bedrockAgentTestAccount, ochrevector.KBRecord{
+		ID: kbID, Name: "docs", Status: ochrevector.StateReady,
 		EmbeddingModel: "amazon.titan-embed-text-v2:0", Dimension: 1024, IndexID: indexID,
 	}))
 }
 
 func TestBedrockAgentRuntimeRequest_Retrieve_HappyPath(t *testing.T) {
 	ts := newVLLMStub(t)
-	vector := &fakeBedrockAgentVectorService{queryResp: handlers_ochrevector.QueryResponse{
-		Results: []handlers_ochrevector.QueryResult{
+	vector := &fakeBedrockAgentVectorService{queryResp: ochrevector.QueryResponse{
+		Results: []ochrevector.QueryResult{
 			{Chunk: "the dragon lives in a cave", SourceKey: "docs/a.txt", Score: 0.9},
 		},
 	}}
@@ -102,7 +102,7 @@ func TestBedrockAgentRuntimeRequest_Retrieve_WithFilter(t *testing.T) {
 
 	require.NotNil(t, vector.queryReq)
 	require.NotNil(t, vector.queryReq.Filter)
-	assert.Equal(t, handlers_ochrevector.FilterEquals, vector.queryReq.Filter.Op)
+	assert.Equal(t, ochrevector.FilterEquals, vector.queryReq.Filter.Op)
 	assert.Equal(t, "genre", vector.queryReq.Filter.Key)
 }
 
@@ -131,8 +131,8 @@ func TestBedrockAgentRuntimeRequest_Retrieve_MalformedBodyReturnsValidationExcep
 
 func TestBedrockAgentRuntimeRequest_RetrieveAndGenerate_HappyPath(t *testing.T) {
 	ts := newVLLMStub(t)
-	vector := &fakeBedrockAgentVectorService{queryResp: handlers_ochrevector.QueryResponse{
-		Results: []handlers_ochrevector.QueryResult{
+	vector := &fakeBedrockAgentVectorService{queryResp: ochrevector.QueryResponse{
+		Results: []ochrevector.QueryResult{
 			{Chunk: "the dragon lives in a cave", SourceKey: "docs/a.txt", Score: 0.9},
 		},
 	}}

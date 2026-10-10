@@ -3,14 +3,14 @@ package daemon
 import (
 	"context"
 	"errors"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"net/netip"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -105,7 +105,7 @@ func (f *failingKV) ListKeys(ctx context.Context, opts ...jetstream.WatchOpt) (j
 // fakeEIPService answers only the EIP calls a test configures; any other
 // method panics through the nil embedded interface.
 type fakeEIPService struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	mu sync.Mutex
 
@@ -217,10 +217,10 @@ func (m *hookVolumeMounter) Mount(_ context.Context, v *vm.VM) error {
 
 func (m *hookVolumeMounter) Unmount(context.Context, *vm.VM) error         { return nil }
 func (m *hookVolumeMounter) Abandon(context.Context, *vm.VM, string) error { return nil }
-func (m *hookVolumeMounter) MountOne(context.Context, string, *types.EBSRequest) error {
+func (m *hookVolumeMounter) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
 	return nil
 }
-func (m *hookVolumeMounter) UnmountOne(context.Context, string, types.EBSRequest) error {
+func (m *hookVolumeMounter) UnmountOne(context.Context, string, viperblocklegacyv1.EBSRequest) error {
 	return nil
 }
 

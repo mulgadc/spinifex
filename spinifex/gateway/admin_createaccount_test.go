@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -244,7 +244,7 @@ func newCreateAccountGateway(t *testing.T) *GatewayConfig {
 	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	sub, err := nc.Subscribe(utils.SubjectEnsureDefaultVpc, func(msg *nats.Msg) {
+	sub, err := nc.Subscribe(ec2v1.EnsureDefaultVpcSubject, func(msg *nats.Msg) {
 		_ = msg.Respond([]byte(`{"vpc_id":"vpc-0a1b2c3d"}`))
 	})
 	require.NoError(t, err)

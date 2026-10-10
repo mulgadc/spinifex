@@ -7,8 +7,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func cpVM(id, eniID string) *vm.VM {
 	return &vm.VM{ID: id, ManagedBy: tags.ManagedByEKS, ENIId: eniID, AccountID: reaperSysAccount, LastNode: "node-1"}
 }
 
-// TestRLC5_EKSBillableReaperTerminatesOrphanCPVM enforces ADR-0006 §5
+// TestRLC5_EKSBillableReaperTerminatesOrphanCPVM exercises ADR-0003:S2's
 // meta-independent billable cleanup: a running EKS control-plane VM whose
 // cluster meta is DEFINITIVELY GONE is a billable orphan and must be terminated
 // by the GC backstop — the real fix for the orphan CP VM surviving a
@@ -65,7 +65,7 @@ func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
 
 	reaped, err := reaper.Sweep(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, 1, reaped, "ADR-0006 §5: a CP VM whose cluster meta is gone must be reaped")
+	assert.Equal(t, 1, reaped, "ADR-0003:S2: a CP VM whose cluster meta is gone must be reaped")
 	assert.Contains(t, f.inst.terminateCalls, "i-orphan", "the orphan CP VM must be terminated")
 	require.Len(t, f.vpc.deleteCalls, 1, "the orphan CP ENI must be deleted")
 	assert.Equal(t, "eni-orphan", aws.StringValue(f.vpc.deleteCalls[0].NetworkInterfaceId))
@@ -108,7 +108,7 @@ func TestRLC5_EKSBillableReaperSpareLiveAndUncertain(t *testing.T) {
 
 	reaped, err := reaper.Sweep(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, 0, reaped, "ADR-0006 §5: the reaper must never reap on uncertainty or a live cluster")
+	assert.Equal(t, 0, reaped, "ADR-0003:S2: the reaper must never reap on uncertainty or a live cluster")
 	assert.Empty(t, f.inst.terminateCalls, "no VM with a live/unknown cluster may be terminated")
 	assert.Empty(t, f.eip.releaseCalls, "no reclaim (no EIP release) may run without a reap")
 }

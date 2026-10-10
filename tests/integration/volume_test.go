@@ -8,8 +8,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/testutil/vbscan"
+	"github.com/mulgadc/spinifex/internal/testkit/vbscan"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ import (
 // ec2.CreateVolume through the real gateway and a real VolumeServiceImpl,
 // which constructs viperblock.New and calls Backend.Init()/SaveState()
 // against an actual predastore daemon rather than an unreachable host. The
-// previous unit-test equivalent (handlers/ec2/volume's
+// previous unit-test equivalent (domains/ec2/volume's
 // TestCreateVolume_PassesValidation) could only assert the returned error
 // wasn't a validation error, because nothing past validation could execute
 // without a live backend. Here CreateVolume is expected to fully succeed,

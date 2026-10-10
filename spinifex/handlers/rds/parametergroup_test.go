@@ -7,7 +7,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/parametergroup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -128,7 +130,7 @@ func TestCreateDBParameterGroup_RejectsAnUnofferedFamily(t *testing.T) {
 	const prefix = "ParameterGroupFamily mysql8.0 is not a valid parameter group family. Supported families: "
 	require.True(t, strings.HasPrefix(message, prefix), message)
 	named := strings.Split(strings.TrimSuffix(strings.TrimPrefix(message, prefix), "."), ", ")
-	assert.ElementsMatch(t, SupportedParameterGroupFamilies(), named)
+	assert.ElementsMatch(t, rdsengine.SupportedParameterGroupFamilies(), named)
 }
 
 // A customer group under the reserved prefix would be indistinguishable from the
@@ -421,7 +423,7 @@ func TestModifyDBParameterGroup_ReturnsAPropagationFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), testDBID)
 
-	overrides, listErr := ListDBParameterOverrides(t.Context(), h.kv(t), testParameterGroup)
+	overrides, listErr := h.svc.parameterGroups().Overrides(t.Context(), testAccountID, testParameterGroup)
 	require.NoError(t, listErr)
 	assert.Equal(t, "16384", overrides["work_mem"].Value,
 		"the durable group edit remains available for a retry")
@@ -521,11 +523,13 @@ func TestDescribeDBParameters_ReportsComputedDefaultsAsLiterals(t *testing.T) {
 
 	// The class is named rather than derived from the class catalog, which would
 	// make this assert the code agrees with itself.
-	memoryMiB, err := classMemoryMiB("db.t3.micro")
+	memoryMiB, err := InstanceSizing().ClassMemoryMiB("db.t3.micro")
 	require.NoError(t, err)
-	assert.Equal(t, sharedBuffersFor(memoryMiB), aws.StringValue(shared.ParameterValue))
+	spec, ok := enginePostgres.LookupParameter("shared_buffers")
+	require.True(t, ok)
+	assert.Equal(t, spec.DefaultAt(memoryMiB), aws.StringValue(shared.ParameterValue))
 	assert.Equal(t, ParameterSourceEngineDefault, aws.StringValue(shared.Source))
-	assert.Equal(t, ApplyTypeStatic, aws.StringValue(shared.ApplyType))
+	assert.Equal(t, rdsengine.ApplyTypeStatic, aws.StringValue(shared.ApplyType))
 	assert.Equal(t, ApplyMethodPendingReboot, aws.StringValue(shared.ApplyMethod))
 	assert.True(t, aws.BoolValue(shared.IsModifiable))
 	assert.NotEmpty(t, aws.StringValue(shared.AllowedValues))
@@ -548,8 +552,9 @@ func TestDescribeDBParameters_ReportsTheCustomersBooleanSpelling(t *testing.T) {
 	assert.Equal(t, "off", aws.StringValue(params["autovacuum"].ParameterValue))
 	assert.Equal(t, ParameterSourceUser, aws.StringValue(params["autovacuum"].Source))
 
-	resolved, err := enginePostgres.ResolveEffectiveParameters("db.t3.micro", map[string]string{"autovacuum": "off"})
+	settings, err := enginePostgres.ResolveEffectiveParameters(InstanceSizing(), "db.t3.micro", map[string]string{"autovacuum": "off"})
 	require.NoError(t, err)
+	resolved := toParameters(settings)
 	assert.Equal(t, "0", resolvedParameter(t, resolved, "autovacuum"),
 		"the guest should be handed the canonical spelling rather than the customer's")
 }
@@ -584,11 +589,11 @@ func TestDescribeDBParameters_DerivesApplyMethodForLegacyOverrides(t *testing.T)
 	require.NoError(t, err)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	for _, rec := range []DBParameterRecord{
+	for _, rec := range []parametergroup.Override{
 		{Name: "work_mem", Value: "16384"},
 		{Name: "shared_buffers", Value: "65536"},
 	} {
-		require.NoError(t, putJSON(t.Context(), kv, DBParameterGroupParamKey(testParameterGroup, rec.Name), &rec))
+		require.NoError(t, putJSON(t.Context(), kv, parametergroup.ParamKey(testParameterGroup, rec.Name), &rec))
 	}
 
 	params := describedParameters(t, h, testParameterGroup)
@@ -684,11 +689,9 @@ func TestDeleteDBParameterGroup_RemovesTheGroupAndItsValues(t *testing.T) {
 		&rds.DeleteDBParameterGroupInput{DBParameterGroupName: aws.String(testParameterGroup)}, testAccountID)
 	require.NoError(t, err)
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
 	// Orphaned values would be silently inherited by a later group of the same
 	// name, which is a configuration nobody wrote.
-	overrides, err := ListDBParameterOverrides(t.Context(), kv, testParameterGroup)
+	overrides, err := h.svc.parameterGroups().Overrides(t.Context(), testAccountID, testParameterGroup)
 	require.NoError(t, err)
 	assert.Empty(t, overrides)
 
@@ -766,9 +769,11 @@ func TestCreateDBInstance_ResolvesTheNamedGroupIntoTheBootstrapSet(t *testing.T)
 	assert.Equal(t, "16384", values["work_mem"])
 	// Evaluated against the instance's own class, which is the whole point of a
 	// computed default: a literal tuned elsewhere would be wrong here.
-	memoryMiB, err := classMemoryMiB("db.t3.medium")
+	memoryMiB, err := InstanceSizing().ClassMemoryMiB("db.t3.medium")
 	require.NoError(t, err)
-	assert.Equal(t, sharedBuffersFor(memoryMiB), values["shared_buffers"])
+	spec, ok := enginePostgres.LookupParameter("shared_buffers")
+	require.True(t, ok)
+	assert.Equal(t, spec.DefaultAt(memoryMiB), values["shared_buffers"])
 }
 
 // An unnamed group takes the implicit default, which resolves to the catalog

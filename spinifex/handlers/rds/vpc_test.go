@@ -4,9 +4,9 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,8 +22,8 @@ func TestSystemVPCSpecDefaults(t *testing.T) {
 	t.Parallel()
 	spec := SystemVPCSpec(nil, "ap-southeast-2")
 
-	assert.Equal(t, handlers_systemvpc.Spec{
-		Owner: handlers_systemvpc.Owner{
+	assert.Equal(t, systemvpc.Spec{
+		Owner: systemvpc.Owner{
 			Name:        "rds-system-ap-southeast-2",
 			ManagedBy:   tags.ManagedByRDS,
 			OwnerTagKey: rdsSystemVPCTagKey,

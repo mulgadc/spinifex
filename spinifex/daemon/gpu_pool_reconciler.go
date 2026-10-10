@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // gpuPoolLiveStates are the instance states that legitimately still hold a
@@ -23,7 +23,7 @@ var gpuPoolLiveStates = map[vm.InstanceState]bool{
 
 // gpuPoolReconciler frees GPU pool entries whose owning instance is absent
 // or has settled in a terminal, non-running state. It is the backstop for
-// the synchronous release in vm/crash_recovery.go: a node-down mid-cascade,
+// the synchronous release in runtime/compute/vm/crash_recovery.go: a node-down mid-cascade,
 // or any other gap that skips the synchronous release, would otherwise leak
 // the slot forever, since nothing else reclaims it. Node-local vm.Reaper run
 // by the GarbageCollector backstop, mirroring eniReconciler.

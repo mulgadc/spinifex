@@ -2,13 +2,12 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,7 +49,7 @@ func TestLookupEKSAction_ResolvesKnownRoutes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+"_"+tc.path, func(t *testing.T) {
-			action, params, handler, ok := eksRouter.lookup(tc.method, tc.path)
+			action, params, handler, ok := eksRouter.Lookup(tc.method, tc.path)
 			require.True(t, ok, "expected route to match for %s %s", tc.method, tc.path)
 			require.NotNil(t, handler)
 			assert.Equal(t, tc.wantAction, action)
@@ -78,7 +77,7 @@ func TestLookupEKSAction_EncodedPrincipalARN(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+"_"+tc.wantAction, func(t *testing.T) {
-			action, params, handler, ok := eksRouter.lookup(tc.method, tc.path)
+			action, params, handler, ok := eksRouter.Lookup(tc.method, tc.path)
 			require.True(t, ok, "encoded ARN path should match: %s %s", tc.method, tc.path)
 			require.NotNil(t, handler)
 			assert.Equal(t, tc.wantAction, action)
@@ -98,7 +97,7 @@ func TestLookupEKSAction_DisassociateEncodedARNs(t *testing.T) {
 		policyEscaped    = "arn%3Aaws%3Aeks%3A%3Aaws%3Acluster-access-policy%2FAmazonEKSViewPolicy"
 	)
 	path := "/clusters/alpha/access-entries/" + principalEscaped + "/access-policies/" + policyEscaped
-	action, params, handler, ok := eksRouter.lookup("DELETE", path)
+	action, params, handler, ok := eksRouter.Lookup("DELETE", path)
 	require.True(t, ok, "encoded disassociate path should match: %s", path)
 	require.NotNil(t, handler)
 	assert.Equal(t, "DisassociateAccessPolicy", action)
@@ -141,8 +140,8 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 		"ListTagsForResource":          false,
 	}
 	for _, route := range eksRoutes {
-		if _, ok := expected[route.action]; ok {
-			expected[route.action] = true
+		if _, ok := expected[route.Action]; ok {
+			expected[route.Action] = true
 		}
 	}
 	for action, seen := range expected {
@@ -152,10 +151,10 @@ func TestLookupEKSAction_CoversAllActions(t *testing.T) {
 }
 
 func TestLookupEKSAction_UnknownReturnsFalse(t *testing.T) {
-	_, _, _, ok := eksRouter.lookup("PATCH", "/clusters/alpha")
+	_, _, _, ok := eksRouter.Lookup("PATCH", "/clusters/alpha")
 	assert.False(t, ok)
 
-	_, _, _, ok = eksRouter.lookup("GET", "/clusters/alpha/wat")
+	_, _, _, ok = eksRouter.Lookup("GET", "/clusters/alpha/wat")
 	assert.False(t, ok)
 }
 
@@ -197,8 +196,7 @@ func TestErrorHandler_EKSEmitsJSONNotXML(t *testing.T) {
 	assert.Equal(t, gateway_eks.JSONContentType, w.Header().Get("Content-Type"))
 	assert.True(t, strings.HasPrefix(w.Body.String(), "{"), "expected JSON body, got %q", w.Body.String())
 
-	var env gateway_eks.EKSJSONError
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	env := decodeJSONError(t, w.Result())
 	assert.Equal(t, "NotImplementedException", env.Type)
 	// SDKs resolve the modelled exception type from this header, not the body.
 	assert.Equal(t, env.Type, w.Header().Get("X-Amzn-Errortype"))

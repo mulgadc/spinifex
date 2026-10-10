@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,8 +22,8 @@ import (
 // StartLaunchTemplateDaemonLite — real KV-backed logic, not a static stub),
 // and RunInstances with only a LaunchTemplateSpecification resolves the
 // template's ImageId/InstanceType and forwards them to the per-node launch —
-// gateway/ec2/instance/RunInstances.go's expandLaunchTemplate, which calls
-// handlers_ec2_launchtemplate.ExpandRunInstances over NATS before validation,
+// domains/ec2/awsapi/instance/RunInstances.go's expandLaunchTemplate, which calls
+// ec2launchtemplate.ExpandRunInstances over NATS before validation,
 // routing, or placement ever see the request. That resolution is complete
 // before the daemon-facing NATS hop, so a real guest is not needed to prove it
 // happened — only that the per-node request actually carries the resolved
@@ -124,7 +124,7 @@ func TestRunInstances_LaunchTemplateExpansion(t *testing.T) {
 // EC2 query encode/decode, version deletion, and template deletion. None of
 // it ever launches a guest: every operation resolves entirely against
 // LaunchTemplateServiceImpl's KV store via StartLaunchTemplateDaemonLite, the
-// same production handler code (handlers/ec2/launchtemplate/service_impl.go)
+// same production handler code (domains/ec2/launchtemplate/service_impl.go)
 // a live daemon runs. RunInstances template expansion — the one launch-
 // template-adjacent behaviour that does run gateway-side before a per-node
 // dispatch — is covered separately by TestRunInstances_LaunchTemplateExpansion

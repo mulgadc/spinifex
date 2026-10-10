@@ -1,0 +1,173 @@
+package vm
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	networkids "github.com/mulgadc/spinifex/spinifex/domains/network/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+)
+
+// TapSpec parameterises a single tap-on-OVS-bridge plumbing operation.
+// VPC taps populate ExternalIDs (iface-id, attached-mac) for OVN binding;
+// management taps leave it nil since br-mgmt is a plain L2 standalone bridge.
+// Queues > 1 creates the tap multi-queue, which a netdev asking for the same
+// count requires; the two must agree or QEMU falls back to one queue.
+type TapSpec struct {
+	Name        string
+	Bridge      string
+	ExternalIDs map[string]string
+	Queues      int
+	// MTU is the host-side ceiling on the tap. It must match the figure the
+	// guest is given, or the larger of the two silently drops frames: the tap
+	// is the first hop and does not fragment. Zero leaves the kernel default.
+	MTU int
+}
+
+// TapDeviceName returns the Linux tap device name for an ENI.
+// Linux IFNAMSIZ limits interface names to 15 characters; long ENI IDs are
+// truncated to fit.
+func TapDeviceName(eniID string) string {
+	id := strings.TrimPrefix(eniID, "eni-")
+	name := "tap" + id
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
+}
+
+// MgmtTapName returns the Linux TAP device name for a management NIC.
+// Uses "mg" prefix + truncated instance ID to stay within 15-char IFNAMSIZ.
+func MgmtTapName(instanceID string) string {
+	id := strings.TrimPrefix(instanceID, "i-")
+	name := "mg" + id
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
+}
+
+// OVSIfaceID returns the OVS external_ids:iface-id value for an ENI.
+// This must match the OVN LogicalSwitchPort name for ovn-controller binding.
+func OVSIfaceID(eniID string) string {
+	return topology.Port(eniID)
+}
+
+// VPCTapSpec returns the TapSpec for a VPC ENI's tap on br-int. The
+// external_ids carry the OVN binding (iface-id) and the kernel-attached MAC.
+// queues must match the count the matching netdev asks for, and mtu the
+// figure advertised to the guest.
+func VPCTapSpec(eniID, mac string, queues, mtu int) TapSpec {
+	return TapSpec{
+		Name:   TapDeviceName(eniID),
+		Bridge: "br-int",
+		Queues: queues,
+		MTU:    mtu,
+		ExternalIDs: map[string]string{
+			"iface-id":     OVSIfaceID(eniID),
+			"attached-mac": mac,
+		},
+	}
+}
+
+// IMDSBridgeName is the dedicated, OVN-unmanaged bridge that carries the per-tap
+// IMDS datapath. Kept in sync with network/host.IMDSBridge (host imports vm, not
+// the reverse); a cross-package test in network/host asserts they match.
+const IMDSBridgeName = "br-imds"
+
+// IMDSPrimaryTapSpec returns the TapSpec for a primary ENI's tap on br-imds, where
+// its egress meets the IMDS demux flows. It carries no external_ids — the
+// br-imds<->br-int patch's br-int end carries the OVN iface-id binding instead.
+// queues must match the count the matching netdev asks for, and mtu the
+// figure advertised to the guest.
+func IMDSPrimaryTapSpec(eniID string, queues, mtu int) TapSpec {
+	return TapSpec{
+		Name:   TapDeviceName(eniID),
+		Bridge: IMDSBridgeName,
+		Queues: queues,
+		MTU:    mtu,
+	}
+}
+
+// GenerateDevMAC returns the locally-administered unicast MAC for the
+// dev/hostfwd NIC. The "dev:" tag disambiguates from the mgmt NIC of the
+// same instance (which shares instanceID).
+func GenerateDevMAC(instanceID string) string {
+	return networkids.HashMAC("dev:" + instanceID)
+}
+
+// GenerateMgmtMAC returns the locally-administered unicast MAC for the
+// management NIC. The "mgmt:" tag disambiguates from the dev NIC of the
+// same instance (which shares instanceID).
+func GenerateMgmtMAC(instanceID string) string {
+	return networkids.HashMAC("mgmt:" + instanceID)
+}
+
+// attachPrimaryIMDSDatapath installs the per-tap IMDS datapath for the instance's
+// primary ENI once its tap is up, before QEMU starts the guest. Only the primary
+// ENI serves IMDS. Any failure is launch-fatal: guest bootstrap (SSH key, user-data,
+// network, hostname) now comes from IMDS, so a guest without it would boot
+// unconfigured while reporting success. A serving-only failure
+// (ErrIMDSServingDegraded) and a connectivity-critical failure are treated alike —
+// there is no roll back to br-int, since a rolled-back tap is equally unreachable for
+// IMDS. The error surfaces to RunInstances.
+func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
+	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
+		return nil
+	}
+	subnetID := ""
+	if instance.Instance != nil {
+		subnetID = aws.StringValue(instance.Instance.SubnetId)
+	}
+	if subnetID == "" {
+		slog.Debug("IMDS: no subnet for primary ENI, skipping per-tap datapath",
+			"instance", instance.ID, "eni", instance.ENIId)
+		return nil
+	}
+	if err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID); err != nil {
+		slog.Error("IMDS: per-tap datapath install failed; aborting launch",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+		return fmt.Errorf("install IMDS datapath for primary ENI %s: %w", instance.ENIId, err)
+	}
+	return nil
+}
+
+// detachPrimaryIMDSDatapath removes the primary ENI's per-tap IMDS datapath at
+// terminate, the inverse of attachPrimaryIMDSDatapath. Best-effort: a failure is
+// logged and never fails teardown. Teardown keys off ENI-derived names, no subnet.
+func (m *Manager) detachPrimaryIMDSDatapath(instance *VM) {
+	if m.deps.NetworkPlumber == nil || instance.ENIId == "" {
+		return
+	}
+	if err := m.deps.NetworkPlumber.DetachIMDSDatapath(instance.ENIId); err != nil {
+		slog.Warn("IMDS: per-tap datapath detach failed (continuing)",
+			"instance", instance.ID, "eni", instance.ENIId, "err", err)
+	}
+}
+
+// setupExtraENINICs creates tap devices on br-int and appends matching QEMU
+// virtio-net device entries to instance.Config for each additional ENI a
+// system VM spans. The primary ENI is handled separately by the launch
+// caller. The guest brings each interface up via per-MAC DHCP.
+func (m *Manager) setupExtraENINICs(instance *VM) error {
+	if m.deps.NetworkPlumber == nil {
+		return nil
+	}
+	queues := NICQueues(instance.Config.CPUCount, m.deps.MultiqueueNICs)
+	for idx, extra := range instance.ExtraENIs {
+		spec := VPCTapSpec(extra.ENIID, extra.ENIMac, queues, m.deps.GuestMTU)
+		if err := m.deps.NetworkPlumber.SetupTap(spec); err != nil {
+			slog.Error("Failed to set up tap device for extra ENI", "eni", extra.ENIID, "err", err)
+			return fmt.Errorf("setup tap device for extra ENI %s: %w", extra.ENIID, err)
+		}
+		extraTapName := spec.Name
+		netID := fmt.Sprintf("net%d", idx+1)
+		instance.Config.NetDevs = append(instance.Config.NetDevs, TapNetDev(netID, extraTapName, queues))
+		instance.Config.Devices = append(instance.Config.Devices, NetDevice(instance.Config.MachineType, netID, extra.ENIMac, queues, m.deps.GuestMTU))
+		slog.Info("Extra VPC NIC configured",
+			"tap", extraTapName, "eni", extra.ENIID, "mac", extra.ENIMac, "subnet", extra.SubnetID)
+	}
+	return nil
+}

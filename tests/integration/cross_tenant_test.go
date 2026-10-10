@@ -18,14 +18,14 @@ import (
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	gateway_ecs "github.com/mulgadc/spinifex/spinifex/gateway/ecs"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -160,7 +160,7 @@ func crossTenantCases() []crossTenantCase {
 		{
 			service: "ecr", action: "ListTagsForResource",
 			arnFor: ecrRepositoryARN, shape: boundaryReanchored,
-			request: jsonTarget(gateway_ecrapi.TargetPrefix+".ListTagsForResource", func(resourceARN string) string {
+			request: jsonTarget(awsapi.TargetPrefix+".ListTagsForResource", func(resourceARN string) string {
 				return `{"resourceArn":"` + resourceARN + `"}`
 			}),
 		},
@@ -329,7 +329,7 @@ func sameHelper(casedAction string) string {
 
 func scopedServices() []scopedService {
 	return []scopedService{
-		{name: "acm", actions: gateway_acm.ScopedActions(), uncased: map[string]string{
+		{name: "acm", actions: acmawsapi.ScopedActions(), uncased: map[string]string{
 			"GetCertificate":            sameHelper("DescribeCertificate"),
 			"ListTagsForCertificate":    sameHelper("DescribeCertificate"),
 			"AddTagsToCertificate":      sameHelper("DescribeCertificate"),
@@ -384,7 +384,7 @@ func scopedServices() []scopedService {
 
 		// Only the three tag actions read an ARN; every other ECR action names
 		// its repository by bare name.
-		{name: "ecr", actions: gateway_ecrapi.ScopedActions(), uncased: ecrUncased()},
+		{name: "ecr", actions: awsapi.ScopedActions(), uncased: ecrUncased()},
 
 		// Same shape as ECR: the tag actions read an ARN, the rest name a
 		// cluster, nodegroup or addon by path segment.
@@ -427,14 +427,20 @@ func eksUncased() map[string]string {
 		"TagResource":   sameHelper("ListTagsForResource"),
 		"UntagResource": sameHelper("ListTagsForResource"),
 	}
+	// These name the cluster's account in the path or body. AuthorizeInternal
+	// refuses every tenant principal outright and binds a control-plane VM to
+	// the cluster it serves, so no tenant ARN reaches the evaluator.
+	for _, action := range []string{"GetRecoveryDirective", "ListInternalAddons", "PublishInternal", "WebhookTokenReview"} {
+		uncased[action] = "internal control-plane route: refused to tenants, bound to the caller's own cluster"
+	}
 	for _, action := range []string{
 		"AssociateAccessPolicy", "CreateAccessEntry", "CreateAddon", "CreateCluster",
 		"CreateNodegroup", "DeleteAccessEntry", "DeleteAddon", "DeleteCluster", "DeleteNodegroup",
 		"DescribeAccessEntry", "DescribeAddon", "DescribeAddonVersions", "DescribeCluster",
-		"DescribeNodegroup", "DisassociateAccessPolicy", "GetRecoveryDirective",
+		"DescribeNodegroup", "DisassociateAccessPolicy",
 		"ListAccessEntries", "ListAccessPolicies", "ListAddons", "ListAssociatedAccessPolicies",
-		"ListClusters", "ListInternalAddons", "ListNodegroups", "PublishInternal",
-		"UpdateAccessEntry", "UpdateAddon", "UpdateNodegroupConfig", "WebhookTokenReview",
+		"ListClusters", "ListNodegroups",
+		"UpdateAccessEntry", "UpdateAddon", "UpdateNodegroupConfig",
 	} {
 		uncased[action] = byName
 	}

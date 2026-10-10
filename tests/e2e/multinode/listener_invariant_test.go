@@ -12,12 +12,12 @@ import (
 	"time"
 
 	networkconnections "github.com/mulgadc/spinifex/docs/security/network-connections"
-	"github.com/mulgadc/spinifex/spinifex/network/listenerinventory"
+	"github.com/mulgadc/spinifex/internal/testkit/listenerinventory"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 )
 
 // runListenerInvariant is the runtime half of the listener invariant. The
-// static half in spinifex/network/invariants reads install scripts and
+// static half in spinifex/domains/network/invariants reads install scripts and
 // config templates; only this half reads what each node's kernel actually
 // bound, which is what caught the original OVN NB/SB wildcard defect (spinifex
 // #765) — that bug was found by hand on a live node with `ss -tulnp`, not by

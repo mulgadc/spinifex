@@ -3,16 +3,16 @@ package gateway_elbv2_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -441,7 +441,7 @@ func TestGatewayDispatch(t *testing.T) {
 			require.NoError(t, err)
 			assert.JSONEq(t, string(wantBody), string(msg.Data),
 				"%s must forward its own input unmodified", tc.name)
-			assert.Equal(t, testAccountID, msg.Header.Get(utils.AccountIDHeader))
+			assert.Equal(t, testAccountID, msg.Header.Get(natsmsg.AccountIDHeader))
 		})
 	}
 }
@@ -601,7 +601,7 @@ func TestGatewayDispatch_ValidationGuards(t *testing.T) {
 func TestGatewayDispatch_ErrorEnvelopePropagates(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	serveOnce(t, nc, "elbv2.DeleteLoadBalancer",
-		utils.GenerateErrorPayload(awserrors.ErrorELBv2LoadBalancerNotFound))
+		awserrors.GenerateErrorPayload(awserrors.ErrorELBv2LoadBalancerNotFound))
 
 	_, err := gateway_elbv2.DeleteLoadBalancer(context.Background(),
 		&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(testLBArn)}, nc, testAccountID)
@@ -620,5 +620,5 @@ func TestGatewayDispatch_NoResponder(t *testing.T) {
 // A nil connection is refused before any request is attempted.
 func TestGatewayDispatch_NilConnection(t *testing.T) {
 	_, err := gateway_elbv2.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, nil, testAccountID)
-	require.ErrorIs(t, err, utils.ErrClusterUnavailable)
+	require.ErrorIs(t, err, natsmsg.ErrClusterUnavailable)
 }

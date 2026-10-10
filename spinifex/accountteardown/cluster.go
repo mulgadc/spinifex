@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -43,7 +43,7 @@ func NewClusterEngine(
 
 	// Absent when the cluster never enabled quotas, which is not a reason to
 	// refuse a teardown: there is simply no counter to remove.
-	usage, err := kvutil.GetOrCreateBucket(ctx, js, handlers_quota.KVBucketAccountUsage, 1)
+	usage, err := kvutil.GetOrCreateBucket(ctx, js, quota.KVBucketAccountUsage, 1)
 	if err != nil {
 		slog.WarnContext(ctx, "Teardown: quota usage bucket unavailable, its counter will not be removed", "err", err)
 		usage = nil

@@ -7,7 +7,8 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The single drain for everything a modify recorded but has not delivered. Both
@@ -73,7 +74,7 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv *kvstore.Buc
 	}
 	switch {
 	case pending.DBInstanceClass != "":
-		instanceType, err := InstanceTypeForClass(pending.DBInstanceClass)
+		instanceType, err := s.sizing.InstanceTypeForClass(pending.DBInstanceClass)
 		if err != nil {
 			return fmt.Errorf("rds: DBInstanceClass %q is not supported", pending.DBInstanceClass)
 		}
@@ -147,14 +148,14 @@ func (s *Service) applyPendingModifications(ctx context.Context, kv *kvstore.Buc
 // the new group's overrides, so a parameter the old group set and the new one
 // does not reverts to its default rather than lingering.
 func (s *Service) applyParameterGroup(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, group, instanceClass string, tolerateUnreachableAgent bool) error {
-	engine, err := LookupEngine(rec.Engine)
+	engine, err := rdsengine.LookupEngine(rec.Engine)
 	if err != nil {
 		return err
 	}
 	// Reached from a deferred modify, whose group was checked at request time,
 	// and from group propagation, where the binding was checked at attach. A
 	// family mismatch here is corrupt state rather than a bad request.
-	resolved, err := s.resolveGroupParameters(ctx, kv, accountID, engine, group, instanceClass)
+	resolved, err := s.resolveGroupParameters(ctx, accountID, engine, group, instanceClass)
 	if err != nil {
 		return s.recordParameterApplyFailure(ctx, kv, accountID, rec, group, err)
 	}

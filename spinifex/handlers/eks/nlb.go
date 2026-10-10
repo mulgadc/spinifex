@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 )
 
 // nlbProvisioner is the narrow ELBv2 surface needed by cluster NLB helpers.
@@ -21,7 +21,7 @@ type nlbProvisioner interface {
 	CreateLoadBalancerSync(input *elbv2.CreateLoadBalancerInput, accountID string) (*elbv2.CreateLoadBalancerOutput, error)
 	// CreateClusterNLBSync is CreateLoadBalancerSync plus cross-account ENIs threaded
 	// onto the LB VM at launch (the customer-VPC Set A private-endpoint NIC).
-	CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []sysinstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error)
+	CreateClusterNLBSync(input *elbv2.CreateLoadBalancerInput, accountID string, crossAccountENIs []systeminstance.ExtraENIInput) (*elbv2.CreateLoadBalancerOutput, error)
 	DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error)
 	DeleteLoadBalancer(ctx context.Context, input *elbv2.DeleteLoadBalancerInput, accountID string) (*elbv2.DeleteLoadBalancerOutput, error)
 	DescribeTags(ctx context.Context, input *elbv2.DescribeTagsInput, accountID string) (*elbv2.DescribeTagsOutput, error)
@@ -139,7 +139,7 @@ func safeELBv2Name(prefix, clusterName, suffix string) string {
 // NLB managed-SG ingress; ignored for an internal NLB (its ingress already
 // tracks the VPC CIDR) and for the wide-open default, which the LB carries out
 // of the box.
-func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string, crossAccountENIs []sysinstance.ExtraENIInput) (*ClusterNLB, error) {
+func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string, crossAccountENIs []systeminstance.ExtraENIInput) (*ClusterNLB, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
 	}
@@ -346,7 +346,7 @@ func deleteClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, tgName
 	return nil
 }
 
-func ensureClusterLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, crossAccountENIs []sysinstance.ExtraENIInput, out *ClusterNLB) error {
+func ensureClusterLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, crossAccountENIs []systeminstance.ExtraENIInput, out *ClusterNLB) error {
 	if lb, err := lookupLBByName(ctx, nlbp, accountID, lbName); err != nil {
 		return err
 	} else if lb != nil {

@@ -6,24 +6,27 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
-	awssession "github.com/aws/aws-sdk-go/aws/session"
 	awsec2 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,54 +37,6 @@ func doRequest(handler http.Handler, req *http.Request) *http.Response {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w.Result()
-}
-
-func TestGenerateEC2ErrorResponse_Structure(t *testing.T) {
-	tests := []struct {
-		name      string
-		code      string
-		message   string
-		requestID string
-	}{
-		{
-			name:      "standard error",
-			code:      "InvalidParameterValue",
-			message:   "The value supplied is not valid.",
-			requestID: "req-12345",
-		},
-		{
-			name:      "auth failure",
-			code:      "AuthFailure",
-			message:   "Credentials could not be validated.",
-			requestID: "req-auth-001",
-		},
-		{
-			name:      "empty fields",
-			code:      "",
-			message:   "",
-			requestID: "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			output := GenerateEC2ErrorResponse(tc.code, tc.message, tc.requestID)
-			require.NotNil(t, output)
-
-			xmlStr := string(output)
-
-			assert.True(t, strings.HasPrefix(xmlStr, xml.Header))
-			assert.Contains(t, xmlStr, "<Code>"+tc.code+"</Code>")
-			assert.Contains(t, xmlStr, "<RequestID>"+tc.requestID+"</RequestID>")
-
-			// EC2 query API uses <Response>/<Errors>, not <ErrorResponse>; aws-sdk-go v1
-			// rejects the latter with SerializationError.
-			assert.Contains(t, xmlStr, "<Response>")
-			assert.Contains(t, xmlStr, "</Response>")
-			assert.Contains(t, xmlStr, "<Errors>")
-			assert.Contains(t, xmlStr, "<Error>")
-		})
-	}
 }
 
 // xmlRootName returns the local name of body's root element, which is what
@@ -96,32 +51,6 @@ func xmlRootName(t *testing.T, body []byte) string {
 			return se.Name.Local
 		}
 	}
-}
-
-func TestGenerateS3ErrorResponse_FlatEnvelope(t *testing.T) {
-	output := GenerateS3ErrorResponse("SignatureDoesNotMatch", "bad signature", "req-s3-1", "/bucket/key.txt")
-	require.NotNil(t, output)
-
-	assert.True(t, strings.HasPrefix(string(output), xml.Header))
-	assert.Equal(t, "Error", xmlRootName(t, output))
-
-	var parsed struct {
-		Code      string `xml:"Code"`
-		Message   string `xml:"Message"`
-		Resource  string `xml:"Resource"`
-		RequestID string `xml:"RequestId"`
-	}
-	require.NoError(t, xml.Unmarshal(output, &parsed))
-
-	assert.Equal(t, "SignatureDoesNotMatch", parsed.Code)
-	assert.Equal(t, "bad signature", parsed.Message)
-	assert.Equal(t, "/bucket/key.txt", parsed.Resource)
-	assert.Equal(t, "req-s3-1", parsed.RequestID)
-}
-
-func TestGenerateS3ErrorResponse_OmitsEmptyResource(t *testing.T) {
-	output := GenerateS3ErrorResponse("AccessDenied", "denied", "req-s3-2", "")
-	assert.NotContains(t, string(output), "<Resource>")
 }
 
 func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
@@ -149,80 +78,6 @@ func TestXMLErrorBody_EnvelopePerService(t *testing.T) {
 			assert.Equal(t, tc.root, xmlRootName(t, body))
 			assert.Contains(t, string(body), "<Code>AccessDenied</Code>")
 		})
-	}
-}
-
-func TestGenerateEC2ErrorResponse_ValidXML(t *testing.T) {
-	output := GenerateEC2ErrorResponse("TestCode", "Test message", "req-999")
-	require.NotNil(t, output)
-
-	xmlBody := strings.TrimPrefix(string(output), xml.Header)
-	decoder := xml.NewDecoder(strings.NewReader(xmlBody))
-	for {
-		_, err := decoder.Token()
-		if err != nil {
-			assert.ErrorIs(t, err, io.EOF)
-			break
-		}
-	}
-}
-
-func TestGenerateIAMErrorResponse_Structure(t *testing.T) {
-	tests := []struct {
-		name      string
-		code      string
-		message   string
-		requestID string
-	}{
-		{
-			name:      "entity not found",
-			code:      "NoSuchEntity",
-			message:   "The request was rejected because it referenced a resource entity that does not exist.",
-			requestID: "req-iam-001",
-		},
-		{
-			name:      "entity already exists",
-			code:      "EntityAlreadyExists",
-			message:   "The request was rejected because it attempted to create a resource that already exists.",
-			requestID: "req-iam-002",
-		},
-		{
-			name:      "empty fields",
-			code:      "",
-			message:   "",
-			requestID: "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			output := GenerateIAMErrorResponse(tc.code, tc.message, tc.requestID)
-			require.NotNil(t, output)
-
-			xmlStr := string(output)
-
-			assert.True(t, strings.HasPrefix(xmlStr, xml.Header))
-			assert.Contains(t, xmlStr, "<ErrorResponse>")
-			assert.Contains(t, xmlStr, "</ErrorResponse>")
-			assert.Contains(t, xmlStr, "<Type>Sender</Type>")
-			assert.Contains(t, xmlStr, "<Code>"+tc.code+"</Code>")
-			assert.Contains(t, xmlStr, "<RequestId>"+tc.requestID+"</RequestId>")
-		})
-	}
-}
-
-func TestGenerateIAMErrorResponse_ValidXML(t *testing.T) {
-	output := GenerateIAMErrorResponse("NoSuchEntity", "Entity not found", "req-iam-999")
-	require.NotNil(t, output)
-
-	xmlBody := strings.TrimPrefix(string(output), xml.Header)
-	decoder := xml.NewDecoder(strings.NewReader(xmlBody))
-	for {
-		_, err := decoder.Token()
-		if err != nil {
-			assert.ErrorIs(t, err, io.EOF)
-			break
-		}
 	}
 }
 
@@ -319,7 +174,7 @@ func TestErrorHandler_PrefersCallSiteMessage(t *testing.T) {
 // ResourceInUseException collision check: ACM's DeleteCertificate must not
 // surface EKS's "cluster already exists" wording for the shared wire code.
 func TestErrorHandler_ACMResourceInUse_UsesACMWording(t *testing.T) {
-	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
+	gw := withACM(&GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}, acmawsapi.Deps{})
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	ctx := context.WithValue(req.Context(), ctxService, "acm")
 	req = req.WithContext(ctx)
@@ -383,7 +238,12 @@ func TestErrorHandler_NoMessageSupplied_MatchesErrorLookup(t *testing.T) {
 // or resource-ID wording, whichever envelope the service uses.
 func TestErrorHandler_NonEC2ValidationDefaults_DropEC2Wording(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	for svc := range supportedServices {
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	gw.Services = b.Build()
+	services := append(slices.Collect(maps.Keys(supportedServices)), awsapi.ServiceName, acmawsapi.ServiceName)
+	for _, svc := range services {
 		if svc == "ec2" {
 			continue
 		}
@@ -513,8 +373,8 @@ func TestDiscoverActiveNodes_WithResponders(t *testing.T) {
 
 	for _, nodeName := range []string{"node-1", "node-2"} {
 		name := nodeName
-		_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
-			resp := types.NodeDiscoverResponse{Node: name}
+		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeDiscoverResponse{Node: name}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 		})
@@ -535,7 +395,7 @@ func TestDiscoverActiveNodes_InvalidJSON(t *testing.T) {
 	SetDiscoverActiveNodesTimeoutForTest(t, 50*time.Millisecond)
 	nc := startTestNATS(t)
 
-	_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
+	_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
 		msg.Respond([]byte("not json"))
 	})
 	require.NoError(t, err)
@@ -555,8 +415,8 @@ func TestDiscoverActiveNodes_DuplicateNodes(t *testing.T) {
 	nc := startTestNATS(t)
 
 	for range 2 {
-		_, err := nc.Subscribe("spinifex.nodes.discover", func(msg *nats.Msg) {
-			resp := types.NodeDiscoverResponse{Node: "same-node"}
+		_, err := nc.Subscribe(clusterv1.NodesDiscoverSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeDiscoverResponse{Node: "same-node"}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 		})
@@ -1154,7 +1014,7 @@ func TestEC2Request_DescribeAccountAttributes_DefaultVPC(t *testing.T) {
 	sub, err := nc.Subscribe("ec2.DescribeVpcs", func(msg *nats.Msg) {
 		var in awsec2.DescribeVpcsInput
 		if err := json.Unmarshal(msg.Data, &in); err != nil || len(in.Filters) != 1 ||
-			aws.StringValue(in.Filters[0].Name) != "is-default" || msg.Header.Get(utils.AccountIDHeader) != "123456789012" {
+			aws.StringValue(in.Filters[0].Name) != "is-default" || msg.Header.Get(natsmsg.AccountIDHeader) != "123456789012" {
 			_ = msg.Respond([]byte(`{}`))
 			return
 		}
@@ -1611,7 +1471,7 @@ func TestWriteThrottleError_Bedrock(t *testing.T) {
 
 	resp := w.Result()
 	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"), "bedrock must get JSON, not XML")
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"), "bedrock must get JSON, not XML")
 	assert.Contains(t, string(body), `"__type"`)
 	assert.NotContains(t, string(body), "<?xml")
 	// SDKs resolve the modelled exception type from this header, not the body.
@@ -1630,7 +1490,7 @@ func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
 	resp := w.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, 403, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"), "a bedrock auth failure must be SDK-parseable JSON")
 	assert.Contains(t, string(body), "SignatureDoesNotMatch")
 	assert.NotContains(t, string(body), "<?xml")
 	// SDKs resolve the modelled exception type from this header, not the body.
@@ -1796,47 +1656,4 @@ func TestRequest_ClusterUnavailableClosedConn(t *testing.T) {
 	resp := w.Result()
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
-}
-
-// TestGenerateEC2ErrorResponse_SDKRoundTrip serves the EC2 error envelope from
-// an httptest server, points an aws-sdk-go v1 EC2 client at it, and asserts
-// the SDK surfaces the code via awserr.Error.Code() — not SerializationError.
-// aws-sdk-go v1's ec2query handler rejects the IAM <ErrorResponse> envelope and
-// discards the embedded code, so the EC2 <Response>/<Errors> shape is required.
-func TestGenerateEC2ErrorResponse_SDKRoundTrip(t *testing.T) {
-	const wantCode = "InvalidInstanceType"
-	const wantMessage = "The instance type 't2.micro' is not supported in this region."
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		body := GenerateEC2ErrorResponse(wantCode, wantMessage, "req-sdk-roundtrip")
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-
-	sess, err := awssession.NewSession(&aws.Config{
-		Region:      aws.String("us-east-1"),
-		Endpoint:    aws.String(srv.URL),
-		Credentials: awscreds.NewStaticCredentials("AKIA-TEST", "secret", ""),
-		DisableSSL:  aws.Bool(true),
-		// Suppress the default retry loop — error responses are not retryable
-		// here and waiting them out wastes test time.
-		MaxRetries: aws.Int(0),
-	})
-	require.NoError(t, err)
-
-	client := awsec2.New(sess)
-	_, err = client.RunInstances(&awsec2.RunInstancesInput{
-		ImageId:      aws.String("ami-test"),
-		InstanceType: aws.String("t2.micro"),
-		MinCount:     aws.Int64(1),
-		MaxCount:     aws.Int64(1),
-	})
-	require.Error(t, err)
-
-	var awsErr awserr.Error
-	require.ErrorAs(t, err, &awsErr, "expected awserr.Error, got %T: %v", err, err)
-	assert.Equal(t, wantCode, awsErr.Code())
-	assert.NotEqual(t, "SerializationError", awsErr.Code(), "SDK could not parse the envelope")
 }

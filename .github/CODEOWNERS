@@ -6,10 +6,10 @@
 # Set the matching branch protection rule on `dev` and `main` to
 # "Require review from Code Owners" or this file is advisory only.
 
-# Network layer is governed by ADR-0006 invariant tests.
+# Network layer is governed by its invariant tests.
 # Changes here must respect those clauses
-# see spinifex/network/invariants/
-# docs/development/proposals/az-local-architecture/0006-spinifex-network-layer-contract.md
-/spinifex/network/          @joshsiv-mulga
+# see spinifex/domains/network/invariants/
+# mulga docs/development/proposals/region-local-architecture/0006-spinifex-network-layer-contract.md (proposal, not accepted)
+/spinifex/domains/network/          @joshsiv-mulga
 /spinifex/vpcd/             @joshsiv-mulga
-/spinifex/network/invariants/ @joshsiv-mulga
+/spinifex/domains/network/invariants/ @joshsiv-mulga

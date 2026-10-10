@@ -23,7 +23,7 @@ version: 1
 services:
 
   awsgw:
-    path: spinifex/services/awsgw
+    path: spinifex/runtime/roles/awsgw
     # TLS frontend, SigV4 auth. Pure router: HTTP → NATS request/response.
     # No subscribes; only publishes (via NATSRequest).
     subscribes: []
@@ -43,23 +43,49 @@ services:
       - "ochre.vector.*"
 
   spinifex_daemon:
-    path: spinifex/services/spinifex
+    path: spinifex/runtime/roles/spinifex
     # Orchestrator. Owns most ec2.* + all elbv2.* + iam event publication.
     # Translates VPC / EBS / S3 operations into vpc.* / ebs.* / s3.* and
     # forwards to vpcd / viperblockd / predastore.
     #
-    # Source layout: spinifex/services/spinifex (entry), spinifex/daemon
-    # (subscribe registration), spinifex/handlers/{ec2,elbv2,iam} (per-
-    # subject handler bodies). Selector treats all four paths as belonging
+    # Source layout: spinifex/runtime/roles/spinifex (entry), spinifex/daemon
+    # (subscribe registration), spinifex/domains/ec2/<resource> and spinifex/handlers/{ecs,elbv2,iam,eks} (per-
+    # subject handler bodies). Selector treats these paths as belonging
     # to this service via the `additional_paths` field.
     additional_paths:
       - spinifex/daemon
-      - spinifex/handlers/ec2
+      - spinifex/domains/ec2/account
+      - spinifex/domains/ec2/eigw
+      - spinifex/domains/ec2/eip
+      - spinifex/domains/ec2/igw
+      - spinifex/domains/ec2/image
+      - spinifex/domains/ec2/instance
+      - spinifex/domains/ec2/key
+      - spinifex/domains/ec2/launchtemplate
+      - spinifex/domains/ec2/natgw
+      - spinifex/domains/ec2/placementgroup
+      - spinifex/domains/ec2/routetable
+      - spinifex/domains/ec2/snapshot
+      - spinifex/domains/ec2/spotinstance
+      - spinifex/domains/ec2/tags
+      - spinifex/domains/ec2/volume
+      - spinifex/domains/ec2/volumestate
+      - spinifex/domains/ec2/vpc
       - spinifex/handlers/elbv2
-      - spinifex/handlers/acm
+      - spinifex/domains/acm
       - spinifex/handlers/iam
+      - spinifex/handlers/ecs
       - spinifex/handlers/rds
-      - spinifex/handlers/ochrevector
+      - spinifex/domains/rds/subnetgroup
+      - spinifex/domains/rds/parametergroup
+      - spinifex/domains/rds/engine
+      - spinifex/domains/ecs/taskdefinition
+      - spinifex/handlers/eks
+      - spinifex/domains/eks/access
+      - spinifex/domains/eks/addon
+      # Guest add-on wire contract (subject, report, staged-manifest body).
+      - contracts/eks/v1
+      - spinifex/domains/ochre/vector
     subscribes:
       # EC2 instance lifecycle.
       - "ec2.RunInstances"
@@ -74,6 +100,8 @@ services:
       - "ec2.start"
       - "ec2.terminate"
       - "ec2.launch"
+      # contracts/ec2/v1 owns the command payload and this subject vocabulary.
+      # The wildcard is intentionally one final instance-ID token, not `>`.
       - "ec2.cmd.*"
       # EC2 VPC / network ops handled by daemon before delegation to vpcd.
       - "ec2.CreateVpc"
@@ -89,7 +117,9 @@ services:
       # An EIP association reaches whichever node holds the instance, which is
       # rarely the node that served the request (fan-out, no queue group).
       - "ec2.eni.public-ip-changed"
+      # contracts/cluster/v1 owns the node status/capacity payload and subject.
       - "spinifex.node.status"
+      # contracts/cluster/v1 owns the VM inventory payload and subject.
       - "spinifex.node.vms"
       - "spinifex.nodes.discover"
       - "spinifex.cluster.shutdown.progress"
@@ -99,6 +129,7 @@ services:
       - "spinifex.cluster.shutdown.storage"
       - "spinifex.cluster.shutdown.persist"
       - "spinifex.cluster.shutdown.infra"
+      # Operator-plane Predastore topology contract (contracts/operator/v1).
       - "spinifex.storage.config"
       # ELBv2 control plane (handlers/elbv2/service_nats.go topic map).
       - "elbv2.CreateLoadBalancer"
@@ -131,7 +162,7 @@ services:
       # {account}.{db-instance}, so the subject is built at runtime and only the
       # prefix is declarable.
       - "rds.bus.*"
-      # Ochre vector store tenant surface (handlers/ochrevector/api.go),
+      # Ochre vector store tenant surface (domains/ochre/vector/api.go),
       # gated behind config.OchreVectorConfig.Enabled (default off).
       - "ochre.vector.createIndex"
       - "ochre.vector.deleteIndex"
@@ -141,6 +172,11 @@ services:
       - "ochre.vector.query"
       - "ochre.vector.listJobs"
       - "ochre.vector.stopJob"
+      # Fence route owned by contracts/viperblockd/legacy/v1: viperblockd
+      # announces a torn-down export so this node stops the guest that was
+      # using it. "ebs.fenced" is the single-node form; a named node is
+      # addressed as "ebs.<node>.fenced".
+      - "ebs.fenced"
     publishes:
       # → vpcd
       - "vpc.create"
@@ -153,6 +189,8 @@ services:
       - "vpc.create-port"
       - "vpc.delete-port"
       - "vpc.update-port-sgs"
+      # EC2-to-network projection owned by contracts/ec2/v1. The network
+      # subscriber realizes it in OVN without reading EC2 private state.
       - "vpc.igw-attach"
       - "vpc.igw-detach"
       - "vpc.add-nat-gateway"
@@ -161,7 +199,22 @@ services:
       - "vpc.delete-nat"
       - "vpc.dhcp.acquire"
       - "vpc.dhcp.release"
+      # Per-subnet route-table projections owned by domains/ec2/routetable:
+      # IGW default-route reachability and the egress gate/ungate decision it
+      # implies, published fire-and-forget on every route-table mutation.
+      - "vpc.add-igw-route"
+      - "vpc.delete-igw-route"
+      - "vpc.gate-subnet-egress"
+      - "vpc.ungate-subnet-egress"
+      # Egress-only reroute removal for a single system instance
+      # (handlers/eks). Fire-and-forget. vpc.add-system-egress has no
+      # current producer.
+      - "vpc.delete-system-egress"
       # → viperblockd
+      # The migrated legacy ebs.config and ebs.sync payloads and routes are
+      # owned by contracts/viperblockd/legacy/v1. They are transitional and
+      # distinct from the generic providers/ebs protocol; other legacy ebs.*
+      # routes remain to be migrated separately.
       - "ebs.mount"
       - "ebs.unmount"
       - "ebs.delete"
@@ -169,6 +222,10 @@ services:
       - "ebs.snapshot.*"
       - "ebs.config"
       - "ebs.config.*"
+      # Abandon route owned by contracts/viperblockd/legacy/v1: the daemon
+      # asks viperblockd to tear an export down without sealing. "ebs.abandon"
+      # is the single-node form; a named node addresses "ebs.<node>.abandon".
+      - "ebs.abandon"
       # → predastore (S3 / AMI / keypair store)
       - "s3.*"
       # → every daemon, so the one holding the instance reports the new address
@@ -205,6 +262,12 @@ services:
       - "vpc.delete-nat"
       - "vpc.dhcp.acquire"
       - "vpc.dhcp.release"
+      - "vpc.add-igw-route"
+      - "vpc.delete-igw-route"
+      - "vpc.gate-subnet-egress"
+      - "vpc.ungate-subnet-egress"
+      - "vpc.add-system-egress"
+      - "vpc.delete-system-egress"
     publishes:
       - "vpc.port-status"
       - "vpc.dhcp.lease-changed"
@@ -212,11 +275,23 @@ services:
     depends_on: []
 
   viperblockd:
-    path: spinifex/services/viperblockd
+    path: spinifex/runtime/roles/viperblockd
     # EBS data plane. Backed by the viperblock storage engine in the
     # mulga/viperblock submodule. Submodule pointer bump → selector forces
     # "run all" (contract changes can be invisible at the spinifex source
     # level).
+    # The migrated legacy ebs.config and ebs.sync routes are versioned by
+    # contracts/viperblockd/legacy/v1, not by providers/ebs. Other legacy
+    # ebs.* routes remain to be migrated separately.
+    # The dirty-marker JetStream KV bucket VIPERBLOCK_VOLUME_DIRTY is owned
+    # by the same contract; not a NATS subject, so not listed below.
+    #
+    # Source layout: spinifex/runtime/roles/viperblockd (role: process lifecycle,
+    # NATS subscription wiring) and spinifex/providers/ebs/viperblock (the
+    # Viperblock EBS provider adapter the role wires up). Selector treats the
+    # adapter path as belonging to this service via `additional_paths`.
+    additional_paths:
+      - spinifex/providers/ebs/viperblock
     subscribes:
       - "ebs.mount"
       - "ebs.unmount"
@@ -225,13 +300,19 @@ services:
       - "ebs.snapshot.*"
       - "ebs.config"
       - "ebs.config.*"
+      # Abandon route (contracts/viperblockd/legacy/v1): request/reply from
+      # the daemon, answered by the Viperblock adapter on the named node.
+      - "ebs.abandon"
     publishes:
       - "ebs.mount.response"
+      # Fence route (contracts/viperblockd/legacy/v1): announced after the
+      # Viperblock adapter tears an export down because its lease moved.
+      - "ebs.fenced"
       - "ebs.unmount.response"
     depends_on: []
 
   predastore:
-    path: spinifex/services/predastore
+    path: spinifex/runtime/roles/predastore
     # S3 / AMI / keypair storage. External submodule under mulga/predastore;
     # this dir contains only the spinifex-side adapter. Submodule pointer
     # bump → selector forces "run all".
@@ -241,7 +322,7 @@ services:
     depends_on: []
 
   nats:
-    path: spinifex/services/nats
+    path: spinifex/runtime/roles/nats
     # NATS broker bootstrap / cluster config. Not a NATS pub/sub
     # participant. Any change here is infra-path; selector forces
     # "run all".
@@ -250,7 +331,7 @@ services:
     depends_on: []
 
   spinifexui:
-    path: spinifex/services/spinifexui
+    path: spinifex/runtime/roles/spinifexui
     # Web UI. Talks to awsgw over HTTP, never NATS. Diffs limited to this
     # dir do not need any e2e suite to run.
     subscribes: []
@@ -395,7 +476,7 @@ suites:
 # the tool, listed here for visibility.
 #
 # infra_paths_force_all:
-#   - spinifex/services/nats/**
+#   - spinifex/runtime/roles/nats/**
 #   - spinifex/tests/e2e/harness/**
 #   - spinifex/tests/e2e/lib/**
 #   - spinifex/.github/workflows/e2e-go.yml

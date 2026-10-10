@@ -2,6 +2,7 @@ package handlers_ecs
 
 import (
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"slices"
 	"strings"
@@ -69,7 +70,7 @@ func (r *ServiceRecord) normalizeDeploymentConfig() {
 }
 
 // newPrimaryDeployment builds an IN_PROGRESS PRIMARY deployment for a task def.
-func newPrimaryDeployment(id string, td *TaskDefRecord, desired int) Deployment {
+func newPrimaryDeployment(id string, td *taskdefinition.Record, desired int) Deployment {
 	now := time.Now().UTC()
 	return Deployment{
 		ID:              id,
@@ -109,7 +110,7 @@ func (r *ServiceRecord) ensurePrimaryDeployment() {
 
 // startDeployment demotes the current PRIMARY to ACTIVE (draining) and installs a
 // new PRIMARY for td, mirroring the taskdef onto the service record.
-func (r *ServiceRecord) startDeployment(td *TaskDefRecord) {
+func (r *ServiceRecord) startDeployment(td *taskdefinition.Record) {
 	r.demotePrimary()
 	r.DeploymentID = uuid.NewV4().String()
 	r.TaskDefFamily = td.Family
@@ -245,7 +246,7 @@ func tripCircuitBreaker(svc *ServiceRecord, primary *Deployment) bool {
 // rollbackToLastGood demotes the failed PRIMARY and starts a fresh PRIMARY from
 // the last-good task definition ARN.
 func (r *ServiceRecord) rollbackToLastGood() {
-	family, rev := ParseTaskDefRef(r.LastGoodTaskDefARN)
+	family, rev := taskdefinition.ParseRef(r.LastGoodTaskDefARN)
 	r.demotePrimary()
 	now := time.Now().UTC()
 	r.DeploymentID = uuid.NewV4().String()

@@ -27,11 +27,11 @@ The AWS SDK formats this as an HTTPS POST with:
 
 ### 2. AWS Gateway
 
-The gateway (`spinifex/services/awsgw/awsgw.go`) is the entry point:
+The gateway (`spinifex/runtime/roles/awsgw/awsgw.go`) is the entry point:
 
 ```go
 // Connect to NATS (retries while the local broker comes up)
-natsConn, err := utils.ConnectNATSWithRetry(...)
+natsConn, err := natsmsg.ConnectNATSWithRetry(...)
 
 // Load IAM (master key + JetStream KV) and create the gateway
 gw := gateway.GatewayConfig{
@@ -50,7 +50,7 @@ Request routing (`spinifex/gateway/gateway.go`):
 1. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
 2. **Throttling**: Per-account+action token bucket rejects bursts post-auth
 3. **Service Detection**: Extracts service name from the Authorization header
-4. **Action Dispatch**: Routes to service-specific handler
+4. **Action Dispatch**: Routes to service-specific handler. A service registered through the ingress dispatch registry (`ingress/aws/dispatch`, wired by `runtime/roles/awsgw`) is dispatched by its registration; currently that is ECR's control plane, registered from `domains/ecr/awsapi`. Every other service uses the legacy switch:
 
 ```go
 switch svc {
@@ -68,8 +68,6 @@ case "eks":
     err = gw.EKS_Request(w, r)
 case "ecs":
     err = gw.ECS_Request(w, r)
-case "ecr":
-    err = gw.ECR_Request(w, r)
 case "acm":
     err = gw.ACM_Request(w, r)
 case "tagging":
@@ -85,10 +83,10 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 
 ```go
 "RunInstances": ec2Handler(func(input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return gateway_ec2_instance.RunInstances(input, gw.NATSConn, accountID)
+    return ec2instanceapi.RunInstances(input, gw.NATSConn, accountID)
 }),
 "DescribeInstances": ec2Handler(func(input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return gateway_ec2_instance.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
+    return ec2instanceapi.DescribeInstances(input, gw.NATSConn, gw.DiscoverActiveNodes(), accountID)
 }),
 // ... + volumes, snapshots, VPCs, subnets, route tables, IGWs, NAT gateways,
 // security groups, network interfaces, elastic IPs, placement groups, key pairs,
@@ -97,16 +95,32 @@ The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and de
 
 ### 4. NATS Messaging
 
-The gateway communicates with daemons via NATS request/response. Most calls go through `utils.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
+The gateway communicates with daemons via NATS request/response. Most calls go through `natsmsg.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
 ```go
 func (s *NATSInstanceService) RunInstances(input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
     topic := fmt.Sprintf("ec2.RunInstances.%s", aws.StringValue(input.InstanceType))
-    return utils.NATSRequest[ec2.Reservation](s.natsConn, topic, input, 5*time.Minute, accountID)
+    return natsmsg.NATSRequest[ec2.Reservation](s.natsConn, topic, input, 5*time.Minute, accountID)
 }
 ```
 
 `RunInstances` uses a per-instance-type subject so NATS only delivers the request to a node with spare capacity for that type — no application-level reject-and-retry.
+
+### Cross-Process Contract Ownership
+
+NATS subjects and JSON payloads that cross a process boundary are contracts,
+not incidental implementation details. A domain owns its named and versioned
+contract under `contracts/<domain>/vN`; consumers own only their narrow
+in-process capability interfaces, and runtime composition wires the two.
+
+The first realised example is the [EC2 instance-command contract](../contracts/ec2/v1/README.md).
+`ec2.cmd.<instance-id>` is deliberately a targeted request/reply route: only
+the node that owns the QEMU process may execute a live-instance command. Its
+JSON shape and `ec2.cmd.*` subject form are compatibility-tested. The wildcard
+matches one final instance-ID token; it is not a broad descendant subscription.
+
+Changing that subject shape or a JSON field is a contract change, not a
+refactor. It needs a versioned successor or an explicit compatibility plan.
 
 ### 5. Daemon Processing
 
@@ -185,7 +199,7 @@ type ResourceManager struct {
 
 ### Multi-Node Aggregation
 
-For operations that need data from all nodes (like `DescribeInstances`), the gateway uses inbox-based fan-out (`spinifex/gateway/ec2/instance/DescribeInstances.go`):
+For operations that need data from all nodes (like `DescribeInstances`), the gateway uses inbox-based fan-out (`spinifex/domains/ec2/awsapi/instance/DescribeInstances.go`):
 
 ```go
 func DescribeInstances(...) {
@@ -198,7 +212,7 @@ func DescribeInstances(...) {
     pubMsg := nats.NewMsg("ec2.DescribeInstances")
     pubMsg.Reply = inbox
     pubMsg.Data = jsonData
-    pubMsg.Header.Set(utils.AccountIDHeader, accountID)
+    pubMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
     _ = natsConn.PublishMsg(pubMsg)
 
     // Collect responses, returning early once expectedNodes have replied
@@ -252,11 +266,15 @@ Ports are unique within a host but repeat across the cluster, so a multi-node cl
 
 A single-node install is the same arrangement with one host: seven nodes — a gate, three blob and three meta — colocated in one process, needing seven distinct ports (8443, 6660–6662, 7660–7662) to stay unique within the host even though only the gate opens a listener. It has no code path of its own.
 
-The daemon reports the topology on `spinifex.storage.config` by parsing the config file. It does not connect to Predastore to do so, and no Predastore node exposes a status endpoint.
+The daemon reports the topology on `spinifex.storage.config` (the
+`contracts/operator/v1` Predastore-topology contract) by parsing the config
+file. It does not connect to Predastore to do so, and no Predastore node
+exposes a status endpoint. This is an operator status interface, not a generic
+storage-provider contract.
 
 ## Configuration
 
-Cluster configuration (`spinifex/config/config.go`):
+Cluster configuration (`spinifex/bootstrap/config/config.go`):
 
 ```go
 type ClusterConfig struct {

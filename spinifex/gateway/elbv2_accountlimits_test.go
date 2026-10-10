@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,7 +59,7 @@ func TestELBv2DescribeAccountLimitsReportsStoredQuota(t *testing.T) {
 	assert.Equal(t, "2", byName["network-load-balancers"])
 
 	require.NoError(t, gw.Quota.PutAccountQuota(t.Context(), account,
-		handlers_quota.Overrides{LoadBalancers: quotaPtr(9)}, "operator"))
+		quota.Overrides{LoadBalancers: quotaPtr(9)}, "operator"))
 
 	byName = describeAccountLimits(t, gw, account)
 	assert.Equal(t, "9", byName["application-load-balancers"])
@@ -73,9 +73,9 @@ func TestELBv2DescribeAccountLimitsIsPerAccount(t *testing.T) {
 	const other = "000000000043"
 
 	require.NoError(t, gw.Quota.PutAccountQuota(t.Context(), account,
-		handlers_quota.Overrides{LoadBalancers: quotaPtr(9)}, "operator"))
+		quota.Overrides{LoadBalancers: quotaPtr(9)}, "operator"))
 	require.NoError(t, gw.Quota.PutAccountQuota(t.Context(), other,
-		handlers_quota.Overrides{LoadBalancers: quotaPtr(4)}, "operator"))
+		quota.Overrides{LoadBalancers: quotaPtr(4)}, "operator"))
 
 	assert.Equal(t, "9", describeAccountLimits(t, gw, account)["application-load-balancers"])
 	assert.Equal(t, "4", describeAccountLimits(t, gw, other)["application-load-balancers"])
@@ -84,7 +84,7 @@ func TestELBv2DescribeAccountLimitsIsPerAccount(t *testing.T) {
 // A disabled quota means "not enforced", not "nothing permitted", so the entries
 // report the AWS default rather than the unconsulted configured value.
 func TestELBv2DescribeAccountLimitsDefaultsWhenQuotaDisabled(t *testing.T) {
-	disabled := handlers_quota.New(handlers_quota.Limits{LoadBalancers: 0}, nil)
+	disabled := quota.New(quota.Limits{LoadBalancers: 0}, nil)
 
 	for name, gw := range map[string]*GatewayConfig{
 		"disabled": {DisableLogging: true, Quota: disabled},

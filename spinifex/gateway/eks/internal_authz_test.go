@@ -1,13 +1,13 @@
 package gateway_eks_test
 
 import (
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -28,7 +28,7 @@ const (
 // cpAgent is the principal an IMDS-credentialed control-plane VM presents.
 func cpAgent(instanceID string) gateway_eks.Caller {
 	return gateway_eks.Caller{
-		AccountID:     utils.GlobalAccountID,
+		AccountID:     awsidentifiers.GlobalAccountID,
 		PrincipalType: principalTypeAssumedRole,
 		RoleName:      handlers_eks.CPInstanceRoleName,
 		SessionName:   instanceID,
@@ -45,6 +45,14 @@ func seedCluster(t *testing.T, nc *nats.Conn, accountID, cluster string, meta *h
 	require.NoError(t, err)
 	meta.Name = cluster
 	require.NoError(t, handlers_eks.PutClusterMeta(t.Context(), kv, meta))
+}
+
+func publishBody(accountID string) []byte {
+	return []byte(`{"accountId":"` + accountID + `","channel":"state","payload":{"healthz":"ok"}}`)
+}
+
+func tokenReviewBody(accountID string) []byte {
+	return []byte(`{"accountId":"` + accountID + `","token":"k8s-aws-v1.dGVzdA"}`)
 }
 
 func assertDenied(t *testing.T, err error) {
@@ -71,16 +79,16 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 			SessionName:   cpInstanceID,
 		}},
 		{"system user, not a role session", gateway_eks.Caller{
-			AccountID: utils.GlobalAccountID, PrincipalType: "user", SessionName: "root",
+			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user", SessionName: "root",
 		}},
 		{"another role in the system account", gateway_eks.Caller{
-			AccountID:     utils.GlobalAccountID,
+			AccountID:     awsidentifiers.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      "spinifex-rds-instance",
 			SessionName:   cpInstanceID,
 		}},
 		{"no session name", gateway_eks.Caller{
-			AccountID:     utils.GlobalAccountID,
+			AccountID:     awsidentifiers.GlobalAccountID,
 			PrincipalType: principalTypeAssumedRole,
 			RoleName:      handlers_eks.CPInstanceRoleName,
 		}},
@@ -88,9 +96,13 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
-				tc.caller, []string{"alpha", tenantAccount}))
+				tc.caller, []string{"alpha", tenantAccount}, nil))
 			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "GetRecoveryDirective",
-				tc.caller, []string{"alpha", tenantAccount, cpInstanceID}))
+				tc.caller, []string{"alpha", tenantAccount, cpInstanceID}, nil))
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "PublishInternal",
+				tc.caller, []string{"alpha"}, publishBody(tenantAccount)))
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "WebhookTokenReview",
+				tc.caller, []string{"alpha"}, tokenReviewBody(tenantAccount)))
 		})
 	}
 }
@@ -99,7 +111,7 @@ func TestAuthorizeInternal_RejectsNonCPPrincipals(t *testing.T) {
 func TestAuthorizeInternal_IgnoresOtherActions(t *testing.T) {
 	assert.False(t, gateway_eks.IsInternalAction("DescribeCluster"))
 	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nil, "DescribeCluster",
-		gateway_eks.Caller{AccountID: tenantAccount, PrincipalType: "user"}, []string{"alpha"}))
+		gateway_eks.Caller{AccountID: tenantAccount, PrincipalType: "user"}, []string{"alpha"}, nil))
 }
 
 func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
@@ -111,9 +123,13 @@ func TestAuthorizeInternal_AllowsClusterMember(t *testing.T) {
 	})
 
 	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
-		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}))
+		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}, nil))
 	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
-		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, cpInstanceID}))
+		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, cpInstanceID}, nil))
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "PublishInternal",
+		cpAgent(cpInstanceID), []string{"alpha"}, publishBody(tenantAccount)))
+	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "WebhookTokenReview",
+		cpAgent(cpInstanceID), []string{"alpha"}, tokenReviewBody(tenantAccount)))
 }
 
 // Clusters persisted before ControlPlaneNodes existed carry the member in the
@@ -125,7 +141,7 @@ func TestAuthorizeInternal_AllowsLegacyScalarMember(t *testing.T) {
 	})
 
 	require.NoError(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
-		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}))
+		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}, nil))
 }
 
 // A CP VM that is a genuine agent still cannot name an account or a cluster it
@@ -148,11 +164,17 @@ func TestAuthorizeInternal_RejectsClusterTheCallerDoesNotServe(t *testing.T) {
 		{"an account with no clusters", "999988887777", "alpha"},
 		{"a cluster that does not exist", tenantAccount, "gamma"},
 		{"its own account, another cluster", tenantAccount, "beta"},
+		{"an account no bucket can be named for", tenantAccount + ".x", "alpha"},
+		{"a cluster no key can be named for", tenantAccount, "al*pha"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "ListInternalAddons",
-				cpAgent(cpInstanceID), []string{tc.cluster, tc.account}))
+				cpAgent(cpInstanceID), []string{tc.cluster, tc.account}, nil))
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "PublishInternal",
+				cpAgent(cpInstanceID), []string{tc.cluster}, publishBody(tc.account)))
+			assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "WebhookTokenReview",
+				cpAgent(cpInstanceID), []string{tc.cluster}, tokenReviewBody(tc.account)))
 		})
 	}
 }
@@ -167,12 +189,27 @@ func TestAuthorizeInternal_RecoveryIsSelfOnly(t *testing.T) {
 	})
 
 	assertDenied(t, gateway_eks.AuthorizeInternal(t.Context(), nc, "GetRecoveryDirective",
-		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, otherInstance}))
+		cpAgent(cpInstanceID), []string{"alpha", tenantAccount, otherInstance}, nil))
+}
+
+// PublishInternal and WebhookTokenReview name their account in the body; one
+// the handler could not read is the caller's validation fault, as an empty
+// path segment is.
+func TestAuthorizeInternal_RejectsUnreadableBody(t *testing.T) {
+	for _, action := range []string{"PublishInternal", "WebhookTokenReview"} {
+		for _, body := range []string{``, `{not-json`, `{"channel":"state","token":"t"}`, `{"accountId":7}`} {
+			err := gateway_eks.AuthorizeInternal(t.Context(), nil, action, cpAgent(cpInstanceID),
+				[]string{"alpha"}, []byte(body))
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
+				"%s body %q", action, body)
+		}
+	}
 }
 
 func TestAuthorizeInternal_RejectsEmptyPathSegments(t *testing.T) {
 	for _, params := range [][]string{{"", tenantAccount}, {"alpha", ""}, {"alpha"}} {
-		err := gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons", cpAgent(cpInstanceID), params)
+		err := gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons", cpAgent(cpInstanceID), params, nil)
 		require.Error(t, err)
 		assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 	}
@@ -183,7 +220,12 @@ func TestAuthorizeInternal_RejectsEmptyPathSegments(t *testing.T) {
 // chasing a permission it already has.
 func TestAuthorizeInternal_NoNATSIsServerInternal(t *testing.T) {
 	err := gateway_eks.AuthorizeInternal(t.Context(), nil, "ListInternalAddons",
-		cpAgent(cpInstanceID), []string{"alpha", tenantAccount})
+		cpAgent(cpInstanceID), []string{"alpha", tenantAccount}, nil)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+
+	err = gateway_eks.AuthorizeInternal(t.Context(), nil, "PublishInternal",
+		cpAgent(cpInstanceID), []string{"alpha"}, publishBody(tenantAccount))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

@@ -2,11 +2,11 @@ package accountteardown
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -30,7 +30,7 @@ func (r *certificateReaper) Kind() string { return "acm-certificate" }
 func (r *certificateReaper) Stage() Stage { return StagePlatform }
 
 func (r *certificateReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := utils.NATSRequest[acm.ListCertificatesOutput](ctx, r.nc, "acm.ListCertificates",
+	out, err := natsmsg.NATSRequest[acm.ListCertificatesOutput](ctx, r.nc, "acm.ListCertificates",
 		&acm.ListCertificatesInput{}, acmNATSTimeout, accountID)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (r *certificateReaper) List(ctx context.Context, accountID string) ([]Resou
 }
 
 func (r *certificateReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := utils.NATSRequest[acm.DeleteCertificateOutput](ctx, r.nc, "acm.DeleteCertificate",
+	_, err := natsmsg.NATSRequest[acm.DeleteCertificateOutput](ctx, r.nc, "acm.DeleteCertificate",
 		&acm.DeleteCertificateInput{CertificateArn: aws.String(resource.ID)}, acmNATSTimeout, accountID)
 	return ignoreAlreadyGone(err)
 }

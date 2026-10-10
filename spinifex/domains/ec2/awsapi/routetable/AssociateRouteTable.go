@@ -1,0 +1,47 @@
+package routetable
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateAssociateRouteTableInput requires RouteTableId and a SubnetId or GatewayId
+// (MissingParameter). Gateway edge associations are rejected with Unsupported.
+func ValidateAssociateRouteTableInput(input *ec2.AssociateRouteTableInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.RouteTableId == nil || *input.RouteTableId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	hasSubnet := input.SubnetId != nil && *input.SubnetId != ""
+	hasGateway := input.GatewayId != nil && *input.GatewayId != ""
+	if !hasSubnet && !hasGateway {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	// Edge associations (GatewayId) are not implemented by the backend.
+	if hasGateway {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
+	return nil
+}
+
+// AssociateRouteTable implements the EC2 AssociateRouteTable action, associating a route table
+// with a subnet via the NATS route table service.
+func AssociateRouteTable(ctx context.Context, input *ec2.AssociateRouteTableInput, natsConn *nats.Conn, accountID string) (ec2.AssociateRouteTableOutput, error) {
+	var output ec2.AssociateRouteTableOutput
+	if err := ValidateAssociateRouteTableInput(input); err != nil {
+		return output, err
+	}
+	svc := ec2routetable.NewNATSRouteTableService(natsConn)
+	result, err := svc.AssociateRouteTable(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+	return *result, nil
+}

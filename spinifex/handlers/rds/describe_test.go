@@ -5,8 +5,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -315,7 +315,7 @@ func TestDesiredDNSChanges_CoversEveryTenantOrClaimsNoAuthority(t *testing.T) {
 	changes, ok := h.svc.DesiredDNSChanges()
 	require.True(t, ok)
 	require.Len(t, changes, 1)
-	assert.Equal(t, handlers_dns.ActionUpsert, changes[0].Action)
+	assert.Equal(t, dns.ActionUpsert, changes[0].Action)
 	assert.Equal(t, rec.DNSName, changes[0].Name)
 	assert.Equal(t, rec.ENIPrivateIP, changes[0].Value)
 }

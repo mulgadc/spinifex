@@ -3,13 +3,13 @@ package handlers_ecs
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,7 +44,7 @@ func (b *fakeEIPBackend) register(t *testing.T, nc *nats.Conn) {
 			var in ec2.AssociateAddressInput
 			_ = json.Unmarshal(msg.Data, &in)
 			if b.associateFails {
-				_ = msg.Respond(utils.GenerateErrorPayload("InvalidParameterValue"))
+				_ = msg.Respond(awserrors.GenerateErrorPayload("InvalidParameterValue"))
 				return
 			}
 			b.mu.Lock()

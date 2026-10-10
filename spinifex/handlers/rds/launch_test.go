@@ -5,19 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,11 +55,11 @@ type fakeSystemVPC struct {
 }
 
 var (
-	_ handlers_systemvpc.VPCProvisioner        = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.RouteTableProvisioner = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.NATGatewayProvisioner = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.EIPProvisioner        = (*fakeSystemVPC)(nil)
-	_ handlers_systemvpc.IGWProvisioner        = (*fakeSystemVPC)(nil)
+	_ systemvpc.VPCProvisioner        = (*fakeSystemVPC)(nil)
+	_ systemvpc.RouteTableProvisioner = (*fakeSystemVPC)(nil)
+	_ systemvpc.NATGatewayProvisioner = (*fakeSystemVPC)(nil)
+	_ systemvpc.EIPProvisioner        = (*fakeSystemVPC)(nil)
+	_ systemvpc.IGWProvisioner        = (*fakeSystemVPC)(nil)
 )
 
 func (f *fakeSystemVPC) id(prefix string) *string {
@@ -67,8 +67,8 @@ func (f *fakeSystemVPC) id(prefix string) *string {
 	return aws.String(fmt.Sprintf("%s-%04d", prefix, f.seq))
 }
 
-func (f *fakeSystemVPC) deps() handlers_systemvpc.Deps {
-	return handlers_systemvpc.Deps{VPC: f, IGW: f, RT: f, NGW: f, EIP: f}
+func (f *fakeSystemVPC) deps() systemvpc.Deps {
+	return systemvpc.Deps{VPC: f, IGW: f, RT: f, NGW: f, EIP: f}
 }
 
 func (f *fakeSystemVPC) CreateVpc(context.Context, *ec2.CreateVpcInput, string) (*ec2.CreateVpcOutput, error) {
@@ -303,7 +303,7 @@ func (f *fakeENIs) CreateSecurityGroup(_ context.Context, in *ec2.CreateSecurity
 
 // fakeLauncher stands in for the system-instance launcher.
 type fakeLauncher struct {
-	input      *sysinstance.SystemInstanceInput
+	input      *systeminstance.SystemInstanceInput
 	instanceID string
 	err        error
 	terminated []string
@@ -321,7 +321,7 @@ type fakeLauncher struct {
 
 var _ launchInstanceLauncher = (*fakeLauncher)(nil)
 
-func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (f *fakeLauncher) LaunchSystemInstance(in *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	f.input = in
 	if f.err != nil {
 		return nil, f.err
@@ -333,7 +333,7 @@ func (f *fakeLauncher) LaunchSystemInstance(in *sysinstance.SystemInstanceInput)
 	if instanceID == "" {
 		instanceID = "i-rds0001"
 	}
-	return &sysinstance.SystemInstanceOutput{InstanceID: instanceID}, nil
+	return &systeminstance.SystemInstanceOutput{InstanceID: instanceID}, nil
 }
 
 func (f *fakeLauncher) TerminateSystemInstance(instanceID string) error {
@@ -572,7 +572,7 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	// The system NIC sits in the RDS system VPC's private subnet under the
 	// system account. That is the NIC with NAT egress, which is how the in-guest
 	// agent reaches the gateway from a customer DB subnet that has none.
-	assert.Equal(t, utils.GlobalAccountID, h.enis.accts[0])
+	assert.Equal(t, awsidentifiers.GlobalAccountID, h.enis.accts[0])
 	assert.True(t, strings.HasPrefix(aws.StringValue(sysENI.SubnetId), "subnet-rdssys"),
 		"the primary NIC must land in the RDS system VPC, got %s", aws.StringValue(sysENI.SubnetId))
 	// Its own ingress-free group, not the system VPC's default one — whose sole
@@ -603,14 +603,14 @@ func TestLaunchDBInstanceVMWiresBothNICs(t *testing.T) {
 	// customer ENI injected cross-account as an extra NIC.
 	in := h.launcher.input
 	require.NotNil(t, in)
-	assert.Equal(t, sysinstance.BootAMI, in.BootMode)
+	assert.Equal(t, systeminstance.BootAMI, in.BootMode)
 	assert.Equal(t, tags.ManagedByRDS, in.ManagedBy)
 	assert.Equal(t, testEngineAMI, in.ImageID)
-	assert.Equal(t, utils.GlobalAccountID, in.AccountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, in.AccountID)
 	assert.Equal(t, aws.StringValue(sysENI.SubnetId), in.SubnetID)
 	assert.Equal(t, out.SystemENIID, in.ENIID)
 	require.Len(t, in.ExtraENIs, 1)
-	assert.Equal(t, sysinstance.ExtraENIInput{
+	assert.Equal(t, systeminstance.ExtraENIInput{
 		ENIID:     out.CustomerENIID,
 		ENIMac:    "02:00:00:00:00:02",
 		ENIIP:     out.CustomerENIIP,
@@ -718,12 +718,12 @@ func TestLaunchDBInstanceVMAttachesTheDataVolume(t *testing.T) {
 	assert.Equal(t, "ap-southeast-2a", aws.StringValue(vol.AvailabilityZone))
 	assert.Equal(t, tags.ManagedByRDS, tagOf(vol.TagSpecifications, tags.ManagedByKey))
 	assert.Equal(t, "mydb", tagOf(vol.TagSpecifications, rdsInstanceTagKey))
-	assert.Equal(t, utils.GlobalAccountID, h.volumes.accts[0], "the data volume belongs to the system account, like the VM it serves")
+	assert.Equal(t, awsidentifiers.GlobalAccountID, h.volumes.accts[0], "the data volume belongs to the system account, like the VM it serves")
 
 	assert.Equal(t, "i-rds0001", h.attacher.instanceID)
 	assert.Equal(t, "vol-rdsdata01", h.attacher.volumeID)
 	assert.Equal(t, dataVolumeDevice, h.attacher.device)
-	assert.Equal(t, utils.GlobalAccountID, h.attacher.accountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, h.attacher.accountID)
 
 	assert.Equal(t, "vol-rdsdata01", out.DataVolumeID)
 	assert.Equal(t, vm.VolumeSerial(out.DataVolumeID), out.DataVolumeSerial)

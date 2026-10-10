@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // runningSetState tracks what this node last wrote to the per-resource key

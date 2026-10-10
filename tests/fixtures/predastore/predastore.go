@@ -1,6 +1,6 @@
 // Package predastore starts a real predastore cluster for tests that need to
 // exercise an actual S3-compatible backend rather than a mock. It is
-// deliberately its own leaf package (not folded into spinifex/testutil,
+// deliberately its own leaf package (not folded into internal/testkit,
 // which is imported by most of the module's test files for lightweight NATS
 // helpers): starting one here runs a whole predastore host — blob nodes, Raft
 // meta replicas and the S3 gate in front of them — whose goroutines run for
@@ -54,7 +54,7 @@ const (
 	SecretKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" //nolint:gosec // well-known AWS SDK example secret, test-only cluster
 
 	// DefaultBucket and DefaultBucket2 are pre-created by Start itself,
-	// matching the bucket set services/predastore's own integration tests
+	// matching the bucket set runtime/roles/predastore's own integration tests
 	// were written against. Callers that need a different bucket should
 	// EnsureBucket one of their own against the fixture (see
 	// objectstore.NewS3ObjectStoreFromConfig) rather than reuse these —

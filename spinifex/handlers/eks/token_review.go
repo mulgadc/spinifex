@@ -3,10 +3,11 @@ package handlers_eks
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -31,7 +32,7 @@ type WebhookTokenReviewResult struct {
 func Authenticate(
 	token string,
 	verify func(presignedURL string) (*TokenVerifyResponse, error),
-	lookup func(principalARN string) (*AccessEntryRecord, error),
+	lookup func(principalARN string) (*access.Record, error),
 ) WebhookTokenReviewResult {
 	presignedURL, err := DecodeGetToken(token)
 	if err != nil {
@@ -57,42 +58,8 @@ func Authenticate(
 		Authenticated: true,
 		Username:      rec.KubernetesUsername,
 		UID:           uid,
-		Groups:        effectiveGroups(rec),
+		Groups:        access.EffectiveGroups(rec),
 	}
-}
-
-// effectiveGroups returns rec's static groups plus the Kubernetes group each
-// cluster-scoped associated policy projects, deduplicated in first-seen order.
-// A namespace-scoped or unrecognized association contributes nothing, so an
-// older or wider record degrades safely instead of widening scope or panicking.
-func effectiveGroups(rec *AccessEntryRecord) []string {
-	seen := make(map[string]struct{}, len(rec.KubernetesGroups))
-	groups := make([]string, 0, len(rec.KubernetesGroups))
-	add := func(g string) {
-		if g == "" {
-			return
-		}
-		if _, ok := seen[g]; ok {
-			return
-		}
-		seen[g] = struct{}{}
-		groups = append(groups, g)
-	}
-	for _, g := range rec.KubernetesGroups {
-		add(g)
-	}
-	for _, p := range rec.AssociatedPolicies {
-		if p.AccessScope.Type != accessScopeCluster {
-			continue
-		}
-		g, ok := accessPolicyGroups[p.PolicyARN]
-		if !ok {
-			slog.Debug("access policy projection: unrecognized policy ARN", "policy_arn", p.PolicyARN)
-			continue
-		}
-		add(g)
-	}
-	return groups
 }
 
 // ResolveTokenReview runs the TokenReview decision host-side, wiring the real
@@ -116,13 +83,13 @@ func ResolveTokenReview(ctx context.Context, nc *nats.Conn, accountID, clusterNa
 	}
 
 	verify := func(presignedURL string) (*TokenVerifyResponse, error) {
-		return utils.NATSRequest[TokenVerifyResponse](
+		return natsmsg.NATSRequest[TokenVerifyResponse](
 			ctx, nc, TokenVerifySubject,
 			TokenVerifyRequest{PresignedURL: presignedURL, ClusterName: clusterName},
 			verifyTimeout, "")
 	}
-	lookup := func(principalARN string) (*AccessEntryRecord, error) {
-		return GetAccessEntryRecord(ctx, kv, clusterName, principalARN)
+	lookup := func(principalARN string) (*access.Record, error) {
+		return access.Get(ctx, kv, clusterName, principalARN)
 	}
 	return Authenticate(token, verify, lookup), nil
 }

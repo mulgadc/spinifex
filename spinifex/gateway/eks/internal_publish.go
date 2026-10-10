@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	eksv1 "github.com/mulgadc/spinifex/contracts/eks/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -41,9 +42,23 @@ var validBootstrapKinds = map[string]struct{}{
 	handlers_eks.BootstrapSubjectCA:         {},
 }
 
+// decodeInternalPublish is the one reading of the body that both AuthorizeInternal
+// and PublishInternal use, so the account the gate binds is the account the
+// published subject names.
+func decodeInternalPublish(body []byte) (internalPublishRequest, error) {
+	var req internalPublishRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return internalPublishRequest{}, err
+	}
+	if req.AccountID == "" {
+		return internalPublishRequest{}, errors.New("accountId is required")
+	}
+	return req, nil
+}
+
 // PublishInternal — POST /clusters/{name}/internal-publish. Relays a VM
-// publication onto the bootstrap/state NATS subjects via the AWSGW, keeping
-// NATS cluster-internal.
+// publication onto the bootstrap/state/addon NATS subjects via the AWSGW,
+// keeping NATS cluster-internal. AuthorizeInternal has bound the caller first.
 func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName string, body []byte) (*publishInternalOutput, error) {
 	if natsConn == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -52,12 +67,12 @@ func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName strin
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	var req internalPublishRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	req, err := decodeInternalPublish(body)
+	if err != nil {
 		slog.DebugContext(ctx, "PublishInternal: bad body", "cluster", clusterName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if req.AccountID == "" || len(req.Payload) == 0 {
+	if len(req.Payload) == 0 {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -72,7 +87,7 @@ func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName strin
 	case internalChannelState:
 		subject = handlers_eks.StateSubject(req.AccountID, clusterName)
 	case internalChannelAddon:
-		subject = handlers_eks.AddonStatusSubject(req.AccountID, clusterName)
+		subject = eksv1.AddonStatusSubject(req.AccountID, clusterName)
 	default:
 		slog.DebugContext(ctx, "PublishInternal: unknown channel", "cluster", clusterName, "channel", req.Channel)
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -80,7 +95,7 @@ func PublishInternal(ctx context.Context, natsConn *nats.Conn, clusterName strin
 
 	msg := nats.NewMsg(subject)
 	msg.Data = req.Payload
-	utils.InjectTraceContext(ctx, msg.Header)
+	natsmsg.InjectTraceContext(ctx, msg.Header)
 	if err := natsConn.PublishMsg(msg); err != nil {
 		slog.ErrorContext(ctx, "PublishInternal: NATS publish failed", "subject", subject, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

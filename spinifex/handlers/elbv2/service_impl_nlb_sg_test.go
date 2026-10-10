@@ -9,15 +9,15 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // firstSubnet returns the ID + VPC ID of the subnet setupTestServiceWithVPC
 // pre-creates.
-func firstSubnet(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) (subnetID, vpcID string) {
+func firstSubnet(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl) (subnetID, vpcID string) {
 	t.Helper()
 	subnets, err := vpcSvc.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{}, testAccountID)
 	require.NoError(t, err)
@@ -26,7 +26,7 @@ func firstSubnet(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) (subnetI
 }
 
 // describeSG returns the security group record by ID.
-func describeSG(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl, sgID string) *ec2.SecurityGroup {
+func describeSG(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl, sgID string) *ec2.SecurityGroup {
 	t.Helper()
 	out, err := vpcSvc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
 		GroupIds: aws.StringSlice([]string{sgID}),
@@ -54,7 +54,7 @@ func sgHasRule(sg *ec2.SecurityGroup, proto string, port int64, cidr string) boo
 	return false
 }
 
-func managedENI(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) *ec2.NetworkInterface {
+func managedENI(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl) *ec2.NetworkInterface {
 	t.Helper()
 	out, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func managedENI(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) *ec2.Netw
 
 // hasManagedNLBSG reports whether any NLB managed SG (named spinifex-nlb-<lbID>)
 // is still present, so a rollback can be asserted to have removed it.
-func hasManagedNLBSG(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) bool {
+func hasManagedNLBSG(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl) bool {
 	t.Helper()
 	out, err := vpcSvc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{}, testAccountID)
 	require.NoError(t, err)

@@ -8,15 +8,15 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -248,7 +248,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 		{
 			name: "HappyPath_UpdatesNBDURI",
 			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := types.EBSMountResponse{URI: "nbd://mounted-vol"}
+				resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://mounted-vol"}
 				data, err := json.Marshal(resp)
 				require.NoError(t, err)
 				require.NoError(t, msg.Respond(data))
@@ -272,7 +272,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 		{
 			name: "ResponseError_IncludedInError",
 			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := types.EBSMountResponse{Error: "boom"}
+				resp := viperblocklegacyv1.EBSMountResponse{Error: "boom"}
 				data, err := json.Marshal(resp)
 				require.NoError(t, err)
 				require.NoError(t, msg.Respond(data))
@@ -283,7 +283,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 		{
 			name: "EmptyURI_ReturnsErrMountAmbiguous",
 			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := types.EBSMountResponse{URI: ""}
+				resp := viperblocklegacyv1.EBSMountResponse{URI: ""}
 				data, err := json.Marshal(resp)
 				require.NoError(t, err)
 				require.NoError(t, msg.Respond(data))
@@ -294,7 +294,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 		{
 			name: "EmptyURI_PreservesInitialNBDURIOnFailure",
 			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := types.EBSMountResponse{URI: ""}
+				resp := viperblocklegacyv1.EBSMountResponse{URI: ""}
 				data, err := json.Marshal(resp)
 				require.NoError(t, err)
 				require.NoError(t, msg.Respond(data))
@@ -319,7 +319,7 @@ func TestVolumeMounterAdapter_MountOne(t *testing.T) {
 				defer sub.Unsubscribe()
 			}
 
-			req := &types.EBSRequest{
+			req := &viperblocklegacyv1.EBSRequest{
 				Name:       "vol-mountone",
 				DeviceName: "/dev/sdf",
 				NBDURI:     tt.initialURI,
@@ -468,7 +468,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetac
 
 	_, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 1)
 	require.NoError(t, err)
-	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *ec2vpc.ENIRecord) {
 		r.DeleteOnTermination = aws.Bool(false)
 	}))
 
@@ -487,7 +487,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_DeleteOnTerminationFalseDetac
 // terminate reaches for has to be real; anything else panics rather than
 // silently answering.
 type stubEIPDisassociator struct {
-	handlers_ec2_eip.EIPService
+	ec2eip.EIPService
 
 	associated map[string]bool
 	calls      []string
@@ -617,7 +617,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_MultipleAttachedENIsReleased(
 	require.NoError(t, err)
 	_, err = f.daemon.vpcService.AttachENI(testAccountID, eniID2, f.vmInst.ID, 2)
 	require.NoError(t, err)
-	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, eniID2, func(r *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, eniID2, func(r *ec2vpc.ENIRecord) {
 		r.DeleteOnTermination = aws.Bool(false)
 	}))
 
@@ -662,7 +662,7 @@ func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerat
 	_, nc, _ := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), daemon.config, nc)
 	require.NoError(t, err)
 	daemon.vpcService = vpcSvc
 	nc.Close()
@@ -684,7 +684,7 @@ func TestVolumeMounterAdapter_Mount_WrapsErrMountRetryable(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	sub, err := daemon.natsConn.Subscribe("ebs."+daemon.node+".mount", func(msg *nats.Msg) {
-		resp := types.EBSMountResponse{Error: "state not found", Retryable: true}
+		resp := viperblocklegacyv1.EBSMountResponse{Error: "state not found", Retryable: true}
 		data, _ := json.Marshal(resp)
 		_ = msg.Respond(data)
 	})
@@ -692,7 +692,7 @@ func TestVolumeMounterAdapter_Mount_WrapsErrMountRetryable(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	instance := &vm.VM{ID: "i-mount-retryable"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-retryable"}}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-retryable"}}
 
 	err = adapter.Mount(t.Context(), instance)
 	require.Error(t, err)
@@ -705,7 +705,7 @@ func TestVolumeMounterAdapter_Mount_PermanentErrorNotWrapped(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	sub, err := daemon.natsConn.Subscribe("ebs."+daemon.node+".mount", func(msg *nats.Msg) {
-		resp := types.EBSMountResponse{Error: "volume vol-permanent is already mounted read_only=true on this node"}
+		resp := viperblocklegacyv1.EBSMountResponse{Error: "volume vol-permanent is already mounted read_only=true on this node"}
 		data, _ := json.Marshal(resp)
 		_ = msg.Respond(data)
 	})
@@ -713,7 +713,7 @@ func TestVolumeMounterAdapter_Mount_PermanentErrorNotWrapped(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	instance := &vm.VM{ID: "i-mount-permanent"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-permanent"}}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-permanent"}}
 
 	err = adapter.Mount(t.Context(), instance)
 	require.Error(t, err)
@@ -728,7 +728,7 @@ func TestVolumeMounterAdapter_Mount_NoResponderIsRetryable(t *testing.T) {
 	// No subscriber on the mount subject: viperblockd is still starting, so
 	// the request returns nats.ErrNoResponders, which must be retryable.
 	instance := &vm.VM{ID: "i-mount-noresponder"}
-	instance.EBSRequests.Requests = []types.EBSRequest{{Name: "vol-noresponder"}}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-noresponder"}}
 
 	err := adapter.Mount(t.Context(), instance)
 	require.Error(t, err)

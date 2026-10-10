@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

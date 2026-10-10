@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,17 +15,17 @@ func TestValidateAccessScope(t *testing.T) {
 	cases := []struct {
 		name    string
 		scope   *eks.AccessScope
-		want    AccessScope
+		want    access.Scope
 		wantErr bool
 	}{
-		{"nil scope", nil, AccessScope{}, true},
-		{"empty type", &eks.AccessScope{}, AccessScope{}, true},
-		{"cluster ok", &eks.AccessScope{Type: aws.String("cluster")}, AccessScope{Type: "cluster"}, false},
-		{"cluster mixed case", &eks.AccessScope{Type: aws.String("Cluster")}, AccessScope{Type: "cluster"}, false},
-		{"cluster with namespaces", &eks.AccessScope{Type: aws.String("cluster"), Namespaces: aws.StringSlice([]string{"kube-system"})}, AccessScope{}, true},
-		{"namespace ok", &eks.AccessScope{Type: aws.String("namespace"), Namespaces: aws.StringSlice([]string{"team-a", "team-b"})}, AccessScope{Type: "namespace", Namespaces: []string{"team-a", "team-b"}}, false},
-		{"namespace without namespaces", &eks.AccessScope{Type: aws.String("namespace")}, AccessScope{}, true},
-		{"unsupported type", &eks.AccessScope{Type: aws.String("galaxy")}, AccessScope{}, true},
+		{"nil scope", nil, access.Scope{}, true},
+		{"empty type", &eks.AccessScope{}, access.Scope{}, true},
+		{"cluster ok", &eks.AccessScope{Type: aws.String("cluster")}, access.Scope{Type: "cluster"}, false},
+		{"cluster mixed case", &eks.AccessScope{Type: aws.String("Cluster")}, access.Scope{Type: "cluster"}, false},
+		{"cluster with namespaces", &eks.AccessScope{Type: aws.String("cluster"), Namespaces: aws.StringSlice([]string{"kube-system"})}, access.Scope{}, true},
+		{"namespace ok", &eks.AccessScope{Type: aws.String("namespace"), Namespaces: aws.StringSlice([]string{"team-a", "team-b"})}, access.Scope{Type: "namespace", Namespaces: []string{"team-a", "team-b"}}, false},
+		{"namespace without namespaces", &eks.AccessScope{Type: aws.String("namespace")}, access.Scope{}, true},
+		{"unsupported type", &eks.AccessScope{Type: aws.String("galaxy")}, access.Scope{}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,13 +43,13 @@ func TestValidateAccessScope(t *testing.T) {
 func TestAccessEntryRecordToAWS_IncludesTags(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
-	rec := &AccessEntryRecord{
+	rec := &access.Record{
 		ARN:                "arn:aws:eks:ap-southeast-2:000000000001:access-entry/dev1/abc",
 		ClusterName:        "dev1",
 		PrincipalARN:       "arn:aws:iam::000000000001:user/admin",
 		KubernetesUsername: "arn:aws:iam::000000000001:user/admin",
 		KubernetesGroups:   []string{"system:masters"},
-		Type:               AccessEntryTypeStandard,
+		Type:               access.EntryTypeStandard,
 		Tags:               map[string]string{"team": "platform"},
 		CreatedAt:          now,
 		ModifiedAt:         now,
@@ -64,9 +65,9 @@ func TestAccessEntryRecordToAWS_IncludesTags(t *testing.T) {
 func TestAssociatedPolicyToAWS_ScopeNamespaces(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1700000000, 0).UTC()
-	p := AssociatedAccessPolicy{
+	p := access.AssociatedPolicy{
 		PolicyARN:    "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy",
-		AccessScope:  AccessScope{Type: "namespace", Namespaces: []string{"team-a"}},
+		AccessScope:  access.Scope{Type: "namespace", Namespaces: []string{"team-a"}},
 		AssociatedAt: now,
 		ModifiedAt:   now,
 	}
@@ -75,24 +76,10 @@ func TestAssociatedPolicyToAWS_ScopeNamespaces(t *testing.T) {
 	assert.Equal(t, "namespace", aws.StringValue(out.AccessScope.Type))
 	assert.Equal(t, []string{"team-a"}, aws.StringValueSlice(out.AccessScope.Namespaces))
 
-	cluster := associatedPolicyToAWS(AssociatedAccessPolicy{
+	cluster := associatedPolicyToAWS(access.AssociatedPolicy{
 		PolicyARN:   "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
-		AccessScope: AccessScope{Type: "cluster"},
+		AccessScope: access.Scope{Type: "cluster"},
 	})
 	assert.Equal(t, "cluster", aws.StringValue(cluster.AccessScope.Type))
 	assert.Empty(t, cluster.AccessScope.Namespaces)
-}
-
-// The record-store guard clauses reject malformed input before touching the KV,
-// so a nil handle is enough to exercise them.
-func TestAccessEntryRecordGuards(t *testing.T) {
-	t.Parallel()
-	require.Error(t, PutAccessEntryRecord(t.Context(), nil, nil))
-	require.Error(t, PutAccessEntryRecord(t.Context(), nil, &AccessEntryRecord{PrincipalARN: "arn:aws:iam::000000000001:user/admin"}))
-
-	_, err := GetAccessEntryRecord(t.Context(), nil, "", "arn:aws:iam::000000000001:user/admin")
-	require.Error(t, err)
-
-	_, err = ListAccessEntryRecords(t.Context(), nil, "")
-	require.Error(t, err)
 }

@@ -15,7 +15,10 @@ import (
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/mulgadc/spinifex/internal/awsmodel"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
+	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +34,10 @@ const slowRequest = 500 * time.Millisecond
 // request for each implemented operation through the real gateway, with every
 // daemon-lite wired, and records each verdict for the suite report.
 func TestRequestConformance(t *testing.T) {
-	inventory := gateway.AWSOperationInventory()
+	inventory := gateway.AWSOperationInventory(map[string]awsdispatch.Inventory{
+		awsapi.ServiceName:    awsapi.OperationInventory(),
+		acmawsapi.ServiceName: acmawsapi.OperationInventory(),
+	})
 	for _, service := range awsmodel.Services() {
 		// Predastore serves S3, not the gateway.
 		if service == awsmodel.S3 {
@@ -39,11 +45,11 @@ func TestRequestConformance(t *testing.T) {
 		}
 		t.Run(string(service), func(t *testing.T) {
 			t.Parallel()
-			dispatch := inventory[string(service)]
+			served := inventory[string(service)]
 			coverage, err := awsmodel.CompareOperations(service, awsmodel.DispatchInventory{
-				Registered:  dispatch.Registered,
-				Stubbed:     dispatch.Stubbed,
-				Unsupported: dispatch.Unsupported,
+				Registered:  served.Registered,
+				Stubbed:     served.Stubbed,
+				Unsupported: served.Unsupported,
 			})
 			require.NoError(t, err)
 

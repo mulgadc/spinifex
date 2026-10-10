@@ -781,7 +781,7 @@ install_apt_deps() {
     # intermittent DORA failures. Must run even when apt is skipped (CI
     # bootstrap runs with INSTALL_SPINIFEX_SKIP_APT=1 against runners that
     # already have dhcpcd-base preinstalled). The ISO installer does the
-    # same mask (cmd/installer/install/install.go).
+    # same mask (spinifex/operator/installer/install/install.go).
     $SUDO systemctl disable --now dhcpcd.service 2>/dev/null || true
     $SUDO systemctl mask dhcpcd.service 2>/dev/null || true
 }

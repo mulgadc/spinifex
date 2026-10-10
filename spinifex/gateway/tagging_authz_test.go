@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_tagging "github.com/mulgadc/spinifex/spinifex/gateway/tagging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

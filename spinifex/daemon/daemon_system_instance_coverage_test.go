@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,18 +12,17 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -45,7 +45,7 @@ func newSysInstFixture(t *testing.T) *sysInstFixture {
 	d := createTestDaemon(t, sharedNATSURL)
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), d.config, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), d.config, nc)
 	require.NoError(t, err)
 	d.vpcService = vpcSvc
 	// MarkFailed tears down in the background; let it finish before the
@@ -60,7 +60,7 @@ func newSysInstFixture(t *testing.T) *sysInstFixture {
 
 	f := &sysInstFixture{d: d, js: js, itype: getTestInstanceType(t)}
 	f.subnetID = f.newSubnet(t, testAccountID, "10.81")
-	f.sysSubnetID = f.newSubnet(t, utils.GlobalAccountID, "10.82")
+	f.sysSubnetID = f.newSubnet(t, awsidentifiers.GlobalAccountID, "10.82")
 	return f
 }
 
@@ -102,7 +102,7 @@ func (f *sysInstFixture) input(eni *ec2.NetworkInterface) *handlers_elbv2.System
 	}
 }
 
-func (f *sysInstFixture) eniRecord(t *testing.T, accountID, eniID string) handlers_ec2_vpc.ENIRecord {
+func (f *sysInstFixture) eniRecord(t *testing.T, accountID, eniID string) ec2vpc.ENIRecord {
 	t.Helper()
 	rec, err := f.d.vpcService.GetENIRecord(accountID, eniID)
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func (s *sysInstReclaimingEIP) ReleaseAddressByInstanceID(id string) error {
 
 func TestLaunchSystemInstance_EarlyErrors(t *testing.T) {
 	t.Run("BootAMI dispatches to the AMI path", func(t *testing.T) {
-		_, err := (&Daemon{}).LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{BootMode: sysinstance.BootAMI})
+		_, err := (&Daemon{}).LaunchSystemInstance(&handlers_elbv2.SystemInstanceInput{BootMode: systeminstance.BootAMI})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "instance service not initialized")
 	})
@@ -207,7 +207,7 @@ func TestLaunchSystemInstance_EarlyErrors(t *testing.T) {
 		t.Cleanup(func() { d.instanceService = orig })
 		// An instance service that knows no types rejects the launch after the
 		// daemon has already reserved capacity for it.
-		d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(d.config, map[string]*ec2.InstanceTypeInfo{},
+		d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, map[string]*ec2.InstanceTypeInfo{},
 			d.natsConn, objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, nil)
 
 		d.resourceMgr.mu.Lock()
@@ -247,7 +247,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 		primary, extra := f.newENI(t), f.newENI(t)
 		extraID := aws.StringValue(extra.NetworkInterfaceId)
 		in := f.input(primary)
-		in.ExtraENIs = []sysinstance.ExtraENIInput{{
+		in.ExtraENIs = []systeminstance.ExtraENIInput{{
 			ENIID:               extraID,
 			ENIMac:              aws.StringValue(extra.MacAddress),
 			ENIIP:               aws.StringValue(extra.PrivateIpAddress),
@@ -263,7 +263,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 
 		rec := f.eniRecord(t, testAccountID, aws.StringValue(primary.NetworkInterfaceId))
 		assert.Equal(t, out.InstanceID, rec.InstanceId)
-		assert.Equal(t, utils.GlobalAccountID, rec.InstanceOwnerId, "a system VM on a customer ENI must stamp its own account")
+		assert.Equal(t, awsidentifiers.GlobalAccountID, rec.InstanceOwnerId, "a system VM on a customer ENI must stamp its own account")
 
 		extraRec := f.eniRecord(t, testAccountID, extraID)
 		assert.Equal(t, out.InstanceID, extraRec.InstanceId)
@@ -274,7 +274,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 		v, ok := d.vmMgr.Get(out.InstanceID)
 		require.True(t, ok)
 		assert.Equal(t, tags.ManagedByELBv2, v.ManagedBy)
-		assert.Equal(t, utils.GlobalAccountID, v.AccountID)
+		assert.Equal(t, awsidentifiers.GlobalAccountID, v.AccountID)
 		assert.NotEmpty(t, aws.StringValue(v.Instance.VpcId), "the VPC is resolved from the pre-created ENI")
 		require.Len(t, v.ExtraENIs, 1)
 		assert.Equal(t, extraID, v.ExtraENIs[0].ENIID)
@@ -289,7 +289,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 
 	t.Run("failed extra attach fails the launch", func(t *testing.T) {
 		in := f.input(f.newENI(t))
-		in.ExtraENIs = []sysinstance.ExtraENIInput{{ENIID: "eni-missing"}}
+		in.ExtraENIs = []systeminstance.ExtraENIInput{{ENIID: "eni-missing"}}
 
 		_, err := d.LaunchSystemInstance(in)
 		require.Error(t, err)
@@ -299,7 +299,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 	t.Run("same-account ENI skips the owner stamp", func(t *testing.T) {
 		out, err := d.vpcService.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{
 			SubnetId: aws.String(f.sysSubnetID),
-		}, utils.GlobalAccountID)
+		}, awsidentifiers.GlobalAccountID)
 		require.NoError(t, err)
 		eni := out.NetworkInterface
 		in := f.input(eni)
@@ -309,7 +309,7 @@ func TestLaunchSystemInstance_PreCreatedENI(t *testing.T) {
 		_, err = d.LaunchSystemInstance(in)
 		require.ErrorIs(t, err, errSysInstLaunchRefused)
 
-		rec := f.eniRecord(t, utils.GlobalAccountID, aws.StringValue(eni.NetworkInterfaceId))
+		rec := f.eniRecord(t, awsidentifiers.GlobalAccountID, aws.StringValue(eni.NetworkInterfaceId))
 		assert.Empty(t, rec.InstanceOwnerId, "same-account attachments leave the owner empty")
 	})
 }
@@ -331,7 +331,7 @@ func TestLaunchSystemInstance_AutoCreateENI(t *testing.T) {
 		v, ok := d.vmMgr.Get(out.InstanceID)
 		require.True(t, ok)
 		require.NotEmpty(t, v.ENIId)
-		rec := f.eniRecord(t, utils.GlobalAccountID, v.ENIId)
+		rec := f.eniRecord(t, awsidentifiers.GlobalAccountID, v.ENIId)
 		assert.Equal(t, out.InstanceID, rec.InstanceId)
 		assert.Equal(t, f.sysSubnetID, aws.StringValue(v.Instance.SubnetId))
 	})
@@ -414,9 +414,9 @@ func TestLaunchSystemInstance_EIPService(t *testing.T) {
 	})
 }
 
-func (f *sysInstFixture) externalIPAM(t *testing.T, pool external.ExternalPoolConfig) *handlers_ec2_vpc.ExternalIPAM {
+func (f *sysInstFixture) externalIPAM(t *testing.T, pool external.ExternalPoolConfig) *ec2vpc.ExternalIPAM {
 	t.Helper()
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), f.js, []external.ExternalPoolConfig{pool})
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), f.js, []external.ExternalPoolConfig{pool})
 	require.NoError(t, err)
 	return ipam
 }
@@ -576,19 +576,19 @@ func (l *sysInstAMILoader) GetAMISourceVolumeID(context.Context, string) (string
 
 func TestLaunchAMISystemInstance_Guards(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
-	base := sysinstance.SystemInstanceInput{
-		BootMode: sysinstance.BootAMI, ImageID: "ami-x", AccountID: testAccountID, ENIID: "eni-x", InstanceType: getTestInstanceType(t),
+	base := systeminstance.SystemInstanceInput{
+		BootMode: systeminstance.BootAMI, ImageID: "ami-x", AccountID: testAccountID, ENIID: "eni-x", InstanceType: getTestInstanceType(t),
 	}
 	cases := []struct {
 		name    string
-		mutate  func(*sysinstance.SystemInstanceInput)
+		mutate  func(*systeminstance.SystemInstanceInput)
 		wantErr string
 	}{
-		{"missing image", func(in *sysinstance.SystemInstanceInput) { in.ImageID = "" }, "requires ImageID"},
-		{"missing account", func(in *sysinstance.SystemInstanceInput) { in.AccountID = "" }, "requires AccountID"},
-		{"missing ENI", func(in *sysinstance.SystemInstanceInput) { in.ENIID = "" }, "requires a pre-created ENI"},
+		{"missing image", func(in *systeminstance.SystemInstanceInput) { in.ImageID = "" }, "requires ImageID"},
+		{"missing account", func(in *systeminstance.SystemInstanceInput) { in.AccountID = "" }, "requires AccountID"},
+		{"missing ENI", func(in *systeminstance.SystemInstanceInput) { in.ENIID = "" }, "requires a pre-created ENI"},
 		// The test daemon wires no AMI loader, so Prepare refuses the launch.
-		{"prepare error", func(in *sysinstance.SystemInstanceInput) {
+		{"prepare error", func(in *systeminstance.SystemInstanceInput) {
 			in.UserData = "#cloud-config"
 			in.IamInstanceProfileArn = "arn:aws:iam::123456789012:instance-profile/cp"
 			in.ManagedBy = tags.ManagedByEKS
@@ -626,10 +626,10 @@ func TestLaunchAMISystemInstance(t *testing.T) {
 	d.instanceService.SetEBSProvider(provider)
 	sysInstLaunchFails(d)
 
-	input := func(t *testing.T) *sysinstance.SystemInstanceInput {
+	input := func(t *testing.T) *systeminstance.SystemInstanceInput {
 		eni := f.newENI(t)
-		return &sysinstance.SystemInstanceInput{
-			BootMode:     sysinstance.BootAMI,
+		return &systeminstance.SystemInstanceInput{
+			BootMode:     systeminstance.BootAMI,
 			InstanceType: f.itype,
 			ImageID:      "ami-sys",
 			AccountID:    testAccountID,
@@ -652,7 +652,7 @@ func TestLaunchAMISystemInstance(t *testing.T) {
 
 	t.Run("extra ENI attach failure", func(t *testing.T) {
 		in := input(t)
-		in.ExtraENIs = []sysinstance.ExtraENIInput{{ENIID: "eni-missing"}}
+		in.ExtraENIs = []systeminstance.ExtraENIInput{{ENIID: "eni-missing"}}
 		_, err := d.LaunchSystemInstance(in)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "attach extra ENI eni-missing")
@@ -668,7 +668,7 @@ func TestLaunchAMISystemInstance(t *testing.T) {
 		sysInstLaunchRuns(d)
 		in := input(t)
 		extra := f.newENI(t)
-		in.ExtraENIs = []sysinstance.ExtraENIInput{{ENIID: aws.StringValue(extra.NetworkInterfaceId), SubnetID: f.subnetID}}
+		in.ExtraENIs = []systeminstance.ExtraENIInput{{ENIID: aws.StringValue(extra.NetworkInterfaceId), SubnetID: f.subnetID}}
 
 		out, err := d.LaunchSystemInstance(in)
 		require.NoError(t, err)
@@ -756,13 +756,13 @@ func TestTerminateSystemInstance(t *testing.T) {
 		eip := &sysInstReclaimingEIP{reclaimErr: errInjected}
 		d.eipService = eip
 		err := d.TerminateSystemInstance("i-term-nobody")
-		require.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+		require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 		assert.Equal(t, []string{"i-term-nobody"}, eip.reclaimed, "the backstop runs even when no node owns the VM")
 	})
 
 	t.Run("local lookup miss", func(t *testing.T) {
 		err := d.terminateSystemInstanceLocal("i-term-gone")
-		require.ErrorIs(t, err, sysinstance.ErrSystemInstanceNotFound)
+		require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 	})
 }
 

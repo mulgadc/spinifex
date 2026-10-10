@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // NATS connectivity strings reported by /local/status.
@@ -109,7 +109,7 @@ func vmToLocalInstance(v *vm.VM) LocalInstance {
 	// PID is read from the QEMU pidfile each request; missing file or unreadable
 	// value just omits the field (json:"omitempty"). Read failures are not
 	// surfaced — /local/instances must keep working even when QEMU is gone.
-	if pid, err := utils.ReadPidFile(v.ID); err == nil {
+	if pid, err := hostprocess.ReadPidFile(v.ID); err == nil {
 		li.PID = pid
 	}
 	return li

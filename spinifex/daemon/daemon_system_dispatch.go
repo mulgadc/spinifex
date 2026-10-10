@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -137,7 +136,7 @@ const systemTerminateRemoteTimeout = 90 * time.Second
 // ErrSystemInstanceNotFound, which callers treat as idempotent success.
 func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 	if d.natsConn == nil {
-		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
 	subject := fmt.Sprintf("system.TerminateInstance.%s", instanceID)
 	reply, err := d.natsConn.Request(subject, nil, systemTerminateRemoteTimeout)
@@ -145,7 +144,7 @@ func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 		if errors.Is(err, nats.ErrNoResponders) {
 			slog.Debug("terminateSystemInstanceRemote: no owner subscribed; VM already gone",
 				"instanceId", instanceID)
-			return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 		}
 		return fmt.Errorf("route terminate %s: %w", instanceID, err)
 	}
@@ -154,8 +153,8 @@ func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 		return fmt.Errorf("decode routed terminate reply %s: %w", instanceID, err)
 	}
 	if env.Error != "" {
-		if strings.Contains(env.Error, sysinstance.ErrSystemInstanceNotFound.Error()) {
-			return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceNotFound.Error()) {
+			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 		}
 		return fmt.Errorf("routed terminate %s: %s", instanceID, env.Error)
 	}
@@ -263,7 +262,7 @@ func respondWithSystemLaunchError(msg *nats.Msg, errMsg string) {
 	payload, err := json.Marshal(systemInstanceLaunchEnvelope{Error: errMsg})
 	if err != nil {
 		// Fall back to bare error payload so the requester at least sees a non-empty reply.
-		if respErr := msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
+		if respErr := msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
 			slog.Error("system.LaunchInstance: respond (error fallback) failed", "err", respErr)
 		}
 		return
@@ -290,7 +289,7 @@ func respondWithSystemTerminateError(msg *nats.Msg, errMsg string) {
 	}
 	payload, err := json.Marshal(systemInstanceTerminateEnvelope{Error: errMsg})
 	if err != nil {
-		if respErr := msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
+		if respErr := msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal)); respErr != nil {
 			slog.Error("system.TerminateInstance: respond (error fallback) failed", "err", respErr)
 		}
 		return

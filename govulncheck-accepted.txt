@@ -1,0 +1,3 @@
+# Reachable vulnerabilities accepted for a bounded time, read by scripts/govulncheck-gate.sh.
+# Format: <OSV-ID> <expiry YYYY-MM-DD> <reason>
+# The gate fails once the expiry passes: fix the dependency or renew deliberately.

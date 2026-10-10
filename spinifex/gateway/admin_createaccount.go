@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -316,7 +316,7 @@ func (gw *GatewayConfig) ensureDefaultVPC(ctx context.Context, accountID string)
 	reqCtx, cancel := context.WithTimeout(ctx, ensureDefaultVpcTimeout)
 	defer cancel()
 
-	msg, err := gw.NATSConn.RequestWithContext(reqCtx, utils.SubjectEnsureDefaultVpc, payload)
+	msg, err := gw.NATSConn.RequestWithContext(reqCtx, ec2v1.EnsureDefaultVpcSubject, payload)
 	if err != nil {
 		return "", fmt.Errorf("request default VPC: %w", err)
 	}

@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,7 +57,8 @@ func TestRLC1_ELBv2DeleteIdempotentOnAbsent(t *testing.T) {
 	}
 }
 
-// TestRLC2_ELBv2NoOrphanAfterDeleteLB enforces ADR-0002 §5 no-orphan completeness:
+// TestRLC2_ELBv2NoOrphanAfterDeleteLB covers the no-orphan completeness
+// described by historic PROP-LIFECYCLE-002:§5:
 // after DeleteLoadBalancer no listener or rule owned by the LB may remain. Two
 // listeners are used so a single-listener cascade can't pass by accident.
 func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
@@ -95,16 +96,17 @@ func TestRLC2_ELBv2NoOrphanAfterDeleteLB(t *testing.T) {
 
 	listeners, err := svc.store.ListListenersByLB(t.Context(), *lbArn)
 	require.NoError(t, err)
-	require.Emptyf(t, listeners, "ADR-0002 §5 no-orphan completeness: no listener owned by a deleted LB may remain")
+	require.Emptyf(t, listeners, "no-orphan completeness: no listener owned by a deleted LB may remain")
 
 	rules, err := svc.store.ListRules(t.Context())
 	require.NoError(t, err)
-	require.Emptyf(t, rules, "ADR-0002 §5 no-orphan completeness: no rule owned by a deleted LB may remain")
+	require.Emptyf(t, rules, "no-orphan completeness: no rule owned by a deleted LB may remain")
 }
 
-// TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade enforces ADR-0002 §5 no-store-bypass
-// cascade: DeleteLoadBalancer must use deleteListenerCascade, not store.DeleteListener
-// directly (a direct call orphans rules). Enforced structurally against source.
+// TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade covers the no-store-bypass
+// cascade described by historic PROP-LIFECYCLE-002:§5: DeleteLoadBalancer must
+// use deleteListenerCascade, not store.DeleteListener directly (a direct call
+// orphans rules). The assertion is structural against source.
 func TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade(t *testing.T) {
 	t.Parallel()
 	src, err := os.ReadFile("service_impl.go")
@@ -112,9 +114,9 @@ func TestRLC3_ELBv2DeleteLBDoesNotBypassListenerCascade(t *testing.T) {
 
 	body := stripComments(deleteLBFuncBody(t, string(src)))
 	assert.Containsf(t, body, "deleteListenerCascade",
-		"ADR-0002 §5 no store-bypass cascade: DeleteLoadBalancer must route listener teardown through deleteListenerCascade")
+		"no-store-bypass cascade: DeleteLoadBalancer must route listener teardown through deleteListenerCascade")
 	assert.NotContainsf(t, body, "s.store.DeleteListener(",
-		"ADR-0002 §5 no store-bypass cascade: DeleteLoadBalancer must not call store.DeleteListener directly")
+		"no-store-bypass cascade: DeleteLoadBalancer must not call store.DeleteListener directly")
 }
 
 // deleteLBFuncBody returns the source text of the DeleteLoadBalancer method,
@@ -145,9 +147,10 @@ func stripComments(src string) string {
 	return b.String()
 }
 
-// TestRLC4_ELBv2TGDeletableAfterLBTeardown enforces ADR-0002 §5 TG deletability:
-// after LB+listener+rule teardown, the target group must not remain pinned as
-// ResourceInUse by an orphaned rule or stale listener default action.
+// TestRLC4_ELBv2TGDeletableAfterLBTeardown covers the target-group deletability
+// described by historic PROP-LIFECYCLE-002:§5: after LB+listener+rule teardown,
+// the target group must not remain pinned as ResourceInUse by an orphaned rule
+// or stale listener default action.
 func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -180,15 +183,16 @@ func TestRLC4_ELBv2TGDeletableAfterLBTeardown(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: tgArn}, testAccountID)
-	require.NoErrorf(t, err, "ADR-0002 §5 TG deletability after LB teardown: target group must not stay pinned as ResourceInUse")
+	require.NoErrorf(t, err, "target-group deletability after LB teardown: target group must not stay pinned as ResourceInUse")
 }
 
-// TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly enforces ADR-0002 §3 (live-only
-// dependency guard): DeleteTargetGroup may block on ResourceInUse ONLY when a
-// LIVE listener/rule (one whose owning LB still exists) forwards to the TG. A
-// rule orphaned by a vanished LB must NOT pin the TG — that is the permanent
-// trap this guard prevents. Locks the liveLB/liveListener skip both ways so a
-// maintainer cannot regress the in-use scan back to a global rule sweep.
+// TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly covers the live-only dependency
+// guard described by historic PROP-LIFECYCLE-002:§3: DeleteTargetGroup may
+// block on ResourceInUse ONLY when a LIVE listener/rule (one whose owning LB
+// still exists) forwards to the TG. A rule orphaned by a vanished LB must NOT
+// pin the TG — that is the permanent trap this guard prevents. The assertions
+// lock the liveLB/liveListener skip both ways so a maintainer cannot regress
+// the in-use scan back to a global rule sweep.
 func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -209,7 +213,7 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 	}))
 
 	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(orphanTGArn)}, testAccountID)
-	require.NoErrorf(t, err, "ADR-0002 §3 live-only guard: a rule orphaned by a vanished LB must NOT pin the TG as ResourceInUse")
+	require.NoErrorf(t, err, "live-only guard: a rule orphaned by a vanished LB must NOT pin the TG as ResourceInUse")
 
 	// Live-rule TG: forwarded to by a listener whose LB still exists → ResourceInUse.
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("rlc3-lb")}, testAccountID)
@@ -228,5 +232,5 @@ func TestRLC3_ELBv2TGInUseGuardGatesOnLiveRefsOnly(t *testing.T) {
 
 	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: liveTGArn}, testAccountID)
 	assert.ErrorContainsf(t, err, awserrors.ErrorELBv2TargetGroupInUse,
-		"ADR-0002 §3 live-only guard: a TG forwarded to by a LIVE listener must block on ResourceInUse")
+		"live-only guard: a TG forwarded to by a LIVE listener must block on ResourceInUse")
 }

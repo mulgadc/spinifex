@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // Applying PendingModifiedValues is the one control-plane operation with two

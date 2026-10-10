@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -14,8 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -180,7 +180,7 @@ func AgeAutomatedBackup(t *testing.T, env *Env, accountID, snapshotID string, by
 	}
 
 	host, token, ca := natsConn(t, env)
-	nc, err := utils.ConnectNATS(host, token, ca)
+	nc, err := natsmsg.ConnectNATS(host, token, ca)
 	if err != nil {
 		t.Fatalf("AgeAutomatedBackup %s: connect NATS %s: %v", snapshotID, host, err)
 	}
@@ -359,7 +359,7 @@ func DBInstanceMgmtIP(t *testing.T, env *Env, system *AWSClient, id string) stri
 	instanceID := aws.StringValue(vm.InstanceId)
 
 	host, token, ca := natsConn(t, env)
-	nc, err := utils.ConnectNATS(host, token, ca)
+	nc, err := natsmsg.ConnectNATS(host, token, ca)
 	if err != nil {
 		t.Fatalf("DBInstanceMgmtIP %s: connect NATS %s: %v", id, host, err)
 	}

@@ -1,0 +1,346 @@
+// Package upgrade runs versioned migrations over NATS KV buckets, on-disk
+// config files and object-store data, recording each target's schema version.
+package upgrade
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	statemigrate "github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// ConfigMigration represents a versioned transformation of on-disk config files.
+type ConfigMigration struct {
+	FromVersion int
+	ToVersion   int
+	Description string
+	Run         func(ctx ConfigContext) error
+}
+
+// ObjectMigration represents a versioned transformation of object-store data
+// (Predastore/S3 objects), such as backfilling a new document shape from an
+// older one written by a different subsystem.
+type ObjectMigration struct {
+	FromVersion int
+	ToVersion   int
+	Description string
+	Run         func(ctx context.Context, octx ObjectContext) error
+}
+
+// ObjectContext provides object-store migration functions access to the
+// bucket being migrated. Objects is the same object-store abstraction
+// handlers use, so a migration reads/writes exactly as a handler would.
+type ObjectContext struct {
+	Objects objectstore.ObjectStore
+	Bucket  string
+	Logger  *slog.Logger
+}
+
+// ConfigContext provides config migration functions access to the filesystem.
+type ConfigContext struct {
+	ConfigDir string // path to /etc/spinifex or equivalent
+	DataDir   string // path to /var/lib/spinifex or equivalent
+	Logger    *slog.Logger
+}
+
+// PendingMigration describes a migration that has not yet been applied.
+type PendingMigration struct {
+	Target      string
+	FromVersion int
+	ToVersion   int
+	Description string
+}
+
+// configTarget bundles the relative path and version reader for a config file.
+type configTarget struct {
+	path   string // relative to configDir (e.g. "nats/nats.conf")
+	reader ConfigVersionReader
+}
+
+// Registry holds configuration and object-store migrations, keyed by target.
+// KV migrations are state primitives and live in foundation/state/migrate.
+type Registry struct {
+	configMigrations map[string][]ConfigMigration
+	configTargets    map[string]configTarget
+	objectMigrations map[string][]ObjectMigration
+}
+
+// DefaultRegistry is the global registry for configuration and object-store
+// migrations. KV migrations use foundation/state/migrate.DefaultRegistry.
+var DefaultRegistry = NewRegistry()
+
+// spinifexTarget is registered even with no migrations against it, so
+// `spx admin upgrade` still reports the version on disk.
+const spinifexTarget = "spinifex.toml"
+
+func init() {
+	DefaultRegistry.RegisterConfigTarget(spinifexTarget, spinifexTarget, &TOMLVersionReader{})
+}
+
+// NewRegistry creates an empty migration registry.
+func NewRegistry() *Registry {
+	return &Registry{
+		configMigrations: make(map[string][]ConfigMigration),
+		configTargets:    make(map[string]configTarget),
+		objectMigrations: make(map[string][]ObjectMigration),
+	}
+}
+
+// RegisterConfigTarget registers a config file target with its relative path
+// and version reader. Must be called before RegisterConfig for the same target.
+func (r *Registry) RegisterConfigTarget(name, relPath string, reader ConfigVersionReader) {
+	r.configTargets[name] = configTarget{path: relPath, reader: reader}
+}
+
+// RegisterConfig adds a config file migration. Migrations are kept sorted by FromVersion.
+func (r *Registry) RegisterConfig(target string, m ConfigMigration) {
+	r.configMigrations[target] = append(r.configMigrations[target], m)
+	sort.Slice(r.configMigrations[target], func(i, j int) bool {
+		return r.configMigrations[target][i].FromVersion < r.configMigrations[target][j].FromVersion
+	})
+}
+
+// RegisterObject adds an object-store migration. Migrations are kept sorted by FromVersion.
+func (r *Registry) RegisterObject(target string, m ObjectMigration) {
+	r.objectMigrations[target] = append(r.objectMigrations[target], m)
+	sort.Slice(r.objectMigrations[target], func(i, j int) bool {
+		return r.objectMigrations[target][i].FromVersion < r.objectMigrations[target][j].FromVersion
+	})
+}
+
+// RunObject applies pending object-store migrations for target up to
+// targetVersion. Predastore has no conditional write, so progress is stamped
+// in JetStream KV instead, exactly as RunKV stamps a KV bucket's own version.
+//
+// Callers must pass a KV bucket shared by every node. The stamp is a
+// read-then-write rather than a compare-and-swap, so two nodes can still race
+// to run a step; each Run must be safe to re-execute for that to be harmless.
+func (r *Registry) RunObject(ctx context.Context, target string, objects objectstore.ObjectStore, bucket string, versionKV jetstream.KeyValue, targetVersion int) error {
+	current, err := kvutil.ReadVersion(ctx, versionKV)
+	if err != nil {
+		return fmt.Errorf("read version for %s: %w", target, err)
+	}
+
+	if current > targetVersion {
+		return statemigrate.SchemaAheadError{Bucket: target, Found: current, Understood: targetVersion}
+	}
+	if current == targetVersion {
+		return nil
+	}
+
+	all := r.objectMigrations[target]
+
+	// Fresh target, no migrations: stamp directly (common first-init path).
+	if current == 0 && len(all) == 0 {
+		return kvutil.WriteVersion(ctx, versionKV, targetVersion)
+	}
+
+	// Fresh target with migrations: no v0 schema by convention; start at chain bottom.
+	if current == 0 {
+		current = all[0].FromVersion
+	}
+
+	// Require a complete chain from current to target.
+	var pending []ObjectMigration
+	for _, m := range all {
+		if m.FromVersion >= current && m.ToVersion <= targetVersion {
+			pending = append(pending, m)
+		}
+	}
+
+	if len(pending) == 0 {
+		return fmt.Errorf("no migrations registered for %s from version %d to %d", target, current, targetVersion)
+	}
+
+	// Validate contiguous chain.
+	expected := current
+	for _, m := range pending {
+		if m.FromVersion != expected {
+			return fmt.Errorf("migration chain gap for %s: expected from %d, got from %d", target, expected, m.FromVersion)
+		}
+		expected = m.ToVersion
+	}
+	if expected != targetVersion {
+		return fmt.Errorf("migration chain for %s ends at version %d, target is %d", target, expected, targetVersion)
+	}
+
+	logger := slog.Default()
+	for _, m := range pending {
+		logger.Info("Running object migration", "target", target, "from", m.FromVersion, "to", m.ToVersion, "description", m.Description)
+		octx := ObjectContext{Objects: objects, Bucket: bucket, Logger: logger}
+		if err := m.Run(ctx, octx); err != nil {
+			return fmt.Errorf("object migration %s %d→%d failed: %w", target, m.FromVersion, m.ToVersion, err)
+		}
+		if err := kvutil.WriteVersion(ctx, versionKV, m.ToVersion); err != nil {
+			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, target, err)
+		}
+	}
+
+	return nil
+}
+
+// RunConfig executes all pending config migrations for a target.
+// Before each migration step, a timestamped backup is created.
+// Returns an error on failure (setup.sh should abort).
+func (r *Registry) RunConfig(target string, configDir, dataDir string) error {
+	t, ok := r.configTargets[target]
+	if !ok {
+		return fmt.Errorf("unknown config target: %s", target)
+	}
+
+	migrations := r.configMigrations[target]
+	if len(migrations) == 0 {
+		return nil
+	}
+
+	fullPath := filepath.Join(configDir, t.path)
+
+	// If the config file doesn't exist (fresh install), skip migrations.
+	if _, err := os.Stat(fullPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat config file %s: %w", fullPath, err)
+	}
+
+	current, err := t.reader.ReadVersion(fullPath)
+	if err != nil {
+		return fmt.Errorf("read version for %s: %w", target, err)
+	}
+
+	var pending []ConfigMigration
+	for _, m := range migrations {
+		if m.FromVersion >= current {
+			pending = append(pending, m)
+		}
+	}
+
+	if len(pending) == 0 {
+		return nil
+	}
+
+	// Validate contiguous chain (same check as RunKV).
+	expected := current
+	for _, m := range pending {
+		if m.FromVersion != expected {
+			return fmt.Errorf("config migration chain gap for %s: expected from %d, got from %d", target, expected, m.FromVersion)
+		}
+		expected = m.ToVersion
+	}
+
+	logger := slog.Default()
+	for _, m := range pending {
+		// Create backup before migration.
+		backupPath, err := BackupConfig(fullPath, m.FromVersion, m.ToVersion)
+		if err != nil {
+			return fmt.Errorf("backup %s before migration %d→%d: %w", target, m.FromVersion, m.ToVersion, err)
+		}
+		logger.Info("Created config backup", "target", target, "backup", backupPath)
+
+		logger.Info("Running config migration", "target", target, "from", m.FromVersion, "to", m.ToVersion, "description", m.Description)
+		ctx := ConfigContext{ConfigDir: configDir, DataDir: dataDir, Logger: logger}
+		if err := m.Run(ctx); err != nil {
+			return fmt.Errorf("config migration %s %d→%d failed: %w", target, m.FromVersion, m.ToVersion, err)
+		}
+
+		// Stamp new version after successful migration.
+		if err := t.reader.WriteVersion(fullPath, m.ToVersion); err != nil {
+			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, target, err)
+		}
+	}
+
+	return nil
+}
+
+// RunAllConfig executes pending config migrations for all registered targets.
+// Used by `spx admin upgrade`.
+func (r *Registry) RunAllConfig(configDir, dataDir string) error {
+	for target := range r.configTargets {
+		if err := r.RunConfig(target, configDir, dataDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PendingConfig returns all pending config migrations across all targets.
+func (r *Registry) PendingConfig(configDir string) ([]PendingMigration, error) {
+	var result []PendingMigration
+	for name, t := range r.configTargets {
+		fullPath := filepath.Join(configDir, t.path)
+
+		if _, err := os.Stat(fullPath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat config file %s: %w", fullPath, err)
+		}
+
+		current, err := t.reader.ReadVersion(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("read version for %s: %w", name, err)
+		}
+
+		for _, m := range r.configMigrations[name] {
+			if m.FromVersion >= current {
+				result = append(result, PendingMigration{
+					Target:      name,
+					FromVersion: m.FromVersion,
+					ToVersion:   m.ToVersion,
+					Description: m.Description,
+				})
+			}
+		}
+	}
+	return result, nil
+}
+
+// ConfigVersions returns current versions for all registered config targets.
+// Targets whose file does not exist are omitted.
+func (r *Registry) ConfigVersions(configDir string) (map[string]int, error) {
+	versions := make(map[string]int)
+	for name, t := range r.configTargets {
+		fullPath := filepath.Join(configDir, t.path)
+		if _, err := os.Stat(fullPath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("stat config file %s: %w", fullPath, err)
+		}
+		v, err := t.reader.ReadVersion(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("read version for %s: %w", name, err)
+		}
+		versions[name] = v
+	}
+	return versions, nil
+}
+
+// BackupConfig creates a timestamped backup of a config file before migration.
+// The backup is stored alongside the original file.
+func BackupConfig(path string, fromVersion, toVersion int) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file for backup: %w", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat file for backup: %w", err)
+	}
+
+	backupPath := fmt.Sprintf("%s.pre-migrate-%dto%d.%d", path, fromVersion, toVersion, time.Now().Unix())
+	if err := os.WriteFile(backupPath, data, info.Mode()); err != nil {
+		return "", fmt.Errorf("write backup: %w", err)
+	}
+
+	return backupPath, nil
+}

@@ -6,16 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 )
 
@@ -53,7 +53,7 @@ func (d *Daemon) RunWorkerInstanceOnNode(ctx context.Context, nodeID string, inp
 		return nil, errors.New("eks worker: NATS connection not initialized")
 	}
 	subject := fmt.Sprintf("ec2.RunInstances.%s.%s", aws.StringValue(input.InstanceType), nodeID)
-	return utils.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
+	return natsmsg.NATSRequest[ec2.Reservation](ctx, d.natsConn, subject, input, 5*time.Minute, accountID)
 }
 
 // TerminateWorkerInstances terminates nodegroup workers by routing a terminate
@@ -90,9 +90,9 @@ func (d *Daemon) TerminateWorkerInstances(ctx context.Context, instanceIDs []str
 // gone, which a retried teardown treats as success. A NotFound error payload
 // from the owner is likewise idempotent.
 func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accountID string) error {
-	cmd := spxtypes.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: spxtypes.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			StopInstance:      true,
 			TerminateInstance: true,
 		},
@@ -102,13 +102,13 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 		return fmt.Errorf("marshal terminate command: %w", err)
 	}
 
-	subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
+	subject := ec2v1.InstanceCommandSubject(instanceID)
 	var msg *nats.Msg
 	for attempt := range 3 {
 		reqMsg := nats.NewMsg(subject)
 		reqMsg.Data = data
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		utils.InjectTraceContext(ctx, reqMsg.Header)
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 		msg, err = d.natsConn.RequestMsg(reqMsg, 5*time.Second)
 		if err == nil || !errors.Is(err, nats.ErrNoResponders) {
 			break
@@ -130,7 +130,7 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 	if err != nil {
 		return err
 	}
-	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if errPayload, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
 			slog.DebugContext(ctx, "TerminateWorkerInstances: owner reports instance gone, idempotent", "instanceId", instanceID)
 			return nil
@@ -147,14 +147,14 @@ func (d *Daemon) terminateWorkerInstance(ctx context.Context, instanceID, accoun
 // NotFound payload — or no responder at all — means the instance is already
 // gone, which a retried teardown treats as idempotent success.
 func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, accountID string) error {
-	req, err := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
+	req, err := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: instanceID})
 	if err != nil {
 		return fmt.Errorf("marshal stopped-terminate request: %w", err)
 	}
 	reqMsg := nats.NewMsg("ec2.terminate")
 	reqMsg.Data = req
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
+	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := d.natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if errors.Is(err, nats.ErrNoResponders) {
 		slog.DebugContext(ctx, "TerminateWorkerInstances: no ec2.terminate responder, instance already gone", "instanceId", instanceID)
@@ -163,7 +163,7 @@ func (d *Daemon) terminateStoppedWorker(ctx context.Context, instanceID, account
 	if err != nil {
 		return fmt.Errorf("ec2.terminate stopped worker %s: %w", instanceID, err)
 	}
-	if errPayload, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {
+	if errPayload, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		if *errPayload.Code == awserrors.ErrorInvalidInstanceIDNotFound {
 			slog.DebugContext(ctx, "TerminateWorkerInstances: stopped worker already gone, idempotent", "instanceId", instanceID)
 			return nil

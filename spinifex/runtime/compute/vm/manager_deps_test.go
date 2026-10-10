@@ -1,0 +1,258 @@
+package vm
+
+import (
+	"context"
+	"errors"
+	"maps"
+	"slices"
+	"sync"
+)
+
+// fakeStateStore is a minimal in-memory StateStore used to verify Deps wiring.
+// The mutex covers all map accessors so StopAll's per-instance fan-out
+// goroutines (each calling WriteStoppedInstance via MigrateStoppedToSharedKV)
+// stay race-free.
+type fakeStateStore struct {
+	mu         sync.Mutex
+	saved      map[string]map[string]*VM
+	stopped    map[string]*VM
+	terminated map[string]*VM
+	saveErr    error
+}
+
+func newFakeStateStore() *fakeStateStore {
+	return &fakeStateStore{
+		saved:      map[string]map[string]*VM{},
+		stopped:    map[string]*VM{},
+		terminated: map[string]*VM{},
+	}
+}
+
+func (f *fakeStateStore) SaveRunningState(nodeID string, snap map[string]*VM) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	cp := make(map[string]*VM, len(snap))
+	maps.Copy(cp, snap)
+	f.saved[nodeID] = cp
+	return nil
+}
+
+func (f *fakeStateStore) LoadRunningState(nodeID string) (map[string]*VM, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.saved[nodeID]; ok {
+		return v, true, nil
+	}
+	return map[string]*VM{}, false, nil
+}
+
+func (f *fakeStateStore) WriteStoppedInstance(id string, v *VM) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped[id] = v
+	return nil
+}
+
+func (f *fakeStateStore) LoadStoppedInstance(id string) (*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.stopped[id]; ok {
+		return v, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeStateStore) DeleteStoppedInstance(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.stopped, id)
+	return nil
+}
+
+func (f *fakeStateStore) ListStoppedInstances() ([]*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Collect(maps.Values(f.stopped)), nil
+}
+
+// ClaimStoppedInstance mimics the real atomic-delete claim for tests: under
+// the store lock, remove and return the entry, or ErrStoppedInstanceClaimed
+// if it is already gone (claimed by a concurrent caller, or never existed).
+func (f *fakeStateStore) ClaimStoppedInstance(id string) (*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.stopped[id]
+	if !ok {
+		return nil, ErrStoppedInstanceClaimed
+	}
+	delete(f.stopped, id)
+	return v, nil
+}
+
+func (f *fakeStateStore) WriteTerminatedInstance(id string, v *VM) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminated[id] = v
+	return nil
+}
+
+func (f *fakeStateStore) ListTerminatedInstances() ([]*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Collect(maps.Values(f.terminated)), nil
+}
+
+func (f *fakeStateStore) DeleteTerminatedInstance(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.terminated, id)
+	return nil
+}
+
+// UpdateTerminatedInstance mimics the real CAS semantics for tests: mutate
+// runs under the store lock against the stored value, matching the
+// read-modify-write contract without needing a real KV revision.
+func (f *fakeStateStore) UpdateTerminatedInstance(id string, mutate func(*VM)) (*VM, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.terminated[id]
+	if !ok {
+		return nil, errors.New("terminated instance not found")
+	}
+	mutate(v)
+	return v, nil
+}
+
+var _ StateStore = (*fakeStateStore)(nil)
+
+// fakeVolumeMounter records every call so lifecycle tests can assert ordering.
+// The mutex covers the recording slices so StopAll's per-instance fan-out
+// goroutines stay race-free.
+type fakeVolumeMounter struct {
+	mu                       sync.Mutex
+	mounted, unmounted       []string
+	mountedOne, unmountedOne []string
+	abandoned                []string
+	abandonErr               error
+	mountErr                 error
+	mountOneErr              error
+	unmountErr               error
+	unmountOneErr            error
+	mountOneURI              string
+	// onMount fires synchronously inside Mount before the configured
+	// mountErr is returned. Used by lifecycle tests to simulate a
+	// concurrent terminate flipping VM.Status while Mount is in flight.
+	onMount func(*VM)
+}
+
+func (f *fakeVolumeMounter) Mount(_ context.Context, v *VM) error {
+	f.mu.Lock()
+	f.mounted = append(f.mounted, v.ID)
+	err := f.mountErr
+	hook := f.onMount
+	f.mu.Unlock()
+	if hook != nil {
+		hook(v)
+	}
+	return err
+}
+
+func (f *fakeVolumeMounter) Unmount(_ context.Context, v *VM) error {
+	f.mu.Lock()
+	f.unmounted = append(f.unmounted, v.ID)
+	err := f.unmountErr
+	f.mu.Unlock()
+	return err
+}
+
+func (f *fakeVolumeMounter) Abandon(_ context.Context, v *VM, _ string) error {
+	f.mu.Lock()
+	f.abandoned = append(f.abandoned, v.ID)
+	err := f.abandonErr
+	f.mu.Unlock()
+	return err
+}
+
+func (f *fakeVolumeMounter) MountOne(_ context.Context, _ string, req *EBSRequest) error {
+	f.mu.Lock()
+	f.mountedOne = append(f.mountedOne, req.Name)
+	mountOneErr := f.mountOneErr
+	uri := f.mountOneURI
+	f.mu.Unlock()
+	if mountOneErr != nil {
+		return mountOneErr
+	}
+	if uri != "" {
+		req.NBDURI = uri
+	}
+	return nil
+}
+
+func (f *fakeVolumeMounter) UnmountOne(_ context.Context, _ string, req EBSRequest) error {
+	f.mu.Lock()
+	f.unmountedOne = append(f.unmountedOne, req.Name)
+	err := f.unmountOneErr
+	f.mu.Unlock()
+	return err
+}
+
+var _ VolumeMounter = (*fakeVolumeMounter)(nil)
+
+// fakeVolumeStateUpdater records every UpdateVolumeState call so tests can
+// assert that AttachVolume / DetachVolume / boot-volume promotion pass the
+// correct attachment-device name. The arguments captured here back the
+// AWS-spec round-trip through DescribeVolumes' attachment.device filter,
+// so a regression that passes the in-guest path (e.g. /dev/vdc) instead
+// of the API-form name (e.g. /dev/sdf) shows up as the wrong stored
+// device on the recorded call.
+type fakeVolumeStateUpdater struct {
+	mu       sync.Mutex
+	calls    []volumeStateUpdate
+	err      error
+	onUpdate func(volumeStateUpdate)
+}
+
+// AccountID is recorded because it is the account segment of the document's
+// key: a call that passes anything but the instance's own account writes to a
+// key that does not exist, and nothing else in the suite would catch it.
+type volumeStateUpdate struct {
+	AccountID        string
+	VolumeID         string
+	State            string
+	InstanceID       string
+	AttachmentDevice string
+}
+
+func (f *fakeVolumeStateUpdater) UpdateVolumeState(accountID, volumeID, state, instanceID, attachmentDevice string) error {
+	update := volumeStateUpdate{
+		AccountID:        accountID,
+		VolumeID:         volumeID,
+		State:            state,
+		InstanceID:       instanceID,
+		AttachmentDevice: attachmentDevice,
+	}
+
+	f.mu.Lock()
+	f.calls = append(f.calls, update)
+	err := f.err
+	hook := f.onUpdate
+	f.mu.Unlock()
+
+	if hook != nil {
+		hook(update)
+	}
+	return err
+}
+
+func (f *fakeVolumeStateUpdater) snapshot() []volumeStateUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]volumeStateUpdate, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+var _ VolumeStateUpdater = (*fakeVolumeStateUpdater)(nil)

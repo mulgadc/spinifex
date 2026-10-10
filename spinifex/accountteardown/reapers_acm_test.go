@@ -5,12 +5,13 @@ package accountteardown
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +22,7 @@ import (
 func replyWith(t *testing.T, nc *nats.Conn, subject string, payload []byte, accounts *[]string) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		*accounts = append(*accounts, msg.Header.Get(utils.AccountIDHeader))
+		*accounts = append(*accounts, msg.Header.Get(natsmsg.AccountIDHeader))
 		require.NoError(t, msg.Respond(payload))
 	})
 	require.NoError(t, err)
@@ -62,7 +63,7 @@ func TestCertificateReaperTreatsAMissingCertificateAsDeleted(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	var accounts []string
-	replyWith(t, nc, "acm.DeleteCertificate", utils.GenerateErrorPayload("ResourceNotFound"), &accounts)
+	replyWith(t, nc, "acm.DeleteCertificate", awserrors.GenerateErrorPayload("ResourceNotFound"), &accounts)
 
 	reaper := &certificateReaper{nc: nc}
 	assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "arn:acm/gone"}, false))

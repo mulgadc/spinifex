@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
 // SystemOwnerAlias is the fixed owner alias written to AMI config on promotion.
@@ -46,7 +46,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	meta, err := readAMI(store, bucket, opts.ImageID)
+	meta, err := ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), opts.ImageID)
 	switch {
 	case err == nil:
 		// ok
@@ -59,7 +59,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if meta.ImageOwnerAlias == "" || !utils.IsAccountID(meta.ImageOwnerAlias) {
+	if meta.ImageOwnerAlias == "" || !awsidentifiers.IsAccountID(meta.ImageOwnerAlias) {
 		return nil, fmt.Errorf("%s is already a system-owned AMI (owner: %q); promotion not allowed", opts.ImageID, meta.ImageOwnerAlias)
 	}
 
@@ -81,7 +81,7 @@ func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts Promo
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if moveSnapshot {
-		snap.OwnerID = utils.GlobalAccountID
+		snap.OwnerID = awsidentifiers.GlobalAccountID
 		if err := metaStore.PutSnapshot(context.Background(), snap); err != nil {
 			slog.Error("PromoteSystemImage: write snapshot document under the global account",
 				"imageId", opts.ImageID, "snapshotId", meta.SnapshotID, "err", err)
@@ -130,7 +130,7 @@ func readPromotedSnapshot(store *ebsmetadata.Store, owner, snapshotID string) (e
 // GetAMIMetadata reads and returns the control-plane document for the given
 // image ID. Returns ErrorInvalidAMIIDNotFound for missing or corrupt documents.
 func GetAMIMetadata(store objectstore.ObjectStore, bucket, imageID string) (ebsmetadata.AMI, error) {
-	meta, err := readAMI(store, bucket, imageID)
+	meta, err := ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
 	switch {
 	case err == nil:
 		return meta, nil

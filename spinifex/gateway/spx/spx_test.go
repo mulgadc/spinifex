@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -53,8 +53,8 @@ func TestGetNodes_NoResponders(t *testing.T) {
 func TestGetNodes_SingleNode(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
-	sub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
-		resp := types.NodeStatusResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeStatusSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeStatusResponse{
 			Node:       "node1",
 			Status:     "Ready",
 			Host:       "10.0.0.1",
@@ -64,7 +64,7 @@ func TestGetNodes_SingleNode(t *testing.T) {
 			TotalMemGB: 16.0,
 			AllocVCPU:  2,
 			AllocMemGB: 2.0,
-			InstanceTypes: []types.InstanceTypeCap{
+			InstanceTypes: []clusterv1.InstanceTypeCap{
 				{Name: "t3.small", VCPU: 2, MemoryGB: 2.0, Available: 3},
 			},
 		}
@@ -92,8 +92,8 @@ func TestGetNodes_MultiNode(t *testing.T) {
 
 	for _, name := range []string{"node1", "node2", "node3"} {
 		nodeName := name
-		sub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
-			resp := types.NodeStatusResponse{Node: nodeName, Status: "Ready"}
+		sub, err := nc.Subscribe(clusterv1.NodeStatusSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeStatusResponse{Node: nodeName, Status: "Ready"}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 		})
@@ -119,11 +119,11 @@ func TestGetVMs_NoResponders(t *testing.T) {
 func TestGetVMs_WithVMs(t *testing.T) {
 	_, nc := startEmbeddedNATS(t)
 
-	sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-		resp := types.NodeVMsResponse{
+	sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+		resp := clusterv1.NodeVMsResponse{
 			Node: "node1",
 			Host: "10.0.0.1",
-			VMs: []types.VMInfo{
+			VMs: []clusterv1.VMInfo{
 				{InstanceID: "i-abc123", Status: "running", InstanceType: "t3.small"},
 				{InstanceID: "i-def456", Status: "running", InstanceType: "t3.medium"},
 			},
@@ -149,10 +149,10 @@ func TestGetVMs_MultiNode(t *testing.T) {
 
 	for _, name := range []string{"node1", "node2"} {
 		nodeName := name
-		sub, err := nc.Subscribe("spinifex.node.vms", func(msg *nats.Msg) {
-			resp := types.NodeVMsResponse{
+		sub, err := nc.Subscribe(clusterv1.NodeVMsSubject, func(msg *nats.Msg) {
+			resp := clusterv1.NodeVMsResponse{
 				Node: nodeName,
-				VMs: []types.VMInfo{
+				VMs: []clusterv1.VMInfo{
 					{InstanceID: "i-" + nodeName, Status: "running"},
 				},
 			}

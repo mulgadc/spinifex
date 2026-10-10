@@ -5,7 +5,7 @@
 # Converts mkosi's raw output to a compressed qcow2, writes the .sha256 sidecar
 # in the coreutils format the spx catalog verifier matches, and uploads both to
 # the bucket behind iso.mulgadc.com/system-ami/. The object name must match the
-# basename of the catalog entry's URL in spinifex/utils/images.go.
+# basename of the catalog entry's URL in spinifex/operator/imagecatalog/images.go.
 #
 # Unlike the build, this needs no relaxed confinement: qemu-img and aws create
 # no namespaces, so the container keeps Docker's default seccomp and AppArmor

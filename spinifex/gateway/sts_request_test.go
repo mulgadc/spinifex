@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,7 +141,7 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
@@ -172,7 +172,7 @@ func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:      utils.GlobalAccountID,
+		accountID:      awsidentifiers.GlobalAccountID,
 		identity:       "s1",
 		principalType:  principalTypeAssumedRole,
 		accessKey:      "ASIAEXAMPLE",
@@ -197,7 +197,7 @@ func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 func TestSTSRequest_GetCallerIdentity_RootShortcircuitsIAMLookup(t *testing.T) {
 	// Root short-circuits IAM lookup — flexMockIAMService.GetUser would cause InternalError otherwise.
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAROOT",
@@ -241,7 +241,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
@@ -261,7 +261,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "ASIAEXAMPLE123")
 
 	// Verify forwarded identity fields and that checkPolicy did not block (STS_Request runs no checkPolicy pass).
-	assert.Equal(t, utils.GlobalAccountID, got.accountID)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, got.accountID)
 	assert.Equal(t, "alice", got.userName)
 	assert.Equal(t, principalTypeUser, got.principalType)
 	assert.Equal(t, "AKIAEXAMPLE", got.accessKeyID)
@@ -270,7 +270,7 @@ func TestSTSRequest_GetSessionToken_Success(t *testing.T) {
 
 func TestSTSRequest_UnknownAction(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAROOT",
@@ -288,7 +288,7 @@ func TestSTSRequest_UnknownAction(t *testing.T) {
 
 func TestSTSRequest_MissingAction(t *testing.T) {
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "root",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAROOT",
@@ -312,7 +312,7 @@ func TestSTSRequest_AssumeRole_MissingRoleArn(t *testing.T) {
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
@@ -336,7 +336,7 @@ func TestSTSRequest_NilService_InternalError(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, STSService: nil, IAMService: &flexMockIAMService{}}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "sts")
-		ctx = context.WithValue(ctx, ctxAccountID, utils.GlobalAccountID)
+		ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
 		ctx = context.WithValue(ctx, ctxIdentity, "alice")
 		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 		ctx = context.WithValue(ctx, ctxAccessKey, "AKIAEXAMPLE")
@@ -368,7 +368,7 @@ func TestSTSRequest_AssumeRole_NilIAMService_InternalError(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, STSService: svc, IAMService: nil}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxService, "sts")
-		ctx = context.WithValue(ctx, ctxAccountID, utils.GlobalAccountID)
+		ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.GlobalAccountID)
 		ctx = context.WithValue(ctx, ctxIdentity, "alice")
 		ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 		ctx = context.WithValue(ctx, ctxAccessKey, "AKIAEXAMPLE")
@@ -396,7 +396,7 @@ func TestSTSRequest_AssumeRole_ServiceError_PropagatesAccessDenied(t *testing.T)
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
@@ -423,7 +423,7 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 		},
 	}
 	handler := setupSTSRequestHandler(stsRequestParams{
-		accountID:     utils.GlobalAccountID,
+		accountID:     awsidentifiers.GlobalAccountID,
 		identity:      "alice",
 		principalType: principalTypeUser,
 		accessKey:     "AKIAEXAMPLE",
@@ -493,8 +493,8 @@ func TestBuildCallerARN(t *testing.T) {
 			"arn:aws:iam::" + acct + ":user/eng/alice", "arn:aws:iam::" + acct + ":user/eng/alice"},
 		{"user with no record formats at the root path", acct, "alice", principalTypeUser, "", "",
 			"arn:aws:iam::" + acct + ":user/alice"},
-		{"global root ignores a user ARN", utils.GlobalAccountID, "root", principalTypeUser, "",
-			"arn:aws:iam::" + utils.GlobalAccountID + ":user/root", "arn:aws:iam::" + utils.GlobalAccountID + ":root"},
+		{"global root ignores a user ARN", awsidentifiers.GlobalAccountID, "root", principalTypeUser, "",
+			"arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":user/root", "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":root"},
 		{"root principal", acct, "", principalTypeRoot, "", "", "arn:aws:iam::" + acct + ":root"},
 		{"assumed role keeps its session ARN", acct, "s", principalTypeAssumedRole,
 			"arn:aws:sts::" + acct + ":assumed-role/Ops/s", "", "arn:aws:sts::" + acct + ":assumed-role/Ops/s"},

@@ -9,9 +9,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // BackupRetentionReaper is the retention sweep, a cluster-wide vm.Reaper rather than a reconciler tick

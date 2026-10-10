@@ -8,10 +8,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	spxtypes "github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,9 +50,9 @@ func TestTerminateWorkerInstances_RoutesToOwner(t *testing.T) {
 	t.Cleanup(nc.Close)
 	d := &Daemon{natsConn: nc}
 
-	gotCmd := make(chan spxtypes.EC2InstanceCommand, 1)
+	gotCmd := make(chan ec2v1.EC2InstanceCommand, 1)
 	sub, err := nc.Subscribe("ec2.cmd.i-owned", func(msg *nats.Msg) {
-		var cmd spxtypes.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		_ = json.Unmarshal(msg.Data, &cmd)
 		gotCmd <- cmd
 		_ = msg.Respond([]byte(`{}`))
@@ -82,7 +81,7 @@ func TestTerminateWorkerInstances_OwnerNotFoundPayloadIdempotent(t *testing.T) {
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.cmd.i-raced", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -99,7 +98,7 @@ func TestTerminateWorkerInstances_OwnerErrorSurfaces(t *testing.T) {
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.cmd.i-protected", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -123,7 +122,7 @@ func TestTerminateWorkerInstances_StoppedFallbackToEC2Terminate(t *testing.T) {
 
 	gotID := make(chan string, 1)
 	sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
-		var req handlers_ec2_instance.TerminateStoppedInstanceInput
+		var req ec2instance.TerminateStoppedInstanceInput
 		_ = json.Unmarshal(msg.Data, &req)
 		gotID <- req.InstanceID
 		_ = msg.Respond([]byte(`{"status":"terminated"}`))
@@ -151,7 +150,7 @@ func TestTerminateWorkerInstances_StoppedFallbackNotFoundIdempotent(t *testing.T
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -169,7 +168,7 @@ func TestTerminateWorkerInstances_StoppedFallbackErrorSurfaces(t *testing.T) {
 	d := &Daemon{natsConn: nc}
 
 	sub, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
-		_ = msg.Respond(utils.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorOperationNotPermitted))
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })

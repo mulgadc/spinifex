@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,8 +13,8 @@ import (
 
 // TestUnmountNeverReleasesBootVolume locks the stop/crash attachment-persistence
 // contract: Unmount seals the block map but must NOT mark a boot/root volume
-// "available". Unmount is driven by stop (vm/shutdown.go) and crash recovery
-// (vm/crash_recovery.go), where the instance keeps its attachment and restarts —
+// "available". Unmount is driven by stop (runtime/compute/vm/shutdown.go) and crash recovery
+// (runtime/compute/vm/crash_recovery.go), where the instance keeps its attachment and restarts —
 // only DetachVolume and terminate release a boot volume. Releasing it here while
 // the instance still owns it splits the volume-state record (describe-instances
 // "attached" vs describe-volumes "available"). EFI is not a
@@ -26,10 +26,10 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
 
 	// Stand in for the ebs daemon: every ebs.<node>.unmount succeeds (sealed).
-	sub, err := daemon.natsConn.Subscribe(adapter.topic("unmount"), func(msg *nats.Msg) {
-		var req types.EBSRequest
+	sub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
+		var req viperblocklegacyv1.EBSRequest
 		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		data, err := json.Marshal(types.EBSUnMountResponse{Volume: req.Name, Mounted: false})
+		data, err := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false})
 		require.NoError(t, err)
 		require.NoError(t, msg.Respond(data))
 	})
@@ -38,8 +38,8 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 
 	inst := &vm.VM{
 		ID: "i-unmount-boot",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-bios-root", Boot: true, EFI: false},
 				{Name: "vol-efi-root", Boot: true, EFI: true},
 				{Name: "vol-data", Boot: false, EFI: false},

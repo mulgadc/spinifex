@@ -1,0 +1,227 @@
+package awsapi
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/bodyscope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+)
+
+// The resource a policy check evaluates against when the request names nothing
+// in particular, or when the identifier cannot be resolved at gate time.
+const anyResource = "*"
+
+// Stands in for the name of every repository, where a describe with no list
+// enumerates the registry. It is a value, so a policy scoped to the type
+// matches it where "*" would not; a Deny naming one repository cannot fire,
+// which would need a store read the gate does not do.
+const anyName = "*"
+
+// repositoryResourceType is the ARN resource-type segment for a repository.
+const repositoryResourceType = "repository"
+
+// Where an action's resource is named in the JSON body.
+type resourceSource uint8
+
+const (
+	sourceAny resourceSource = iota
+	sourceRepository
+	sourceRepositories
+	sourceTagARN
+)
+
+// Every action the ECR dispatcher serves, with the resources AWS evaluates it against.
+// Exhaustive by contract: a completeness test compares this table with the
+// dispatch table in both directions, so an action cannot be added with a silent
+// account-wide grant.
+var ecrScopes = map[string][]resourceSource{
+	// The registry-level surface AWS evaluates against "*": an authorization
+	// token, the registry policy, replication and the scanning configuration
+	// are properties of the registry, not of any one repository.
+	"GetAuthorizationToken":                   {sourceAny},
+	"GetRegistryPolicy":                       {sourceAny},
+	"PutRegistryPolicy":                       {sourceAny},
+	"DescribeRegistry":                        {sourceAny},
+	"GetRegistryScanningConfiguration":        {sourceAny},
+	"PutRegistryScanningConfiguration":        {sourceAny},
+	"BatchGetRepositoryScanningConfiguration": {sourceAny},
+	"PutReplicationConfiguration":             {sourceAny},
+	// The repository list is account-level.
+	"ListRepositories": {sourceAny},
+
+	// Repositories.
+	"CreateRepository":      {sourceRepository},
+	"DeleteRepository":      {sourceRepository},
+	"DescribeRepositories":  {sourceRepositories},
+	"PutImageTagMutability": {sourceRepository},
+
+	// Images and layers.
+	"BatchGetImage":               {sourceRepository},
+	"BatchCheckLayerAvailability": {sourceRepository},
+	"BatchDeleteImage":            {sourceRepository},
+	"PutImage":                    {sourceRepository},
+	"ListImages":                  {sourceRepository},
+	"DescribeImages":              {sourceRepository},
+	"GetDownloadUrlForLayer":      {sourceRepository},
+	"InitiateLayerUpload":         {sourceRepository},
+	"UploadLayerPart":             {sourceRepository},
+	"CompleteLayerUpload":         {sourceRepository},
+	"ReplicateImage":              {sourceRepository},
+
+	// Repository policy.
+	"SetRepositoryPolicy":    {sourceRepository},
+	"GetRepositoryPolicy":    {sourceRepository},
+	"DeleteRepositoryPolicy": {sourceRepository},
+
+	// Repository scanning.
+	"PutImageScanningConfiguration": {sourceRepository},
+	"GetImageScanningConfiguration": {sourceRepository},
+	"StartImageScan":                {sourceRepository},
+	"DescribeImageScanFindings":     {sourceRepository},
+
+	// Lifecycle policy.
+	"PutLifecyclePolicy":          {sourceRepository},
+	"GetLifecyclePolicy":          {sourceRepository},
+	"DeleteLifecyclePolicy":       {sourceRepository},
+	"StartLifecyclePolicyPreview": {sourceRepository},
+	"GetLifecyclePolicyPreview":   {sourceRepository},
+
+	// Tags.
+	"TagResource":         {sourceTagARN},
+	"UntagResource":       {sourceTagARN},
+	"ListTagsForResource": {sourceTagARN},
+}
+
+// HasScope reports whether action has an explicit ECR scope-table entry.
+func HasScope(action string) bool {
+	_, ok := ecrScopes[action]
+	return ok
+}
+
+// ScopedActions returns every action represented in the ECR scope table.
+func ScopedActions() []string {
+	return slices.Sorted(maps.Keys(ecrScopes))
+}
+
+// ResourceARNs resolves the resources an ECR control-plane request authorizes
+// against from the same body bytes the handler will unmarshal. The registryId a
+// body may carry is ignored: a caller-supplied account would let a request slide
+// out from under a Deny scoped to the real one.
+func ResourceARNs(action, region, accountID string, body []byte) ([]string, error) {
+	sources, ok := ecrScopes[action]
+	if !ok {
+		slog.Error("ECR authz: action is served but absent from the scope table", "action", action)
+		return nil, errors.New(awserrors.ErrorInvalidAction)
+	}
+
+	// Parse fails only on a field spelled two ways, which it cannot scope.
+	scope, err := bodyscope.Parse(action, body)
+	if err != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorECRInvalidParameter,
+			"The request body names the same field more than once in different letter case")
+	}
+
+	resources := make([]string, 0, len(sources))
+	seen := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		resolved, err := resolve(source, action, region, accountID, scope)
+		if err != nil {
+			return nil, err
+		}
+		for _, resource := range resolved {
+			// An unresolved member drops out rather than contributing "*", which
+			// no scoped Allow can match and which would deny a call AWS permits.
+			if resource == anyResource {
+				continue
+			}
+			if _, duplicate := seen[resource]; duplicate {
+				continue
+			}
+			if len(resources) >= query.MaxSliceLen {
+				return nil, errors.New(awserrors.ErrorMalformedQueryString)
+			}
+			seen[resource] = struct{}{}
+			resources = append(resources, resource)
+		}
+	}
+	if len(resources) == 0 {
+		return []string{anyResource}, nil
+	}
+	return resources, nil
+}
+
+func resolve(source resourceSource, action, region, accountID string, scope bodyscope.Scope) ([]string, error) {
+	switch source {
+	case sourceAny:
+		return nil, nil
+
+	case sourceRepository:
+		return []string{repositoryARN(region, accountID, scope.String("repositoryName"))}, nil
+
+	case sourceRepositories:
+		names := scope.Strings("repositoryNames")
+		if len(names) == 0 {
+			// A describe naming none enumerates every repository in the registry.
+			return []string{repositoryARN(region, accountID, anyName)}, nil
+		}
+		// Capped so a body-supplied list cannot make the gate do unbounded work
+		// ahead of the authorization decision.
+		if len(names) > query.MaxSliceLen {
+			return nil, errors.New(awserrors.ErrorMalformedQueryString)
+		}
+		out := make([]string, 0, len(names))
+		for _, name := range names {
+			out = append(out, repositoryARN(region, accountID, name))
+		}
+		return out, nil
+
+	case sourceTagARN:
+		return []string{tagARN(region, accountID, scope.String("resourceArn"))}, nil
+
+	default:
+		slog.Error("ECR authz: unhandled resource source, failing closed", "action", action, "source", source)
+		return nil, errors.New(awserrors.ErrorInternalError)
+	}
+}
+
+// An absent identifier authorizes account-wide, so a malformed request stays
+// the handler's validation fault rather than becoming an authorization failure.
+func repositoryARN(region, accountID, name string) string {
+	if region == "" || accountID == "" || name == "" {
+		return anyResource
+	}
+	return fmt.Sprintf("arn:aws:ecr:%s:%s:%s/%s", region, accountID, repositoryResourceType, name)
+}
+
+// tagARN re-anchors the caller-supplied resource ARN on gw.Region and the
+// caller's account: the tag handler keys off the repository name alone and
+// operates in the caller's own account bucket.
+func tagARN(region, accountID, resourceARN string) string {
+	name, err := RepositoryNameFromResourceARN(resourceARN)
+	if err != nil {
+		return anyResource
+	}
+	return repositoryARN(region, accountID, name)
+}
+
+// RepositoryNameFromResourceARN extracts the repository name from an ECR
+// resource ARN (arn:aws:ecr:<region>:<account>:repository/<name>). tagARN and
+// the tag handlers share this one parser for that shape.
+func RepositoryNameFromResourceARN(resourceARN string) (string, error) {
+	service, _, _, resource, ok := arn.Split(resourceARN)
+	if !ok || service != "ecr" {
+		return "", invalidResourceARNError()
+	}
+	kind, name, found := strings.Cut(resource, "/")
+	if !found || kind != repositoryResourceType || name == "" {
+		return "", invalidResourceARNError()
+	}
+	return name, nil
+}

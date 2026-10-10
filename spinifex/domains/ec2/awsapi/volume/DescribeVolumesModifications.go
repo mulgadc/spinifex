@@ -1,0 +1,47 @@
+package volume
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateDescribeVolumesModificationsInput accepts a nil input and rejects any VolumeIds entry
+// without the vol- prefix with InvalidVolumeID.Malformed.
+func ValidateDescribeVolumesModificationsInput(input *ec2.DescribeVolumesModificationsInput) error {
+	if input == nil {
+		return nil
+	}
+
+	for _, volumeId := range input.VolumeIds {
+		if volumeId != nil && !strings.HasPrefix(*volumeId, "vol-") {
+			return errors.New(awserrors.ErrorInvalidVolumeIDMalformed)
+		}
+	}
+
+	return nil
+}
+
+// DescribeVolumesModifications handles the DescribeVolumesModifications API call.
+func DescribeVolumesModifications(ctx context.Context, input *ec2.DescribeVolumesModificationsInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVolumesModificationsOutput, error) {
+	var output ec2.DescribeVolumesModificationsOutput
+
+	err := ValidateDescribeVolumesModificationsInput(input)
+	if err != nil {
+		return output, err
+	}
+
+	volumeService := ec2volume.NewNATSVolumeService(natsConn)
+	result, err := volumeService.DescribeVolumesModifications(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+
+	output = *result
+	return output, nil
+}

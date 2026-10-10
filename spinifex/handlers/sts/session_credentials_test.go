@@ -3,15 +3,15 @@ package handlers_sts
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,7 +125,7 @@ func TestPutSessionCredential_RejectsNonASIAPrefix(t *testing.T) {
 	if !errors.Is(err, jetstream.ErrNoKeysFound) {
 		require.NoError(t, err)
 		for _, k := range keys {
-			if k == utils.VersionKey {
+			if k == kvutil.VersionKey {
 				continue
 			}
 			t.Fatalf("unexpected key written to session bucket: %q", k)
@@ -195,7 +195,7 @@ func putCredWithExpiry(t *testing.T, svc *STSServiceImpl, akid string, expiresAt
 func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	// The fixture's role must exist, or the sweep reaps its unexpired records as orphans.
-	role := createRoleInAccount(t, svc, utils.GlobalAccountID, "app-role", trustPolicyAllowingWildcard())
+	role := createRoleInAccount(t, svc, awsidentifiers.GlobalAccountID, "app-role", trustPolicyAllowingWildcard())
 	put := func(akid string, expiresAt time.Time) {
 		cred := newTestSessionCredential(akid)
 		cred.RoleID = aws.StringValue(role.RoleId)
@@ -258,7 +258,7 @@ func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	assert.Equal(t, 0, svc.sweep(t.Context(), time.Now().UTC()))
 
-	_, err := sessionsKV(t, svc).Get(t.Context(), utils.VersionKey)
+	_, err := sessionsKV(t, svc).Get(t.Context(), kvutil.VersionKey)
 	require.NoError(t, err, "version key must survive the sweep")
 }
 

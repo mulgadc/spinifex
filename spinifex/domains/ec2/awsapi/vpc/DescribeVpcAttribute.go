@@ -1,0 +1,43 @@
+package vpc
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateDescribeVpcAttributeInput rejects a nil input with InvalidParameterValue and a missing
+// VpcId or Attribute with MissingParameter.
+func ValidateDescribeVpcAttributeInput(input *ec2.DescribeVpcAttributeInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.VpcId == nil || *input.VpcId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.Attribute == nil || *input.Attribute == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
+// DescribeVpcAttribute handles the EC2 DescribeVpcAttribute API call.
+func DescribeVpcAttribute(ctx context.Context, input *ec2.DescribeVpcAttributeInput, natsConn *nats.Conn, accountID string) (ec2.DescribeVpcAttributeOutput, error) {
+	var output ec2.DescribeVpcAttributeOutput
+
+	if err := ValidateDescribeVpcAttributeInput(input); err != nil {
+		return output, err
+	}
+
+	svc := ec2vpc.NewNATSVPCService(natsConn)
+	result, err := svc.DescribeVpcAttribute(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+
+	return *result, nil
+}

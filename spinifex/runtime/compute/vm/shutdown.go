@@ -1,0 +1,833 @@
+package vm
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
+)
+
+// pidFileRemovalTimeout is how long Stop/Terminate wait for the PID file to
+// disappear after system_powerdown before resorting to SIGKILL.
+const pidFileRemovalTimeout = 20 * time.Second
+
+const (
+	// powerdownResendInterval re-presses the virtual power button. A guest
+	// whose acpid has not started yet never sees the first one, so a single
+	// signal is not a shutdown request — it is a bet on the guest being ready.
+	powerdownResendInterval = 10 * time.Second
+	// qmpStatusShutdown is the run state QEMU reports once a guest has powered
+	// itself off under -action shutdown=pause: stopped, but not yet gone.
+	qmpStatusShutdown = "shutdown"
+)
+
+// powerdownPollInterval is how often the guest's run state is sampled while it
+// shuts down. A var so tests need not wait out the real interval.
+var powerdownPollInterval = 500 * time.Millisecond
+
+// errPowerdownTimedOut reports a guest still running at the end of its budget.
+// Callers escalate: Stop to SIGKILL, Reboot to a hard reset.
+var errPowerdownTimedOut = errors.New("guest did not power down within its budget")
+
+// qemuPausesOnShutdown reports whether this guest's QEMU was launched with the
+// shutdown action that leaves it paused. A guest started before that flag
+// exits on powerdown instead, and a reboot would have nothing left to reset.
+// Indirected so a test can describe a guest without one running behind it.
+var qemuPausesOnShutdown = func(instance *VM) bool {
+	pid, err := hostprocess.ReadPidFile(instance.ID)
+	if err != nil || pid <= 0 {
+		return false
+	}
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+	return cmdlineHasPauseAction(cmdline)
+}
+
+// cmdlineHasPauseAction looks for the shutdown action in a NUL-separated
+// /proc cmdline. Split out from the /proc read so the matching is testable.
+func cmdlineHasPauseAction(cmdline []byte) bool {
+	return slices.Contains(strings.Split(string(cmdline), "\x00"), "shutdown=pause")
+}
+
+// gracefulPowerdown presses the guest's power button until it shuts itself
+// down, so it syncs and unmounts rather than losing its dirty pages. QEMU is
+// left paused in the shutdown run state, not exited — the caller decides.
+func (m *Manager) gracefulPowerdown(ctx context.Context, instance *VM, budget time.Duration) error {
+	return m.powerdownWithTuning(ctx, instance, budget, powerdownResendInterval, powerdownPollInterval)
+}
+
+// powerdownWithTuning is gracefulPowerdown with its cadence supplied, so a test
+// can drive the re-send and the budget without waiting out the real intervals.
+func (m *Manager) powerdownWithTuning(ctx context.Context, instance *VM,
+	budget, resendInterval, pollInterval time.Duration) error {
+	if instance.QMPClient == nil {
+		return errors.New("no QMP client")
+	}
+
+	deadline := time.Now().Add(budget)
+	var nextSend time.Time
+	for {
+		if !time.Now().Before(nextSend) {
+			if _, err := sendQMPCommand(ctx, instance.QMPClient,
+				qmp.QMPCommand{Execute: "system_powerdown"}, instance.ID); err != nil {
+				// A guest already on its way down rejects the second press, so
+				// this is only worth a debug line until the budget decides.
+				slog.Debug("QMP system_powerdown failed", "id", instance.ID, "err", err)
+			}
+			nextSend = time.Now().Add(resendInterval)
+		}
+
+		status, err := queryQMPStatus(ctx, instance, qmpCommandTimeout)
+		if err == nil && status.Status == qmpStatusShutdown {
+			return nil
+		}
+		// The process going away is the other clean outcome: a guest can exit
+		// before the poll sees the run state, and on the fence path QEMU may
+		// have been reaped underneath us.
+		if !isInstanceProcessRunning(instance) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("%w: %s (last run state %q)",
+				errPowerdownTimedOut, budget, status.Status)
+		}
+
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// Stop transitions a running instance to stopped: graceful QMP shutdown, volume
+// unmount, tap teardown, resource deallocation. Migrates to the "stopped" KV
+// bucket and fires OnInstanceDown. Returns ErrInstanceNotFound,
+// ErrInvalidTransition, or ErrVolumeSealFailed once the stop has completed.
+func (m *Manager) Stop(id string) error {
+	instance, ok := m.Get(id)
+	if !ok {
+		return ErrInstanceNotFound
+	}
+
+	migrated, stopErr := m.stopOne(instance)
+	// A failed seal still ran the whole sequence, so the ownership hand-off
+	// below must still happen; the error is reported after it.
+	if stopErr != nil && !errors.Is(stopErr, ErrVolumeSealFailed) {
+		return stopErr
+	}
+	if !migrated {
+		return stopErr
+	}
+
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("Failed to persist state after stop, re-adding to local map for consistency",
+			"instanceId", instance.ID, "err", err)
+		m.InsertIfAbsent(instance)
+		return stopErr
+	}
+	slog.Info("Released instance ownership to KV",
+		"instanceId", instance.ID, "state", string(StateStopped), "lastNode", m.deps.NodeID)
+	return stopErr
+}
+
+// stopOne runs the stop sequence shared by Stop and StopAll:
+// Stopping → stopCleanup → Stopped → migrate to "stopped" KV → OnInstanceDown.
+// The bool reports whether migration removed the instance (caller must persist).
+//
+// A failed volume seal (ErrVolumeSealFailed) does not abort the sequence —
+// QEMU is already down, so the remaining steps must still run — but it is
+// returned so the caller can refuse to advance. A precheck failure returns
+// ErrInvalidTransition with nothing torn down.
+func (m *Manager) stopOne(instance *VM) (bool, error) {
+	if err := m.transitionWithPrecheck(instance, StateStopping); err != nil {
+		return false, err
+	}
+
+	sealErr := m.stopCleanup(instance)
+
+	m.UpdateState(instance.ID, func(v *VM) { v.LastNode = m.deps.NodeID })
+
+	if err := m.transitionWithPrecheck(instance, StateStopped); err != nil {
+		slog.Error("Failed to transition to stopped", "instanceId", instance.ID, "err", err)
+	}
+
+	if instance.DesiredState != DesiredStopped {
+		// Host DRAIN stop (not operator): keep the VM in the local running
+		// map at StateStopped so Restore relaunches it on the next boot. Do
+		// not migrate to the operator-stopped shared bucket or fire
+		// OnInstanceDown; QEMU is already down and resources released.
+		//
+		// The address is kept for the same reason. A drain is not a customer
+		// stop, and Restore brings the instance back on the same address rather
+		// than changing it under a guest nobody asked to move.
+		return false, sealErr
+	}
+
+	m.releaseAutoAssignedPublicIP(instance)
+
+	if !m.MigrateStoppedToSharedKV(instance) {
+		// Either StateStore unavailable / write failed (instance stays in
+		// local map; restoreInstances retries on next boot) OR a concurrent
+		// handler reclaimed the slot (id now resolves to a different live
+		// VM). Either way, do not fire OnInstanceDown — firing it would
+		// unsubscribe the per-id NATS subscriptions of the reclaimed
+		// instance.
+		return false, sealErr
+	}
+
+	if m.deps.Hooks.OnInstanceDown != nil {
+		m.deps.Hooks.OnInstanceDown(instance.ID)
+	}
+	return true, sealErr
+}
+
+// StopAll fans stopOne across every VM for the coordinated shutdown DRAIN phase.
+// Runs one goroutine per VM; per-VM errors are logged but do not abort the fan-out.
+// AWS resources (ENI, public IP, placement group) are not released on stop.
+//
+// Volume seal failures are aggregated and returned so DRAIN fails: the caller
+// must not let the storage layer stop underneath a block map that never sealed.
+func (m *Manager) StopAll() error {
+	snapshot := m.Snapshot()
+	if len(snapshot) == 0 {
+		return nil
+	}
+	var (
+		mu       sync.Mutex
+		sealErrs []error
+	)
+	var wg sync.WaitGroup
+	for _, instance := range snapshot {
+		wg.Add(1)
+		go func(v *VM) {
+			defer wg.Done()
+			if _, err := m.stopOne(v); err != nil {
+				if errors.Is(err, ErrInvalidTransition) {
+					slog.Debug("StopAll: skipping non-running instance",
+						"instanceId", v.ID, "state", string(m.Status(v)))
+					return
+				}
+				slog.Error("StopAll: stopOne failed", "instanceId", v.ID, "err", err)
+				if errors.Is(err, ErrVolumeSealFailed) {
+					mu.Lock()
+					sealErrs = append(sealErrs, err)
+					mu.Unlock()
+				}
+			}
+		}(instance)
+	}
+	wg.Wait()
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("StopAll: failed to persist running state after fan-out", "err", err)
+		sealErrs = append(sealErrs, err)
+	}
+	return errors.Join(sealErrs...)
+}
+
+// Terminate transitions an instance to terminated: graceful shutdown, volume +
+// ENI + IP cleanup, placement group removal. Idempotent on already-shutting-down.
+// Returns ErrInstanceNotFound or ErrInvalidTransition as appropriate.
+func (m *Manager) Terminate(id string) error {
+	instance, ok := m.Get(id)
+	if !ok {
+		// Idempotent terminate (rule #1): an absent instance is already gone,
+		// so destroy retries converge.
+		return nil
+	}
+
+	if current := m.Status(instance); current == StateShuttingDown || current == StateTerminated {
+		// Already terminating/terminated: cleanup is owned elsewhere. Idempotent.
+		return nil
+	}
+
+	if err := m.transitionWithPrecheck(instance, StateShuttingDown); err != nil {
+		return err
+	}
+
+	m.terminateCleanup(instance)
+
+	return m.finalizeTerminated(instance)
+}
+
+// MarkFailed sets a failure reason, transitions to shutting-down synchronously,
+// then runs the cleanup chain in a goroutine so callers return immediately.
+// Tolerates instances already in a cleanup state (no-op).
+func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
+	skip := false
+	var observed InstanceState
+	m.Inspect(instance, func(v *VM) {
+		observed = v.Status
+		if v.Status == StateShuttingDown || v.Status == StateTerminated {
+			skip = true
+			return
+		}
+		if v.Instance != nil {
+			v.Instance.StateReason = &ec2.StateReason{
+				Code:    aws.String("Server.InternalError"),
+				Message: aws.String(reason),
+			}
+		}
+	})
+	if skip {
+		slog.Info("MarkFailed: instance already in cleanup state, skipping",
+			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		return
+	}
+
+	if err := m.transitionWithPrecheck(instance, StateShuttingDown); err != nil {
+		slog.Error("MarkFailed transition failed", "instanceId", instance.ID, "err", err)
+		// If this was a persistence-only failure, in-memory state is now
+		// shutting-down and we still want to finalize. Otherwise bail.
+		if m.Status(instance) != StateShuttingDown {
+			return
+		}
+	}
+	recordInstanceFailure(ctx, instance.ID, reason)
+	slog.ErrorContext(ctx, "Instance marked as failed", "instanceId", instance.ID, "reason", reason)
+
+	m.goroutineWg.Go(func() {
+		m.terminateCleanup(instance)
+		if err := m.finalizeTerminated(instance); err != nil {
+			slog.Error("MarkFailed finalize failed", "instanceId", instance.ID, "err", err)
+		}
+	})
+}
+
+// MarkRecoveryFailed transitions an instance to StateError after a failed
+// daemon-restart recovery. Runs non-destructive cleanup (unmount, tap teardown,
+// GPU/resource release) in a goroutine. Unlike MarkFailed, volumes, ENIs, and
+// IPs are preserved for operator retry or explicit TerminateInstances.
+func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
+	skip := false
+	var observed InstanceState
+	m.Inspect(instance, func(v *VM) {
+		observed = v.Status
+		if v.Status == StateError || v.Status == StateShuttingDown || v.Status == StateTerminated {
+			skip = true
+			return
+		}
+		if v.Instance != nil {
+			v.Instance.StateReason = &ec2.StateReason{
+				Code:    aws.String("Server.RecoveryFailed"),
+				Message: aws.String(reason),
+			}
+		}
+	})
+	if skip {
+		slog.Info("MarkRecoveryFailed: instance already in terminal/cleanup state, skipping",
+			"instanceId", instance.ID, "status", string(observed), "reason", reason)
+		return
+	}
+
+	if err := m.transitionWithPrecheck(instance, StateError); err != nil {
+		slog.Error("MarkRecoveryFailed transition failed", "instanceId", instance.ID, "err", err)
+		if m.Status(instance) != StateError {
+			return
+		}
+	}
+	// Counted like a crash so the next restore can retry this instance against a
+	// budget that runs out, rather than either never retrying or retrying forever.
+	now := time.Now()
+	m.UpdateState(instance.ID, func(v *VM) { recordCrash(v, reason, now) })
+
+	slog.Error("Instance marked recovery_failed; volumes and ENIs preserved for operator action",
+		"instanceId", instance.ID, "reason", reason)
+
+	m.goroutineWg.Go(func() {
+		if err := m.stopCleanup(instance); err != nil {
+			slog.Error("Volume seal failed during recovery cleanup; volume left unsealed for operator action",
+				"instanceId", instance.ID, "err", err)
+		}
+		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
+		if err := m.writeRunningState(); err != nil {
+			slog.Error("Failed to persist state after recovery failure",
+				"instanceId", instance.ID, "err", err)
+		}
+	})
+}
+
+// finalizeTerminated transitions to terminated, writes the KV entry, removes
+// from the local map, fires OnInstanceDown, and persists the running set.
+func (m *Manager) finalizeTerminated(instance *VM) error {
+	// Inspect (not UpdateState): MarkFailed may invoke this for an
+	// instance that was never inserted into the local map.
+	m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
+
+	transitionErr := m.transitionWithPrecheck(instance, StateTerminated)
+	if transitionErr != nil && errors.Is(transitionErr, ErrInvalidTransition) {
+		if m.Status(instance) != StateTerminated {
+			// A genuine invalid/raced transition: in-memory status never reached
+			// terminated, so there is nothing durable to record yet.
+			return fmt.Errorf("transition to terminated: %w", transitionErr)
+		}
+		// Another handler (typically the VM GC) finalised this instance while we
+		// were tearing it down. Its destination is the one we wanted, so fall
+		// through: everything below is idempotent.
+		transitionErr = nil
+	}
+	if transitionErr != nil {
+		// In-memory status reached terminated even though local persistence
+		// failed (e.g. ENOSPC writing the local state file). Keep going:
+		// WriteTerminatedInstance below is a JetStream KV write independent
+		// of local disk space, so the durable record can still land and
+		// TerminatedTeardownReaper picks it up on its next sweep without
+		// requiring an operator restart.
+		slog.Warn("Local state persistence failed on terminate, continuing to durable KV write",
+			"instanceId", instance.ID, "err", transitionErr)
+	}
+
+	// Stamp the termination time so the GC backstop can preserve a
+	// describe-visibility window before reclaiming the record early.
+	if instance.TerminatedAt.IsZero() {
+		instance.TerminatedAt = time.Now()
+	}
+
+	if m.deps.StateStore != nil {
+		if err := m.deps.StateStore.WriteTerminatedInstance(instance.ID, instance); err != nil {
+			slog.Error("Failed to write terminated instance to KV, keeping in local state for retry",
+				"instanceId", instance.ID, "err", err)
+			if transitionErr != nil {
+				return transitionErr
+			}
+			return err
+		}
+	}
+
+	if !m.DeleteIf(instance.ID, instance) {
+		slog.Info("Instance was reclaimed by another handler, skipping local cleanup",
+			"instanceId", instance.ID, "state", string(StateTerminated))
+		return nil
+	}
+
+	if m.deps.Hooks.OnInstanceDown != nil {
+		m.deps.Hooks.OnInstanceDown(instance.ID)
+	}
+
+	if err := m.writeRunningState(); err != nil {
+		slog.Error("Failed to persist state after terminate, re-adding to local map",
+			"instanceId", instance.ID, "err", err)
+		m.InsertIfAbsent(instance)
+		return nil
+	}
+	slog.Info("Released instance ownership to KV",
+		"instanceId", instance.ID, "state", string(StateTerminated), "lastNode", m.deps.NodeID)
+	return transitionErr
+}
+
+// reconcileVanishedQEMU finalizes a shutting-down instance whose QEMU process
+// has vanished. The terminate that transitioned it to shutting-down wedged
+// downstream (a dead nbdkit stalling the unmount seal, say) and never reached
+// finalizeTerminated. QEMU is confirmed gone, so the guest holds nothing open:
+// drive the record to terminated and stamp every still-outstanding teardown
+// dependent failed, so TerminatedTeardownReaper re-drives each through the
+// idempotent cleaner (volume detach+delete, ENI, NAT, placement) on its next
+// sweep. Should the original terminate goroutine later unblock, its own
+// finalizeTerminated is a no-op — the shutting-down → terminated transition is
+// already spent and terminated is terminal.
+func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+	m.stampOutstandingTeardownFailed(instance)
+	return m.finalizeTerminated(instance)
+}
+
+// forceFinalizeStuckTerminate force-completes a terminate wedged in
+// shutting-down past the backstop timeout. Unlike reconcileVanishedQEMU, which
+// fires only once QEMU is already gone, the process may still be alive and
+// wedged here, so kill it first to unblock whatever the terminate is waiting on.
+// It then reclaims DeleteOnTermination volume space directly through the cleaner
+// — the delete-authorized action the backstop exists for — stamps any remaining
+// teardown failed for TerminatedTeardownReaper, and drives the record to
+// terminated. The cleaner is idempotent, so racing the wedged goroutine is safe.
+func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
+	if pid, err := hostprocess.ReadPidFile(instance.ID); err == nil && hostprocess.ProcessAlive(pid) {
+		slog.Warn("Force-killing wedged QEMU for stuck terminate",
+			"instanceId", instance.ID, "pid", pid)
+		if err := hostprocess.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
+			slog.Error("Failed to kill wedged QEMU, continuing finalize",
+				"instanceId", instance.ID, "pid", pid, "err", err)
+		}
+		_ = hostprocess.RemovePidFile(instance.ID)
+	}
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+
+	if m.deps.InstanceCleaner != nil {
+		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
+	}
+	m.stampOutstandingTeardownFailed(instance)
+	return m.finalizeTerminated(instance)
+}
+
+// stampOutstandingTeardownFailed marks every teardown dependent that applies to
+// this instance and is not already done as failed, so a terminated record left
+// by reconcileVanishedQEMU carries the outstanding work for TerminatedTeardownReaper
+// to complete. Over-marking a dependent the wedged goroutine had actually
+// finished is harmless: the reaper re-drives it through the idempotent cleaner.
+func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
+	m.Inspect(instance, func(v *VM) {
+		if v.Teardown == nil {
+			v.Teardown = make(map[string]string)
+		}
+		markFailed := func(dep string) {
+			if TeardownState(v.Teardown[dep]) != TeardownDone {
+				v.Teardown[dep] = string(TeardownFailed)
+			}
+		}
+		markFailed(TeardownVolumes) // volumes always apply
+		if v.PublicIP != "" {
+			markFailed(TeardownNAT)
+		}
+		if v.ENIId != "" {
+			markFailed(TeardownENI)
+			markFailed(TeardownOVN)
+		}
+		if len(v.GPUAttachments) > 0 {
+			markFailed(TeardownGPU)
+		}
+		if v.PlacementGroupName != "" {
+			markFailed(TeardownPlacement)
+		}
+	})
+}
+
+// stopCleanup performs the per-instance teardown shared by Stop and the
+// initial section of Terminate: graceful QMP shutdown, PID-file wait,
+// volume unmount, tap teardown (main + extra ENI + mgmt), resource
+// deallocation. Every step runs; only a failed volume seal is returned.
+func (m *Manager) stopCleanup(instance *VM) error {
+	sealErr := m.shutdownAndUnmount(instance)
+	m.cleanupTapDevices(instance)
+	if m.deps.InstanceCleaner != nil {
+		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
+			slog.Warn("ReleaseGPU failed on stop", "instanceId", instance.ID, "err", err)
+		}
+	}
+	m.deallocateResources(instance)
+
+	// The slot just returned to the reservation; detach the binding (under the
+	// manager lock, mirroring crash recovery) so a later start re-allocates from
+	// the general pool and terminate frees there too — never double-counting the
+	// reservation while the stopped instance no longer holds a slot.
+	if instance.CapacityReservationId != "" {
+		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
+	}
+
+	return sealErr
+}
+
+// releaseAutoAssignedPublicIP returns the instance's auto-assigned address to
+// its pool on an operator stop, matching AWS: the free address is borrowed for
+// as long as the instance runs, and the start that follows takes a new one.
+// An Elastic IP is refused by the cleaner and the VM keeps it, so the only
+// state cleared here is state the pool no longer backs.
+func (m *Manager) releaseAutoAssignedPublicIP(instance *VM) {
+	if m.deps.InstanceCleaner == nil || instance.PublicIP == "" {
+		return
+	}
+	released, err := m.deps.InstanceCleaner.ReleaseAutoAssignedPublicIP(instance)
+	if err != nil {
+		slog.Warn("Failed to release auto-assigned public IP on stop",
+			"instanceId", instance.ID, "ip", instance.PublicIP, "err", err)
+	}
+	if !released {
+		return
+	}
+	// Written under the manager lock so the record migrated to the stopped
+	// bucket a moment later cannot still advertise the address.
+	m.UpdateState(instance.ID, func(v *VM) {
+		v.PublicIP = ""
+		v.PublicIPPool = ""
+		v.AutoAssignPublicIP = true
+	})
+}
+
+// terminateCleanup is stopCleanup plus the AWS-resource cleanup that
+// only applies on terminate: volume deletion, public IP release, ENI
+// deletion, placement-group removal.
+func (m *Manager) terminateCleanup(instance *VM) {
+	// Terminate deletes the volumes next, so an unsealed block map loses
+	// nothing a caller can still ask for. Tolerated to keep terminate
+	// idempotent; only stop and DRAIN treat a failed seal as fatal.
+	_ = m.shutdownAndUnmount(instance)
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+
+	if m.deps.InstanceCleaner != nil {
+		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
+	}
+
+	m.cleanupTapDevices(instance)
+	m.markTeardown(instance, TeardownTap, TeardownDone)
+
+	if m.deps.InstanceCleaner != nil {
+		gpuErr := m.deps.InstanceCleaner.ReleaseGPU(instance)
+		if len(instance.GPUAttachments) > 0 {
+			m.markTeardownResult(instance, TeardownGPU, gpuErr)
+		}
+
+		// Public IP: ReleaseIP is sync; vpc.delete-nat is fire-and-forget, so the
+		// NAT rule removal is recorded pending (drift reconciler / GC reaps it).
+		natErr := m.deps.InstanceCleaner.ReleasePublicIP(instance)
+		if instance.PublicIP != "" {
+			if natErr != nil {
+				m.markTeardown(instance, TeardownNAT, TeardownFailed)
+			} else {
+				m.markTeardown(instance, TeardownNAT, TeardownPending)
+			}
+		}
+
+		// ENI KV delete is sync; vpc.delete-port (OVN LSP) is request-reply but
+		// non-fatal on failure, so the OVN port removal is recorded pending
+		// (reconcile LSP prune reaps anything the request-reply missed).
+		eniErr := m.deps.InstanceCleaner.DetachAndDeleteENI(instance)
+		if instance.ENIId != "" {
+			m.markTeardownResult(instance, TeardownENI, eniErr)
+			m.markTeardown(instance, TeardownOVN, TeardownPending)
+		}
+
+		placementErr := m.deps.InstanceCleaner.RemoveFromPlacementGroup(instance)
+		if instance.PlacementGroupName != "" {
+			m.markTeardownResult(instance, TeardownPlacement, placementErr)
+		}
+
+		// Spot Instance Requests carry no VM-side marker, so this is a best-effort
+		// scan that no-ops for non-spot instances. It is not a tracked teardown
+		// dependency: without a marker we cannot stamp it only when it applies.
+		if err := m.deps.InstanceCleaner.RemoveFromSpotRequest(instance); err != nil {
+			slog.Warn("Failed to close spot request on termination", "id", instance.ID, "err", err)
+		}
+	}
+
+	m.deallocateResources(instance)
+}
+
+// shutdownAndUnmount asks QEMU to power down via QMP, waits for the PID
+// file to disappear (force-killing on timeout), then unmounts every
+// attached volume. Each step runs regardless of the one before it.
+//
+// Returns ErrVolumeSealFailed when the unmount did not seal the block map:
+// that is the one step whose failure means data loss. QMP, PID-file, fw_cfg
+// and telemetry cleanup stay best-effort and are logged only.
+func (m *Manager) shutdownAndUnmount(instance *VM) error {
+	m.shutdownQEMU(instance)
+
+	var sealErr error
+	if m.deps.VolumeMounter != nil {
+		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
+			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
+			sealErr = fmt.Errorf("%w for instance %s: %w", ErrVolumeSealFailed, instance.ID, err)
+		}
+	}
+
+	for _, fw := range instance.Config.FwCfg {
+		if err := os.Remove(fw.File); err != nil && !os.IsNotExist(err) {
+			slog.Warn("Failed to remove fw_cfg temp file", "file", fw.File, "id", instance.ID, "err", err)
+		}
+	}
+
+	removeTelemetryArtifacts(instance)
+
+	return sealErr
+}
+
+// ForgetSuperseded stops any local copy of an instance another node now owns
+// and removes it from this node's view.
+//
+// It stops the guest without unmounting, for the reason shutdownQEMU is
+// separate at all: the volumes belong to the new owner, and an unmount here
+// would seal this node's stale copy over theirs. The local resources the
+// instance was admitted against are returned, since it is no longer here.
+//
+// Stopping the guest is not sufficient, and this is the part that is easy to get
+// wrong. The export outlives the guest and holds the volume lease, and this node
+// is healthy, so it renews that lease indefinitely — the new owner would never
+// acquire it, and the instance would be stopped here and unable to start
+// anywhere. So the export is given up too, without sealing.
+// An instance's OVN logical port is bound to whichever chassis has a tap
+// carrying its iface-id, and the column holding that binding names one chassis.
+// Two nodes offering the same iface-id therefore do not split the traffic — they
+// contend for the binding, and the address answers from whichever won last. So
+// the tap goes, on this node, for the same reason the guest does.
+//
+// It also unblocks the layer above: the external IP's host ingress is pruned on
+// the evidence that the owning guest sits on another chassis, which stays false
+// for as long as this node is still claiming the port.
+func (m *Manager) ForgetSuperseded(instance *VM) {
+	if instance == nil {
+		return
+	}
+	m.shutdownQEMU(instance)
+	m.cleanupTapDevices(instance)
+
+	if m.deps.VolumeMounter != nil {
+		if err := m.deps.VolumeMounter.Abandon(context.Background(), instance,
+			"the instance is owned by another node now"); err != nil {
+			// Logged rather than returned because there is nothing better to do
+			// here and the instance is going either way. The lease is the cost: a
+			// volume this node did not let go of is one the new owner waits on.
+			slog.Error("Could not give up the volumes of an instance that moved, "+
+				"so this node may still hold leases its new owner needs",
+				"id", instance.ID, "err", err)
+		}
+	}
+
+	m.deallocateResources(instance)
+	m.Delete(instance.ID)
+}
+
+// shutdownQEMU takes the guest process down and nothing else. Separated from
+// shutdownAndUnmount for the fence path, which must stop the guest without
+// unmounting: a fenced node's volumes belong to another node now, and an
+// unmount would seal this node's stale copy over theirs.
+func (m *Manager) shutdownQEMU(instance *VM) {
+	if instance.QMPClient != nil {
+		ctx := context.Background()
+		// The whole graceful budget is the pid-file wait it replaces, so a stop
+		// takes no longer than it used to. quit closes the paused-on-shutdown
+		// window a reboot needs and a stop does not.
+		if err := m.gracefulPowerdown(ctx, instance, pidFileRemovalTimeout); err != nil {
+			slog.Warn("Guest did not power down gracefully", "id", instance.ID, "err", err)
+		} else if _, err := sendQMPCommand(ctx, instance.QMPClient,
+			qmp.QMPCommand{Execute: "quit"}, instance.ID); err != nil {
+			slog.Warn("QMP quit failed (VM may already be stopped)", "id", instance.ID, "err", err)
+		}
+	}
+
+	// The PID file persisting past the timeout means QEMU did not exit on its
+	// own; force-kill it then. A PID file that disappears is the clean-exit
+	// signal — do not kill on that path (the PID may be stale or reused). The
+	// wrong-node terminate case, where this never runs on the hosting node, is
+	// the OrphanQEMUReaper's job.
+	if err := hostprocess.WaitForPidFileRemoval(instance.ID, pidFileRemovalTimeout); err != nil {
+		slog.Warn("Timeout waiting for PID file removal", "id", instance.ID, "err", err)
+		pid, readErr := hostprocess.ReadPidFile(instance.ID)
+		if readErr != nil {
+			slog.Debug("No PID file found (VM likely already stopped)", "id", instance.ID)
+		} else if hostprocess.ProcessAlive(pid) {
+			slog.Info("Force killing process", "pid", pid, "id", instance.ID)
+			if err := hostprocess.KillProcess(pid); err != nil {
+				slog.Error("Failed to kill process", "pid", pid, "id", instance.ID, "err", err)
+			}
+		}
+	}
+}
+
+// cleanupTapDevices removes the primary VPC tap, every extra ENI tap, and
+// the management TAP/IP allocation. Errors are logged and tolerated.
+func (m *Manager) cleanupTapDevices(instance *VM) {
+	if instance.ENIId != "" && m.deps.NetworkPlumber != nil {
+		// Detach the primary ENI's IMDS datapath before removing its tap, the
+		// inverse of the launch-time attach-after-SetupTap order.
+		m.detachPrimaryIMDSDatapath(instance)
+		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(instance.ENIId)); err != nil {
+			slog.Warn("Failed to clean up tap device", "eni", instance.ENIId, "err", err)
+		}
+		m.cleanupExtraENITaps(instance)
+	}
+
+	if m.deps.InstanceCleaner != nil {
+		m.deps.InstanceCleaner.CleanupMgmtNetwork(instance)
+	}
+}
+
+// cleanupExtraENITaps removes tap devices for every extra ENI attached
+// to a system VM (multi-subnet ALB instances span multiple ENIs).
+func (m *Manager) cleanupExtraENITaps(instance *VM) {
+	if m.deps.NetworkPlumber == nil {
+		return
+	}
+	for _, extra := range instance.ExtraENIs {
+		if err := m.deps.NetworkPlumber.CleanupTap(TapDeviceName(extra.ENIID)); err != nil {
+			slog.Warn("Failed to clean up extra ENI tap device", "eni", extra.ENIID, "err", err)
+		}
+	}
+}
+
+// deallocateResources releases the per-instance vCPU/memory reservation
+// back to the resource controller. The single release/restore chokepoint for
+// stop, terminate and crash recovery.
+func (m *Manager) deallocateResources(instance *VM) {
+	if m.deps.Resources == nil || instance.InstanceType == "" {
+		return
+	}
+	// A reservation-bound instance returns its slot to the reservation, not the
+	// general pool. CapacityReservationId is set at launch and only cleared (under
+	// the manager lock, on crash before a general-capacity restart), so the
+	// stop/terminate/crash reads here do not overlap that clear.
+	if instance.CapacityReservationId != "" {
+		m.deps.Resources.ReleaseToReservation(instance.CapacityReservationId, instance.InstanceType)
+		return
+	}
+	m.deps.Resources.Deallocate(instance.InstanceType)
+}
+
+// transitionWithPrecheck validates the transition then calls TransitionState.
+// Surfaces ErrInvalidTransition cleanly; post-precheck errors are persistence
+// failures on a transition whose in-memory mutation already succeeded.
+func (m *Manager) transitionWithPrecheck(instance *VM, target InstanceState) error {
+	current := m.Status(instance)
+	if !IsValidTransition(current, target) {
+		return fmt.Errorf("%w: %s -> %s for instance %s",
+			ErrInvalidTransition, current, target, instance.ID)
+	}
+	if m.deps.TransitionState == nil {
+		// Inspect (not UpdateState): MarkFailed may run this on an instance
+		// that was never inserted into the local map.
+		m.Inspect(instance, func(v *VM) {
+			v.Status = target
+			stampShuttingDownAt(v, target)
+		})
+		return nil
+	}
+	if err := m.deps.TransitionState(instance, target); err != nil {
+		// Could be persistence failure (memory state already updated) or a
+		// racing transition that invalidated the precheck. Re-inspect to
+		// distinguish.
+		if m.Status(instance) != target {
+			return fmt.Errorf("%w: %s -> %s for instance %s (raced)",
+				ErrInvalidTransition, current, target, instance.ID)
+		}
+		// The in-memory status reached target even though persistence
+		// failed, so the stamp must still land: it is what lets the
+		// stuck-terminate backstop see and eventually bound this instance.
+		m.Inspect(instance, func(v *VM) { stampShuttingDownAt(v, target) })
+		return err
+	}
+	m.Inspect(instance, func(v *VM) { stampShuttingDownAt(v, target) })
+	return nil
+}
+
+// stampShuttingDownAt records, once, when an instance entered shutting-down, so
+// the stuck-terminate backstop can bound how long a terminate may wedge before
+// force-completing it. Only the first entry is kept.
+func stampShuttingDownAt(v *VM, target InstanceState) {
+	if target == StateShuttingDown && v.ShuttingDownAt.IsZero() {
+		v.ShuttingDownAt = time.Now()
+	}
+}
+
+// writeRunningState persists the running-VM map. View holds the lock across
+// marshal+put to prevent field changes mid-encode.
+func (m *Manager) writeRunningState() error {
+	if m.deps.StateStore == nil {
+		return nil
+	}
+	var err error
+	m.View(func(vms map[string]*VM) {
+		err = m.deps.StateStore.SaveRunningState(m.deps.NodeID, vms)
+	})
+	return err
+}

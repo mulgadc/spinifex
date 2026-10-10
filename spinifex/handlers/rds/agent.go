@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // Bootstrap modes returned by GetDBBootstrapConfig. Initialize carries the

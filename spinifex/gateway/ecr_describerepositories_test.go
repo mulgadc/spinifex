@@ -3,16 +3,16 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,15 +23,15 @@ import (
 func serveECRMeta[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn func(context.Context, *I, string) (*O, error)) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		accountID := utils.AccountIDFromMsg(msg)
+		accountID := natsmsg.AccountIDFromMsg(msg)
 		in := new(I)
-		if errResp := utils.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
+		if errResp := awserrors.UnmarshalJsonPayload(in, msg.Data); errResp != nil {
 			_ = msg.Respond(errResp)
 			return
 		}
 		out, err := fn(context.Background(), in, accountID)
 		if err != nil {
-			_ = msg.Respond(utils.GenerateErrorPayload("ServerInternal"))
+			_ = msg.Respond(awserrors.GenerateErrorPayload("ServerInternal"))
 			return
 		}
 		data, _ := json.Marshal(out)
@@ -45,27 +45,29 @@ func newDescribeReposGateway(t *testing.T, repos ...string) *GatewayConfig {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	svc := handlers_ecr.NewKVMetaService(js)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoCreate, svc.RepoCreate)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoDescribe, svc.RepoDescribe)
-	serveECRMeta(t, nc, handlers_ecr.SubjectRepoList, svc.RepoList)
+	svc := ecr.NewKVMetaService(js)
+	serveECRMeta(t, nc, ecr.SubjectRepoCreate, svc.RepoCreate)
+	serveECRMeta(t, nc, ecr.SubjectRepoDescribe, svc.RepoDescribe)
+	serveECRMeta(t, nc, ecr.SubjectRepoList, svc.RepoList)
 
-	store := handlers_ecr.NewNATSMetaStore(nc)
+	store := ecr.NewNATSMetaStore(nc)
 	for _, r := range repos {
-		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, handlers_ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
+		require.NoError(t, store.PutRepo(context.Background(), ecrTestAccount, ecr.RepoMeta{Name: r, CreatedAt: time.Now()}))
 	}
-	return &GatewayConfig{
+	return withECR(&GatewayConfig{
 		NATSConn: nc, Region: ecrTestRegion, InternalSuffix: ecrTestSuffix, DisableLogging: true,
 		IAMService: allowAllIAMService(),
-	}
+	}, awsapi.Deps{Repository: awsapi.NewRepositoryActionService(store, awsapi.RepositoryEndpoint{
+		Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
+	})})
 }
 
 func describeReposRequest(t *testing.T, gw *GatewayConfig, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", body)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.handleDescribeRepositories(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 	return w
 }
 
@@ -125,12 +127,12 @@ func TestECRRegistryHost_AppendsAdvertisedPort(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gw := &GatewayConfig{
-				Region: ecrTestRegion, InternalSuffix: ecrTestSuffix,
+			endpoint := awsapi.RepositoryEndpoint{
+				Region: ecrTestRegion, ServicesDomain: ecrTestSuffix,
 				RegistryHost: tc.registryHost, RegistryPort: tc.port,
 			}
-			assert.Equal(t, tc.want, gw.ecrRegistryHost(ecrTestAccount))
-			assert.Equal(t, tc.want+"/team/app", gw.ecrRepositoryUri(ecrTestAccount, "team/app"))
+			assert.Equal(t, tc.want, endpoint.RegistryURIHost(ecrTestAccount))
+			assert.Equal(t, tc.want+"/team/app", endpoint.RepositoryURI(ecrTestAccount, "team/app"))
 		})
 	}
 }
@@ -146,18 +148,18 @@ func TestDescribeRepositories_NameFilter(t *testing.T) {
 
 func TestDescribeRepositories_MissingNamedRepo(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"repositoryNames":["team/ghost"]}`))
+	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"repositoryNames":["team/ghost"]}`)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.handleDescribeRepositories(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "RepositoryNotFoundException", awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDescribeRepositories_CrossAccountDenied(t *testing.T) {
 	gw := newDescribeReposGateway(t, "team/app")
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"registryId":"999999999999"}`))
+	req := setupECRRequest(awsapi.TargetPrefix+".DescribeRepositories", `{"registryId":"999999999999"}`)
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
-	err := gw.handleDescribeRepositories(httptest.NewRecorder(), req.WithContext(ctx))
+	err := gw.serveECR(httptest.NewRecorder(), req.WithContext(ctx))
 	require.Error(t, err)
 	assert.Equal(t, "AccessDenied", err.Error())
 }
@@ -167,6 +169,6 @@ func TestECRRequest_DescribeRepositoriesDispatched(t *testing.T) {
 	req := setupECRRequest("AmazonEC2ContainerRegistry_V20150921.DescribeRepositories", "{}")
 	ctx := context.WithValue(req.Context(), ctxAccountID, ecrTestAccount)
 	w := httptest.NewRecorder()
-	require.NoError(t, gw.ECR_Request(w, req.WithContext(ctx)))
+	require.NoError(t, gw.serveECR(w, req.WithContext(ctx)))
 	assert.Equal(t, http.StatusOK, w.Code)
 }

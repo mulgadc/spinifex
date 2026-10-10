@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 )
 
 // QuotaLimits is the [quota] baseline a suite installs on the cluster. Every
@@ -280,7 +280,7 @@ func SpxAdminQuotaGet(t *testing.T, accountID string) (limits map[string]int, so
 		if m == nil {
 			continue
 		}
-		value := handlers_quota.Unlimited
+		value := quota.Unlimited
 		if m[2] != "unlimited" {
 			parsed, err := strconv.Atoi(m[2])
 			if err != nil {

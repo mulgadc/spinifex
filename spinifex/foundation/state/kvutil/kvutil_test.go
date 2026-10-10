@@ -1,0 +1,281 @@
+package kvutil
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// startJetStream starts an embedded JetStream-enabled NATS server and returns a
+// handle on the jetstream package API.
+func startJetStream(t *testing.T) jetstream.JetStream {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	return testutil.NewJetStream(t, nc)
+}
+
+// streamReplicas returns the replica count of the JetStream stream backing a KV
+// bucket, so tests can assert on the config actually sent to the server.
+func streamReplicas(t *testing.T, js jetstream.JetStream, bucket string) int {
+	t.Helper()
+	stream, err := js.Stream(t.Context(), "KV_"+bucket)
+	require.NoError(t, err)
+	info, err := stream.Info(t.Context())
+	require.NoError(t, err)
+	return info.Config.Replicas
+}
+
+func TestGetOrCreateBucket_CreatesAtTheClusterReplicaCount(t *testing.T) {
+	js := startJetStream(t)
+
+	kv, err := GetOrCreateBucket(t.Context(), js, "regression-bucket", 5)
+	require.NoError(t, err)
+	require.NotNil(t, kv)
+	assert.Equal(t, 1, streamReplicas(t, js, "regression-bucket"), "one embedded server is a one-node cluster")
+}
+
+// TestGetOrCreateBucket_OpensExisting covers the second-boot path: a bucket that
+// already exists is opened with its stored contents rather than reset.
+func TestGetOrCreateBucket_OpensExisting(t *testing.T) {
+	js := startJetStream(t)
+
+	kv, err := GetOrCreateBucket(t.Context(), js, "existing-bucket", 5)
+	require.NoError(t, err)
+	_, err = kv.PutString(t.Context(), "survivor", "value")
+	require.NoError(t, err)
+
+	// A differing history must not stop the reopen — the existing config wins.
+	reopened, err := GetOrCreateBucket(t.Context(), js, "existing-bucket", 1)
+	require.NoError(t, err)
+	entry, err := reopened.Get(t.Context(), "survivor")
+	require.NoError(t, err)
+	assert.Equal(t, "value", string(entry.Value()))
+}
+
+// TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared pins the fail-closed
+// choice: an undeclared size must not fall back to one replica, because one
+// replica on a multi-node cluster is the outage this package exists to prevent.
+func TestGetOrCreateBucket_RefusesWhenClusterSizeIsUndeclared(t *testing.T) {
+	js := startJetStream(t)
+	clustersize.RedeclareForTest(t, 0)
+
+	_, err := GetOrCreateBucket(t.Context(), js, "undeclared", 1)
+	require.ErrorIs(t, err, clustersize.ErrUndeclared)
+
+	_, err = js.KeyValue(t.Context(), "undeclared")
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "a refused create must not leave a bucket behind")
+}
+
+// TestGetOrCreateBucket_SurfacesCreateFailure pins the reason the open is scoped
+// to "bucket exists": a create that fails for any other reason must report that
+// reason, not the "bucket not found" a blind reopen produces.
+func TestGetOrCreateBucket_SurfacesCreateFailure(t *testing.T) {
+	js := startJetStream(t)
+
+	// The embedded single-node server rejects a three-node replica count.
+	clustersize.RedeclareForTest(t, 3)
+
+	_, err := GetOrCreateBucket(t.Context(), js, "over-replicated", 1)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, jetstream.ErrBucketNotFound)
+	assert.Contains(t, err.Error(), "create KV bucket over-replicated")
+}
+
+// TestGetOrCreateBucket_OpensAnExistingBucketTheClusterCannotYetRaise pins the
+// other half of the line, and it is the half that matters in production: a
+// bucket that exists and works must be handed back even when it cannot be
+// raised to the count the config now asks for.
+//
+// That happens on the documented growth path — the config names a new node
+// before that node is serving — and refusing would stop every service on the
+// host over a bucket that is perfectly usable. The sweep and
+// `kv replicas --repair` are what finish the raise.
+func TestGetOrCreateBucket_OpensAnExistingBucketTheClusterCannotYetRaise(t *testing.T) {
+	js := startJetStream(t)
+
+	kv, err := GetOrCreateBucket(t.Context(), js, "growing-cluster", 1)
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), "key", []byte("value"))
+	require.NoError(t, err)
+
+	// One embedded server cannot hold three replicas, so the raise must fail.
+	clustersize.RedeclareForTest(t, 3)
+
+	reopened, err := GetOrCreateBucket(t.Context(), js, "growing-cluster", 1)
+	require.NoError(t, err, "an existing, working bucket must open even when it cannot be raised")
+	entry, err := reopened.Get(t.Context(), "key")
+	require.NoError(t, err)
+	assert.Equal(t, "value", string(entry.Value()))
+	assert.Equal(t, 1, streamReplicas(t, js, "growing-cluster"), "the raise must not have been faked")
+}
+
+func TestDeleteBucketIfExists(t *testing.T) {
+	js := startJetStream(t)
+
+	// Missing bucket is a no-op.
+	require.NoError(t, DeleteBucketIfExists(t.Context(), js, "ghost-bucket"))
+
+	// Existing bucket gets deleted.
+	_, err := GetOrCreateBucket(t.Context(), js, "doomed-bucket", 1)
+	require.NoError(t, err)
+	require.NoError(t, DeleteBucketIfExists(t.Context(), js, "doomed-bucket"))
+
+	_, err = js.KeyValue(t.Context(), "doomed-bucket")
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "bucket should be gone")
+
+	// Calling again on the now-missing bucket is still a no-op (idempotent).
+	require.NoError(t, DeleteBucketIfExists(t.Context(), js, "doomed-bucket"))
+}
+
+func TestBucketNames_ListsEveryBucket(t *testing.T) {
+	js := startJetStream(t)
+
+	names, err := BucketNames(t.Context(), js)
+	require.NoError(t, err)
+	assert.Empty(t, names, "no buckets yet")
+
+	for _, bucket := range []string{"names-alpha", "names-beta"} {
+		_, err := GetOrCreateBucket(t.Context(), js, bucket, 1)
+		require.NoError(t, err)
+	}
+
+	names, err = BucketNames(t.Context(), js)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"names-alpha", "names-beta"}, names, "names are unprefixed bucket names")
+}
+
+// TestBucketNames_SurfacesEnumerationFailure is the reason this helper exists:
+// the underlying lister closes its channel on failure exactly as it does on
+// success, so a caller that ignores Error() sees a failed listing as an empty
+// one and prunes every resource it was meant to keep.
+func TestBucketNames_SurfacesEnumerationFailure(t *testing.T) {
+	js := startJetStream(t)
+
+	_, err := GetOrCreateBucket(t.Context(), js, "should-not-vanish", 1)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	names, err := BucketNames(ctx, js)
+	require.Error(t, err, "a failed listing must not read as a complete one")
+	assert.Nil(t, names)
+}
+
+// hangingNamesLister never sends and never closes, which is what a lost
+// stream-names reply looks like from the caller's side.
+type hangingNamesLister struct{ names chan string }
+
+func (l *hangingNamesLister) Name() <-chan string { return l.names }
+func (l *hangingNamesLister) Error() error        { return nil }
+
+// hangingKVManager answers only the listing call. The embedded interface is nil
+// on purpose: anything else this test reaches should fail loudly rather than
+// quietly return a zero value.
+type hangingKVManager struct{ jetstream.KeyValueManager }
+
+func (m *hangingKVManager) KeyValueStoreNames(context.Context) jetstream.KeyValueNamesLister {
+	return &hangingNamesLister{names: make(chan string)}
+}
+
+// A listing that never completes must not park the caller for the life of the
+// process. The context passed here carries no deadline, which is what the EKS
+// desired-set builder passes, so the bound inside BucketNames is the only thing
+// that can end this call.
+func TestBucketNames_GivesUpOnAListingThatNeverCompletes(t *testing.T) {
+	restore := bucketListTimeout
+	bucketListTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { bucketListTimeout = restore })
+
+	done := make(chan error, 1)
+	go func() {
+		names, err := BucketNames(context.Background(), &hangingKVManager{})
+		assert.Nil(t, names, "a listing that did not finish must not read as a complete one")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(30 * time.Second):
+		t.Fatal("BucketNames never returned: the listing is still unbounded")
+	}
+}
+
+func TestKeys_ListsKeysAndSurfacesCancellation(t *testing.T) {
+	js := startJetStream(t)
+	kv, err := GetOrCreateBucket(t.Context(), js, "bounded-keys", 1)
+	require.NoError(t, err)
+	_, err = kv.PutString(t.Context(), "key", "value")
+	require.NoError(t, err)
+
+	keys, err := Keys(t.Context(), kv)
+	require.NoError(t, err)
+	require.Equal(t, []string{"key"}, keys)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	keys, err = Keys(ctx, kv)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, keys)
+}
+
+// TestVersionStateMachine covers unset→0, first write, idempotent same write, upgrade, and no-downgrade.
+// One bucket is reused so each step runs against the prior state — the only way to catch unconditional-overwrite regressions.
+func TestVersionStateMachine(t *testing.T) {
+	js := startJetStream(t)
+	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-fsm", 1)
+	require.NoError(t, err)
+
+	// Unset → 0.
+	v, err := ReadVersion(t.Context(), kv)
+	require.NoError(t, err)
+	assert.Equal(t, 0, v, "ReadVersion on unset bucket")
+
+	steps := []struct {
+		name  string
+		write int
+		want  int // expected ReadVersion after the write
+	}{
+		{"first write persists", 1, 1},
+		{"same version is no-op", 1, 1},
+		{"higher version upgrades", 2, 2},
+		{"lower version is no-op (no downgrade)", 1, 2},
+		{"larger jump upgrades", 5, 5},
+	}
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			require.NoError(t, WriteVersion(t.Context(), kv, step.write))
+			v, err := ReadVersion(t.Context(), kv)
+			require.NoError(t, err)
+			assert.Equal(t, step.want, v)
+		})
+	}
+
+	// Round-trip the raw KV value to confirm the encoding is what readers
+	// outside this package would expect.
+	entry, err := kv.Get(t.Context(), VersionKey)
+	require.NoError(t, err)
+	assert.Equal(t, "5", string(entry.Value()))
+}
+
+// TestVersionCorruptValue asserts a mangled stamp is reported rather than
+// silently overwritten, which would hide that the bucket needs inspection.
+func TestVersionCorruptValue(t *testing.T) {
+	js := startJetStream(t)
+	kv, err := GetOrCreateBucket(t.Context(), js, "test-version-corrupt", 1)
+	require.NoError(t, err)
+	_, err = kv.PutString(t.Context(), VersionKey, "not-a-number")
+	require.NoError(t, err)
+
+	_, err = ReadVersion(t.Context(), kv)
+	require.ErrorContains(t, err, "corrupted")
+
+	require.ErrorContains(t, WriteVersion(t.Context(), kv, 2), "corrupted")
+}

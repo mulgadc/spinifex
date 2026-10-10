@@ -13,7 +13,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +22,7 @@ import (
 
 // TestRequestSpotInstances_Lifecycle exercises the gateway's Spot Instance Request
 // orchestration end to end: RequestSpotInstances validates the input, dispatches the shared
-// on-demand RunInstances placement/quota path (spinifex/gateway/ec2/spotinstance/
+// on-demand RunInstances placement/quota path (spinifex/domains/ec2/awsapi/spotinstance/
 // RequestSpotInstances.go), persists one active/fulfilled SpotInstanceRequest per launched
 // instance via the daemon's spot service, and stamps spot lineage back onto each instance.
 // Fulfilment itself is a documented mock (RequestSpotInstances.go:2 — no bidding,
@@ -95,9 +96,9 @@ func TestRequestSpotInstances_Lifecycle(t *testing.T) {
 	// subject (ec2.cmd.{id}) asynchronously after the response. Capturing every command sent
 	// lets the write-back be asserted against the real SIR ids RequestSpotInstances just
 	// minted, rather than the hand-built fixture lineage_test.go uses in isolation.
-	lineageCmds := make(chan types.EC2InstanceCommand, count)
+	lineageCmds := make(chan ec2v1.EC2InstanceCommand, count)
 	cmdSub, err := gw.NATSConn.Subscribe("ec2.cmd.>", func(msg *nats.Msg) {
-		var cmd types.EC2InstanceCommand
+		var cmd ec2v1.EC2InstanceCommand
 		if jsonErr := json.Unmarshal(msg.Data, &cmd); jsonErr != nil {
 			t.Errorf("unmarshal spot lineage command: %v", jsonErr)
 			return
@@ -204,7 +205,7 @@ func TestRequestSpotInstances_Lifecycle(t *testing.T) {
 	// in-process when a spot-backed instance is terminated (spinifex/daemon/vm_adapters.go
 	// RemoveFromSpotRequest) — that one-line delegation is already covered by
 	// TestRemoveFromSpotRequest_NoService_NoOp plus CloseForInstance's own unit tests
-	// (spinifex/handlers/ec2/spotinstance/service_impl_test.go). What those unit tests can't
+	// (spinifex/domains/ec2/spotinstance/service_impl_test.go). What those unit tests can't
 	// prove is that a SIR minted by the real gateway orchestration — a generated id, keyed by
 	// the account resolved from a genuine SigV4-authenticated request — closes correctly; this
 	// does, by calling CloseForInstance directly the same way the teardown cleaner would.

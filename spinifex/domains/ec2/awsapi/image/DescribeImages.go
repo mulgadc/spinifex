@@ -1,0 +1,50 @@
+// Package image implements the EC2 AMI actions: it validates each
+// request and forwards it to the image service over NATS.
+package image
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateDescribeImagesInput accepts a nil input and rejects any ImageIds entry without the ami-
+// prefix with InvalidAMIID.Malformed.
+func ValidateDescribeImagesInput(input *ec2.DescribeImagesInput) (err error) {
+	if input == nil {
+		return nil
+	}
+
+	if input.ImageIds != nil {
+		for _, imageId := range input.ImageIds {
+			if imageId != nil && !strings.HasPrefix(*imageId, "ami-") {
+				return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
+			}
+		}
+	}
+
+	return err
+}
+
+// DescribeImages implements the EC2 DescribeImages action, returning the AMIs visible to
+// accountID from the NATS image service.
+func DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, natsConn *nats.Conn, accountID string) (output ec2.DescribeImagesOutput, err error) {
+	err = ValidateDescribeImagesInput(input)
+	if err != nil {
+		return output, err
+	}
+
+	imageService := ec2image.NewNATSImageService(natsConn, 0)
+	result, err := imageService.DescribeImages(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+
+	output = *result
+	return output, nil
+}

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	natssvc "github.com/mulgadc/spinifex/spinifex/services/nats"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	natssvc "github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )

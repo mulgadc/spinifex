@@ -11,7 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/mulgadc/spinifex/spinifex/testutil/segscanoracle"
+	"github.com/mulgadc/spinifex/internal/testkit/segscanoracle"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/require"
 )

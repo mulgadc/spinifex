@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"slices"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -31,17 +31,21 @@ type Caller struct {
 }
 
 // IsInternalAction reports whether action is one of the internal CP-VM routes:
-// the ones naming the customer account in the path, which no customer grant may
-// reach. Derived from eksScopes so a new such route cannot ship ungated — that
-// table is exhaustive by contract against the dispatch table.
+// the ones naming the customer account in the path or body, which no customer
+// grant may reach. Derived from eksScopes so a new such route cannot ship
+// ungated — that table is exhaustive by contract against the dispatch table.
 func IsInternalAction(action string) bool {
-	return slices.Contains(eksScopes[action], sourceInternalCluster)
+	return slices.ContainsFunc(eksScopes[action], func(source resourceSource) bool {
+		return source == sourceInternalCluster || source == sourceInternalBodyCluster
+	})
 }
 
 // AuthorizeInternal is the principal gate for the internal CP-VM routes, run
 // ahead of the policy check. params are the route captures: cluster name,
-// account ID, and for GetRecoveryDirective the member's instance ID.
-func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, caller Caller, params []string) error {
+// account ID, and for GetRecoveryDirective the member's instance ID. body is
+// the request body the handler will read; PublishInternal and WebhookTokenReview
+// name their account there.
+func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, caller Caller, params []string, body []byte) error {
 	if !IsInternalAction(action) {
 		return nil
 	}
@@ -49,9 +53,9 @@ func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, 
 		return err
 	}
 
-	clusterName, accountID := param(params, 0), param(params, 1)
-	if clusterName == "" || accountID == "" {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+	clusterName, accountID, err := internalTarget(action, params, body)
+	if err != nil {
+		return err
 	}
 
 	// A member reads its own directive and no other's: the path segment is only
@@ -79,12 +83,48 @@ func AuthorizeInternal(ctx context.Context, natsConn *nats.Conn, action string, 
 	return nil
 }
 
+// internalTarget reads the cluster and owning account an internal route acts
+// on, from the same place its handler reads them, so the binding checks the
+// account the handler then uses.
+func internalTarget(action string, params []string, body []byte) (clusterName, accountID string, err error) {
+	clusterName, accountID = param(params, 0), param(params, 1)
+	if slices.Contains(eksScopes[action], sourceInternalBodyCluster) {
+		readAccount, ok := internalBodyAccounts[action]
+		if !ok {
+			slog.Error("EKS: internal route has no body account reader", "action", action)
+			return "", "", errors.New(awserrors.ErrorServerInternal)
+		}
+		bodyAccount, decodeErr := readAccount(body)
+		if decodeErr != nil {
+			return "", "", errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+		accountID = bodyAccount
+	}
+	if clusterName == "" || accountID == "" {
+		return "", "", errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	return clusterName, accountID, nil
+}
+
+// internalBodyAccounts reads the owning account of each body-scoped internal
+// route through the same decoder its handler uses.
+var internalBodyAccounts = map[string]func(body []byte) (string, error){
+	"PublishInternal": func(body []byte) (string, error) {
+		req, err := decodeInternalPublish(body)
+		return req.AccountID, err
+	},
+	"WebhookTokenReview": func(body []byte) (string, error) {
+		req, err := decodeWebhookTokenReview(body)
+		return req.AccountID, err
+	},
+}
+
 // The class check on its own: a session assumed from the CP VM's instance role
 // in the system account. It says the caller is a control-plane VM, not which
 // one — the binding to a cluster is AuthorizeInternal's, and needs NATS.
 func requireCPAgent(ctx context.Context, action string, caller Caller) error {
 	if caller.PrincipalType != principalTypeAssumedRole ||
-		caller.AccountID != utils.GlobalAccountID ||
+		caller.AccountID != awsidentifiers.GlobalAccountID ||
 		caller.RoleName != handlers_eks.CPInstanceRoleName ||
 		caller.SessionName == "" {
 		slog.WarnContext(ctx, "EKS: internal route rejected for non-CP-agent caller",
@@ -97,8 +137,9 @@ func requireCPAgent(ctx context.Context, action string, caller Caller) error {
 
 // Reads JetStream directly, matching the OIDC discovery path, rather than a
 // service round trip through the handler. js.KeyValue still costs a STREAM.INFO
-// for the bucket handle. A nil meta is returned for an account with no clusters
-// and for a cluster that is absent; both are denials rather than failures.
+// for the bucket handle. A nil meta is returned for an account with no clusters,
+// for a cluster that is absent, and for a name no bucket or key can hold; all
+// are denials rather than failures.
 func lookupClusterMeta(ctx context.Context, natsConn *nats.Conn, accountID, clusterName string) (*handlers_eks.ClusterMeta, error) {
 	if natsConn == nil {
 		return nil, errors.New("gateway NATS connection not initialised")
@@ -109,13 +150,13 @@ func lookupClusterMeta(ctx context.Context, natsConn *nats.Conn, accountID, clus
 	}
 	kv, err := js.KeyValue(ctx, handlers_eks.AccountBucketName(accountID))
 	if err != nil {
-		if errors.Is(err, jetstream.ErrBucketNotFound) {
+		if errors.Is(err, jetstream.ErrBucketNotFound) || errors.Is(err, jetstream.ErrInvalidBucketName) {
 			return nil, nil
 		}
 		return nil, err
 	}
 	entry, err := kv.Get(ctx, handlers_eks.ClusterMetaKey(clusterName))
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
+	if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrInvalidKey) {
 		return nil, nil
 	}
 	if err != nil {

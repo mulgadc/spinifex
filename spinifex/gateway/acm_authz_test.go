@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_acm "github.com/mulgadc/spinifex/spinifex/gateway/acm"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +25,7 @@ func acmCertARN(id string) string {
 // which is what proves the policy check ran ahead of the certificate existing.
 func dispatchACM(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
-	return gw.ACM_Request(httptest.NewRecorder(), setupACMRequest("CertificateManager."+action, body))
+	return gw.serveACM(httptest.NewRecorder(), setupACMRequest("CertificateManager."+action, body))
 }
 
 // TestACMRequest_ScopedDenyFires is the bypass this work closes. An operator
@@ -125,7 +125,7 @@ func TestACMRequest_ListIsAccountLevel(t *testing.T) {
 func TestACMRequest_WildcardPolicyStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "acm:*", "*"))
 
-	for _, action := range gateway_acm.ScopedActions() {
+	for _, action := range acmawsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
 			assertPermitted(t, dispatchACM(t, gw, action, `{"CertificateArn":"`+acmCertARN("aaaa-1111")+`"}`))
 		})
@@ -185,7 +185,7 @@ func TestACMRequest_MissingAccountID(t *testing.T) {
 	req := setupACMRequest("CertificateManager.ListCertificates", `{}`)
 	req = req.WithContext(context.WithValue(req.Context(), ctxAccountID, ""))
 
-	err := gw.ACM_Request(httptest.NewRecorder(), req)
+	err := gw.serveACM(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

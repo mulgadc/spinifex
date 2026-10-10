@@ -12,16 +12,16 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -761,7 +761,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	// known IP that the rollback must release back.
 	_, _, js := testutil.StartTestJetStream(t)
 
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
@@ -788,7 +788,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 	eniIP := aws.StringValue(eniOut.NetworkInterface.PrivateIpAddress)
 
 	// Stand up a vpcd-shaped NACK responder on the daemon's NATS conn —
-	// utils.AddNAT publishes on d.natsConn, so the responder must live there.
+	// the projection client requests on d.natsConn, so the responder must live there.
 	sub, err := d.natsConn.Subscribe("vpc.add-nat", func(msg *nats.Msg) {
 		_ = msg.Respond([]byte(`{"success":false,"error":"northd unavailable"}`))
 	})
@@ -867,13 +867,13 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 
 	_, jsNC, js := testutil.StartTestJetStream(t)
 
-	ipam, err := handlers_ec2_vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
 	d.externalIPAM = ipam
 
-	eipSvc, err := handlers_ec2_eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService)
 	require.NoError(t, err)
 	d.eipService = eipSvc
 
@@ -917,7 +917,7 @@ func TestAttachExtraENI_DeleteOnTerminationFalseSurvivesTerminate(t *testing.T) 
 	f := newENIHotPlugFixture(t)
 	f.vmInst.AccountID = testAccountID
 
-	require.NoError(t, f.daemon.attachExtraENI(testAccountID, sysinstance.ExtraENIInput{
+	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID:               f.eniID,
 		DeleteOnTermination: aws.Bool(false),
 	}, f.vmInst.ID, 1))
@@ -942,7 +942,7 @@ func TestAttachExtraENI_NilDeleteOnTerminationStaysDisposable(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 	f.vmInst.AccountID = testAccountID
 
-	require.NoError(t, f.daemon.attachExtraENI(testAccountID, sysinstance.ExtraENIInput{
+	require.NoError(t, f.daemon.attachExtraENI(testAccountID, systeminstance.ExtraENIInput{
 		ENIID: f.eniID,
 	}, f.vmInst.ID, 1))
 

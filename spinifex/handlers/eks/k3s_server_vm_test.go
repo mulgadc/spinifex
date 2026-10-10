@@ -10,9 +10,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/tags"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,22 +95,22 @@ func (f *fakeK3sVPC) DescribeNetworkInterfaces(_ context.Context, input *ec2.Des
 }
 
 type fakeK3sInst struct {
-	launchCalls    []*sysinstance.SystemInstanceInput
+	launchCalls    []*systeminstance.SystemInstanceInput
 	launchNodes    []string // TargetNodeID per launch (parallel to launchCalls)
 	terminateCalls []string
 
-	launchOut    *sysinstance.SystemInstanceOutput
+	launchOut    *systeminstance.SystemInstanceOutput
 	launchErr    error
 	terminateErr error
 }
 
 var _ k3sInstanceLauncher = (*fakeK3sInst)(nil)
 
-func (f *fakeK3sInst) LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (f *fakeK3sInst) LaunchSystemInstance(input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	return f.LaunchSystemInstanceOnNode("", input)
 }
 
-func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	f.launchCalls = append(f.launchCalls, input)
 	f.launchNodes = append(f.launchNodes, nodeID)
 	if f.launchErr != nil {
@@ -119,7 +119,7 @@ func (f *fakeK3sInst) LaunchSystemInstanceOnNode(nodeID string, input *sysinstan
 	if f.launchOut != nil {
 		return f.launchOut, nil
 	}
-	return &sysinstance.SystemInstanceOutput{InstanceID: "i-aaa111"}, nil
+	return &systeminstance.SystemInstanceOutput{InstanceID: "i-aaa111"}, nil
 }
 
 func (f *fakeK3sInst) TerminateSystemInstance(instanceID string) error {
@@ -342,7 +342,7 @@ func TestLaunchK3sServerVM_HappyPath(t *testing.T) {
 
 	require.Len(t, inst.launchCalls, 1)
 	runIn := inst.launchCalls[0]
-	assert.Equal(t, sysinstance.BootAMI, runIn.BootMode)
+	assert.Equal(t, systeminstance.BootAMI, runIn.BootMode)
 	assert.Equal(t, tags.ManagedByEKS, runIn.ManagedBy)
 	assert.Equal(t, "ami-eks-server-001", runIn.ImageID)
 	assert.Equal(t, defaultK3sServerInstanceType, runIn.InstanceType)
@@ -691,7 +691,7 @@ func TestK3sServerJoinURL(t *testing.T) {
 func TestLaunchK3sServerVM_RunInstancesEmptyReservationRollsBack(t *testing.T) {
 	t.Parallel()
 	vpc, ami := &fakeK3sVPC{}, &fakeK3sAMI{}
-	inst := &fakeK3sInst{launchOut: &sysinstance.SystemInstanceOutput{}}
+	inst := &fakeK3sInst{launchOut: &systeminstance.SystemInstanceOutput{}}
 
 	_, err := LaunchK3sServerVM(context.Background(), vpc, inst, ami, validK3sInput())
 	require.Error(t, err)
@@ -792,7 +792,7 @@ func TestTerminateK3sServerVM_InstanceAlreadyGoneIsIdempotent(t *testing.T) {
 	// returns ErrSystemInstanceNotFound. This must not block teardown; the ENI
 	// delete still runs.
 	vpc := &fakeK3sVPC{}
-	inst := &fakeK3sInst{terminateErr: fmt.Errorf("%w: i-aaa111", sysinstance.ErrSystemInstanceNotFound)}
+	inst := &fakeK3sInst{terminateErr: fmt.Errorf("%w: i-aaa111", systeminstance.ErrSystemInstanceNotFound)}
 
 	err := TerminateK3sServerVM(context.Background(), vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
 	require.NoError(t, err, "instance already gone must be idempotent success")

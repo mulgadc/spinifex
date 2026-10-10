@@ -2,7 +2,7 @@ package handlers_sts
 
 import (
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 )
 
@@ -29,7 +29,7 @@ type AssumeRoleForInstanceRequest struct {
 // queue-grouped so any awsgw can answer.
 func (s *STSServiceImpl) SubscribeIMDSResponder(nc *nats.Conn) (*nats.Subscription, error) {
 	return nc.QueueSubscribe(SubjectAssumeRoleForInstance, imdsResponderQueue, func(msg *nats.Msg) {
-		utils.ServeNATSRequest(msg, func(req *AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
+		natsmsg.ServeNATSRequest(msg, func(req *AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
 			return s.AssumeRoleForInstance(req.AccountID, req.RoleARN, req.InstanceID, req.DurationSeconds)
 		})
 	})

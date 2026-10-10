@@ -1,0 +1,46 @@
+package natgw
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateCreateNatGatewayInput requires SubnetId and AllocationId (MissingParameter) and rejects
+// ConnectivityType=private with Unsupported, since only public NAT gateways exist.
+func ValidateCreateNatGatewayInput(input *ec2.CreateNatGatewayInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.SubnetId == nil || *input.SubnetId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	// Private NAT gateways (ConnectivityType=private) are not implemented.
+	if input.ConnectivityType != nil && *input.ConnectivityType == "private" {
+		return errors.New(awserrors.ErrorUnsupported)
+	}
+	// AllocationId is required for public NAT gateways, matching AWS.
+	if input.AllocationId == nil || *input.AllocationId == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
+// CreateNatGateway implements the EC2 CreateNatGateway action, validating the input and
+// forwarding it to the NATS NAT gateway service scoped to accountID.
+func CreateNatGateway(ctx context.Context, input *ec2.CreateNatGatewayInput, natsConn *nats.Conn, accountID string) (ec2.CreateNatGatewayOutput, error) {
+	var output ec2.CreateNatGatewayOutput
+	if err := ValidateCreateNatGatewayInput(input); err != nil {
+		return output, err
+	}
+	svc := ec2natgw.NewNATSNatGatewayService(natsConn)
+	result, err := svc.CreateNatGateway(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+	return *result, nil
+}

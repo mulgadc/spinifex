@@ -15,8 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 )
 
 const (

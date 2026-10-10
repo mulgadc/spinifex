@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvlease"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/migrate"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -105,30 +105,6 @@ func ServicesPrefix(cluster string) string {
 // ServiceKey returns the KV key for a service record under a cluster.
 func ServiceKey(cluster, serviceName string) string {
 	return ServicesPrefix(cluster) + serviceName
-}
-
-// TaskDefFamiliesPrefix returns the KV key prefix under which all task-definition
-// families live. Task definitions are account-scoped, not cluster-scoped (Q2).
-func TaskDefFamiliesPrefix() string {
-	return "taskdef-families/"
-}
-
-// TaskDefLatestRevKey returns the KV key holding a family's latest revision
-// number. Read-modify-written on RegisterTaskDefinition.
-func TaskDefLatestRevKey(family string) string {
-	return fmt.Sprintf("taskdef-families/%s/latest-rev", family)
-}
-
-// TaskDefRevsPrefix returns the KV key prefix under which all revisions of a
-// task-definition family live. Used by ListTaskDefinitions to enumerate.
-func TaskDefRevsPrefix(family string) string {
-	return fmt.Sprintf("taskdef-families/%s/revs/", family)
-}
-
-// TaskDefRevKey returns the KV key for a specific revision of a task-definition
-// family.
-func TaskDefRevKey(family string, rev int) string {
-	return fmt.Sprintf("%s%d", TaskDefRevsPrefix(family), rev)
 }
 
 // LeaderLeaseKey returns the per-cluster scheduler leader-lease key in the shared

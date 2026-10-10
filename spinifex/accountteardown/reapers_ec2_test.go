@@ -13,9 +13,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,11 +62,11 @@ func (c *fakeCluster) serve(msg *nats.Msg) {
 
 	switch {
 	case isError:
-		_ = msg.Respond(utils.GenerateErrorPayload(code))
+		_ = msg.Respond(awserrors.GenerateErrorPayload(code))
 	case hasReply:
 		payload, err := json.Marshal(reply)
 		if err != nil {
-			_ = msg.Respond(utils.GenerateErrorPayload("InternalError"))
+			_ = msg.Respond(awserrors.GenerateErrorPayload("InternalError"))
 			return
 		}
 		_ = msg.Respond(payload)

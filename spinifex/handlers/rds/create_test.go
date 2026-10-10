@@ -3,6 +3,7 @@ package handlers_rds
 import (
 	"context"
 	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"slices"
 	"strings"
 	"testing"
@@ -10,13 +11,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_dns "github.com/mulgadc/spinifex/spinifex/handlers/dns"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,7 +81,7 @@ func (f *fakeNetwork) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInp
 	if input != nil {
 		f.vpcFilters = append(f.vpcFilters, input.Filters...)
 		for _, filter := range input.Filters {
-			if name := aws.StringValue(filter.Name); !handlers_ec2_vpc.SupportsDescribeVpcsFilter(name) {
+			if name := aws.StringValue(filter.Name); !ec2vpc.SupportsDescribeVpcsFilter(name) {
 				return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 			}
 		}
@@ -282,7 +282,7 @@ func TestCreateDBInstance_ProvisionsAndRecordsTheInstance(t *testing.T) {
 	assert.Equal(t, int64(firstVMGeneration), entry.VMGeneration)
 
 	require.NotNil(t, h.launch.launcher.input)
-	assert.Equal(t, rdsInstanceProfileARN(utils.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
+	assert.Equal(t, rdsInstanceProfileARN(awsidentifiers.GlobalAccountID), h.launch.launcher.input.IamInstanceProfileArn)
 }
 
 func TestCreateDBInstance_IAMFailurePrecedesReservationAndLaunch(t *testing.T) {
@@ -314,7 +314,7 @@ func TestCreateDBInstance_ContributesEndpointRecordToDesiredSet(t *testing.T) {
 	require.True(t, authoritative)
 	require.Len(t, changes, 1)
 	change := changes[0]
-	assert.Equal(t, handlers_dns.ActionUpsert, change.Action)
+	assert.Equal(t, dns.ActionUpsert, change.Action)
 	assert.Equal(t, testBaseDomain, change.Zone)
 	assert.Equal(t, "A", change.Type)
 

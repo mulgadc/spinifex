@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/reconciler"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/nats-io/nats.go/jetstream"
 )
 

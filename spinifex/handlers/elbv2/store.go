@@ -10,10 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/migrate"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -652,7 +651,7 @@ func listByPrefixOpt[T any](ctx context.Context, kv jetstream.KeyValue, prefix s
 
 	var result []*T
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {

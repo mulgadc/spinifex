@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"

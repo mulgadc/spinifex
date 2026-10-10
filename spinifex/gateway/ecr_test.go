@@ -9,8 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,46 +32,28 @@ func setupECRRequest(target, body string) *http.Request {
 	return req.WithContext(ctx)
 }
 
-func TestECRActionFromTarget(t *testing.T) {
-	assert.Equal(t, "CreateRepository",
-		ecrActionFromTarget("AmazonEC2ContainerRegistry_V20150921.CreateRepository"))
-	assert.Equal(t, "GetAuthorizationToken", ecrActionFromTarget("GetAuthorizationToken"))
-	assert.Empty(t, ecrActionFromTarget(""))
-}
-
-func TestECRActionsMap_CoreActionsRegistered(t *testing.T) {
-	core := []string{
-		"GetAuthorizationToken", "CreateRepository", "DeleteRepository",
-		"DescribeRepositories", "BatchGetImage", "BatchCheckLayerAvailability",
-		"PutImage", "InitiateLayerUpload", "UploadLayerPart", "CompleteLayerUpload",
-	}
-	for _, action := range core {
-		_, ok := gateway_ecrapi.Actions[action]
-		assert.True(t, ok, "action %q should be registered", action)
-	}
-}
-
 func TestECRRequest_MissingTarget(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err := gw.ECR_Request(httptest.NewRecorder(), setupECRRequest("", ""))
+	err := gw.serveECR(httptest.NewRecorder(), setupECRRequest("", ""))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingAction, err.Error())
 }
 
 func TestECRRequest_UnknownAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err := gw.ECR_Request(httptest.NewRecorder(),
+	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.MadeUpAction", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAction, err.Error())
 }
 
 // A registered-but-unimplemented action resolves to the 501 stub until its
-// handler lands. The repo/image actions are now served inline, so
-// ListRepositories stands in as a still-stubbed action.
+// handler lands. Repository actions may use a transitional gateway adapter and
+// image actions a composed registry capability, so ListRepositories stands in
+// as a still-stubbed action.
 func TestECRRequest_KnownActionNotImplemented(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	err := gw.ECR_Request(httptest.NewRecorder(),
+	err := gw.serveECR(httptest.NewRecorder(),
 		setupECRRequest("AmazonEC2ContainerRegistry_V20150921.ListRepositories", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorNotImplemented, err.Error())

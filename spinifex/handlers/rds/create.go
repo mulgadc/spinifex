@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // The first VM behind a DB instance. Replacement and recovery increment it,
@@ -34,7 +34,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	if err != nil {
 		return nil, err
 	}
-	placement, err := s.resolvePlacement(ctx, kv, accountID, req)
+	placement, err := s.resolvePlacement(ctx, accountID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -42,13 +42,13 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	// does not exist leaves no record behind. The set is literals only: the
 	// class's memory has already been folded into every size-derived default, so
 	// the agent never sees a formula.
-	parameters, err := s.resolveGroupParameters(ctx, kv, accountID, req.Engine, req.DBParameterGroupName, req.InstanceClass)
+	parameters, err := s.resolveGroupParameters(ctx, accountID, req.Engine, req.DBParameterGroupName, req.InstanceClass)
 	if err != nil {
 		return nil, err
 	}
 	// The agent cannot bootstrap without this profile, so resolve it before the
 	// identifier reservation or any launch side effects.
-	profileARN, err := ensureInstanceProfile(s.deps.IAM, utils.GlobalAccountID)
+	profileARN, err := ensureInstanceProfile(s.deps.IAM, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func newDBInstanceRecord(accountID string, req *validatedCreate, placement *endp
 	now := time.Now().UTC()
 	return DBInstanceRecord{
 		DBInstanceIdentifier: req.Identifier,
-		DbiResourceID:        utils.GenerateResourceID(dbiResourceIDPrefix),
+		DbiResourceID:        awsidentifiers.GenerateResourceID(dbiResourceIDPrefix),
 		AccountID:            accountID,
 		Status:               StatusCreating,
 		VMGeneration:         firstVMGeneration,

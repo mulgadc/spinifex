@@ -1,0 +1,88 @@
+package instance
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"log/slog"
+	"time"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateStopInstancesInput rejects a nil input with InvalidParameterValue and an empty
+// InstanceIds list with MissingParameter.
+func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if len(input.InstanceIds) == 0 {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
+// StopInstances sends stop commands via NATS using system_powerdown with stop_instance
+// set to prevent auto-restart on daemon boot.
+func StopInstances(ctx context.Context, input *ec2.StopInstancesInput, natsConn *nats.Conn, accountID string) (*ec2.StopInstancesOutput, error) {
+	if err := ValidateStopInstancesInput(input); err != nil {
+		return nil, err
+	}
+
+	slog.InfoContext(ctx, "StopInstances: Processing request", "instance_count", len(input.InstanceIds))
+
+	var stateChanges []*ec2.InstanceStateChange
+
+	for _, instanceIDPtr := range input.InstanceIds {
+		if instanceIDPtr == nil {
+			continue
+		}
+		instanceID := *instanceIDPtr
+
+		command := ec2v1.EC2InstanceCommand{
+			ID: instanceID,
+			Attributes: ec2v1.EC2CommandAttributes{
+				StopInstance:      true,
+				TerminateInstance: false,
+			},
+		}
+
+		jsonData, err := json.Marshal(command)
+		if err != nil {
+			slog.ErrorContext(ctx, "StopInstances: Failed to marshal command", "instance_id", instanceID, "err", err)
+			continue
+		}
+
+		subject := ec2v1.InstanceCommandSubject(instanceID)
+		reqMsg := nats.NewMsg(subject)
+		reqMsg.Data = jsonData
+		reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
+		natsmsg.InjectTraceContext(ctx, reqMsg.Header)
+		msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
+		if err != nil {
+			slog.ErrorContext(ctx, "StopInstances: Failed to send command", "instance_id", instanceID, "err", err)
+			stateChanges = append(stateChanges, newStateChange(instanceID, 16, "running", 16, "running"))
+			continue
+		}
+
+		if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
+			slog.ErrorContext(ctx, "StopInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
+			return nil, errors.New(*responseError.Code)
+		}
+
+		slog.InfoContext(ctx, "StopInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
+
+		stateChanges = append(stateChanges, newStateChange(instanceID, 64, "stopping", 16, "running"))
+	}
+
+	output := &ec2.StopInstancesOutput{
+		StoppingInstances: stateChanges,
+	}
+
+	slog.InfoContext(ctx, "StopInstances: Completed", "total_instances", len(stateChanges))
+	return output, nil
+}

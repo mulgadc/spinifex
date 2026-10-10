@@ -17,12 +17,12 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/instancecache"
-	"github.com/mulgadc/spinifex/spinifex/resource"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -253,7 +253,7 @@ func TestWhatStopsTheLoopStarting(t *testing.T) {
 				node:            "node-1",
 				clusterConfig:   &config.ClusterConfig{Nodes: map[string]config.Config{"node-1": {}, "node-2": {}}},
 				jsManager:       &JetStreamManager{},
-				instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
+				instanceService: &ec2instance.InstanceServiceImpl{},
 			}
 		}},
 	}
@@ -403,7 +403,7 @@ func TestWhatTheLaunchRefusalMeansForTheNextAttempt(t *testing.T) {
 		{
 			name: "the old owner still holds the volume lease",
 			err: fmt.Errorf("mount refused: %w", fmt.Errorf("%w: %w",
-				handlers_ec2_instance.ErrVolumeHeldElsewhere,
+				ec2instance.ErrVolumeHeldElsewhere,
 				awserrors.Errorf(awserrors.ErrorIncorrectState, "volume is leased by another owner: node-1"))),
 			want: recoveryFaultLeaseHeld,
 			code: "Server.HostRecoveryFailed",

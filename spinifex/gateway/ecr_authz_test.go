@@ -1,4 +1,4 @@
-//test:in-package — drives ECR_Request through the gateway's unexported test
+//test:in-package — drives ECR dispatch through the gateway's unexported test
 // helpers (setupECRRequest, policyMockIAMService) and auth context keys.
 
 package gateway
@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_ecrapi "github.com/mulgadc/spinifex/spinifex/gateway/ecrapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ import (
 // a permitted request fails there rather than on authorization.
 func dispatchECR(t *testing.T, gw *GatewayConfig, action, body string) error {
 	t.Helper()
-	return gw.ECR_Request(httptest.NewRecorder(), setupECRRequest(gateway_ecrapi.TargetPrefix+"."+action, body))
+	return gw.serveECR(httptest.NewRecorder(), setupECRRequest(awsapi.TargetPrefix+"."+action, body))
 }
 
 func assertECRPermitted(t *testing.T, err error) {
@@ -129,9 +129,9 @@ func TestECRRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 	body := []byte(`{"repositoryName":"app","repositoryNames":["app"],` +
 		`"resourceArn":"arn:aws:ecr:` + authzRegion + `:` + authzAccountID + `:repository/app"}`)
 
-	for _, action := range gateway_ecrapi.ScopedActions() {
+	for _, action := range awsapi.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
-			resources, err := gateway_ecrapi.ResourceARNs(action, authzRegion, authzAccountID, body)
+			resources, err := awsapi.ResourceARNs(action, authzRegion, authzAccountID, body)
 			require.NoError(t, err)
 			assert.NoError(t, gw.checkPolicyResources(req, "ecr", action, resources))
 		})
@@ -143,10 +143,10 @@ func TestECRRequest_AccountWideGrantStillPermitsEveryAction(t *testing.T) {
 func TestECRRequest_MissingAccountIDReturnsInternalError(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "ecr:*", "*"))
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
-	req.Header.Set("X-Amz-Target", gateway_ecrapi.TargetPrefix+".ListRepositories")
+	req.Header.Set("X-Amz-Target", awsapi.TargetPrefix+".ListRepositories")
 	req = withTestIdentity(req.WithContext(context.WithValue(req.Context(), ctxService, "ecr")))
 
-	err := gw.ECR_Request(httptest.NewRecorder(), req)
+	err := gw.serveECR(httptest.NewRecorder(), req)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInternalError, err.Error())
 }

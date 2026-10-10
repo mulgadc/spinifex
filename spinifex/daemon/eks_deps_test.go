@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,7 +213,7 @@ func TestBuildEKSServiceDeps_ConfigDerivedFields(t *testing.T) {
 		return &Daemon{
 			mgmtBridgeIP:  "10.15.8.1",
 			clusterConfig: &config.ClusterConfig{AWS: config.AWSConfig{ServicesDomain: "svc.example"}},
-			volumeService: &handlers_ec2_volume.VolumeServiceImpl{},
+			volumeService: &ec2volume.VolumeServiceImpl{},
 			config: &config.Config{
 				AdvertiseIP: "192.0.2.10",
 				AWSGW:       config.AWSGWConfig{Host: "0.0.0.0:8443"},

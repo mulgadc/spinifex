@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 )
 
 // Peer-health probe cadence. Worst-case partition detection on a 3-node

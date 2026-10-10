@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/types"
+	types "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 // captureLaunchTemplateNodeInput wires a per-node launch responder that
 // forwards each decoded RunInstancesInput onto the returned channel before
 // replying, so a test can inspect exactly what expandLaunchTemplate
-// (handlers/ec2/launchtemplate/expand.go, called from RunInstances.go) merged
+// (domains/ec2/launchtemplate/expand.go, called from RunInstances.go) merged
 // onto the request the gateway actually dispatched.
 func captureLaunchTemplateNodeInput(t *testing.T, gw *Gateway, instanceType, nodeID string) <-chan *ec2.RunInstancesInput {
 	t.Helper()

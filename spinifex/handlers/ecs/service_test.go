@@ -2,14 +2,15 @@ package handlers_ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,14 +145,14 @@ func TestService_ListTaskDefinitions_StatusFilter(t *testing.T) {
 
 	// Explicit ACTIVE matches the default.
 	activeExplicit, err := svc.ListTaskDefinitions(context.Background(), &ecs.ListTaskDefinitionsInput{
-		Status: aws.String(TaskDefStatusActive),
+		Status: aws.String(taskdefinition.StatusActive),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, activeExplicit.TaskDefinitionArns, 1)
 
 	// INACTIVE returns only the deregistered revision.
 	inactive, err := svc.ListTaskDefinitions(context.Background(), &ecs.ListTaskDefinitionsInput{
-		Status: aws.String(TaskDefStatusInactive),
+		Status: aws.String(taskdefinition.StatusInactive),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, inactive.TaskDefinitionArns, 1)

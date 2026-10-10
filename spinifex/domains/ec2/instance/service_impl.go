@@ -1,0 +1,3582 @@
+package instance
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
+	"log/slog"
+	"maps"
+	"os"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go"
+)
+
+// bytesPerGiB converts the byte sizes the launch path works in to the GiB
+// units ebsmetadata records.
+const bytesPerGiB = 1024 * 1024 * 1024
+
+// VolumeInfo holds volume information returned from GenerateVolumes
+// for populating BlockDeviceMappings in the EC2 API response.
+type VolumeInfo struct {
+	VolumeId            string
+	DeviceName          string
+	AttachTime          time.Time
+	DeleteOnTermination bool
+}
+
+// volumeParams holds parsed block device mapping parameters for volume creation.
+type volumeParams struct {
+	size                int
+	deviceName          string
+	volumeType          string
+	iops                int
+	imageId             string
+	snapshotId          string
+	deleteOnTermination bool
+}
+
+// floorVolumeSizeToAMI ensures the requested size is at least the AMI's snapshot
+// size. Under-sizing hangs the guest in dracut; we round up silently rather than
+// returning InvalidParameterValue, since a slightly larger volume is less harmful.
+func floorVolumeSizeToAMI(ctx context.Context, loader AMIMetaLoader, imageID string, requested int) int {
+	if loader == nil || !strings.HasPrefix(imageID, "ami-") {
+		return requested
+	}
+	amiMeta, err := loader.GetAMIConfig(ctx, imageID)
+	if err != nil {
+		slog.WarnContext(ctx, "floorVolumeSizeToAMI: AMI metadata fetch failed; using requested size — guest may dracut-hang if requested is smaller than the AMI snapshot", "imageId", imageID, "err", err)
+		return requested
+	}
+	if amiMeta.VolumeSizeGiB == 0 {
+		return requested
+	}
+	amiSize := safecast.Uint64ToInt64(amiMeta.VolumeSizeGiB) * 1024 * 1024 * 1024
+	if amiSize <= int64(requested) {
+		return requested
+	}
+	slog.InfoContext(ctx, "floorVolumeSizeToAMI: rounding up to AMI snapshot size", "imageId", imageID, "requestedBytes", requested, "amiBytes", amiSize)
+	return int(amiSize)
+}
+
+// dataVolumeParams describes one non-root EBS mapping: an empty volume the
+// launch creates and attaches at the device name the caller named.
+type dataVolumeParams struct {
+	deviceName          string
+	sizeGiB             int64
+	iops                int64
+	deleteOnTermination bool
+}
+
+// parseDataVolumeParams returns the EBS mappings that are not the root, in the
+// order the caller gave them. An instance store mapping names no volume, and a
+// mapping with no Ebs block sizes nothing, so neither is one of them.
+func parseDataVolumeParams(input *ec2.RunInstancesInput) []dataVolumeParams {
+	root := SelectRootBlockDeviceMapping(input.BlockDeviceMappings)
+	var out []dataVolumeParams
+	for i, bdm := range input.BlockDeviceMappings {
+		if i == root || bdm == nil || bdm.Ebs == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		p := dataVolumeParams{
+			deviceName: aws.StringValue(bdm.DeviceName),
+			// A volume attached at launch is deleted with the instance unless
+			// the caller says otherwise, as AWS does.
+			deleteOnTermination: true,
+		}
+		if bdm.Ebs.VolumeSize != nil {
+			p.sizeGiB = *bdm.Ebs.VolumeSize
+		}
+		if bdm.Ebs.Iops != nil {
+			p.iops = *bdm.Ebs.Iops
+		}
+		if bdm.Ebs.DeleteOnTermination != nil {
+			p.deleteOnTermination = *bdm.Ebs.DeleteOnTermination
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// isEphemeralMapping reports whether a mapping names an instance store device
+// rather than an EBS volume. These carry a VirtualName and no Ebs block, so the
+// launch path neither creates nor owes them a volume.
+func isEphemeralMapping(bdm *ec2.BlockDeviceMapping) bool {
+	return bdm != nil && bdm.Ebs == nil && aws.StringValue(bdm.VirtualName) != ""
+}
+
+// SelectRootBlockDeviceMapping returns the index of the mapping addressing the
+// root device, which is the one naming ebsmetadata.RootDeviceName. Position
+// decides only when no mapping names it, so a caller addressing a device this
+// platform's images do not have still gets the volume they sized.
+func SelectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) int {
+	first := -1
+	for i, bdm := range mappings {
+		if bdm == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		if aws.StringValue(bdm.DeviceName) == ebsmetadata.RootDeviceName {
+			return i
+		}
+		if first < 0 {
+			first = i
+		}
+	}
+	return first
+}
+
+// UnservedBlockDeviceMappings names the non-root EBS mappings the launch path
+// cannot serve, with the reason. A data volume is created empty, so a mapping
+// naming a snapshot is refused rather than served as a blank volume.
+func UnservedBlockDeviceMappings(mappings []*ec2.BlockDeviceMapping) []string {
+	root := SelectRootBlockDeviceMapping(mappings)
+	var unserved []string
+	for i, bdm := range mappings {
+		if i == root || bdm == nil || bdm.Ebs == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		name := aws.StringValue(bdm.DeviceName)
+		if name == "" {
+			name = "(unnamed)"
+		}
+		switch {
+		case aws.StringValue(bdm.Ebs.SnapshotId) != "":
+			unserved = append(unserved, name+" (names a snapshot)")
+		case aws.Int64Value(bdm.Ebs.VolumeSize) < 1:
+			unserved = append(unserved, name+" (names no size)")
+		}
+	}
+	return unserved
+}
+
+// parseVolumeParams extracts volume parameters from RunInstancesInput,
+// applying defaults and resolving AMI-based image IDs.
+func parseVolumeParams(input *ec2.RunInstancesInput) volumeParams {
+	p := volumeParams{
+		size:                4 * 1024 * 1024 * 1024, // 4GB default
+		deviceName:          ebsmetadata.RootDeviceName,
+		deleteOnTermination: true, // matches AWS RunInstances behavior
+	}
+
+	if root := SelectRootBlockDeviceMapping(input.BlockDeviceMappings); root >= 0 {
+		bdm := input.BlockDeviceMappings[root]
+		if bdm.DeviceName != nil {
+			p.deviceName = *bdm.DeviceName
+		}
+		if bdm.Ebs != nil {
+			if bdm.Ebs.VolumeSize != nil {
+				p.size = int(*bdm.Ebs.VolumeSize) * 1024 * 1024 * 1024
+			}
+			if bdm.Ebs.VolumeType != nil {
+				p.volumeType = *bdm.Ebs.VolumeType
+			}
+			if bdm.Ebs.Iops != nil {
+				p.iops = int(*bdm.Ebs.Iops)
+			}
+			if bdm.Ebs.DeleteOnTermination != nil {
+				p.deleteOnTermination = *bdm.Ebs.DeleteOnTermination
+			}
+		}
+	}
+
+	if strings.HasPrefix(*input.ImageId, "ami-") {
+		p.imageId = awsidentifiers.GenerateResourceID("vol")
+		p.snapshotId = *input.ImageId
+	} else {
+		p.imageId = *input.ImageId
+	}
+
+	return p
+}
+
+var _ InstanceService = (*InstanceServiceImpl)(nil)
+
+// InstanceServiceImpl handles daemon-side EC2 instance operations.
+type InstanceServiceImpl struct {
+	config            *config.Config
+	instanceTypes     map[string]*ec2.InstanceTypeInfo
+	natsConn          *nats.Conn
+	objectStore       objectstore.ObjectStore
+	vmMgr             *vm.Manager
+	resourceMgr       InstanceTypeAllocator
+	stoppedStore      StoppedInstanceStore
+	volumeDeleter     VolumeDeleter
+	volumeCreator     VolumeCreator
+	eniDeleter        ENIDeleter
+	ipReleaser        PublicIPReleaser
+	tagWriter         InstanceTagWriter
+	gpuClaimer        GPUClaimer
+	amiLoader         AMIMetaLoader
+	ebsProvider       ebsprovider.EBSProvider
+	metadata          *ebsmetadata.Store
+	keyValidator      KeyPairValidator
+	eniCreator        ENICreator
+	ipAllocator       PublicIPAllocator
+	dnsBaseDomain     string
+	dnsInternalDomain string
+}
+
+// SetEBSProvider injects the provider boundary used for instance-created
+// volumes. Once set, root volumes are allocated through it instead of a
+// control-plane storage engine.
+func (s *InstanceServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
+	s.ebsProvider = provider
+}
+
+// SetVolumeCreator injects the volume service a launch uses for the volumes it
+// names beyond the root device.
+func (s *InstanceServiceImpl) SetVolumeCreator(vc VolumeCreator) {
+	s.volumeCreator = vc
+}
+
+// EBSProvider returns the injected provider boundary, or nil on the legacy
+// embedded-engine path. Primarily for composition-root tests to observe wiring.
+func (s *InstanceServiceImpl) EBSProvider() ebsprovider.EBSProvider {
+	return s.ebsProvider
+}
+
+// NewInstanceServiceImpl creates a new instance service implementation for daemon use.
+func NewInstanceServiceImpl(
+	cfg *config.Config,
+	instanceTypes map[string]*ec2.InstanceTypeInfo,
+	nc *nats.Conn,
+	store objectstore.ObjectStore,
+	vmMgr *vm.Manager,
+	resourceMgr InstanceTypeAllocator,
+	stoppedStore StoppedInstanceStore,
+) *InstanceServiceImpl {
+	// cfg is nil-tolerated by the DNS resolvers below, so keep the metadata
+	// store's bucket lookup equally tolerant.
+	bucket := ""
+	if cfg != nil {
+		bucket = cfg.Predastore.Bucket
+	}
+	return &InstanceServiceImpl{
+		config:            cfg,
+		instanceTypes:     instanceTypes,
+		natsConn:          nc,
+		objectStore:       store,
+		vmMgr:             vmMgr,
+		resourceMgr:       resourceMgr,
+		stoppedStore:      stoppedStore,
+		metadata:          ebsmetadata.NewStore(store, bucket),
+		dnsBaseDomain:     dns.ResolveBaseDomain(cfg),
+		dnsInternalDomain: dns.ResolveInternalDomain(cfg),
+	}
+}
+
+// SetTerminationDeps wires the dependencies required by the terminate paths.
+// Kept separate from the main constructor so handlers needing only read or
+// modify paths can construct a service without dragging the VPC/volume stack in.
+func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter, pr PublicIPReleaser, tw InstanceTagWriter) {
+	s.volumeDeleter = vd
+	s.eniDeleter = ed
+	s.ipReleaser = pr
+	s.tagWriter = tw
+}
+
+// SetGPUClaimer wires the GPU passthrough claim/release dependency used by
+// StartStoppedInstance. nil disables GPU passthrough for the service.
+func (s *InstanceServiceImpl) SetGPUClaimer(g GPUClaimer) {
+	s.gpuClaimer = g
+}
+
+// SetRunInstancesDeps wires the AMI/key/VPC/IPAM dependencies required by
+// RunInstances. Kept separate from the constructor so handlers needing only
+// read paths can build the service without dragging the full stack in.
+func (s *InstanceServiceImpl) SetRunInstancesDeps(ami AMIMetaLoader, key KeyPairValidator, eni ENICreator, ipam PublicIPAllocator) {
+	s.amiLoader = ami
+	s.keyValidator = key
+	s.eniCreator = eni
+	s.ipAllocator = ipam
+}
+
+// RunInstance creates a single EC2 instance (called per-instance by daemon)
+// Returns the VM struct and EC2 instance metadata.
+func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM, *ec2.Instance, error) {
+	// Validate instance type exists
+	_, exists := s.instanceTypes[*input.InstanceType]
+	if !exists {
+		return nil, nil, errors.New(awserrors.ErrorInvalidInstanceType)
+	}
+
+	instanceId := awsidentifiers.GenerateResourceID("i")
+
+	// Create new instance structure
+	instance := &vm.VM{
+		ID:           instanceId,
+		Status:       vm.StateProvisioning,
+		InstanceType: *input.InstanceType,
+	}
+
+	// Create EC2 instance metadata
+	ec2Instance := &ec2.Instance{
+		State: &ec2.InstanceState{},
+	}
+	ec2Instance.SetInstanceId(instance.ID)
+	ec2Instance.SetInstanceType(*input.InstanceType)
+	if input.ImageId != nil {
+		ec2Instance.SetImageId(*input.ImageId)
+	}
+	if input.KeyName != nil {
+		ec2Instance.SetKeyName(*input.KeyName)
+	}
+	ec2Instance.SetLaunchTime(time.Now())
+	ec2Instance.State.SetCode(0)
+	ec2Instance.State.SetName("pending")
+
+	// Project the instance type's architecture onto the customer instance so it
+	// flows to DescribeInstances and the IMDS identity document for free.
+	if arch := instanceArchitecture(s.instanceTypes[*input.InstanceType]); arch != "" {
+		ec2Instance.SetArchitecture(arch)
+	}
+
+	// Every image this platform serves boots from an EBS root at the same
+	// device, and DescribeImages already reports both. DescribeInstances left
+	// them null, so a caller comparing the two read a disagreement.
+	ec2Instance.SetRootDeviceName(ebsmetadata.RootDeviceName)
+	ec2Instance.SetRootDeviceType(ec2.DeviceTypeEbs)
+
+	// Stamp the metadata-options block so DescribeInstances reports the posture;
+	// the hop limit and the IMDSv1 opt-in are request-driven.
+	var hopLimit *int64
+	var httpTokens string
+	if input.MetadataOptions != nil {
+		hopLimit = input.MetadataOptions.HttpPutResponseHopLimit
+		httpTokens = aws.StringValue(input.MetadataOptions.HttpTokens)
+	}
+	ec2Instance.MetadataOptions = buildMetadataOptions(hopLimit, httpTokens)
+
+	// IAM instance profile attached at launch: gateway has already resolved
+	// the reference to a canonical ARN and enforced iam:PassRole; here we
+	// just persist it on the VM and generate the association ID. Id is left
+	// for the gateway to enrich on DescribeInstances since daemons have no
+	// IAM service access.
+	if input.IamInstanceProfile != nil {
+		arn := aws.StringValue(input.IamInstanceProfile.Arn)
+		if arn != "" {
+			instance.IamInstanceProfileArn = arn
+			instance.IamInstanceProfileAssociationId = awsidentifiers.GenerateResourceID("iip-assoc")
+			ec2Instance.IamInstanceProfile = &ec2.IamInstanceProfile{
+				Arn: aws.String(arn),
+			}
+		}
+	}
+
+	// Apply instance-scoped tags from TagSpecifications so DescribeInstances
+	// returns them and tag filters match. Node groups discover their workers by
+	// the spinifex:eks-cluster tag; scale-up convergence depends on it.
+	ec2Instance.Tags = instanceTagsFromSpec(input.TagSpecifications)
+
+	// Store EC2 API metadata in VM for DescribeInstances compatibility
+	instance.RunInstancesInput = input
+	instance.Instance = ec2Instance
+
+	return instance, ec2Instance, nil
+}
+
+// instanceTagsFromSpec extracts the instance-scoped tags from a RunInstances
+// TagSpecifications list. Only ResourceType "instance" applies to the launched
+// instance; the volume specs go to the root volume's metadata.
+func instanceTagsFromSpec(specs []*ec2.TagSpecification) []*ec2.Tag {
+	var tags []*ec2.Tag
+	for _, spec := range specs {
+		if spec == nil || aws.StringValue(spec.ResourceType) != "instance" {
+			continue
+		}
+		for _, t := range spec.Tags {
+			if t == nil || t.Key == nil {
+				continue
+			}
+			tags = append(tags, &ec2.Tag{Key: t.Key, Value: t.Value})
+		}
+	}
+	return tags
+}
+
+// volumeTagsFromSpec extracts the volume-scoped tags from a RunInstances
+// TagSpecifications list, in the shape ebsmetadata records them. Only the root
+// volume exists at launch, so they all land on it.
+func volumeTagsFromSpec(specs []*ec2.TagSpecification) map[string]string {
+	var tags map[string]string
+	for _, spec := range specs {
+		if spec == nil || aws.StringValue(spec.ResourceType) != ec2.ResourceTypeVolume {
+			continue
+		}
+		for _, t := range spec.Tags {
+			if t == nil || aws.StringValue(t.Key) == "" {
+				continue
+			}
+			if tags == nil {
+				tags = make(map[string]string, len(spec.Tags))
+			}
+			tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+		}
+	}
+	return tags
+}
+
+// ApplyInstanceTagMutation applies a set or remove tag mutation to a tag list,
+// mirroring the central tag store's merge, value-match delete, and clear-all
+// semantics, and returns the resulting list sorted by key.
+func ApplyInstanceTagMutation(existing []*ec2.Tag, data *ec2v1.InstanceTagsData, remove bool) []*ec2.Tag {
+	tags := make(map[string]string, len(existing))
+	for _, t := range existing {
+		if t == nil || t.Key == nil {
+			continue
+		}
+		tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+
+	switch {
+	case remove && data == nil:
+		tagmirror.ApplyTagRemovals(tags, nil, nil)
+	case remove:
+		tagmirror.ApplyTagRemovals(tags, data.TagKeys, data.Tags)
+	case data != nil:
+		maps.Copy(tags, data.Tags)
+	}
+
+	out := make([]*ec2.Tag, 0, len(tags))
+	for key, value := range tags {
+		out = append(out, &ec2.Tag{Key: aws.String(key), Value: aws.String(value)})
+	}
+	sort.Slice(out, func(i, j int) bool { return aws.StringValue(out[i].Key) < aws.StringValue(out[j].Key) })
+	return out
+}
+
+// TagsToMap converts a record tag list to the central tag store's map form,
+// skipping nil entries and nil keys.
+func TagsToMap(tags []*ec2.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		if t == nil || t.Key == nil {
+			continue
+		}
+		out[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	return out
+}
+
+// WriteInstanceTags applies the tag mutation to the instance record (the source
+// of truth) and writes the resulting full tag set to the central tag store, so
+// both stores move together. Callers own record persistence and must not hold
+// the vm.Manager lock, since the central write is an S3 round-trip.
+func WriteInstanceTags(ctx context.Context, instance *vm.VM, data *ec2v1.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+	if instance == nil || instance.Instance == nil || central == nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	instance.Instance.Tags = ApplyInstanceTagMutation(instance.Instance.Tags, data, remove)
+	return central.PutResourceTags(ctx, accountID, instance.ID, TagsToMap(instance.Instance.Tags))
+}
+
+// TagStoppedInstance applies a create-tags/delete-tags mutation to a stopped
+// instance's shared KV record and the central tag store together. A missing or
+// cross-account record returns InvalidID.NotFound and writes nothing.
+func (s *InstanceServiceImpl) TagStoppedInstance(ctx context.Context, instanceID string, data *ec2v1.InstanceTagsData, remove bool, central InstanceTagWriter, accountID string) error {
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "TagStoppedInstance: stopped store not available")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "TagStoppedInstance: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "TagStoppedInstance: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.ErrorContext(ctx, "TagStoppedInstance: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	if err := WriteInstanceTags(ctx, instance, data, remove, central, accountID); err != nil {
+		slog.ErrorContext(ctx, "TagStoppedInstance: central tag store write failed", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// CAS the tag mutation into the shared KV record instead of a wholesale
+	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
+	// the record between the Load above and this write fails cleanly with
+	// kvstore.ErrNotFound rather than resurrecting a stale stopped entry.
+	newTags := instance.Instance.Tags
+	if _, err := s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		if v.Instance != nil {
+			v.Instance.Tags = newTags
+		}
+	}); err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			slog.WarnContext(ctx, "TagStoppedInstance: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		}
+		slog.ErrorContext(ctx, "TagStoppedInstance: failed to write stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
+// SetStoppedInstanceMonitoring applies a monitoring-tier change to a stopped
+// instance's shared KV record. Nothing polls a stopped instance, so there is
+// no discovery file to rewrite: the next start stamps one from this flag.
+func (s *InstanceServiceImpl) SetStoppedInstanceMonitoring(ctx context.Context, instanceID string, enabled bool, accountID string) error {
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "SetStoppedInstanceMonitoring: stopped store not available")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "SetStoppedInstanceMonitoring: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "SetStoppedInstanceMonitoring: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	// CAS with createIfAbsent=false so a start-claim that deletes the record
+	// between the Load above and this write fails cleanly rather than
+	// resurrecting a stale stopped entry.
+	if _, err := s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		if v.RunInstancesInput == nil {
+			return
+		}
+		if v.RunInstancesInput.Monitoring == nil {
+			v.RunInstancesInput.Monitoring = &ec2.RunInstancesMonitoringEnabled{}
+		}
+		v.RunInstancesInput.Monitoring.Enabled = aws.Bool(enabled)
+	}); err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			slog.WarnContext(ctx, "SetStoppedInstanceMonitoring: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		}
+		slog.ErrorContext(ctx, "SetStoppedInstanceMonitoring: failed to write stopped instance", "instanceId", instanceID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.InfoContext(ctx, "SetStoppedInstanceMonitoring: tier applied", "instanceId", instanceID, "enabled", enabled)
+	return nil
+}
+
+// deleteCentralInstanceTags removes a terminated instance's central tag store
+// entry so describe-tags stops reporting it, while the terminated record keeps
+// its tags until TTL. Best-effort: the terminate already succeeded, so a
+// failed delete is logged rather than surfaced.
+func (s *InstanceServiceImpl) deleteCentralInstanceTags(ctx context.Context, instanceID, ownerAccountID string) {
+	if s.tagWriter == nil || ownerAccountID == "" {
+		return
+	}
+	if err := s.tagWriter.DeleteAllTags(ctx, ownerAccountID, instanceID); err != nil {
+		slog.ErrorContext(ctx, "deleteCentralInstanceTags: central tag store delete failed",
+			"instanceId", instanceID, "err", err)
+	}
+}
+
+// PrepareRunInstances validates input, allocates capacity, creates VM metadata,
+// auto-creates the primary ENI, and auto-assigns a public IP when needed.
+// Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.
+//
+// A non-empty reservationID makes this a targeted launch into an On-Demand
+// Capacity Reservation: capacity is consumed from that reservation (net-zero
+// swap), the count is capped at the reservation's free slots (never spilling
+// onto general capacity), and every rollback site returns slots to the
+// reservation rather than the general pool.
+func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID, reservationID string) (*ec2.Reservation, []*vm.VM, *ec2.InstanceTypeInfo, error) {
+	if accountID == "" {
+		return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if input == nil || input.InstanceType == nil {
+		return nil, nil, nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	// Reject a metadata-options downgrade before allocating capacity: http-tokens=
+	// optional and other weakenings return UnsupportedOperation under IMDSv2
+	// enforcement. RunInstance seeds the hop limit onto the per-instance block.
+	if opts := input.MetadataOptions; opts != nil {
+		if err := validateMetadataOptions(
+			aws.StringValue(opts.HttpTokens),
+			aws.StringValue(opts.HttpEndpoint),
+			aws.StringValue(opts.HttpProtocolIpv6),
+			aws.StringValue(opts.InstanceMetadataTags),
+			opts.HttpPutResponseHopLimit,
+		); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	instanceType, exists := s.instanceTypes[*input.InstanceType]
+	if !exists {
+		slog.ErrorContext(ctx, "PrepareRunInstances: invalid instance type", "InstanceType", *input.InstanceType)
+		return nil, nil, nil, errors.New(awserrors.ErrorInvalidInstanceType)
+	}
+
+	if input.ImageId == nil || *input.ImageId == "" {
+		slog.ErrorContext(ctx, "PrepareRunInstances: missing ImageId")
+		return nil, nil, nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.amiLoader == nil {
+		slog.ErrorContext(ctx, "PrepareRunInstances: AMI loader not initialized")
+		return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	amiMeta, err := s.amiLoader.GetAMIConfig(ctx, *input.ImageId)
+	if err != nil {
+		slog.ErrorContext(ctx, "PrepareRunInstances: AMI not found", "imageId", *input.ImageId, "err", err)
+		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+	// Caller must own the AMI or the owner alias must be non-account-ID (e.g. "self", "spinifex", "").
+	amiOwner := amiMeta.ImageOwnerAlias
+	if amiOwner != "" && amiOwner != accountID && awsidentifiers.IsAccountID(amiOwner) {
+		slog.WarnContext(ctx, "PrepareRunInstances: AMI not owned by caller", "imageId", *input.ImageId, "amiOwner", amiOwner, "accountID", accountID)
+		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+
+	if input.KeyName != nil && *input.KeyName != "" {
+		if s.keyValidator == nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: key validator not initialized")
+			return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if err := s.keyValidator.ValidateKeyPairExists(ctx, accountID, *input.KeyName); err != nil {
+			// Only a key the store answered for is absent. Reporting an unreadable
+			// store as a missing key sends the caller after a key that exists.
+			if err.Error() != awserrors.ErrorInvalidKeyPairNotFound {
+				slog.ErrorContext(ctx, "PrepareRunInstances: key pair unreadable", "keyName", *input.KeyName, "err", err)
+				return nil, nil, nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			slog.ErrorContext(ctx, "PrepareRunInstances: key pair not found", "keyName", *input.KeyName, "err", err)
+			return nil, nil, nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+		}
+	}
+
+	minCount := int(*input.MinCount)
+	maxCount := int(*input.MaxCount)
+
+	var allocatableCount int
+	if reservationID == "" {
+		allocatableCount = s.resourceMgr.CanAllocate(instanceType, maxCount)
+	} else {
+		// Targeted launch: confined to the reservation. Cap at its free slots so
+		// the overflow never spills onto the node's general capacity.
+		allocatableCount = min(s.resourceMgr.ReservationAvailable(reservationID, accountID, instanceType), maxCount)
+	}
+	if allocatableCount < minCount {
+		errCode := awserrors.ErrorInsufficientInstanceCapacity
+		if reservationID != "" {
+			errCode = awserrors.ErrorReservationCapacityExceeded
+		}
+		slog.ErrorContext(ctx, "PrepareRunInstances: insufficient capacity", "requested", minCount, "available", allocatableCount, "InstanceType", *input.InstanceType, "reservationId", reservationID)
+		return nil, nil, nil, errors.New(errCode)
+	}
+
+	launchCount := allocatableCount
+	slog.InfoContext(ctx, "PrepareRunInstances: count determined", "min", minCount, "max", maxCount, "launching", launchCount)
+
+	// Each Allocate is atomic; under contention we may get fewer than
+	// allocatableCount — the < minCount branch below rolls back.
+	var allocatedCount int
+	for i := 0; i < launchCount; i++ {
+		var allocErr error
+		if reservationID == "" {
+			allocErr = s.resourceMgr.Allocate(instanceType)
+		} else {
+			allocErr = s.resourceMgr.AllocateFromReservation(reservationID, accountID, instanceType)
+		}
+		if allocErr != nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: allocate failed mid-allocation", "allocated", allocatedCount, "err", allocErr)
+			break
+		}
+		allocatedCount++
+	}
+	if allocatedCount < minCount {
+		for i := 0; i < allocatedCount; i++ {
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
+		}
+		errCode := awserrors.ErrorInsufficientInstanceCapacity
+		if reservationID != "" {
+			errCode = awserrors.ErrorReservationCapacityExceeded
+		}
+		slog.ErrorContext(ctx, "PrepareRunInstances: insufficient capacity after allocation", "allocated", allocatedCount, "minCount", minCount)
+		return nil, nil, nil, errors.New(errCode)
+	}
+	launchCount = allocatedCount
+
+	var instances []*vm.VM
+	var allEC2Instances []*ec2.Instance
+	var lastRunErr error
+	// Whether this call created the instance's ENI, keyed by instance ID. An
+	// abandoned batch deletes the ones it made and only detaches the rest.
+	autoCreatedENI := make(map[string]bool)
+
+	for i := 0; i < launchCount; i++ {
+		instance, ec2Instance, err := s.RunInstance(input)
+		if err != nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: RunInstance failed", "index", i, "err", err)
+			lastRunErr = err
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
+			continue
+		}
+		instance.BootMode = amiMeta.BootMode
+
+		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
+		// even if the image is later deregistered.
+		ec2Instance.Platform = ec2platform.PlatformFromDetails(amiMeta.PlatformDetails)
+
+		// RunInstance has no image in hand, so the platform-derived IMDS default
+		// lands here, where the AMI is resolved.
+		var requestedTokens string
+		if input.MetadataOptions != nil {
+			requestedTokens = aws.StringValue(input.MetadataOptions.HttpTokens)
+		}
+		applyPlatformTokenDefault(ec2Instance, requestedTokens, ec2Instance.Platform)
+
+		// Terraform may pass subnet/SG/private IP via NetworkInterfaces[0]; lift to
+		// top-level, mirroring AWS's flattening of the primary interface spec.
+		if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
+			nic := input.NetworkInterfaces[0]
+			if (input.SubnetId == nil || *input.SubnetId == "") && nic.SubnetId != nil && *nic.SubnetId != "" {
+				input.SubnetId = nic.SubnetId
+			}
+			if len(input.SecurityGroupIds) == 0 && len(nic.Groups) > 0 {
+				input.SecurityGroupIds = nic.Groups
+			}
+			if input.PrivateIpAddress == nil || *input.PrivateIpAddress == "" {
+				if nic.PrivateIpAddress != nil && *nic.PrivateIpAddress != "" {
+					input.PrivateIpAddress = nic.PrivateIpAddress
+				} else {
+					for _, spec := range nic.PrivateIpAddresses {
+						if spec != nil && aws.BoolValue(spec.Primary) &&
+							spec.PrivateIpAddress != nil && *spec.PrivateIpAddress != "" {
+							input.PrivateIpAddress = spec.PrivateIpAddress
+							break
+						}
+					}
+				}
+			}
+		}
+
+		// Pre-created ENI: attach the existing ENI instead of auto-creating one
+		// (AWS parity; used by EKS launcher to pre-create the ENI in customer VPC).
+		preExistingENIID := ""
+		if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
+			preExistingENIID = aws.StringValue(input.NetworkInterfaces[0].NetworkInterfaceId)
+		}
+		if preExistingENIID != "" {
+			if s.eniCreator == nil {
+				slog.ErrorContext(ctx, "PrepareRunInstances: pre-created ENI specified but ENI service unavailable",
+					"instanceId", instance.ID, "eniId", preExistingENIID)
+				lastRunErr = errors.New(awserrors.ErrorServerInternal)
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
+				continue
+			}
+			if err := s.attachPreCreatedENI(ctx, accountID, preExistingENIID, instance, ec2Instance); err != nil {
+				slog.ErrorContext(ctx, "PrepareRunInstances: pre-created ENI attach failed",
+					"instanceId", instance.ID, "eniId", preExistingENIID, "err", err)
+				lastRunErr = err
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
+				continue
+			}
+			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
+			instances = append(instances, instance)
+			allEC2Instances = append(allEC2Instances, ec2Instance)
+			continue
+		}
+
+		if (input.SubnetId == nil || *input.SubnetId == "") && s.eniCreator != nil {
+			defaultSubnet, dsErr := s.eniCreator.GetDefaultSubnet(ctx, accountID)
+			if dsErr == nil && defaultSubnet != nil {
+				input.SubnetId = aws.String(defaultSubnet.SubnetID)
+				slog.InfoContext(ctx, "PrepareRunInstances: resolved default subnet", "instanceId", instance.ID, "subnetId", defaultSubnet.SubnetID)
+			}
+		}
+
+		if input.SubnetId != nil && *input.SubnetId != "" && s.eniCreator != nil {
+			eniOut, eniErr := s.eniCreator.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
+				SubnetId:         input.SubnetId,
+				Description:      aws.String(ec2vpc.AutoENIDescriptionPrefix + instance.ID),
+				Groups:           input.SecurityGroupIds,
+				PrivateIpAddress: input.PrivateIpAddress,
+			}, accountID)
+			if eniErr != nil {
+				slog.ErrorContext(ctx, "PrepareRunInstances: auto-create ENI failed", "instanceId", instance.ID, "subnetId", *input.SubnetId, "err", eniErr)
+				lastRunErr = eniErr
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
+				continue
+			}
+
+			eni := eniOut.NetworkInterface
+			instance.ENIId = *eni.NetworkInterfaceId
+			instance.ENIMac = *eni.MacAddress
+			autoCreatedENI[instance.ID] = true
+
+			if _, attachErr := s.eniCreator.AttachENI(ctx, accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
+				// Without the attachment RegisterTargets silently drops the target;
+				// aborting prevents a leak of the auto-assigned EIP.
+				slog.ErrorContext(ctx, "PrepareRunInstances: AttachENI failed — aborting launch",
+					"eniId", instance.ENIId, "instanceId", instance.ID, "err", attachErr)
+				s.detachAndDeleteENI(ctx, accountID, instance.ID, instance.ENIId, true)
+				lastRunErr = attachErr
+				if reservationID == "" {
+					s.resourceMgr.Deallocate(instanceType)
+				} else {
+					s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+				}
+				continue
+			}
+			ec2Instance.SetPrivateIpAddress(*eni.PrivateIpAddress)
+			ec2Instance.SetSubnetId(*input.SubnetId)
+			ec2Instance.SetVpcId(*eni.VpcId)
+			ec2Instance.SecurityGroups = eni.Groups
+			ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
+				{
+					NetworkInterfaceId: eni.NetworkInterfaceId,
+					PrivateIpAddress:   eni.PrivateIpAddress,
+					MacAddress:         eni.MacAddress,
+					SubnetId:           input.SubnetId,
+					VpcId:              eni.VpcId,
+					Status:             aws.String("in-use"),
+					Groups:             eni.Groups,
+					Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+						DeviceIndex: aws.Int64(0),
+						Status:      aws.String("attached"),
+					},
+				},
+			}
+
+			slog.InfoContext(ctx, "PrepareRunInstances: auto-created ENI for VPC instance",
+				"instanceId", instance.ID,
+				"eniId", instance.ENIId,
+				"privateIp", *eni.PrivateIpAddress,
+				"mac", instance.ENIMac,
+			)
+
+			subnet, subErr := s.eniCreator.GetSubnet(ctx, accountID, *input.SubnetId)
+			wantPublic := subErr == nil && subnet != nil && subnet.MapPublicIpOnLaunch
+			if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil && input.NetworkInterfaces[0].AssociatePublicIpAddress != nil {
+				wantPublic = *input.NetworkInterfaces[0].AssociatePublicIpAddress
+			}
+			if wantPublic {
+				publicIP, poolName, allocErr := s.allocatePublicIP(ctx, *eni.NetworkInterfaceId, instance.ID)
+				if allocErr != nil {
+					// Fail rather than boot an unreachable instance.
+					slog.ErrorContext(ctx, "PrepareRunInstances: public IP allocation failed — aborting launch",
+						"instanceId", instance.ID, "eniId", *eni.NetworkInterfaceId, "err", allocErr)
+					s.detachAndDeleteENI(ctx, accountID, instance.ID, *eni.NetworkInterfaceId, true)
+					// Carry the allocator's own error rather than a flat
+					// capacity code: the gateway resolves the AWS code out
+					// of the wrap chain, so a genuinely exhausted pool still
+					// surfaces InsufficientAddressCapacity while an upstream
+					// DHCP or IPAM fault reports as itself instead of
+					// wearing a capacity code it did not earn.
+					lastRunErr = fmt.Errorf("allocate public IP for %s: %w", instance.ID, allocErr)
+					if reservationID == "" {
+						s.resourceMgr.Deallocate(instanceType)
+					} else {
+						s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+					}
+					continue
+				}
+				if updateErr := s.eniCreator.UpdateENIPublicIP(ctx, accountID, *eni.NetworkInterfaceId, publicIP, poolName); updateErr != nil {
+					slog.WarnContext(ctx, "PrepareRunInstances: failed to update ENI with public IP", "eniId", *eni.NetworkInterfaceId, "err", updateErr)
+				}
+				portName := topology.Port(*eni.NetworkInterfaceId)
+				if natErr := projection.New(s.natsConn).AddNAT(*eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress); natErr != nil {
+					slog.ErrorContext(ctx, "PrepareRunInstances: vpc.add-nat failed — rolling back public IP to avoid surfacing an unreachable address",
+						"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
+					// Neutralise before releasing in case timeout committed the rule.
+					projection.New(s.natsConn).RemoveNAT(*eni.VpcId, publicIP, *eni.PrivateIpAddress, portName, *eni.MacAddress)
+					s.rollbackAutoAssignedPublicIP(ctx, accountID, instance.ID, *eni.NetworkInterfaceId, publicIP, poolName)
+					lastRunErr = natErr
+					if reservationID == "" {
+						s.resourceMgr.Deallocate(instanceType)
+					} else {
+						s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+					}
+					continue
+				}
+				ec2Instance.PublicIpAddress = aws.String(publicIP)
+				instance.PublicIP = publicIP
+				instance.PublicIPPool = poolName
+				slog.InfoContext(ctx, "PrepareRunInstances: auto-assigned public IP",
+					"instanceId", instance.ID,
+					"publicIp", publicIP,
+					"privateIp", *eni.PrivateIpAddress,
+					"pool", poolName,
+				)
+			}
+		}
+
+		ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
+		instances = append(instances, instance)
+		allEC2Instances = append(allEC2Instances, ec2Instance)
+	}
+
+	if len(instances) < minCount {
+		// The instances that succeeded are abandoned here too, so their
+		// interfaces and external addresses have to go back with the capacity —
+		// an orphaned ENI pins its subnet, VPC and account undeletable.
+		for _, instance := range instances {
+			s.rollbackPreparedInstance(ctx, accountID, instance, autoCreatedENI[instance.ID])
+			if reservationID == "" {
+				s.resourceMgr.Deallocate(instanceType)
+			} else {
+				s.resourceMgr.ReleaseToReservation(reservationID, instanceType)
+			}
+		}
+		errCode := awserrors.ValidErrorCodeFromError(lastRunErr)
+		// Log the cause next to the code: collapsing to the code alone is how
+		// an upstream DHCP fault came to be recorded fleet-wide as an exhausted
+		// address pool, with nothing left in the record to contradict it.
+		slog.ErrorContext(ctx, "PrepareRunInstances: failed to create minimum instances",
+			"created", len(instances), "minCount", minCount, "code", errCode, "err", lastRunErr)
+		return nil, nil, nil, errors.New(errCode)
+	}
+
+	reservation := &ec2.Reservation{}
+	reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
+	reservation.SetOwnerId(accountID)
+	reservation.Instances = allEC2Instances
+
+	for _, instance := range instances {
+		instance.Reservation = reservation
+		instance.AccountID = accountID
+		if reservationID != "" {
+			instance.CapacityReservationId = reservationID
+		}
+		if input.Placement != nil && input.Placement.GroupName != nil && *input.Placement.GroupName != "" {
+			instance.PlacementGroupName = *input.Placement.GroupName
+		}
+	}
+
+	return reservation, instances, instanceType, nil
+}
+
+// attachPreCreatedENI verifies the ENI is available, attaches it as device-0,
+// and populates the VM + ec2.Instance. Public-IP auto-assignment is skipped;
+// the caller manages that out-of-band.
+func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID, eniID string, instance *vm.VM, ec2Instance *ec2.Instance) error {
+	eniInfo, err := s.eniCreator.GetENI(ctx, accountID, eniID)
+	if err != nil {
+		return err
+	}
+	if eniInfo == nil {
+		return errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)
+	}
+	if eniInfo.Status == "in-use" {
+		return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+	}
+	if _, err := s.eniCreator.AttachENI(ctx, accountID, eniID, instance.ID, 0); err != nil {
+		return err
+	}
+
+	instance.ENIId = eniID
+	instance.ENIMac = eniInfo.MacAddress
+
+	ec2Instance.SetPrivateIpAddress(eniInfo.PrivateIpAddress)
+	ec2Instance.SetSubnetId(eniInfo.SubnetID)
+	ec2Instance.SetVpcId(eniInfo.VpcID)
+	if len(eniInfo.SecurityGroupIDs) > 0 {
+		groups := make([]*ec2.GroupIdentifier, 0, len(eniInfo.SecurityGroupIDs))
+		for _, id := range eniInfo.SecurityGroupIDs {
+			groups = append(groups, &ec2.GroupIdentifier{GroupId: aws.String(id)})
+		}
+		ec2Instance.SecurityGroups = groups
+	}
+	ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+		NetworkInterfaceId: aws.String(eniID),
+		PrivateIpAddress:   aws.String(eniInfo.PrivateIpAddress),
+		MacAddress:         aws.String(eniInfo.MacAddress),
+		SubnetId:           aws.String(eniInfo.SubnetID),
+		VpcId:              aws.String(eniInfo.VpcID),
+		Status:             aws.String("in-use"),
+		Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+			DeviceIndex: aws.Int64(0),
+			Status:      aws.String("attached"),
+		},
+	}}
+
+	slog.InfoContext(ctx, "PrepareRunInstances: attached pre-created ENI",
+		"instanceId", instance.ID,
+		"eniId", eniID,
+		"privateIp", eniInfo.PrivateIpAddress,
+		"mac", eniInfo.MacAddress,
+	)
+	return nil
+}
+
+// LaunchRunInstances runs the heavyweight launch loop for VMs already inserted
+// into vmMgr: volume prep, GPU claim, vmMgr.Run. Partial failures are tolerated.
+func (s *InstanceServiceImpl) LaunchRunInstances(ctx context.Context, instances []*vm.VM, input *ec2.RunInstancesInput, instanceType *ec2.InstanceTypeInfo) {
+	var successCount int
+	for _, instance := range instances {
+		// Skip if a concurrent terminate raced with prepare.
+		status := s.vmMgr.Status(instance)
+		if status != vm.StatePending && status != vm.StateProvisioning {
+			slog.InfoContext(ctx, "LaunchRunInstances: instance state changed during provisioning, skipping launch",
+				"instanceId", instance.ID, "status", string(status))
+			continue
+		}
+
+		// Pre-compute dev MAC for per-interface cloud-init netplan (route suppression).
+		if s.config.Daemon.DevNetworking && instance.ENIId != "" {
+			instance.DevMAC = vm.GenerateDevMAC(instance.ID)
+		}
+
+		volumeInfos, err := s.GenerateVolumes(ctx, input, instance)
+		if err != nil {
+			slog.ErrorContext(ctx, "LaunchRunInstances: GenerateVolumes failed", "instanceId", instance.ID, "err", err)
+			s.vmMgr.MarkFailed(ctx, instance, "volume_preparation_failed")
+			continue
+		}
+
+		instance.Instance.BlockDeviceMappings = make([]*ec2.InstanceBlockDeviceMapping, 0, len(volumeInfos))
+		for _, vi := range volumeInfos {
+			mapping := &ec2.InstanceBlockDeviceMapping{}
+			mapping.SetDeviceName(vi.DeviceName)
+			mapping.Ebs = &ec2.EbsInstanceBlockDevice{}
+			mapping.Ebs.SetVolumeId(vi.VolumeId)
+			mapping.Ebs.SetAttachTime(vi.AttachTime)
+			mapping.Ebs.SetDeleteOnTermination(vi.DeleteOnTermination)
+			mapping.Ebs.SetStatus("attached")
+			instance.Instance.BlockDeviceMappings = append(instance.Instance.BlockDeviceMappings, mapping)
+		}
+
+		if instancetypes.IsGPUType(instanceType) {
+			// Admission gates on the daemon's GPU manager, which is a different
+			// field wired at a different moment. Booting a GPU type without a
+			// claimer would hand the customer a running, GPU-less instance.
+			if s.gpuClaimer == nil {
+				slog.ErrorContext(ctx, "LaunchRunInstances: GPU type admitted with no GPU claimer wired",
+					"instanceId", instance.ID, "instanceType", aws.StringValue(instanceType.InstanceType))
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
+				continue
+			}
+			profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
+			gpuCount := instancetypes.GPUCountForType(aws.StringValue(instanceType.InstanceType))
+			attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
+			if gpuErr != nil {
+				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
+				continue
+			}
+			if len(attachments) != gpuCount {
+				slog.ErrorContext(ctx, "LaunchRunInstances: GPU claim returned the wrong count",
+					"instanceId", instance.ID, "requested", gpuCount, "got", len(attachments))
+				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
+					slog.ErrorContext(ctx, "LaunchRunInstances: GPU release after short claim failed",
+						"instanceId", instance.ID, "err", releaseErr)
+				}
+				s.vmMgr.MarkFailed(ctx, instance, "gpu_claim_failed")
+				continue
+			}
+			instance.GPUAttachments = attachments
+			slog.InfoContext(ctx, "LaunchRunInstances: GPUs claimed for instance", "instanceId", instance.ID,
+				"count", len(attachments), "attachments", attachments)
+		}
+
+		if err := s.vmMgr.Run(ctx, instance); err != nil {
+			slog.ErrorContext(ctx, "LaunchRunInstances: vmMgr.Run failed", "instanceId", instance.ID, "err", err)
+			if len(instance.GPUAttachments) > 0 && s.gpuClaimer != nil {
+				if releaseErr := s.gpuClaimer.Release(instance.ID); releaseErr != nil {
+					slog.ErrorContext(ctx, "LaunchRunInstances: GPU release failed after launch failure",
+						"instanceId", instance.ID, "err", releaseErr)
+				}
+			}
+			s.vmMgr.MarkFailed(ctx, instance, "launch_failed")
+			continue
+		}
+
+		if s.vmMgr.Status(instance) != vm.StateRunning {
+			slog.InfoContext(ctx, "LaunchRunInstances: launch did not reach running state", "instanceId", instance.ID)
+			continue
+		}
+		s.vmMgr.LogGuestDeviceMap(instance)
+
+		successCount++
+		slog.InfoContext(ctx, "LaunchRunInstances: launched instance", "instanceId", instance.ID)
+	}
+
+	slog.InfoContext(ctx, "LaunchRunInstances: completed", "requested", len(instances), "launched", successCount)
+}
+
+// RunInstances is for non-daemon callers (tests). The daemon calls
+// PrepareRunInstances + LaunchRunInstances directly to respond before launching.
+func (s *InstanceServiceImpl) RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
+	reservation, instances, instanceType, err := s.PrepareRunInstances(ctx, input, accountID, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, instance := range instances {
+		s.vmMgr.Insert(instance)
+	}
+	s.LaunchRunInstances(ctx, instances, input, instanceType)
+	return reservation, nil
+}
+
+// RebootInstance handles an ec2.cmd reboot for a running instance on this node.
+func (s *InstanceServiceImpl) RebootInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
+	slog.InfoContext(ctx, "RebootInstance: rebooting instance", "id", command.ID)
+
+	if err := s.vmMgr.Reboot(ctx, instance.ID); err != nil {
+		switch {
+		case errors.Is(err, vm.ErrInstanceNotFound):
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		case errors.Is(err, vm.ErrInvalidTransition):
+			slog.ErrorContext(ctx, "RebootInstance: instance not in running state",
+				"instanceId", command.ID, "err", err)
+			return errors.New(awserrors.ErrorIncorrectInstanceState)
+		default:
+			slog.ErrorContext(ctx, "RebootInstance: reboot failed", "instanceId", command.ID, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
+	slog.InfoContext(ctx, "RebootInstance: rebooted", "instanceId", command.ID)
+	return nil
+}
+
+// StartInstance handles an ec2.cmd start for a locally stopped instance.
+func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
+	slog.InfoContext(ctx, "StartInstance: starting instance", "id", command.ID)
+
+	status := s.vmMgr.Status(instance)
+	// StateError is startable so a crashed instance can be manually recovered.
+	if status != vm.StateStopped && status != vm.StateError {
+		slog.ErrorContext(ctx, "StartInstance: instance not in a startable state", "instanceId", command.ID, "status", status)
+		return errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+
+	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
+	if ok {
+		if err := s.resourceMgr.Allocate(instanceType); err != nil {
+			slog.ErrorContext(ctx, "StartInstance: failed to allocate resources", "id", command.ID, "err", err)
+			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		}
+	}
+
+	// Clear the stop intent before launch; a stale DesiredStopped would cause
+	// the daemon to skip QEMU reconnect on restart.
+	s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.DesiredState = vm.DesiredRunning })
+
+	if err := s.vmMgr.Start(ctx, instance.ID); err != nil {
+		if ok {
+			s.resourceMgr.Deallocate(instanceType)
+		}
+		switch {
+		case errors.Is(err, vm.ErrInstanceNotFound):
+			slog.WarnContext(ctx, "StartInstance: instance not found in manager",
+				"instanceId", command.ID, "err", err)
+			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		default:
+			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+
+	s.vmMgr.LogGuestDeviceMap(instance)
+
+	slog.InfoContext(ctx, "StartInstance: started", "instanceId", instance.ID)
+	return nil
+}
+
+// StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
+// transition synchronously, then dispatches Stop/Terminate in a goroutine.
+func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
+	isTerminate := command.Attributes.TerminateInstance
+	action := "Stopping"
+	initialState := vm.StateStopping
+	if isTerminate {
+		action = "Terminating"
+		initialState = vm.StateShuttingDown
+	}
+
+	slog.InfoContext(ctx, "StopOrTerminateInstance: "+action, "id", command.ID)
+
+	// Single lock acquisition covers protection check, idempotency, transition
+	// validation, and attribute stamp to prevent races with ModifyInstanceAttribute.
+	var (
+		protected, raced, stateMismatch bool
+		currentState                    vm.InstanceState
+	)
+	ok := s.vmMgr.UpdateState(instance.ID, func(v *vm.VM) {
+		currentState = v.Status
+		if isTerminate && v.IsTerminationProtected() {
+			protected = true
+			return
+		}
+		if isTerminate && v.Status == vm.StateShuttingDown {
+			raced = true
+			return
+		}
+		if !vm.IsValidTransition(v.Status, initialState) {
+			stateMismatch = true
+			return
+		}
+		if isTerminate {
+			now := time.Now().UTC()
+			v.DeletionTimestamp = &now
+		} else {
+			v.DesiredState = vm.DesiredStopped
+		}
+		// Auto-disassociate IAM profile on terminate (AWS parity; stop/start preserves it).
+		// Done under the same lock so DescribeInstances never sees a terminated
+		// instance advertising a profile.
+		if isTerminate && v.IamInstanceProfileArn != "" {
+			slog.InfoContext(ctx, "IAM instance profile auto-disassociated",
+				"instance_id", v.ID,
+				"association_id", v.IamInstanceProfileAssociationId,
+				"profile_arn", v.IamInstanceProfileArn,
+				"reason", "instance terminated")
+			v.IamInstanceProfileArn = ""
+			v.IamInstanceProfileAssociationId = ""
+		}
+	})
+	if !ok {
+		if isTerminate {
+			// Idempotent terminate (rule #1): the instance was reclaimed/torn down
+			// between resolve and lock, so it is already gone.
+			slog.InfoContext(ctx, "StopOrTerminateInstance: instance already gone, terminate is idempotent",
+				"instanceId", instance.ID)
+			return nil
+		}
+		slog.WarnContext(ctx, "StopOrTerminateInstance: instance no longer in running map",
+			"instanceId", instance.ID)
+		return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if protected {
+		slog.WarnContext(ctx, "StopOrTerminateInstance: instance has termination protection",
+			"instanceId", instance.ID)
+		return errors.New(awserrors.ErrorOperationNotPermitted)
+	}
+	if raced {
+		// Idempotent: a concurrent terminate is already in progress.
+		slog.InfoContext(ctx, "StopOrTerminateInstance: instance already shutting down, terminate is idempotent", "instanceId", instance.ID)
+		return nil
+	}
+	if stateMismatch {
+		// Surface IncorrectInstanceState synchronously (AWS SDK expects 400).
+		slog.WarnContext(ctx, "StopOrTerminateInstance: instance in incorrect state for "+strings.ToLower(action),
+			"instanceId", instance.ID, "currentState", string(currentState))
+		return errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+
+	go func(id, ownerAccountID string) { //nolint:gosec // detached lifecycle op: stop/terminate continues after the API ack; request ctx would cancel it
+		var err error
+		if isTerminate {
+			err = s.vmMgr.Terminate(id)
+		} else {
+			err = s.vmMgr.Stop(id)
+		}
+		if err != nil {
+			if errors.Is(err, vm.ErrInvalidTransition) {
+				slog.Warn("StopOrTerminateInstance: lifecycle transition raced; ack already sent",
+					"id", id, "action", strings.ToLower(action), "err", err)
+				return
+			}
+			slog.Error("StopOrTerminateInstance: failed to "+strings.ToLower(action), "err", err, "id", id)
+			return
+		}
+		if isTerminate {
+			s.deleteCentralInstanceTags(context.Background(), id, ownerAccountID)
+		}
+	}(instance.ID, instance.AccountID)
+
+	return nil
+}
+
+// AssociateIamInstanceProfile attaches an instance profile to a running instance.
+// Validates no existing profile, then atomically writes the ARN + new association ID.
+// InstanceProfile.Id is left nil; the gateway enriches it from IAMService.
+func (s *InstanceServiceImpl) AssociateIamInstanceProfile(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) (*ec2.IamInstanceProfileAssociation, error) {
+	if command.IamProfileAssociationData == nil || command.IamProfileAssociationData.InstanceProfileArn == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	profileArn := command.IamProfileAssociationData.InstanceProfileArn
+	newID := awsidentifiers.GenerateResourceID("iip-assoc")
+	timestamp := time.Now().UTC()
+
+	var alreadyAssociated bool
+	found, err := s.vmMgr.UpdateAndPersist(instance.ID, func(v *vm.VM) bool {
+		if v.IamInstanceProfileArn != "" {
+			alreadyAssociated = true
+			return false
+		}
+		v.IamInstanceProfileArn = profileArn
+		v.IamInstanceProfileAssociationId = newID
+		return true
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "AssociateIamInstanceProfile: persist failed", "instanceId", instance.ID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if alreadyAssociated {
+		return nil, errors.New(awserrors.ErrorIamInstanceProfileAlreadyAssociated)
+	}
+	if !found {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	slog.InfoContext(ctx, "AssociateIamInstanceProfile: associated",
+		"instanceId", instance.ID, "associationId", newID, "profileArn", profileArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(newID),
+		InstanceId:         aws.String(instance.ID),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(profileArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+		Timestamp:          aws.Time(timestamp),
+	}, nil
+}
+
+// DisassociateIamProfileAssociation clears the profile association on the local VM.
+// Returns nil when no local VM owns the ID so the gateway fan-out can skip this node.
+func (s *InstanceServiceImpl) DisassociateIamProfileAssociation(ctx context.Context, input *ec2.DisassociateIamInstanceProfileInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+	if input == nil || input.AssociationId == nil || *input.AssociationId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	associationID := *input.AssociationId
+	owner, ok := s.findInstanceByAssociationID(associationID, accountID)
+	if !ok {
+		return nil, nil
+	}
+
+	var clearedArn string
+	timestamp := time.Now().UTC()
+	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {
+		// Re-check under lock: a concurrent terminate may have cleared the association.
+		if v.IamInstanceProfileAssociationId != associationID {
+			return false
+		}
+		clearedArn = v.IamInstanceProfileArn
+		v.IamInstanceProfileArn = ""
+		v.IamInstanceProfileAssociationId = ""
+		return true
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "DisassociateIamProfileAssociation: persist failed", "instanceId", owner, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if clearedArn == "" {
+		// Lost a race; NoOp so the gateway collector skips this node.
+		return nil, nil
+	}
+
+	slog.InfoContext(ctx, "DisassociateIamProfileAssociation: disassociated",
+		"instanceId", owner, "associationId", associationID, "profileArn", clearedArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(associationID),
+		InstanceId:         aws.String(owner),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(clearedArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateDisassociating),
+		Timestamp:          aws.Time(timestamp),
+	}, nil
+}
+
+// ReplaceIamProfileAssociation atomically swaps the profile ARN and AssociationId.
+// Returns nil when no local VM owns the old ID. The gateway has already resolved
+// the ARN to canonical form.
+func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, accountID string) (*ec2.IamInstanceProfileAssociation, error) {
+	if input == nil || input.AssociationId == nil || *input.AssociationId == "" ||
+		input.IamInstanceProfile == nil || aws.StringValue(input.IamInstanceProfile.Arn) == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	oldID := *input.AssociationId
+	newArn := *input.IamInstanceProfile.Arn
+
+	owner, ok := s.findInstanceByAssociationID(oldID, accountID)
+	if !ok {
+		return nil, nil
+	}
+
+	newID := awsidentifiers.GenerateResourceID("iip-assoc")
+	timestamp := time.Now().UTC()
+	var swapped bool
+	_, err := s.vmMgr.UpdateAndPersist(owner, func(v *vm.VM) bool {
+		if v.IamInstanceProfileAssociationId != oldID {
+			return false
+		}
+		v.IamInstanceProfileArn = newArn
+		v.IamInstanceProfileAssociationId = newID
+		swapped = true
+		return true
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "ReplaceIamProfileAssociation: persist failed", "instanceId", owner, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !swapped {
+		return nil, nil
+	}
+
+	slog.InfoContext(ctx, "ReplaceIamProfileAssociation: replaced",
+		"instanceId", owner, "oldAssociationId", oldID, "newAssociationId", newID, "profileArn", newArn)
+	return &ec2.IamInstanceProfileAssociation{
+		AssociationId:      aws.String(newID),
+		InstanceId:         aws.String(owner),
+		IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(newArn)},
+		State:              aws.String(ec2.IamInstanceProfileAssociationStateAssociated),
+		Timestamp:          aws.Time(timestamp),
+	}, nil
+}
+
+// DescribeIamProfileAssociations returns live associations on this node visible to
+// the caller. Supports "instance-id" and "state" filters; unknown filters return
+// InvalidParameterValue.
+func (s *InstanceServiceImpl) DescribeIamProfileAssociations(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
+	assocFilter := stringPtrSliceToSet(input.AssociationIds)
+	instFilter := make(map[string]bool)
+	stateFilter := make(map[string]bool)
+	for _, f := range input.Filters {
+		if f == nil || f.Name == nil {
+			continue
+		}
+		switch *f.Name {
+		case "instance-id":
+			for _, v := range f.Values {
+				if v != nil && *v != "" {
+					instFilter[*v] = true
+				}
+			}
+		case "state":
+			for _, v := range f.Values {
+				if v != nil && *v != "" {
+					stateFilter[*v] = true
+				}
+			}
+		default:
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
+	}
+
+	out := &ec2.DescribeIamInstanceProfileAssociationsOutput{}
+	s.vmMgr.ForEach(func(v *vm.VM) {
+		if v.IamInstanceProfileArn == "" || v.IamInstanceProfileAssociationId == "" {
+			return
+		}
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			return
+		}
+		if len(assocFilter) > 0 && !assocFilter[v.IamInstanceProfileAssociationId] {
+			return
+		}
+		if len(instFilter) > 0 && !instFilter[v.ID] {
+			return
+		}
+		// Only "associated" state exists; other state filters yield empty results.
+		const liveState = ec2.IamInstanceProfileAssociationStateAssociated
+		if len(stateFilter) > 0 && !stateFilter[liveState] {
+			return
+		}
+		out.IamInstanceProfileAssociations = append(out.IamInstanceProfileAssociations, &ec2.IamInstanceProfileAssociation{
+			AssociationId:      aws.String(v.IamInstanceProfileAssociationId),
+			InstanceId:         aws.String(v.ID),
+			IamInstanceProfile: &ec2.IamInstanceProfile{Arn: aws.String(v.IamInstanceProfileArn)},
+			State:              aws.String(liveState),
+		})
+	})
+	return out, nil
+}
+
+// findInstanceByAssociationID returns the VM ID for the given AssociationId
+// if the caller's account owns it. Mutations re-validate under UpdateAndPersist.
+func (s *InstanceServiceImpl) findInstanceByAssociationID(associationID, accountID string) (string, bool) {
+	var owner string
+	s.vmMgr.ForEach(func(v *vm.VM) {
+		if owner != "" || v.IamInstanceProfileAssociationId != associationID {
+			return
+		}
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			return
+		}
+		owner = v.ID
+	})
+	if owner == "" {
+		return "", false
+	}
+	return owner, true
+}
+
+func stringPtrSliceToSet(in []*string) map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for _, s := range in {
+		if s != nil && *s != "" {
+			out[*s] = true
+		}
+	}
+	return out
+}
+
+func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
+	p := parseVolumeParams(input)
+	if input.ImageId != nil {
+		p.size = floorVolumeSizeToAMI(ctx, s.amiLoader, *input.ImageId, p.size)
+	}
+
+	// Capture attach time for the root volume
+	attachTime := time.Now()
+
+	size := p.size
+	imageId := p.imageId
+	deviceName := p.deviceName
+	deleteOnTermination := p.deleteOnTermination
+
+	// Step 1: Create or validate root volume
+	err := s.prepareRootVolume(ctx, input, imageId, deviceName, size, p.iops, instance, deleteOnTermination)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 2: Create EFI variable store (only when the AMI is UEFI; BIOS
+	// guests must not allocate an orphan VARS volume).
+	if instance.BootMode == "uefi" || instance.BootMode == "uefi-preferred" {
+		arch := instanceArchitecture(s.instanceTypes[*input.InstanceType])
+		err = s.prepareEFIVolume(ctx, imageId, instance, arch)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// The EFI store is internal, so it is not reported; every volume the
+	// request named is.
+	volumeInfos := []VolumeInfo{
+		{
+			VolumeId:            imageId,
+			DeviceName:          deviceName,
+			AttachTime:          attachTime,
+			DeleteOnTermination: deleteOnTermination,
+		},
+	}
+
+	// Step 3: Create a volume for each remaining EBS mapping.
+	data, err := s.prepareDataVolumes(ctx, input, instance)
+	if err != nil {
+		return nil, err
+	}
+	volumeInfos = append(volumeInfos, data...)
+
+	return volumeInfos, nil
+}
+
+// prepareDataVolumes creates an empty volume for every EBS mapping that is not
+// the root and records each as a non-boot request the launcher attaches. A
+// failure unwinds the volumes this call created, so a refused launch leaves none.
+func (s *InstanceServiceImpl) prepareDataVolumes(ctx context.Context, input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
+	params := parseDataVolumeParams(input)
+	if len(params) == 0 {
+		return nil, nil
+	}
+	if s.volumeCreator == nil {
+		slog.ErrorContext(ctx, "no volume creator configured", "op", "prepareDataVolumes")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var infos []VolumeInfo
+	unwind := func() {
+		for _, info := range infos {
+			if _, err := s.volumeCreator.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
+				VolumeId: aws.String(info.VolumeId),
+			}, instance.AccountID); err != nil {
+				slog.WarnContext(ctx, "rollback delete of launch data volume failed",
+					"volumeId", info.VolumeId, "err", err)
+			}
+		}
+	}
+
+	for _, p := range params {
+		created, err := s.createDataVolume(ctx, input, instance.AccountID, p)
+		if err != nil {
+			unwind()
+			return nil, err
+		}
+		volumeID := aws.StringValue(created.VolumeId)
+		appendDataEBSRequest(instance, volumeID, p.deviceName, p.deleteOnTermination)
+		infos = append(infos, VolumeInfo{
+			VolumeId:            volumeID,
+			DeviceName:          p.deviceName,
+			AttachTime:          time.Now(),
+			DeleteOnTermination: p.deleteOnTermination,
+		})
+	}
+	return infos, nil
+}
+
+// createDataVolume allocates one empty volume through the volume service, so
+// the launch path reuses its validation and metadata write, then records the
+// mapping's DeleteOnTermination, which CreateVolume has no field for.
+func (s *InstanceServiceImpl) createDataVolume(ctx context.Context, input *ec2.RunInstancesInput, accountID string, p dataVolumeParams) (*ec2.Volume, error) {
+	create := &ec2.CreateVolumeInput{
+		AvailabilityZone:  aws.String(s.config.AZ),
+		Size:              aws.Int64(p.sizeGiB),
+		VolumeType:        aws.String(ebspolicy.VolumeTypeGP3),
+		TagSpecifications: volumeTagSpecifications(input.TagSpecifications),
+	}
+	if p.iops > 0 {
+		create.Iops = aws.Int64(p.iops)
+	}
+	created, err := s.volumeCreator.CreateVolume(ctx, create, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "launch data volume creation failed",
+			"deviceName", p.deviceName, "sizeGiB", p.sizeGiB, "err", err)
+		return nil, err
+	}
+	if created == nil || aws.StringValue(created.VolumeId) == "" {
+		slog.ErrorContext(ctx, "launch data volume creation returned no volume", "deviceName", p.deviceName)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !p.deleteOnTermination {
+		return created, nil
+	}
+	meta, err := s.metadata.GetVolume(ctx, accountID, aws.StringValue(created.VolumeId))
+	if err != nil {
+		slog.ErrorContext(ctx, "launch data volume metadata read failed",
+			"volumeId", aws.StringValue(created.VolumeId), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	meta.DeleteOnTermination = true
+	if err := s.metadata.PutVolume(ctx, meta); err != nil {
+		slog.ErrorContext(ctx, "launch data volume metadata write failed",
+			"volumeId", aws.StringValue(created.VolumeId), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return created, nil
+}
+
+// volumeTagSpecifications returns the volume tag specifications from a launch
+// request, which AWS applies to every volume the launch creates.
+func volumeTagSpecifications(specs []*ec2.TagSpecification) []*ec2.TagSpecification {
+	var out []*ec2.TagSpecification
+	for _, spec := range specs {
+		if spec != nil && aws.StringValue(spec.ResourceType) == ec2.ResourceTypeVolume {
+			out = append(out, spec)
+		}
+	}
+	return out
+}
+
+// prepareRootVolume allocates the root volume through the EBS provider and
+// records the boot volume the launcher must attach.
+func (s *InstanceServiceImpl) prepareRootVolume(ctx context.Context, input *ec2.RunInstancesInput, imageId, deviceName string, size, iops int, instance *vm.VM, deleteOnTermination bool) error {
+	if s.ebsProvider == nil {
+		slog.ErrorContext(ctx, "no EBS provider configured", "op", "prepareRootVolume")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.createRootVolumeViaProvider(ctx, rootVolumeSpec{
+		amiID:               aws.StringValue(input.ImageId),
+		volumeID:            imageId,
+		accountID:           instance.AccountID,
+		sizeBytes:           size,
+		iops:                iops,
+		deleteOnTermination: deleteOnTermination,
+		tags:                volumeTagsFromSpec(input.TagSpecifications),
+	}); err != nil {
+		return err
+	}
+	appendRootEBSRequest(instance, imageId, deviceName, deleteOnTermination)
+	return nil
+}
+
+// appendRootEBSRequest records the boot volume the launcher must attach. The
+// device name travels with it because the launcher writes it to the volume's
+// metadata, which is what DescribeVolumes reports as Attachments[].Device.
+func appendRootEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
+	instance.EBSRequests.Mu.Lock()
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
+		Name:                volumeID,
+		DeviceName:          deviceName,
+		Boot:                true,
+		DeleteOnTermination: deleteOnTermination,
+	})
+	instance.EBSRequests.Mu.Unlock()
+}
+
+// appendDataEBSRequest records a non-boot volume the launcher must attach at
+// the device name the request named, which is what DescribeVolumes reports as
+// Attachments[].Device.
+func appendDataEBSRequest(instance *vm.VM, volumeID, deviceName string, deleteOnTermination bool) {
+	instance.EBSRequests.Mu.Lock()
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
+		Name:                volumeID,
+		DeviceName:          deviceName,
+		DeleteOnTermination: deleteOnTermination,
+	})
+	instance.EBSRequests.Mu.Unlock()
+}
+
+// rootVolumeSpec describes the boot volume a launch needs, in provider-neutral
+// terms taken from the launch request.
+type rootVolumeSpec struct {
+	amiID               string
+	volumeID            string
+	accountID           string
+	sizeBytes           int
+	iops                int
+	deleteOnTermination bool
+	tags                map[string]string
+}
+
+// createRootVolumeViaProvider allocates the root volume through the injected
+// provider, cloning the AMI's snapshot, then records it in ebsmetadata. No
+// control-plane engine is built, so a launch never becomes a second writer.
+func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, spec rootVolumeSpec) error {
+	amiConfig, err := s.amiLoader.GetAMIConfig(ctx, spec.amiID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Could not load AMI config", "imageId", spec.amiID, "err", err)
+		return errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+	if amiConfig.SnapshotID == "" {
+		slog.ErrorContext(ctx, "AMI has no snapshot ID, cannot perform zero-copy clone", "imageId", spec.amiID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// The provider resolves a clone's base blocks against the snapshot's source
+	// volume, so the wire contract requires both IDs together.
+	sourceVolumeID, err := s.amiLoader.GetAMISourceVolumeID(ctx, spec.amiID)
+	if err != nil {
+		slog.ErrorContext(ctx, "Could not resolve AMI snapshot source volume",
+			"imageId", spec.amiID, "snapshotId", amiConfig.SnapshotID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// The control plane cannot see how a provider encrypts its volumes, but this
+	// shared config knob is the same one the legacy path derives Encrypted from.
+	encrypted, err := ebsencryption.Enabled(s.config.Viperblock.EncryptionKeyFile)
+	if err != nil {
+		slog.ErrorContext(ctx, "Could not load encryption key for root volume", "volumeId", spec.volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, "Creating root volume from AMI snapshot via EBS provider",
+		"imageId", spec.amiID, "volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "sourceVolumeId", sourceVolumeID)
+
+	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+		Versioned:              ebsprovider.NewVersioned(),
+		VolumeID:               spec.volumeID,
+		CapacityRange:          ebsprovider.CapacityRange{RequiredBytes: int64(spec.sizeBytes)},
+		AvailabilityZone:       s.config.AZ,
+		SourceSnapshotID:       amiConfig.SnapshotID,
+		SourceSnapshotVolumeID: sourceVolumeID,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Provider root volume creation failed",
+			"volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if created == nil {
+		slog.ErrorContext(ctx, "Provider returned no volume for the root volume", "volumeId", spec.volumeID)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// DescribeVolumes enumerates ebsmetadata documents only, so a root volume
+	// without one is invisible and its attach-time state write fails.
+	if err := s.metadata.PutVolume(ctx, ebsmetadata.Volume{
+		VolumeID: spec.volumeID, TenantID: spec.accountID,
+		CapacityGiB: safecast.IntToUint64(spec.sizeBytes / bytesPerGiB),
+		State:       string(ebsprovider.VolumeStateAvailable),
+		CreatedAt:   time.Now(), AvailabilityZone: s.config.AZ,
+		VolumeType: ebspolicy.VolumeTypeGP3, IOPS: rootVolumeIOPS(spec.iops),
+		Throughput: ebspolicy.DefaultGP3Throughput, SnapshotID: amiConfig.SnapshotID,
+		DeleteOnTermination: spec.deleteOnTermination, Encrypted: encrypted,
+		Tags:           spec.tags,
+		ProviderHandle: created.Handle,
+	}); err != nil {
+		slog.ErrorContext(ctx, "Failed to persist root volume metadata", "volumeId", spec.volumeID, "err", err)
+		if delErr := s.ebsProvider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+			Versioned: ebsprovider.NewVersioned(), VolumeID: spec.volumeID, Handle: created.Handle,
+		}); delErr != nil {
+			slog.ErrorContext(ctx, "Failed to roll back untracked root volume", "volumeId", spec.volumeID, "err", delErr)
+		}
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
+// rootVolumeIOPS falls back to the gp3 baseline when the launch request named
+// no Iops, so DescribeVolumes never reports a root volume as having zero.
+func rootVolumeIOPS(requested int) int {
+	if requested <= 0 {
+		return ebspolicy.DefaultGP3IOPS
+	}
+	return requested
+}
+
+// prepareEFIVolume creates the per-VM EFI variable store, sized exactly to the
+// firmware VARS template (pflash requires byte-exact size) and seeded from it.
+// arch is "x86_64" | "arm64".
+func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID string, instance *vm.VM, arch string) error {
+	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
+	if err != nil {
+		slog.ErrorContext(ctx, "UEFI firmware not installed on this host", "arch", arch, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	template, err := os.ReadFile(varsTemplate)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read VARS template", "path", varsTemplate, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if int64(len(template)) != varsSize {
+		slog.ErrorContext(ctx, "VARS template size mismatch between stat and read", "path", varsTemplate, "statSize", varsSize, "readSize", len(template))
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "firmwarePath", codePath, "varsTemplate", varsTemplate, "size", varsSize)
+
+	efiVolumeName := fmt.Sprintf("%s-efi", volumeID)
+	if s.ebsProvider == nil {
+		slog.ErrorContext(ctx, "no EBS provider configured", "op", "prepareEFIVolume")
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.createEFIVolumeViaProvider(ctx, efiVolumeName, template); err != nil {
+		return err
+	}
+
+	instance.EBSRequests.Mu.Lock()
+	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
+		Name: efiVolumeName,
+		Boot: false,
+		EFI:  true,
+	})
+	instance.EBSRequests.Mu.Unlock()
+
+	return nil
+}
+
+// createEFIVolumeViaProvider allocates the EFI variable store through the
+// provider, seeding it with this node's firmware VARS template. The bytes
+// travel with the request so the region matches the firmware that will run.
+func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, efiVolumeName string, template []byte) error {
+	slog.InfoContext(ctx, "Creating EFI variable store via EBS provider", "name", efiVolumeName, "seedBytes", len(template))
+
+	// The store is internal to the launch, never attachable and filtered out of
+	// DescribeVolumes, so it gets no ebsmetadata document the way a root volume
+	// does. Its lifecycle is the root volume's DeleteVolume.
+	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
+		Versioned:        ebsprovider.NewVersioned(),
+		VolumeID:         efiVolumeName,
+		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: int64(len(template))},
+		AvailabilityZone: s.config.AZ,
+		SeedData:         template,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "Provider EFI volume creation failed", "name", efiVolumeName, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if created == nil {
+		slog.ErrorContext(ctx, "Provider returned no volume for the EFI variable store", "name", efiVolumeName)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// pflash rejects a VARS region that is not byte-exact, so a provider that
+	// rounded the capacity up to a GiB boundary yields a guest that cannot boot.
+	if created.CapacityBytes != int64(len(template)) {
+		slog.ErrorContext(ctx, "Provider EFI volume capacity does not match the VARS template",
+			"name", efiVolumeName, "wantBytes", len(template), "gotBytes", created.CapacityBytes)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	return nil
+}
+
+// instanceArchitecture returns the AWS architecture string from the instance type.
+// Returns "" on nil/malformed spec; the caller's firmware probe surfaces the error.
+func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
+	if it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 || it.ProcessorInfo.SupportedArchitectures[0] == nil {
+		return ""
+	}
+	return *it.ProcessorInfo.SupportedArchitectures[0]
+}
+
+// DescribeInstancesValidFilters lists the filter names accepted by DescribeInstances
+// (and the stopped/terminated variants, which share the same filter shape).
+var DescribeInstancesValidFilters = map[string]bool{
+	"instance-state-name": true,
+	"instance-id":         true,
+	"instance-type":       true,
+	"vpc-id":              true,
+	"subnet-id":           true,
+	"tag-key":             true,
+	"tag-value":           true,
+}
+
+// DescribeInstanceStatusValidFilters lists the filter names accepted by
+// DescribeInstanceStatus. event.* and status.* filters are excluded as
+// Mulga's health model has a single static value per status field.
+var DescribeInstanceStatusValidFilters = map[string]bool{
+	"availability-zone":   true,
+	"instance-state-code": true,
+	"instance-state-name": true,
+}
+
+// IsInstanceVisible reports whether the caller can see this instance.
+// Pre-Phase4 instances (empty AccountID) are only visible to root (GlobalAccountID).
+func IsInstanceVisible(callerAccountID, ownerAccountID string) bool {
+	if ownerAccountID == "" {
+		return callerAccountID == awsidentifiers.GlobalAccountID
+	}
+	return callerAccountID == ownerAccountID
+}
+
+// IsInstanceVisibleToCaller combines account ownership with the
+// platform-managed hide rule: LB/EKS control-plane VMs are system-account-owned
+// and stay hidden from customer listings, visible only to the Global account.
+func IsInstanceVisibleToCaller(accountID string, v *vm.VM) bool {
+	if !IsInstanceVisible(accountID, v.AccountID) {
+		return false
+	}
+	return v.ManagedBy == "" || accountID == awsidentifiers.GlobalAccountID
+}
+
+// instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed awsfilters.
+func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
+	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			// tag:Key filters are handled after all field awsfilters.
+			continue
+		}
+
+		var field string
+		switch name {
+		case "instance-state-name":
+			if ic.State != nil && ic.State.Name != nil {
+				field = *ic.State.Name
+			}
+		case "instance-id":
+			field = inst.ID
+		case "instance-type":
+			field = inst.InstanceType
+		case "vpc-id":
+			if ic.VpcId != nil {
+				field = *ic.VpcId
+			}
+		case "subnet-id":
+			if ic.SubnetId != nil {
+				field = *ic.SubnetId
+			}
+		case "tag-key":
+			if !matchTagKey(ic.Tags, values) {
+				return false
+			}
+			continue
+		case "tag-value":
+			if !matchTagValue(ic.Tags, values) {
+				return false
+			}
+			continue
+		default:
+			// Filter name passed ParseFilters but has no case — treat as non-match
+			// to avoid silently ignoring it.
+			return false
+		}
+
+		if !awsfilters.MatchesAny(values, field) {
+			return false
+		}
+	}
+
+	// Check tag:Key filters via the instance's Tag slice.
+	tags := awsfilters.EC2TagsToMap(ic.Tags)
+	return awsfilters.MatchesTags(filters, tags)
+}
+
+// matchTagKey returns true if any tag key on the resource matches any of the filter values.
+func matchTagKey(tags []*ec2.Tag, values []string) bool {
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Key != nil && awsfilters.MatchesAny(values, *t.Key)
+	})
+}
+
+// matchTagValue returns true if any tag value on the resource matches any of the filter values.
+func matchTagValue(tags []*ec2.Tag, values []string) bool {
+	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
+		return t.Value != nil && awsfilters.MatchesAny(values, *t.Value)
+	})
+}
+
+// DescribeInstances returns instances on this node visible to the caller's account.
+func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	slog.InfoContext(ctx, "Processing DescribeInstances request from this node", "accountID", accountID)
+
+	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return nil, err
+	}
+
+	parsedFilters, err := awsfilters.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	if err != nil {
+		slog.WarnContext(ctx, "DescribeInstances: invalid filter", "err", err)
+		return nil, err
+	}
+
+	reservationMap := make(map[string]*ec2.Reservation)
+
+	// Iterate under the manager lock to avoid races on Status, Instance, PublicIP, etc.
+	s.vmMgr.View(func(vms map[string]*vm.VM) {
+		for _, instance := range vms {
+			if !IsInstanceVisibleToCaller(accountID, instance) {
+				continue
+			}
+			if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
+				continue
+			}
+			if instance.Reservation == nil || instance.Instance == nil {
+				continue
+			}
+
+			resID := ""
+			if instance.Reservation.ReservationId != nil {
+				resID = *instance.Reservation.ReservationId
+			}
+
+			// Project every vm.VM-sourced field via the shared projection, the
+			// same call the daemon's running path makes, so both define the field
+			// set once. Running instances include their runtime network and
+			// capacity reservation; an unmapped status falls back to pending/0.
+			projected, stateMapped := ProjectInstance(instance, InstanceProjection{
+				Region:                s.config.Region,
+				DNSBaseDomain:         s.dnsBaseDomain,
+				DNSInternalDomain:     s.dnsInternalDomain,
+				AZ:                    s.config.AZ,
+				IncludeRuntimeNetwork: true,
+				FallbackStateCode:     0,
+				FallbackStateName:     "pending",
+			})
+			if !stateMapped {
+				slog.WarnContext(ctx, "Instance has unmapped status, reporting as pending",
+					"instanceId", instance.ID, "status", string(instance.Status))
+			}
+
+			if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
+				continue
+			}
+
+			// Only create the reservation entry once an instance has survived
+			// filtering, so a reservation with every instance filtered out
+			// never appears in the response.
+			if _, exists := reservationMap[resID]; !exists {
+				reservation := &ec2.Reservation{}
+				reservation.SetReservationId(resID)
+				if instance.Reservation.OwnerId != nil {
+					reservation.SetOwnerId(*instance.Reservation.OwnerId)
+				}
+				reservation.Instances = []*ec2.Instance{}
+				reservationMap[resID] = reservation
+			}
+
+			reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
+		}
+	})
+
+	reservations := slices.Collect(maps.Values(reservationMap))
+
+	slog.InfoContext(ctx, "DescribeInstances completed", "count", len(reservations))
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// DescribeInstanceTypes returns supported instance types. With filter
+// capacity=true, expands each type to one entry per free slot for cluster-wide
+// capacity aggregation.
+func (s *InstanceServiceImpl) DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypesInput, _ string) (*ec2.DescribeInstanceTypesOutput, error) {
+	slog.InfoContext(ctx, "Processing DescribeInstanceTypes request from this node")
+
+	if s.resourceMgr == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	showCapacity := false
+	for _, f := range input.Filters {
+		if f.Name != nil && *f.Name == "capacity" {
+			for _, v := range f.Values {
+				if v != nil && *v == "true" {
+					showCapacity = true
+					break
+				}
+			}
+		}
+	}
+
+	var filteredTypes []*ec2.InstanceTypeInfo
+	if showCapacity {
+		filteredTypes = s.resourceMgr.GetAvailableInstanceTypeInfos(true)
+	} else {
+		filteredTypes = s.resourceMgr.GetSupportedInstanceTypeInfos()
+	}
+	slog.InfoContext(ctx, "DescribeInstanceTypes completed", "count", len(filteredTypes), "showCapacity", showCapacity)
+	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: filteredTypes}, nil
+}
+
+// DescribeStoppedInstances returns stopped instances from shared KV.
+func (s *InstanceServiceImpl) DescribeStoppedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances")
+}
+
+// DescribeTerminatedInstances returns terminated instances from the terminated KV bucket.
+func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances")
+}
+
+func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
+	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
+	if err != nil {
+		return nil, err
+	}
+
+	parsedFilters, filterErr := awsfilters.ParseFilters(input.Filters, DescribeInstancesValidFilters)
+	if filterErr != nil {
+		slog.WarnContext(ctx, opName+": invalid filter", "err", filterErr)
+		return nil, filterErr
+	}
+
+	instances, err := listFn()
+	if err != nil {
+		slog.ErrorContext(ctx, opName+": failed to list instances", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	reservationMap := make(map[string]*ec2.Reservation)
+
+	for _, instance := range instances {
+		if !IsInstanceVisible(accountID, instance.AccountID) {
+			continue
+		}
+		if len(instanceIDFilter) > 0 && !instanceIDFilter[instance.ID] {
+			continue
+		}
+		if instance.Reservation == nil || instance.Instance == nil {
+			slog.WarnContext(ctx, opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
+				"instanceId", instance.ID)
+			continue
+		}
+
+		resID := ""
+		if instance.Reservation.ReservationId != nil {
+			resID = *instance.Reservation.ReservationId
+		}
+
+		// Reuse the shared projection so stopped/terminated instances carry the
+		// same fields as the running path. Runtime network and the capacity
+		// reservation are released on stop, so IncludeRuntimeNetwork stays false;
+		// Placement and Spot lineage survive and are projected. The caller's
+		// fallback labels the state when a stored status has no EC2 mapping.
+		projected, _ := ProjectInstance(instance, InstanceProjection{
+			AZ:                s.config.AZ,
+			FallbackStateCode: fallbackCode,
+			FallbackStateName: fallbackName,
+		})
+
+		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {
+			continue
+		}
+
+		// Only create the reservation entry once an instance has survived
+		// filtering, so a reservation with every instance filtered out
+		// never appears in the response.
+		if _, exists := reservationMap[resID]; !exists {
+			reservation := &ec2.Reservation{}
+			reservation.SetReservationId(resID)
+			if instance.Reservation.OwnerId != nil {
+				reservation.SetOwnerId(*instance.Reservation.OwnerId)
+			}
+			reservation.Instances = []*ec2.Instance{}
+			reservationMap[resID] = reservation
+		}
+
+		reservationMap[resID].Instances = append(reservationMap[resID].Instances, projected)
+	}
+
+	reservations := slices.Collect(maps.Values(reservationMap))
+
+	slog.InfoContext(ctx, opName+" completed", "count", len(reservations))
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// ModifyInstanceAttribute applies a single attribute change. SourceDestCheck=true
+// is a no-op; false is unsupported because OVN port security enforces the check.
+// InstanceType/UserData require a stopped instance.
+func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, accountID string) (*ec2.ModifyInstanceAttributeOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+
+	if input.SourceDestCheck != nil {
+		if input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
+			return nil, errors.New(awserrors.ErrorUnsupported)
+		}
+		slog.InfoContext(ctx, "ModifyInstanceAttribute: accepting SourceDestCheck=true (no-op)", "instanceId", instanceID)
+		return &ec2.ModifyInstanceAttributeOutput{}, nil
+	}
+
+	// DisableApiTermination applies to both running and stopped instances.
+	// Try the running map first; fall through to the stopped-store path only
+	// if the instance isn't currently running on this node.
+	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
+		newVal := input.DisableApiTermination.Value
+		var notVisible bool
+		updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
+			if !IsInstanceVisible(accountID, v.AccountID) {
+				notVisible = true
+				return false
+			}
+			if v.RunInstancesInput == nil {
+				v.RunInstancesInput = &ec2.RunInstancesInput{}
+			}
+			v.RunInstancesInput.DisableApiTermination = newVal
+			return true
+		})
+		if notVisible {
+			slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not visible",
+				"instanceId", instanceID, "callerAccount", accountID)
+			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		}
+		if updated {
+			if persistErr != nil {
+				slog.ErrorContext(ctx, "ModifyInstanceAttribute: persist failed",
+					"instanceId", instanceID, "err", persistErr)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			slog.InfoContext(ctx, "ModifyInstanceAttribute: updated DisableApiTermination on running instance",
+				"instanceId", instanceID, "value", *newVal)
+			return &ec2.ModifyInstanceAttributeOutput{}, nil
+		}
+		// Not in running map — fall through to stopped-store path.
+	}
+
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not found in shared KV", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if instance.Status != vm.StateStopped {
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: instance not in stopped state", "instanceId", instanceID, "status", instance.Status)
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if input.InstanceType != nil && input.InstanceType.Value != nil {
+		newType := *input.InstanceType.Value
+		if newType == "" {
+			slog.ErrorContext(ctx, "ModifyInstanceAttribute: empty instance type value", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorInvalidInstanceAttributeValue)
+		}
+		if instance.Instance == nil {
+			slog.ErrorContext(ctx, "ModifyInstanceAttribute: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.InfoContext(ctx, "ModifyInstanceAttribute: changing instance type",
+			"instanceId", instanceID, "oldType", instance.InstanceType, "newType", newType)
+	}
+
+	// CAS the mutations into the shared KV record instead of a wholesale
+	// WriteStoppedInstance: createIfAbsent=false means a claim that deletes
+	// the record between the Load above and this write fails cleanly with
+	// kvstore.ErrNotFound rather than resurrecting a stale stopped entry.
+	_, err = s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		if input.InstanceType != nil && input.InstanceType.Value != nil && v.Instance != nil {
+			newType := *input.InstanceType.Value
+			v.InstanceType = newType
+			v.Config.InstanceType = newType
+			v.Instance.InstanceType = aws.String(newType)
+		}
+
+		if input.UserData != nil && input.UserData.Value != nil {
+			slog.InfoContext(ctx, "ModifyInstanceAttribute: changing user data", "instanceId", instanceID)
+			if v.RunInstancesInput == nil {
+				v.RunInstancesInput = &ec2.RunInstancesInput{}
+			}
+			v.RunInstancesInput.UserData = aws.String(base64.StdEncoding.EncodeToString(input.UserData.Value))
+		}
+
+		if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
+			slog.InfoContext(ctx, "ModifyInstanceAttribute: changing DisableApiTermination on stopped instance",
+				"instanceId", instanceID, "value", *input.DisableApiTermination.Value)
+			if v.RunInstancesInput == nil {
+				v.RunInstancesInput = &ec2.RunInstancesInput{}
+			}
+			v.RunInstancesInput.DisableApiTermination = input.DisableApiTermination.Value
+		}
+	})
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			// The record existed moments ago (Load above) but a concurrent
+			// claim removed it: the instance is mid-transition, not gone.
+			slog.WarnContext(ctx, "ModifyInstanceAttribute: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: failed to write modified instance to KV",
+			"instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	slog.InfoContext(ctx, "ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
+	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}
+
+// ModifyInstanceMetadataOptions applies a metadata-options change; only the hop
+// limit is mutable. It mirrors DisableApiTermination's running-first/stopped path
+// — no stopped-only guard, since AWS permits this on running instances.
+func (s *InstanceServiceImpl) ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, accountID string) (*ec2.ModifyInstanceMetadataOptionsOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+
+	if err := validateMetadataOptions(
+		aws.StringValue(input.HttpTokens),
+		aws.StringValue(input.HttpEndpoint),
+		aws.StringValue(input.HttpProtocolIpv6),
+		aws.StringValue(input.InstanceMetadataTags),
+		input.HttpPutResponseHopLimit,
+	); err != nil {
+		return nil, err
+	}
+
+	// Running-first: mutate the live instance's block, falling through to the
+	// stopped store only when the instance isn't running on this node.
+	var notVisible, integrityErr bool
+	var options *ec2.InstanceMetadataOptionsResponse
+	updated, persistErr := s.vmMgr.UpdateAndPersist(instanceID, func(v *vm.VM) bool {
+		if !IsInstanceVisible(accountID, v.AccountID) {
+			notVisible = true
+			return false
+		}
+		if v.Instance == nil {
+			integrityErr = true
+			return false
+		}
+		applyMetadataOptions(v.Instance, input.HttpPutResponseHopLimit, aws.StringValue(input.HttpTokens))
+		opt := *v.Instance.MetadataOptions
+		options = &opt
+		return true
+	})
+	if notVisible {
+		slog.WarnContext(ctx, "ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if integrityErr {
+		slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if updated {
+		if persistErr != nil {
+			slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: persist failed", "instanceId", instanceID, "err", persistErr)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		slog.InfoContext(ctx, "ModifyInstanceMetadataOptions: updated running instance", "instanceId", instanceID)
+		return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: options}, nil
+	}
+
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.WarnContext(ctx, "ModifyInstanceMetadataOptions: instance not found", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "ModifyInstanceMetadataOptions: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Instance == nil {
+		slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: instance.Instance is nil, data integrity issue", "instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	applyMetadataOptions(instance.Instance, input.HttpPutResponseHopLimit, aws.StringValue(input.HttpTokens))
+	if err := s.stoppedStore.WriteStoppedInstance(instanceID, instance); err != nil {
+		slog.ErrorContext(ctx, "ModifyInstanceMetadataOptions: failed to persist stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.InfoContext(ctx, "ModifyInstanceMetadataOptions: updated stopped instance", "instanceId", instanceID)
+	return &ec2.ModifyInstanceMetadataOptionsOutput{InstanceId: aws.String(instanceID), InstanceMetadataOptions: instance.Instance.MetadataOptions}, nil
+}
+
+// StoppedInstanceNode returns the node that last hosted the stopped instance,
+// used to route start requests back to the original node when possible.
+func (s *InstanceServiceImpl) StoppedInstanceNode(instanceID string) string {
+	if s.stoppedStore == nil {
+		return ""
+	}
+	instance, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil || instance == nil {
+		return ""
+	}
+	return instance.LastNode
+}
+
+// startLocalRecord answers a start for an instance this node holds locally but
+// the stopped store does not, reading the record's state rather than its mere
+// presence. Only an error-state record is started here: it is what a failed
+// recovery leaves behind, it never reaches the stopped store, and refusing it
+// as "already running" is what dead-ends the instance.
+//
+// Every other state stays a refusal. A local record in any startable state is
+// a claim another caller is part-way through — it inserts the instance before
+// it launches — so starting it here would put two launches on one volume.
+func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM, accountID string) (*StartStoppedInstanceOutput, error) {
+	if !IsInstanceVisible(accountID, local.AccountID) {
+		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
+			"instanceId", local.ID, "callerAccount", accountID, "ownerAccount", local.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	status := s.vmMgr.Status(local)
+	switch status {
+	case vm.StateError:
+		slog.InfoContext(ctx, "StartStoppedInstance: starting an error-state record the stopped store does not hold",
+			"instanceId", local.ID)
+		if err := s.StartInstance(ctx, local, ec2v1.EC2InstanceCommand{ID: local.ID}); err != nil {
+			return nil, err
+		}
+		return &StartStoppedInstanceOutput{Status: "running", InstanceID: local.ID}, nil
+	case vm.StateTerminated:
+		slog.WarnContext(ctx, "StartStoppedInstance: local record is terminated", "instanceId", local.ID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	default:
+		slog.WarnContext(ctx, "StartStoppedInstance: instance already being started locally",
+			"instanceId", local.ID, "status", string(status))
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+}
+
+// StartStoppedInstance picks up a stopped instance from shared KV, re-launches
+// it on this daemon node, then removes it from shared KV.
+func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *StartStoppedInstanceInput, accountID string) (*StartStoppedInstanceOutput, error) {
+	if input.InstanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if s.resourceMgr == nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: resource manager not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if s.vmMgr == nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: vm manager not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(input.InstanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: failed to load stopped instance", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		// No shared record, but this node may still hold a local one, and what
+		// that record says decides the answer. A cross-node winner is invisible
+		// here and falls through to NotFound.
+		if local, ok := s.vmMgr.Get(input.InstanceID); ok {
+			return s.startLocalRecord(ctx, local, accountID)
+		}
+		slog.WarnContext(ctx, "StartStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Status != vm.StateStopped {
+		slog.ErrorContext(ctx, "StartStoppedInstance: instance not in stopped state", "instanceId", input.InstanceID, "status", instance.Status)
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
+			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	// Atomic claim: at most one caller across the cluster can win this race
+	// — a forwarded call and this node's local fallback, or two nodes
+	// racing the same forwarded call, both pass the checks above, but only
+	// one succeeds here. The loser must not touch resourceMgr/vmMgr at
+	// all, closing the double-start-onto-the-same-volume race. This also
+	// replaces the plain Load used above as the record of truth going
+	// forward: `instance` is reassigned to the freshest claimed value.
+	instance, err = s.stoppedStore.ClaimStoppedInstance(input.InstanceID)
+	if err != nil {
+		if errors.Is(err, vm.ErrStoppedInstanceClaimed) {
+			slog.WarnContext(ctx, "StartStoppedInstance: lost race to claim stopped instance",
+				"instanceId", input.InstanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
+		slog.ErrorContext(ctx, "StartStoppedInstance: failed to claim stopped instance",
+			"instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Reset node-local fields that are stale after cross-node migration.
+	if err := s.launchClaimedInstance(ctx, instance, func() { s.restoreClaimedStoppedInstance(ctx, instance) }); err != nil {
+		return nil, err
+	}
+
+	slog.InfoContext(ctx, "Started stopped instance from shared KV", "instanceId", instance.ID)
+	return &StartStoppedInstanceOutput{Status: "running", InstanceID: instance.ID}, nil
+}
+
+// launchClaimedInstance runs an instance this node has already won the right
+// to run, and is the whole of the launch both claims share.
+//
+// undo hands the record back to whoever should hold it if the launch does not
+// happen, which is the one thing the two callers disagree about: an explicit
+// start returns it to the stopped store, a recovery returns it to the node it
+// was taken from.
+func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
+	instance.ResetNodeLocalState()
+
+	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
+	if !ok {
+		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",
+			"instanceId", instance.ID, "instanceType", instance.InstanceType)
+		undo()
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+	}
+	if err := s.resourceMgr.Allocate(instanceType); err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: failed to allocate resources", "instanceId", instance.ID, "err", err)
+		undo()
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+	}
+
+	// Add to local map + clear the stop intent before launch.
+	instance.DesiredState = vm.DesiredRunning
+	s.vmMgr.Insert(instance)
+
+	// Reclaim the GPU count the instance type advertises, which is what the
+	// instance was admitted against. A record holding a different number was
+	// written by a build that took the count from somewhere else.
+	gpuClaimed := false
+	if instancetypes.IsGPUType(instanceType) {
+		// Admission gates on the daemon's GPU manager, which is a different
+		// field wired at a different moment. Starting a GPU type without a
+		// claimer would hand the customer a running, GPU-less instance.
+		if s.gpuClaimer == nil {
+			slog.ErrorContext(ctx, "launchClaimedInstance: GPU type admitted with no GPU claimer wired",
+				"instanceId", instance.ID, "instanceType", instance.InstanceType)
+			s.resourceMgr.Deallocate(instanceType)
+			s.vmMgr.Delete(instance.ID)
+			undo()
+			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		}
+		profileName := instancetypes.MIGProfileFromType(aws.StringValue(instanceType.InstanceType))
+		gpuCount := instancetypes.GPUCountForType(instance.InstanceType)
+		if recorded := len(instance.GPUAttachments); recorded > 0 && recorded != gpuCount {
+			slog.WarnContext(ctx, "launchClaimedInstance: recorded GPU count differs from the instance type",
+				"instanceId", instance.ID, "instanceType", instance.InstanceType,
+				"recorded", recorded, "reclaiming", gpuCount)
+		}
+		attachments, gpuErr := s.gpuClaimer.Claim(instance.ID, profileName, gpuCount)
+		if gpuErr == nil && len(attachments) != gpuCount {
+			slog.ErrorContext(ctx, "launchClaimedInstance: GPU claim returned the wrong count",
+				"instanceId", instance.ID, "requested", gpuCount, "got", len(attachments))
+			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
+				slog.ErrorContext(ctx, "launchClaimedInstance: GPU release after short claim failed",
+					"instanceId", instance.ID, "err", relErr)
+			}
+			gpuErr = errors.New("GPU claim returned fewer GPUs than the instance type requires")
+		}
+		if gpuErr != nil {
+			slog.ErrorContext(ctx, "launchClaimedInstance: GPU claim failed", "instanceId", instance.ID, "count", gpuCount, "err", gpuErr)
+			s.resourceMgr.Deallocate(instanceType)
+			s.vmMgr.Delete(instance.ID)
+			undo()
+			return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
+		}
+		instance.GPUAttachments = attachments
+		gpuClaimed = true
+		slog.InfoContext(ctx, "GPUs claimed for instance", "instanceId", instance.ID,
+			"count", len(attachments), "attachments", attachments)
+	}
+
+	// Before Run, so a pool with nothing left refuses the start instead of
+	// booting a guest the customer cannot reach.
+	addressAllocated, err := s.reassignAutoAssignedPublicIP(ctx, instance)
+	if err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: public IP allocation failed — refusing the start",
+			"instanceId", instance.ID, "err", err)
+		if gpuClaimed {
+			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
+				slog.ErrorContext(ctx, "launchClaimedInstance: GPU release failed after address allocation failure",
+					"instanceId", instance.ID, "err", relErr)
+			}
+		}
+		s.resourceMgr.Deallocate(instanceType)
+		s.vmMgr.Delete(instance.ID)
+		undo()
+		return errors.New(awserrors.ValidErrorCodeFromError(err))
+	}
+
+	// The record names on-host state by path, and this host is not the one that
+	// wrote it. A system instance whose boot blobs are not rebuilt here is handed
+	// paths that exist only on the node it is being recovered from, so it either
+	// refuses to start or starts with no network configuration at all.
+	launchErr := s.vmMgr.PrepareRelaunch(instance)
+	if launchErr != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: could not rebuild this node's copy of the instance's boot state",
+			"instanceId", instance.ID, "managedBy", instance.ManagedBy, "err", launchErr)
+	} else {
+		launchErr = s.vmMgr.Run(ctx, instance)
+	}
+	if err := launchErr; err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: relaunch failed", "instanceId", instance.ID, "err", err)
+		if addressAllocated {
+			s.rollbackStartPublicIP(ctx, instance)
+		}
+		if gpuClaimed {
+			if relErr := s.gpuClaimer.Release(instance.ID); relErr != nil {
+				slog.ErrorContext(ctx, "launchClaimedInstance: GPU release failed after launch failure",
+					"instanceId", instance.ID, "err", relErr)
+			}
+		}
+		s.resourceMgr.Deallocate(instanceType)
+		s.vmMgr.Delete(instance.ID)
+		undo()
+		if refusal := volumeHeldElsewhereError(err); refusal != nil {
+			return refusal
+		}
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	s.vmMgr.LogGuestDeviceMap(instance)
+
+	return nil
+}
+
+// RecoverInstance launches an instance whose record this node has already
+// claimed from a node that stopped heartbeating.
+//
+// It makes no decision of its own: the claim decided who launches, and the
+// volume leases decide whether the launch may proceed. A refusal because the
+// old owner still holds a lease is ordinary and retryable — it means the
+// source's own self-fence has not finished yet — so it is returned as-is for
+// the caller to try again rather than turned into a failure.
+func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.VM, undo func()) error {
+	if s.resourceMgr == nil || s.vmMgr == nil {
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// The record was written by a node that never got to stop the instance, so
+	// it still says running and a launch would read that as a terminate racing
+	// it. Pending is the same shape a drain-stop leaves behind, which restore
+	// already relaunches from.
+	instance.Status = vm.StatePending
+	return s.launchClaimedInstance(ctx, instance, undo)
+}
+
+// volumeExclusionMarkers are the refusals that mean another node is writing this
+// volume right now. Only the lease refuses: a volume whose writes are merely
+// unsealed is opened here with a warning rather than blocked, so the instance
+// still runs. The text arrives having crossed NATS from viperblockd.
+var volumeExclusionMarkers = []string{
+	"volume is leased by another owner",
+}
+
+// ErrVolumeHeldElsewhere reports a launch refused because another node still
+// holds one of the instance's volume leases.
+//
+// Recovery treats it differently from every other failure — it clears on the
+// lease's own clock rather than needing anything fixed — so it has to be
+// recognisable with errors.Is rather than inferred from text that has already
+// crossed NATS once.
+var ErrVolumeHeldElsewhere = errors.New("a volume is leased by another node")
+
+// volumeHeldElsewhereError converts a mount refused because another node holds
+// the volume into a client-facing error carrying that reason. Returns nil for
+// anything else. Without it the caller gets ServerInternal and is told to
+// retry, which cannot succeed while the holder is down, and the text naming the
+// holder never leaves the node's log.
+func volumeHeldElsewhereError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, marker := range volumeExclusionMarkers {
+		if strings.Contains(msg, marker) {
+			return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
+				awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg))
+		}
+	}
+	return nil
+}
+
+// restoreClaimedStoppedInstance writes instance back to the shared
+// stopped-instance store after a downstream failure that follows a
+// successful ClaimStoppedInstance (which already removed it), so the claim
+// does not silently lose the instance. Best-effort: the caller already has
+// an error to return, so a restore failure is logged, not surfaced — the
+// instance is still safely stopped in the local vm.Manager's view (it was
+// never inserted, or was removed again above).
+func (s *InstanceServiceImpl) restoreClaimedStoppedInstance(ctx context.Context, instance *vm.VM) {
+	if err := s.stoppedStore.WriteStoppedInstance(instance.ID, instance); err != nil {
+		slog.ErrorContext(ctx, "StartStoppedInstance: failed to restore claimed instance to shared KV after downstream failure",
+			"instanceId", instance.ID, "err", err)
+	}
+}
+
+// TerminateStoppedInstance terminates a stopped instance: deletes its volumes,
+// releases its public IP and ENI, and moves it to the terminated KV bucket.
+func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, input *TerminateStoppedInstanceInput, accountID string) (*TerminateStoppedInstanceOutput, error) {
+	if input.InstanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "TerminateStoppedInstance: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	instance, err := s.stoppedStore.LoadStoppedInstance(input.InstanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to load stopped instance", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if instance == nil {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if instance.Status != vm.StateStopped {
+		slog.ErrorContext(ctx, "TerminateStoppedInstance: instance not in stopped state", "instanceId", input.InstanceID, "status", instance.Status)
+		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	}
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: instance not visible",
+			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if instance.IsTerminationProtected() {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: instance has termination protection",
+			"instanceId", input.InstanceID)
+		return nil, errors.New(awserrors.ErrorOperationNotPermitted)
+	}
+
+	s.deleteInstanceVolumes(ctx, instance, input.InstanceID)
+	s.releaseInstancePublicIP(ctx, instance, input.InstanceID)
+	s.deleteInstanceENI(ctx, instance, input.InstanceID)
+
+	// Write to terminated KV FIRST so the instance is visible in DescribeInstances.
+	// If this fails the instance stays in the stopped bucket — safe to retry.
+	instance.Status = vm.StateTerminated
+	if err := s.stoppedStore.WriteTerminatedInstance(input.InstanceID, instance); err != nil {
+		slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to write to terminated KV, aborting", "instanceId", input.InstanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Now safe to remove from stopped KV. Retry once on failure so the instance
+	// doesn't appear in both buckets.
+	if err := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); err != nil {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: first stopped KV delete failed, retrying",
+			"instanceId", input.InstanceID, "err", err)
+		if retryErr := s.stoppedStore.DeleteStoppedInstance(input.InstanceID); retryErr != nil {
+			slog.ErrorContext(ctx, "TerminateStoppedInstance: stopped KV delete failed after retry, instance may appear in both buckets",
+				"instanceId", input.InstanceID, "err", retryErr)
+		}
+	}
+
+	s.deleteCentralInstanceTags(ctx, input.InstanceID, instance.AccountID)
+
+	slog.InfoContext(ctx, "Terminated stopped instance from shared KV", "instanceId", input.InstanceID)
+	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
+}
+
+func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instance *vm.VM, instanceID string) {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+
+	// Tracks whether every DeleteOnTermination volume was actually deleted, so
+	// Teardown[vm.TeardownVolumes] below mirrors markTeardownResult's
+	// done/failed semantics (runtime/compute/vm/teardown.go) — the same mark the
+	// running-instance path already stamps via terminateCleanup. Without this,
+	// TerminateStoppedInstance never touches Teardown at all, so
+	// daemon.leakedVolumeInstances() and VolumeLeakReaper can never see a
+	// stopped-path delete failure.
+	var lastErr error
+
+	for _, ebsRequest := range instance.EBSRequests.Requests {
+		// Internal volumes (EFI) are always cleaned up via ebs.delete.
+		if ebsRequest.EFI {
+			ebsDeleteData, err := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ebsRequest.Name})
+			if err != nil {
+				slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to marshal ebs.delete request", "name", ebsRequest.Name, "err", err)
+				continue
+			}
+			deleteMsg, err := s.natsConn.Request(viperblocklegacyv1.DeleteSubject, ebsDeleteData, 30*time.Second)
+			if err != nil {
+				slog.WarnContext(ctx, "TerminateStoppedInstance: ebs.delete failed for internal volume", "name", ebsRequest.Name, "err", err)
+			} else {
+				slog.InfoContext(ctx, "TerminateStoppedInstance: ebs.delete sent for internal volume", "name", ebsRequest.Name, "data", string(deleteMsg.Data))
+			}
+			continue
+		}
+
+		// User-visible volumes: DeleteOnTermination=false survives terminate, but
+		// terminate still implies detach (AWS semantics) for every volume, Boot or
+		// not. Unmount clears a non-Boot attachment only when the seal succeeded,
+		// so a volume whose seal failed is still attached to an instance that is
+		// about to stop existing.
+		if !ebsRequest.DeleteOnTermination {
+			slog.InfoContext(ctx, "TerminateStoppedInstance: volume has DeleteOnTermination=false, detaching without deleting", "name", ebsRequest.Name)
+			if s.volumeDeleter == nil {
+				slog.WarnContext(ctx, "TerminateStoppedInstance: volume deleter not configured, skipping detach", "name", ebsRequest.Name)
+				lastErr = errors.New("volume deleter not configured")
+				continue
+			}
+			// A volume already gone is the detach's own goal, not a failure.
+			if err := s.volumeDeleter.DetachVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil &&
+				!awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
+				slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to detach volume", "name", ebsRequest.Name, "err", err)
+				lastErr = err
+			}
+			continue
+		}
+
+		slog.InfoContext(ctx, "TerminateStoppedInstance: deleting volume with DeleteOnTermination=true", "name", ebsRequest.Name)
+		if s.volumeDeleter == nil {
+			slog.WarnContext(ctx, "TerminateStoppedInstance: volume deleter not configured, skipping", "name", ebsRequest.Name)
+			lastErr = errors.New("volume deleter not configured")
+			continue
+		}
+		// Terminate implies detach: DeleteVolumeOnTerminate clears the stale
+		// AttachedInstance left over from Stop (Unmount deliberately never
+		// clears a Boot volume, daemon/vm_adapters.go) before deleting, so
+		// DeleteVolume's in-use guard does not reject an otherwise-legitimate
+		// delete. The resulting error is surfaced into lastErr, not swallowed.
+		if err := s.volumeDeleter.DeleteVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil {
+			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete volume", "name", ebsRequest.Name, "err", err)
+			lastErr = err
+		}
+	}
+
+	if instance.Teardown == nil {
+		instance.Teardown = make(map[string]string)
+	}
+	instance.Teardown[vm.TeardownVolumes] = string(vm.TeardownDone)
+	if lastErr != nil {
+		instance.Teardown[vm.TeardownVolumes] = string(vm.TeardownFailed)
+	}
+
+	_ = instanceID
+}
+
+// allocatePublicIP allocates an auto-assigned public IP for a new ENI. A node
+// whose external IPAM never initialised has no allocator wired: report no
+// capacity so the caller aborts rather than booting an unreachable instance.
+func (s *InstanceServiceImpl) allocatePublicIP(ctx context.Context, eniID, instanceID string) (string, string, error) {
+	if s.ipAllocator == nil {
+		return "", "", fmt.Errorf("no public IP allocator on this node: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity))
+	}
+	region := ""
+	az := ""
+	if s.config != nil {
+		region = s.config.Region
+		az = s.config.AZ
+	}
+	return s.ipAllocator.AllocateIP(ctx, region, az, ec2vpc.PurposeENIPublic, "", eniID, instanceID)
+}
+
+// reassignAutoAssignedPublicIP gives a starting instance the fresh address AWS
+// would. The one it had went back to its pool when it stopped, so an address is
+// taken here and stamped everywhere the datapath reads it.
+//
+// It does nothing unless the stop actually released one, which is what keeps an
+// instance that never had a public address, one holding an Elastic IP, and one
+// stopped by a build that predates this from being handed an address on start.
+// An exhausted pool is returned as an error so the caller refuses the start
+// rather than booting a guest the customer cannot reach.
+//
+// allocated reports whether an address came out of the pool here, which is the
+// only case a later failure may hand back: an Elastic IP adopted below is the
+// customer's and a rollback must not touch it.
+func (s *InstanceServiceImpl) reassignAutoAssignedPublicIP(ctx context.Context, instance *vm.VM) (allocated bool, err error) {
+	if !instance.AutoAssignPublicIP || instance.PublicIP != "" || instance.ENIId == "" {
+		return false, nil
+	}
+	// The flag is cleared only once the instance is holding an address, so a
+	// refused start stays owed one and the retry does not bring it up with none.
+	eni, err := s.eniInfoForStart(ctx, instance)
+	if err != nil {
+		return false, err
+	}
+
+	// An Elastic IP associated while the instance was stopped is what it comes
+	// back on. Auto-assigning here would hand the customer a second address they
+	// never asked for, so adopt the EIP instead and take nothing from the pool.
+	if s.eniCreator != nil {
+		owned, eipErr := s.eniCreator.ENIHasEIP(ctx, instance.AccountID, instance.ENIId)
+		if eipErr != nil {
+			return false, fmt.Errorf("check EIP association for %s: %w", instance.ENIId, eipErr)
+		}
+		if owned {
+			instance.PublicIP = eni.PublicIpAddress
+			instance.PublicIPPool = eni.PublicIpPool
+			instance.AutoAssignPublicIP = false
+			slog.InfoContext(ctx, "StartStoppedInstance: instance starts on the Elastic IP associated to its interface",
+				"instanceId", instance.ID, "eniId", instance.ENIId, "publicIp", instance.PublicIP)
+			return false, nil
+		}
+	}
+
+	publicIP, poolName, err := s.allocatePublicIP(ctx, instance.ENIId, instance.ID)
+	if err != nil {
+		return false, fmt.Errorf("allocate public IP for %s: %w", instance.ID, err)
+	}
+	if updateErr := s.eniCreator.UpdateENIPublicIP(ctx, instance.AccountID, instance.ENIId, publicIP, poolName); updateErr != nil {
+		// The reconciler builds the NAT rule from this record, so an address the
+		// instance holds but the record does not is an address nothing routes.
+		slog.WarnContext(ctx, "StartStoppedInstance: failed to update ENI with public IP",
+			"instanceId", instance.ID, "eniId", instance.ENIId, "err", updateErr)
+	}
+	if natErr := projection.New(s.natsConn).AddNAT(eni.VpcID, publicIP, eni.PrivateIpAddress,
+		topology.Port(instance.ENIId), eni.MacAddress); natErr != nil {
+		// Neutralise before releasing in case the timeout committed the rule.
+		projection.New(s.natsConn).RemoveNAT(eni.VpcID, publicIP, eni.PrivateIpAddress,
+			topology.Port(instance.ENIId), eni.MacAddress)
+		s.releaseAutoAssignedPublicIP(ctx, instance.AccountID, instance.ENIId, publicIP, poolName)
+		return false, natErr
+	}
+
+	instance.PublicIP = publicIP
+	instance.PublicIPPool = poolName
+	instance.AutoAssignPublicIP = false
+	slog.InfoContext(ctx, "StartStoppedInstance: auto-assigned a new public IP",
+		"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName)
+	return true, nil
+}
+
+// eniInfoForStart reads the interface a start is bringing back up. The stored
+// instance carries the launch-time copy, which a cross-node start and an EIP
+// associated while stopped both outdate, so the record is read fresh.
+func (s *InstanceServiceImpl) eniInfoForStart(ctx context.Context, instance *vm.VM) (*ENIInfo, error) {
+	if s.eniCreator == nil {
+		return nil, fmt.Errorf("no ENI service on this node: %w", errors.New(awserrors.ErrorServerInternal))
+	}
+	eni, err := s.eniCreator.GetENI(ctx, instance.AccountID, instance.ENIId)
+	if err != nil {
+		return nil, fmt.Errorf("read ENI %s: %w", instance.ENIId, err)
+	}
+	return eni, nil
+}
+
+// rollbackStartPublicIP returns the address a start took when the launch that
+// followed failed, so a refused start does not cost the pool a slot per attempt.
+// The instance goes back to the stopped store still marked for re-assignment.
+func (s *InstanceServiceImpl) rollbackStartPublicIP(ctx context.Context, instance *vm.VM) {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" {
+		return
+	}
+	vpcID := ""
+	privateIP := ""
+	if instance.Instance != nil {
+		vpcID = aws.StringValue(instance.Instance.VpcId)
+		privateIP = aws.StringValue(instance.Instance.PrivateIpAddress)
+	}
+	projection.New(s.natsConn).RemoveNAT(vpcID, instance.PublicIP, privateIP,
+		topology.Port(instance.ENIId), instance.ENIMac)
+	s.releaseAutoAssignedPublicIP(ctx, instance.AccountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
+	instance.PublicIP = ""
+	instance.PublicIPPool = ""
+	instance.AutoAssignPublicIP = true
+}
+
+// rollbackAutoAssignedPublicIP unwinds a failed auto-assign: clears the ENI
+// public IP record, releases the IPAM lease, then detaches and deletes the ENI.
+func (s *InstanceServiceImpl) rollbackAutoAssignedPublicIP(ctx context.Context, accountID, instanceID, eniID, publicIP, poolName string) {
+	_ = s.releaseAutoAssignedPublicIP(ctx, accountID, eniID, publicIP, poolName)
+	_ = s.detachAndDeleteENI(ctx, accountID, instanceID, eniID, true)
+}
+
+// releaseAutoAssignedPublicIP clears the ENI's public IP record and returns the
+// lease to its pool, reporting whether both steps landed. Clearing the record
+// first is what keeps the ENI delete from releasing the same address again.
+func (s *InstanceServiceImpl) releaseAutoAssignedPublicIP(ctx context.Context, accountID, eniID, publicIP, poolName string) bool {
+	released := true
+	if s.eniCreator != nil {
+		if err := s.eniCreator.UpdateENIPublicIP(ctx, accountID, eniID, "", ""); err != nil {
+			slog.WarnContext(ctx, "PrepareRunInstances: failed to clear ENI public IP during launch rollback",
+				"eniId", eniID, "publicIp", publicIP, "err", err)
+			released = false
+		}
+	}
+	if s.ipReleaser != nil {
+		if err := s.ipReleaser.ReleaseIP(ctx, poolName, publicIP, eniID); err != nil {
+			slog.WarnContext(ctx, "PrepareRunInstances: failed to release public IP during launch rollback",
+				"publicIp", publicIP, "pool", poolName, "err", err)
+			released = false
+		}
+	}
+	return released
+}
+
+// detachAndDeleteENI releases the interface a rolled-back launch is holding and
+// reports whether it is safely gone. An auto-created ENI goes through the
+// atomic detach-and-delete: the launch owns it, so force is right, and the
+// single read is what stops a lagging replica rejecting the delete as in-use
+// and stranding the very orphan this rollback exists to prevent. A
+// caller-supplied ENI outlives the launch it was offered to, so it is detached
+// only, matching DeleteOnTermination=false on the terminate sweep.
+func (s *InstanceServiceImpl) detachAndDeleteENI(ctx context.Context, accountID, instanceID, eniID string, autoCreated bool) bool {
+	if !autoCreated {
+		if s.eniCreator == nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: no ENI service wired — caller-supplied ENI left attached to an instance that never launched",
+				"eniId", eniID, "instanceId", instanceID)
+			return false
+		}
+		if err := s.eniCreator.DetachENI(ctx, accountID, eniID); err != nil {
+			slog.ErrorContext(ctx, "PrepareRunInstances: failed to detach caller-supplied ENI during launch rollback",
+				"eniId", eniID, "instanceId", instanceID, "err", err)
+			return false
+		}
+		return true
+	}
+
+	if s.eniDeleter == nil {
+		slog.ErrorContext(ctx, "PrepareRunInstances: no ENI deleter wired — auto-created ENI orphaned by launch rollback",
+			"eniId", eniID, "instanceId", instanceID)
+		return false
+	}
+	deleted, err := s.eniDeleter.DetachAndDeleteENI(ctx, accountID, eniID, true)
+	if err != nil {
+		// Not a warning: the interface survives, and it will refuse its
+		// subnet's delete and then its VPC's until something reaps it.
+		slog.ErrorContext(ctx, "PrepareRunInstances: failed to release auto-created ENI during launch rollback — interface orphaned",
+			"eniId", eniID, "instanceId", instanceID, "err", err)
+		return false
+	}
+	slog.InfoContext(ctx, "PrepareRunInstances: released auto-created ENI during launch rollback",
+		"eniId", eniID, "instanceId", instanceID, "deleted", deleted)
+	return true
+}
+
+// rollbackPreparedInstance unwinds the network resources a prepared instance
+// holds when the batch is abandoned, in the reverse order they were taken: NAT
+// rule, external address, then the interface itself. The VM needs no teardown —
+// it is metadata the caller never received.
+func (s *InstanceServiceImpl) rollbackPreparedInstance(ctx context.Context, accountID string, instance *vm.VM, autoCreatedENI bool) {
+	if instance == nil || instance.ENIId == "" {
+		return
+	}
+	rolledBack := true
+	if instance.PublicIP != "" {
+		vpcID := ""
+		privateIP := ""
+		if instance.Instance != nil {
+			vpcID = aws.StringValue(instance.Instance.VpcId)
+			privateIP = aws.StringValue(instance.Instance.PrivateIpAddress)
+		}
+		projection.New(s.natsConn).RemoveNAT(vpcID, instance.PublicIP, privateIP,
+			topology.Port(instance.ENIId), instance.ENIMac)
+		rolledBack = s.releaseAutoAssignedPublicIP(ctx, accountID, instance.ENIId, instance.PublicIP, instance.PublicIPPool)
+	}
+	// Evaluated before the &&: the interface must be released whether or not
+	// the address came back.
+	rolledBack = s.detachAndDeleteENI(ctx, accountID, instance.ID, instance.ENIId, autoCreatedENI) && rolledBack
+
+	if !rolledBack {
+		slog.ErrorContext(ctx, "PrepareRunInstances: prepared-instance rollback incomplete — ENI or address may be orphaned",
+			"instanceId", instance.ID, "eniId", instance.ENIId,
+			"publicIp", instance.PublicIP, "eniAutoCreated", autoCreatedENI)
+		return
+	}
+	slog.InfoContext(ctx, "PrepareRunInstances: rolled back prepared instance",
+		"instanceId", instance.ID, "eniId", instance.ENIId,
+		"publicIp", instance.PublicIP, "eniAutoCreated", autoCreatedENI)
+}
+
+func (s *InstanceServiceImpl) releaseInstancePublicIP(ctx context.Context, instance *vm.VM, instanceID string) {
+	if instance.PublicIP == "" || instance.PublicIPPool == "" || s.ipReleaser == nil {
+		return
+	}
+	portName := topology.Port(instance.ENIId)
+	vpcID := ""
+	logicalIP := ""
+	if instance.Instance != nil {
+		if instance.Instance.VpcId != nil {
+			vpcID = *instance.Instance.VpcId
+		}
+		if instance.Instance.PrivateIpAddress != nil {
+			logicalIP = *instance.Instance.PrivateIpAddress
+		}
+	}
+	projection.New(s.natsConn).RemoveNAT(vpcID, instance.PublicIP, logicalIP, portName, "")
+
+	if err := s.ipReleaser.ReleaseIP(ctx, instance.PublicIPPool, instance.PublicIP, instance.ENIId); err != nil {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: failed to release public IP", "ip", instance.PublicIP, "pool", instance.PublicIPPool, "err", err)
+	} else {
+		slog.InfoContext(ctx, "TerminateStoppedInstance: released public IP", "ip", instance.PublicIP, "instanceId", instanceID)
+	}
+}
+
+func (s *InstanceServiceImpl) deleteInstanceENI(ctx context.Context, instance *vm.VM, instanceID string) {
+	if instance.ENIId != "" && s.eniDeleter != nil {
+		// Detach first to clear the attachment record. A stopped instance's ENI may
+		// still show Status=in-use/AttachmentId set; without the detach the
+		// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
+		// stranding the ENI record after the instance is already gone from the store
+		// and blocking VPC/subnet delete. Best-effort: the delete is
+		// the authoritative gate.
+		if s.eniCreator != nil {
+			if err := s.eniCreator.DetachENI(ctx, instance.AccountID, instance.ENIId); err != nil {
+				slog.WarnContext(ctx, "TerminateStoppedInstance: failed to detach ENI before delete",
+					"eni", instance.ENIId, "instanceId", instanceID, "err", err)
+			}
+		}
+		_, err := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &instance.ENIId,
+		}, instance.AccountID)
+		switch {
+		case err == nil,
+			awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+			awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceNotFound):
+			slog.InfoContext(ctx, "TerminateStoppedInstance: deleted ENI", "eni", instance.ENIId, "instanceId", instanceID)
+		default:
+			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete ENI", "eni", instance.ENIId, "err", err)
+		}
+	}
+
+	s.releaseAttachedENIs(ctx, instance, instanceID)
+}
+
+// releaseAttachedENIs enumerates every ENI the KV still records against
+// instanceID and releases each one, independent of instance.ENIId. Covers
+// post-launch attachments (e.g. ECS awsvpc, direct AttachNetworkInterface)
+// that never update the launch-time ENIId scalar. Best-effort and idempotent
+// per ENI: one failure is logged and the sweep continues, so a re-run of
+// terminate converges. DeleteOnTermination=false detaches only.
+func (s *InstanceServiceImpl) releaseAttachedENIs(ctx context.Context, instance *vm.VM, instanceID string) {
+	if s.eniCreator == nil || s.eniDeleter == nil {
+		return
+	}
+	records, err := s.eniCreator.ListInstanceENIs(ctx, instance.AccountID, instance.ID)
+	if err != nil {
+		slog.WarnContext(ctx, "TerminateStoppedInstance: failed to enumerate attached ENIs",
+			"instanceId", instanceID, "err", err)
+		return
+	}
+
+	for _, record := range records {
+		eniID := record.NetworkInterfaceID
+		if err := s.eniCreator.DetachENI(ctx, instance.AccountID, eniID); err != nil {
+			slog.WarnContext(ctx, "TerminateStoppedInstance: failed to detach attached ENI",
+				"eni", eniID, "instanceId", instanceID, "err", err)
+		}
+
+		if !record.DeleteOnTermination {
+			slog.InfoContext(ctx, "TerminateStoppedInstance: detached attached ENI, DeleteOnTermination=false",
+				"eni", eniID, "instanceId", instanceID)
+			continue
+		}
+
+		_, delErr := s.eniDeleter.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{
+			NetworkInterfaceId: &eniID,
+		}, instance.AccountID)
+		switch {
+		case delErr == nil,
+			awserrors.IsErrorCode(delErr, awserrors.ErrorInvalidNetworkInterfaceIDNotFound),
+			awserrors.IsErrorCode(delErr, awserrors.ErrorInvalidNetworkInterfaceNotFound):
+			slog.InfoContext(ctx, "TerminateStoppedInstance: deleted attached ENI", "eni", eniID, "instanceId", instanceID)
+		default:
+			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete attached ENI",
+				"eni", eniID, "instanceId", instanceID, "err", delErr)
+		}
+	}
+}
+
+// DescribeInstanceAttribute returns a single requested attribute for an instance.
+// Checks running instances first (in-memory), then falls back to stopped instances in KV.
+func (s *InstanceServiceImpl) DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, accountID string) (*ec2.DescribeInstanceAttributeOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if input.Attribute == nil || *input.Attribute == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+
+	instanceID := *input.InstanceId
+	attribute := *input.Attribute
+
+	var instance *vm.VM
+	if running, ok := s.vmMgr.Get(instanceID); ok {
+		instance = running
+	}
+
+	if instance == nil {
+		if s.stoppedStore == nil {
+			slog.ErrorContext(ctx, "DescribeInstanceAttribute: stopped store not available")
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		stopped, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+		if err != nil {
+			slog.ErrorContext(ctx, "DescribeInstanceAttribute: failed to load stopped instance",
+				"instanceId", instanceID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		instance = stopped
+	}
+
+	if instance == nil {
+		slog.WarnContext(ctx, "DescribeInstanceAttribute: instance not found",
+			"instanceId", instanceID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	if !IsInstanceVisible(accountID, instance.AccountID) {
+		slog.WarnContext(ctx, "DescribeInstanceAttribute: instance not visible",
+			"instanceId", instanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	output := &ec2.DescribeInstanceAttributeOutput{
+		InstanceId: &instanceID,
+	}
+
+	switch attribute {
+	case ec2.InstanceAttributeNameInstanceType:
+		val := instance.InstanceType
+		output.InstanceType = &ec2.AttributeValue{Value: &val}
+
+	case ec2.InstanceAttributeNameUserData:
+		// AWS returns user-data base64-encoded; RunInstancesInput.UserData is the
+		// canonical base64 store, set at launch and kept in sync by Modify. An
+		// instance with no user data carries no Value at all, not an empty one.
+		output.UserData = &ec2.AttributeValue{}
+		if instance.RunInstancesInput != nil && aws.StringValue(instance.RunInstancesInput.UserData) != "" {
+			output.UserData.Value = aws.String(*instance.RunInstancesInput.UserData)
+		}
+
+	case ec2.InstanceAttributeNameDisableApiTermination:
+		// Read under the manager lock so we serialise with a concurrent
+		// ModifyInstanceAttribute writer. Inspect is a no-op race-wise for
+		// stopped instances (no concurrent writers) but keeps the call site
+		// uniform.
+		var val bool
+		s.vmMgr.Inspect(instance, func(v *vm.VM) {
+			val = v.IsTerminationProtected()
+		})
+		output.DisableApiTermination = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameDisableApiStop:
+		val := false
+		output.DisableApiStop = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameInstanceInitiatedShutdownBehavior:
+		val := ec2.ShutdownBehaviorStop
+		output.InstanceInitiatedShutdownBehavior = &ec2.AttributeValue{Value: &val}
+
+	case ec2.InstanceAttributeNameEbsOptimized:
+		val := false
+		output.EbsOptimized = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameEnaSupport:
+		val := true
+		output.EnaSupport = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameSourceDestCheck:
+		val := true
+		output.SourceDestCheck = &ec2.AttributeBooleanValue{Value: &val}
+
+	case ec2.InstanceAttributeNameGroupSet:
+		if instance.Instance != nil && len(instance.Instance.SecurityGroups) > 0 {
+			output.Groups = instance.Instance.SecurityGroups
+		} else {
+			output.Groups = []*ec2.GroupIdentifier{}
+		}
+
+	default:
+		slog.WarnContext(ctx, "DescribeInstanceAttribute: unsupported attribute",
+			"instanceId", instanceID, "attribute", attribute)
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+
+	slog.InfoContext(ctx, "DescribeInstanceAttribute: completed",
+		"instanceId", instanceID, "attribute", attribute, "accountID", accountID)
+	return output, nil
+}
+
+// Terminated and error states are deliberately never surfaced: terminated
+// matches AWS (drops from DescribeInstanceStatus shortly after termination);
+// error is a Spinifex-internal state whose name is not a valid AWS state label.
+var (
+	describeInstanceStatusRunningOnly = map[vm.InstanceState]bool{vm.StateRunning: true}
+	describeInstanceStatusAllIncluded = map[vm.InstanceState]bool{
+		vm.StateRunning:      true,
+		vm.StatePending:      true,
+		vm.StateProvisioning: true,
+		vm.StateStopping:     true,
+		vm.StateStopped:      true,
+		vm.StateShuttingDown: true,
+	}
+)
+
+// hostHealthReporter is an optional capability on the resource manager that
+// reports node-level memory pressure, surfaced as DescribeInstanceStatus
+// SystemStatus. Implemented by daemon.ResourceManager.
+type hostHealthReporter interface {
+	HostUnderMemoryPressure() bool
+}
+
+// hostUnderMemoryPressure reports whether the node is under memory pressure when
+// the resource manager supports the check, false otherwise (fail open).
+func (s *InstanceServiceImpl) hostUnderMemoryPressure() bool {
+	if hr, ok := s.resourceMgr.(hostHealthReporter); ok {
+		return hr.HostUnderMemoryPressure()
+	}
+	return false
+}
+
+// az is passed rather than read from config because a cache-backed caller
+// projects a record owned by another node, whose AZ is on the record.
+func buildInstanceStatus(v *vm.VM, systemImpaired bool, az string) *ec2.InstanceStatus {
+	state := &ec2.InstanceState{}
+	if info, ok := vm.EC2APIState(v.Status); ok {
+		state.SetCode(info.Code)
+		state.SetName(info.Name)
+	} else {
+		state.SetCode(vm.EC2StateCodes[vm.StatePending].Code)
+		state.SetName(vm.EC2StateCodes[vm.StatePending].Name)
+	}
+
+	status, reachability, impairedSince := instanceHealthSummary(v)
+
+	instDetail := &ec2.InstanceStatusDetails{
+		Name:   aws.String(reachabilityDetailName),
+		Status: aws.String(reachability),
+	}
+	if impairedSince != nil {
+		instDetail.ImpairedSince = impairedSince
+	}
+
+	// SystemStatus reflects host/node health, independent of the VM process: a
+	// running VM's host is reachable unless under memory pressure. A guest held
+	// on a backend I/O error is an infrastructure fault rather than a guest one,
+	// which is the distinction this check exists to draw. So is a guest whose
+	// public address the cloud underneath is not delivering here: it answers on
+	// its private address and on nothing else, and reporting that as healthy is
+	// the one outcome worse than reporting it as down.
+	systemStatus, systemReach := instanceStatusOK, instanceStatusPassed
+	addressDark := !v.Health.AddressUnreachableSince.IsZero()
+	switch {
+	case v.Status != vm.StateRunning:
+		systemStatus, systemReach = instanceStatusNotApplicable, instanceStatusNotApplicable
+	case systemImpaired, v.Health.IOErrorResumes > 0, addressDark:
+		systemStatus, systemReach = instanceStatusImpaired, instanceStatusFailed
+	}
+
+	sysDetail := &ec2.InstanceStatusDetails{
+		Name:   aws.String(reachabilityDetailName),
+		Status: aws.String(systemReach),
+	}
+	if addressDark && v.Status == vm.StateRunning {
+		since := v.Health.AddressUnreachableSince
+		sysDetail.ImpairedSince = &since
+	}
+
+	return &ec2.InstanceStatus{
+		AvailabilityZone: aws.String(az),
+		InstanceId:       aws.String(v.ID),
+		InstanceState:    state,
+		InstanceStatus: &ec2.InstanceStatusSummary{
+			Status:  aws.String(status),
+			Details: []*ec2.InstanceStatusDetails{instDetail},
+		},
+		SystemStatus: &ec2.InstanceStatusSummary{
+			Status:  aws.String(systemStatus),
+			Details: []*ec2.InstanceStatusDetails{sysDetail},
+		},
+	}
+}
+
+// instanceInitializingGrace is the post-launch window during which a running VM
+// reports initializing, matching AWS's status-check grace period.
+const instanceInitializingGrace = 2 * time.Minute
+
+// instanceHealthSummary maps a VM's runtime and QMP health into AWS
+// InstanceStatus fields: the status label, the reachability detail status, and
+// an optional ImpairedSince timestamp. Only running VMs carry real health; all
+// other states are not-applicable per AWS behavior.
+func instanceHealthSummary(v *vm.VM) (status, reachability string, impairedSince *time.Time) {
+	if v.Status != vm.StateRunning {
+		return instanceStatusNotApplicable, instanceStatusNotApplicable, nil
+	}
+
+	// QMP unresponsive past the failure gate → impaired/failed.
+	if v.Health.QMPConsecutiveFailures >= vm.QMPMaxConsecutiveFailures {
+		var impPtr *time.Time
+		if !v.Health.ImpairedSince.IsZero() {
+			since := v.Health.ImpairedSince
+			impPtr = &since
+		}
+		return instanceStatusImpaired, instanceStatusFailed, impPtr
+	}
+
+	// Paused by werror=stop on a backend I/O error. The counter is cleared the
+	// moment a poll sees the guest running again, so this reports for exactly
+	// as long as the guest is actually held.
+	if v.Health.IOErrorResumes > 0 {
+		var impPtr *time.Time
+		if !v.Health.IOErrorSince.IsZero() {
+			since := v.Health.IOErrorSince
+			impPtr = &since
+		}
+		return instanceStatusImpaired, instanceStatusFailed, impPtr
+	}
+
+	// Grace period: freshly launched VMs report initializing until reachable.
+	if v.Instance != nil && v.Instance.LaunchTime != nil &&
+		time.Since(*v.Instance.LaunchTime) < instanceInitializingGrace {
+		return instanceStatusInitializing, instanceStatusInitializing, nil
+	}
+
+	return instanceStatusOK, instanceStatusPassed, nil
+}
+
+const (
+	instanceStatusOK            = "ok"
+	instanceStatusPassed        = "passed"
+	instanceStatusNotApplicable = "not-applicable"
+	instanceStatusImpaired      = "impaired"
+	instanceStatusFailed        = "failed"
+	instanceStatusInitializing  = "initializing"
+	reachabilityDetailName      = "reachability"
+)
+
+func instanceStatusMatchesFilters(v *vm.VM, is *ec2.InstanceStatus, filters map[string][]string) bool {
+	for name, values := range filters {
+		if strings.HasPrefix(name, "tag:") {
+			continue
+		}
+		var field string
+		switch name {
+		case "availability-zone":
+			if is.AvailabilityZone != nil {
+				field = *is.AvailabilityZone
+			}
+		case "instance-state-name":
+			if is.InstanceState != nil && is.InstanceState.Name != nil {
+				field = *is.InstanceState.Name
+			}
+		case "instance-state-code":
+			if is.InstanceState != nil && is.InstanceState.Code != nil {
+				field = strconv.FormatInt(*is.InstanceState.Code, 10)
+			}
+		default:
+			return false
+		}
+		if !awsfilters.MatchesAny(values, field) {
+			return false
+		}
+	}
+
+	if v.Instance != nil {
+		tags := awsfilters.EC2TagsToMap(v.Instance.Tags)
+		return awsfilters.MatchesTags(filters, tags)
+	}
+	return awsfilters.MatchesTags(filters, nil)
+}
+
+// DescribeInstanceStatus returns per-VM status entries for VMs on this node
+// visible to the caller. Stopped instances come from the gateway's KV query,
+// not this handler.
+func (s *InstanceServiceImpl) DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, accountID string) (*ec2.DescribeInstanceStatusOutput, error) {
+	slog.InfoContext(ctx, "Processing DescribeInstanceStatus request from this node", "accountID", accountID)
+
+	selection, err := ParseStatusSelection(input, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	// SystemStatus is node-wide: evaluate host memory pressure once per request
+	// rather than per instance.
+	opts := StatusOptions{SystemImpaired: s.hostUnderMemoryPressure(), AZ: s.config.AZ}
+
+	var statuses []*ec2.InstanceStatus
+	s.vmMgr.View(func(vms map[string]*vm.VM) {
+		for _, v := range vms {
+			if is := selection.StatusFor(v, opts); is != nil {
+				statuses = append(statuses, is)
+			}
+		}
+	})
+
+	slog.InfoContext(ctx, "DescribeInstanceStatus completed", "count", len(statuses))
+	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: statuses}, nil
+}

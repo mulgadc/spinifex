@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 )
 
 // captureLogs redirects slog for one test and returns the accumulated output.

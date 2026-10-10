@@ -8,13 +8,13 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	"github.com/stretchr/testify/require"
 )
 
 // TestVPCD_SecurityGroupReachesOVN asserts the synchronous half of the
 // handler-to-vpcd contract against a real responder. The SG topics use
-// utils.RequestEvent, so unlike the topology events these need no polling: by
+// the network projection client, so unlike the topology events these need no polling: by
 // the time the SDK call returns, vpcd has already committed to OVN.
 //
 // This is the case the tier previously faked outright with a canned

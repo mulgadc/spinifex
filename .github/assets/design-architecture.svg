@@ -51,7 +51,7 @@
   <!-- ═══ AWS GATEWAY ════════════════════════════════════ -->
   <rect x="16" y="154" width="868" height="104" rx="8" fill="url(#gw-grad)" stroke="#DC2626" stroke-width="1.3" stroke-opacity="0.75"/>
   <text x="32" y="176" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#F87171" font-weight="700" letter-spacing="1">AWS GATEWAY · port 9999</text>
-  <text x="876" y="176" font-family="'SF Mono', ui-monospace, monospace" font-size="9" fill="#71717a" text-anchor="end">spinifex/services/awsgw/awsgw.go</text>
+  <text x="876" y="176" font-family="'SF Mono', ui-monospace, monospace" font-size="9" fill="#71717a" text-anchor="end">spinifex/runtime/roles/awsgw/awsgw.go</text>
 
   <!-- Two-column feature bullets -->
   <g font-family="'Segoe UI', sans-serif" font-size="10.5" fill="#f5f5f5">

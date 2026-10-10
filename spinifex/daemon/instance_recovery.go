@@ -10,11 +10,11 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/instancecache"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -301,7 +301,7 @@ func (f recoveryFault) stateReasonCode() string {
 
 // classifyRecoveryFault reads what the launch refused with.
 func classifyRecoveryFault(err error) recoveryFault {
-	if errors.Is(err, handlers_ec2_instance.ErrVolumeHeldElsewhere) {
+	if errors.Is(err, ec2instance.ErrVolumeHeldElsewhere) {
 		return recoveryFaultLeaseHeld
 	}
 	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInsufficientInstanceCapacity {

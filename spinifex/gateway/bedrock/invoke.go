@@ -9,7 +9,7 @@ import (
 	"uuid"
 
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // resolveEndpointError maps a failed endpoint resolution onto the AWS code the

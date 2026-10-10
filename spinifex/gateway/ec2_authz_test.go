@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -233,7 +233,7 @@ func TestEC2Request_ModifySecurityGroupRulesIsGroupScoped(t *testing.T) {
 func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
 	var body strings.Builder
 	body.WriteString("Action=TerminateInstances")
-	for i := 1; i <= awsec2query.MaxSliceLen+1; i++ {
+	for i := 1; i <= query.MaxSliceLen+1; i++ {
 		body.WriteString("&InstanceId.")
 		body.WriteString(strconv.Itoa(i))
 		body.WriteString("=i-")

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"net"
 	"slices"
@@ -11,14 +13,14 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	handlers_systemvpc "github.com/mulgadc/spinifex/spinifex/handlers/systemvpc"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/systemvpc"
+	awsami "github.com/mulgadc/spinifex/spinifex/foundation/aws/ami"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
@@ -94,7 +96,7 @@ type launchVPCProvisioner interface {
 // System-managed VMs get a mgmt-bridge NIC alongside their VPC NICs, which is
 // how the agent reaches the gateway from a private subnet.
 type launchInstanceLauncher interface {
-	LaunchSystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error)
+	LaunchSystemInstance(input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error)
 	TerminateSystemInstance(instanceID string) error
 }
 
@@ -117,7 +119,7 @@ type volumeAttacher interface {
 // substitute each one.
 type LaunchDeps struct {
 	Config    *config.Config
-	SystemVPC handlers_systemvpc.Deps
+	SystemVPC systemvpc.Deps
 	VPC       launchVPCProvisioner
 	Instance  launchInstanceLauncher
 	Image     launchAMIResolver
@@ -189,13 +191,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, err
 	}
 
-	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, utils.GlobalAccountID, region)
+	sysRefs, err := EnsureSystemVPC(ctx, deps.SystemVPC, &deps.Config.RDS, awsidentifiers.GlobalAccountID, region)
 	if err != nil {
 		return nil, err
 	}
 	systemSubnetID := sysRefs.PrivateSubnetIDs[0]
 
-	systemSGID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, utils.GlobalAccountID, region, sysRefs.VpcID)
+	systemSGID, err := EnsureSystemSecurityGroup(ctx, deps.VPC, awsidentifiers.GlobalAccountID, region, sysRefs.VpcID)
 	if err != nil {
 		return nil, err
 	}
@@ -227,13 +229,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}()
 
-	systemENI, err := createLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemSubnetID, []string{systemSGID},
+	systemENI, err := createLaunchENI(ctx, deps.VPC, awsidentifiers.GlobalAccountID, systemSubnetID, []string{systemSGID},
 		"RDS management NIC for "+in.DBInstanceIdentifier, in.DBInstanceIdentifier, false)
 	if err != nil {
 		return nil, err
 	}
 	rollback = append(rollback, func(ctx context.Context) {
-		deleteLaunchENI(ctx, deps.VPC, utils.GlobalAccountID, systemENI.id)
+		deleteLaunchENI(ctx, deps.VPC, awsidentifiers.GlobalAccountID, systemENI.id)
 	})
 
 	// A replace adopts the ENI the endpoint already resolves to; only a create
@@ -258,19 +260,19 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, fmt.Errorf("rds: resolve customer subnet network for %s: %w", in.DBInstanceIdentifier, err)
 	}
 
-	sysOut, err := deps.Instance.LaunchSystemInstance(&sysinstance.SystemInstanceInput{
-		BootMode:     sysinstance.BootAMI,
+	sysOut, err := deps.Instance.LaunchSystemInstance(&systeminstance.SystemInstanceInput{
+		BootMode:     systeminstance.BootAMI,
 		ManagedBy:    tags.ManagedByRDS,
 		InstanceType: in.InstanceType,
 		ImageID:      amiID,
 		// The VM and its primary NIC live in the system account; the customer
 		// ENI carries its own account so the daemon updates the right record.
-		AccountID: utils.GlobalAccountID,
+		AccountID: awsidentifiers.GlobalAccountID,
 		SubnetID:  systemSubnetID,
 		ENIID:     systemENI.id,
 		ENIMac:    systemENI.mac,
 		ENIIP:     systemENI.ip,
-		ExtraENIs: []sysinstance.ExtraENIInput{{
+		ExtraENIs: []systeminstance.ExtraENIInput{{
 			ENIID:         customerENI.id,
 			ENIMac:        customerENI.mac,
 			ENIIP:         customerENI.ip,
@@ -295,7 +297,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 	instanceID := sysOut.InstanceID
 	terminateVM = func(ctx context.Context) {
 		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
-			!errors.Is(termErr, sysinstance.ErrSystemInstanceNotFound) {
+			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "rds: rollback terminate of failed DB VM failed",
 				"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "err", termErr)
 		}
@@ -318,7 +320,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 					{Key: aws.String(rdsInstanceTagKey), Value: aws.String(in.DBInstanceIdentifier)},
 				},
 			}},
-		}, utils.GlobalAccountID)
+		}, awsidentifiers.GlobalAccountID)
 		if volErr != nil {
 			return nil, fmt.Errorf("rds: create data volume for %s: %w", in.DBInstanceIdentifier, volErr)
 		}
@@ -328,7 +330,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		volumeID = aws.StringValue(volume.VolumeId)
 		volumeEncrypted = aws.BoolValue(volume.Encrypted)
 		rollback = append(rollback, func(ctx context.Context) {
-			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, utils.GlobalAccountID); delErr != nil {
+			if _, delErr := deps.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String(volumeID)}, awsidentifiers.GlobalAccountID); delErr != nil {
 				slog.WarnContext(ctx, "rds: rollback delete of orphaned data volume failed",
 					"dbInstance", in.DBInstanceIdentifier, "volumeId", volumeID, "err", delErr)
 			}
@@ -342,7 +344,7 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		}
 	}
 
-	device, err := deps.Attacher.AttachVolume(ctx, utils.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
+	device, err := deps.Attacher.AttachVolume(ctx, awsidentifiers.GlobalAccountID, instanceID, volumeID, dataVolumeDevice)
 	if err != nil {
 		return nil, fmt.Errorf("rds: attach data volume %s to %s: %w", volumeID, instanceID, err)
 	}
@@ -536,7 +538,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 		})
 	}
 
-	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, utils.GlobalAccountID)
+	out, err := amiSvc.DescribeImages(ctx, &ec2.DescribeImagesInput{Filters: filters}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", fmt.Errorf("rds: describe %s AMI: %w", engine, err)
 	}
@@ -547,7 +549,7 @@ func resolveEngineAMI(ctx context.Context, amiSvc launchAMIResolver, engine, ver
 	// Several builds of one engine version can be registered; select the most
 	// recently imported usable image. A GPU engine build carries the same engine
 	// tags, so it is excluded or a newer GPU image would hijack an ordinary instance.
-	newestID, _, matches := utils.SelectNewestImage(out.Images, tags.GPUVendorKey)
+	newestID, _, matches := awsami.SelectNewestImage(out.Images, tags.GPUVendorKey)
 	if newestID == "" {
 		return "", engineAMINotFound(engine, version)
 	}
@@ -576,16 +578,16 @@ func NewNATSVolumeAttacher(nc *nats.Conn) volumeAttacher {
 // Returns the device the attachment landed on, which can differ from the
 // requested one when the guest renames it.
 func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instanceID, volumeID, device string) (string, error) {
-	cmd := types.EC2InstanceCommand{
+	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
-		Attributes: types.EC2CommandAttributes{AttachVolume: true},
-		AttachVolumeData: &types.AttachVolumeData{
+		Attributes: ec2v1.EC2CommandAttributes{AttachVolume: true},
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 			Device:   device,
 		},
 	}
-	out, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,
-		"ec2.cmd."+instanceID, cmd, a.timeout, accountID)
+	out, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, a.nc,
+		ec2v1.InstanceCommandSubject(instanceID), cmd, a.timeout, accountID)
 	if err != nil {
 		if !errors.Is(err, nats.ErrNoResponders) {
 			return "", err
@@ -617,7 +619,7 @@ func (a *natsVolumeAttacher) AttachVolume(ctx context.Context, accountID, instan
 // shared stopped-instance lookup disambiguates those AWS errors for the caller.
 func (a *natsVolumeAttacher) isStoppedInstance(ctx context.Context, accountID, instanceID string) (bool, error) {
 	input := ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}}
-	out, err := utils.NATSRequest[ec2.DescribeInstancesOutput](ctx, a.nc,
+	out, err := natsmsg.NATSRequest[ec2.DescribeInstancesOutput](ctx, a.nc,
 		"ec2.DescribeStoppedInstances", &input, 3*time.Second, accountID)
 	if err != nil {
 		return false, err

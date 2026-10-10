@@ -8,10 +8,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/resource"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +29,7 @@ func TestENIOrphanReaperScopeIsClusterWide(t *testing.T) {
 
 func TestENIOrphanReaperSweep(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	testutil.StubVpcdSGResponder(t, nc)
 
@@ -46,11 +46,11 @@ func TestENIOrphanReaperSweep(t *testing.T) {
 
 	eniOut, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    subnetOut.Subnet.SubnetId,
-		Description: aws.String(handlers_ec2_vpc.AutoENIDescriptionPrefix + "i-abandoned"),
+		Description: aws.String(ec2vpc.AutoENIDescriptionPrefix + "i-abandoned"),
 	}, reaperTestAccountID)
 	require.NoError(t, err)
 	eniID := *eniOut.NetworkInterface.NetworkInterfaceId
-	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *ec2vpc.ENIRecord) {
 		rec.CreatedAt = time.Now().Add(-time.Hour)
 	}))
 
@@ -116,10 +116,10 @@ func (f *fakeEIPDisassociator) DisassociateByENI(_ context.Context, _, eniID str
 
 // staleReaperFixture builds a VPC with one ENI attached to instanceID, aged past
 // the sweep's guard, plus the reaper under test.
-func staleReaperFixture(t *testing.T, instanceID string, index instanceIndex, eip eipDisassociator) (*eniOrphanReaper, *handlers_ec2_vpc.VPCServiceImpl, string) {
+func staleReaperFixture(t *testing.T, instanceID string, index instanceIndex, eip eipDisassociator) (*eniOrphanReaper, *ec2vpc.VPCServiceImpl, string) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	testutil.StubVpcdSGResponder(t, nc)
 
@@ -134,14 +134,14 @@ func staleReaperFixture(t *testing.T, instanceID string, index instanceIndex, ei
 
 	eniOut, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    subnetOut.Subnet.SubnetId,
-		Description: aws.String(handlers_ec2_vpc.AutoENIDescriptionPrefix + instanceID),
+		Description: aws.String(ec2vpc.AutoENIDescriptionPrefix + instanceID),
 	}, reaperTestAccountID)
 	require.NoError(t, err)
 	eniID := *eniOut.NetworkInterface.NetworkInterfaceId
 
 	_, err = vpcSvc.AttachENI(reaperTestAccountID, eniID, instanceID, 0)
 	require.NoError(t, err)
-	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *ec2vpc.ENIRecord) {
 		rec.CreatedAt = time.Now().Add(-time.Hour)
 	}))
 
@@ -215,7 +215,7 @@ func TestENIOrphanReaperDetachesKeepOnTerminateENI(t *testing.T) {
 	index := &fakeInstanceIndex{live: []string{"i-somebody-else"}}
 	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
-	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *handlers_ec2_vpc.ENIRecord) {
+	require.NoError(t, vpcSvc.UpdateENI(reaperTestAccountID, eniID, func(rec *ec2vpc.ENIRecord) {
 		rec.DeleteOnTermination = aws.Bool(false)
 	}))
 

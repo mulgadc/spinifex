@@ -3,23 +3,24 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"reflect"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -34,7 +35,7 @@ const testPredastoreBucket = "integration-test-bucket"
 // DaemonLite is a minimal in-process stand-in for a live spinifex daemon. It
 // subscribes the REAL key/tags/route-table/VPC-subnet-SG/IGW service
 // implementations — the same production code a live daemon runs — to the
-// NATS subjects the gateway's handlers_ec2_*.NewNATS*Service clients call,
+// NATS subjects the gateway's ec2*.NewNATS*Service clients call,
 // so a test exercises genuine daemon-side business logic instead of a
 // StubSubject canned reply.
 //
@@ -45,13 +46,13 @@ const testPredastoreBucket = "integration-test-bucket"
 // OVN-backed are not wired — those need real provisioning DaemonLite
 // intentionally avoids.
 type DaemonLite struct {
-	Key             *handlers_ec2_key.KeyServiceImpl
-	Tags            *handlers_ec2_tags.TagsServiceImpl
-	VPC             *handlers_ec2_vpc.VPCServiceImpl
-	RouteTable      *handlers_ec2_routetable.RouteTableServiceImpl
-	IGW             *handlers_ec2_igw.IGWServiceImpl
-	EIGW            *handlers_ec2_eigw.EgressOnlyIGWServiceImpl
-	AccountSettings *handlers_ec2_account.AccountSettingsServiceImpl
+	Key             *ec2key.KeyServiceImpl
+	Tags            *ec2tags.TagsServiceImpl
+	VPC             *ec2vpc.VPCServiceImpl
+	RouteTable      *ec2routetable.RouteTableServiceImpl
+	IGW             *ec2igw.IGWServiceImpl
+	EIGW            *ec2eigw.EgressOnlyIGWServiceImpl
+	AccountSettings *ec2account.AccountSettingsServiceImpl
 
 	// MemStore backs Key and Tags — exposed so a test can seed or inspect
 	// stored objects directly without going through NATS.
@@ -108,27 +109,27 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 		Predastore: config.PredastoreConfig{Bucket: testPredastoreBucket},
 	}
 
-	keySvc := handlers_ec2_key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
+	keySvc := ec2key.NewKeyServiceImplWithStore(memStore, cfg.Predastore.Bucket)
 
 	tagsJS, err := jetstream.New(nc)
 	require.NoError(t, err, "jetstream handle for the tag store")
-	tagsKV, err := handlers_ec2_tags.GetOrCreateTagsBucket(t.Context(), tagsJS)
+	tagsKV, err := ec2tags.GetOrCreateTagsBucket(t.Context(), tagsJS)
 	require.NoError(t, err, "tag store bucket")
-	tagsSvc := handlers_ec2_tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
+	tagsSvc := ec2tags.NewTagsServiceImplWithStore(cfg, memStore, tagsKV)
 
-	vpcSvc, err := handlers_ec2_vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
+	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct VPC service")
 
-	rtbSvc, err := handlers_ec2_routetable.NewRouteTableServiceImplWithNATS(t.Context(), cfg, nc)
+	rtbSvc, err := ec2routetable.NewRouteTableServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct route table service")
 
-	igwSvc, err := handlers_ec2_igw.NewIGWServiceImplWithNATS(t.Context(), cfg, nc)
+	igwSvc, err := ec2igw.NewIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct IGW service")
 
-	eigwSvc, err := handlers_ec2_eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), cfg, nc)
+	eigwSvc, err := ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct EIGW service")
 
-	acctSettingsSvc, err := handlers_ec2_account.NewAccountSettingsServiceImplWithNATS(t.Context(), cfg, nc)
+	acctSettingsSvc, err := ec2account.NewAccountSettingsServiceImplWithNATS(t.Context(), cfg, nc)
 	require.NoError(t, err, "construct account settings service")
 
 	dl := &DaemonLite{
@@ -144,13 +145,13 @@ func StartDaemonLite(t *testing.T, gw *Gateway, opts ...DaemonLiteOption) *Daemo
 
 	// CreateVpc/EnsureDefaultVPC/DeleteVpc synchronously round-trip through
 	// vpcd (the OVN topology-translation daemon) to provision/tear down each
-	// VPC's default security group (handlers/ec2/vpc/security_group.go
+	// VPC's default security group (domains/ec2/vpc/security_group.go
 	// createDefaultSecurityGroupInternal/deleteSecurityGroupInternal ->
-	// requestSGEvent -> utils.RequestEvent). vpcd itself is out of scope for
+	// requestSGEvent -> projection.Client). vpcd itself is out of scope for
 	// this tier (it's an external OVN process, not a key/tags/routetable/vpc
 	// service impl), so it is stubbed here exactly like any other
 	// out-of-scope daemon-side responder: a fixed {"success":true} ack on
-	// "vpc.create-sg"/"vpc.delete-sg", satisfying utils.RequestEvent's
+	// "vpc.create-sg"/"vpc.delete-sg", satisfying the projection client's
 	// {success,error} reply contract. The SG record itself is written to the
 	// KV store by the real service impl before this event is even sent, so
 	// stubbing the vpcd ack never substitutes for in-scope logic under test —
@@ -252,29 +253,29 @@ func daemonHandlerShape(fn reflect.Type) (withPrincipal, ok bool) {
 }
 
 func dispatchReflected(msg *nats.Msg, handler reflect.Value, withPrincipal bool) {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
-	ctx = utils.WithIdempotencyKey(ctx, utils.IdempotencyKeyFromMsg(msg))
+	ctx = idempotency.WithKey(ctx, idempotency.KeyFromMsg(msg))
 
 	input := reflect.New(handler.Type().In(1).Elem())
-	if errResp := utils.UnmarshalJsonPayload(input.Interface(), msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input.Interface(), msg.Data); errResp != nil {
 		respond(msg, errResp)
 		return
 	}
-	args := []reflect.Value{reflect.ValueOf(ctx), input, reflect.ValueOf(utils.AccountIDFromMsg(msg))}
+	args := []reflect.Value{reflect.ValueOf(ctx), input, reflect.ValueOf(natsmsg.AccountIDFromMsg(msg))}
 	if withPrincipal {
-		args = append(args, reflect.ValueOf(utils.PrincipalARNFromMsg(msg)))
+		args = append(args, reflect.ValueOf(natsmsg.PrincipalARNFromMsg(msg)))
 	}
 	results := handler.Call(args)
 	if err, _ := results[1].Interface().(error); err != nil {
-		utils.MarkSpanError(span, err)
+		natsmsg.MarkSpanError(span, err)
 		_, message, _ := awserrors.ResolveErrorDetail(err)
-		respond(msg, utils.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
+		respond(msg, awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message))
 		return
 	}
 	payload, err := json.Marshal(results[0].Interface())
 	if err != nil {
-		respond(msg, utils.GenerateErrorPayload(awserrors.ErrorServerInternal))
+		respond(msg, awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
 		return
 	}
 	respond(msg, payload)

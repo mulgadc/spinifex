@@ -7,9 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
 // The resource a policy check evaluates against when the request names nothing
@@ -147,7 +147,7 @@ func ResourceARNs(action, region, accountID string, input any) ([]string, error)
 			if _, duplicate := seen[resource]; duplicate {
 				continue
 			}
-			if len(resources) >= awsec2query.MaxSliceLen {
+			if len(resources) >= query.MaxSliceLen {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			seen[resource] = struct{}{}
@@ -223,13 +223,13 @@ func resolve(source resourceSource, action, region, accountID string, input any)
 func suppliedARNs(region, accountID string, input any, paths ...string) ([]string, error) {
 	var resources []string
 	for _, path := range paths {
-		for _, value := range awsec2query.StringValuesAt(input, path) {
+		for _, value := range query.StringValuesAt(input, path) {
 			if value == "" {
 				continue
 			}
 			// A nested list can fan out past what any single list may hold, so the
 			// bound is asserted here rather than inherited from the parser.
-			if len(resources) >= awsec2query.MaxSliceLen {
+			if len(resources) >= query.MaxSliceLen {
 				return nil, errors.New(awserrors.ErrorMalformedQueryString)
 			}
 			if err := checkARN(value, region, accountID); err != nil {
@@ -287,7 +287,7 @@ func arnError(value, why string) error {
 }
 
 func firstValue(input any, path string) string {
-	for _, value := range awsec2query.StringValuesAt(input, path) {
+	for _, value := range query.StringValuesAt(input, path) {
 		if value != "" {
 			return value
 		}

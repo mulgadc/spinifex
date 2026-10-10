@@ -21,6 +21,7 @@ package integration
 
 import (
 	"encoding/json"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http/httptest"
 	"testing"
 
@@ -32,16 +33,18 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecr"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
-	handlers_ecr "github.com/mulgadc/spinifex/spinifex/handlers/ecr"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
@@ -72,6 +75,10 @@ const (
 	// GatewayConfig.InternalSuffix (unset here; the in-process harness talks to
 	// the gateway's httptest address directly rather than a registry hostname).
 	testECRAudience = "ecr.integration-test"
+
+	// testECRServicesDomain completes the AWS-shaped registry host ECR
+	// responses advertise; no test resolves it.
+	testECRServicesDomain = "integration.test"
 )
 
 // Gateway is a running in-process instance of the real AWS gateway router,
@@ -90,7 +97,7 @@ type Gateway struct {
 	// responders.
 	NATSConn *nats.Conn
 	// AccountID is the account the seeded root credentials belong to
-	// (utils.GlobalAccountID).
+	// (awsidentifiers.GlobalAccountID).
 	AccountID string
 	// Config is the GatewayConfig SetupRoutes was built from, exposed so
 	// tests can inspect or further wire fields StartGateway did not set.
@@ -112,7 +119,7 @@ type Option func(*gateway.GatewayConfig)
 // and authorize exactly as they would against a live environment — root
 // bypasses IAM policy evaluation, matching gateway.evaluatePrincipalPolicy.
 //
-// ExpectedNodes is pinned to 1: utils.Gather waits the FULL timeout on every
+// ExpectedNodes is pinned to 1: natsmsg.Gather waits the FULL timeout on every
 // call when ExpectedNodes is 0, which would make every stubbed NATS
 // round-trip pathologically slow.
 //
@@ -149,20 +156,37 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	require.NoError(t, iamSvc.SeedBootstrap(&handlers_iam.BootstrapData{
 		AccessKeyID:     testAccessKeyID,
 		EncryptedSecret: encryptedSecret,
-		AccountID:       utils.GlobalAccountID,
+		AccountID:       awsidentifiers.GlobalAccountID,
 	}))
 
 	// ECR auth bridge signing key: reuses the IAM master key to encrypt the
 	// signing key at rest in the same embedded JetStream KV, matching
-	// production's awsgw-keys wiring (services/awsgw/awsgw.go).
-	signingKey, verifyKeys, err := gateway_ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
+	// production's awsgw-keys wiring (runtime/roles/awsgw/awsgw.go).
+	signingKey, verifyKeys, err := ecrauth.LoadOrCreateSigningKey(t.Context(), js, masterKey)
 	require.NoError(t, err)
 
 	bedrockAccess := gateway_bedrock.NewModelAccessStore(js)
 
+	// ECR's control plane is composed as the awsgw role composes it, sharing
+	// the OCI registry, meta store and token issuer the /v2 data plane uses.
+	ecrMeta := ecrdomain.NewNATSMetaStore(nc)
+	ecrRegistry := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), ecrMeta, awsidentifiers.GlobalAccountID)
+	ecrIssuer := ecrauth.NewIssuer(signingKey, testECRAudience)
+	ecrEndpoint := awsapi.RepositoryEndpoint{Region: testRegion, ServicesDomain: testECRServicesDomain}
+	services := awsdispatch.NewBuilder()
+	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{
+		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
+		LifecyclePreview:   awsapi.NewLifecyclePreviewActionService(ecrMeta, ecrRegistry),
+		Repository:         awsapi.NewRepositoryActionService(ecrMeta, ecrEndpoint),
+		AuthorizationToken: awsapi.NewAuthorizationTokenActionService(ecrIssuer, ecrEndpoint),
+		NATS:               nc,
+	})))
+	require.NoError(t, services.Register(acmawsapi.NewRegistration(acmawsapi.Deps{NATS: nc})))
+
 	cfg := &gateway.GatewayConfig{
 		DisableLogging: true,
 		NATSConn:       nc,
+		Services:       services.Build(),
 		ExpectedNodes:  1,
 		Region:         testRegion,
 		AZ:             testAZ,
@@ -173,9 +197,9 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 		// repositories must additionally call StartECRDaemonLite to subscribe a
 		// real MetaServiceImpl or every ECR request will time out with no
 		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      gateway_ecr.NewRegistry(objectstore.NewMemoryObjectStore(), handlers_ecr.NewNATSMetaStore(nc), utils.GlobalAccountID),
-		ECRTokenIssuer:   gateway_ecrauth.NewIssuer(signingKey, testECRAudience),
-		ECRTokenVerifier: gateway_ecrauth.NewVerifier(verifyKeys, testECRAudience),
+		ECRRegistry:      ecrRegistry,
+		ECRTokenIssuer:   ecrIssuer,
+		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
 		// Ochre model access is deny-by-default, so without a grant store every
 		// bedrock route refuses. Tests sign as the system account, which the
 		// store exempts from grants exactly as it does in production, so the
@@ -198,11 +222,11 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	gw := &Gateway{
 		Server:    srv,
 		NATSConn:  nc,
-		AccountID: utils.GlobalAccountID,
+		AccountID: awsidentifiers.GlobalAccountID,
 		Config:    cfg,
 	}
 
-	nodeReply, err := json.Marshal(types.NodeDiscoverResponse{Node: "integration-test-node"})
+	nodeReply, err := json.Marshal(clusterv1.NodeDiscoverResponse{Node: "integration-test-node"})
 	require.NoError(t, err)
 	gw.StubSubject(t, nodeDiscoverSubject, nodeReply)
 

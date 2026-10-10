@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 const (

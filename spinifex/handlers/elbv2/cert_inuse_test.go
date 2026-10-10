@@ -15,9 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	handlers_acm "github.com/mulgadc/spinifex/spinifex/handlers/acm"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -343,7 +343,7 @@ func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
-	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
+	acmSvc, err := acmdomain.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
 	require.NoError(t, err)
 	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
 
@@ -399,7 +399,7 @@ func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 }
 
 // genLeafCertPEM returns a self-signed leaf certificate + private key as PEM,
-// mirroring handlers_acm's own test helper (unexported, different package).
+// mirroring domains/acm's own test helper (unexported, different package).
 // dnsNames become SANs, which is how a renderer learns the names a cert serves.
 func genLeafCertPEM(t *testing.T, cn string, dnsNames ...string) (certPEM, keyPEM []byte) {
 	t.Helper()
@@ -443,7 +443,7 @@ func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)
-	acmSvc, err := handlers_acm.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
+	acmSvc, err := acmdomain.NewACMServiceImplWithNATS(context.Background(), nil, nc, masterKey)
 	require.NoError(t, err)
 	// Mirrors the daemon.go wiring between the two services.
 	acmSvc.CertMaterialUpdated = elbv2Svc.UpdateStoredConfigForCert
@@ -497,7 +497,7 @@ func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 // final set contains exactly all N — lives at the store layer, where the
 // property actually belongs: see
 // TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive in
-// handlers/acm/store_test.go. An earlier version of this test asserted only
+// domains/acm/store_test.go. An earlier version of this test asserted only
 // "no errors/panics" across a concurrent re-import/ModifyListener race,
 // which cannot detect a lost index entry: a dropped update produces a
 // correct-looking record with a missing entry, not an error, so that

@@ -1,0 +1,437 @@
+// Package formation coordinates cluster formation: an HTTPS server that nodes
+// join with a token, which hands each the shared credentials and the topology
+// of the formed cluster.
+package formation
+
+import (
+	"context"
+	crypto_rand "crypto/rand"
+	"crypto/subtle"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"maps"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+)
+
+// NodeInfo describes a node participating in cluster formation.
+type NodeInfo struct {
+	Name string `json:"name"`
+	// BindIP is the listen address on the joining node.
+	BindIP string `json:"bind_ip"`
+	// AdvertiseIP is the off-host dial target for this node. Empty →
+	// peers fall back to BindIP for backward compat with older joiners.
+	AdvertiseIP string   `json:"advertise_ip,omitempty"`
+	ClusterIP   string   `json:"cluster_ip"`
+	Region      string   `json:"region"`
+	AZ          string   `json:"az"`
+	Port        int      `json:"port"`
+	Services    []string `json:"services,omitempty"`
+}
+
+// PredastoreNodeConfig identifies one formed node in the generated Predastore
+// topology. Node IDs are assigned from the deterministic formation membership
+// order so every joiner renders the same topology.
+type PredastoreNodeConfig struct {
+	ID   int
+	Host string
+}
+
+// PoolData is one external-network pool propagated to joining nodes during
+// formation and rendered into spinifex.toml.
+//
+// The JSON field names are part of the formation protocol: changing one would
+// silently drop a pool on a joining node rather than fail compilation.
+type PoolData struct {
+	Name       string   `json:"name"`
+	Source     string   `json:"source,omitempty"`
+	BindBridge string   `json:"bind_bridge,omitempty"`
+	Start      string   `json:"start,omitempty"`
+	End        string   `json:"end,omitempty"`
+	Gateway    string   `json:"gateway,omitempty"`
+	GatewayIP  string   `json:"gateway_ip,omitempty"`
+	PrefixLen  int      `json:"prefix_len,omitempty"`
+	DNSServers []string `json:"dns_servers,omitempty"`
+	DHCPMAC    string   `json:"dhcp_mac,omitempty"`
+	// GwLrpRangeStart/End reserve gateway-LRP IPs for OVN routers. When empty
+	// the allocator derives the top 16 host IPs of the pool subnet.
+	GwLrpRangeStart string `json:"gw_lrp_range_start,omitempty"`
+	GwLrpRangeEnd   string `json:"gw_lrp_range_end,omitempty"`
+}
+
+// JoinRequest is the payload POSTed by joining nodes.
+type JoinRequest struct {
+	NodeInfo
+}
+
+// JoinResponse is returned by the formation server on join.
+type JoinResponse struct {
+	Success  bool   `json:"success"`
+	Message  string `json:"message"`
+	Joined   int    `json:"joined"`
+	Expected int    `json:"expected"`
+}
+
+// StatusResponse is returned by the formation server status endpoint.
+type StatusResponse struct {
+	Complete      bool                `json:"complete"`
+	Joined        int                 `json:"joined"`
+	Expected      int                 `json:"expected"`
+	Nodes         map[string]NodeInfo `json:"nodes,omitempty"`
+	Credentials   *SharedCredentials  `json:"credentials,omitempty"`
+	CACert        string              `json:"ca_cert,omitempty"`
+	CAKey         string              `json:"ca_key,omitempty"`
+	MasterKey     string              `json:"master_key,omitempty"`
+	ViperblockKey string              `json:"viperblock_key,omitempty"`
+	NetworkConfig *NetworkConfig      `json:"network_config,omitempty"`
+}
+
+// NetworkConfig holds the cluster-wide external networking configuration
+// propagated from the init node to joining nodes during formation.
+type NetworkConfig struct {
+	ExternalMode string `json:"external_mode"`
+
+	// Pools is every [[network.external_pools]] entry the init node rendered, in
+	// order. A list rather than one flattened pool because routed NAT has two —
+	// the transit segment and any public pool — and the transit pool carries a
+	// gateway-LRP range that has no equivalent in pool mode.
+	Pools          []PoolData `json:"pools,omitempty"`
+	PoolDNSServers []string   `json:"pool_dns_servers,omitempty"`
+
+	// IPSecEnabled propagates the cluster-wide intra-AZ IPsec toggle so the
+	// joining node provisions strongSwan and flips OVS ipsec_encapsulation to
+	// match the rest of the cluster.
+	IPSecEnabled bool `json:"ipsec_enabled"`
+
+	BootstrapAccountId  string `json:"bootstrap_account_id,omitempty"`
+	BootstrapVpcId      string `json:"bootstrap_vpc_id,omitempty"`
+	BootstrapSubnetId   string `json:"bootstrap_subnet_id,omitempty"`
+	BootstrapIgwId      string `json:"bootstrap_igw_id,omitempty"`
+	BootstrapCidr       string `json:"bootstrap_cidr,omitempty"`
+	BootstrapSubnetCidr string `json:"bootstrap_subnet_cidr,omitempty"`
+}
+
+// SharedCredentials contains the cluster-wide credentials distributed during formation.
+type SharedCredentials struct {
+	AccessKey   string `json:"access_key"`
+	SecretKey   string `json:"secret_key"`
+	AccountID   string `json:"account_id"`
+	NatsToken   string `json:"nats_token"`
+	ClusterName string `json:"cluster_name"`
+	Region      string `json:"region"`
+
+	// Admin credentials (generated by init node, shared to join nodes)
+	AdminAccessKey string `json:"admin_access_key,omitempty"`
+	AdminSecretKey string `json:"admin_secret_key,omitempty"`
+
+	// Northstar credentials are the bucket-scoped, read-only pair the DNS
+	// resolver reads zone files with. Every node needs the identical pair:
+	// the zone bucket is distributed, but each node's predastore only honours
+	// the keys rendered into its own config.
+	//
+	// Both are omitempty so a cluster formed by an init node predating
+	// northstar distribution yields no northstar config on joiners at all,
+	// rather than a config holding a key no predastore recognises.
+	NorthstarAccessKey string `json:"northstar_access_key,omitempty"`
+	NorthstarSecretKey string `json:"northstar_secret_key,omitempty"`
+}
+
+// FormationServer is a lightweight HTTPS server that coordinates cluster formation.
+// Nodes register via POST /formation/join; full cluster data is available via
+// GET /formation/status once the expected count is reached.
+type FormationServer struct {
+	mu            sync.RWMutex
+	expected      int
+	nodes         map[string]NodeInfo
+	credentials   *SharedCredentials
+	caCert        string
+	caKey         string
+	masterKey     string
+	viperblockKey string
+	networkConfig *NetworkConfig
+	joinToken     string
+	tokenExpiry   time.Time
+	done          chan struct{}
+	server        *http.Server
+}
+
+// GenerateJoinToken returns a token of the form "spx_join_<16 base64url chars>".
+// Uses crypto/rand for 12 random bytes (96 bits entropy), base64 URL-safe encoded.
+func GenerateJoinToken() (string, error) {
+	b := make([]byte, 12)
+	if _, err := crypto_rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate join token: %w", err)
+	}
+	return "spx_join_" + base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// NewFormationServer creates a new formation server expecting the given number of nodes.
+func NewFormationServer(expected int, creds *SharedCredentials, caCert, caKey string,
+	networkConfig *NetworkConfig, joinToken string, tokenTTL time.Duration) *FormationServer {
+	return &FormationServer{
+		expected:      expected,
+		nodes:         make(map[string]NodeInfo),
+		credentials:   creds,
+		caCert:        caCert,
+		caKey:         caKey,
+		networkConfig: networkConfig,
+		joinToken:     joinToken,
+		tokenExpiry:   time.Now().Add(tokenTTL),
+		done:          make(chan struct{}),
+	}
+}
+
+// RegisterNode validates and adds a node. Returns an error for duplicates.
+func (fs *FormationServer) RegisterNode(info NodeInfo) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	if info.Name == "" {
+		return fmt.Errorf("node name is required")
+	}
+	if info.BindIP == "" {
+		return fmt.Errorf("bind_ip is required")
+	}
+
+	// Check for duplicate name
+	if _, exists := fs.nodes[info.Name]; exists {
+		return fmt.Errorf("node %q already registered", info.Name)
+	}
+
+	// Check for duplicate bind IP
+	for _, n := range fs.nodes {
+		if n.BindIP == info.BindIP {
+			return fmt.Errorf("bind IP %s already registered by node %q", info.BindIP, n.Name)
+		}
+	}
+
+	fs.nodes[info.Name] = info
+	slog.Info("Node registered", "name", info.Name, "bind_ip", info.BindIP, "joined", len(fs.nodes), "expected", fs.expected)
+
+	if fs.isComplete() {
+		close(fs.done)
+	}
+
+	return nil
+}
+
+// isComplete returns true when we have enough nodes. Must be called with lock held.
+func (fs *FormationServer) isComplete() bool {
+	return len(fs.nodes) >= fs.expected
+}
+
+// IsComplete returns true when the expected number of nodes have registered.
+func (fs *FormationServer) IsComplete() bool {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.isComplete()
+}
+
+// WaitForCompletion blocks until all nodes have joined or the timeout fires.
+func (fs *FormationServer) WaitForCompletion(timeout time.Duration) error {
+	select {
+	case <-fs.done:
+		return nil
+	case <-time.After(timeout):
+		fs.mu.RLock()
+		joined := len(fs.nodes)
+		fs.mu.RUnlock()
+		return fmt.Errorf("formation timed out after %s: %d/%d nodes joined", timeout, joined, fs.expected)
+	}
+}
+
+// Nodes returns a copy of the registered nodes.
+func (fs *FormationServer) Nodes() map[string]NodeInfo {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	out := make(map[string]NodeInfo, len(fs.nodes))
+	maps.Copy(out, fs.nodes)
+	return out
+}
+
+// SetMasterKey sets the base64-encoded IAM master key for distribution to joining nodes.
+func (fs *FormationServer) SetMasterKey(key string) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.masterKey = key
+}
+
+// SetViperblockKey sets the base64-encoded cluster-wide viperblock at-rest
+// encryption key for distribution to joining nodes. Unlike the per-node
+// predastore key, this key is shared so a volume sealed on one node can be
+// opened on any other.
+func (fs *FormationServer) SetViperblockKey(key string) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.viperblockKey = key
+}
+
+// Start launches the HTTPS server on the given address (e.g. "10.0.0.1:4432")
+// using the cluster CA certificate and key for TLS.
+func (fs *FormationServer) Start(bindAddr string) error {
+	tlsCert, err := tls.X509KeyPair([]byte(fs.caCert), []byte(fs.caKey))
+	if err != nil {
+		return fmt.Errorf("formation server TLS keypair: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /formation/join", fs.handleJoin)
+	mux.HandleFunc("GET /formation/status", fs.handleStatus)
+	mux.HandleFunc("GET /formation/health", fs.handleHealth)
+
+	fs.server = &http.Server{
+		Addr:              bindAddr,
+		Handler:           mux,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig: &tls.Config{
+			Certificates:     []tls.Certificate{tlsCert},
+			MinVersion:       tls.VersionTLS13,
+			CurvePreferences: tlsconfig.Curves,
+		},
+	}
+
+	ln, err := tls.Listen("tcp", bindAddr, fs.server.TLSConfig)
+	if err != nil {
+		return fmt.Errorf("formation server listen: %w", err)
+	}
+
+	go func() {
+		if err := fs.server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			slog.Error("Formation server error", "error", err)
+		}
+	}()
+
+	slog.Info("Formation server started (TLS)", "addr", bindAddr)
+	return nil
+}
+
+// Shutdown gracefully stops the formation server.
+func (fs *FormationServer) Shutdown(ctx context.Context) error {
+	if fs.server == nil {
+		return nil
+	}
+	return fs.server.Shutdown(ctx)
+}
+
+// validateToken checks the Authorization header against the join token.
+// Returns an error if the token is missing, invalid, or expired.
+func (fs *FormationServer) validateToken(r *http.Request) error {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	if time.Now().After(fs.tokenExpiry) {
+		return fmt.Errorf("join token has expired")
+	}
+
+	auth := r.Header.Get("Authorization")
+	if auth == "" {
+		return fmt.Errorf("missing Authorization header")
+	}
+
+	token, ok := strings.CutPrefix(auth, "Bearer ")
+	if !ok {
+		return fmt.Errorf("invalid Authorization header format")
+	}
+
+	if subtle.ConstantTimeCompare([]byte(token), []byte(fs.joinToken)) != 1 {
+		return fmt.Errorf("invalid join token")
+	}
+
+	return nil
+}
+
+func (fs *FormationServer) handleJoin(w http.ResponseWriter, r *http.Request) {
+	if err := fs.validateToken(r); err != nil {
+		slog.Warn("Formation join rejected", "error", err, "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusUnauthorized, JoinResponse{
+			Success: false,
+			Message: "unauthorized: " + err.Error(),
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1 MB limit
+	var req JoinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, JoinResponse{
+			Success: false,
+			Message: fmt.Sprintf("invalid request body: %v", err),
+		})
+		return
+	}
+
+	if err := fs.RegisterNode(req.NodeInfo); err != nil {
+		writeJSON(w, http.StatusConflict, JoinResponse{
+			Success: false,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	fs.mu.RLock()
+	joined := len(fs.nodes)
+	fs.mu.RUnlock()
+
+	writeJSON(w, http.StatusOK, JoinResponse{
+		Success:  true,
+		Message:  fmt.Sprintf("node %q registered", req.Name),
+		Joined:   joined,
+		Expected: fs.expected,
+	})
+}
+
+func (fs *FormationServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if err := fs.validateToken(r); err != nil {
+		slog.Warn("Formation status rejected", "error", err, "remote_addr", r.RemoteAddr)
+		http.Error(w, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	resp := StatusResponse{
+		Complete: fs.isComplete(),
+		Joined:   len(fs.nodes),
+		Expected: fs.expected,
+	}
+
+	// Only expose full data when formation is complete
+	if fs.isComplete() {
+		resp.Nodes = make(map[string]NodeInfo, len(fs.nodes))
+		maps.Copy(resp.Nodes, fs.nodes)
+		resp.Credentials = fs.credentials
+		resp.CACert = fs.caCert
+		resp.CAKey = fs.caKey
+		resp.MasterKey = fs.masterKey
+		resp.ViperblockKey = fs.viperblockKey
+		resp.NetworkConfig = fs.networkConfig
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (fs *FormationServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte("ok")); err != nil {
+		slog.Error("Failed to write health response", "error", err)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("Failed to encode JSON response", "error", err)
+	}
+}

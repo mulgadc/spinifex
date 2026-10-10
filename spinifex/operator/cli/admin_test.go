@@ -1,0 +1,1674 @@
+package cli
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mulgadc/northstar/pkg/backend"
+	nsconfig "github.com/mulgadc/northstar/pkg/config"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
+	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
+	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
+	toml "github.com/pelletier/go-toml/v2"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// Regression guard: source URL must print for every error kind, not just
+// mismatch, so a 404/non-HTTPS/size-cap failure still tells the operator
+// which URL to investigate.
+func TestPrintChecksumError(t *testing.T) {
+	image := imagecatalog.Images{Checksum: "https://example.com/SUMS", ChecksumType: "sha512"}
+	const imageFile = "/var/lib/img.tar.xz"
+	const imageName = "debian-13-x86_64"
+
+	errs := []error{
+		fmt.Errorf("%w: expected abc got def", imagecatalog.ErrChecksumMismatch),
+		fmt.Errorf("%w: 404", imagecatalog.ErrChecksumFetchFailed),
+		errors.New("open /x: no such file"),
+	}
+	for _, e := range errs {
+		var buf bytes.Buffer
+		printChecksumError(&buf, imageFile, imageName, image, e)
+		out := buf.String()
+		assert.Contains(t, out, image.Checksum, "source URL must print for: %v", e)
+		assert.Contains(t, out, imageFile)
+		assert.Contains(t, out, "spx admin images import --name "+imageName+" --force")
+	}
+}
+
+// buildRemoteNodes must prefer AdvertiseIP (off-host dial target) and fall
+// back to BindIP when the peer did not send AdvertiseIP.
+func TestBuildRemoteNodes_AdvertiseFallback(t *testing.T) {
+	nodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "203.0.113.1"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2"}, // legacy joiner
+		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "203.0.113.3"},
+	}
+	got := buildRemoteNodes(nodes, "node3", "")
+	if assert.Len(t, got, 2) {
+		assert.Equal(t, "node1", got[0].Name)
+		assert.Equal(t, "203.0.113.1", got[0].Host, "advertise wins when set")
+		assert.Equal(t, "node2", got[1].Name)
+		assert.Equal(t, "10.0.0.2", got[1].Host, "bind fallback when advertise empty")
+	}
+}
+
+// Every peer must carry the northstar stanza, since a node that describes only
+// its own northstar computes a single-entry seed set and pins the base zone's NS
+// records to whichever node won the create-if-absent race.
+func TestBuildRemoteNodes_NorthstarConfigPath(t *testing.T) {
+	nodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2"},
+	}
+
+	got := buildRemoteNodes(nodes, "node2", "/etc/spinifex/northstar/northstar.toml")
+	if assert.Len(t, got, 1) {
+		assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", got[0].NorthstarConfigPath)
+	}
+
+	// No distributed credentials means no node runs northstar. Publishing peers
+	// as resolvers anyway would point guests at 169.254.169.253 for a service
+	// that never starts.
+	got = buildRemoteNodes(nodes, "node2", "")
+	if assert.Len(t, got, 1) {
+		assert.Empty(t, got[0].NorthstarConfigPath)
+	}
+}
+
+func TestResolveAdvertiseIP(t *testing.T) {
+	wan := &admin.DetectedNetwork{WAN: &admin.DetectedInterface{IP: "192.168.1.21"}}
+	noWAN := &admin.DetectedNetwork{}
+
+	tests := []struct {
+		name      string
+		bindIP    string
+		advertise string
+		detected  *admin.DetectedNetwork
+		want      string
+		wantErr   bool
+	}{
+		{"single-node default, WAN detected", "0.0.0.0", "", wan, "192.168.1.21", false},
+		{"single-node default, no WAN", "0.0.0.0", "", noWAN, "127.0.0.1", false},
+		{"single-node explicit advertise", "0.0.0.0", "203.0.113.5", wan, "203.0.113.5", false},
+		{"multi-node init, specific bind", "10.11.12.1", "", nil, "10.11.12.1", false},
+		{"multi-node dual-homed override", "10.11.12.1", "203.0.113.5", nil, "203.0.113.5", false},
+		{"loopback-only test", "127.0.0.1", "", noWAN, "127.0.0.1", false},
+		{"invalid advertise flag", "0.0.0.0", "not-an-ip", wan, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveAdvertiseIP(tt.bindIP, tt.advertise, tt.detected)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// Generated spinifex.toml must include both host (listen, BindIP) and
+// advertise (off-host dial target, AdvertiseIP) for the local node.
+func TestSpinifexTomlTemplate_AdvertiseField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:        "node1",
+		Az:          "ap-southeast-2a",
+		Port:        "4432",
+		Region:      "ap-southeast-2",
+		BindIP:      "0.0.0.0",
+		AdvertiseIP: "192.168.1.21",
+		AccessKey:   "AKIATEST",
+		SecretKey:   "SECRET",
+		AccountID:   "123456789012",
+		NatsToken:   "token",
+		ConfigDir:   dir,
+		OVNNBAddr:   "tcp:127.0.0.1:6641",
+		OVNSBAddr:   "tcp:127.0.0.1:6642",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `host = "0.0.0.0"`, "listen address")
+	assert.Contains(t, content, `advertise = "192.168.1.21"`, "off-host dial target")
+}
+
+// The gateway is the public AWS-API surface, so its listener must stay on the
+// wildcard even when --bind names a single internal plane; pinning it to BindIP
+// makes a multi-NIC node unreachable from the wan side. The internal services
+// around it still follow BindIP.
+func TestSpinifexTomlTemplate_GatewayListensOnAllPlanes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:        "hydrogen",
+		Az:          "us-west-1a",
+		Port:        "4432",
+		Region:      "us-west-1",
+		BindIP:      "10.0.0.3",
+		AdvertiseIP: "216.218.163.99",
+		AccessKey:   "AKIATEST",
+		SecretKey:   "SECRET",
+		AccountID:   "123456789012",
+		NatsToken:   "token",
+		ConfigDir:   dir,
+		OVNNBAddr:   "tcp:10.0.0.3:6641",
+		OVNSBAddr:   "tcp:10.0.0.3:6642",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `host = "0.0.0.0:9999"`, "gateway must answer on every plane")
+	assert.NotContains(t, content, `host = "10.0.0.3:9999"`, "gateway must not be pinned to the internal plane")
+	assert.Contains(t, content, `host = "10.0.0.3:4222"`, "nats stays internal")
+
+	// predastore-start.sh scrapes this into SPINIFEX_PREDASTORE_HOST, which
+	// outranks predastore.toml, so pinning it here makes S3 unreachable from the
+	// wan plane and breaks the UI, which proxies to localhost:8443.
+	assert.Contains(t, content, `host = "0.0.0.0:8443"`, "S3 must answer on every plane")
+	assert.NotContains(t, content, `host = "10.0.0.3:8443"`, "S3 must not be pinned to the internal plane")
+
+	// The daemon is cluster-internal and peers dial it by advertise address,
+	// so it stays on the bind address rather than following the public ones.
+	assert.Contains(t, content, `host = "10.0.0.3:4432"`, "daemon stays internal")
+}
+
+// Empty AdvertiseIP (for example when loading an existing cluster) must NOT
+// render an empty advertise = "" line — downstream fallback to Host kicks in.
+func TestSpinifexTomlTemplate_AdvertiseOmittedWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:      "node1",
+		Az:        "ap-southeast-2a",
+		Port:      "4432",
+		Region:    "ap-southeast-2",
+		BindIP:    "10.11.12.1",
+		AccessKey: "AKIATEST",
+		SecretKey: "SECRET",
+		AccountID: "123456789012",
+		NatsToken: "token",
+		ConfigDir: dir,
+		OVNNBAddr: "tcp:127.0.0.1:6641",
+		OVNSBAddr: "tcp:127.0.0.1:6642",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+	data, _ := os.ReadFile(path)
+	assert.NotContains(t, string(data), "advertise =")
+}
+
+// The northstar stanza carries the non-secret domains so confined services
+// (vpcd) resolve DNS names without reading the 0600 northstar.toml.
+func TestSpinifexTomlTemplate_NorthstarDomains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:                    "node1",
+		Az:                      "ap-southeast-2a",
+		Port:                    "4432",
+		Region:                  "ap-southeast-2",
+		BindIP:                  "10.11.12.1",
+		AccessKey:               "AKIATEST",
+		SecretKey:               "SECRET",
+		AccountID:               "123456789012",
+		NatsToken:               "token",
+		ConfigDir:               dir,
+		OVNNBAddr:               "tcp:127.0.0.1:6641",
+		OVNSBAddr:               "tcp:127.0.0.1:6642",
+		NorthstarConfigPath:     "/etc/spinifex/northstar/northstar.toml",
+		NorthstarDefaultDomain:  "spx3.net",
+		NorthstarInternalDomain: "compute.internal",
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `config_path = "/etc/spinifex/northstar/northstar.toml"`)
+	assert.Contains(t, content, `default_domain = "spx3.net"`)
+	assert.Contains(t, content, `internal_domain = "compute.internal"`)
+
+	// The stanza must round-trip into NorthstarConfig so the resolvers read it.
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	assert.Equal(t, "spx3.net", cfg.Nodes["node1"].Northstar.DefaultDomain)
+	assert.Equal(t, "compute.internal", cfg.Nodes["node1"].Northstar.InternalDomain)
+}
+
+// Legacy `wan_bridge` TOML key must fail-start vpcd with guidance, not silently
+// alias. Prevents the footgun where operators inherited the
+// old key pointing at 'br-ext' and got broken DHCP on veth-mode hosts.
+func TestCheckLegacyWanBridgeKey_TOMLRejected(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+node = "node1"
+[nodes.node1.vpcd]
+ovn_nb_addr = "tcp:127.0.0.1:6641"
+wan_bridge = "br-ext"
+`), 0o644))
+
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	viper.SetConfigFile(cfgPath)
+	viper.SetConfigType("toml")
+	require.NoError(t, viper.ReadInConfig())
+
+	err := checkLegacyWanBridgeKey("node1", cfgPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wan_bridge")
+	assert.Contains(t, err.Error(), "Remove")
+}
+
+func TestCheckLegacyWanBridgeKey_EnvVarRejected(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	t.Setenv("SPINIFEX_VPCD_WAN_BRIDGE", "br-ext")
+
+	err := checkLegacyWanBridgeKey("node1", "/tmp/unused.toml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SPINIFEX_VPCD_WAN_BRIDGE")
+	assert.Contains(t, err.Error(), "Remove")
+}
+
+func TestCheckLegacyWanBridgeKey_CleanConfigPasses(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+node = "node1"
+[nodes.node1.vpcd]
+ovn_nb_addr = "tcp:127.0.0.1:6641"
+external_interface = "enp0s3"
+`), 0o644))
+
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	viper.SetConfigFile(cfgPath)
+	viper.SetConfigType("toml")
+	require.NoError(t, viper.ReadInConfig())
+
+	assert.NoError(t, checkLegacyWanBridgeKey("node1", cfgPath))
+}
+
+// iam.nats_url must not embed a bare 0.0.0.0 — the predastore process dials
+// its own NATS via loopback when listening on wildcard.
+func TestPredastoreMultinodeTemplate_NatsURLLoopbackShim(t *testing.T) {
+	nodes := []formation.PredastoreNodeConfig{
+		{ID: 1, Host: "10.0.0.1"},
+		{ID: 2, Host: "10.0.0.2"},
+		{ID: 3, Host: "10.0.0.3"},
+	}
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "/var/lib/spinifex", "0.0.0.0", 0, admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+	assert.Contains(t, content, `nats_url = "nats://localhost:4222"`)
+	assert.NotContains(t, content, `nats_url = "nats://0.0.0.0:4222"`)
+
+	// Specific bind IP → stays as-is.
+	content2, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, nodes, "AK", "SK", "ap-southeast-2", "token", "/tmp", "/var/lib/spinifex", "10.11.12.1", 0, admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+	assert.Contains(t, content2, `nats_url = "nats://10.11.12.1:4222"`)
+}
+
+// writePredastoreEncryptionKey is called from both `spx admin init` and `spx
+// admin join`; both depend on it producing a 32-byte file at 0600 in the
+// expected layout. Predastore's keyfile loader rejects anything that isn't
+// exactly that, so a regression here would break service startup on every
+// node.
+func TestWritePredastoreEncryptionKey(t *testing.T) {
+	configDir := t.TempDir()
+
+	keyPath, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "predastore", "encryption.key"), keyPath)
+
+	info, err := os.Stat(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(32), info.Size(), "predastore master key must be exactly 32 bytes")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "predastore master key must be mode 0600")
+
+	// Per-node invariant: two successive calls (on what would be two
+	// different nodes) must produce different key material. If they ever
+	// returned the same bytes we'd have silently lost the per-node
+	// blast-radius property.
+	configDir2 := t.TempDir()
+	keyPath2, err := writePredastoreEncryptionKey(configDir2)
+	require.NoError(t, err)
+
+	key1, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	key2, err := os.ReadFile(keyPath2)
+	require.NoError(t, err)
+	assert.NotEqual(t, key1, key2, "per-node keys must differ")
+}
+
+// Joiners persist the leader's shared key via saveViperblockEncryptionKey
+// against a configDir with no viperblock/ subdir yet. The bytes round-trip
+// verbatim — the whole cluster shares one key, so any mutation would orphan
+// volumes sealed on other nodes.
+func TestSaveViperblockEncryptionKey_RoundTrip(t *testing.T) {
+	configDir := t.TempDir()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	keyPath, err := saveViperblockEncryptionKey(configDir, key)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "viperblock", "encryption.key"), keyPath)
+
+	got, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, key, got, "shared key must be written verbatim")
+}
+
+// A re-init must not rotate the per-node predastore key: rotating it would orphan
+// every fragment already sealed under the old key. The helper preserves an
+// existing key byte-for-byte.
+func TestWritePredastoreEncryptionKey_PreservesExisting(t *testing.T) {
+	configDir := t.TempDir()
+
+	keyPath, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+	orig, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+
+	keyPath2, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, keyPath, keyPath2)
+	after, err := os.ReadFile(keyPath2)
+	require.NoError(t, err)
+	assert.Equal(t, orig, after, "existing predastore key must be preserved on re-init")
+}
+
+// ensureViperblockEncryptionKey generates a shared 32-byte 0600 key on a fresh
+// dir and returns bytes that match the on-disk file; a second call preserves it
+// so a re-init keeps every encrypted volume readable.
+func TestEnsureViperblockEncryptionKey(t *testing.T) {
+	configDir := t.TempDir()
+
+	key, keyPath, err := ensureViperblockEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(configDir, "viperblock", "encryption.key"), keyPath)
+	assert.Len(t, key, 32, "viperblock key must be 32 bytes")
+
+	info, err := os.Stat(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(32), info.Size(), "viperblock master key must be exactly 32 bytes")
+	assert.Equal(t, os.FileMode(0600), info.Mode().Perm(), "viperblock master key must be mode 0600")
+
+	onDisk, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, key, onDisk, "returned bytes must match the file")
+
+	key2, _, err := ensureViperblockEncryptionKey(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, key, key2, "existing viperblock key must be preserved on re-init")
+}
+
+// A present-but-corrupt viperblock key must fail loud rather than regenerate,
+// which would orphan every already-encrypted volume in the cluster.
+func TestEnsureViperblockEncryptionKey_CorruptFailsLoud(t *testing.T) {
+	configDir := t.TempDir()
+	keyDir := filepath.Join(configDir, "viperblock")
+	require.NoError(t, os.MkdirAll(keyDir, 0750))
+	keyPath := filepath.Join(keyDir, "encryption.key")
+	require.NoError(t, os.WriteFile(keyPath, []byte("bad"), 0600))
+
+	_, _, err := ensureViperblockEncryptionKey(configDir)
+	require.Error(t, err, "a truncated viperblock key must error, not regenerate")
+
+	after, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("bad"), after, "corrupt viperblock key must not be overwritten")
+}
+
+// ensureMasterKey generates a fresh in-memory key without touching disk (the
+// bootstrap writer persists it), and preserves an existing on-disk key so a
+// re-init never rotates the key that encrypts IAM secrets in NATS KV.
+func TestEnsureMasterKey(t *testing.T) {
+	t.Run("FreshGeneratesWithoutWriting", func(t *testing.T) {
+		configDir := t.TempDir()
+		key, existed, err := ensureMasterKey(configDir)
+		require.NoError(t, err)
+		assert.False(t, existed, "no master.key present yet")
+		assert.Len(t, key, 32)
+		assert.NoFileExists(t, filepath.Join(configDir, "master.key"),
+			"ensureMasterKey must not persist on the fresh path")
+	})
+
+	t.Run("PreservesExisting", func(t *testing.T) {
+		configDir := t.TempDir()
+		seed := make([]byte, 32)
+		for i := range seed {
+			seed[i] = byte(200 - i)
+		}
+		require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(configDir, "master.key"), seed))
+
+		key, existed, err := ensureMasterKey(configDir)
+		require.NoError(t, err)
+		assert.True(t, existed, "existing master.key must be detected")
+		assert.Equal(t, seed, key, "existing master key must be loaded verbatim")
+	})
+
+	// A present-but-corrupt master.key must fail loud, never be silently
+	// regenerated: rotating it would orphan every IAM secret in NATS KV.
+	t.Run("CorruptFailsLoud", func(t *testing.T) {
+		configDir := t.TempDir()
+		keyPath := filepath.Join(configDir, "master.key")
+		require.NoError(t, os.WriteFile(keyPath, []byte("too-short"), 0600))
+
+		_, _, err := ensureMasterKey(configDir)
+		require.Error(t, err, "a truncated master.key must error, not regenerate")
+
+		after, err := os.ReadFile(keyPath)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("too-short"), after, "corrupt master key must not be overwritten")
+	})
+}
+
+// The identity bundle is preserved holistically on re-init: the load helpers
+// recover the exact system credentials and never rewrite bootstrap.json. Admin
+// credentials are not recovered from disk — awsgw consumes and deletes
+// bootstrap.json after first boot, so the preserve path must not read it back.
+func TestPreservedIdentityBundle(t *testing.T) {
+	configDir := t.TempDir()
+	bootstrapDir := filepath.Join(configDir, "awsgw")
+
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	const (
+		sysAccess   = "AKIASYSTEM0000000000"
+		sysSecret   = "system-secret-value"
+		adminAccess = "AKIAADMIN00000000000"
+		adminSecret = "admin-secret-value"
+		accountID   = "123456789012"
+	)
+	require.NoError(t, writeBootstrapFilesWithAdmin(configDir, bootstrapDir, masterKey,
+		sysAccess, sysSecret, accountID, adminAccess, adminSecret))
+	require.NoError(t, writeSystemCredentials(configDir, sysAccess, sysSecret))
+
+	bootstrapPath := filepath.Join(bootstrapDir, "bootstrap.json")
+	bootstrapBefore, err := os.ReadFile(bootstrapPath)
+	require.NoError(t, err)
+
+	// master.key round-trips and is flagged as pre-existing.
+	loadedKey, existed, err := ensureMasterKey(configDir)
+	require.NoError(t, err)
+	assert.True(t, existed)
+	assert.Equal(t, masterKey, loadedKey)
+
+	// System credentials come back verbatim (they must match the NATS KV seed).
+	gotSysAccess, gotSysSecret, err := loadSystemCredentials(configDir)
+	require.NoError(t, err)
+	assert.Equal(t, sysAccess, gotSysAccess)
+	assert.Equal(t, sysSecret, gotSysSecret)
+
+	// The preserve helpers must not rewrite the seed file.
+	bootstrapAfter, err := os.ReadFile(bootstrapPath)
+	require.NoError(t, err)
+	assert.Equal(t, bootstrapBefore, bootstrapAfter, "bootstrap.json must not be rewritten on re-init")
+}
+
+// loadSystemCredentials surfaces a clear error when the file is absent rather
+// than returning empty credentials that would silently break SigV4 auth.
+func TestLoadSystemCredentials_Missing(t *testing.T) {
+	_, _, err := loadSystemCredentials(t.TempDir())
+	require.Error(t, err)
+}
+
+// A present-but-empty or malformed system-credentials.json must error rather
+// than yield blank credentials that would silently break SigV4 between services.
+func TestLoadSystemCredentials_Invalid(t *testing.T) {
+	t.Run("EmptyValues", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "system-credentials.json"),
+			[]byte(`{"access_key_id":"","secret_access_key":""}`), 0600))
+		_, _, err := loadSystemCredentials(configDir)
+		require.Error(t, err)
+	})
+
+	t.Run("MalformedJSON", func(t *testing.T) {
+		configDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(configDir, "system-credentials.json"),
+			[]byte("not json"), 0600))
+		_, _, err := loadSystemCredentials(configDir)
+		require.Error(t, err)
+	})
+}
+
+// A fresh install must render encryption_key_file so viperblockd enables
+// at-rest encryption; an empty field (upgrade / legacy) must omit the line
+// entirely so the volume stays in cleartext legacy mode.
+func TestSpinifexTomlTemplate_EncryptionKeyFile(t *testing.T) {
+	base := admin.ConfigSettings{
+		Node: "node1", Az: "ap-southeast-2a", Port: "4432", Region: "ap-southeast-2",
+		BindIP: "0.0.0.0", AccessKey: "AKIATEST", SecretKey: "SECRET",
+		AccountID: "123456789012", NatsToken: "token",
+		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
+	}
+
+	dir := t.TempDir()
+	withKey := base
+	withKey.ConfigDir = dir
+	withKey.EncryptionKeyFile = "/etc/spinifex/viperblock/encryption.key"
+	path := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, withKey))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `encryption_key_file = "/etc/spinifex/viperblock/encryption.key"`)
+
+	dir2 := t.TempDir()
+	noKey := base
+	noKey.ConfigDir = dir2
+	path2 := filepath.Join(dir2, "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path2, spinifexTomlTemplate, noKey))
+	data2, err := os.ReadFile(path2)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data2), "encryption_key_file", "blank key must omit the field")
+}
+
+// A rendered node config must turn chunk GC on. Asserting the template text
+// alone is not enough: the value has to survive parsing into a non-nil true
+// pointer, because every consumer treats nil as off. Rendering and loading
+// together is the only check that covers the whole path.
+func TestSpinifexTomlTemplate_GCEnabled(t *testing.T) {
+	dir := t.TempDir()
+	settings := admin.ConfigSettings{
+		Node: "node1", Az: "ap-southeast-2a", Port: "4432", Region: "ap-southeast-2",
+		BindIP: "0.0.0.0", AccessKey: "AKIATEST", SecretKey: "SECRET",
+		AccountID: "123456789012", NatsToken: "token",
+		OVNNBAddr: "tcp:127.0.0.1:6641", OVNSBAddr: "tcp:127.0.0.1:6642",
+		ConfigDir: dir,
+	}
+
+	path := filepath.Join(dir, "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+
+	node, ok := cfg.Nodes["node1"]
+	require.True(t, ok, "rendered config must define the node")
+	require.NotNil(t, node.Viperblock.GCEnabled, "gc_enabled must be rendered; nil leaves chunk GC off on every deployed node")
+	assert.True(t, *node.Viperblock.GCEnabled, "chunk GC must be enabled in a freshly rendered node config")
+}
+
+// Joiners run `spx admin join` against a configDir that doesn't yet contain
+// a predastore/ subdir. The helper must create it (predastore subdir is
+// owned by spinifex-storage in prod, but the helper just needs the dir to
+// exist).
+func TestWritePredastoreEncryptionKey_CreatesMissingDir(t *testing.T) {
+	configDir := t.TempDir()
+	// Don't pre-create the predastore subdir — simulate a fresh joiner.
+
+	keyPath, err := writePredastoreEncryptionKey(configDir)
+	require.NoError(t, err)
+
+	dirInfo, err := os.Stat(filepath.Dir(keyPath))
+	require.NoError(t, err)
+	assert.True(t, dirInfo.IsDir())
+}
+
+// TestImagesRemoveCmd_FlagSchema guards the public flag surface for
+// `spx admin images remove`. --image-id is required so cobra rejects a bare
+// invocation; --force/--yes default to false.
+func TestImagesRemoveCmd_FlagSchema(t *testing.T) {
+	imageIDFlag := imagesRemoveCmd.Flags().Lookup("image-id")
+	require.NotNil(t, imageIDFlag, "--image-id must be defined")
+	assert.Equal(t, []string{"true"}, imageIDFlag.Annotations[cobraRequiredAnnotation],
+		"--image-id must be marked required")
+
+	forceFlag := imagesRemoveCmd.Flags().Lookup("force")
+	require.NotNil(t, forceFlag)
+	assert.Equal(t, "false", forceFlag.DefValue)
+
+	yesFlag := imagesRemoveCmd.Flags().Lookup("yes")
+	require.NotNil(t, yesFlag)
+	assert.Equal(t, "false", yesFlag.DefValue)
+}
+
+// cobraRequiredAnnotation is the annotation key cobra uses to mark required flags.
+const cobraRequiredAnnotation = "cobra_annotation_bash_completion_one_required_flag"
+
+// `spx admin init` must expose --external-source and --external-bind-bridge so
+// operators can pick the DHCP path for [[network.external_pools]].
+func TestAdminInitCmd_ExternalDHCPFlagSchema(t *testing.T) {
+	sourceFlag := adminInitCmd.Flags().Lookup("external-source")
+	require.NotNil(t, sourceFlag, "--external-source must be defined")
+	assert.Empty(t, sourceFlag.DefValue)
+
+	bindFlag := adminInitCmd.Flags().Lookup("external-bind-bridge")
+	require.NotNil(t, bindFlag, "--external-bind-bridge must be defined")
+	assert.Empty(t, bindFlag.DefValue)
+
+	poolFlag := adminInitCmd.Flags().Lookup("external-pool")
+	require.NotNil(t, poolFlag)
+	assert.Empty(t, poolFlag.DefValue)
+}
+
+// DHCP-sourced pool must emit source + bind_bridge into spinifex.toml so the
+// daemon's validator and vpcd's DHCPManager find the bridge they DORA on.
+func TestSpinifexTomlTemplate_ExternalPoolDHCPSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:          "node1",
+		Az:            "ap-southeast-2a",
+		Port:          "4432",
+		Region:        "ap-southeast-2",
+		BindIP:        "10.11.12.1",
+		ConfigDir:     dir,
+		OVNNBAddr:     "tcp:127.0.0.1:6641",
+		OVNSBAddr:     "tcp:127.0.0.1:6642",
+		ExternalMode:  "pool",
+		ExternalIface: "eth0",
+		Pools: []formation.PoolData{{
+			Name: "wan", Source: "dhcp", BindBridge: "br-wan", PrefixLen: 24,
+		}},
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `source      = "dhcp"`)
+	assert.Contains(t, content, `bind_bridge = "br-wan"`)
+	assert.NotContains(t, content, "range_start", "dhcp pool must not emit range_start")
+	assert.NotContains(t, content, "range_end", "dhcp pool must not emit range_end")
+	assert.NotContains(t, content, "gateway     =", "gateway omitted for dhcp pool (discovered from OFFER)")
+}
+
+// Static-sourced pool must not emit bind_bridge — the validator rejects it.
+func TestSpinifexTomlTemplate_ExternalPoolStaticSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spinifex.toml")
+	settings := admin.ConfigSettings{
+		Node:          "node1",
+		Az:            "ap-southeast-2a",
+		Port:          "4432",
+		Region:        "ap-southeast-2",
+		BindIP:        "10.11.12.1",
+		ConfigDir:     dir,
+		OVNNBAddr:     "tcp:127.0.0.1:6641",
+		OVNSBAddr:     "tcp:127.0.0.1:6642",
+		ExternalMode:  "pool",
+		ExternalIface: "eth0",
+		Pools: []formation.PoolData{{
+			Name: "wan", Source: "static",
+			Start: "192.168.1.150", End: "192.168.1.250",
+			Gateway: "192.168.1.1", PrefixLen: 24,
+		}},
+	}
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	content := string(data)
+	assert.Contains(t, content, `source      = "static"`)
+	assert.NotContains(t, content, "bind_bridge", "static pool must not emit bind_bridge")
+	assert.Contains(t, content, `range_start = "192.168.1.150"`)
+	assert.Contains(t, content, `gateway     = "192.168.1.1"`)
+}
+
+// Formation joiners must receive BindBridge from the init node so the
+// cluster-wide config reaches every chassis intact.
+func TestApplyNetworkConfig_PropagatesPoolBindBridge(t *testing.T) {
+	settings := &admin.ConfigSettings{}
+	nc := &formation.NetworkConfig{
+		ExternalMode: "pool",
+		Pools: []formation.PoolData{{
+			Name: "wan", Source: "dhcp", BindBridge: "br-wan", PrefixLen: 24,
+		}},
+	}
+	applyNetworkConfig(settings, nc)
+	require.Len(t, settings.Pools, 1)
+	assert.Equal(t, "dhcp", settings.Pools[0].Source)
+	assert.Equal(t, "br-wan", settings.Pools[0].BindBridge)
+	assert.Empty(t, settings.BridgeMode, "bridged modes stay auto-detected, only nat is pinned")
+}
+
+// Routed NAT renders two pools, and the transit one carries a gateway-LRP range
+// that pool mode has no equivalent for. A joiner that received only the first,
+// or lost the range, would allocate VPC gateway addresses from nowhere.
+func TestApplyNetworkConfig_PropagatesEveryPool(t *testing.T) {
+	settings := &admin.ConfigSettings{}
+	nc := &formation.NetworkConfig{
+		ExternalMode: "nat",
+		Pools: []formation.PoolData{
+			{Name: "nat-transit", Gateway: "100.127.0.1", PrefixLen: 24,
+				GwLrpRangeStart: "100.127.0.16", GwLrpRangeEnd: "100.127.0.254"},
+			{Name: "wan", Source: "static", Start: "192.168.1.150", End: "192.168.1.200",
+				Gateway: "192.168.1.1", PrefixLen: 24},
+		},
+	}
+	applyNetworkConfig(settings, nc)
+	require.Len(t, settings.Pools, 2)
+	assert.Equal(t, "nat", settings.BridgeMode,
+		"a joiner that loses bridge_mode falls back to autodetection for a mode init pinned")
+	assert.Equal(t, "nat-transit", settings.Pools[0].Name)
+	assert.Equal(t, "100.127.0.16", settings.Pools[0].GwLrpRangeStart)
+	assert.Equal(t, "100.127.0.254", settings.Pools[0].GwLrpRangeEnd)
+	assert.Equal(t, "wan", settings.Pools[1].Name)
+}
+
+func renderSingleNodePredastore(t *testing.T, settings admin.ConfigSettings) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "predastore.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, predastoreTomlTemplate, settings))
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func predastoreMultinodeNodes() []formation.PredastoreNodeConfig {
+	return []formation.PredastoreNodeConfig{
+		{ID: 1, Host: "10.0.0.1"}, {ID: 2, Host: "10.0.0.2"}, {ID: 3, Host: "10.0.0.3"},
+	}
+}
+
+// predastoreBucketAuth parses the buckets and auth entries a northstar-enabled
+// multi-node predastore must render.
+type predastoreBucketAuth struct {
+	Buckets []struct {
+		Name string `toml:"name"`
+	} `toml:"bucket"`
+	Auth []struct {
+		AccessKeyID     string `toml:"access_key_id"`
+		SecretAccessKey string `toml:"secret_access_key"`
+		Policy          []struct {
+			Bucket  string   `toml:"bucket"`
+			Actions []string `toml:"actions"`
+		} `toml:"policy"`
+	} `toml:"auth"`
+}
+
+// policyFor returns the actions the given key is granted on the given bucket,
+// and whether the key holds any policy for it at all.
+func (c predastoreBucketAuth) policyFor(accessKey, bucket string) ([]string, bool) {
+	for _, auth := range c.Auth {
+		if auth.AccessKeyID != accessKey {
+			continue
+		}
+		for _, p := range auth.Policy {
+			if p.Bucket == bucket {
+				return p.Actions, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (c predastoreBucketAuth) hasBucket(name string) bool {
+	for _, b := range c.Buckets {
+		if b.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Northstar on a multi-node cluster needs three things from predastore, all
+// gated on the same credential: the zone bucket, write access for the system
+// key (which is what BootstrapBaseZone seeds zones with), and the resolver's
+// own read-only key. The template rendered all three correctly, but the caller
+// never populated the credential, so multi-node clusters silently got none of
+// them.
+func TestPredastoreMultinodeTemplate_NorthstarProvisioned(t *testing.T) {
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", 0,
+		admin.NorthstarCredentials{AccessKey: "NSAK", SecretKey: "NSSK", Bucket: admin.NorthstarBucketName},
+	)
+	require.NoError(t, err)
+
+	var cfg predastoreBucketAuth
+	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
+
+	// The zone bucket is declared once for the whole cluster: every host's gate
+	// reads the same config, so a resolver on any node can serve it.
+	assert.True(t, cfg.hasBucket(admin.NorthstarBucketName), "northstar zone bucket not rendered")
+
+	// BootstrapBaseZone writes zone files with the system key, not the
+	// resolver's. Without this grant, seeding fails on every node.
+	systemActions, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	require.True(t, ok, "system key has no policy for the northstar bucket")
+	assert.Contains(t, systemActions, "s3:GetObject", "bootstrap must check whether the zone already exists")
+	assert.Contains(t, systemActions, "s3:PutObject", "bootstrap must create a missing zone")
+
+	// The resolver's key stays read-only and scoped to the zone bucket alone.
+	nsActions, ok := cfg.policyFor("NSAK", admin.NorthstarBucketName)
+	require.True(t, ok, "northstar key has no policy for the northstar bucket")
+	assert.ElementsMatch(t, []string{"s3:ListBucket", "s3:GetObject"}, nsActions)
+	for _, auth := range cfg.Auth {
+		if auth.AccessKeyID == "NSAK" {
+			assert.Equal(t, "NSSK", auth.SecretAccessKey)
+		}
+	}
+
+	_, ok = cfg.policyFor("NSAK", "predastore")
+	assert.False(t, ok, "northstar key must not reach the predastore bucket")
+}
+
+// Without a credential the northstar stanzas must be omitted wholesale rather
+// than half-rendered: an empty-keyed [[auth]] entry would let anyone read the
+// zone bucket.
+func TestPredastoreMultinodeTemplate_NorthstarOmittedWithoutCredentials(t *testing.T) {
+	content, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", 0,
+		admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+
+	var cfg predastoreBucketAuth
+	require.NoError(t, toml.Unmarshal([]byte(content), &cfg))
+
+	assert.False(t, cfg.hasBucket(admin.NorthstarBucketName))
+	_, ok := cfg.policyFor("AK", admin.NorthstarBucketName)
+	assert.False(t, ok, "system key granted northstar access without a northstar credential")
+	assert.Len(t, cfg.Auth, 1, "only the system key should be rendered")
+}
+
+// A joiner must provision its predastore with the leader's pair verbatim, since
+// each node's predastore only honours the keys in its own config. Per-node
+// generation would have node A's predastore reject node B's resolver.
+func TestNorthstarFromFormation_UsesDistributedPair(t *testing.T) {
+	dirs := configDirs{Northstar: "/etc/spinifex/northstar"}
+	creds := &formation.SharedCredentials{NorthstarAccessKey: "NSAK", NorthstarSecretKey: "NSSK"}
+
+	got, path := northstarFromFormation(creds, dirs)
+
+	assert.Equal(t, "NSAK", got.AccessKey)
+	assert.Equal(t, "NSSK", got.SecretKey)
+	assert.Equal(t, admin.NorthstarBucketName, got.Bucket, "bucket is a constant, derived node-side")
+	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", path)
+}
+
+// A leader predating credential distribution, or returning only half a pair,
+// must yield no Northstar config. Advertising a resolver without usable keys
+// would send guests to a service that cannot read its zones.
+func TestNorthstarFromFormation_IncompletePairYieldsNoConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		access string
+		secret string
+	}{
+		{name: "legacy leader"},
+		{name: "access key only", access: "NSAK"},
+		{name: "secret key only", secret: "NSSK"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, path := northstarFromFormation(&formation.SharedCredentials{
+				NorthstarAccessKey: tt.access,
+				NorthstarSecretKey: tt.secret,
+			}, configDirs{Northstar: "/etc/spinifex/northstar"})
+
+			assert.Equal(t, admin.NorthstarCredentials{}, got)
+			assert.Empty(t, path, "config path without credentials advertises a resolver that cannot read its zones")
+		})
+	}
+}
+
+// multinodeNorthstarSettings mirrors what both formation paths hand
+// generateAndWriteConfigs once the distributed pair is wired through.
+func multinodeNorthstarSettings(configPath string) admin.ConfigSettings {
+	s := northstarSettings()
+	s.Node = "node1"
+	s.Az = "ap-southeast-2a"
+	s.Port = "4432"
+	s.AccountID = "123456789012"
+	s.OVNNBAddr = "tcp:127.0.0.1:6641"
+	s.OVNSBAddr = "tcp:127.0.0.1:6642"
+	s.NorthstarConfigPath = configPath
+	return s
+}
+
+// The multi-node formation paths must produce both halves of a working
+// resolver: the northstar.toml the service reads, and the spinifex.toml stanza
+// that makes configuredNorthstarNodeNames count this node. Rendering was
+// previously reachable only from the single-node path.
+func TestGenerateAndWriteConfigs_MultinodeRendersNorthstar(t *testing.T) {
+	dirs, err := createConfigSubdirs(t.TempDir())
+	require.NoError(t, err)
+	nsPath := filepath.Join(dirs.Northstar, "northstar.toml")
+	spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+
+	require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, multinodeNorthstarSettings(nsPath), true))
+
+	nsContent, err := os.ReadFile(nsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(nsContent), `access_key = "AKIANORTHSTAR"`)
+
+	// config_path is the sole predicate for "this node runs northstar", so its
+	// presence is what puts the node in the nameserver set and the resolver list.
+	cfg, err := config.LoadConfig(spinifexTomlPath)
+	require.NoError(t, err)
+	assert.Equal(t, nsPath, cfg.Nodes["node1"].Northstar.ConfigPath)
+}
+
+// Incomplete credentials must yield neither file nor stanza. A stanza without
+// a usable northstar.toml would point guests at a resolver that never starts.
+func TestGenerateAndWriteConfigs_NoNorthstarWithoutCompleteCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		access string
+		secret string
+	}{
+		{name: "no credentials"},
+		{name: "access key only", access: "AKIANORTHSTAR"},
+		{name: "secret key only", secret: "northstar-secret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dirs, err := createConfigSubdirs(t.TempDir())
+			require.NoError(t, err)
+			spinifexTomlPath := filepath.Join(t.TempDir(), "spinifex.toml")
+
+			settings := multinodeNorthstarSettings(filepath.Join(dirs.Northstar, "northstar.toml"))
+			settings.NorthstarAccessKey = tt.access
+			settings.NorthstarSecretKey = tt.secret
+			require.NoError(t, generateAndWriteConfigs(dirs, spinifexTomlPath, settings, false))
+
+			_, err = os.Stat(filepath.Join(dirs.Northstar, "northstar.toml"))
+			assert.True(t, os.IsNotExist(err), "northstar.toml rendered without complete credentials")
+
+			cfg, err := config.LoadConfig(spinifexTomlPath)
+			require.NoError(t, err)
+			assert.Empty(t, cfg.Nodes["node1"].Northstar.ConfigPath)
+
+			predastoreContent, err := os.ReadFile(filepath.Join(dirs.Predastore, "predastore.toml"))
+			require.NoError(t, err)
+			var predastoreCfg predastoreBucketAuth
+			require.NoError(t, toml.Unmarshal(predastoreContent, &predastoreCfg))
+			assert.False(t, predastoreCfg.hasBucket(admin.NorthstarBucketName))
+			assert.Len(t, predastoreCfg.Auth, 1, "incomplete pair rendered a Northstar auth entry")
+		})
+	}
+}
+
+// renderClusterNode renders one node's spinifex.toml as its own formation path
+// would: its local northstar stanza plus a stanza for every peer.
+func renderClusterNode(t *testing.T, node string, allNodes map[string]formation.NodeInfo) *config.ClusterConfig {
+	t.Helper()
+	const nsPath = "/etc/spinifex/northstar/northstar.toml"
+
+	settings := multinodeNorthstarSettings(nsPath)
+	settings.Node = node
+	settings.BindIP = allNodes[node].BindIP
+	settings.AdvertiseIP = allNodes[node].AdvertiseIP
+	settings.RemoteNodes = buildRemoteNodes(allNodes, node, nsPath)
+
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, admin.GenerateConfigFile(path, spinifexTomlTemplate, settings))
+
+	cfg, err := config.LoadConfig(path)
+	require.NoError(t, err)
+	return cfg
+}
+
+// Every node must derive the same nameserver set from its own rendered config.
+// EnsureBaseZone is create-if-absent and never overwrites, so if each node saw
+// only itself the zone's NS records would be pinned to whichever node won the
+// startup race — permanently, for the life of the zone object. Identical sets
+// make that race benign: whoever writes, writes the same bytes.
+func TestSpinifexTomlTemplate_PeerNorthstarSeedsAreUniform(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+		"node3": {Name: "node3", BindIP: "10.0.0.3", AdvertiseIP: "192.168.1.33"},
+	}
+
+	wantIPs := []string{"192.168.1.31", "192.168.1.32", "192.168.1.33"}
+	wantHosts := []string{"ns1", "ns2", "ns3"}
+	for _, node := range []string{"node1", "node2", "node3"} {
+		cfg := renderClusterNode(t, node, allNodes)
+		seeds := dns.NameserverSeeds(cfg)
+		require.Len(t, seeds, 3)
+		for i, seed := range seeds {
+			assert.Equal(t, wantHosts[i], seed.Host)
+			assert.Equal(t, wantIPs[i], seed.IP)
+		}
+		assert.Equal(t, wantIPs, dns.ResolverNameserverIPs(cfg),
+			"%s derived a different nameserver set from its own config", node)
+	}
+}
+
+// A peer's stanza carries config_path alone: it is the only field ever read back
+// from a peer, and the domains would be fiction — the local node cannot know
+// what a peer configured.
+func TestSpinifexTomlTemplate_PeerNorthstarStanzaIsPathOnly(t *testing.T) {
+	allNodes := map[string]formation.NodeInfo{
+		"node1": {Name: "node1", BindIP: "10.0.0.1", AdvertiseIP: "192.168.1.31"},
+		"node2": {Name: "node2", BindIP: "10.0.0.2", AdvertiseIP: "192.168.1.32"},
+	}
+
+	cfg := renderClusterNode(t, "node1", allNodes)
+	peer := cfg.Nodes["node2"].Northstar
+	assert.Equal(t, "/etc/spinifex/northstar/northstar.toml", peer.ConfigPath)
+	assert.Empty(t, peer.DefaultDomain, "peer domains are unknowable from here")
+	assert.Empty(t, peer.InternalDomain)
+}
+
+// Unset knob must leave production config byte-identical: no [compaction] block
+// and the original trailing bytes unchanged — the [iam] table both templates
+// end on, and the newline after it.
+func TestPredastoreTemplates_UnsetCompactionEmitsNoBlock(t *testing.T) {
+	single := renderSingleNodePredastore(t, admin.ConfigSettings{
+		Region: "ap-southeast-2", BindIP: "0.0.0.0", ConfigDir: "/cfg",
+		AccessKey: "AK", SecretKey: "SK", NatsToken: "tok",
+	})
+	assert.NotContains(t, single, "[compaction]")
+	assert.True(t, strings.HasSuffix(single, "access_keys_bucket = \"spinifex-iam-access-keys\"\n"),
+		"unset single-node tail changed: %q", single[len(single)-40:])
+
+	multi, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", 0, admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+	assert.NotContains(t, multi, "[compaction]")
+	assert.True(t, strings.HasSuffix(multi, "access_keys_bucket = \"spinifex-iam-access-keys\"\n"),
+		"unset multinode tail changed: %q", multi[len(multi)-40:])
+}
+
+func TestPredastoreTemplates_SetCompactionEmitsParseableBlock(t *testing.T) {
+	const interval = 30
+
+	single := renderSingleNodePredastore(t, admin.ConfigSettings{
+		Region: "ap-southeast-2", BindIP: "0.0.0.0", ConfigDir: "/cfg",
+		AccessKey: "AK", SecretKey: "SK", NatsToken: "tok", CompactionIntervalSeconds: interval,
+	})
+	assert.Contains(t, single, "[compaction]")
+	var singleCfg compactionConfig
+	require.NoError(t, toml.Unmarshal([]byte(single), &singleCfg))
+	assert.Equal(t, interval, singleCfg.Compaction.IntervalSeconds)
+
+	multi, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok", "/cfg", "/var/lib/spinifex", "10.0.0.1", interval, admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+	var multiCfg compactionConfig
+	require.NoError(t, toml.Unmarshal([]byte(multi), &multiCfg))
+	assert.Equal(t, interval, multiCfg.Compaction.IntervalSeconds)
+}
+
+// compactionConfig parses just the rendered [compaction] block. Predastore's
+// s3.Config dropped its Compaction field, so this asserts the spinifex template
+// still emits a valid, parseable block carrying the interval.
+type compactionConfig struct {
+	Compaction struct {
+		IntervalSeconds int `toml:"interval_seconds"`
+	} `toml:"compaction"`
+}
+
+// The init/join flag must register with an unset (0) default and flow into the
+// rendered config via ConfigSettings.
+func TestAdminInitFlag_CompactionIntervalReachesRenderedConfig(t *testing.T) {
+	for _, c := range []*cobra.Command{adminInitCmd, adminJoinCmd} {
+		f := c.Flags().Lookup("predastore-compaction-interval")
+		require.NotNil(t, f, "%s missing --predastore-compaction-interval", c.Name())
+		assert.Equal(t, "0", f.DefValue)
+	}
+
+	require.NoError(t, adminInitCmd.Flags().Set("predastore-compaction-interval", "45"))
+	defer func() { _ = adminInitCmd.Flags().Set("predastore-compaction-interval", "0") }()
+
+	v, _ := adminInitCmd.Flags().GetInt("predastore-compaction-interval")
+	require.Equal(t, 45, v)
+
+	out := renderSingleNodePredastore(t, admin.ConfigSettings{
+		Region: "ap-southeast-2", BindIP: "0.0.0.0", CompactionIntervalSeconds: v,
+	})
+	assert.Contains(t, out, "interval_seconds = 45")
+}
+
+func TestFilterDNSServersExcludesLocalNorthstar(t *testing.T) {
+	servers := []string{
+		"10.0.0.5",
+		"127.0.0.53",
+		"1.1.1.1",
+		"1.1.1.1",
+		"not-an-ip",
+		"2001:0db8::1",
+		"8.8.8.8",
+		"9.9.9.9",
+		"4.4.4.4",
+	}
+
+	got := filterDNSServers(servers, "10.0.0.5", "2001:db8::1")
+	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}, got)
+}
+
+func TestDetectDNSServersContinuesAfterExcludedSource(t *testing.T) {
+	var queries []string
+	sources := dnsDetectionSources{
+		queryResolvectl: func(args ...string) (string, error) {
+			query := strings.Join(args, " ")
+			queries = append(queries, query)
+			switch query {
+			case "dns br-wan":
+				return "Link 2 (br-wan): 10.0.0.5 127.0.0.53\n", nil
+			case "dns":
+				return "Global: 10.0.0.5 10.0.0.5 127.0.0.53 10.20.0.53 8.8.8.8\n", nil
+			default:
+				return "", fmt.Errorf("unexpected query %q", query)
+			}
+		},
+		readResolvConf: func() (string, error) {
+			t.Fatal("resolv.conf read despite usable global resolvers")
+			return "", nil
+		},
+	}
+
+	got := detectDNSServersWithSources("br-wan", []string{"10.0.0.5"}, sources)
+	assert.Equal(t, []string{"10.20.0.53", "8.8.8.8"}, got)
+	assert.Equal(t, []string{"dns br-wan", "dns"}, queries)
+}
+
+func TestDetectDNSServersFallsBackToResolvConf(t *testing.T) {
+	sources := dnsDetectionSources{
+		queryResolvectl: func(_ ...string) (string, error) {
+			return "", errors.New("resolver manager unavailable")
+		},
+		readResolvConf: func() (string, error) {
+			return "nameserver 10.0.0.5\nnameserver 10.20.0.53\n", nil
+		},
+	}
+
+	got := detectDNSServersWithSources("br-wan", []string{"10.0.0.5"}, sources)
+	assert.Equal(t, []string{"10.20.0.53"}, got)
+}
+
+func TestHostDNSParams(t *testing.T) {
+	// northstarEnabled requires both credentials; the zones and IPs mirror what
+	// admin init/join hold in memory after rendering northstar.toml.
+	enabled := admin.ConfigSettings{
+		NorthstarAccessKey:      "AK",
+		NorthstarSecretKey:      "SK",
+		NorthstarDefaultDomain:  "spx3.net",
+		NorthstarInternalDomain: "compute.internal",
+		AdvertiseIP:             "10.0.0.5",
+		BindIP:                  "0.0.0.0",
+	}
+
+	tests := []struct {
+		name       string
+		settings   admin.ConfigSettings
+		skip       bool
+		wantOK     bool
+		wantParams hostdns.Params
+	}{
+		{
+			name:     "enabled selects AdvertiseIP over BindIP",
+			settings: enabled,
+			wantOK:   true,
+			wantParams: hostdns.Params{
+				ResolverIP:     "10.0.0.5",
+				BaseDomain:     "spx3.net",
+				InternalDomain: "compute.internal",
+			},
+		},
+		{
+			name: "falls back to BindIP when AdvertiseIP is unset",
+			settings: func() admin.ConfigSettings {
+				s := enabled
+				s.AdvertiseIP = ""
+				s.BindIP = "10.0.0.9"
+				return s
+			}(),
+			wantOK: true,
+			wantParams: hostdns.Params{
+				ResolverIP:     "10.0.0.9",
+				BaseDomain:     "spx3.net",
+				InternalDomain: "compute.internal",
+			},
+		},
+		{
+			name:     "opt-out skips even when enabled",
+			settings: enabled,
+			skip:     true,
+			wantOK:   false,
+		},
+		{
+			name: "northstar disabled skips",
+			settings: func() admin.ConfigSettings {
+				s := enabled
+				s.NorthstarSecretKey = ""
+				return s
+			}(),
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := hostDNSParams(tt.settings, tt.skip)
+			assert.Equal(t, tt.wantOK, ok)
+			if tt.wantOK {
+				assert.Equal(t, tt.wantParams, got)
+			}
+		})
+	}
+}
+
+// The image is written into a root volume of exactly the size this returns, so
+// anything less than the image size truncates the image and the guest never
+// finds its root. The old flooring conversion undersized every non-round image.
+func TestAMIVolumeSizeGiB(t *testing.T) {
+	const giB int64 = 1024 * 1024 * 1024
+
+	tests := []struct {
+		name  string
+		bytes int64
+		want  uint64
+	}{
+		// The regression: a real 4.94 GiB mkosi image floored to 4 GiB and the
+		// guest hung with no root partition.
+		{name: "non-round image rounds up", bytes: 5306470400, want: 5},
+		// Exact multiples must not gain a spare GiB — the round sizes are the
+		// common case and were the only ones the old code got right.
+		{name: "exact multiple is unchanged", bytes: 16 * giB, want: 16},
+		{name: "one byte over a multiple rounds up", bytes: 16*giB + 1, want: 17},
+		{name: "one byte under a multiple rounds up", bytes: 16*giB - 1, want: 16},
+		// Sub-GiB images still need a whole GiB to live in.
+		{name: "sub-GiB image gets a full GiB", bytes: 1, want: 1},
+		{name: "empty image", bytes: 0, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := amiVolumeSizeGiB(tt.bytes)
+			assert.Equal(t, tt.want, got)
+			// The invariant the guest depends on, stated directly.
+			if tt.bytes > 0 {
+				assert.GreaterOrEqual(t, int64(got)*giB, tt.bytes,
+					"volume must be large enough to hold the image")
+			}
+		})
+	}
+}
+
+func TestValidateChecksumFlags(t *testing.T) {
+	tests := []struct {
+		name       string
+		checksum   string
+		unset      bool
+		file       string
+		skipVerify bool
+		wantErr    string
+	}{
+		{name: "no checksum", unset: true, file: "img.raw"},
+		{name: "checksum with file", checksum: "SHA256SUMS", file: "img.raw"},
+		{name: "empty checksum value", checksum: "", file: "img.raw", wantErr: "--checksum requires a sums file path"},
+		{name: "blank checksum value", checksum: "  ", file: "img.raw", wantErr: "--checksum requires a sums file path"},
+		{name: "checksum without file", checksum: "SHA256SUMS", wantErr: "--checksum requires --file"},
+		{name: "checksum with skip-verify", checksum: "SHA256SUMS", file: "img.raw", skipVerify: true,
+			wantErr: "mutually exclusive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateChecksumFlags(tt.checksum, !tt.unset, tt.file, tt.skipVerify)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestSourceDigestMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		localFile  string
+		checksum   string
+		skipVerify bool
+		want       string
+	}{
+		{name: "file with checksum", localFile: "img.raw", checksum: "SHA256SUMS", want: ebsmetadata.DigestOperator},
+		{name: "catalog download verified", want: ebsmetadata.DigestCatalog},
+		{name: "catalog download skip-verify", skipVerify: true, want: ebsmetadata.DigestUnverified},
+		{name: "file without checksum", localFile: "img.raw", want: ebsmetadata.DigestUnverified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sourceDigestMode(tt.localFile, tt.checksum, tt.skipVerify))
+		})
+	}
+}
+
+func TestImportSourceResolveDigest(t *testing.T) {
+	imgBytes := []byte("import-source-fixture")
+	sum := sha256.Sum256(imgBytes)
+	imgHex := hex.EncodeToString(sum[:])
+	dir := t.TempDir()
+	img := filepath.Join(dir, "image.raw")
+	require.NoError(t, os.WriteFile(img, imgBytes, 0o600))
+	sums := filepath.Join(dir, "SHA256SUMS")
+
+	t.Run("operator verified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{
+			imageFile: img, localFile: img,
+			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: imgHex,
+		}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Verification: ebsmetadata.DigestOperator,
+			Source: "SHA256SUMS", Filename: "image.raw",
+		}, got)
+		assert.Contains(t, out.String(), "Verified image checksum (sha256)")
+		assert.Empty(t, errOut.String())
+	})
+
+	t.Run("operator mismatch names the file and sums file", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		_, err := importSource{
+			imageFile: img, localFile: img,
+			checksumPath: sums, checksumAlgo: "sha256", expectedDigest: strings.Repeat("0", 64),
+		}.resolveDigest(&out, &errOut)
+		require.ErrorIs(t, err, imagecatalog.ErrChecksumMismatch)
+		assert.Contains(t, errOut.String(), "file:     "+img)
+		assert.Contains(t, errOut.String(), "checksum: "+sums)
+		assert.Contains(t, errOut.String(), imgHex)
+		assert.FileExists(t, img, "the operator's file must be left in place")
+	})
+
+	t.Run("local file without checksum is recorded unverified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{imageFile: img, localFile: img}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Verification: ebsmetadata.DigestUnverified, Filename: "image.raw",
+		}, got)
+		assert.Equal(t, "Importing "+img+" without checksum validation (pass --checksum <sums-file> to verify)\n",
+			errOut.String())
+	})
+
+	t.Run("catalog skip-verify is recorded unverified", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{imageFile: img, imageName: "debian-13-x86_64", skipVerify: true}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.DigestUnverified, got.Verification)
+		assert.Equal(t, imgHex, got.Value)
+		assert.Contains(t, errOut.String(), "--skip-verify set")
+	})
+
+	t.Run("catalog entry without checksum is refused", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		_, err := importSource{imageFile: img, imageName: "debian-13-x86_64"}.resolveDigest(&out, &errOut)
+		require.Error(t, err)
+		assert.Contains(t, errOut.String(), "missing Checksum/ChecksumDigest/ChecksumType")
+	})
+
+	// Oracle publishes its digests inline on a web page and ships no sums file,
+	// so a pinned digest is the only way its entries can import verified.
+	t.Run("catalog pinned digest verifies without fetching a sums file", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		got, err := importSource{
+			imageFile: img, imageName: "oracle-10.1-x86_64",
+			image: imagecatalog.Images{ChecksumType: "sha256", ChecksumDigest: imgHex},
+		}.resolveDigest(&out, &errOut)
+		require.NoError(t, err)
+		assert.Equal(t, ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: imgHex, Source: catalogPinnedDigestSource,
+			Verification: ebsmetadata.DigestCatalog, Filename: "image.raw",
+		}, got)
+		assert.Contains(t, out.String(), "pinned catalog digest")
+	})
+
+	t.Run("catalog pinned digest mismatch is refused and names the url", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		wrong := strings.Repeat("a", 64)
+		_, err := importSource{
+			imageFile: img, imageName: "oracle-10.1-x86_64",
+			image: imagecatalog.Images{ChecksumType: "sha256", ChecksumDigest: wrong, URL: "https://example.invalid/ol.qcow2"},
+		}.resolveDigest(&out, &errOut)
+		require.ErrorIs(t, err, imagecatalog.ErrChecksumMismatch)
+		assert.Contains(t, errOut.String(), catalogPinnedDigestSource)
+		assert.Contains(t, errOut.String(), "https://example.invalid/ol.qcow2")
+		assert.FileExists(t, img, "the downloaded file must be left in place")
+	})
+
+	t.Run("unreadable image fails the unverified hash", func(t *testing.T) {
+		var out, errOut bytes.Buffer
+		missing := filepath.Join(dir, "missing.raw")
+		_, err := importSource{imageFile: missing, localFile: missing}.resolveDigest(&out, &errOut)
+		require.Error(t, err)
+		assert.Contains(t, errOut.String(), "Could not hash image")
+	})
+}
+
+func TestImagesDescribeCmd_FlagSchema(t *testing.T) {
+	imageIDFlag := imagesDescribeCmd.Flags().Lookup("image-id")
+	require.NotNil(t, imageIDFlag, "--image-id must be defined")
+	assert.Equal(t, []string{"true"}, imageIDFlag.Annotations[cobraRequiredAnnotation],
+		"--image-id must be marked required")
+}
+
+func TestPrintAMIDescription(t *testing.T) {
+	base := ebsmetadata.AMI{
+		ImageID:         "ami-1",
+		Name:            "ami-debian-13-x86_64",
+		ImageOwnerAlias: "system",
+		CreationDate:    time.Date(2026, 9, 23, 1, 2, 3, 0, time.UTC),
+		BootMode:        "uefi",
+		Architecture:    "x86_64",
+	}
+
+	t.Run("digest recorded", func(t *testing.T) {
+		meta := base
+		meta.SourceDigest = &ebsmetadata.ImageDigest{
+			Algorithm: "sha512", Value: "abc123", Verification: ebsmetadata.DigestOperator,
+			Source: "SHA512SUMS", Filename: "debian-13-generic-amd64.tar.xz",
+		}
+		var buf bytes.Buffer
+		printAMIDescription(&buf, meta)
+		out := buf.String()
+		assert.Contains(t, out, "Image ID:       ami-1")
+		assert.Contains(t, out, "Created:        2026-09-23T01:02:03Z")
+		assert.Contains(t, out, "Boot mode:      uefi")
+		assert.Contains(t, out, "Source digest:  sha512:abc123")
+		assert.Contains(t, out, "Verification:   operator (SHA512SUMS)")
+		assert.Contains(t, out, "Source file:    debian-13-generic-amd64.tar.xz")
+	})
+
+	t.Run("unverified digest has no source", func(t *testing.T) {
+		meta := base
+		meta.SourceDigest = &ebsmetadata.ImageDigest{
+			Algorithm: "sha256", Value: "def456", Verification: ebsmetadata.DigestUnverified,
+			Filename: "image.raw",
+		}
+		var buf bytes.Buffer
+		printAMIDescription(&buf, meta)
+		assert.Contains(t, buf.String(), "Verification:   unverified\n")
+	})
+
+	t.Run("digest not recorded", func(t *testing.T) {
+		var buf bytes.Buffer
+		printAMIDescription(&buf, base)
+		out := buf.String()
+		assert.Contains(t, out, "Source digest:  not recorded (imported before digest recording)")
+		assert.NotContains(t, out, "Verification:")
+	})
+}
+
+func TestCheckJoinPreconditions(t *testing.T) {
+	withFakeProc(t, nil)
+	noStore := filepath.Join(t.TempDir(), "nats", "jetstream")
+
+	writeToml := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "spinifex.toml"), []byte("# cluster\n"), 0o644); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		return dir
+	}
+
+	t.Run("uninitialized node joins", func(t *testing.T) {
+		if err := checkJoinPreconditions(t.TempDir(), noStore, false); err != nil {
+			t.Fatalf("want nil, got %v", err)
+		}
+	})
+
+	t.Run("initialized node is refused", func(t *testing.T) {
+		err := checkJoinPreconditions(writeToml(t), noStore, false)
+		if err == nil {
+			t.Fatal("want refusal, got nil")
+		}
+		if !strings.Contains(err.Error(), "already initialized") {
+			t.Errorf("unexpected message: %v", err)
+		}
+	})
+
+	// The guidance is the whole point of the guard: an operator must be able to
+	// tell what a forced join would destroy without reading the source.
+	t.Run("guidance names what is discarded", func(t *testing.T) {
+		for _, want := range []string{"CA certificate", "master key", "viperblock key", "JetStream store", "--force"} {
+			if !strings.Contains(joinDiscardsIdentityMsg, want) {
+				t.Errorf("guidance missing %q", want)
+			}
+		}
+	})
+
+	t.Run("force overrides", func(t *testing.T) {
+		if err := checkJoinPreconditions(writeToml(t), noStore, true); err != nil {
+			t.Fatalf("want nil with force, got %v", err)
+		}
+	})
+
+	// A store with streams and no config is still data the join would destroy.
+	t.Run("uninitialized node with streams is refused", func(t *testing.T) {
+		err := checkJoinPreconditions(t.TempDir(), seedStore(t, "KV_a"), false)
+		if err == nil || !strings.Contains(err.Error(), "JetStream store") {
+			t.Fatalf("want JetStream refusal, got %v", err)
+		}
+	})
+
+	// --force accepts the loss of data, never a wipe under a live server.
+	t.Run("running NATS is refused even with force", func(t *testing.T) {
+		withFakeProc(t, map[string]string{"4242": "/usr/local/bin/spx\x00service\x00nats\x00start\x00"})
+		err := checkJoinPreconditions(writeToml(t), seedStore(t, "KV_a"), true)
+		if !errors.Is(err, errNATSRunning) {
+			t.Fatalf("want errNATSRunning, got %v", err)
+		}
+	})
+}
+
+func TestJoinRetryable(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		want   bool
+	}{
+		// The primary may still be booting — bare-metal nodes cannot be
+		// sequenced, so a joiner that arrives first has to wait.
+		{"connection refused", errors.New("connection refused"), 0, true},
+		{"tls handshake failure", errors.New("tls: handshake failure"), 0, true},
+		{"timeout", errors.New("context deadline exceeded"), 0, true},
+		{"server error", nil, 500, true},
+		{"bad gateway", nil, 502, true},
+
+		// Answered and said no: retrying changes nothing, and a mistyped token
+		// must not hang a console for the whole timeout.
+		{"bad token", nil, 401, false},
+		{"duplicate node name", nil, 409, false},
+		{"bad request", nil, 400, false},
+		{"success", nil, 200, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := joinRetryable(tt.err, tt.status); got != tt.want {
+				t.Errorf("joinRetryable(%v, %d) = %v, want %v", tt.err, tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+// The rendered resolver must refuse the internet and still serve the cluster.
+// Both halves matter: an open resolver is the bug, and a resolver that refuses
+// its own nodes silently stops internal names resolving.
+func TestGenerateAndWriteConfigs_NorthstarRecursionIsClosedButServesTheCluster(t *testing.T) {
+	dirs, err := createConfigSubdirs(t.TempDir())
+	require.NoError(t, err)
+	nsPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
+	settings := multinodeNorthstarSettings(nsPath)
+	settings.BindIP = "10.2.0.2"
+	settings.AdvertiseIP = "72.52.77.228"
+	settings.RemoteNodes = []admin.RemoteNode{
+		{Name: "node2", Host: "72.52.77.229", NorthstarConfigPath: nsPath},
+		{Name: "node3", Host: "72.52.77.230:4432", NorthstarConfigPath: nsPath},
+	}
+
+	require.NoError(t, generateAndWriteConfigs(dirs, filepath.Join(t.TempDir(), "spinifex.toml"), settings, true))
+
+	raw, err := os.ReadFile(nsPath)
+	require.NoError(t, err)
+	rendered := string(raw)
+
+	assert.Contains(t, rendered, "allow_recursion = false",
+		"a node bound to a public address must not be an open resolver")
+
+	// The node's own advertised address: resolv.conf points there, so the query
+	// arrives from it over lo rather than from 127.0.0.1.
+	assert.Contains(t, rendered, `"72.52.77.228"`)
+	assert.Contains(t, rendered, `"10.2.0.2"`)
+	// Peers, with any port stripped.
+	assert.Contains(t, rendered, `"72.52.77.229"`)
+	assert.Contains(t, rendered, `"72.52.77.230"`)
+	assert.NotContains(t, rendered, "72.52.77.230:4432")
+
+	// It must parse as the config northstar will actually load.
+	cfg, err := nsconfig.LoadServerConfig(nsPath)
+	require.NoError(t, err)
+	assert.False(t, cfg.Upstream.AllowRecursion)
+
+	prefixes, err := cfg.Upstream.ParseAllowRecursionFrom()
+	require.NoError(t, err)
+	policy := backend.NewRecursionPolicy(cfg.Upstream.AllowRecursion, prefixes)
+
+	// The cluster resolves.
+	assert.True(t, policy.Allows(netip.MustParseAddr("72.52.77.228")), "node must resolve through itself")
+	assert.True(t, policy.Allows(netip.MustParseAddr("72.52.77.229")), "peer node must resolve")
+	assert.True(t, policy.Allows(netip.MustParseAddr("127.0.0.1")), "loopback is always allowed")
+	// Guests reach northstar via vpcd's shim, which relays from a node address,
+	// so a guest query is seen as one of the addresses asserted above.
+
+	// The internet does not.
+	assert.False(t, policy.Allows(netip.MustParseAddr("198.51.100.7")))
+	assert.False(t, policy.Allows(netip.MustParseAddr("8.8.8.8")))
+}

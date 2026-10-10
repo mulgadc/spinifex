@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"golang.org/x/crypto/ssh"
 )
@@ -44,7 +44,7 @@ func extractLastPasswordData(data []byte) string {
 // that was never stamped, is not evidence of the wrong key type, and turning a
 // lookup blip into a terminal error would be worse than the empty string.
 func (d *Daemon) launchKeyCannotEncrypt(instance *vm.VM) bool {
-	if instance.Instance == nil || aws.StringValue(instance.Instance.Platform) != utils.PlatformWindows {
+	if instance.Instance == nil || aws.StringValue(instance.Instance.Platform) != ec2platform.PlatformWindows {
 		return false
 	}
 	keyName := aws.StringValue(instance.Instance.KeyName)
@@ -70,7 +70,7 @@ func (d *Daemon) handleEC2GetPasswordData(msg *nats.Msg) {
 	slog.Debug("Received GetPasswordData request", "subject", msg.Subject, "data", string(msg.Data))
 
 	var input ec2.GetPasswordDataInput
-	if errResp := utils.UnmarshalJsonPayload(&input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(&input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}

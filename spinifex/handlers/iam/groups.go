@@ -16,10 +16,9 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 )
 
 // maxGroupsPerUser caps how many groups a single user may belong to. Mirrors the
@@ -130,7 +129,7 @@ func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput
 	// element at all rather than an empty one.
 	groups := []*iam.Group{}
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -554,7 +553,7 @@ func (s *IAMServiceImpl) findGroupMembers(ctx context.Context, accountID, groupN
 	keyPrefix := accountID + "."
 	var members []*User
 	for _, key := range keys {
-		if key == utils.VersionKey {
+		if key == kvutil.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/tests/fixtures/scratch"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"

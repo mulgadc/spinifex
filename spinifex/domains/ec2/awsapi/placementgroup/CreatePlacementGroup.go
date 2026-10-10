@@ -1,0 +1,40 @@
+package placementgroup
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go"
+)
+
+// ValidateCreatePlacementGroupInput rejects a nil input with InvalidParameterValue and a missing
+// GroupName with MissingParameter.
+func ValidateCreatePlacementGroupInput(input *ec2.CreatePlacementGroupInput) error {
+	if input == nil {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
+	if input.GroupName == nil || *input.GroupName == "" {
+		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	return nil
+}
+
+// CreatePlacementGroup handles the EC2 CreatePlacementGroup API call.
+func CreatePlacementGroup(ctx context.Context, input *ec2.CreatePlacementGroupInput, natsConn *nats.Conn, accountID string) (ec2.CreatePlacementGroupOutput, error) {
+	var output ec2.CreatePlacementGroupOutput
+
+	if err := ValidateCreatePlacementGroupInput(input); err != nil {
+		return output, err
+	}
+
+	svc := ec2placementgroup.NewNATSPlacementGroupService(natsConn)
+	result, err := svc.CreatePlacementGroup(ctx, input, accountID)
+	if err != nil {
+		return output, err
+	}
+
+	return *result, nil
+}

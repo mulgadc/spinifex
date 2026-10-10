@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 )
 
 // ociTokenResponse is the Docker Registry v2 token-endpoint body. token and
@@ -31,13 +31,13 @@ type ociTokenResponse struct {
 // without a Bearer realm to avoid a challenge loop.
 func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) {
 	if gw.ECRTokenVerifier == nil || gw.ECRTokenIssuer == nil {
-		gateway_ecr.WriteError(w, http.StatusNotImplemented, "UNSUPPORTED", "token endpoint not configured")
+		ecrregistry.WriteError(w, http.StatusNotImplemented, "UNSUPPORTED", "token endpoint not configured")
 		return
 	}
 
 	authz := r.Header.Values("Authorization")
 	if len(authz) > 1 {
-		gateway_ecr.WriteError(w, http.StatusBadRequest, "UNAUTHORIZED", "multiple Authorization headers")
+		ecrregistry.WriteError(w, http.StatusBadRequest, "UNAUTHORIZED", "multiple Authorization headers")
 		return
 	}
 	raw := ""
@@ -46,21 +46,21 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 	}
 	token, ok := extractECRToken(raw)
 	if !ok {
-		gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+		ecrregistry.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
 		return
 	}
 
 	claims, err := gw.ECRTokenVerifier.Verify(token)
 	if err != nil {
 		slog.Debug("ECR token endpoint: verify failed", "err", err)
-		gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
+		ecrregistry.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
 		return
 	}
 
 	// Cross-account guard mirrors the auth bridge: a token is account-scoped and
 	// must match the account in the registry host it is presented against.
 	if target, _ := r.Context().Value(ctxTargetAccount).(string); target != "" && target != claims.AccountID {
-		gateway_ecr.WriteError(w, http.StatusForbidden, "DENIED", "token account does not match registry host")
+		ecrregistry.WriteError(w, http.StatusForbidden, "DENIED", "token account does not match registry host")
 		return
 	}
 
@@ -74,22 +74,22 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 		// revoked identity retrying the challenge flow would only loop back.
 		if isECRDependencyFailure(err) {
 			slog.Error("ECR token endpoint: principal rehydration dependency failure", "err", err)
-			gateway_ecr.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
+			ecrregistry.WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
 			return
 		}
 		slog.Warn("ECR token endpoint: refusing to refresh revoked identity", "err", err)
-		gateway_ecr.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
+		ecrregistry.WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
 		return
 	}
 
 	callerARN, err := buildCallerARN(principal.accountID, principal.identity, principal.principalType, principal.assumedRoleARN, principal.userARN)
 	if err != nil {
 		slog.Error("ECR token endpoint: cannot build canonical caller ARN", "err", err)
-		gateway_ecr.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "token mint failed")
+		ecrregistry.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "token mint failed")
 		return
 	}
 
-	fresh, expiresAt, err := gw.ECRTokenIssuer.Mint(gateway_ecrauth.Principal{
+	fresh, expiresAt, err := gw.ECRTokenIssuer.Mint(ecrauth.Principal{
 		AccountID:   principal.accountID,
 		ARN:         callerARN,
 		Type:        principal.principalType,
@@ -97,7 +97,7 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 	})
 	if err != nil {
 		slog.Error("ECR token endpoint: mint failed", "err", err)
-		gateway_ecr.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "token mint failed")
+		ecrregistry.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "token mint failed")
 		return
 	}
 
@@ -109,7 +109,7 @@ func (gw *GatewayConfig) handleECRToken(w http.ResponseWriter, r *http.Request) 
 	})
 	if err != nil {
 		slog.Error("ECR token endpoint: marshal failed", "err", err)
-		gateway_ecr.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "response encode failed")
+		ecrregistry.WriteError(w, http.StatusInternalServerError, "SERVER_ERROR", "response encode failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

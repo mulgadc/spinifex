@@ -13,29 +13,30 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awsec2query"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	gateway_ec2 "github.com/mulgadc/spinifex/spinifex/gateway/ec2"
-	gateway_ec2_account "github.com/mulgadc/spinifex/spinifex/gateway/ec2/account"
-	gateway_ec2_capacityreservation "github.com/mulgadc/spinifex/spinifex/gateway/ec2/capacityreservation"
-	gateway_ec2_eigw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eigw"
-	gateway_ec2_eip "github.com/mulgadc/spinifex/spinifex/gateway/ec2/eip"
-	gateway_ec2_igw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/igw"
-	gateway_ec2_image "github.com/mulgadc/spinifex/spinifex/gateway/ec2/image"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ec2_key "github.com/mulgadc/spinifex/spinifex/gateway/ec2/key"
-	gateway_ec2_launchtemplate "github.com/mulgadc/spinifex/spinifex/gateway/ec2/launchtemplate"
-	gateway_ec2_natgw "github.com/mulgadc/spinifex/spinifex/gateway/ec2/natgw"
-	gateway_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/gateway/ec2/placementgroup"
-	gateway_ec2_routetable "github.com/mulgadc/spinifex/spinifex/gateway/ec2/routetable"
-	gateway_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/gateway/ec2/snapshot"
-	gateway_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/spotinstance"
-	gateway_ec2_tags "github.com/mulgadc/spinifex/spinifex/gateway/ec2/tags"
-	gateway_ec2_volume "github.com/mulgadc/spinifex/spinifex/gateway/ec2/volume"
-	gateway_ec2_vpc "github.com/mulgadc/spinifex/spinifex/gateway/ec2/vpc"
-	gateway_ec2_zone "github.com/mulgadc/spinifex/spinifex/gateway/ec2/zone"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
+	ec2accountapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/account"
+	ec2capacityreservationapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/capacityreservation"
+	ec2eigwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eigw"
+	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
+	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
+	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
+	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
+	ec2natgwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/natgw"
+	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
+	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
+	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
+	ec2spotinstanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/spotinstance"
+	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
+	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
+	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
 )
 
@@ -70,14 +71,14 @@ func requestContext(r *http.Request) context.Context {
 	if r == nil {
 		return context.Background()
 	}
-	return utils.WithIdempotencyKey(r.Context(), r.Header.Get(utils.SDKInvocationIDHeader))
+	return idempotency.WithKey(r.Context(), r.Header.Get(idempotency.SDKInvocationIDHeader))
 }
 
 // parseEC2Input parses query args into an action's input type. Shared by every
 // ec2Action constructor so they all consume the same parse.
 func parseEC2Input[In any](q map[string]string) (any, error) {
 	input := new(In)
-	if err := awsec2query.QueryParamsToStruct(q, input); err != nil {
+	if err := query.QueryParamsToStruct(q, input); err != nil {
 		return nil, err
 	}
 	return input, nil
@@ -127,11 +128,11 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 func marshalEC2Response(action string, output any) ([]byte, error) {
 	// BuildXML omits a nil slice's container element entirely but renders an
 	// empty one for a non-nil empty slice; AWS mostly renders the latter.
-	normalized := utils.NormalizeXMLOutput(output, ec2ListsAsSet)
+	normalized := awsxml.NormalizeOutput(output, ec2ListsAsSet)
 	// The SDK's generated output structs never carry a RequestId field.
-	withRequestID := utils.WithRequestID(normalized, uuid.NewV4().String())
-	payload := utils.GenerateXMLPayload(action+"Response", withRequestID)
-	xmlOutput, err := utils.MarshalToXML(payload)
+	withRequestID := awsxml.WithRequestID(normalized, uuid.NewV4().String())
+	payload := awsxml.ResponsePayload(action+"Response", withRequestID)
+	xmlOutput, err := awsxml.Marshal(payload)
 	if err != nil {
 		return nil, errors.New("failed to marshal response to XML")
 	}
@@ -181,11 +182,11 @@ func (gw *GatewayConfig) advertisedEndpoint() string {
 
 var ec2Actions = map[string]ec2Action{
 	"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
+		out, err := ec2instanceapi.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
 		if err != nil {
 			return out, err
 		}
-		gateway_ec2_instance.EnrichInstanceProfileIDs(out, gw.IAMService, accountID)
+		ec2instanceapi.EnrichInstanceProfileIDs(out, gw.IAMService, accountID)
 		return out, nil
 	}),
 	"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
@@ -195,7 +196,7 @@ var ec2Actions = map[string]ec2Action{
 		launchQuotaCheck := func() error {
 			return gw.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
 		}
-		reservation, err := gateway_ec2_instance.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
+		reservation, err := ec2instanceapi.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
 		if err != nil {
 			return nil, err
 		}
@@ -210,64 +211,64 @@ var ec2Actions = map[string]ec2Action{
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
-		return gateway_ec2_instance.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
+		return ec2instanceapi.AssociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck)
 	}),
 	"DisassociateIamInstanceProfile": ec2Handler(func(ctx context.Context, input *ec2.DisassociateIamInstanceProfileInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DisassociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2instanceapi.DisassociateIamInstanceProfile(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"ReplaceIamInstanceProfileAssociation": ec2HandlerWithReq(func(ctx context.Context, input *ec2.ReplaceIamInstanceProfileAssociationInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
-		return gateway_ec2_instance.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
+		return ec2instanceapi.ReplaceIamInstanceProfileAssociation(ctx, input, gw.NATSConn, gw.IAMService, gw.DiscoverActiveNodes(ctx), accountID, passRoleCheck)
 	}),
 	"DescribeIamInstanceProfileAssociations": ec2Handler(func(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeIamInstanceProfileAssociations(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2instanceapi.DescribeIamInstanceProfileAssociations(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"StartInstances": ec2Handler(func(ctx context.Context, input *ec2.StartInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.StartInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.StartInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"StopInstances": ec2Handler(func(ctx context.Context, input *ec2.StopInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.StopInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.StopInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RebootInstances": ec2Handler(func(ctx context.Context, input *ec2.RebootInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.RebootInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.RebootInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"MonitorInstances": ec2Handler(func(ctx context.Context, input *ec2.MonitorInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.MonitorInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.MonitorInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"UnmonitorInstances": ec2Handler(func(ctx context.Context, input *ec2.UnmonitorInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.UnmonitorInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.UnmonitorInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"TerminateInstances": ec2Handler(func(ctx context.Context, input *ec2.TerminateInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.TerminateInstances(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.TerminateInstances(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceTypes": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, accountID)
+		return ec2instanceapi.DescribeInstanceTypes(ctx, input, gw.NATSConn, gw.ExpectedNodes, gw.NodeIDs, accountID)
 	}),
 	"DescribeInstanceTypeOfferings": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceTypeOfferings(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID, gw.Region, gw.AZ)
+		return ec2instanceapi.DescribeInstanceTypeOfferings(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID, gw.Region, gw.AZ)
 	}),
 	"DescribeInstanceStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ, gw.InstanceStatus)
+		return ec2instanceapi.DescribeInstanceStatus(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID, gw.AZ, gw.InstanceStatus)
 	}),
 	"GetConsoleOutput": ec2Handler(func(ctx context.Context, input *ec2.GetConsoleOutputInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.GetConsoleOutput(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetPasswordData": ec2Handler(func(ctx context.Context, input *ec2.GetPasswordDataInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.GetPasswordData(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.GetPasswordData(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
 		var delta int
 		if input.InstanceType != nil {
-			resolve := handlers_quota.NATSInstanceTypeResolver(gw.NATSConn, func() int { return gw.ExpectedNodes })
+			resolve := quota.NATSInstanceTypeResolver(gw.NATSConn, func() int { return gw.ExpectedNodes })
 			d, err := gw.Quota.EnforceRetype(ctx, resolve, accountID, aws.StringValue(input.InstanceId), aws.StringValue(input.InstanceType.Value))
 			if err != nil {
 				return nil, err
 			}
 			delta = d
 		}
-		out, err := gateway_ec2_instance.ModifyInstanceAttribute(ctx, input, gw.NATSConn, accountID)
+		out, err := ec2instanceapi.ModifyInstanceAttribute(ctx, input, gw.NATSConn, accountID)
 		if err != nil {
 			return nil, err
 		}
@@ -279,25 +280,25 @@ var ec2Actions = map[string]ec2Action{
 		return out, nil
 	}),
 	"DescribeInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceAttribute(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2instanceapi.DescribeInstanceAttribute(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"ModifyInstanceMetadataOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.ModifyInstanceMetadataOptions(ctx, input, gw.NATSConn, accountID)
+		return ec2instanceapi.ModifyInstanceMetadataOptions(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInstanceCreditSpecifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceCreditSpecificationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_instance.DescribeInstanceCreditSpecifications(input)
+		return ec2instanceapi.DescribeInstanceCreditSpecifications(input)
 	}),
 	"CreateKeyPair": ec2Handler(func(ctx context.Context, input *ec2.CreateKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.CreateKeyPair(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.CreateKeyPair(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteKeyPair": ec2Handler(func(ctx context.Context, input *ec2.DeleteKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.DeleteKeyPair(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.DeleteKeyPair(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeKeyPairs": ec2Handler(func(ctx context.Context, input *ec2.DescribeKeyPairsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.DescribeKeyPairs(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.DescribeKeyPairs(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ImportKeyPair": ec2Handler(func(ctx context.Context, input *ec2.ImportKeyPairInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_key.ImportKeyPair(ctx, input, gw.NATSConn, accountID)
+		return ec2keyapi.ImportKeyPair(ctx, input, gw.NATSConn, accountID)
 	}).withQueryPreprocessor(func(q map[string]string) {
 		// Parser leaves Base64 padding URL-encoded; decode it before dispatch.
 		if strings.HasSuffix(q["PublicKeyMaterial"], "%3D%3D") {
@@ -305,201 +306,201 @@ var ec2Actions = map[string]ec2Action{
 		}
 	}),
 	"DescribeImages": ec2Handler(func(ctx context.Context, input *ec2.DescribeImagesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.DescribeImages(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.DescribeImages(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateImage": ec2Handler(func(ctx context.Context, input *ec2.CreateImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.CreateImage(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2imageapi.CreateImage(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"DeregisterImage": ec2Handler(func(ctx context.Context, input *ec2.DeregisterImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.DeregisterImage(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.DeregisterImage(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RegisterImage": ec2Handler(func(ctx context.Context, input *ec2.RegisterImageInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.RegisterImage(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.RegisterImage(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CopyImage": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CopyImageInput, gw *GatewayConfig, accountID string) (ec2.CopyImageOutput, error) {
-		return gateway_ec2_image.CopyImage(ctx, input, gw.NATSConn, gw.Region, accountID)
+		return ec2imageapi.CopyImage(ctx, input, gw.NATSConn, gw.Region, accountID)
 	}),
 	"DescribeImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.DescribeImageAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.DescribeImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.ModifyImageAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.ModifyImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ResetImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetImageAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_image.ResetImageAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2imageapi.ResetImageAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRegions": ec2Handler(func(ctx context.Context, input *ec2.DescribeRegionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_zone.DescribeRegions(input, gw.Region, gw.advertisedEndpoint())
+		return ec2zoneapi.DescribeRegions(input, gw.Region, gw.advertisedEndpoint())
 	}),
 	"DescribeAvailabilityZones": ec2Handler(func(ctx context.Context, input *ec2.DescribeAvailabilityZonesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_zone.DescribeAvailabilityZones(input, gw.Region, gw.AZ)
+		return ec2zoneapi.DescribeAvailabilityZones(input, gw.Region, gw.AZ)
 	}),
 	"DescribeVolumes": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DescribeVolumes(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DescribeVolumes(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyVolume": ec2Handler(func(ctx context.Context, input *ec2.ModifyVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceVolumeModify(ctx, gw.NATSConn, accountID, aws.StringValue(input.VolumeId), int(aws.Int64Value(input.Size))); err != nil {
 			return nil, err
 		}
-		return gateway_ec2_volume.ModifyVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.ModifyVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateVolume": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateVolumeInput, gw *GatewayConfig, accountID string) (ec2.Volume, error) {
 		if err := gw.Quota.EnforceVolumeCreate(ctx, gw.NATSConn, accountID, int(aws.Int64Value(input.Size))); err != nil {
 			return ec2.Volume{}, err
 		}
-		return gateway_ec2_volume.CreateVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.CreateVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteVolume": ec2Handler(func(ctx context.Context, input *ec2.DeleteVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2volumeapi.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
 	}),
 	"AttachVolume": ec2Handler(func(ctx context.Context, input *ec2.AttachVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.AttachVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.AttachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeVolumeStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumeStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DescribeVolumeStatus(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DescribeVolumeStatus(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeVolumesModifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesModificationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DescribeVolumesModifications(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DescribeVolumesModifications(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DetachVolume": ec2Handler(func(ctx context.Context, input *ec2.DetachVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_volume.DetachVolume(ctx, input, gw.NATSConn, accountID)
+		return ec2volumeapi.DetachVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAccountAttributes": ec2Handler(func(ctx context.Context, input *ec2.DescribeAccountAttributesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DescribeAccountAttributes(input, func() (string, error) {
+		return ec2accountapi.DescribeAccountAttributes(input, func() (string, error) {
 			return defaultVPCID(ctx, gw.NATSConn, accountID)
 		})
 	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.EnableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.EnableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.DisableEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DisableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.DisableEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.GetEbsEncryptionByDefaultInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.GetEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.GetEbsEncryptionByDefault(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetSerialConsoleAccessStatus": ec2Handler(func(ctx context.Context, input *ec2.GetSerialConsoleAccessStatusInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.GetSerialConsoleAccessStatus(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.GetSerialConsoleAccessStatus(ctx, input, gw.NATSConn, accountID)
 	}),
 	"EnableSerialConsoleAccess": ec2Handler(func(ctx context.Context, input *ec2.EnableSerialConsoleAccessInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.EnableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.EnableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisableSerialConsoleAccess": ec2Handler(func(ctx context.Context, input *ec2.DisableSerialConsoleAccessInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_account.DisableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
+		return ec2accountapi.DisableSerialConsoleAccess(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateTags": ec2Handler(func(ctx context.Context, input *ec2.CreateTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_tags.CreateTags(ctx, input, gw.NATSConn, accountID)
+		return ec2tagsapi.CreateTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteTags": ec2Handler(func(ctx context.Context, input *ec2.DeleteTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_tags.DeleteTags(ctx, input, gw.NATSConn, accountID)
+		return ec2tagsapi.DeleteTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeTags": ec2Handler(func(ctx context.Context, input *ec2.DescribeTagsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_tags.DescribeTags(ctx, input, gw.NATSConn, accountID)
+		return ec2tagsapi.DescribeTags(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateSnapshot": ec2Handler(func(ctx context.Context, input *ec2.CreateSnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.CreateSnapshot(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.CreateSnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteSnapshot": ec2Handler(func(ctx context.Context, input *ec2.DeleteSnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.DeleteSnapshot(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.DeleteSnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeSnapshots": ec2Handler(func(ctx context.Context, input *ec2.DescribeSnapshotsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.DescribeSnapshots(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.DescribeSnapshots(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CopySnapshot": ec2Handler(func(ctx context.Context, input *ec2.CopySnapshotInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_snapshot.CopySnapshot(ctx, input, gw.NATSConn, accountID)
+		return ec2snapshotapi.CopySnapshot(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.CreateInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.CreateInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.CreateInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.DeleteInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.DeleteInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeInternetGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeInternetGatewaysInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.DescribeInternetGateways(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.DescribeInternetGateways(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AttachInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.AttachInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.AttachInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.AttachInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DetachInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DetachInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_igw.DetachInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2igwapi.DetachInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateEgressOnlyInternetGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateEgressOnlyInternetGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateEgressOnlyInternetGatewayOutput, error) {
-		return gateway_ec2_eigw.CreateEgressOnlyInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2eigwapi.CreateEgressOnlyInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteEgressOnlyInternetGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteEgressOnlyInternetGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eigw.DeleteEgressOnlyInternetGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2eigwapi.DeleteEgressOnlyInternetGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeEgressOnlyInternetGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeEgressOnlyInternetGatewaysInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eigw.DescribeEgressOnlyInternetGateways(ctx, input, gw.NATSConn, accountID)
+		return ec2eigwapi.DescribeEgressOnlyInternetGateways(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreatePlacementGroup": ec2Handler(func(ctx context.Context, input *ec2.CreatePlacementGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_placementgroup.CreatePlacementGroup(ctx, input, gw.NATSConn, accountID)
+		return ec2placementgroupapi.CreatePlacementGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeletePlacementGroup": ec2Handler(func(ctx context.Context, input *ec2.DeletePlacementGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_placementgroup.DeletePlacementGroup(ctx, input, gw.NATSConn, accountID)
+		return ec2placementgroupapi.DeletePlacementGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribePlacementGroups": ec2Handler(func(ctx context.Context, input *ec2.DescribePlacementGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_placementgroup.DescribePlacementGroups(ctx, input, gw.NATSConn, accountID)
+		return ec2placementgroupapi.DescribePlacementGroups(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateCapacityReservation": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateCapacityReservationInput, gw *GatewayConfig, accountID string) (ec2.CreateCapacityReservationOutput, error) {
-		return gateway_ec2_capacityreservation.CreateCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return ec2capacityreservationapi.CreateCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"DescribeCapacityReservations": ec2Handler(func(ctx context.Context, input *ec2.DescribeCapacityReservationsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_capacityreservation.DescribeCapacityReservations(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return ec2capacityreservationapi.DescribeCapacityReservations(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CancelCapacityReservation": ec2Handler(func(ctx context.Context, input *ec2.CancelCapacityReservationInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_capacityreservation.CancelCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
+		return ec2capacityreservationapi.CancelCapacityReservation(ctx, input, gw.NATSConn, gw.ExpectedNodes, accountID)
 	}),
 	"CreateLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.CreateLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_launchtemplate.CreateLaunchTemplate(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.CreateLaunchTemplate(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateLaunchTemplateVersion": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateLaunchTemplateVersionInput, gw *GatewayConfig, accountID string) (ec2.CreateLaunchTemplateVersionOutput, error) {
-		return gateway_ec2_launchtemplate.CreateLaunchTemplateVersion(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.CreateLaunchTemplateVersion(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.DeleteLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_launchtemplate.DeleteLaunchTemplate(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.DeleteLaunchTemplate(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteLaunchTemplateVersions": ec2Handler(func(ctx context.Context, input *ec2.DeleteLaunchTemplateVersionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_launchtemplate.DeleteLaunchTemplateVersions(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.DeleteLaunchTemplateVersions(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyLaunchTemplate": ec2Handler(func(ctx context.Context, input *ec2.ModifyLaunchTemplateInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_launchtemplate.ModifyLaunchTemplate(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.ModifyLaunchTemplate(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeLaunchTemplates": ec2Handler(func(ctx context.Context, input *ec2.DescribeLaunchTemplatesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_launchtemplate.DescribeLaunchTemplates(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.DescribeLaunchTemplates(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeLaunchTemplateVersions": ec2Handler(func(ctx context.Context, input *ec2.DescribeLaunchTemplateVersionsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_launchtemplate.DescribeLaunchTemplateVersions(ctx, input, gw.NATSConn, accountID)
+		return ec2launchtemplateapi.DescribeLaunchTemplateVersions(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RequestSpotInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RequestSpotInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
 		passRoleCheck := func(roleARN string) error {
 			return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 		}
-		return gateway_ec2_spotinstance.RequestSpotInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
+		return ec2spotinstanceapi.RequestSpotInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, gw.AZ, passRoleCheck, gw.Quota, gw.ExpectedNodes)
 	}),
 	"DescribeSpotInstanceRequests": ec2Handler(func(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_spotinstance.DescribeSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
+		return ec2spotinstanceapi.DescribeSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CancelSpotInstanceRequests": ec2Handler(func(ctx context.Context, input *ec2.CancelSpotInstanceRequestsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_spotinstance.CancelSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
+		return ec2spotinstanceapi.CancelSpotInstanceRequests(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateVpc": ec2Handler(func(ctx context.Context, input *ec2.CreateVpcInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceVPCs(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err
 		}
-		return gateway_ec2_vpc.CreateVpc(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.CreateVpc(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteVpc": ec2Handler(func(ctx context.Context, input *ec2.DeleteVpcInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DeleteVpc(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DeleteVpc(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeVpcs": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DescribeVpcs(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DescribeVpcs(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyVpcAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyVpcAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.ModifyVpcAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.ModifyVpcAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeVpcAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DescribeVpcAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DescribeVpcAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	// No VPC endpoint can exist here, because CreateVpcEndpoint is not served, so
 	// the empty list is the true answer rather than a stand-in for one. It has to
@@ -513,127 +514,127 @@ var ec2Actions = map[string]ec2Action{
 		if err := gw.Quota.EnforceSubnets(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err
 		}
-		return gateway_ec2_vpc.CreateSubnet(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.CreateSubnet(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteSubnet": ec2Handler(func(ctx context.Context, input *ec2.DeleteSubnetInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DeleteSubnet(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DeleteSubnet(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeSubnets": ec2Handler(func(ctx context.Context, input *ec2.DescribeSubnetsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DescribeSubnets(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DescribeSubnets(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifySubnetAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifySubnetAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.ModifySubnetAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.ModifySubnetAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateRouteTable": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateRouteTableInput, gw *GatewayConfig, accountID string) (ec2.CreateRouteTableOutput, error) {
-		return gateway_ec2_routetable.CreateRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.CreateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteRouteTable": ec2Handler(func(ctx context.Context, input *ec2.DeleteRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DeleteRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DeleteRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeRouteTables": ec2Handler(func(ctx context.Context, input *ec2.DescribeRouteTablesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DescribeRouteTables(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DescribeRouteTables(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateRoute": ec2Handler(func(ctx context.Context, input *ec2.CreateRouteInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.CreateRoute(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.CreateRoute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteRoute": ec2Handler(func(ctx context.Context, input *ec2.DeleteRouteInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DeleteRoute(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DeleteRoute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ReplaceRoute": ec2Handler(func(ctx context.Context, input *ec2.ReplaceRouteInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.ReplaceRoute(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.ReplaceRoute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AssociateRouteTable": ec2Handler(func(ctx context.Context, input *ec2.AssociateRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.AssociateRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.AssociateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisassociateRouteTable": ec2Handler(func(ctx context.Context, input *ec2.DisassociateRouteTableInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.DisassociateRouteTable(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.DisassociateRouteTable(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ReplaceRouteTableAssociation": ec2Handler(func(ctx context.Context, input *ec2.ReplaceRouteTableAssociationInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_routetable.ReplaceRouteTableAssociation(ctx, input, gw.NATSConn, accountID)
+		return ec2routetableapi.ReplaceRouteTableAssociation(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateNetworkInterface": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, gw *GatewayConfig, accountID string) (ec2.CreateNetworkInterfaceOutput, error) {
-		return gateway_ec2_vpc.CreateNetworkInterface(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.CreateNetworkInterface(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.DeleteNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DeleteNetworkInterface(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DeleteNetworkInterface(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeNetworkInterfaces": ec2Handler(func(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DescribeNetworkInterfaces(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DescribeNetworkInterfaces(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifyNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.ModifyNetworkInterfaceAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.ModifyNetworkInterfaceAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AttachNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.AttachNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.AttachNetworkInterface(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.AttachNetworkInterface(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DetachNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.DetachNetworkInterfaceInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DetachNetworkInterface(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DetachNetworkInterface(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateSecurityGroup": ec2Handler(func(ctx context.Context, input *ec2.CreateSecurityGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.CreateSecurityGroup(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.CreateSecurityGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteSecurityGroup": ec2Handler(func(ctx context.Context, input *ec2.DeleteSecurityGroupInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DeleteSecurityGroup(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DeleteSecurityGroup(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeSecurityGroups": ec2Handler(func(ctx context.Context, input *ec2.DescribeSecurityGroupsInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DescribeSecurityGroups(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DescribeSecurityGroups(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeSecurityGroupRules": ec2Handler(func(ctx context.Context, input *ec2.DescribeSecurityGroupRulesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.DescribeSecurityGroupRules(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.DescribeSecurityGroupRules(ctx, input, gw.NATSConn, accountID)
 	}),
 	"GetSecurityGroupsForVpc": ec2Handler(func(ctx context.Context, input *ec2.GetSecurityGroupsForVpcInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.GetSecurityGroupsForVpc(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.GetSecurityGroupsForVpc(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AuthorizeSecurityGroupIngress": ec2Handler(func(ctx context.Context, input *ec2.AuthorizeSecurityGroupIngressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.AuthorizeSecurityGroupIngress(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.AuthorizeSecurityGroupIngress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AuthorizeSecurityGroupEgress": ec2Handler(func(ctx context.Context, input *ec2.AuthorizeSecurityGroupEgressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.AuthorizeSecurityGroupEgress(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.AuthorizeSecurityGroupEgress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RevokeSecurityGroupIngress": ec2Handler(func(ctx context.Context, input *ec2.RevokeSecurityGroupIngressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.RevokeSecurityGroupIngress(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.RevokeSecurityGroupIngress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"RevokeSecurityGroupEgress": ec2Handler(func(ctx context.Context, input *ec2.RevokeSecurityGroupEgressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.RevokeSecurityGroupEgress(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.RevokeSecurityGroupEgress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"UpdateSecurityGroupRuleDescriptionsIngress": ec2Handler(func(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsIngressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.UpdateSecurityGroupRuleDescriptionsIngress(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.UpdateSecurityGroupRuleDescriptionsIngress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"UpdateSecurityGroupRuleDescriptionsEgress": ec2Handler(func(ctx context.Context, input *ec2.UpdateSecurityGroupRuleDescriptionsEgressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.UpdateSecurityGroupRuleDescriptionsEgress(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.UpdateSecurityGroupRuleDescriptionsEgress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ModifySecurityGroupRules": ec2Handler(func(ctx context.Context, input *ec2.ModifySecurityGroupRulesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_vpc.ModifySecurityGroupRules(ctx, input, gw.NATSConn, accountID)
+		return ec2vpcapi.ModifySecurityGroupRules(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AllocateAddress": ec2Handler(func(ctx context.Context, input *ec2.AllocateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
 		if err := gw.Quota.EnforceEIPs(ctx, gw.NATSConn, accountID, 1); err != nil {
 			return nil, err
 		}
-		return gateway_ec2_eip.AllocateAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.AllocateAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"ReleaseAddress": ec2Handler(func(ctx context.Context, input *ec2.ReleaseAddressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.ReleaseAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.ReleaseAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"AssociateAddress": ec2Handler(func(ctx context.Context, input *ec2.AssociateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.AssociateAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.AssociateAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DisassociateAddress": ec2Handler(func(ctx context.Context, input *ec2.DisassociateAddressInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.DisassociateAddress(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.DisassociateAddress(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAddresses": ec2Handler(func(ctx context.Context, input *ec2.DescribeAddressesInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.DescribeAddresses(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.DescribeAddresses(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeAddressesAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeAddressesAttributeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_eip.DescribeAddressesAttribute(ctx, input, gw.NATSConn, accountID)
+		return ec2eipapi.DescribeAddressesAttribute(ctx, input, gw.NATSConn, accountID)
 	}),
 	"CreateNatGateway": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateNatGatewayInput, gw *GatewayConfig, accountID string) (ec2.CreateNatGatewayOutput, error) {
-		return gateway_ec2_natgw.CreateNatGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2natgwapi.CreateNatGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteNatGateway": ec2Handler(func(ctx context.Context, input *ec2.DeleteNatGatewayInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_natgw.DeleteNatGateway(ctx, input, gw.NATSConn, accountID)
+		return ec2natgwapi.DeleteNatGateway(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DescribeNatGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeNatGatewaysInput, gw *GatewayConfig, accountID string) (any, error) {
-		return gateway_ec2_natgw.DescribeNatGateways(ctx, input, gw.NATSConn, accountID)
+		return ec2natgwapi.DescribeNatGateways(ctx, input, gw.NATSConn, accountID)
 	}),
 }
 
@@ -643,7 +644,7 @@ func defaultVPCID(ctx context.Context, natsConn *nats.Conn, accountID string) (s
 	if natsConn == nil {
 		return "", errors.New(awserrors.ErrorServerInternal)
 	}
-	out, err := gateway_ec2_vpc.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+	out, err := ec2vpcapi.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		Filters: []*ec2.Filter{{Name: aws.String("is-default"), Values: aws.StringSlice([]string{"true"})}},
 	}, natsConn, accountID)
 	if err != nil {
@@ -692,7 +693,7 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 
 	input, err := handler.parse(queryArgs)
 	if err != nil {
-		if errors.Is(err, awsec2query.ErrSliceTooLarge) {
+		if errors.Is(err, query.ErrSliceTooLarge) {
 			return errors.New(awserrors.ErrorMalformedQueryString)
 		}
 		return err
@@ -701,12 +702,12 @@ func (gw *GatewayConfig) EC2_Request(w http.ResponseWriter, r *http.Request) err
 	// Launch templates supply effective RunInstances resources. Resolve them
 	// before authorization, and dispatch the same expanded input afterwards.
 	if runInput, ok := input.(*ec2.RunInstancesInput); ok && action == "RunInstances" {
-		if err := gateway_ec2_instance.ExpandLaunchTemplate(r.Context(), gw.NATSConn, runInput, accountID); err != nil {
+		if err := ec2instanceapi.ExpandLaunchTemplate(r.Context(), gw.NATSConn, runInput, accountID); err != nil {
 			return err
 		}
 	}
 
-	resources, err := gateway_ec2.ResourceARNs(action, gw.Region, accountID, input)
+	resources, err := ec2awsapi.ResourceARNs(action, gw.Region, accountID, input)
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,4022 @@
+package cli
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/tls"
+	_ "embed"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"uuid"
+
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	"github.com/mulgadc/bluebottle/pkg/safecast"
+	legacyadmin "github.com/mulgadc/spinifex/spinifex/admin"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/operator/admin"
+	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
+	operatorprogress "github.com/mulgadc/spinifex/spinifex/operator/progress"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock/dirty"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/pterm/pterm"
+	"github.com/spf13/cobra"
+)
+
+//go:embed templates/spinifex.toml
+var spinifexTomlTemplate string
+
+//go:embed templates/awsgw.toml
+var awsgwTomlTemplate string
+
+//go:embed templates/predastore.toml
+var predastoreTomlTemplate string
+
+//go:embed templates/nats.conf
+var natsConfTemplate string
+
+//go:embed templates/predastore-multinode.toml
+var predastoreMultiNodeTemplate string
+
+//go:embed templates/northstar.toml
+var northstarTomlTemplate string
+
+var supportedArchs = map[string]bool{
+	"x86_64":  true,
+	"aarch64": true, // alias for arm64
+	"arm64":   true,
+}
+
+// TODO: Confirm suppported platform types.
+var supportedPlatforms = map[string]bool{
+	"Linux/UNIX": true,
+	"Windows":    true,
+}
+
+// Mirrors the gateway RegisterImage allowlist so admin imports can't write an
+// AMI with a boot mode that RegisterImage would reject.
+var supportedBootModes = map[string]bool{
+	"bios":           true,
+	"uefi":           true,
+	"uefi-preferred": true,
+}
+
+var adminCmd = &cobra.Command{
+	Use:   "admin",
+	Short: "Administrative commands for Spinifex platform management",
+	Long:  `Administrative commands for initializing and managing the Spinifex platform.`,
+}
+
+var clusterCmd = &cobra.Command{
+	Use:   "cluster",
+	Short: "Cluster-wide operations",
+	Long:  `Cluster-wide administrative operations such as coordinated shutdown.`,
+}
+
+var clusterShutdownCmd = &cobra.Command{
+	Use:   "shutdown",
+	Short: "Gracefully shut down the entire cluster",
+	Long: `Perform a coordinated, phased shutdown of the entire cluster.
+Phases execute in order: GATE (stop API/UI) → DRAIN (stop VMs) → STORAGE (stop viperblock) → PERSIST (stop predastore) → INFRA (stop NATS/daemon).
+Each phase waits for all nodes to ACK before proceeding to the next.`,
+	Run: runClusterShutdown,
+}
+
+var nodeCmd = &cobra.Command{
+	Use:   "node",
+	Short: "Node-local operations",
+	Long:  `Node-local administrative operations such as a graceful local guest drain.`,
+}
+
+var nodeDrainCmd = &cobra.Command{
+	Use:   "drain",
+	Short: "Gracefully drain guests on the local node",
+	Long: `Run the GATE and DRAIN shutdown phases against the local node only: power down
+its guests via QMP and unmount their volumes (flushing the viperblock WAL) while
+every service is still running. STORAGE/PERSIST/INFRA are left to systemd's
+ordered unit teardown. This is what spinifex-shutdown.service's ExecStop runs,
+with --unless-restarting so it drains on a genuine host shutdown/reboot and on
+a plain "systemctl stop spinifex.target", but skips the drain when a restart
+of the stack (e.g. "systemctl restart spinifex.target") is already queued.
+Run by hand without that flag, it always drains unconditionally.`,
+	Run: runNodeDrainLocal,
+}
+
+var clusterDrainDHCPCmd = &cobra.Command{
+	Use:   "drain-dhcp",
+	Short: "Release all upstream DHCP leases held by vpcd",
+	Long: `Ask each vpcd to DHCPRELEASE every external-pool DHCP lease it currently
+holds, returning them to the upstream DHCP server. Run this on teardown before
+stopping services: an env reset otherwise strands held leases on the upstream
+server until their TTL expires, eventually exhausting the upstream scope.`,
+	Run: runClusterDrainDHCP,
+}
+
+var adminInitCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Initialize Spinifex platform configuration",
+	Long: `Initialize Spinifex platform by creating configuration files, generating SSL certificates,
+and setting up AWS credentials. This creates the necessary directory structure and
+configuration files in ~/spinifex/config.`,
+	Run: runAdminInit,
+}
+
+var adminJoinCmd = &cobra.Command{
+	Use:   "join",
+	Short: "Join an existing Spinifex cluster",
+	Long: `Join an existing Spinifex cluster by connecting to a leader node and retrieving
+the cluster configuration. This command will configure the local node to join
+the cluster and participate in distributed operations.`,
+	Run: runAdminJoin,
+}
+
+var imagesCmd = &cobra.Command{
+	Use:   "images",
+	Short: "Manage OS images",
+	Long:  `Manage OS images for local storage and AMI creation.`,
+}
+
+var imagesImportCmd = &cobra.Command{
+	Use:   "import",
+	Short: "Specify local file to import",
+	Long:  `Create a new image from a local file`,
+	Run:   runimagesImportCmd,
+}
+
+var imagesListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List OS images to import or download",
+	Long:  `Query the remote endpoint for common OS images available for import as AMI or locally download.`,
+	Run:   runimagesListCmd,
+}
+
+var imagesRemoveCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove an admin-imported system AMI",
+	Long: `Delete an AMI imported via 'spx admin images import', including its
+backing block storage and snapshot artefacts. Only operates on AMIs with a
+non-account owner (e.g. "system"); account-owned AMIs must be removed via
+'aws ec2 deregister-image' followed by 'aws ec2 delete-snapshot'.
+
+Refuses to delete an AMI that has dependent volumes or copied snapshots/AMIs
+unless --force is passed. Prompts for confirmation unless --yes is passed.`,
+	Run: runimagesRemoveCmd,
+}
+
+var imagesPromoteCmd = &cobra.Command{
+	Use:   "promote",
+	Short: "Promote an account-owned AMI to a system image",
+	Long: `Rewrite an account-owned AMI's owner to the system alias so it becomes
+visible to all accounts via DescribeImages, matching the behaviour of AMIs
+imported via 'spx admin images import'.
+
+No data is copied — only the config.json owner field is updated. The change
+takes effect immediately. Prompts for confirmation unless --yes is passed.`,
+	Run: runimagesPromoteCmd,
+}
+
+var imagesDescribeCmd = &cobra.Command{
+	Use:   "describe",
+	Short: "Show an AMI's metadata and source digest",
+	Long: `Print an AMI's control-plane metadata, including the digest of the
+artifact it was imported from and who verified it. The digest describes the
+imported source file, not the volume's current contents.`,
+	Run: runimagesDescribeCmd,
+}
+
+var volumesCmd = &cobra.Command{
+	Use:   "volumes",
+	Short: "Inspect block storage volumes",
+	Long:  `Inspect the volumes the storage provider holds, independently of the EC2 API.`,
+}
+
+var volumesOrphansCmd = &cobra.Command{
+	Use:   "orphans",
+	Short: "Report volumes the provider holds with no control-plane record",
+	Long: `List volumes the storage provider holds that the control plane has no record
+of. Their blocks are consuming space but they have no API handle, so they
+cannot be described or deleted through the EC2 API.
+
+This command only reports. It never deletes: the evidence that an orphan is
+still wanted is the record that went missing, so removal is an operator
+decision made per volume.`,
+	Run: runVolumesOrphansCmd,
+}
+
+var volumesUnsealedCmd = &cobra.Command{
+	Use:   "unsealed",
+	Short: "Report volumes whose writes have not been confirmed to the backend",
+	Long: `List volumes a node has open, or had open, without a confirmed seal to the
+backend. The node named holds writes that predastore may not have.
+
+Starting such a volume elsewhere is allowed and is preferred over leaving the
+instance unable to run, but it opens from the last checkpoint that did reach
+the backend. This is the list of volumes where that would cost something.`,
+	Run: runVolumesUnsealedCmd,
+}
+
+var accountCmd = &cobra.Command{
+	Use:   "account",
+	Short: "Manage Spinifex accounts",
+	Long:  `Create and manage Spinifex accounts. Each account namespaces IAM users, policies, and resources.`,
+}
+
+var accountCreateCmd = &cobra.Command{
+	Use:   "create",
+	Short: "Create a new account with an admin user",
+	Long: `Create a new Spinifex account. This creates an account with a sequential 12-digit ID,
+an admin user, and an AdministratorAccess policy attached to the admin user.
+Requires the cluster to be running (connects to NATS).`,
+	Run: runAccountCreate,
+}
+
+var accountListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all accounts",
+	Long:  `List all Spinifex accounts with their ID, name, status, and creation time.`,
+	Run:   runAccountList,
+}
+
+var adminBannerCmd = &cobra.Command{
+	Use:   "banner",
+	Short: "Write the Spinifex console banner to /etc/issue and /etc/motd",
+	Long: `Writes the node information banner to /etc/issue (shown before login on
+physical/serial console) and /etc/motd (shown after SSH login).
+
+With --boot-check, also detects if the management IP has changed since last
+boot and updates /etc/spinifex/node.conf accordingly.`,
+	Run: runAdminBanner,
+}
+
+var certCmd = &cobra.Command{
+	Use:   "cert",
+	Short: "Manage TLS certificates",
+	Long:  `Manage TLS certificates for the Spinifex platform.`,
+}
+
+var certRenewCmd = &cobra.Command{
+	Use:   "renew",
+	Short: "Regenerate the server certificate with current IPs",
+	Long: `Regenerate the server certificate signed by the existing CA.
+The new certificate will include all current network interface IPs
+and the machine hostname in its SANs. Use this after adding a new
+network interface or changing IP addresses.`,
+	Run: runCertRenew,
+}
+
+/*
+CLI ideas
+
+spx admin images list
+
+- fetches from remote endpoint for common/trusted images to bootstrap environment, or baked in from compile.
+
+// If --name specified, download
+spx admin images import --name debian-13-x86_64
+
+// List available images
+spx admin images list
+
+// Manually import a path
+spx admin images import --file /path/to/image --checksum /path/to/SHA512SUMS --distro debian --version 13 --arch x86_64
+
+-> x <-
+*/
+
+func init() {
+	rootCmd.AddCommand(adminCmd)
+	adminCmd.AddCommand(adminInitCmd)
+	adminCmd.AddCommand(adminJoinCmd)
+
+	adminCmd.AddCommand(clusterCmd)
+	clusterCmd.AddCommand(clusterShutdownCmd)
+	clusterShutdownCmd.Flags().Bool("force", false, "Force shutdown even if nodes don't respond")
+	clusterShutdownCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
+	clusterShutdownCmd.Flags().Bool("dry-run", false, "Print phase plan without executing")
+
+	clusterCmd.AddCommand(clusterDrainDHCPCmd)
+	clusterDrainDHCPCmd.Flags().Duration("timeout", 30*time.Second, "Reply-collection window for vpcd drain responders")
+
+	adminCmd.AddCommand(nodeCmd)
+	nodeCmd.AddCommand(nodeDrainCmd)
+	nodeDrainCmd.Flags().Bool("local", false, "Drain the local node only (required)")
+	nodeDrainCmd.Flags().Duration("timeout", 120*time.Second, "Maximum time to wait per phase")
+	nodeDrainCmd.Flags().Bool("unless-restarting", false, "Drain on a real host shutdown or a plain target stop; skip only when a restart of the stack is already queued. Unset, always drains")
+	nodeDrainCmd.Flags().Bool("only-if-host-stopping", false, "Deprecated: use --unless-restarting")
+	_ = nodeDrainCmd.Flags().MarkDeprecated("only-if-host-stopping", "use --unless-restarting instead")
+	nodeCmd.AddCommand(nodeJSProbeCmd)
+	nodeJSProbeCmd.Flags().Duration("timeout", 10*time.Second, "Maximum time to wait for the canary round-trip")
+
+	adminCmd.AddCommand(imagesCmd)
+	imagesCmd.AddCommand(imagesImportCmd)
+	imagesCmd.AddCommand(imagesListCmd)
+	imagesCmd.AddCommand(imagesRemoveCmd)
+	imagesCmd.AddCommand(imagesPromoteCmd)
+	imagesCmd.AddCommand(imagesDescribeCmd)
+
+	adminCmd.AddCommand(volumesCmd)
+	volumesCmd.AddCommand(volumesOrphansCmd)
+	volumesCmd.AddCommand(volumesUnsealedCmd)
+
+	adminCmd.AddCommand(accountCmd)
+	accountCmd.AddCommand(accountCreateCmd)
+	accountCmd.AddCommand(accountListCmd)
+
+	adminCmd.AddCommand(adminBannerCmd)
+	adminBannerCmd.Flags().Bool("boot-check", false, "Check for management IP change and update node.conf if needed")
+
+	adminCmd.AddCommand(certCmd)
+	certCmd.AddCommand(certRenewCmd)
+
+	adminCmd.AddCommand(upgradeCmd)
+	upgradeCmd.Flags().Bool("yes", false, "Apply migrations without prompting")
+	upgradeCmd.Flags().Bool("dry-run", false, "Report pending config and unit changes without applying them")
+	upgradeCmd.Flags().Bool("units-only", false, "Reconcile systemd units only, skip config migrations")
+	upgradeCmd.Flags().Bool("skip-units", false, "Apply config migrations only, skip systemd unit reconciliation")
+	certRenewCmd.Flags().StringSlice("extra-ip", nil, "Additional IP addresses to include in SANs")
+	certRenewCmd.Flags().StringSlice("extra-dns", nil, "Additional DNS names to include in SANs")
+	accountCreateCmd.Flags().String("name", "", "Account name (required)")
+	mustMarkFlagRequired(accountCreateCmd, "name")
+
+	rootCmd.PersistentFlags().String("config-dir", DefaultConfigDir(), "Configuration directory")
+	rootCmd.PersistentFlags().String("spinifex-dir", DefaultDataDir(), "Spinifex base directory")
+
+	// Flags for admin init
+	adminInitCmd.Flags().Bool("force", false, "Force re-initialization (overwrites existing config)")
+	adminInitCmd.Flags().Bool("discard-jetstream", true, "With --nodes >= 2, remove this node's existing JetStream streams once every node has joined; =false refuses to form over a non-empty store instead. Ignored with --nodes 1")
+	adminInitCmd.Flags().String("region", "ap-southeast-2", "Mulga region to create")
+	adminInitCmd.Flags().String("az", "ap-southeast-2a", "Mulga AZ to create")
+	adminInitCmd.Flags().String("node", "node1", "Node name, increment for additional nodes (default, node1)")
+	adminInitCmd.Flags().Int("nodes", 3, "Number of nodes to expect for cluster (1, or 3 and up)")
+	adminInitCmd.Flags().String("host", "", "Leader node to join (if not specified, tries multicast discovery)")
+	adminInitCmd.Flags().Int("port", 4432, "Port to bind cluster services on")
+	adminInitCmd.Flags().String("bind", "0.0.0.0", "IP address to bind services to (e.g., 10.11.12.1 for multi-node). Default 0.0.0.0 listens on all interfaces.")
+	adminInitCmd.Flags().String("advertise", "", "External IP that off-host clients (ALB VMs, remote operators) should dial. Auto-detected from default route when empty.")
+	adminInitCmd.Flags().String("cluster-bind", "", "IP address to bind NATS cluster services to (e.g., 10.11.12.1 for multi-node)")
+	adminInitCmd.Flags().String("cluster-routes", "", "NATS cluster hosts for routing specify multiple with comma (e.g., 10.11.12.1:4248,10.11.12.2:4248 for multi-node)")
+	adminInitCmd.Flags().String("predastore-nodes", "", "Comma-separated IPs for multi-node Predastore cluster (e.g., 10.11.12.1,10.11.12.2,10.11.12.3). Requires >= 3 nodes.")
+	adminInitCmd.Flags().String("formation-timeout", "10m", "Timeout for cluster formation (e.g., 5m, 30s)")
+	adminInitCmd.Flags().String("token-ttl", "30m", "Join token validity duration (e.g. 30m, 1h, 2h)")
+	adminInitCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
+	adminInitCmd.Flags().String("cluster-name", "spinifex", "NATS cluster name")
+	adminInitCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during init (default: enabled)")
+	adminInitCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
+	adminInitCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all). Valid: nats,predastore,viperblock,daemon,awsgw,ui")
+
+	// External networking flags
+	adminInitCmd.Flags().String("external-mode", "", "External network mode: 'pool' (default when WAN detected), 'nat' (routed; non-bridgeable uplinks; add --external-pool or --external-source=dhcp for public IPs), or '' (disabled)")
+	adminInitCmd.Flags().String("external-iface", "", "WAN NIC for br-external (auto-detected from default route)")
+	adminInitCmd.Flags().String("external-source", "", "Pool IP source: 'dhcp' (default when no --external-pool) or 'static' (uses --external-pool range)")
+	adminInitCmd.Flags().String("external-bind-bridge", "", "Linux bridge for upstream DHCP DORA (default 'br-wan' when --external-source=dhcp)")
+	adminInitCmd.Flags().String("external-pool", "", "External IP pool range as start-end (e.g., 192.168.1.150-192.168.1.250)")
+	adminInitCmd.Flags().String("external-gateway", "", "WAN gateway IP (auto-detected from default route)")
+	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
+	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
+	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
+	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
+	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
+
+	// Flags for admin join
+	adminJoinCmd.Flags().String("region", "ap-southeast-2", "Region for this node")
+	adminJoinCmd.Flags().String("az", "ap-southeast-2a", "Availability zone for this node")
+	adminJoinCmd.Flags().String("node", "", "Node name (required)")
+	adminJoinCmd.Flags().String("host", "", "Leader node host:port (e.g., node1.local:4432) (required)")
+	adminJoinCmd.Flags().String("data-dir", "", "Data directory for this node (default: ~/spinifex)")
+	adminJoinCmd.Flags().Int("port", 4432, "Port to bind cluster services on")
+	adminJoinCmd.Flags().String("bind", "0.0.0.0", "IP address to bind services to (e.g., 10.11.12.2 for multi-node on single host)")
+	adminJoinCmd.Flags().String("advertise", "", "External IP this node advertises to other cluster members. Defaults to --bind, or auto-detected WAN IP when --bind is 0.0.0.0.")
+	adminJoinCmd.Flags().String("cluster-bind", "", "IP address to bind NATS cluster services to (e.g., 10.11.12.1 for multi-node)")
+	adminJoinCmd.Flags().String("cluster-routes", "", "NATS cluster hosts for routing specify multiple with comma (e.g., 10.11.12.1:4248,10.11.12.2:4248 for multi-node)")
+	adminJoinCmd.Flags().String("token", "", "Join token from the init node (required)")
+	adminJoinCmd.Flags().Bool("force", false, "Join even though this node is already initialized, discarding its own CA and master key")
+	adminJoinCmd.Flags().Duration("join-timeout", 20*time.Minute, "How long to keep retrying while the formation server is unreachable")
+	adminJoinCmd.Flags().StringSlice("services", nil, "Services this node runs (default: all)")
+	adminJoinCmd.Flags().Bool("no-telemetry", false, "Disable telemetry metrics sent during join (default: enabled)")
+	adminJoinCmd.Flags().String("email", "", "Operator email address (used for update and security notifications)")
+	adminJoinCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
+	adminJoinCmd.Flags().Int("predastore-compaction-interval", 0, "Predastore compactor interval in seconds (0 = unset, uses built-in default). Test clusters set a short interval.")
+	mustMarkFlagRequired(adminJoinCmd, "node")
+	mustMarkFlagRequired(adminJoinCmd, "host")
+	mustMarkFlagRequired(adminJoinCmd, "token")
+
+	imagesImportCmd.Flags().String("tmp-dir", "", "Scratch directory for extracting the image (default: <spinifex-dir>/images); must be disk-backed, not tmpfs")
+
+	imagesImportCmd.Flags().String("name", "", "Import specified image by name")
+	imagesImportCmd.Flags().String("ami-name", "", "Override the registered AMI name (DescribeImages name). Defaults to ami-{distro}-{version}-{arch}. Use for locally-built appliances (e.g. --ami-name spinifex-eks-node).")
+	imagesImportCmd.Flags().String("file", "", "Import file from specified path (raw, qcow2, compressed)")
+	imagesImportCmd.Flags().String("distro", "", "Specified distro name (e.g debian)")
+	imagesImportCmd.Flags().String("version", "", "Specified distro version (e.g 12)")
+	imagesImportCmd.Flags().String("arch", "", "Specified distro arch (e.g aarch64, arm64, x86_64)")
+	imagesImportCmd.Flags().String("platform", "Linux/UNIX", "Specified platform (e.g Linux/UNIX, Windows)")
+	imagesImportCmd.Flags().String("boot-mode", "", "Boot mode for the imported AMI (bios|uefi|uefi-preferred). Required with --file. Overrides the catalog value when used with --name.")
+	imagesImportCmd.Flags().StringSlice("tag", nil, "Tag to apply to the imported AMI as key=value (repeatable; e.g. --tag spinifex:managed-by=elbv2)")
+	imagesImportCmd.Flags().Bool("force", false, "Force command execution (overwrites existing files)")
+	imagesImportCmd.Flags().Bool("skip-verify", false, "Skip catalog-image checksum verification (INSECURE; operator assumes integrity responsibility)")
+	imagesImportCmd.Flags().String("checksum", "", "Sums file to verify a --file image against (SHA256SUMS, SHA512SUMS, <image>.sha256/.sha512)")
+
+	imagesRemoveCmd.Flags().String("image-id", "", "AMI ID to remove (required)")
+	imagesRemoveCmd.Flags().Bool("force", false, "Bypass dependency, ownership and config-corrupt checks (salvage mode)")
+	imagesRemoveCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
+	mustMarkFlagRequired(imagesRemoveCmd, "image-id")
+
+	imagesPromoteCmd.Flags().String("image-id", "", "AMI ID to promote to system image (required)")
+	imagesPromoteCmd.Flags().Bool("yes", false, "Skip interactive confirmation prompt")
+	mustMarkFlagRequired(imagesPromoteCmd, "image-id")
+
+	imagesDescribeCmd.Flags().String("image-id", "", "AMI ID to describe (required)")
+	mustMarkFlagRequired(imagesDescribeCmd, "image-id")
+}
+
+const bytesPerGiB = 1024 * 1024 * 1024
+
+// imageImportTimeout bounds each provider call the import makes. Generous
+// because the snapshot at the end runs over the whole imported volume.
+const imageImportTimeout = 30 * time.Minute
+
+// amiVolumeSizeGiB returns the smallest whole GiB that still holds sizeBytes.
+//
+// Rounding up is load-bearing. The image is copied into a root volume of
+// exactly this size, so a volume smaller than the image truncates it and the
+// guest comes up with no root partition — it stalls on the root device until
+// systemd drops it to an emergency shell, and nothing on the way there reports
+// an undersized volume. Flooring (plain integer division) undersizes every
+// image that is not an exact multiple of a GiB, which is why this went unseen
+// while every system image happened to be a round 16 GiB.
+//
+// The downstream guard cannot cover for a wrong answer here: floorVolumeSizeToAMI
+// raises a caller's requested size to this value, so it inherits the mistake
+// rather than catching it.
+func amiVolumeSizeGiB(sizeBytes int64) uint64 {
+	if sizeBytes <= 0 {
+		return 0
+	}
+	return safecast.Int64ToUint64((sizeBytes + bytesPerGiB - 1) / bytesPerGiB)
+}
+
+// validateChecksumFlags rejects --checksum combinations that would otherwise be silently ignored.
+// An explicitly empty --checksum (e.g. an unset shell variable) must not fall through to an unverified import.
+func validateChecksumFlags(checksumPath string, checksumSet bool, localFile string, skipVerify bool) error {
+	if !checksumSet {
+		return nil
+	}
+	if strings.TrimSpace(checksumPath) == "" {
+		return errors.New("--checksum requires a sums file path")
+	}
+	if localFile == "" {
+		return errors.New("--checksum requires --file")
+	}
+	if skipVerify {
+		return errors.New("--checksum and --skip-verify are mutually exclusive")
+	}
+	return nil
+}
+
+// catalogPinnedDigestSource records that the expected digest came from this
+// binary's catalog, so a recorded digest never reads as a fetched sums file.
+const catalogPinnedDigestSource = "catalog:pinned"
+
+// importSource is the file an import is about to extract, and what it is to be verified against.
+type importSource struct {
+	imageFile, imageName, localFile            string
+	image                                      imagecatalog.Images
+	checksumPath, checksumAlgo, expectedDigest string
+	skipVerify                                 bool
+}
+
+// resolveDigest verifies or hashes the source before extract and returns the digest to record.
+// Upstream digests are of the artifact as supplied. Failures are reported to errOut before
+// returning; the file is left in place, and a catalog download recovers with --force.
+func (src importSource) resolveDigest(out, errOut io.Writer) (ebsmetadata.ImageDigest, error) {
+	digest := ebsmetadata.ImageDigest{Filename: filepath.Base(src.imageFile)}
+	switch sourceDigestMode(src.localFile, src.checksumPath, src.skipVerify) {
+	case ebsmetadata.DigestCatalog:
+		if src.image.ChecksumType == "" || (src.image.Checksum == "" && src.image.ChecksumDigest == "") {
+			fmt.Fprintf(errOut, "Catalog entry %q is missing Checksum/ChecksumDigest/ChecksumType; refusing import.\n", src.imageName)
+			return digest, errors.New("catalog entry has no checksum")
+		}
+		// A pinned digest is checked against this file rather than a sums file
+		// fetched from the same host that served the image.
+		if src.image.ChecksumDigest != "" {
+			actual, err := imagecatalog.VerifyImageDigest(src.imageFile, src.image.ChecksumType, src.image.ChecksumDigest)
+			if err != nil {
+				printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
+				return digest, err
+			}
+			fmt.Fprintf(out, "✅ Verified image checksum (%s) against the pinned catalog digest\n", src.image.ChecksumType)
+			digest.Algorithm, digest.Value, digest.Source = src.image.ChecksumType, actual, catalogPinnedDigestSource
+			digest.Verification = ebsmetadata.DigestCatalog
+			return digest, nil
+		}
+		actual, err := imagecatalog.VerifyImageChecksum(src.imageFile, src.image.Checksum, src.image.ChecksumType)
+		if err != nil {
+			printChecksumError(errOut, src.imageFile, src.imageName, src.image, err)
+			return digest, err
+		}
+		fmt.Fprintf(out, "✅ Verified image checksum (%s)\n", src.image.ChecksumType)
+		digest.Algorithm, digest.Value, digest.Source = src.image.ChecksumType, actual, src.image.Checksum
+		digest.Verification = ebsmetadata.DigestCatalog
+	case ebsmetadata.DigestOperator:
+		actual, err := imagecatalog.VerifyImageDigest(src.localFile, src.checksumAlgo, src.expectedDigest)
+		if err != nil {
+			fmt.Fprintf(errOut, "Image integrity verification failed: %v\n", err)
+			fmt.Fprintf(errOut, "  file:     %s\n", src.localFile)
+			fmt.Fprintf(errOut, "  checksum: %s\n", src.checksumPath)
+			return digest, err
+		}
+		fmt.Fprintf(out, "✅ Verified image checksum (%s) against %s\n", src.checksumAlgo, src.checksumPath)
+		digest.Algorithm, digest.Value, digest.Source = src.checksumAlgo, actual, filepath.Base(src.checksumPath)
+		digest.Verification = ebsmetadata.DigestOperator
+	default:
+		if src.localFile != "" {
+			fmt.Fprintf(errOut, "Importing %s without checksum validation (pass --checksum <sums-file> to verify)\n", src.localFile)
+		} else {
+			fmt.Fprintf(errOut, "⚠️  --skip-verify set: checksum verification skipped for %s\n", src.imageName)
+		}
+		actual, err := imagecatalog.HashImageFile(src.imageFile, "sha256")
+		if err != nil {
+			fmt.Fprintf(errOut, "Could not hash image: %v\n", err)
+			return digest, err
+		}
+		digest.Algorithm, digest.Value = "sha256", actual
+		digest.Verification = ebsmetadata.DigestUnverified
+	}
+	return digest, nil
+}
+
+// sourceDigestMode picks how an import's source digest is obtained.
+func sourceDigestMode(localFile, checksumPath string, skipVerify bool) string {
+	switch {
+	case localFile != "" && checksumPath != "":
+		return ebsmetadata.DigestOperator
+	case localFile != "" || skipVerify:
+		return ebsmetadata.DigestUnverified
+	default:
+		return ebsmetadata.DigestCatalog
+	}
+}
+
+func runimagesImportCmd(cmd *cobra.Command, args []string) {
+	var image imagecatalog.Images
+
+	var imageFile string
+	var err error
+
+	forceCmd, _ := cmd.Flags().GetBool("force")
+	skipVerify, _ := cmd.Flags().GetBool("skip-verify")
+	ostmpDir, _ := cmd.Flags().GetString("tmp-dir")
+
+	//configDir, _ := cmd.Flags().GetString("config-dir")
+	baseDir, _ := cmd.Flags().GetString("spinifex-dir")
+
+	// Strip trailing slash
+	baseDir = filepath.Clean(baseDir)
+
+	// Check the base dir has our images path, and correctlty init
+	imageDir := fmt.Sprintf("%s/images", baseDir)
+
+	if !admin.FileExists(imageDir) {
+		fmt.Fprintf(os.Stderr, "Error: image directory does not exist: %s\n\n", imageDir)
+		fmt.Fprintf(os.Stderr, "Run 'spx admin init' first to initialize the Spinifex platform.\n")
+		os.Exit(1)
+	}
+
+	// --name pulls metadata (including Tags) from the catalog; --file supplies
+	// the local image source. When both are set, the catalog provides metadata
+	// and the file is used directly (no download). When only --file is set,
+	// metadata comes from flags and no catalog tags are applied.
+	imageName, _ := cmd.Flags().GetString("name")
+	amiNameOverride, _ := cmd.Flags().GetString("ami-name")
+	localFile, _ := cmd.Flags().GetString("file")
+
+	if imageName == "" && localFile == "" {
+		fmt.Fprintf(os.Stderr, "Either --name or --file is required to import an image\n")
+		os.Exit(1)
+	}
+
+	checksumPath, _ := cmd.Flags().GetString("checksum")
+	if err := validateChecksumFlags(checksumPath, cmd.Flags().Changed("checksum"), localFile, skipVerify); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var checksumAlgo, expectedDigest string
+	if checksumPath != "" {
+		checksumAlgo, expectedDigest, err = imagecatalog.ReadExpectedDigest(checksumPath, filepath.Base(localFile))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not read checksum from %s: %v\n", checksumPath, err)
+			os.Exit(1)
+		}
+	}
+
+	if imageName != "" {
+		var exists bool
+		image, exists = imagecatalog.AvailableImages[imageName]
+		if !exists {
+			fmt.Fprintf(os.Stderr, "Image name not found in available images")
+			os.Exit(1)
+		}
+	}
+
+	if localFile != "" {
+		if _, err := os.Stat(localFile); err != nil {
+			fmt.Fprintf(os.Stderr, "File could not be found: %s", err)
+			os.Exit(1)
+		}
+		imageFile = localFile
+		if imageName == "" {
+			image.Distro, _ = cmd.Flags().GetString("distro")
+			image.Version, _ = cmd.Flags().GetString("version")
+			image.Arch, _ = cmd.Flags().GetString("arch")
+			image.Platform, _ = cmd.Flags().GetString("platform")
+		}
+	}
+
+	// --file imports have no catalog metadata to inherit from, so the operator
+	// must declare the boot mode explicitly — guessing would silently produce
+	// a BIOS AMI from a UEFI-only image (or vice versa) and fail at launch.
+	// --name imports inherit from the catalog; the flag overrides when set.
+	bootModeFlag, _ := cmd.Flags().GetString("boot-mode")
+	if bootModeFlag != "" {
+		if !supportedBootModes[bootModeFlag] {
+			fmt.Fprintf(os.Stderr, "Unsupported --boot-mode %q (expected bios|uefi|uefi-preferred)\n", bootModeFlag)
+			os.Exit(1)
+		}
+		image.BootMode = bootModeFlag
+	} else if imageName == "" {
+		fmt.Fprintf(os.Stderr, "--boot-mode is required when importing via --file (expected bios|uefi|uefi-preferred)\n")
+		os.Exit(1)
+	}
+
+	// --tag k=v (repeatable) merges user-supplied tags into the AMI. Overrides
+	// catalog tags on key collision so operators can re-tag a known image.
+	tagFlags, _ := cmd.Flags().GetStringSlice("tag")
+	for _, kv := range tagFlags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			fmt.Fprintf(os.Stderr, "Invalid --tag %q: expected key=value\n", kv)
+			os.Exit(1)
+		}
+		if image.Tags == nil {
+			image.Tags = map[string]string{}
+		}
+		image.Tags[k] = v
+	}
+
+	if image.Distro == "" {
+		fmt.Fprintf(os.Stderr, "Specify distro name")
+		os.Exit(1)
+	}
+
+	// Check version specified
+	if image.Version == "" {
+		fmt.Fprintf(os.Stderr, "Specify image version")
+		os.Exit(1)
+	}
+
+	if !supportedArchs[image.Arch] {
+		fmt.Fprintf(os.Stderr, "Unsupported architecture")
+		os.Exit(1)
+	}
+
+	if !supportedPlatforms[image.Platform] {
+		fmt.Fprintf(os.Stderr, "Unsupported platform")
+		os.Exit(1)
+	}
+
+	// Create the specified image directory
+	imagePath := fmt.Sprintf("%s/%s/%s/%s", imageDir, image.Distro, image.Version, image.Arch)
+
+	// 0770, matching the root:spinifex convention setup.sh gives the shared data
+	// dirs. At 0700 the first sudo import leaves a directory no group member can
+	// descend into, so every later import without sudo fails on mkdir.
+	if err := os.MkdirAll(imagePath, 0770); err != nil { //nolint:gosec // G301: shared image directory is group-writable (0770) so later imports by other spinifex group members can create entries; it is not world-accessible.
+		fmt.Fprintf(os.Stderr, "Error creating image directory %s: %v\n", imagePath, err)
+		os.Exit(1)
+	}
+
+	// Next, if the file is selected to download, fetch it and save to path
+	if localFile == "" {
+		// Download the file to the image path
+		filename := path.Base(image.URL)
+		imageFile = fmt.Sprintf("%s/%s", imagePath, filename)
+
+		// If image path exists, skip
+		if admin.FileExists(imageFile) && !forceCmd {
+			fmt.Printf("Image file already exists, skipping download, use --force to overwrite: %s\n", imageFile)
+		} else {
+			err := operatorprogress.DownloadFileWithProgress(image.URL, image.Name, imageFile, 0)
+
+			if err != nil {
+				fmt.Printf("Download failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
+	}
+
+	sourceDigest, err := importSource{
+		imageFile:      imageFile,
+		imageName:      imageName,
+		localFile:      localFile,
+		image:          image,
+		checksumPath:   checksumPath,
+		checksumAlgo:   checksumAlgo,
+		expectedDigest: expectedDigest,
+		skipVerify:     skipVerify,
+	}.resolveDigest(os.Stdout, os.Stderr)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	// An empty --tmp-dir scratches beside the catalog: disk-backed, unlike a
+	// tmpfs /tmp, and already root:spinifex 0770.
+	scratchRoot := ostmpDir
+	if scratchRoot == "" {
+		scratchRoot = imageDir
+	}
+
+	extractedImagePath, cleanupScratch, err := extractToScratch(imageFile, scratchRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// os.Exit skips deferred calls, so scratch is removed before any exit.
+	volumeId, err := registerExtractedImage(image, amiNameOverride, imagePath, extractedImagePath, sourceDigest)
+	cleanupScratch()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Image import complete. Image-ID (AMI): %s\n", volumeId)
+	fmt.Printf("✅ Source digest: %s:%s (%s)\n", sourceDigest.Algorithm, sourceDigest.Value, sourceDigest.Verification)
+}
+
+// extractToScratch extracts imageFile into a fresh hidden directory under
+// scratchRoot and returns the extracted path with a cleanup that removes that
+// directory. On error the directory is already removed.
+func extractToScratch(imageFile, scratchRoot string) (string, func(), error) {
+	scratchDir, err := os.MkdirTemp(scratchRoot, ".import-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create scratch dir under %s: %w", scratchRoot, err)
+	}
+	cleanup := func() {
+		if err := os.RemoveAll(scratchDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not remove scratch dir %s: %v\n", scratchDir, err)
+		}
+	}
+
+	extracted, err := imagecatalog.ExtractDiskImageFromFile(imageFile, scratchDir)
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("extract image: %w", err)
+	}
+	return extracted, cleanup, nil
+}
+
+// registerExtractedImage writes the AMI manifest into imagePath, imports
+// extractedImagePath into storage and registers the AMI, returning its ID.
+func registerExtractedImage(image imagecatalog.Images, amiNameOverride, imagePath, extractedImagePath string, sourceDigest ebsmetadata.ImageDigest) (string, error) {
+	imageStat, err := os.Stat(extractedImagePath)
+	if err != nil {
+		return "", fmt.Errorf("stat image: %w", err)
+	}
+
+	// Describe the image/AMI as the control-plane document it will become.
+	volumeId := awsidentifiers.GenerateResourceID("ami")
+	amiName := fmt.Sprintf("ami-%s-%s-%s", image.Distro, image.Version, image.Arch)
+	if amiNameOverride != "" {
+		amiName = amiNameOverride
+	}
+
+	ami := ebsmetadata.AMI{
+		ImageID:         volumeId,
+		Name:            amiName,
+		Description:     fmt.Sprintf("%s cloud image prepared for Spinifex", amiName),
+		Architecture:    image.Arch,
+		PlatformDetails: image.Platform,
+		CreationDate:    time.Now().UTC(),
+		RootDeviceType:  "ebs",
+		Virtualization:  "hvm",
+		ImageOwnerAlias: "system",
+		VolumeSizeGiB:   amiVolumeSizeGiB(imageStat.Size()),
+		SnapshotID:      admin.SnapPrefix(volumeId),
+		BootMode:        image.BootMode,
+		Distro:          image.Distro,
+		DistroFamily:    imagecatalog.DistroFamily(image.Distro),
+		SourceDigest:    &sourceDigest,
+	}
+
+	// Copy catalog-provided tags (e.g. spinifex:managed-by for system AMIs)
+	// onto the imported AMI so the UI can filter them out.
+	if len(image.Tags) > 0 {
+		ami.Tags = make(map[string]string, len(image.Tags))
+		maps.Copy(ami.Tags, image.Tags)
+	}
+
+	// Write the manifest to disk
+	// Save as JSON
+	jsonData, err := json.Marshal(ami)
+	if err != nil {
+		return "", fmt.Errorf("marshal manifest: %w", err)
+	}
+
+	manifestFilename := fmt.Sprintf("%s/%s.json", imagePath, ami.Name)
+	// Write to file
+	err = os.WriteFile(manifestFilename, jsonData, 0600)
+	if err != nil {
+		return "", fmt.Errorf("write manifest: %w", err)
+	}
+
+	appConfig, nc, err := loadConfigAndConnect()
+	if err != nil {
+		return "", fmt.Errorf("connect to the cluster: %w", err)
+	}
+	defer nc.Close()
+	node := appConfig.Nodes[appConfig.Node]
+
+	fmt.Println("Writing image to storage ...")
+	provider := ebsprovider.NewNATSProvider(nc, imageImportTimeout)
+	err = admin.ImportImage(context.Background(), provider, admin.ImportOpts{
+		VolumeID:         volumeId,
+		NodeID:           appConfig.Node,
+		SizeBytes:        safecast.Uint64ToInt64(ami.VolumeSizeGiB * bytesPerGiB),
+		AvailabilityZone: node.AZ,
+		SourcePath:       extractedImagePath,
+		Snapshot:         true,
+		Progress:         os.Stdout,
+	})
+	if err != nil {
+		return "", fmt.Errorf("import image: %w", err)
+	}
+
+	// admin.ImportImage only wrote the provider's half of the snapshot (its
+	// blocks); this writes the EC2 control plane's, without which
+	// DescribeSnapshots and GetAMISourceVolumeID cannot resolve the import.
+	metaStore := objectstore.NewS3ObjectStoreFromConfig(node.Predastore.Host, node.Predastore.Region, node.Predastore.AccessKey, node.Predastore.SecretKey)
+	if err := registerImportedAMISnapshot(metaStore, node.Predastore.Bucket, ami, node.AZ, node.Viperblock.EncryptionKeyFile != ""); err != nil {
+		return "", fmt.Errorf("imported %s but could not register its snapshot: %w", volumeId, err)
+	}
+
+	// The document is what DescribeImages enumerates, so it is written last:
+	// until it exists the AMI is not launchable, and an import that failed
+	// partway leaves no half-registered image behind.
+	ami.State = "available"
+	if err := ebsmetadata.NewStore(metaStore, node.Predastore.Bucket).PutAMI(context.Background(), ami); err != nil {
+		return "", fmt.Errorf("imported %s but could not register it: %w", volumeId, err)
+	}
+
+	return volumeId, nil
+}
+
+// registerImportedAMISnapshot writes the EC2 control plane's snapshot document
+// for a catalog-imported AMI. The provider-backed import path only writes the
+// storage backend's blocks under ami.SnapshotID, so without this a launch or
+// DescribeSnapshots call cannot resolve it. The volume ID matches ami.ImageID:
+// admin.ImportImage creates the volume under the AMI's own ID.
+func registerImportedAMISnapshot(store objectstore.ObjectStore, bucket string, ami ebsmetadata.AMI, az string, encrypted bool) error {
+	cfg := ebsmetadata.Snapshot{
+		SnapshotID:       ami.SnapshotID,
+		VolumeID:         ami.ImageID,
+		VolumeSize:       safecast.Uint64ToInt64(ami.VolumeSizeGiB),
+		State:            "completed",
+		Progress:         "100%",
+		StartTime:        time.Now(),
+		Description:      fmt.Sprintf("Imported AMI volume for %s", ami.Name),
+		Encrypted:        encrypted,
+		OwnerID:          awsidentifiers.GlobalAccountID,
+		AvailabilityZone: az,
+	}
+	if err := ebsmetadata.NewStore(store, bucket).PutSnapshot(context.Background(), cfg); err != nil {
+		return fmt.Errorf("register snapshot metadata: %w", err)
+	}
+	return nil
+}
+
+func runVolumesOrphansCmd(_ *cobra.Command, _ []string) {
+	appConfig, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+
+	orphans, err := admin.FindOrphanVolumes(
+		context.Background(),
+		ebsprovider.NewNATSProvider(nc, imageImportTimeout),
+		ebsmetadata.NewStore(store, node.Predastore.Bucket),
+	)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Orphan scan failed:", err)
+		os.Exit(1)
+	}
+	if len(orphans) == 0 {
+		fmt.Println("No orphaned volumes: every volume the provider holds has a control-plane record.")
+		return
+	}
+
+	fmt.Printf("%d orphaned volume(s) — held by the provider, unknown to the control plane:\n\n", len(orphans))
+	for _, orphan := range orphans {
+		fmt.Printf("  %s\n", orphan.VolumeID)
+		fmt.Printf("    handle:  %s\n", orphan.Handle)
+		if orphan.Derived {
+			fmt.Println("    note:    derived volume; its base volume is also unknown")
+		}
+	}
+	fmt.Println()
+	fmt.Println("Nothing was deleted. Each of these holds data that cannot be reached")
+	fmt.Println("through the EC2 API; removing one is a per-volume operator decision.")
+}
+
+func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+	force, _ := cmd.Flags().GetBool("force")
+	yes, _ := cmd.Flags().GetBool("yes")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+	bucket := node.Predastore.Bucket
+
+	preview, err := admin.PreviewRemoveSystemImage(store, bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
+		os.Exit(1)
+	}
+
+	// Print metadata block.
+	fmt.Println("About to remove system AMI:")
+	fmt.Println()
+	fmt.Printf("  Image ID:        %s\n", preview.ImageID)
+	switch {
+	case !preview.ConfigPresent && !preview.ConfigCorrupt:
+		fmt.Println("  Name:            <unknown — config.json missing>")
+		fmt.Println("  Owner:           <unknown>")
+	case preview.ConfigCorrupt:
+		fmt.Println("  Name:            <unknown — config.json corrupt>")
+		fmt.Println("  Owner:           <unknown>")
+	default:
+		fmt.Printf("  Name:            %s\n", preview.Name)
+		fmt.Printf("  Owner:           %s\n", preview.Owner)
+		if !preview.Created.IsZero() {
+			fmt.Printf("  Created:         %s\n", preview.Created.UTC().Format("2006-01-02T15:04:05Z"))
+		}
+	}
+	fmt.Printf("  Backing storage: %s/      (%d objects, %s)\n",
+		preview.ImageID, preview.AMIObjectCount, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.AMIBytesTotal)))
+	fmt.Printf("                   %s/ (%d objects, %s)\n",
+		admin.SnapPrefix(preview.ImageID), preview.SnapObjectCount, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.SnapBytesTotal)))
+	fmt.Println()
+
+	// Account-owned guard before salvage / dependents — the AWS-flow hint is
+	// the most useful thing to surface for this kind of mistake.
+	if preview.ConfigPresent && !preview.IsSystemOwned && !force {
+		fmt.Fprintf(os.Stderr,
+			"Refusing to remove: %s is account-owned (%s).\n"+
+				"Use 'aws ec2 deregister-image --image-id %s' followed by 'aws ec2 delete-snapshot ...'.\n",
+			preview.ImageID, preview.Owner, preview.ImageID)
+		os.Exit(1)
+	}
+
+	if !preview.ConfigPresent && !force {
+		fmt.Fprintln(os.Stderr, "AMI config.json missing or corrupt; re-run with --force to salvage backing blocks.")
+		os.Exit(1)
+	}
+
+	if !preview.Dependents.Empty() && !force {
+		fmt.Fprintln(os.Stderr, "Refusing to remove: dependent resources reference this image.")
+		printDependents(os.Stderr, preview.Dependents)
+		fmt.Fprintln(os.Stderr, "Remove them first (e.g. 'aws ec2 terminate-instances', 'aws ec2 delete-snapshot', 'aws ec2 deregister-image') or re-run with --force.")
+		os.Exit(1)
+	}
+
+	if force && (!preview.ConfigPresent || !preview.Dependents.Empty()) {
+		fmt.Println("⚠️  --force: skipping dependency check and ownership check.")
+		if !preview.Dependents.Empty() {
+			printDependents(os.Stdout, preview.Dependents)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println("This is permanent and cannot be undone.")
+	if !yes {
+		fmt.Print("Type 'yes' to proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	res, err := admin.RemoveSystemImage(store, bucket, admin.RemoveImageOpts{
+		ImageID: imageID,
+		Force:   force,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Remove failed:", err)
+		os.Exit(1)
+	}
+
+	// BytesDeleted is logical: predastore reclaims the underlying disk space
+	// asynchronously via background compaction, not at delete time.
+	fmt.Printf("✅ Removed AMI %s (%d objects, %s marked for deletion; disk space is reclaimed by background compaction).\n",
+		imageID, res.ObjectsDeleted, operatorprogress.HumanBytes(safecast.Int64ToUint64(res.BytesDeleted)))
+}
+
+func printDependents(w io.Writer, d admin.Dependents) {
+	if len(d.Volumes) > 0 {
+		fmt.Fprintf(w, "  Volumes (%d):\n", len(d.Volumes))
+		for _, v := range d.Volumes {
+			fmt.Fprintf(w, "    - %s\n", v)
+		}
+	}
+	if len(d.Snapshots) > 0 {
+		fmt.Fprintf(w, "  Snapshots (%d):\n", len(d.Snapshots))
+		for _, s := range d.Snapshots {
+			fmt.Fprintf(w, "    - %s\n", s)
+		}
+	}
+	if len(d.AMIs) > 0 {
+		fmt.Fprintf(w, "  AMIs (%d):\n", len(d.AMIs))
+		for _, a := range d.AMIs {
+			fmt.Fprintf(w, "    - %s\n", a)
+		}
+	}
+}
+
+func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+	yes, _ := cmd.Flags().GetBool("yes")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+	bucket := node.Predastore.Bucket
+
+	// Read current metadata for the confirmation prompt.
+	meta, err := legacyadmin.GetAMIMetadata(store, bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("About to promote AMI to system image:")
+	fmt.Println()
+	fmt.Printf("  Image ID:       %s\n", imageID)
+	fmt.Printf("  Name:           %s\n", meta.Name)
+	fmt.Printf("  Current owner:  %s\n", meta.ImageOwnerAlias)
+	fmt.Printf("  New owner:      %s\n", legacyadmin.SystemOwnerAlias)
+	if !meta.CreationDate.IsZero() {
+		fmt.Printf("  Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	fmt.Println()
+	fmt.Println("After promotion this AMI will be visible to all accounts.")
+
+	if !yes {
+		fmt.Print("Type 'yes' to proceed: ")
+		reader := bufio.NewReader(os.Stdin)
+		answer, _ := reader.ReadString('\n')
+		if strings.TrimSpace(answer) != "yes" {
+			fmt.Println("Aborted.")
+			return
+		}
+	}
+
+	if _, err := legacyadmin.PromoteSystemImage(store, bucket, legacyadmin.PromoteImageOpts{ImageID: imageID}); err != nil {
+		fmt.Fprintln(os.Stderr, "Promote failed:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, legacyadmin.SystemOwnerAlias)
+}
+
+func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
+	imageID, _ := cmd.Flags().GetString("image-id")
+
+	cfgFile, _ := cmd.Flags().GetString("config")
+	if cfgFile == "" {
+		cfgFile = DefaultConfigFile()
+	}
+
+	appConfig, err := config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		os.Exit(1)
+	}
+
+	node := appConfig.Nodes[appConfig.Node]
+	store := objectstore.NewS3ObjectStoreFromConfig(
+		node.Predastore.Host,
+		node.Predastore.Region,
+		node.Predastore.AccessKey,
+		node.Predastore.SecretKey,
+	)
+
+	meta, err := legacyadmin.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to describe AMI:", err)
+		os.Exit(1)
+	}
+
+	printAMIDescription(os.Stdout, meta)
+}
+
+// printAMIDescription writes an AMI's metadata and source digest for an operator.
+func printAMIDescription(w io.Writer, meta ebsmetadata.AMI) {
+	fmt.Fprintf(w, "Image ID:       %s\n", meta.ImageID)
+	fmt.Fprintf(w, "Name:           %s\n", meta.Name)
+	fmt.Fprintf(w, "Owner:          %s\n", meta.ImageOwnerAlias)
+	if !meta.CreationDate.IsZero() {
+		fmt.Fprintf(w, "Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
+	}
+	fmt.Fprintf(w, "Boot mode:      %s\n", meta.BootMode)
+	fmt.Fprintf(w, "Architecture:   %s\n", meta.Architecture)
+
+	d := meta.SourceDigest
+	if d == nil {
+		fmt.Fprintln(w, "Source digest:  not recorded (imported before digest recording)")
+		return
+	}
+	fmt.Fprintf(w, "Source digest:  %s:%s\n", d.Algorithm, d.Value)
+	if d.Source != "" {
+		fmt.Fprintf(w, "Verification:   %s (%s)\n", d.Verification, d.Source)
+	} else {
+		fmt.Fprintf(w, "Verification:   %s\n", d.Verification)
+	}
+	fmt.Fprintf(w, "Source file:    %s\n", d.Filename)
+}
+
+// List remote images available.
+func runimagesListCmd(cmd *cobra.Command, args []string) {
+	//fmt.Println(availableImages)
+
+	tableData := pterm.TableData{
+		{"NAME", "DISTRO", "VERSION", "ARCH", "BOOT"},
+	}
+
+	// Sort A→Z then iterate.
+	keys := slices.Sorted(maps.Keys(imagecatalog.AvailableImages))
+	for _, k := range keys {
+		img := imagecatalog.AvailableImages[k]
+
+		//for _, img := range imagecatalog.AvailableImages {
+		tableData = append(tableData, []string{img.Name, img.Distro, img.Version, img.Arch, img.BootMode})
+	}
+
+	// Render discards its write error, so write the table here to fail on it.
+	rendered, err := pterm.DefaultTable.WithHasHeader().WithLeftAlignment().WithData(tableData).Srender()
+	if err == nil {
+		_, err = fmt.Fprintln(os.Stdout, rendered)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: render table: %v\n", err)
+		os.Exit(1)
+	}
+
+	pterm.Println("To install a selected image as an AMI use:")
+
+	pterm.Println("spx admin images import --name <image-name>")
+}
+
+// validateNodeCount accepts the cluster sizes Spinifex supports: one server, or
+// three and up.
+//
+// Two is rejected rather than allowed and warned about. On two servers OVN runs
+// standalone, the storage metadata quorum has no majority to lose, and the
+// control plane's own KV state has no replica count that works — one replica
+// disappears with its node, and two stop accepting writes when either goes. A
+// cluster that cannot survive the event it was built for is worth refusing at the
+// point someone asks for it.
+func validateNodeCount(nodes int) error {
+	if nodes < 1 {
+		return fmt.Errorf("a cluster needs at least one node, got %d", nodes)
+	}
+	if nodes > 1 && nodes < clustersize.MinHANodes {
+		return fmt.Errorf("%d nodes is not a supported cluster size: use 1 for a single server, or %d and up for a cluster that can survive losing one",
+			nodes, clustersize.MinHANodes)
+	}
+	return nil
+}
+
+// TODO: Move all logic to a module, use minimal application logic in viper commands.
+func runAdminInit(cmd *cobra.Command, args []string) {
+	if os.Getuid() != 0 {
+		fmt.Fprintln(os.Stderr, "⚠️  Warning: 'spx admin init' is not running as root.")
+		fmt.Fprintln(os.Stderr, "   Service user setup and CA certificate installation will be skipped.")
+		fmt.Fprintln(os.Stderr, "   For production deployments, run with sudo.")
+	}
+
+	force, _ := cmd.Flags().GetBool("force")
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	spxRoot, _ := cmd.Flags().GetString("spinifex-dir")
+	region, _ := cmd.Flags().GetString("region")
+	az, _ := cmd.Flags().GetString("az")
+	node, _ := cmd.Flags().GetString("node")
+	nodes, _ := cmd.Flags().GetInt("nodes")
+	port, _ := cmd.Flags().GetInt("port")
+	bindIP, _ := cmd.Flags().GetString("bind")
+	advertiseFlag, _ := cmd.Flags().GetString("advertise")
+	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
+	clusterRoutesStr, _ := cmd.Flags().GetString("cluster-routes")
+	var clusterRoutes []string
+	if clusterRoutesStr != "" {
+		clusterRoutes = strings.Split(clusterRoutesStr, ",")
+	}
+	predastoreNodesStr, _ := cmd.Flags().GetString("predastore-nodes")
+	formationTimeoutStr, _ := cmd.Flags().GetString("formation-timeout")
+	tokenTTLStr, _ := cmd.Flags().GetString("token-ttl")
+	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
+	clusterName, _ := cmd.Flags().GetString("cluster-name")
+	services, _ := cmd.Flags().GetStringSlice("services")
+
+	// Rejected before anything is written, because a two-node cluster has no
+	// correct answer rather than a worse one: no layer of the stack has a
+	// majority to lose, and no replica count for its state both survives a node
+	// going away and still accepts writes.
+	if err := validateNodeCount(nodes); err != nil {
+		fmt.Fprintf(os.Stderr, "--nodes: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Optional operator email — validated up-front so a bad address fails
+	// before we touch any config state. Empty is allowed here; reset / repeat
+	// inits on a box that already has an email in /etc/spinifex/spinifex.toml
+	// should preserve it (see config-preservation below).
+	email, _ := cmd.Flags().GetString("email")
+	email = strings.TrimSpace(email)
+	if email != "" {
+		if err := admin.ValidateEmail(email); err != nil {
+			fmt.Fprintf(os.Stderr, "--email: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// External networking flags
+	externalMode, _ := cmd.Flags().GetString("external-mode")
+	externalIface, _ := cmd.Flags().GetString("external-iface")
+	externalSource, _ := cmd.Flags().GetString("external-source")
+	externalBindBridge, _ := cmd.Flags().GetString("external-bind-bridge")
+	externalPool, _ := cmd.Flags().GetString("external-pool")
+	externalGateway, _ := cmd.Flags().GetString("external-gateway")
+	externalPrefixLen, _ := cmd.Flags().GetInt("external-prefix-len")
+	gatewayIP, _ := cmd.Flags().GetString("gateway-ip")
+	gpuPassthrough, _ := cmd.Flags().GetBool("gpu-passthrough")
+	ipsecEnabled, _ := cmd.Flags().GetBool("ipsec")
+
+	// Fire telemetry in background (completes during init work, waited at end)
+	noTelemetry, _ := cmd.Flags().GetBool("no-telemetry")
+	if os.Getenv("SPX_NO_TELEMETRY") == "1" {
+		noTelemetry = true
+	}
+	var telemetryWg sync.WaitGroup
+	defer telemetryWg.Wait()
+	if !noTelemetry {
+		telemetryWg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			admin.SendTelemetry(ctx, admin.TelemetryPayload{
+				MachineID:    admin.ReadMachineID(),
+				Event:        "init",
+				Region:       region,
+				AZ:           az,
+				Node:         node,
+				Nodes:        nodes,
+				BindIP:       bindIP,
+				Version:      Version,
+				ExternalMode: externalMode,
+				Email:        email,
+			})
+		})
+	}
+
+	// Auto-detect network topology
+	var poolStart, poolEnd string
+	var detectedNet *admin.DetectedNetwork
+	detected, err := admin.DetectNetwork()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Network auto-detection failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   Use --external-mode=nat on a non-bridgeable uplink, or specify --external-* flags manually.\n")
+	} else {
+		detectedNet = detected
+
+		// Print detected topology
+		fmt.Println("\n🔍 Detected network topology:")
+		fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", "Interface", "IP", "Subnet", "Gateway", "Role")
+		for _, iface := range detected.Interfaces {
+			gw := "—"
+			if iface.Gateway != "" {
+				gw = iface.Gateway
+			}
+			fmt.Printf("  %-14s %-18s %-20s %-16s %s\n", iface.Name, iface.IP, iface.Subnet, gw, strings.ToUpper(iface.Role))
+		}
+		if detected.LANCount == 0 {
+			fmt.Println("\n  Mode: single-NIC (veth-bridged external)")
+		} else {
+			fmt.Printf("\n  Mode: %d LAN + 1 WAN (veth-bridged external)\n", detected.LANCount)
+		}
+
+		// Apply auto-detected values when flags not explicitly set
+		if detected.WAN != nil {
+			if externalIface == "" {
+				externalIface = detected.WAN.Name
+			}
+			if externalGateway == "" {
+				externalGateway = detected.WAN.Gateway
+			}
+			if !cmd.Flags().Changed("external-prefix-len") {
+				externalPrefixLen = detected.WAN.PrefixLen
+			}
+
+			// Default mode: always "pool". Source defaults to "static"; if
+			// --external-pool is omitted the validator below will error with
+			// a SuggestPoolRange hint.
+			if externalMode == "" && !cmd.Flags().Changed("external-mode") {
+				if isNonBridgeableUplink(detected.WAN.Name) {
+					fmt.Fprintf(os.Stderr, "\n❌ Detected WAN interface %s cannot be bridged (WiFi/cellular/PPP).\n", detected.WAN.Name)
+					fmt.Fprintf(os.Stderr, "   Use routed NAT mode instead:\n")
+					fmt.Fprintf(os.Stderr, "     ./scripts/setup-ovn.sh --management --nat-uplink\n")
+					fmt.Fprintf(os.Stderr, "     spx admin init --external-mode=nat\n")
+					os.Exit(1)
+				}
+				externalMode = "pool"
+			}
+		}
+	}
+	// Validate external networking flags
+	if externalMode != "" && externalMode != "pool" && externalMode != "nat" {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-mode must be 'pool', 'nat', or empty, got: %s\n", externalMode)
+		os.Exit(1)
+	}
+	// A public pool alongside nat's transit pool restores EIP / public-subnet
+	// parity where the operator has spare LAN IPs; without these flags nat
+	// stays Tier-1-only (host-jumpbox access, no public IPs).
+	natPublicPool := externalMode == "nat" && (externalPool != "" || externalSource != "")
+	// natPublicGateway keeps the upstream gateway for the public pool before
+	// the transit segment claims externalGateway below.
+	natPublicGateway := externalGateway
+	if externalMode == "nat" {
+		// Verified on three OCI nodes 2026-09-26: each node delivers its own
+		// instances' public IPs, inbound and outbound. Still flagged because no
+		// nightly cell covers multi-node nat yet.
+		if nodes >= 2 {
+			fmt.Fprintf(os.Stderr, "⚠️  --external-mode=nat on %d nodes is NEW.\n", nodes)
+			fmt.Fprintf(os.Stderr, "   Public IPs are delivered by the node running the instance; default egress stays on the VPC's gateway chassis.\n")
+			fmt.Fprintf(os.Stderr, "   Verified by hand on three nodes, but not yet covered by a nightly cell.\n")
+			fmt.Fprintf(os.Stderr, "   Check with: ip route show dev spx-nat-host — exactly one node should hold each public address.\n")
+		}
+		if !natPublicPool && (externalBindBridge != "" || gatewayIP != "") {
+			fmt.Fprintf(os.Stderr, "❌ Error: --external-bind-bridge/--gateway-ip require --external-pool or --external-source in --external-mode=nat\n")
+			os.Exit(1)
+		}
+		if natPublicPool {
+			// DHCP DORA in nat mode binds the uplink interface itself — there
+			// is no br-wan (nothing is bridged in routed mode).
+			src, start, end, bb, err := resolvePublicPoolFlags(externalSource, externalPool, externalBindBridge, natPublicGateway, externalIface)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+				os.Exit(1)
+			}
+			externalSource, poolStart, poolEnd, externalBindBridge = src, start, end, bb
+		}
+		// The transit segment is fixed: the host veth owns the gateway IP and
+		// masquerades the /24.
+		externalGateway = host.NATTransitGatewayIP
+	}
+	if externalMode == "pool" {
+		src, start, end, bb, err := resolvePublicPoolFlags(externalSource, externalPool, externalBindBridge, externalGateway, "br-wan")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+			if strings.Contains(err.Error(), "--external-pool is required") && detectedNet != nil && detectedNet.WAN != nil {
+				sugStart, sugEnd := admin.SuggestPoolRange(detectedNet.WAN)
+				fmt.Fprintf(os.Stderr, "   Suggested: --external-pool=%s-%s\n", sugStart, sugEnd)
+			}
+			os.Exit(1)
+		}
+		externalSource, poolStart, poolEnd, externalBindBridge = src, start, end, bb
+	}
+	if externalGateway != "" && net.ParseIP(externalGateway) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", externalGateway)
+		os.Exit(1)
+	}
+	if natPublicGateway != "" && net.ParseIP(natPublicGateway) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-gateway is not a valid IP: %s\n", natPublicGateway)
+		os.Exit(1)
+	}
+	if gatewayIP != "" && net.ParseIP(gatewayIP) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: --gateway-ip is not a valid IP: %s\n", gatewayIP)
+		os.Exit(1)
+	}
+
+	// Validate IP address format
+	if net.ParseIP(bindIP) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP address for --bind: %s\n", bindIP)
+		os.Exit(1)
+	}
+
+	// Resolve the off-host advertise IP before detecting DNS. DetectNetwork may
+	// have failed earlier, so retry lazily when the listener still needs a WAN IP.
+	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") && detectedNet == nil {
+		if d, derr := admin.DetectNetwork(); derr == nil {
+			detectedNet = d
+		}
+	}
+	advertiseIP, err := resolveAdvertiseIP(bindIP, advertiseFlag, detectedNet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Exclude the node-local Northstar listener from its own upstreams. On a
+	// forced re-init, resolvconf may still list this address first; forwarding it
+	// back to Northstar creates a recursive DNS loop.
+	var dnsServers []string
+	if externalMode != "" {
+		dnsServers = detectDNSServers(externalIface, advertiseIP)
+		if len(dnsServers) > 0 {
+			fmt.Printf("  DNS servers: %s\n", strings.Join(dnsServers, ", "))
+		}
+	}
+
+	// Assemble the external pool blocks rendered into spinifex.toml.
+	var externalPools []formation.PoolData
+	switch externalMode {
+	case "nat":
+		externalPools = append(externalPools, formation.PoolData{
+			Name: host.NATTransitPoolName, Gateway: host.NATTransitGatewayIP,
+			PrefixLen: 24, DNSServers: dnsServers,
+			GwLrpRangeStart: host.NATTransitGwLrpStart, GwLrpRangeEnd: host.NATTransitGwLrpEnd,
+		})
+		if natPublicPool {
+			// WiFi/WWAN uplinks drop frames with foreign source MACs, so DHCP
+			// leases must go out with the interface's own MAC.
+			dhcpMAC := ""
+			if externalSource == "dhcp" && isNonBridgeableUplink(externalBindBridge) {
+				dhcpMAC = "interface"
+			}
+			externalPools = append(externalPools, formation.PoolData{
+				Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
+				DHCPMAC: dhcpMAC, Start: poolStart, End: poolEnd, Gateway: natPublicGateway,
+				GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
+			})
+		}
+	case "pool":
+		externalPools = append(externalPools, formation.PoolData{
+			Name: "wan", Source: externalSource, BindBridge: externalBindBridge,
+			Start: poolStart, End: poolEnd, Gateway: externalGateway,
+			GatewayIP: gatewayIP, PrefixLen: externalPrefixLen, DNSServers: dnsServers,
+		})
+	}
+
+	// Validate port range
+	if port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "❌ Error: Port must be between 1 and 65535, got: %d\n", port)
+		os.Exit(1)
+	}
+
+	// Default cluster-bind to bind IP if not specified
+	if clusterBind == "" {
+		clusterBind = bindIP
+	}
+
+	fmt.Printf("Initializing Spinifex with bind IP: %s, advertise IP: %s, port: %d\n", bindIP, advertiseIP, port)
+
+	// Default config directory
+	if configDir == "" {
+		configDir = DefaultConfigDir()
+	}
+
+	fmt.Println("🚀 Initializing Spinifex platform...")
+	fmt.Printf("Configuration directory: %s\n\n", configDir)
+
+	// Check if already initialized
+	spinifexTomlPath := filepath.Join(configDir, "spinifex.toml")
+	if !force && admin.FileExists(spinifexTomlPath) {
+		fmt.Println("⚠️  Spinifex already initialized!")
+		fmt.Printf("Config file exists: %s\n", spinifexTomlPath)
+		fmt.Println("\nTo re-initialize, run with --force flag:")
+		fmt.Println("  spx admin init --force")
+		os.Exit(0)
+	}
+
+	if spxRoot == "" {
+		spxRoot = DefaultDataDir()
+	}
+	discardJetStream, _ := cmd.Flags().GetBool("discard-jetstream")
+	if err := checkInitJetStreamStore(jetStreamStoreDir(spxRoot), nodes, discardJetStream); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Preserve the previously-captured operator email across --force re-inits
+	// when --email is omitted (e.g. reset-dev-env.sh workflows). Without this
+	// a reset would silently blank the address.
+	if email == "" && admin.FileExists(spinifexTomlPath) {
+		email = admin.ReadOperatorEmail(spinifexTomlPath)
+	}
+
+	// Create config directory
+	if err := EnsureConfigDir(configDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Created config directory: %s\n", configDir)
+
+	// Identity and crypto material is load-or-generate: a fresh install mints a
+	// new identity bundle, but a --force re-init preserves the existing one so
+	// data sealed under it (NATS KV secrets, sealed fragments, encrypted volumes)
+	// stays decryptable.
+	masterKey, masterKeyExisted, err := ensureMasterKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error preparing IAM master key: %v\n", err)
+		os.Exit(1)
+	}
+	accountID := awsidentifiers.GlobalAccountID
+	bootstrapDir := filepath.Join(spxRoot, "awsgw")
+
+	var accessKey, secretKey, adminAccessKey, adminSecretKey string
+	if masterKeyExisted {
+		// Preserve path: reuse the existing identity. The system credentials must
+		// match what seeded the NATS KV `system` secret, so load them rather than
+		// mint new ones.
+		accessKey, secretKey, err = loadSystemCredentials(configDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading preserved system credentials: %v\n", err)
+			os.Exit(1)
+		}
+
+		// The admin pair is minted afresh rather than preserved, because it cannot
+		// be read back: bootstrap.json is consumed and deleted by awsgw on first
+		// start. The half of the identity that survives a re-init is on local disk,
+		// but the IAM store lives in NATS and predastore — so forming a cluster out
+		// of already-initialized nodes rebuilds it and the old access key stops
+		// existing. Carrying an empty pair through instead is worse than useless:
+		// it reaches every joiner's bootstrap.json, where seeding rejects the empty
+		// key ID and awsgw fails to start on every restart, forever.
+		bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
+			os.Exit(1)
+		}
+		adminAccessKey = bootstrapResult.AdminAccessKey
+		adminSecretKey = bootstrapResult.AdminSecretKey
+
+		fmt.Println("\n🔐 Preserved existing identity (master key and CA unchanged)")
+		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+		fmt.Printf("   Admin credentials reissued in %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
+	} else {
+		// Fresh install: mint system + admin credentials and seed the bootstrap files.
+		accessKey, err = legacyadmin.GenerateAWSAccessKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
+			os.Exit(1)
+		}
+		secretKey, err = legacyadmin.GenerateAWSSecretKey()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
+			os.Exit(1)
+		}
+		bootstrapResult, err := writeBootstrapFiles(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing bootstrap files: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeSystemCredentials(configDir, accessKey, secretKey); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing system credentials: %v\n", err)
+			os.Exit(1)
+		}
+		adminAccessKey = bootstrapResult.AdminAccessKey
+		adminSecretKey = bootstrapResult.AdminSecretKey
+		fmt.Println("\n🔐 Generated IAM master key")
+		fmt.Printf("   Master key: %s\n", filepath.Join(configDir, "master.key"))
+		fmt.Printf("   Bootstrap: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
+		fmt.Printf("   System creds: %s\n", filepath.Join(configDir, "system-credentials.json"))
+	}
+
+	// Predastore encryption key is per-node and never transmitted; load-or-generate
+	// so the service has it on first start and a re-init keeps sealed fragments.
+	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error preparing predastore encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔐 Predastore encryption key ready (per-node, never transmitted)")
+	fmt.Printf("   Key: %s\n", predastoreKeyPath)
+
+	// Viperblock at-rest encryption key is cluster-wide; load-or-generate so a
+	// re-init keeps the existing key (and its sealed volumes). The bytes feed the
+	// multi-node leader's key distribution below.
+	viperblockKey, viperblockKeyPath, err := ensureViperblockEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error preparing viperblock encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔐 Viperblock at-rest encryption key ready")
+	fmt.Printf("   Key: %s\n", viperblockKeyPath)
+
+	if !masterKeyExisted {
+		// Never echo the keys: on an ISO install stdout is the systemd journal,
+		// which persists them for the life of the node. They are recoverable from
+		// bootstrap.json and ~/.aws/credentials.
+		fmt.Printf("\n🔑 Generated admin credentials (written to ~/.aws/credentials)\n")
+		fmt.Printf("   Account:     %s (%s)\n", legacyadmin.DefaultAccountName(), legacyadmin.DefaultAccountID())
+		fmt.Printf("   AWS Profile: spinifex\n")
+	}
+
+	// Generate SSL certificates (with bind IP in SANs for multi-node support)
+	certPath := admin.GenerateCertificatesIfNeeded(configDir, force, bindIP, region, config.DefaultAWSServicesDomain)
+
+	// Generate per-node IPsec peer cert when cluster-wide IPsec is enabled
+	// (default true). Reuses the cluster CA — no intermediate strongSwan PKI.
+	if ipsecEnabled {
+		caCertPath := filepath.Join(configDir, "ca.pem")
+		caKeyPath := filepath.Join(configDir, "ca.key")
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
+	}
+
+	// Install CA certificate into system trust store
+	installCACertificate(filepath.Join(configDir, "ca.pem"))
+
+	// Generate NATS token
+	natsToken, err := admin.GenerateNATSToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating NATS token: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n🔒 Generated NATS authentication token")
+
+	if spxRoot == "" {
+		spxRoot = DefaultDataDir()
+	}
+	spxRoot = filepath.Clean(spxRoot)
+
+	// Generate dedicated, bucket-scoped credentials for the northstar DNS
+	// service. Rendered into predastore.toml ([[auth]]) and northstar.toml so
+	// the resolver reads zone files read-only from its own S3 bucket.
+	//
+	// Generated above the multi-node dispatch because the pair is cluster-wide:
+	// a node's predastore only honours the keys rendered into its own config, so
+	// every node must present this same pair to read the distributed zone bucket.
+	northstarAccessKey, err := legacyadmin.GenerateAWSAccessKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarSecretKey, err := legacyadmin.GenerateAWSSecretKey()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
+		os.Exit(1)
+	}
+	northstarCreds := admin.NorthstarCredentials{
+		AccessKey: northstarAccessKey,
+		SecretKey: northstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}
+
+	// Determine if this is a multi-node formation. Operator intent comes from
+	// --nodes, not from whether --bind was left at the 0.0.0.0 default.
+	isMultiNode := nodes >= 2
+
+	if isMultiNode {
+		// Build cluster-wide network config for propagation to joining nodes.
+		// Always emit so the IPSecEnabled flag reaches joiners even when
+		// external networking is disabled.
+		networkConfig := &formation.NetworkConfig{
+			IPSecEnabled: ipsecEnabled,
+		}
+		if externalMode != "" {
+			bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
+			bootstrapSubnetId := awsidentifiers.GenerateResourceID("subnet")
+			bootstrapIgwId := awsidentifiers.GenerateResourceID("igw")
+			networkConfig.ExternalMode = externalMode
+			networkConfig.Pools = externalPools
+			networkConfig.PoolDNSServers = dnsServers
+			networkConfig.BootstrapAccountId = legacyadmin.DefaultAccountID()
+			networkConfig.BootstrapVpcId = bootstrapVpcId
+			networkConfig.BootstrapSubnetId = bootstrapSubnetId
+			networkConfig.BootstrapIgwId = bootstrapIgwId
+			networkConfig.BootstrapCidr = ec2vpc.DefaultVPCCidr
+			networkConfig.BootstrapSubnetCidr = ec2vpc.DefaultSubnetCidr
+		}
+
+		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
+			masterKey, viperblockKey, natsToken, clusterName,
+			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, networkConfig, northstarCreds)
+		return
+	}
+
+	// --- Single-node path (existing behavior) ---
+
+	// Create config files from embedded templates
+	fmt.Println("\n📝 Creating configuration files...")
+
+	dirs, err := createConfigSubdirs(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config subdirectories: %v\n", err)
+		os.Exit(1)
+	}
+
+	portStr := strconv.Itoa(port)
+
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
+	// Parse multi-node predastore configuration. A single-node install is host
+	// 1, the only [[host]] its predastore.toml declares; the multi-node path
+	// below replaces this with the host matching this machine.
+	predastoreHostID := 1
+	if predastoreNodesStr != "" {
+		ips := strings.Split(predastoreNodesStr, ",")
+		if len(ips) < 2 {
+			fmt.Fprintf(os.Stderr, "❌ Error: --predastore-nodes requires at least 2 IPs, got %d\n", len(ips))
+			os.Exit(1)
+		}
+
+		var predastoreNodes []formation.PredastoreNodeConfig
+		for i, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			if net.ParseIP(ip) == nil {
+				fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP in --predastore-nodes: %s\n", ip)
+				os.Exit(1)
+			}
+			predastoreNodes = append(predastoreNodes, formation.PredastoreNodeConfig{
+				ID:   i + 1,
+				Host: ip,
+			})
+		}
+
+		// One machine is one predastore host, so the node list index that
+		// matches this bind IP is this node's host ID.
+		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		if predastoreHostID == 0 {
+			fmt.Fprintf(os.Stderr, "❌ Error: --bind IP %s not found in --predastore-nodes list\n", bindIP)
+			os.Exit(1)
+		}
+
+		// Generate multi-node predastore.toml
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, spxRoot, bindIP, compactionInterval, northstarCreds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
+			os.Exit(1)
+		}
+
+		predastorePath := filepath.Join(dirs.Predastore, "predastore.toml")
+		if err := os.WriteFile(predastorePath, []byte(predastoreContent), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing predastore config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
+	}
+
+	// Pre-generate default VPC/subnet/IGW IDs for bootstrap config.
+	// These are written to [bootstrap] in spinifex.toml so vpcd can
+	// create OVN topology on first boot. The daemon uses the same IDs
+	// when it creates the records in NATS KV via EnsureDefaultVPC.
+	bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
+	bootstrapSubnetId := awsidentifiers.GenerateResourceID("subnet")
+	bootstrapIgwId := awsidentifiers.GenerateResourceID("igw")
+
+	configSettings := admin.ConfigSettings{
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		AccountID: accountID,
+		Region:    region,
+		NatsToken: natsToken,
+		DataDir:   spxRoot,
+		LogDir:    LogDirFor(spxRoot),
+		ConfigDir: configDir,
+
+		Node:          node,
+		Az:            az,
+		Port:          portStr,
+		BindIP:        bindIP,
+		AdvertiseIP:   advertiseIP,
+		ClusterBindIP: clusterBind,
+		ClusterRoutes: clusterRoutes,
+		ClusterName:   clusterName,
+
+		PredastoreHostID:          predastoreHostID,
+		PredastoreAdminPort:       admin.PredastoreAdminPort,
+		CompactionIntervalSeconds: compactionInterval,
+		Services:                  services,
+
+		OVNNBAddr: "tcp:127.0.0.1:6641",
+		OVNSBAddr: "tcp:127.0.0.1:6642",
+
+		ExternalMode:  externalMode,
+		ExternalIface: externalIface,
+		BridgeMode:    bridgeModeFor(externalMode),
+		Pools:         externalPools,
+
+		OperatorEmail:       email,
+		BootstrapAccountId:  legacyadmin.DefaultAccountID(),
+		BootstrapVpcId:      bootstrapVpcId,
+		BootstrapSubnetId:   bootstrapSubnetId,
+		BootstrapIgwId:      bootstrapIgwId,
+		BootstrapCidr:       ec2vpc.DefaultVPCCidr,
+		BootstrapSubnetCidr: ec2vpc.DefaultSubnetCidr,
+
+		GPUPassthrough: gpuPassthrough,
+		IPSecEnabled:   ipsecEnabled,
+
+		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
+		PoolDNSServers:          dnsServers,
+	}
+
+	// Print external networking summary
+	if externalMode == "nat" {
+		if natPublicPool {
+			fmt.Printf("\n📡 External networking: nat (routed) with public pool — EIPs enabled\n")
+			if externalSource == "static" {
+				fmt.Printf("  Public pool:   %s - %s (source: static)\n", poolStart, poolEnd)
+			} else {
+				fmt.Printf("  Public pool:   dhcp via %s\n", externalBindBridge)
+			}
+		} else {
+			fmt.Printf("\n📡 External networking: nat (routed; no public pool configured yet)\n")
+		}
+		fmt.Printf("  Transit:       %s via %s (host masquerades out any uplink)\n", host.NATTransitCIDR, host.NATTransitHostEnd)
+		fmt.Printf("  Host setup:    ./scripts/setup-ovn.sh --nat-uplink (run before starting services)\n")
+	} else if externalMode != "" {
+		fmt.Printf("\n📡 External networking: %s\n", externalMode)
+		fmt.Printf("  WAN interface: %s\n", externalIface)
+		switch externalSource {
+		case "static":
+			fmt.Printf("  Source:        static (IP range)\n")
+			fmt.Printf("  IP pool:       %s - %s\n", poolStart, poolEnd)
+			fmt.Printf("  ⚠️  Ensure %s-%s is excluded from your router's DHCP range.\n", poolStart, poolEnd)
+		case "dhcp":
+			fmt.Printf("  Source:        dhcp (upstream DHCP server)\n")
+			fmt.Printf("  Bind bridge:   %s\n", externalBindBridge)
+		}
+		if gatewayIP != "" {
+			fmt.Printf("  Gateway IP:    %s (static)\n", gatewayIP)
+		}
+	}
+
+	// Generate config files
+	if err := generateAndWriteConfigs(dirs, spinifexTomlPath, configSettings, predastoreNodesStr != ""); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating configuration files: %v\n", err)
+		os.Exit(1)
+	}
+
+	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
+	// Write node.conf so spx admin banner works on source installs (not just ISO).
+	nodeHostname, _ := os.Hostname()
+	if nodeHostname == "" {
+		nodeHostname = node
+	}
+	nodeConfPath := filepath.Join(configDir, "node.conf")
+	if err := writeNodeConf(nodeConfPath, map[string]string{
+		"MANAGEMENT_IP":    advertiseIP,
+		"MANAGEMENT_IFACE": "br-wan",
+		"NODE_HOSTNAME":    nodeHostname,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not write %s: %v\n", nodeConfPath, err)
+	}
+
+	// Print success message
+	fmt.Println("\n🎉 Spinifex initialization complete!")
+	fmt.Println()
+	fmt.Println("🔗 Configuration:")
+	fmt.Printf("   Config file: %s\n", spinifexTomlPath)
+	fmt.Printf("   Data directory: %s\n", spxRoot)
+	fmt.Printf("   Bind IP: %s (listen)\n", bindIP)
+	fmt.Printf("   Advertise IP: %s (off-host dial target)\n", advertiseIP)
+	fmt.Printf("   Loopback: 127.0.0.1 (in-process dial target)\n")
+	fmt.Println()
+}
+
+// runAdminInitMultiNode handles the multi-node formation path for admin init.
+// It starts a formation server, registers this node, waits for all nodes to join,
+// then generates configs with complete cluster topology.
+//
+// The northstar credentials are generated by the caller and provision this
+// node's predastore with the zone bucket. The same pair is distributed to
+// joiners, since each node's predastore only honours the keys in its own config.
+func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string,
+	masterKey, viperblockKey []byte, natsToken, clusterName,
+	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
+	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, networkConfig *formation.NetworkConfig,
+	northstarCreds admin.NorthstarCredentials) {
+	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: Invalid --formation-timeout: %v\n", err)
+		os.Exit(1)
+	}
+
+	tokenTTL, err := time.ParseDuration(tokenTTLStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: Invalid --token-ttl: %v\n", err)
+		os.Exit(1)
+	}
+	if tokenTTL < formationTimeout+1*time.Minute {
+		fmt.Fprintf(os.Stderr, "❌ Error: --token-ttl (%s) must be >= --formation-timeout + 1m (%s)\n", tokenTTL, formationTimeout+1*time.Minute)
+		os.Exit(1)
+	}
+
+	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
+
+	joinToken, err := formation.GenerateJoinToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error generating join token: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Identity, predastore and viperblock keys were prepared load-or-generate by
+	// the caller: reuse them here so a re-init never rotates cluster crypto and
+	// the leader distributes the same viperblock key to joiners. The path is
+	// deterministic and already written on disk.
+	viperblockKeyPath := filepath.Join(configDir, "viperblock", "encryption.key")
+
+	// Read CA cert/key for distribution to joining nodes
+	caCertData, err := os.ReadFile(filepath.Join(configDir, "ca.pem"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error reading CA cert: %v\n", err)
+		os.Exit(1)
+	}
+	caKeyData, err := os.ReadFile(filepath.Join(configDir, "ca.key"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error reading CA key: %v\n", err)
+		os.Exit(1)
+	}
+
+	creds := &formation.SharedCredentials{
+		AccessKey:      accessKey,
+		SecretKey:      secretKey,
+		AccountID:      accountID,
+		NatsToken:      natsToken,
+		ClusterName:    clusterName,
+		Region:         region,
+		AdminAccessKey: adminAccessKey,
+		AdminSecretKey: adminSecretKey,
+
+		// Joiners provision their own predastore with this pair, so every
+		// node's resolver can read the distributed zone bucket via its local
+		// endpoint. The bucket is a constant, so it is derived node-side.
+		NorthstarAccessKey: northstarCreds.AccessKey,
+		NorthstarSecretKey: northstarCreds.SecretKey,
+	}
+
+	fs := formation.NewFormationServer(expectedNodes, creds, string(caCertData), string(caKeyData), networkConfig, joinToken, tokenTTL)
+
+	// Include master key in formation server for distribution to joining nodes
+	fs.SetMasterKey(base64.StdEncoding.EncodeToString(masterKey))
+
+	// Distribute the cluster-wide viperblock encryption key to joiners
+	fs.SetViperblockKey(base64.StdEncoding.EncodeToString(viperblockKey))
+
+	// Register self (init node) as the first node
+	selfNode := formation.NodeInfo{
+		Name:        node,
+		BindIP:      bindIP,
+		AdvertiseIP: advertiseIP,
+		ClusterIP:   clusterBind,
+		Region:      region,
+		AZ:          az,
+		Port:        port,
+	}
+	if err := fs.RegisterNode(selfNode); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error registering self: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write join token to file for automated workflows
+	tokenPath := filepath.Join(configDir, "join-token")
+	if err := os.WriteFile(tokenPath, []byte(joinToken), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error writing join token: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start formation server
+	formationAddr := fmt.Sprintf("%s:%d", bindIP, port)
+	if err := fs.Start(formationAddr); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error starting formation server: %v\n", err)
+		os.Exit(1)
+	}
+
+	// The host firewall scopes this port to known peers, and a node joining is
+	// not one yet. Closed again on every exit below.
+	closeFormationPort := openFormationPort(port)
+
+	fmt.Printf("\n📡 Formation server started on %s\n", formationAddr)
+	fmt.Printf("   Waiting for %d more node(s) to join...\n", expectedNodes-1)
+	fmt.Printf("   Token expires in %s\n\n", tokenTTL)
+	fmt.Printf("   Other nodes should run:\n")
+	fmt.Printf("   sudo spx admin join --host %s --token %s --node <name> --bind <ip>\n\n", formationAddr, joinToken)
+
+	// Wait for all nodes to register
+	if err := fs.WaitForCompletion(formationTimeout); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		_ = fs.Shutdown(context.Background())
+		closeFormationPort()
+		os.Remove(tokenPath)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ All %d nodes joined!\n", expectedNodes)
+
+	// The pre-start check refused a store with streams unless discard was asked
+	// for, so anything left here is removed now that the cluster is committed.
+	if discard, _ := cmd.Flags().GetBool("discard-jetstream"); discard {
+		storeDir := jetStreamStoreDir(spxRoot)
+		if err := discardJetStreamStore(storeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Discarded this node's pre-formation JetStream store: %s\n", storeDir)
+	}
+
+	// Build cluster topology from formation data
+	allNodes := fs.Nodes()
+	clusterRoutes := formation.BuildClusterRoutes(allNodes)
+	predastoreNodes := formation.BuildPredastoreNodes(allNodes)
+	ovnNBAddr, ovnSBAddr := formation.BuildOVNDBAddrs(allNodes)
+
+	fmt.Println("\n📝 Creating configuration files...")
+
+	dirs, err := createConfigSubdirs(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config subdirectories: %v\n", err)
+		os.Exit(1)
+	}
+
+	portStr := strconv.Itoa(port)
+
+	// The keys are cluster-wide and generated above the dispatch; the config path
+	// is node-local, so it is derived here from this node's own config dirs.
+	northstarConfigPath := filepath.Join(dirs.Northstar, "northstar.toml")
+
+	// Generate multi-node predastore config. A single-node install is host 1,
+	// the only [[host]] its predastore.toml declares; the multi-node path below
+	// replaces this with the host matching this machine.
+	predastoreHostID := 1
+	hasPredastoreConfig := len(predastoreNodes) >= 2
+	if hasPredastoreConfig {
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, accessKey, secretKey, region, natsToken, configDir, spxRoot, bindIP, compactionInterval, northstarCreds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
+			os.Exit(1)
+		}
+
+		predastorePath := filepath.Join(dirs.Predastore, "predastore.toml")
+		if err := os.WriteFile(predastorePath, []byte(predastoreContent), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing predastore config: %v\n", err)
+			os.Exit(1)
+		}
+
+		// One machine is one predastore host, so the node list entry matching
+		// this bind IP is this node's host ID. Without one the service has no
+		// [[host]] to run and refuses to start.
+		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		if predastoreHostID == 0 {
+			fmt.Fprintf(os.Stderr, "❌ Error: bind IP %s not found in the predastore node list\n", bindIP)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
+	}
+
+	spinifexTomlPath := filepath.Join(configDir, "spinifex.toml")
+
+	configSettings := admin.ConfigSettings{
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		AccountID: accountID,
+		Region:    region,
+		NatsToken: natsToken,
+		DataDir:   spxRoot,
+		LogDir:    LogDirFor(spxRoot),
+		ConfigDir: configDir,
+
+		Node:          node,
+		Az:            az,
+		Port:          portStr,
+		BindIP:        bindIP,
+		AdvertiseIP:   advertiseIP,
+		ClusterBindIP: clusterBind,
+		ClusterRoutes: clusterRoutes,
+		ClusterName:   clusterName,
+
+		PredastoreHostID:          predastoreHostID,
+		PredastoreAdminPort:       admin.PredastoreAdminPort,
+		CompactionIntervalSeconds: compactionInterval,
+		Services:                  services,
+		RemoteNodes:               buildRemoteNodes(allNodes, node, northstarConfigPath),
+
+		OperatorEmail: email,
+
+		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
+
+		// Multi-endpoint OVN NB/SB list across the RAFT quorum; the init node's
+		// own address leads, the rest provide failover.
+		OVNNBAddr: ovnNBAddr,
+		OVNSBAddr: ovnSBAddr,
+	}
+
+	if networkConfig != nil {
+		applyNetworkConfig(&configSettings, networkConfig)
+	}
+
+	if err := generateAndWriteConfigs(dirs, spinifexTomlPath, configSettings, hasPredastoreConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating configuration files: %v\n", err)
+		os.Exit(1)
+	}
+
+	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
+	// Keep formation server running briefly so joining nodes can fetch complete status
+	fmt.Println("\n⏳ Waiting for joining nodes to fetch cluster data...")
+	time.Sleep(15 * time.Second)
+
+	// Shutdown formation server
+	_ = fs.Shutdown(context.Background())
+	closeFormationPort()
+	if err := os.Remove(tokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("Failed to remove join token file", "path", tokenPath, "error", err)
+	}
+
+	// Print cluster summary
+	fmt.Println("\n🎉 Cluster formation complete!")
+	fmt.Printf("   Cluster: %s (%d nodes)\n", clusterName, expectedNodes)
+	fmt.Printf("   Region: %s\n", region)
+	fmt.Printf("   Bind: %s  Advertise: %s  Loopback: 127.0.0.1\n", bindIP, advertiseIP)
+	fmt.Println("   Nodes:")
+	for name, n := range allNodes {
+		adv := n.AdvertiseIP
+		if adv == "" {
+			adv = n.BindIP
+		}
+		fmt.Printf("     - %s (bind=%s advertise=%s)\n", name, n.BindIP, adv)
+	}
+	fmt.Println("\n📋 Next steps:")
+	fmt.Println("   1. Start services on ALL nodes:")
+	fmt.Println("      sudo systemctl start spinifex.target")
+	fmt.Println()
+}
+
+// joinRetryInterval paces retries against an unreachable formation server. The
+// primary may still be booting, so this is measured in "how long until the other
+// machine finishes starting", not in fractions of a second.
+const joinRetryInterval = 5 * time.Second
+
+// joinRetryable separates a formation server that is not up yet from one that
+// has answered and said no. Bare-metal nodes cannot be sequenced reliably, so a
+// joiner racing ahead of the primary must wait rather than fail. A rejected
+// token or a duplicate node name answers the same way on every attempt, so
+// those are reported at once instead of after the whole timeout.
+func joinRetryable(err error, statusCode int) bool {
+	if err != nil {
+		// Connection refused, DNS failure, TLS handshake, timeout: the primary
+		// is not listening yet.
+		return true
+	}
+	return statusCode >= 500
+}
+
+// checkJoinPreconditions rejects a join that would silently destroy this node's
+// identity or JetStream data; --force accepts that loss. A running NATS service
+// is refused even with --force, because the store cannot be removed under it.
+func checkJoinPreconditions(configDir, storeDir string, force bool) error {
+	if err := checkStoreDiscardable(); err != nil {
+		return err
+	}
+	if force {
+		return nil
+	}
+	tomlPath := filepath.Join(configDir, "spinifex.toml")
+	if admin.FileExists(tomlPath) {
+		return fmt.Errorf("this node is already initialized: %s", tomlPath)
+	}
+	streams, err := localStreams(storeDir)
+	if err != nil {
+		return err
+	}
+	if len(streams) > 0 {
+		return fmt.Errorf("this node's JetStream store %s holds %d stream(s)", storeDir, len(streams))
+	}
+	return nil
+}
+
+// joinDiscardsIdentityMsg spells out what a forced join throws away. Kept out of
+// the error string so that stays short enough to wrap in another.
+const joinDiscardsIdentityMsg = `Joining will discard this node's own cluster identity:
+  - CA certificate and key
+  - master key, and any data sealed under it
+  - viperblock key, and any volumes encrypted under it
+  - JetStream store (<data-dir>/nats/jetstream): every stream and KV bucket
+    this node holds, so it takes the cluster's copy instead of diverging from it
+
+That is safe on a freshly installed node — an ISO install initializes a
+single-node cluster at first boot, and nothing has been sealed under these keys
+yet. On a node that has been in service it is unrecoverable data loss.
+
+To proceed: spx admin join --force ...`
+
+func runAdminJoin(cmd *cobra.Command, args []string) {
+	if os.Getuid() != 0 {
+		fmt.Fprintln(os.Stderr, "⚠️  Warning: 'spx admin join' is not running as root.")
+		fmt.Fprintln(os.Stderr, "   Service user setup and CA certificate installation will be skipped.")
+		fmt.Fprintln(os.Stderr, "   For production deployments, run with sudo.")
+	}
+
+	node, _ := cmd.Flags().GetString("node")
+	leaderHost, _ := cmd.Flags().GetString("host")
+	joinToken, _ := cmd.Flags().GetString("token")
+	region, _ := cmd.Flags().GetString("region")
+	az, _ := cmd.Flags().GetString("az")
+	dataDir, _ := cmd.Flags().GetString("data-dir")
+	port, _ := cmd.Flags().GetInt("port")
+	bindIP, _ := cmd.Flags().GetString("bind")
+	advertiseFlag, _ := cmd.Flags().GetString("advertise")
+	configDir, _ := cmd.Flags().GetString("config-dir")
+	clusterBind, _ := cmd.Flags().GetString("cluster-bind")
+	services, _ := cmd.Flags().GetStringSlice("services")
+	compactionInterval, _ := cmd.Flags().GetInt("predastore-compaction-interval")
+	force, _ := cmd.Flags().GetBool("force")
+	joinTimeout, _ := cmd.Flags().GetDuration("join-timeout")
+
+	email, _ := cmd.Flags().GetString("email")
+	email = strings.TrimSpace(email)
+	if email != "" {
+		if err := admin.ValidateEmail(email); err != nil {
+			fmt.Fprintf(os.Stderr, "--email: %v\n", err)
+			os.Exit(1)
+		}
+	} else if admin.FileExists(filepath.Join(configDir, "spinifex.toml")) {
+		email = admin.ReadOperatorEmail(filepath.Join(configDir, "spinifex.toml"))
+	}
+
+	// Validate required parameters
+	if node == "" {
+		fmt.Fprintf(os.Stderr, "❌ Error: --node is required\n")
+		os.Exit(1)
+	}
+	if leaderHost == "" {
+		fmt.Fprintf(os.Stderr, "❌ Error: --host is required\n")
+		os.Exit(1)
+	}
+
+	// Validate IP address format
+	if net.ParseIP(bindIP) == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: Invalid IP address for --bind: %s\n", bindIP)
+		os.Exit(1)
+	}
+
+	// Resolve the off-host advertise IP before the JoinRequest is built so
+	// peers record a reachable dial target instead of 0.0.0.0.
+	var detectedNet *admin.DetectedNetwork
+	if advertiseFlag == "" && (bindIP == "0.0.0.0" || bindIP == "127.0.0.1") {
+		if d, derr := admin.DetectNetwork(); derr == nil {
+			detectedNet = d
+		}
+	}
+	advertiseIP, err := resolveAdvertiseIP(bindIP, advertiseFlag, detectedNet)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Validate port range
+	if port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "❌ Error: Port must be between 1 and 65535, got: %d\n", port)
+		os.Exit(1)
+	}
+
+	// Checked before any network call so a node that will not join says so
+	// immediately. Unlike init this exits non-zero: a node that did not join
+	// must not look like success to a provisioning script.
+	if dataDir == "" {
+		dataDir = DefaultDataDir()
+	}
+	storeDir := jetStreamStoreDir(dataDir)
+	if err := checkJoinPreconditions(configDir, storeDir, force); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  %v\n\n%s\n", err, joinDiscardsIdentityMsg)
+		os.Exit(1)
+	}
+
+	// Default cluster-bind to bind IP if not specified
+	if clusterBind == "" {
+		clusterBind = bindIP
+	}
+
+	fmt.Println("🚀 Joining Spinifex cluster...")
+	fmt.Printf("Node: %s\n", node)
+	fmt.Printf("Leader: %s\n", leaderHost)
+	fmt.Printf("Region: %s\n", region)
+	fmt.Printf("AZ: %s\n", az)
+	fmt.Printf("Bind IP: %s\n", bindIP)
+	fmt.Printf("Advertise IP: %s\n", advertiseIP)
+	fmt.Printf("Port: %d\n\n", port)
+
+	// POST join request to formation server
+	joinReq := formation.JoinRequest{
+		NodeInfo: formation.NodeInfo{
+			Name:        node,
+			BindIP:      bindIP,
+			AdvertiseIP: advertiseIP,
+			ClusterIP:   clusterBind,
+			Region:      region,
+			AZ:          az,
+			Port:        port,
+		},
+	}
+
+	reqBody, err := json.Marshal(joinReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling join request: %v\n", err)
+		os.Exit(1)
+	}
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: KNOWN SECURITY GAP, not a false positive. The formation trust bootstrap does not authenticate the server, so the join token and returned cluster secrets are exposed to interception. Remove once formation TLS is authenticated by a pinned key/certificate or an out-of-band CA.
+		},
+	}
+
+	joinURL := fmt.Sprintf("https://%s/formation/join", leaderHost)
+	deadline := time.Now().Add(joinTimeout)
+
+	// A fresh body per attempt: bytes.Buffer is consumed by the first send.
+	var resp *http.Response
+	for attempt := 1; ; attempt++ {
+		req, reqErr := http.NewRequest(http.MethodPost, joinURL, bytes.NewBuffer(reqBody))
+		if reqErr != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error creating join request: %v\n", reqErr)
+			os.Exit(1)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+joinToken)
+
+		var doErr error
+		resp, doErr = client.Do(req)
+		statusCode := 0
+		if doErr == nil {
+			statusCode = resp.StatusCode
+		}
+		if !joinRetryable(doErr, statusCode) {
+			break
+		}
+		if doErr == nil {
+			resp.Body.Close()
+		}
+
+		if time.Now().After(deadline) {
+			if doErr != nil {
+				fmt.Fprintf(os.Stderr, "❌ Error connecting to formation server: %v\n", doErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "❌ Formation server returned status %d\n", statusCode)
+			}
+			fmt.Fprintf(os.Stderr, "Gave up after %s (%d attempts).\n", joinTimeout, attempt)
+			fmt.Fprintf(os.Stderr, "Make sure the leader node has run 'spx admin init' and is accessible at %s\n", leaderHost)
+			os.Exit(1)
+		}
+		if attempt == 1 {
+			fmt.Printf("⏳ Formation server at %s not ready, retrying every %s (up to %s)...\n",
+				leaderHost, joinRetryInterval, joinTimeout)
+		}
+		time.Sleep(joinRetryInterval)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error reading response body: %v\n", err)
+		os.Exit(1)
+	}
+
+	var joinResp formation.JoinResponse
+	if err := json.Unmarshal(body, &joinResp); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing join response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !joinResp.Success {
+		fmt.Fprintf(os.Stderr, "❌ Failed to join cluster: %s\n", joinResp.Message)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Registered with formation server (%d/%d nodes joined)\n", joinResp.Joined, joinResp.Expected)
+
+	// Poll status until formation is complete
+	statusURL := fmt.Sprintf("https://%s/formation/status", leaderHost)
+	var statusResp formation.StatusResponse
+
+	for {
+		statusReq, err := http.NewRequest(http.MethodGet, statusURL, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error creating status request: %v\n", err)
+			os.Exit(1)
+		}
+		statusReq.Header.Set("Authorization", "Bearer "+joinToken)
+
+		sResp, err := client.Do(statusReq)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error polling formation status: %v\n", err)
+			os.Exit(1)
+		}
+
+		sBody, err := io.ReadAll(sResp.Body)
+		sResp.Body.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error reading status response: %v\n", err)
+			os.Exit(1)
+		}
+
+		if sResp.StatusCode == http.StatusUnauthorized {
+			fmt.Fprintf(os.Stderr, "❌ Error: join token rejected by formation server (expired or invalid)\n")
+			os.Exit(1)
+		}
+		if sResp.StatusCode != http.StatusOK {
+			fmt.Fprintf(os.Stderr, "❌ Error: unexpected status %d from formation server\n", sResp.StatusCode)
+			os.Exit(1)
+		}
+
+		if err := json.Unmarshal(sBody, &statusResp); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error parsing status response: %v\n", err)
+			os.Exit(1)
+		}
+
+		if statusResp.Complete {
+			break
+		}
+
+		fmt.Printf("   Waiting for cluster formation... (%d/%d nodes joined)\n", statusResp.Joined, statusResp.Expected)
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	fmt.Printf("✅ Cluster formation complete! (%d nodes)\n\n", statusResp.Expected)
+
+	// Fire telemetry after formation (now we know the cluster topology)
+	noTelemetry, _ := cmd.Flags().GetBool("no-telemetry")
+	if os.Getenv("SPX_NO_TELEMETRY") == "1" {
+		noTelemetry = true
+	}
+	var telemetryWg sync.WaitGroup
+	defer telemetryWg.Wait()
+	if !noTelemetry {
+		telemetryWg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			admin.SendTelemetry(ctx, admin.TelemetryPayload{
+				MachineID: admin.ReadMachineID(),
+				Event:     "join",
+				Region:    region,
+				AZ:        az,
+				Node:      node,
+				Nodes:     statusResp.Expected,
+				BindIP:    bindIP,
+				Version:   Version,
+				Email:     email,
+			})
+		})
+	}
+
+	// Extract credentials and CA from formation status
+	creds := statusResp.Credentials
+	if creds == nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: formation server did not return credentials\n")
+		os.Exit(1)
+	}
+
+	// Removed only once formation has succeeded, so a failed join leaves the
+	// node's single-node cluster intact.
+	if err := discardJetStreamStore(storeDir); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Discarded this node's pre-formation JetStream store: %s\n", storeDir)
+
+	// Set up config directory
+	if configDir == "" {
+		configDir = DefaultConfigDir()
+	}
+
+	if err := EnsureConfigDir(configDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write CA cert and key
+	caCertPath := filepath.Join(configDir, "ca.pem")
+	caKeyPath := filepath.Join(configDir, "ca.key")
+
+	if statusResp.CACert == "" || statusResp.CAKey == "" {
+		fmt.Fprintf(os.Stderr, "❌ Error: formation server did not return CA certificate\n")
+		os.Exit(1)
+	}
+
+	if err := os.WriteFile(caCertPath, []byte(statusResp.CACert), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing CA cert: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(caKeyPath, []byte(statusResp.CAKey), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing CA key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ CA certificate received from leader: %s\n", caCertPath)
+
+	// Install CA certificate into system trust store
+	installCACertificate(caCertPath)
+
+	// Extract and write master key from formation server
+	if statusResp.MasterKey == "" {
+		fmt.Fprintf(os.Stderr, "❌ Error: formation server did not return master key\n")
+		os.Exit(1)
+	}
+	masterKeyBytes, err := base64.StdEncoding.DecodeString(statusResp.MasterKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error decoding master key: %v\n", err)
+		os.Exit(1)
+	}
+	bootstrapDir := filepath.Join(dataDir, "awsgw")
+	if err := writeBootstrapFilesWithAdmin(configDir, bootstrapDir, masterKeyBytes, creds.AccessKey, creds.SecretKey, creds.AccountID, creds.AdminAccessKey, creds.AdminSecretKey); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error writing bootstrap files: %v\n", err)
+		os.Exit(1)
+	}
+	if err := writeSystemCredentials(configDir, creds.AccessKey, creds.SecretKey); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error writing system credentials: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✅ IAM master key received from leader")
+	fmt.Printf("✅ Bootstrap file written: %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
+
+	// Predastore encryption key is per-node: generate locally rather than
+	// receiving from the leader. Each node only opens fragments it sealed
+	// itself, so there is no cluster-wide predastore key to share.
+	predastoreKeyPath, err := writePredastoreEncryptionKey(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error generating predastore encryption key: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Predastore encryption key generated: %s\n", predastoreKeyPath)
+
+	// Viperblock at-rest encryption key is cluster-wide: receive it from the
+	// leader rather than generating one, so this node can open volumes sealed
+	// elsewhere. Lenient on absence — an older leader that predates key
+	// distribution returns nothing; fall back to cleartext rather than fail
+	// the join.
+	var viperblockKeyPath string
+	if statusResp.ViperblockKey == "" {
+		fmt.Println("⚠️  Leader did not provide a viperblock encryption key; at-rest encryption disabled on this node")
+	} else {
+		viperblockKeyBytes, err := base64.StdEncoding.DecodeString(statusResp.ViperblockKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error decoding viperblock encryption key: %v\n", err)
+			os.Exit(1)
+		}
+		viperblockKeyPath, err = saveViperblockEncryptionKey(configDir, viperblockKeyBytes)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error saving viperblock encryption key: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Viperblock encryption key received from leader: %s\n", viperblockKeyPath)
+	}
+
+	// Generate server cert signed by CA with this node's bind IP
+	if err := admin.GenerateServerCertOnly(configDir, bindIP, region, config.DefaultAWSServicesDomain); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✅ Server certificate generated with bind IP: %s\n\n", bindIP)
+
+	// Match the leader's intra-AZ IPsec posture: NetworkConfig.IPSecEnabled is
+	// authoritative. When the formation response omits NetworkConfig entirely
+	// (no current code path; defensive guard against future regressions) fall
+	// back to the AWS-parity default of ON.
+	ipsecEnabled := true
+	if statusResp.NetworkConfig != nil {
+		ipsecEnabled = statusResp.NetworkConfig.IPSecEnabled
+	}
+	if ipsecEnabled {
+		caCertPath := filepath.Join(configDir, "ca.pem")
+		caKeyPath := filepath.Join(configDir, "ca.key")
+		if err := host.GenerateIPSecPeerCert(configDir, caCertPath, caKeyPath, node, bindIP); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating IPsec peer certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("🔐 IPsec peer certificate generated (intra-AZ Geneve encryption ON)")
+	}
+
+	// Build cluster topology from formation data
+	clusterRoutes := formation.BuildClusterRoutes(statusResp.Nodes)
+	predastoreNodes := formation.BuildPredastoreNodes(statusResp.Nodes)
+	ovnNBAddr, ovnSBAddr := formation.BuildOVNDBAddrs(statusResp.Nodes)
+
+	fmt.Println("📝 Creating configuration files...")
+
+	dirs, err := createConfigSubdirs(configDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating config subdirectories: %v\n", err)
+		os.Exit(1)
+	}
+
+	portStr := strconv.Itoa(port)
+
+	northstarCreds, northstarConfigPath := northstarFromFormation(creds, dirs)
+
+	// Generate multi-node predastore config. A single-node install is host 1,
+	// the only [[host]] its predastore.toml declares; the multi-node path below
+	// replaces this with the host matching this machine.
+	predastoreHostID := 1
+	hasPredastoreConfig := len(predastoreNodes) >= 2
+
+	if hasPredastoreConfig {
+		predastoreContent, err := admin.GenerateMultiNodePredastoreConfig(predastoreMultiNodeTemplate, predastoreNodes, creds.AccessKey, creds.SecretKey, creds.Region, creds.NatsToken, configDir, dataDir, bindIP, compactionInterval,
+			northstarCreds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating multi-node predastore config: %v\n", err)
+			os.Exit(1)
+		}
+
+		predastorePath := filepath.Join(dirs.Predastore, "predastore.toml")
+		if err := os.WriteFile(predastorePath, []byte(predastoreContent), 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing predastore config: %v\n", err)
+			os.Exit(1)
+		}
+
+		predastoreHostID = admin.FindNodeIDByIP(predastoreNodes, bindIP)
+		if predastoreHostID == 0 {
+			fmt.Fprintf(os.Stderr, "❌ Error: bind IP %s not found in predastore node list\n", bindIP)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Created: multi-node predastore.toml (host ID: %d)\n", predastoreHostID)
+	}
+
+	spinifexTomlPath := filepath.Join(configDir, "spinifex.toml")
+
+	configSettings := admin.ConfigSettings{
+		AccessKey: creds.AccessKey,
+		SecretKey: creds.SecretKey,
+		AccountID: creds.AccountID,
+		Region:    creds.Region,
+		NatsToken: creds.NatsToken,
+		DataDir:   dataDir,
+		LogDir:    LogDirFor(dataDir),
+		ConfigDir: configDir,
+
+		Node:          node,
+		Az:            az,
+		Port:          portStr,
+		BindIP:        bindIP,
+		AdvertiseIP:   advertiseIP,
+		ClusterBindIP: clusterBind,
+		ClusterRoutes: clusterRoutes,
+		ClusterName:   creds.ClusterName,
+
+		PredastoreHostID:          predastoreHostID,
+		PredastoreAdminPort:       admin.PredastoreAdminPort,
+		CompactionIntervalSeconds: compactionInterval,
+		Services:                  services,
+		RemoteNodes:               buildRemoteNodes(statusResp.Nodes, node, northstarConfigPath),
+
+		OperatorEmail: email,
+
+		EncryptionKeyFile: viperblockKeyPath,
+
+		NorthstarAccessKey:      northstarCreds.AccessKey,
+		NorthstarSecretKey:      northstarCreds.SecretKey,
+		NorthstarBucket:         northstarCreds.Bucket,
+		NorthstarDefaultDomain:  admin.NorthstarDefaultDomain,
+		NorthstarInternalDomain: admin.NorthstarInternalDomain,
+		NorthstarConfigPath:     northstarConfigPath,
+
+		// Multi-endpoint OVN NB/SB list across the RAFT quorum so the client
+		// fails over instead of pinning to a single init node.
+		OVNNBAddr: ovnNBAddr,
+		OVNSBAddr: ovnSBAddr,
+	}
+
+	if statusResp.NetworkConfig != nil {
+		applyNetworkConfig(&configSettings, statusResp.NetworkConfig)
+	}
+
+	if err := generateAndWriteConfigs(dirs, spinifexTomlPath, configSettings, hasPredastoreConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating configuration files: %v\n", err)
+		os.Exit(1)
+	}
+
+	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
+
+	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
+	configureHostDNS(configSettings, skipHostDNS)
+
+	// Print cluster summary
+	fmt.Println("\n🎉 Node successfully joined cluster!")
+	fmt.Printf("   Cluster: %s (%d nodes)\n", creds.ClusterName, len(statusResp.Nodes))
+	fmt.Printf("   Bind: %s  Advertise: %s  Loopback: 127.0.0.1\n", bindIP, advertiseIP)
+	fmt.Println("   Nodes:")
+	for name, n := range statusResp.Nodes {
+		adv := n.AdvertiseIP
+		if adv == "" {
+			adv = n.BindIP
+		}
+		fmt.Printf("     - %s (bind=%s advertise=%s)\n", name, n.BindIP, adv)
+	}
+}
+
+// resolveAdvertiseIP picks the off-host dial target for this node.
+// Precedence: explicit --advertise flag > specific --bind IP > auto-detected
+// WAN IP > loopback (with warning that off-host clients cannot reach this node).
+func resolveAdvertiseIP(bindIP, advertiseFlag string, detected *admin.DetectedNetwork) (string, error) {
+	if advertiseFlag != "" {
+		if net.ParseIP(advertiseFlag) == nil {
+			return "", fmt.Errorf("--advertise: invalid IP %q", advertiseFlag)
+		}
+		return advertiseFlag, nil
+	}
+	if bindIP != "" && bindIP != "0.0.0.0" && bindIP != "127.0.0.1" {
+		return bindIP, nil
+	}
+	if detected != nil && detected.WAN != nil && detected.WAN.IP != "" {
+		return detected.WAN.IP, nil
+	}
+	fmt.Fprintln(os.Stderr,
+		"⚠️  Could not auto-detect a WAN IP. Off-host clients (ALB VMs, remote operators) "+
+			"will not be able to reach this node. Re-run with --advertise <IP> to fix.")
+	return "127.0.0.1", nil
+}
+
+// buildRemoteNodes converts formation NodeInfo into RemoteNode entries,
+// excluding the local node. This puts all cluster members into spinifex.toml
+// so config is the source of truth for expected cluster membership.
+//
+// northstarConfigPath is the local node's own path, republished for every peer:
+// every node in a formed cluster runs northstar, and the seed set must be
+// identical on all of them or the base zone's NS records get pinned to whichever
+// node wins the create-if-absent race. --config-dir is per-node and does not
+// cross the wire, so the value is accurate whenever nodes share a config dir and
+// inert when they do not — only its emptiness is ever read back. Passing it
+// empty (no credentials distributed) leaves peers with no stanza, so no node is
+// advertised as a resolver it cannot be.
+func buildRemoteNodes(allNodes map[string]formation.NodeInfo, localNode, northstarConfigPath string) []admin.RemoteNode {
+	var remote []admin.RemoteNode
+	for name, n := range allNodes {
+		if name == localNode {
+			continue
+		}
+		// Prefer the peer's advertise IP (off-host dial target); fall back
+		// to BindIP for joiners that did not send AdvertiseIP.
+		host := n.AdvertiseIP
+		if host == "" {
+			host = n.BindIP
+		}
+		remote = append(remote, admin.RemoteNode{
+			Name:                name,
+			Host:                host,
+			Region:              n.Region,
+			AZ:                  n.AZ,
+			Services:            n.Services,
+			NorthstarConfigPath: northstarConfigPath,
+		})
+	}
+	sort.Slice(remote, func(i, j int) bool {
+		return remote[i].Name < remote[j].Name
+	})
+	return remote
+}
+
+// initIAMServiceFromConfig loads config, connects to NATS, loads the master
+// key, and returns an initialised IAMServiceImpl. Callers must defer nc.Close().
+func initIAMServiceFromConfig() (*handlers_iam.IAMServiceImpl, *config.ClusterConfig, *nats.Conn, func(), error) {
+	cfg, nc, err := loadConfigAndConnect()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("connect to cluster: %w", err)
+	}
+
+	masterKeyPath := filepath.Join(cfg.NodeBaseDir(), "config", "master.key")
+	masterKey, err := masterkey.ReadShared(masterKeyPath)
+	if err != nil {
+		nc.Close()
+		return nil, nil, nil, nil, fmt.Errorf("load master key: %w", err)
+	}
+
+	// Background: this runs at CLI top level, where there is no request to
+	// inherit a deadline from and the process exits after the one command.
+	svc, err := handlers_iam.NewIAMServiceImpl(context.Background(), nc, masterKey)
+	if err != nil {
+		nc.Close()
+		return nil, nil, nil, nil, fmt.Errorf("init IAM service: %w", err)
+	}
+
+	return svc, cfg, nc, func() { nc.Close() }, nil
+}
+
+// openAccountNameIndex opens the account-name reservation index over an
+// existing NATS connection.
+func openAccountNameIndex(ctx context.Context, nc *nats.Conn) (*handlers_iam.AccountNameIndex, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("get JetStream context: %w", err)
+	}
+	return handlers_iam.NewAccountNameIndex(ctx, js)
+}
+
+func runAccountCreate(cmd *cobra.Command, args []string) {
+	name, _ := cmd.Flags().GetString("name")
+
+	if remote, _ := cmd.Flags().GetBool("remote"); remote {
+		runAccountCreateRemote(cmd, name)
+		return
+	}
+
+	svc, cfg, nc, cleanup, err := initIAMServiceFromConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Reject a duplicate before allocating an account ID. CreateAccount does not
+	// check names, so without this two runs of the same command silently produce
+	// two accounts that differ only by ID.
+	existing, err := handlers_iam.FindAccountByName(svc, name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking existing accounts: %v\n", err)
+		os.Exit(1)
+	}
+	if existing != nil {
+		fmt.Fprintf(os.Stderr, "Error: account %q already exists (account ID %s)\n",
+			existing.AccountName, existing.AccountID)
+		os.Exit(1)
+	}
+
+	// Reserve the name so a concurrent create — including one through
+	// /admin/CreateAccount — cannot take it between the check above and the
+	// create below. The CLI has no client token, so it owns the reservation by
+	// a per-invocation identifier.
+	names, err := openAccountNameIndex(ctx, nc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	reservationOwner := "spx-cli-" + uuid.NewV4().String()
+	switch err := names.Reserve(ctx, name, reservationOwner); {
+	case errors.Is(err, handlers_iam.ErrNameTaken):
+		fmt.Fprintf(os.Stderr, "Error: account %q already exists\n", name)
+		os.Exit(1)
+	case errors.Is(err, handlers_iam.ErrNameInFlight):
+		fmt.Fprintf(os.Stderr, "Error: another account creation for %q is in progress\n", name)
+		os.Exit(1)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "Error reserving account name: %v\n", err)
+		os.Exit(1)
+	}
+
+	account, err := svc.CreateAccount(handlers_iam.NormalizeAccountName(name))
+	if err != nil {
+		if relErr := names.Release(ctx, name, reservationOwner); relErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not release name reservation: %v\n", relErr)
+		}
+		fmt.Fprintf(os.Stderr, "Error creating account: %v\n", err)
+		os.Exit(1)
+	}
+	accountID := account.AccountID
+
+	if err := names.Commit(ctx, name, accountID, reservationOwner); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not index account name: %v\n", err)
+	}
+
+	// Create default VPC for the new account (belt-and-suspenders: daemon also
+	// does this via iam.account.created event, but daemon may not be running).
+	nodeConfig := cfg.Nodes[cfg.Node]
+	vpcSvc, vpcErr := ec2vpc.NewVPCServiceImplWithNATS(ctx, &nodeConfig, nc)
+	if vpcErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC service: %v\n", vpcErr)
+	} else if _, vpcErr = vpcSvc.EnsureDefaultVPC(accountID); vpcErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not create default VPC: %v\n", vpcErr)
+	}
+
+	// Shared with /admin/CreateAccount so the CLI and the remote endpoint cannot
+	// drift in what an account is made of.
+	provisioned, err := handlers_iam.ProvisionAccount(svc, accountID, account.AccountName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error provisioning account: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Configure AWS CLI profile automatically
+	profileName := "spinifex-" + strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	homeDir, _ := os.UserHomeDir()
+
+	endpointHost := "localhost"
+	certPath := filepath.Join(cfg.NodeBaseDir(), "config", "ca.pem")
+	nodeConfig = cfg.Nodes[cfg.Node]
+	if h, _, err := net.SplitHostPort(nodeConfig.AWSGW.Host); err == nil {
+		if h != "" && h != "0.0.0.0" {
+			endpointHost = h
+		}
+	}
+
+	credPath := filepath.Join(homeDir, ".aws", "credentials")
+	configPath := filepath.Join(homeDir, ".aws", "config")
+
+	if err := admin.UpdateAWSINIFile(credPath, profileName, map[string]string{
+		"aws_access_key_id":     provisioned.AccessKeyID,
+		"aws_secret_access_key": provisioned.SecretAccessKey,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not update AWS credentials: %v\n", err)
+	}
+	region := cfg.Nodes[cfg.Node].Region
+	if region == "" {
+		region = "ap-southeast-2"
+	}
+	if err := admin.WriteAWSProfileConfig(configPath, profileName, region, certPath, endpointHost); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not update AWS config: %v\n", err)
+	}
+
+	// Print credentials
+	fmt.Println("\nAccount created successfully!")
+	fmt.Printf("  Account ID:        %s\n", accountID)
+	fmt.Printf("  Account Name:      %s\n", provisioned.AccountName)
+	fmt.Printf("  Admin User:        %s\n", provisioned.AdminUser)
+	fmt.Printf("  Access Key ID:     %s\n", provisioned.AccessKeyID)
+	fmt.Printf("  Secret Access Key: %s\n", provisioned.SecretAccessKey)
+	fmt.Printf("  AWS Profile:       %s\n", profileName)
+	fmt.Println("\nUse with:")
+	fmt.Printf("  AWS_PROFILE=%s aws ec2 describe-instances\n", profileName)
+}
+
+func runAccountList(cmd *cobra.Command, args []string) {
+	if remote, _ := cmd.Flags().GetBool("remote"); remote {
+		if err := runAccountListRemote(cmd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	svc, _, _, cleanup, err := initIAMServiceFromConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer cleanup()
+
+	accounts, err := svc.ListAccounts()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing accounts: %v\n", err)
+		os.Exit(1)
+	}
+
+	printAccountTable(accountSummaries(accounts))
+}
+
+func runCertRenew(cmd *cobra.Command, _ []string) {
+	configDir, _ := cmd.Root().Flags().GetString("config-dir")
+
+	// Verify CA files exist.
+	caCertPath := filepath.Join(configDir, "ca.pem")
+	caKeyPath := filepath.Join(configDir, "ca.key")
+	if !admin.FileExists(caCertPath) || !admin.FileExists(caKeyPath) {
+		fmt.Fprintf(os.Stderr, "Error: CA files not found in %s\nRun 'spx admin init' first.\n", configDir)
+		os.Exit(1)
+	}
+
+	extraIPs, _ := cmd.Flags().GetStringSlice("extra-ip")
+	extraDNS, _ := cmd.Flags().GetStringSlice("extra-dns")
+
+	serverCertPath := filepath.Join(configDir, "server.pem")
+	serverKeyPath := filepath.Join(configDir, "server.key")
+
+	if err := admin.GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
+		fmt.Fprintf(os.Stderr, "Error regenerating server certificate: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ Server certificate regenerated with current IPs and hostname")
+	fmt.Printf("   Certificate: %s\n", serverCertPath)
+	fmt.Println("\n⚠️  Restart awsgw and daemon services to pick up the new certificate.")
+}
+
+// configDirs holds the paths to config subdirectories created by createConfigSubdirs.
+type configDirs struct {
+	AWSGW      string
+	Predastore string
+	Viperblock string
+	NATS       string
+	Spinifex   string
+	Northstar  string
+}
+
+// createConfigSubdirs creates the standard config subdirectories under configDir.
+func createConfigSubdirs(configDir string) (configDirs, error) {
+	dirs := configDirs{
+		AWSGW:      filepath.Join(configDir, "awsgw"),
+		Predastore: filepath.Join(configDir, "predastore"),
+		Viperblock: filepath.Join(configDir, "viperblock"),
+		NATS:       filepath.Join(configDir, "nats"),
+		Spinifex:   filepath.Join(configDir, "spinifex"),
+		Northstar:  filepath.Join(configDir, "northstar"),
+	}
+	for _, dir := range []string{dirs.AWSGW, dirs.Predastore, dirs.Viperblock, dirs.NATS, dirs.Spinifex, dirs.Northstar} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return configDirs{}, fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+	return dirs, nil
+}
+
+// northstarFromFormation derives a joining node's northstar credentials and
+// node-local config path from the cluster-wide pair distributed at formation.
+//
+// The keys cross the wire because a node's predastore only honours the keys in
+// its own config, so every node must present the same pair to read the
+// distributed zone bucket. The bucket name and config path are node-local
+// constants, so they are derived here rather than carried.
+//
+// A leader that predates credential distribution sends no keys. That yields a
+// zero pair and an empty path, so the node renders no northstar config at all
+// rather than a resolver holding a key its own predastore would reject.
+func northstarFromFormation(creds *formation.SharedCredentials, dirs configDirs) (admin.NorthstarCredentials, string) {
+	if creds.NorthstarAccessKey == "" || creds.NorthstarSecretKey == "" {
+		return admin.NorthstarCredentials{}, ""
+	}
+	return admin.NorthstarCredentials{
+		AccessKey: creds.NorthstarAccessKey,
+		SecretKey: creds.NorthstarSecretKey,
+		Bucket:    admin.NorthstarBucketName,
+	}, filepath.Join(dirs.Northstar, "northstar.toml")
+}
+
+// resolverAllowFrom returns the addresses permitted to recurse against this
+// node's northstar: every cluster node, on whichever address its peers dial.
+//
+// Guests are covered without appearing here. vpcd's per-tap DNS shim relays
+// guest queries to a node's :5300 from a node address, so trusting the nodes
+// trusts every guest behind them, and no guest CIDR is needed.
+func resolverAllowFrom(settings admin.ConfigSettings) []string {
+	seen := make(map[string]bool)
+	var addrs []string
+	add := func(ip string) {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || ip == "0.0.0.0" || seen[ip] {
+			return
+		}
+		seen[ip] = true
+		addrs = append(addrs, ip)
+	}
+
+	// Both local addresses: a node resolving through its own advertised address
+	// is seen arriving from that address over lo, not from 127.0.0.1.
+	add(settings.AdvertiseIP)
+	add(settings.BindIP)
+	add(settings.ClusterBindIP)
+	for _, peer := range settings.RemoteNodes {
+		host := peer.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		add(host)
+	}
+	return addrs
+}
+
+// generateAndWriteConfigs renders the standard config files (spinifex.toml,
+// awsgw.toml, nats.conf, and optionally predastore.toml) from templates.
+func generateAndWriteConfigs(dirs configDirs, spinifexTomlPath string, settings admin.ConfigSettings, skipPredastore bool) error {
+	settings.ResolverAllowFrom = resolverAllowFrom(settings)
+
+	// A one-sided pair must disable Northstar wholesale. Rendering only the
+	// public stanza or only the secret file advertises a resolver that cannot run.
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled {
+		settings.NorthstarAccessKey = ""
+		settings.NorthstarSecretKey = ""
+		settings.NorthstarBucket = ""
+		settings.NorthstarConfigPath = ""
+	}
+
+	configs := []admin.ConfigFile{
+		{Name: "spinifex.toml", Path: spinifexTomlPath, Template: spinifexTomlTemplate},
+		{Name: filepath.Join(dirs.AWSGW, "awsgw.toml"), Path: filepath.Join(dirs.AWSGW, "awsgw.toml"), Template: awsgwTomlTemplate},
+		{Name: filepath.Join(dirs.NATS, "nats.conf"), Path: filepath.Join(dirs.NATS, "nats.conf"), Template: natsConfTemplate},
+	}
+	// northstar.toml is only rendered when scoped DNS credentials were
+	// provisioned. A cluster formed by a leader that predates their distribution
+	// leaves the keys empty, yielding no northstar config rather than a partial
+	// one pointing at a bucket the local predastore does not serve.
+	if northstarEnabled {
+		configs = append(configs, admin.ConfigFile{
+			Name: filepath.Join(dirs.Northstar, "northstar.toml"), Path: filepath.Join(dirs.Northstar, "northstar.toml"), Template: northstarTomlTemplate,
+		})
+	}
+	if !skipPredastore {
+		configs = append(configs, admin.ConfigFile{
+			Name: filepath.Join(dirs.Predastore, "predastore.toml"), Path: filepath.Join(dirs.Predastore, "predastore.toml"), Template: predastoreTomlTemplate,
+		})
+	}
+	return admin.GenerateConfigFiles(configs, settings)
+}
+
+// hostDNSParams derives the resolver target from the settings just rendered into
+// northstar.toml and reports whether host DNS should be configured at all. Host
+// DNS is pointed at the node's own northstar only when a northstar config was
+// rendered (scoped DNS credentials present) and the operator did not opt out.
+// The resolver is the node AdvertiseIP, falling back to BindIP.
+func hostDNSParams(settings admin.ConfigSettings, skip bool) (hostdns.Params, bool) {
+	northstarEnabled := settings.NorthstarAccessKey != "" && settings.NorthstarSecretKey != ""
+	if !northstarEnabled || skip {
+		return hostdns.Params{}, false
+	}
+	resolverIP := settings.AdvertiseIP
+	if resolverIP == "" {
+		resolverIP = settings.BindIP
+	}
+	return hostdns.Params{
+		ResolverIP:     resolverIP,
+		BaseDomain:     settings.NorthstarDefaultDomain,
+		InternalDomain: settings.NorthstarInternalDomain,
+	}, true
+}
+
+// configureHostDNS points this node's host resolver at its own northstar so the
+// Spinifex authoritative zones (ELB/EKS names) resolve from the node itself on
+// every install path. Failures are surfaced loudly but never abort a formed
+// cluster, mirroring installCACertificate.
+func configureHostDNS(settings admin.ConfigSettings, skip bool) {
+	params, ok := hostDNSParams(settings, skip)
+	if !ok {
+		return
+	}
+	fmt.Println("\n🔧 Configuring host DNS for Spinifex zones...")
+	if err := hostdns.Configure(params); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not configure host DNS: %v\n", err)
+		fmt.Fprintf(os.Stderr, "    LB/EKS names may not resolve from this node until the host resolver points at %s:53.\n", params.ResolverIP)
+		return
+	}
+	fmt.Printf("✅ Host DNS: %s + %s -> %s:53 (northstar)\n", params.BaseDomain, params.InternalDomain, params.ResolverIP)
+}
+
+// finalizeNodeSetup configures AWS credentials, creates service directories,
+// and sets ownership when running as root.
+func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region, bindIP string) {
+	fmt.Println("\n🔧 Configuring AWS credentials...")
+	if err := admin.SetupAWSCredentials(adminAccessKey, adminSecretKey, region, certPath, bindIP); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Could not update AWS credentials: %v\n", err)
+	} else {
+		fmt.Println("✅ AWS credentials configured")
+	}
+
+	admin.CreateServiceDirectories(dataDir)
+
+	if os.Getuid() == 0 {
+		if err := admin.SetServiceOwnership(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: service ownership not fully applied: %v\n", err)
+		} else {
+			fmt.Println("✅ Service ownership set")
+		}
+	}
+}
+
+// applyNetworkConfig copies cluster-wide network settings from a formation
+// NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
+func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
+	settings.IPSecEnabled = nc.IPSecEnabled
+	settings.ExternalMode = nc.ExternalMode
+	settings.PoolDNSServers = nc.PoolDNSServers
+	// Derived from the mode rather than carried in NetworkConfig, so the leader
+	// and every joiner pin the same value from the same rule as single-node init.
+	settings.BridgeMode = bridgeModeFor(nc.ExternalMode)
+	if nc.ExternalMode != "" {
+		settings.Pools = nc.Pools
+	}
+
+	settings.BootstrapAccountId = nc.BootstrapAccountId
+	settings.BootstrapVpcId = nc.BootstrapVpcId
+	settings.BootstrapSubnetId = nc.BootstrapSubnetId
+	settings.BootstrapIgwId = nc.BootstrapIgwId
+	settings.BootstrapCidr = nc.BootstrapCidr
+	settings.BootstrapSubnetCidr = nc.BootstrapSubnetCidr
+
+	if nc.ExternalMode != "" {
+		detected, err := admin.DetectNetwork()
+		if err == nil && detected.WAN != nil {
+			settings.ExternalIface = detected.WAN.Name
+		}
+	}
+}
+
+// writeBootstrapResult holds the admin credentials so callers can
+// write them to ~/.aws/credentials instead of the system credentials.
+type writeBootstrapResult struct {
+	AdminAccessKey string
+	AdminSecretKey string
+}
+
+// ensureMasterKey load-or-generates the IAM master key at <configDir>/master.key.
+// It returns the key bytes and whether the key already existed on disk. On a
+// --force re-init the existing key is preserved: rotating it would orphan every
+// IAM secret in NATS KV (e.g. the ECR signing key) that was encrypted under it.
+func ensureMasterKey(configDir string) (key []byte, existed bool, err error) {
+	keyPath := filepath.Join(configDir, "master.key")
+	if admin.FileExists(keyPath) {
+		key, err = masterkey.ReadShared(keyPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("load master key: %w", err)
+		}
+		return key, true, nil
+	}
+	key, err = handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return nil, false, fmt.Errorf("generate master key: %w", err)
+	}
+	return key, false, nil
+}
+
+// loadSystemCredentials reads the preserved system access/secret key from
+// <configDir>/system-credentials.json. On a re-init the configs must render the
+// same system credentials that seeded the NATS KV `system` secret, else SigV4
+// auth between services fails.
+func loadSystemCredentials(configDir string) (accessKey, secretKey string, err error) {
+	data, err := os.ReadFile(filepath.Join(configDir, "system-credentials.json"))
+	if err != nil {
+		return "", "", fmt.Errorf("read system credentials: %w", err)
+	}
+	var creds struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "", "", fmt.Errorf("parse system credentials: %w", err)
+	}
+	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
+		return "", "", fmt.Errorf("system credentials missing access/secret key")
+	}
+	return creds.AccessKeyID, creds.SecretAccessKey, nil
+}
+
+// writeBootstrapFiles generates new admin credentials and writes the bootstrap
+// files (master.key to configDir, bootstrap.json to bootstrapDir).
+// Used by init flows (single and multi-node).
+func writeBootstrapFiles(configDir, bootstrapDir string, masterKey []byte, accessKey, secretKey, accountID string) (*writeBootstrapResult, error) {
+	adminAccessKey, err := legacyadmin.GenerateAWSAccessKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate admin access key: %w", err)
+	}
+	adminSecretKey, err := legacyadmin.GenerateAWSSecretKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate admin secret key: %w", err)
+	}
+	if err := writeBootstrapFilesWithAdmin(configDir, bootstrapDir, masterKey, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey); err != nil {
+		return nil, err
+	}
+	return &writeBootstrapResult{
+		AdminAccessKey: adminAccessKey,
+		AdminSecretKey: adminSecretKey,
+	}, nil
+}
+
+// writePredastoreEncryptionKey load-or-generates this node's per-node predastore
+// key at <configDir>/predastore/encryption.key (mode 0600). The key is per-node:
+// every node generates its own at init/join time and never transmits it, because
+// predastore only opens fragments on the node that sealed them. An existing key
+// is preserved so a --force re-init does not orphan already-sealed fragments.
+func writePredastoreEncryptionKey(configDir string) (string, error) {
+	predastoreDir := filepath.Join(configDir, "predastore")
+	if err := os.MkdirAll(predastoreDir, 0750); err != nil {
+		return "", fmt.Errorf("create predastore config dir: %w", err)
+	}
+	keyPath := filepath.Join(predastoreDir, "encryption.key")
+	if admin.FileExists(keyPath) {
+		return keyPath, nil
+	}
+	key, err := handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return "", fmt.Errorf("generate predastore encryption key: %w", err)
+	}
+	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+		return "", fmt.Errorf("save predastore encryption key: %w", err)
+	}
+	return keyPath, nil
+}
+
+// ensureViperblockEncryptionKey load-or-generates the cluster-wide viperblock
+// at-rest key at <configDir>/viperblock/encryption.key (mode 0600) and returns
+// its bytes and path. Unlike the predastore key it is shared: the leader loads
+// these bytes to distribute the same key to joiners via the formation server, so
+// a volume sealed on any node can be opened on any other. An existing key is
+// preserved so a --force re-init does not orphan already-encrypted volumes.
+func ensureViperblockEncryptionKey(configDir string) ([]byte, string, error) {
+	viperblockDir := filepath.Join(configDir, "viperblock")
+	if err := os.MkdirAll(viperblockDir, 0750); err != nil {
+		return nil, "", fmt.Errorf("create viperblock config dir: %w", err)
+	}
+	keyPath := filepath.Join(viperblockDir, "encryption.key")
+	if admin.FileExists(keyPath) {
+		key, err := masterkey.ReadShared(keyPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("load viperblock encryption key: %w", err)
+		}
+		return key, keyPath, nil
+	}
+	key, err := handlers_iam.GenerateMasterKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate viperblock encryption key: %w", err)
+	}
+	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+		return nil, "", fmt.Errorf("save viperblock encryption key: %w", err)
+	}
+	return key, keyPath, nil
+}
+
+// saveViperblockEncryptionKey writes an already-generated 32-byte viperblock
+// master key (received from the formation leader) to
+// <configDir>/viperblock/encryption.key with mode 0600.
+func saveViperblockEncryptionKey(configDir string, key []byte) (string, error) {
+	viperblockDir := filepath.Join(configDir, "viperblock")
+	if err := os.MkdirAll(viperblockDir, 0750); err != nil {
+		return "", fmt.Errorf("create viperblock config dir: %w", err)
+	}
+	keyPath := filepath.Join(viperblockDir, "encryption.key")
+	if err := handlers_iam.SaveMasterKey(keyPath, key); err != nil {
+		return "", fmt.Errorf("save viperblock encryption key: %w", err)
+	}
+	return keyPath, nil
+}
+
+// writeSystemCredentials writes the system access key to a plaintext JSON file.
+// The daemon reads this at startup to inject credentials into ALB VM cloud-init
+// for SigV4-authenticated communication with the AWS gateway.
+func writeSystemCredentials(configDir, accessKey, secretKey string) error {
+	creds := struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	}{
+		AccessKeyID:     accessKey,
+		SecretAccessKey: secretKey,
+	}
+	data, err := json.MarshalIndent(creds, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling system credentials: %w", err)
+	}
+	return os.WriteFile(filepath.Join(configDir, "system-credentials.json"), data, 0600)
+}
+
+// writeBootstrapFilesWithAdmin writes the bootstrap files using the provided
+// admin credentials. master.key goes to configDir, bootstrap.json goes to
+// bootstrapDir (the awsgw data directory) so it stays outside /etc/spinifex.
+func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []byte, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey string) error {
+	if err := os.MkdirAll(bootstrapDir, 0700); err != nil {
+		return fmt.Errorf("create bootstrap directory %s: %w", bootstrapDir, err)
+	}
+	if err := handlers_iam.SaveMasterKey(filepath.Join(configDir, "master.key"), masterKey); err != nil {
+		return fmt.Errorf("saving master key: %w", err)
+	}
+	encryptedSecret, err := handlers_iam.EncryptSecret(secretKey, masterKey)
+	if err != nil {
+		return fmt.Errorf("encrypting system secret: %w", err)
+	}
+
+	adminEncryptedSecret, err := handlers_iam.EncryptSecret(adminSecretKey, masterKey)
+	if err != nil {
+		return fmt.Errorf("encrypting admin secret: %w", err)
+	}
+
+	bd := &handlers_iam.BootstrapData{
+		Version:         handlers_iam.BootstrapVersion,
+		AccessKeyID:     accessKey,
+		EncryptedSecret: encryptedSecret,
+		AccountID:       accountID,
+		Admin: &handlers_iam.AdminBootstrapData{
+			AccountID:       legacyadmin.DefaultAccountID(),
+			AccountName:     legacyadmin.DefaultAccountName(),
+			UserName:        "admin",
+			AccessKeyID:     adminAccessKey,
+			EncryptedSecret: adminEncryptedSecret,
+		},
+	}
+
+	return handlers_iam.SaveBootstrapData(filepath.Join(bootstrapDir, "bootstrap.json"), bd)
+}
+
+// isNonBridgeableUplink reports whether the interface name indicates an uplink
+// that cannot be enslaved to an L2 bridge: WiFi (wl*), cellular (ww*), PPP.
+func isNonBridgeableUplink(name string) bool {
+	return strings.HasPrefix(name, "wl") || strings.HasPrefix(name, "ww") || strings.HasPrefix(name, "ppp")
+}
+
+// resolvePublicPoolFlags validates the public-pool flag set shared by pool
+// mode and nat-with-public-pool. Returns the resolved source, static range
+// start/end, and bind bridge. Source defaults to dhcp when no range is given;
+// defaultBindBridge fills --external-bind-bridge for dhcp (br-wan in pool
+// mode, the uplink interface in nat mode).
+func resolvePublicPoolFlags(source, poolRange, bindBridge, gateway, defaultBindBridge string) (resolvedSource, start, end, resolvedBindBridge string, err error) {
+	if source == "" {
+		if poolRange == "" {
+			source = "dhcp"
+		} else {
+			source = "static"
+		}
+	}
+	switch source {
+	case "dhcp":
+		if poolRange != "" {
+			return "", "", "", "", fmt.Errorf("--external-pool not allowed with --external-source=dhcp (addresses come from upstream DHCP server)")
+		}
+		if bindBridge == "" {
+			if defaultBindBridge == "" {
+				return "", "", "", "", fmt.Errorf("--external-bind-bridge is required with --external-source=dhcp (no uplink interface detected)")
+			}
+			bindBridge = defaultBindBridge
+		}
+	case "static":
+		if bindBridge != "" {
+			return "", "", "", "", fmt.Errorf("--external-bind-bridge only valid with --external-source=dhcp")
+		}
+		if poolRange == "" {
+			return "", "", "", "", fmt.Errorf("--external-pool is required with --external-source=static (e.g., 192.168.1.150-192.168.1.250)")
+		}
+		if gateway == "" {
+			return "", "", "", "", fmt.Errorf("--external-gateway is required with --external-source=static")
+		}
+		var ok bool
+		start, end, ok = strings.Cut(poolRange, "-")
+		if !ok || net.ParseIP(start) == nil || net.ParseIP(end) == nil {
+			return "", "", "", "", fmt.Errorf("--external-pool must be start-end IPs (e.g., 192.168.1.150-192.168.1.250), got: %s", poolRange)
+		}
+	default:
+		return "", "", "", "", fmt.Errorf("--external-source must be 'static' or 'dhcp', got: %s", source)
+	}
+	return source, start, end, bindBridge, nil
+}
+
+// bridgeModeFor returns the vpcd bridge_mode admin init persists for the
+// external mode: only nat mode is pinned; bridged modes stay auto-detected.
+func bridgeModeFor(externalMode string) string {
+	if externalMode == "nat" {
+		return "nat"
+	}
+	return ""
+}
+
+// dnsDetectionCommandTimeout prevents a wedged resolver manager from blocking init.
+const dnsDetectionCommandTimeout = 5 * time.Second
+
+// dnsDetectionSources isolates host resolver discovery for deterministic tests.
+type dnsDetectionSources struct {
+	queryResolvectl func(args ...string) (string, error)
+	readResolvConf  func() (string, error)
+}
+
+// detectDNSServers auto-detects up to three host DNS servers, preferring
+// systemd-resolved before resolv.conf and public fallbacks.
+func detectDNSServers(iface string, excludedIPs ...string) []string {
+	return detectDNSServersWithSources(iface, excludedIPs, dnsDetectionSources{
+		queryResolvectl: func(args ...string) (string, error) {
+			return hostcommand.RunCommandWithTimeout(dnsDetectionCommandTimeout, "resolvectl", args...)
+		},
+		readResolvConf: func() (string, error) {
+			data, err := os.ReadFile("/etc/resolv.conf")
+			return string(data), err
+		},
+	})
+}
+
+// detectDNSServersWithSources finds usable upstreams in resolver-manager order.
+func detectDNSServersWithSources(iface string, excludedIPs []string, sources dnsDetectionSources) []string {
+	// Try resolvectl for the specific link first (most reliable on modern systems)
+	if iface != "" {
+		out, err := sources.queryResolvectl("dns", iface)
+		if err == nil {
+			servers := filterDNSServers(parseDNSFromResolvectl(out), excludedIPs...)
+			if len(servers) > 0 {
+				return servers
+			}
+		}
+	}
+
+	// Try resolvectl global
+	out, err := sources.queryResolvectl("dns")
+	if err == nil {
+		servers := filterDNSServers(parseDNSFromResolvectl(out), excludedIPs...)
+		if len(servers) > 0 {
+			return servers
+		}
+	}
+
+	// Fall back to /etc/resolv.conf
+	resolvConf, err := sources.readResolvConf()
+	if err == nil {
+		var servers []string
+		for line := range strings.SplitSeq(resolvConf, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "nameserver ") {
+				servers = append(servers, strings.TrimSpace(strings.TrimPrefix(line, "nameserver")))
+			}
+		}
+		if servers = filterDNSServers(servers, excludedIPs...); len(servers) > 0 {
+			return servers
+		}
+	}
+
+	// Fallback to well-known public DNS
+	return filterDNSServers([]string{"8.8.8.8", "1.1.1.1"}, excludedIPs...)
+}
+
+// filterDNSServers removes local, duplicate, and invalid resolver addresses and
+// caps the upstream list at the three entries supported by generated configs.
+func filterDNSServers(servers []string, excludedIPs ...string) []string {
+	excluded := make(map[string]struct{}, len(excludedIPs)+2)
+	excluded["127.0.0.1"] = struct{}{}
+	excluded["127.0.0.53"] = struct{}{}
+	for _, value := range excludedIPs {
+		if ip := net.ParseIP(strings.TrimSpace(value)); ip != nil {
+			excluded[ip.String()] = struct{}{}
+		}
+	}
+
+	filtered := make([]string, 0, min(len(servers), 3))
+	seen := make(map[string]struct{}, len(servers))
+	for _, value := range servers {
+		ip := net.ParseIP(strings.TrimSpace(value))
+		if ip == nil {
+			continue
+		}
+		normalized := ip.String()
+		if _, skip := excluded[normalized]; skip {
+			continue
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		filtered = append(filtered, normalized)
+		if len(filtered) == 3 {
+			break
+		}
+	}
+	return filtered
+}
+
+// parseDNSFromResolvectl extracts IP addresses from resolvectl dns output.
+// Format: "Link 2 (enp0s3): 192.168.1.1 8.8.8.8 1.1.1.1".
+func parseDNSFromResolvectl(output string) []string {
+	var servers []string
+	for line := range strings.SplitSeq(output, "\n") {
+		// Find the colon separator, IPs come after it
+		_, after, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		fields := strings.FieldsSeq(after)
+		for f := range fields {
+			if net.ParseIP(f) != nil {
+				servers = append(servers, f)
+			}
+		}
+	}
+	return servers
+}
+
+// installCACertificate copies the Spinifex CA certificate into the system
+// trust store and runs update-ca-certificates so TLS clients (AWS CLI, etc.)
+// trust the self-signed gateway certificate without extra configuration.
+func installCACertificate(caPemPath string) {
+	if os.Getuid() != 0 {
+		return
+	}
+
+	const systemCertPath = "/usr/local/share/ca-certificates/spinifex-ca.crt"
+
+	data, err := os.ReadFile(caPemPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not read CA certificate %s: %v\n", caPemPath, err)
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(systemCertPath), 0755); err != nil { //nolint:gosec // G301: system CA trust-store directory must be 0755 for every TLS client to read it. Contains no secret material.
+		fmt.Fprintf(os.Stderr, "Warning: could not create certificate directory: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(systemCertPath, data, 0644); err != nil { //nolint:gosec // G306: public CA certificate in the system trust store must be world-readable (0644); no private key is written here.
+		fmt.Fprintf(os.Stderr, "Warning: could not install CA certificate: %v\n", err)
+		return
+	}
+
+	cmd := exec.Command("update-ca-certificates")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: update-ca-certificates failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("✅ CA certificate installed to system trust store\n")
+}
+
+// runAdminBanner writes the Spinifex console banner to /etc/motd.
+// With --boot-check it also detects management IP changes and updates node.conf.
+// All errors are logged as warnings — the command always exits 0 so a banner
+// failure never blocks the boot sequence.
+func runAdminBanner(cmd *cobra.Command, _ []string) {
+	bootCheck, _ := cmd.Flags().GetBool("boot-check")
+
+	const nodeConf = "/etc/spinifex/node.conf"
+
+	// Parse /etc/spinifex/node.conf (KEY=VALUE shell format).
+	conf := parseNodeConf(nodeConf)
+	iface := conf["MANAGEMENT_IFACE"]
+	recordedIP := conf["MANAGEMENT_IP"]
+	hostname := conf["NODE_HOSTNAME"]
+
+	if hostname == "" {
+		if h, err := os.Hostname(); err == nil {
+			hostname = h
+		}
+	}
+
+	// Resolve current IP from the management interface at runtime.
+	// If node.conf is absent or has no MANAGEMENT_IFACE (source installs before
+	// the first spx admin init writes node.conf), fall back to br-wan which
+	// setup-ovn.sh always creates as the management bridge.
+	if iface == "" {
+		iface = "br-wan"
+	}
+	currentIP := resolveIfaceIP(iface)
+	if currentIP == "" {
+		currentIP = recordedIP // fall back to value recorded at install time
+	}
+	if currentIP == "" {
+		currentIP = "<unknown>"
+	}
+
+	if bootCheck && iface != "" && recordedIP != "" && currentIP != recordedIP {
+		slog.Info("Management IP changed", "old", recordedIP, "new", currentIP)
+		conf["MANAGEMENT_IP"] = currentIP
+		if err := writeNodeConf(nodeConf, conf); err != nil {
+			slog.Warn("Failed to update node.conf with new IP", "err", err)
+		} else {
+			slog.Info("Updated node.conf with new management IP", "ip", currentIP)
+		}
+		// try-restart is safe even if the target isn't active yet.
+		restartCmd := exec.Command("systemctl", "try-restart", "spinifex.target")
+		restartCmd.Stdout = os.Stdout
+		restartCmd.Stderr = os.Stderr
+		if err := restartCmd.Run(); err != nil {
+			// Services are still bound to the old IP — operator must act.
+			slog.Error("Failed to restart spinifex.target after IP change — services may be unreachable on new IP", "err", err)
+		}
+	}
+
+	banner := fmt.Sprintf(`
+  +--------------------------------------------------------------+
+  |          Spinifex  —  Mulga Defense Corporation              |
+  +--------------------------------------------------------------+
+  |  Node:      %-49s|
+  |  Login:     %-49s|
+  |  Dashboard: %-49s|
+  |  API:       %-49s|
+  |  SSH:       %-49s|
+  +--------------------------------------------------------------+
+  |  AWS credentials:  cat ~/.aws/credentials                    |
+  +--------------------------------------------------------------+
+
+`,
+		hostname,
+		"spinifex",
+		"https://"+currentIP+":3000",
+		"https://"+currentIP+":9999",
+		"spinifex@"+currentIP,
+	)
+
+	banner += gpuBannerSection()
+
+	// Write to /etc/issue — displayed on the console before the login prompt.
+	// Overwrite entirely; this is a purpose-built appliance so we own this file.
+	if err := os.WriteFile("/etc/issue", []byte(banner), 0o644); err != nil { //nolint:gosec // G306: /etc/issue is shown before login and must be world-readable (0644). Contains no secret material.
+		slog.Warn("Failed to write /etc/issue", "err", err)
+	}
+
+	// Append to /etc/motd — displayed after SSH login, preserving any existing
+	// content (e.g. the Debian disclaimer). A sentinel marks our section so
+	// re-runs replace it cleanly rather than accumulating.
+	if err := appendBannerToMotd(banner); err != nil {
+		slog.Warn("Failed to write /etc/motd", "err", err)
+	}
+}
+
+// appendBannerToMotd appends the Spinifex banner to /etc/motd, preserving any
+// existing content. A sentinel line marks the start of the Spinifex section so
+// repeated runs replace only our section rather than accumulating duplicates.
+func appendBannerToMotd(banner string) error {
+	const (
+		motdPath = "/etc/motd"
+		sentinel = "# --- Spinifex ---\n"
+	)
+	existing, _ := os.ReadFile(motdPath)
+	base := string(existing)
+	// Strip any previous Spinifex section from the sentinel onwards.
+	if idx := strings.Index(base, sentinel); idx >= 0 {
+		base = base[:idx]
+	}
+	// Ensure a blank line separates the existing content from our banner.
+	if len(strings.TrimSpace(base)) > 0 && !strings.HasSuffix(base, "\n\n") {
+		if strings.HasSuffix(base, "\n") {
+			base += "\n"
+		} else {
+			base += "\n\n"
+		}
+	}
+	return os.WriteFile(motdPath, []byte(base+sentinel+banner), 0o644) //nolint:gosec // G306: motd is shown at login and must be world-readable (0644). Contains no secret material.
+}
+
+// gpuBannerSection returns an optional banner box section describing GPU state.
+// Returns "" when no GPU hardware is detected. Safe to call at boot before the
+// daemon starts — all checks are sysfs/file reads, no NATS required.
+func gpuBannerSection() string {
+	devices, err := gpu.Discover()
+	if err != nil || len(devices) == 0 {
+		return ""
+	}
+
+	iommuEntries, _ := os.ReadDir("/sys/kernel/iommu_groups/")
+	iommuActive := len(iommuEntries) > 0
+
+	_, vfioErr := os.Stat("/sys/module/vfio_pci")
+	vfioPresent := vfioErr == nil
+
+	passthroughEnabled := false
+	cfgPath := DefaultConfigFile()
+	if cfg, err := config.LoadConfig(cfgPath); err == nil {
+		if nodeCfg, ok := cfg.Nodes[cfg.Node]; ok {
+			passthroughEnabled = nodeCfg.Daemon.GPUPassthrough
+		}
+	}
+
+	models := gpuModelSummary(devices)
+
+	var statusLine, hintLine string
+	switch {
+	case passthroughEnabled:
+		statusLine = "Passthrough enabled"
+	case iommuActive && vfioPresent:
+		statusLine = "Ready to enable"
+		hintLine = "sudo spx admin gpu enable"
+	default:
+		statusLine = "Setup required"
+		hintLine = "sudo spx admin gpu setup"
+	}
+
+	const (
+		sep    = "  +--------------------------------------------------------------+\n"
+		maxVal = 55
+	)
+	if len([]rune(models)) > maxVal {
+		models = string([]rune(models)[:maxVal-3]) + "..."
+	}
+
+	section := sep +
+		fmt.Sprintf("  |  GPU: %-55s|\n", models) +
+		fmt.Sprintf("  |       %-55s|\n", statusLine)
+	if hintLine != "" {
+		section += fmt.Sprintf("  |       %-55s|\n", hintLine)
+	}
+	section += sep + "\n"
+	return section
+}
+
+func gpuModelSummary(devices []gpu.GPUDevice) string {
+	counts := make(map[string]int)
+	var order []string
+	for _, d := range devices {
+		if counts[d.Model] == 0 {
+			order = append(order, d.Model)
+		}
+		counts[d.Model]++
+	}
+	var parts []string
+	for _, m := range order {
+		if n := counts[m]; n > 1 {
+			parts = append(parts, fmt.Sprintf("%dx %s", n, m))
+		} else {
+			parts = append(parts, m)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// parseNodeConf reads a KEY=VALUE shell-format file and returns a map.
+// Lines starting with # and blank lines are ignored.
+func parseNodeConf(path string) map[string]string {
+	result := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("parseNodeConf: could not read node.conf", "path", path, "err", err)
+		}
+		return result
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		result[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return result
+}
+
+// writeNodeConf serialises a KEY=VALUE map back to the node.conf file.
+// Only writes keys that were present in the original (preserves order via known keys).
+func writeNodeConf(path string, conf map[string]string) error {
+	// Write in a stable order matching what the installer creates.
+	keys := []string{"MANAGEMENT_IP", "MANAGEMENT_IFACE", "NODE_HOSTNAME"}
+	var b strings.Builder
+	written := make(map[string]bool)
+	for _, k := range keys {
+		if v, ok := conf[k]; ok {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+			written[k] = true
+		}
+	}
+	// Append any extra keys not in the known list.
+	for k, v := range conf {
+		if !written[k] {
+			fmt.Fprintf(&b, "%s=%s\n", k, v)
+		}
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644) //nolint:gosec // G306: node.conf holds the management IP, interface and hostname, read by non-root Spinifex services (0644). Contains no secret material.
+}
+
+// resolveIfaceIP returns the first IPv4 address assigned to iface, or "".
+func resolveIfaceIP(iface string) string {
+	if iface == "" {
+		return ""
+	}
+	netIface, err := net.InterfaceByName(iface)
+	if err != nil {
+		return ""
+	}
+	addrs, err := netIface.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil && ip.To4() != nil {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+// printChecksumError writes the failure, the source URL (printed for every
+// error kind so 404/non-HTTPS/size-cap failures tell the operator which URL
+// to investigate), and the exact --force recovery command. The cached file
+// is left in place: an implicit auto-delete would mutate state inside
+// "verify", and a tampered artifact is forensically useful intact.
+func printChecksumError(w io.Writer, imageFile, imageName string, image imagecatalog.Images, err error) {
+	fmt.Fprintf(w, "Image integrity verification failed: %v\n", err)
+	fmt.Fprintf(w, "  file:     %s\n", imageFile)
+	if image.ChecksumDigest != "" {
+		fmt.Fprintf(w, "  source:   %s (%s)\n", catalogPinnedDigestSource, image.ChecksumDigest)
+		fmt.Fprintf(w, "  url:      %s\n", image.URL)
+	} else {
+		fmt.Fprintf(w, "  source:   %s\n", image.Checksum)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "The cached file was left in place. To re-download and retry:")
+	fmt.Fprintf(w, "  spx admin images import --name %s --force\n", imageName)
+}
+
+func runVolumesUnsealedCmd(_ *cobra.Command, _ []string) {
+	_, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	unsealed, err := dirty.ListUnsealedVolumes(context.Background(), nc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Could not read the unsealed volumes:", err)
+		os.Exit(1)
+	}
+	if len(unsealed) == 0 {
+		fmt.Println("No unsealed volumes: every volume's writes are confirmed to the backend.")
+		return
+	}
+
+	sort.Slice(unsealed, func(i, j int) bool { return unsealed[i].VolumeID < unsealed[j].VolumeID })
+	fmt.Printf("%d volume(s) with writes the backend may not have:\n\n", len(unsealed))
+	for _, volume := range unsealed {
+		fmt.Printf("  %s\n", volume.VolumeID)
+		fmt.Printf("    held by: %s\n", volume.Owner)
+		if !volume.Since.IsZero() {
+			fmt.Printf("    since:   %s\n", volume.Since.Format(time.RFC3339))
+		}
+		fmt.Printf("    reason:  %s\n", volume.Reason)
+	}
+	fmt.Println()
+	fmt.Println("A volume open right now is listed here and that is normal — the entry")
+	fmt.Println("clears on its next successful seal. One naming a node that is gone is")
+	fmt.Println("the case worth acting on: starting it elsewhere loses writes made since.")
+}

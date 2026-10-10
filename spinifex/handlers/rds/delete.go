@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
@@ -235,7 +235,7 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 		return errors.New("rds: no system-instance launcher configured")
 	}
 	if err := launcher.TerminateSystemInstance(instanceID); err != nil &&
-		!errors.Is(err, sysinstance.ErrSystemInstanceNotFound) {
+		!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 		return err
 	}
 	return nil
@@ -370,7 +370,7 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, acc
 				{Key: aws.String(rdsSnapshotAccountTagKey), Value: aws.String(accountID)},
 			},
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		s.rollbackFinalSnapshotReservation(ctx, kv, rec.FinalSnapshotIdentifier, rev)
 		return fmt.Errorf("rds: take the final snapshot of %s: %w", rec.DBInstanceIdentifier, err)
@@ -463,7 +463,7 @@ func (s *Service) releaseDataVolume(ctx context.Context, kv *kvstore.Bucket, acc
 	}
 	_, err = s.deps.Launch.Volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(rec.DataVolumeID),
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	switch {
 	case err == nil || awserrors.IsNotFound(err):
 		return nil
@@ -512,7 +512,7 @@ func (s *Service) snapshotsHolding(ctx context.Context, volumeID string) ([]stri
 			Name:   aws.String("volume-id"),
 			Values: aws.StringSlice([]string{volumeID}),
 		}},
-	}, utils.GlobalAccountID)
+	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		if awserrors.IsNotFound(err) {
 			return nil, nil
@@ -543,6 +543,6 @@ func (s *Service) deleteInstanceENIs(ctx context.Context, accountID string, rec 
 		deleteLaunchENI(ctx, vpcSvc, accountID, rec.ENIID)
 	}
 	if rec.SystemENIID != "" {
-		deleteLaunchENI(ctx, vpcSvc, utils.GlobalAccountID, rec.SystemENIID)
+		deleteLaunchENI(ctx, vpcSvc, awsidentifiers.GlobalAccountID, rec.SystemENIID)
 	}
 }

@@ -197,7 +197,7 @@ var ErrProtectedAccount = errors.New("account is protected and cannot be deleted
 var ErrResourcesStuck = errors.New("teardown left resources behind")
 
 // protectedAccountIDs are the two accounts no teardown may ever remove. They
-// mirror admin.SystemAccountID and admin.DefaultAccountID; a test asserts the
+// mirror identifiers.GlobalAccountID and admin.DefaultAccountID; a test asserts the
 // two lists agree so a change to either is caught rather than diverging.
 var protectedAccountIDs = map[string]string{
 	"000000000000": "system",

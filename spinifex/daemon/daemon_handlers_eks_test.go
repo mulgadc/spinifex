@@ -2,13 +2,13 @@ package daemon
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +34,7 @@ func requestEKS(t *testing.T, nc *nats.Conn, subject string) []byte {
 	t.Helper()
 	msg := nats.NewMsg(subject)
 	msg.Data = []byte(`{}`)
-	msg.Header.Set(utils.AccountIDHeader, "111122223333")
+	msg.Header.Set(natsmsg.AccountIDHeader, "111122223333")
 	resp, err := nc.RequestMsg(msg, 2*time.Second)
 	require.NoError(t, err, "no responder for %s", subject)
 	return resp.Data

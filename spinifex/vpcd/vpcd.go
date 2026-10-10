@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -19,20 +21,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_imds "github.com/mulgadc/spinifex/spinifex/handlers/imds"
-	"github.com/mulgadc/spinifex/spinifex/network/external"
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
-	"github.com/mulgadc/spinifex/spinifex/network/external/ocinet"
-	"github.com/mulgadc/spinifex/spinifex/network/host"
-	"github.com/mulgadc/spinifex/spinifex/network/ovn"
-	"github.com/mulgadc/spinifex/spinifex/network/policy"
-	"github.com/mulgadc/spinifex/spinifex/network/reconcile"
-	"github.com/mulgadc/spinifex/spinifex/network/subscribers"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -80,11 +82,11 @@ var waitForFlowsHV = func(nbAddr string) error {
 	return nil
 }
 
-// sudoCommand is utils.SudoCommand, which escalates only what genuinely needs
+// sudoCommand is hostcommand.SudoCommand, which escalates only what genuinely needs
 // it. Every caller here is an OVS/OVN socket client, so none of them escalate;
 // a local copy that always sudoed silently bypassed that policy and broke the
 // flows-ready barrier once the grants were removed.
-var sudoCommand = utils.SudoCommand
+var sudoCommand = hostcommand.SudoCommand
 
 var serviceName = "vpcd"
 
@@ -202,7 +204,7 @@ func New(config any) (*Service, error) {
 
 // Start starts the vpcd service.
 func (svc *Service) Start() (int, error) {
-	if err := utils.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
+	if err := hostprocess.WritePidFileTo(svc.Config.BaseDir, serviceName, os.Getpid()); err != nil {
 		return 0, fmt.Errorf("write pid file: %w", err)
 	}
 
@@ -417,7 +419,7 @@ func launchService(cfg *Config) error {
 	}
 	slog.Info("OVN preflight passed (br-int exists, ovn-controller running)")
 
-	nc, err := utils.ConnectNATSWithRetry(admin.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
+	nc, err := natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 	if err != nil {
 		slog.Error("Failed to connect to NATS", "err", err)
 		return err
@@ -579,18 +581,18 @@ func launchService(cfg *Config) error {
 		return live, nil
 	}
 	// vpcd is the composition root for both planes IMDS straddles: it wires the
-	// on-disk VM state reader and the shared record space, so handlers/imds
+	// on-disk VM state reader and the shared record space, so domains/ec2/guestmetadata
 	// itself never needs to import the compute plane beyond vm.VM.
 	records, err := newInstanceRecordLoader(ctx, nc)
 	if err != nil {
 		return fmt.Errorf("open instance record space: %w", err)
 	}
-	imdsSvc, err := handlers_imds.NewIMDSServiceImpl(
+	imdsSvc, err := guestmetadata.NewIMDSServiceImpl(
 		ctx,
 		nc,
-		handlers_imds.NewNATSSTSAssumer(nc),
-		handlers_imds.NewNATSProfileLookup(nc),
-		handlers_imds.NewNATSPublicKeyLookup(nc),
+		guestmetadata.NewNATSSTSAssumer(nc),
+		guestmetadata.NewNATSProfileLookup(nc),
+		guestmetadata.NewNATSPublicKeyLookup(nc),
 		newLocalVMStateReader(cfg.DataDir),
 		records,
 		listTaps,
@@ -599,7 +601,7 @@ func launchService(cfg *Config) error {
 		cfg.ServicesDomain,
 		cfg.CACert,
 		cfg.ResolverNameservers,
-		handlers_imds.NewHostBindAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP),
+		guestmetadata.NewHostBindAddrs(cfg.IMDSHostMetaIP, cfg.IMDSHostDNSIP),
 	)
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
@@ -757,11 +759,11 @@ func launchService(cfg *Config) error {
 			return host.ListLocalPorts(ctx, host.NewExecRunner())
 		},
 		MarkIGWAttached: func(ctx context.Context, recordKey, vpcID string) error {
-			kv, err := js.KeyValue(ctx, handlers_ec2_igw.KVBucketIGW)
+			kv, err := js.KeyValue(ctx, ec2igw.KVBucketIGW)
 			if err != nil {
-				return fmt.Errorf("open %s: %w", handlers_ec2_igw.KVBucketIGW, err)
+				return fmt.Errorf("open %s: %w", ec2igw.KVBucketIGW, err)
 			}
-			return handlers_ec2_igw.MarkAttached(ctx, kv, recordKey, vpcID)
+			return ec2igw.MarkAttached(ctx, kv, recordKey, vpcID)
 		},
 	})
 	if err != nil {
@@ -824,7 +826,7 @@ func launchService(cfg *Config) error {
 // absent northstar it falls back to the upstream pool DNS.
 func resolverDNSServer(cfg *Config) string {
 	if len(cfg.ResolverNameservers) > 0 {
-		return handlers_imds.VPCDNSServerIP
+		return guestmetadata.VPCDNSServerIP
 	}
 	return pickDNSServer(cfg.ExternalPools)
 }

@@ -3,7 +3,7 @@ package gateway_elbv2
 import (
 	"errors"
 
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // ModifyListenerAttributesInput is the ELBv2 ModifyListenerAttributes request, defined locally

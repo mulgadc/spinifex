@@ -14,13 +14,16 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/handlers/sysinstance"
-	"github.com/mulgadc/spinifex/spinifex/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/tags"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
 // Compile-time check that Daemon implements SystemInstanceLauncher.
@@ -45,7 +48,7 @@ func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID str
 	if d.vpcService == nil || eniID == "" || instanceOwnerID == eniAccountID {
 		return
 	}
-	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *handlers_ec2_vpc.ENIRecord) {
+	if err := d.vpcService.UpdateENI(eniAccountID, eniID, func(r *ec2vpc.ENIRecord) {
 		r.InstanceOwnerId = instanceOwnerID
 	}); err != nil {
 		slog.Warn("LaunchSystemInstance: failed to record ENI instance owner",
@@ -57,14 +60,14 @@ func (d *Daemon) recordENIInstanceOwner(eniAccountID, eniID, instanceOwnerID str
 // for an explicit DeleteOnTermination, persists it onto the record. An ENI that
 // has to outlive its VM is only safe once that flag is stored, so a failed stamp
 // fails the attach rather than leaving a disposable NIC behind.
-func (d *Daemon) attachExtraENI(eniAccountID string, extra sysinstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
+func (d *Daemon) attachExtraENI(eniAccountID string, extra systeminstance.ExtraENIInput, instanceID string, deviceIndex int64) error {
 	if _, err := d.vpcService.AttachENI(eniAccountID, extra.ENIID, instanceID, deviceIndex); err != nil {
 		return err
 	}
 	if extra.DeleteOnTermination == nil {
 		return nil
 	}
-	if err := d.vpcService.UpdateENI(eniAccountID, extra.ENIID, func(r *handlers_ec2_vpc.ENIRecord) {
+	if err := d.vpcService.UpdateENI(eniAccountID, extra.ENIID, func(r *ec2vpc.ENIRecord) {
 		r.DeleteOnTermination = extra.DeleteOnTermination
 	}); err != nil {
 		return fmt.Errorf("set DeleteOnTermination on ENI %s: %w", extra.ENIID, err)
@@ -78,10 +81,10 @@ func (d *Daemon) attachExtraENI(eniAccountID string, extra sysinstance.ExtraENII
 // (bundled vmlinuz+initramfs, fw_cfg-delivered config). There is no AMI,
 // volume, or cloud-init path.
 func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput) (*handlers_elbv2.SystemInstanceOutput, error) {
-	if input.BootMode == sysinstance.BootAMI {
+	if input.BootMode == systeminstance.BootAMI {
 		return d.launchAMISystemInstance(input)
 	}
-	accountID := utils.GlobalAccountID
+	accountID := awsidentifiers.GlobalAccountID
 	// ENI account may differ from system account — the ENI is created under
 	// the caller's account, so lookups/updates must use that account ID.
 	eniAccountID := resolveENIAccount(input.AccountID, accountID)
@@ -133,10 +136,10 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 		{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
 	}
 	instance.Reservation = &ec2.Reservation{}
-	instance.Reservation.SetReservationId(utils.GenerateResourceID("r"))
+	instance.Reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
 	instance.Reservation.SetOwnerId(accountID)
 	instance.Reservation.Instances = []*ec2.Instance{ec2Instance}
-	// Mirror the customer-instance path (handlers/ec2/instance/service_impl.go:334)
+	// Mirror the customer-instance path (domains/ec2/instance/service_impl.go:334)
 	// so consumers reading instance.Instance (e.g. onInstanceUpHook's NAT
 	// republish, device_map, volumes) see the same metadata for system VMs.
 	instance.Instance = ec2Instance
@@ -274,7 +277,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				region = d.config.Region
 				az = d.config.AZ
 			}
-			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(context.Background(), region, az, handlers_ec2_vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
+			allocatedIP, poolName, allocErr := d.externalIPAM.AllocateIP(context.Background(), region, az, ec2vpc.PurposeENIPublic, "", instance.ENIId, instance.ID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: failed to allocate public IP for internet-facing ALB", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)
@@ -292,11 +295,11 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 				vpcID = *result.NetworkInterfaces[0].VpcId
 			}
 			portName := topology.Port(instance.ENIId)
-			if natErr := utils.AddNAT(d.natsConn, vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
+			if natErr := projection.New(d.natsConn).AddNAT(vpcID, publicIP, privateIP, portName, instance.ENIMac); natErr != nil {
 				slog.Error("LaunchSystemInstance: vpc.add-nat failed for ALB public IP — rolling back to avoid surfacing an unreachable address",
 					"instanceId", instance.ID, "publicIp", publicIP, "pool", poolName, "err", natErr)
 				// Timeout may have committed the rule after our window; neutralise before releasing the IP.
-				utils.PublishNATEvent(d.natsConn, "vpc.delete-nat", vpcID, publicIP, privateIP, portName, instance.ENIMac)
+				projection.New(d.natsConn).RemoveNAT(vpcID, publicIP, privateIP, portName, instance.ENIMac)
 				if clearErr := d.vpcService.UpdateENIPublicIP(eniAccountID, instance.ENIId, "", ""); clearErr != nil {
 					slog.Warn("LaunchSystemInstance: failed to clear ENI public IP during NAT-failure rollback",
 						"eniId", instance.ENIId, "publicIp", publicIP, "err", clearErr)
@@ -327,7 +330,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 
 	// Subscribe to per-instance NATS topic for terminate commands.
 	d.mu.Lock()
-	sub, subErr := d.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instance.ID), d.handleEC2Events)
+	sub, subErr := d.natsConn.Subscribe(ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events)
 	if subErr != nil {
 		slog.Warn("LaunchSystemInstance: failed to subscribe to instance topic", "instanceId", instance.ID, "err", subErr)
 	} else {
@@ -439,7 +442,7 @@ func (d *Daemon) LaunchSystemInstance(input *handlers_elbv2.SystemInstanceInput)
 // gets the same admission, GPU claim and teardown-time release as a customer
 // VM: PrepareRunInstances gates on a free GPU slot, LaunchRunInstances claims
 // the device, and vm.Manager's cleanup chain releases it.
-func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput) (*sysinstance.SystemInstanceOutput, error) {
+func (d *Daemon) launchAMISystemInstance(input *systeminstance.SystemInstanceInput) (*systeminstance.SystemInstanceOutput, error) {
 	if d.instanceService == nil {
 		return nil, errors.New("sysinstance: instance service not initialized")
 	}
@@ -537,7 +540,7 @@ func (d *Daemon) launchAMISystemInstance(input *sysinstance.SystemInstanceInput)
 		"mgmtIP", inst.MgmtIP,
 		"privateIp", privateIP,
 	)
-	return &sysinstance.SystemInstanceOutput{
+	return &systeminstance.SystemInstanceOutput{
 		InstanceID: inst.ID,
 		PrivateIP:  privateIP,
 		MgmtIP:     inst.MgmtIP,
@@ -628,7 +631,7 @@ func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
 func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
-		return fmt.Errorf("%w: %s", sysinstance.ErrSystemInstanceNotFound, instanceID)
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was
@@ -667,7 +670,7 @@ func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
 }
 
 // refreshSystemInstanceState regenerates the tmpfs-backed fw_cfg blobs that
-// QEMU loads at boot. The blobs live under utils.RuntimeDir() (tmpfs on
+// QEMU loads at boot. The blobs live under hostprocess.RuntimeDir() (tmpfs on
 // production hosts) and are wiped on host reboot while the persisted
 // vm.Config still references the same paths. Customer VMs use only paths
 // under /var/lib/spinifex/ and are a no-op.
@@ -777,7 +780,7 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 // (PID file, console log, serial socket) are filled in later by startQEMU.
 //
 // Network topology from input.NICs is serialised to three fw_cfg tmpfiles
-// (netcfg, lb-agent-env, ca-cert) under utils.RuntimeDir().
+// (netcfg, lb-agent-env, ca-cert) under hostprocess.RuntimeDir().
 func (d *Daemon) buildDirectBootConfig(instanceID string, input *handlers_elbv2.SystemInstanceInput) (vm.Config, error) {
 	it := d.resourceMgr.instanceTypes[input.InstanceType]
 	architecture := "x86_64"
@@ -922,11 +925,11 @@ func tapNameForNIC(idx int, _ handlers_elbv2.NICConfig, instanceID string, input
 }
 
 // writeFwCfgBlobs serialises NIC configuration, lb-agent env, and CA cert to
-// per-VM tmpfiles under utils.RuntimeDir(). Returns the fw_cfg entries for the
+// per-VM tmpfiles under hostprocess.RuntimeDir(). Returns the fw_cfg entries for the
 // three blobs and an error if any write fails or the NIC default invariant is
 // violated.
 func (d *Daemon) writeFwCfgBlobs(instanceID string, input *handlers_elbv2.SystemInstanceInput) ([]vm.FwCfgEntry, error) {
-	runtimeDir := utils.RuntimeDir()
+	runtimeDir := hostprocess.RuntimeDir()
 
 	netcfgPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-netcfg.tmp", instanceID))
 	lbenvPath := filepath.Join(runtimeDir, fmt.Sprintf("fwcfg-%s-lbenv.tmp", instanceID))

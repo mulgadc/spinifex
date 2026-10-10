@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"log/slog"
 	"math"
 	"net/http"
@@ -15,29 +16,29 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockagent"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
 	"github.com/nats-io/nats.go"
 )
 
 // bedrockAgentRoute maps one HTTP method + chi path pattern to an AWS action and handler.
-type bedrockAgentRoute = restRoute[bedrockAgentRouteHandler]
+type bedrockAgentRoute = rest.Route[bedrockAgentRouteHandler]
 
 // bedrockAgentRouteHandler invokes a per-action bedrock-agent (control-plane)
 // gateway function. params holds the path params, PathUnescape'd.
 // kb/ds are gw.BedrockAgentKB / gw.BedrockAgentDataSources; vector is
 // gw.BedrockAgentVector, the NATSVectorService forwarding client to .9's
 // daemon-side VectorService.
-type bedrockAgentRouteHandler func(ctx context.Context, accountID, region string, params []string, body []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error)
+type bedrockAgentRouteHandler func(ctx context.Context, accountID, region string, params []string, body []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error)
 
 // bedrockAgentRoutes is the dispatch table. Real AWS HTTP paths/methods
 // (verified against the vendored aws-sdk-go bedrockagent request
 // definitions), not invented ones — including the trailing slashes, which
 // chi matches exactly.
 var bedrockAgentRoutes = []bedrockAgentRoute{
-	{"PUT", "/knowledgebases/", "CreateKnowledgeBase",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, _ *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+	{Method: "PUT", Pattern: "/knowledgebases/", Action: "CreateKnowledgeBase",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, _ *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
 			input := new(bedrockagent.CreateKnowledgeBaseInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -46,20 +47,20 @@ var bedrockAgentRoutes = []bedrockAgentRoute{
 			}
 			return CreateKnowledgeBase(ctx, acct, region, kb, vector, input)
 		}},
-	{"POST", "/knowledgebases/", "ListKnowledgeBases",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, _ *handlers_ochrevector.DataSourceStore, _ handlers_ochrevector.VectorService) (any, error) {
+	{Method: "POST", Pattern: "/knowledgebases/", Action: "ListKnowledgeBases",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, _ *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
 			return ListKnowledgeBases(ctx, acct, kb, new(bedrockagent.ListKnowledgeBasesInput))
 		}},
-	{"GET", "/knowledgebases/{knowledgeBaseId}", "GetKnowledgeBase",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, _ *handlers_ochrevector.DataSourceStore, _ handlers_ochrevector.VectorService) (any, error) {
+	{Method: "GET", Pattern: "/knowledgebases/{knowledgeBaseId}", Action: "GetKnowledgeBase",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, _ *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
 			return GetKnowledgeBase(ctx, acct, region, kb, &bedrockagent.GetKnowledgeBaseInput{KnowledgeBaseId: aws.String(p[0])})
 		}},
-	{"DELETE", "/knowledgebases/{knowledgeBaseId}", "DeleteKnowledgeBase",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+	{Method: "DELETE", Pattern: "/knowledgebases/{knowledgeBaseId}", Action: "DeleteKnowledgeBase",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
 			return DeleteKnowledgeBase(ctx, acct, kb, ds, vector, &bedrockagent.DeleteKnowledgeBaseInput{KnowledgeBaseId: aws.String(p[0])})
 		}},
-	{"PUT", "/knowledgebases/{knowledgeBaseId}/datasources/", "CreateDataSource",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, _ handlers_ochrevector.VectorService) (any, error) {
+	{Method: "PUT", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/", Action: "CreateDataSource",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
 			input := new(bedrockagent.CreateDataSourceInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -69,44 +70,44 @@ var bedrockAgentRoutes = []bedrockAgentRoute{
 			input.KnowledgeBaseId = aws.String(p[0])
 			return CreateDataSource(ctx, acct, region, kb, ds, input)
 		}},
-	{"POST", "/knowledgebases/{knowledgeBaseId}/datasources/", "ListDataSources",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, _ handlers_ochrevector.VectorService) (any, error) {
+	{Method: "POST", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/", Action: "ListDataSources",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
 			return ListDataSources(ctx, acct, kb, ds, &bedrockagent.ListDataSourcesInput{KnowledgeBaseId: aws.String(p[0])})
 		}},
-	{"GET", "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}", "GetDataSource",
-		func(ctx context.Context, acct, region string, p []string, b []byte, _ *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, _ handlers_ochrevector.VectorService) (any, error) {
+	{Method: "GET", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}", Action: "GetDataSource",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, _ *ochrevector.KBStore, ds *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
 			return GetDataSource(ctx, acct, region, ds, &bedrockagent.GetDataSourceInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1])})
 		}},
-	{"DELETE", "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}", "DeleteDataSource",
-		func(ctx context.Context, acct, region string, p []string, b []byte, _ *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, _ handlers_ochrevector.VectorService) (any, error) {
+	{Method: "DELETE", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}", Action: "DeleteDataSource",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, _ *ochrevector.KBStore, ds *ochrevector.DataSourceStore, _ ochrevector.VectorService) (any, error) {
 			return DeleteDataSource(ctx, acct, ds, &bedrockagent.DeleteDataSourceInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1])})
 		}},
-	{"PUT", "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/", "StartIngestionJob",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+	{Method: "PUT", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/", Action: "StartIngestionJob",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
 			return StartIngestionJob(ctx, acct, kb, ds, vector, &bedrockagent.StartIngestionJobInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1])})
 		}},
-	{"POST", "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/", "ListIngestionJobs",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+	{Method: "POST", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/", Action: "ListIngestionJobs",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
 			return ListIngestionJobs(ctx, acct, kb, ds, vector, &bedrockagent.ListIngestionJobsInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1])})
 		}},
-	{"GET", "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/{ingestionJobId}", "GetIngestionJob",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+	{Method: "GET", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/{ingestionJobId}", Action: "GetIngestionJob",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
 			return GetIngestionJob(ctx, acct, kb, ds, vector, &bedrockagent.GetIngestionJobInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1]), IngestionJobId: aws.String(p[2])})
 		}},
-	{"PUT", "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/{ingestionJobId}/stop", "StopIngestionJob",
-		func(ctx context.Context, acct, region string, p []string, b []byte, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService) (any, error) {
+	{Method: "PUT", Pattern: "/knowledgebases/{knowledgeBaseId}/datasources/{dataSourceId}/ingestionjobs/{ingestionJobId}/stop", Action: "StopIngestionJob",
+		Handler: func(ctx context.Context, acct, region string, p []string, b []byte, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService) (any, error) {
 			return StopIngestionJob(ctx, acct, kb, ds, vector, &StopIngestionJobInput{KnowledgeBaseId: aws.String(p[0]), DataSourceId: aws.String(p[1]), IngestionJobId: aws.String(p[2])})
 		}},
 }
 
 // bedrockAgentRouter matches an escaped request path against bedrockAgentRoutes.
-var bedrockAgentRouter = newRESTRouter("bedrock-agent", bedrockAgentRoutes)
+var bedrockAgentRouter = rest.NewRouter("bedrock-agent", bedrockAgentRoutes)
 
 // BedrockAgent_Request dispatches bedrock-agent (control-plane) REST-JSON
 // requests: resolves method+path to an action, reads the body, calls the
 // handler, and serialises the output as JSON, mirroring Bedrock_Request.
 func (gw *GatewayConfig) BedrockAgent_Request(w http.ResponseWriter, r *http.Request) error {
-	action, params, handler, ok := bedrockAgentRouter.lookup(r.Method, r.URL.EscapedPath())
+	action, params, handler, ok := bedrockAgentRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-agent: no route for request", "method", r.Method, "path", r.URL.Path)
 		return errors.New(awserrors.ErrorInvalidAction)
@@ -196,11 +197,11 @@ func formatS3BucketARN(bucket string) string {
 // so only StateReady is ever actually persisted here in Pass 1.
 func kbStatusToAWS(status string) string {
 	switch status {
-	case handlers_ochrevector.StateReady:
+	case ochrevector.StateReady:
 		return bedrockagent.KnowledgeBaseStatusActive
-	case handlers_ochrevector.StateCreating:
+	case ochrevector.StateCreating:
 		return bedrockagent.KnowledgeBaseStatusCreating
-	case handlers_ochrevector.StateDeleting:
+	case ochrevector.StateDeleting:
 		return bedrockagent.KnowledgeBaseStatusDeleting
 	default:
 		return bedrockagent.KnowledgeBaseStatusFailed
@@ -210,7 +211,7 @@ func kbStatusToAWS(status string) string {
 // dataSourceStatusToAWS is kbStatusToAWS's sibling for DataSourceStatus.
 func dataSourceStatusToAWS(status string) string {
 	switch status {
-	case handlers_ochrevector.StateDeleting:
+	case ochrevector.StateDeleting:
 		return bedrockagent.DataSourceStatusDeleting
 	default:
 		return bedrockagent.DataSourceStatusAvailable
@@ -228,13 +229,13 @@ const ingestionJobStatusStopped = "STOPPED"
 // wire values.
 func jobStateToAWS(state string) string {
 	switch state {
-	case handlers_ochrevector.JobStatePending:
+	case ochrevector.JobStatePending:
 		return bedrockagent.IngestionJobStatusStarting
-	case handlers_ochrevector.JobStateRunning:
+	case ochrevector.JobStateRunning:
 		return bedrockagent.IngestionJobStatusInProgress
-	case handlers_ochrevector.JobStateReady:
+	case ochrevector.JobStateReady:
 		return bedrockagent.IngestionJobStatusComplete
-	case handlers_ochrevector.JobStateStopped:
+	case ochrevector.JobStateStopped:
 		return ingestionJobStatusStopped
 	default:
 		return bedrockagent.IngestionJobStatusFailed
@@ -264,9 +265,9 @@ func translateVectorErr(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, handlers_ochrevector.ErrIndexNotFound), errors.Is(err, handlers_ochrevector.ErrJobNotFound):
+	case errors.Is(err, ochrevector.ErrIndexNotFound), errors.Is(err, ochrevector.ErrJobNotFound):
 		return errors.New(awserrors.ErrorResourceNotFoundException)
-	case errors.Is(err, handlers_ochrevector.ErrIndexExists):
+	case errors.Is(err, ochrevector.ErrIndexExists):
 		return errors.New(awserrors.ErrorConflictException)
 	case errors.Is(err, nats.ErrNoResponders), errors.Is(err, nats.ErrTimeout), errors.Is(err, context.DeadlineExceeded):
 		return errors.New(awserrors.ErrorServiceUnavailableException)
@@ -279,7 +280,7 @@ func translateVectorErr(err error) error {
 // StorageConfigJSON blob is decoded back into the typed AWS struct so
 // Get/List echo exactly what CreateKnowledgeBase accepted (D5: accepted and
 // stubbed, never acted on).
-func kbRecordToOutput(region, accountID string, rec handlers_ochrevector.KBRecord) (*bedrockagent.KnowledgeBase, error) {
+func kbRecordToOutput(region, accountID string, rec ochrevector.KBRecord) (*bedrockagent.KnowledgeBase, error) {
 	storageConfig := new(bedrockagent.StorageConfiguration)
 	if len(rec.StorageConfigJSON) > 0 {
 		if err := json.Unmarshal(rec.StorageConfigJSON, storageConfig); err != nil {
@@ -321,7 +322,7 @@ func kbRecordToOutput(region, accountID string, rec handlers_ochrevector.KBRecor
 // round-trip echo but never honored (D5). A KBStore.Create collision (id
 // reuse) rolls the just-created index back, so no orphan index survives a
 // failed claim.
-func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *handlers_ochrevector.KBStore, vector handlers_ochrevector.VectorService, input *bedrockagent.CreateKnowledgeBaseInput) (*bedrockagent.CreateKnowledgeBaseOutput, error) {
+func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *ochrevector.KBStore, vector ochrevector.VectorService, input *bedrockagent.CreateKnowledgeBaseInput) (*bedrockagent.CreateKnowledgeBaseOutput, error) {
 	if input == nil || aws.StringValue(input.Name) == "" || aws.StringValue(input.RoleArn) == "" ||
 		input.StorageConfiguration == nil || input.KnowledgeBaseConfiguration == nil {
 		return nil, errors.New(awserrors.ErrorValidationException)
@@ -347,7 +348,7 @@ func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *hand
 	}
 
 	id := uuid.NewV4().String()
-	indexResp, err := vector.CreateIndex(ctx, &handlers_ochrevector.CreateIndexRequest{
+	indexResp, err := vector.CreateIndex(ctx, &ochrevector.CreateIndexRequest{
 		IndexID:        id,
 		Name:           aws.StringValue(input.Name),
 		Dimension:      dimension,
@@ -363,11 +364,11 @@ func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *hand
 	}
 
 	now := time.Now().UTC()
-	rec := handlers_ochrevector.KBRecord{
+	rec := ochrevector.KBRecord{
 		ID:                id,
 		Name:              aws.StringValue(input.Name),
 		Description:       aws.StringValue(input.Description),
-		Status:            handlers_ochrevector.StateReady,
+		Status:            ochrevector.StateReady,
 		EmbeddingModel:    embeddingModel,
 		EmbeddingModelArn: embeddingModelArn,
 		Dimension:         dimension,
@@ -383,10 +384,10 @@ func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *hand
 		// below, so a rollback failure here must not be swallowed -- log it
 		// at Error with the orphaned index id so it stays observable even
 		// though the caller never sees it.
-		if _, delErr := vector.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: id}, accountID); delErr != nil {
+		if _, delErr := vector.DeleteIndex(ctx, &ochrevector.DeleteIndexRequest{IndexID: id}, accountID); delErr != nil {
 			slog.ErrorContext(ctx, "bedrock-agent: rollback delete index after knowledge base claim failure left an orphaned index", "index", id, "err", delErr)
 		}
-		if errors.Is(err, handlers_ochrevector.ErrKBExists) {
+		if errors.Is(err, ochrevector.ErrKBExists) {
 			return nil, errors.New(awserrors.ErrorConflictException)
 		}
 		return nil, err
@@ -402,7 +403,7 @@ func CreateKnowledgeBase(ctx context.Context, accountID, region string, kb *hand
 // GetKnowledgeBase looks up id in kb, returning ResourceNotFoundException for
 // a foreign account or an unknown id alike so a caller cannot distinguish
 // "not yours" from "does not exist".
-func GetKnowledgeBase(ctx context.Context, accountID, region string, kb *handlers_ochrevector.KBStore, input *bedrockagent.GetKnowledgeBaseInput) (*bedrockagent.GetKnowledgeBaseOutput, error) {
+func GetKnowledgeBase(ctx context.Context, accountID, region string, kb *ochrevector.KBStore, input *bedrockagent.GetKnowledgeBaseInput) (*bedrockagent.GetKnowledgeBaseOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -424,12 +425,12 @@ func GetKnowledgeBase(ctx context.Context, accountID, region string, kb *handler
 // ListKnowledgeBases returns the caller account's own knowledge bases,
 // sorted by creation time (id as a deterministic tie-breaker), mirroring
 // gateway_bedrock.ListGuardrails.
-func ListKnowledgeBases(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, _ *bedrockagent.ListKnowledgeBasesInput) (*bedrockagent.ListKnowledgeBasesOutput, error) {
+func ListKnowledgeBases(ctx context.Context, accountID string, kb *ochrevector.KBStore, _ *bedrockagent.ListKnowledgeBasesInput) (*bedrockagent.ListKnowledgeBasesOutput, error) {
 	recs, err := kb.List(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(recs, func(a, b handlers_ochrevector.KBRecord) int {
+	slices.SortFunc(recs, func(a, b ochrevector.KBRecord) int {
 		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
 			return c
 		}
@@ -455,7 +456,7 @@ func ListKnowledgeBases(ctx context.Context, accountID string, kb *handlers_ochr
 // ResourceNotFoundException), unlike gateway_bedrock.DeleteGuardrail's
 // idempotent-delete contract, because AWS's own DeleteKnowledgeBase does the
 // same.
-func DeleteKnowledgeBase(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.DeleteKnowledgeBaseInput) (*bedrockagent.DeleteKnowledgeBaseOutput, error) {
+func DeleteKnowledgeBase(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *bedrockagent.DeleteKnowledgeBaseInput) (*bedrockagent.DeleteKnowledgeBaseOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -483,7 +484,7 @@ func DeleteKnowledgeBase(ctx context.Context, accountID string, kb *handlers_och
 	// delete just because its index is already gone (Delete is idempotent
 	// w.r.t. the index). Any other error still aborts before the record
 	// itself is removed.
-	if _, err := vector.DeleteIndex(ctx, &handlers_ochrevector.DeleteIndexRequest{IndexID: rec.IndexID}, accountID); err != nil && !errors.Is(err, handlers_ochrevector.ErrIndexNotFound) {
+	if _, err := vector.DeleteIndex(ctx, &ochrevector.DeleteIndexRequest{IndexID: rec.IndexID}, accountID); err != nil && !errors.Is(err, ochrevector.ErrIndexNotFound) {
 		return nil, translateVectorErr(err)
 	}
 	if err := kb.Delete(ctx, accountID, id); err != nil {
@@ -498,7 +499,7 @@ func DeleteKnowledgeBase(ctx context.Context, accountID string, kb *handlers_och
 // dataSourceRecordToOutput builds the AWS DataSource shape from rec. Only S3
 // data sources are supported (CreateDataSource rejects any other type), so
 // this always renders an S3Configuration.
-func dataSourceRecordToOutput(rec handlers_ochrevector.DataSourceRecord) *bedrockagent.DataSource {
+func dataSourceRecordToOutput(rec ochrevector.DataSourceRecord) *bedrockagent.DataSource {
 	var inclusionPrefixes []*string
 	if rec.Source.Prefix != "" {
 		inclusionPrefixes = []*string{aws.String(rec.Source.Prefix)}
@@ -532,7 +533,7 @@ func dataSourceRecordToOutput(rec handlers_ochrevector.DataSourceRecord) *bedroc
 // CreateDataSourceInput carries no arbitrary metadata map to source it from
 // (real per-document metadata comes from S3 .metadata.json sidecar files at
 // ingest time, out of scope for Pass 1).
-func CreateDataSource(ctx context.Context, accountID, region string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, input *bedrockagent.CreateDataSourceInput) (*bedrockagent.CreateDataSourceOutput, error) {
+func CreateDataSource(ctx context.Context, accountID, region string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, input *bedrockagent.CreateDataSourceInput) (*bedrockagent.CreateDataSourceOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.Name) == "" || input.DataSourceConfiguration == nil {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -573,13 +574,13 @@ func CreateDataSource(ctx context.Context, accountID, region string, kb *handler
 
 	id := uuid.NewV4().String()
 	now := time.Now().UTC()
-	rec := handlers_ochrevector.DataSourceRecord{
+	rec := ochrevector.DataSourceRecord{
 		ID:              id,
 		KnowledgeBaseID: kbID,
 		Name:            aws.StringValue(input.Name),
 		Description:     aws.StringValue(input.Description),
-		Status:          handlers_ochrevector.StateReady,
-		Source: handlers_ochrevector.SourceSpec{
+		Status:          ochrevector.StateReady,
+		Source: ochrevector.SourceSpec{
 			Bucket:         bucketNameFromS3ARN(bucketArn),
 			Prefix:         prefix,
 			ChunkSize:      chunkSize,
@@ -591,7 +592,7 @@ func CreateDataSource(ctx context.Context, accountID, region string, kb *handler
 		UpdatedAt: now,
 	}
 	if err := ds.Create(ctx, accountID, rec); err != nil {
-		if errors.Is(err, handlers_ochrevector.ErrDataSourceExists) {
+		if errors.Is(err, ochrevector.ErrDataSourceExists) {
 			return nil, errors.New(awserrors.ErrorConflictException)
 		}
 		return nil, err
@@ -602,7 +603,7 @@ func CreateDataSource(ctx context.Context, accountID, region string, kb *handler
 // GetDataSource looks up dataSourceId scoped to knowledgeBaseId: a data
 // source that exists but belongs to a different knowledge base reports
 // ResourceNotFoundException, the same as one that does not exist at all.
-func GetDataSource(ctx context.Context, accountID, region string, ds *handlers_ochrevector.DataSourceStore, input *bedrockagent.GetDataSourceInput) (*bedrockagent.GetDataSourceOutput, error) {
+func GetDataSource(ctx context.Context, accountID, region string, ds *ochrevector.DataSourceStore, input *bedrockagent.GetDataSourceInput) (*bedrockagent.GetDataSourceOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -619,7 +620,7 @@ func GetDataSource(ctx context.Context, accountID, region string, ds *handlers_o
 
 // ListDataSources returns knowledgeBaseId's data sources, sorted by creation
 // time (id as a deterministic tie-breaker), mirroring ListKnowledgeBases.
-func ListDataSources(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, input *bedrockagent.ListDataSourcesInput) (*bedrockagent.ListDataSourcesOutput, error) {
+func ListDataSources(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, input *bedrockagent.ListDataSourcesInput) (*bedrockagent.ListDataSourcesOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -636,7 +637,7 @@ func ListDataSources(ctx context.Context, accountID string, kb *handlers_ochreve
 	if err != nil {
 		return nil, err
 	}
-	slices.SortFunc(recs, func(a, b handlers_ochrevector.DataSourceRecord) int {
+	slices.SortFunc(recs, func(a, b ochrevector.DataSourceRecord) int {
 		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
 			return c
 		}
@@ -659,7 +660,7 @@ func ListDataSources(ctx context.Context, accountID string, kb *handlers_ochreve
 // DeleteDataSource removes dataSourceId scoped to knowledgeBaseId. Not
 // idempotent on a foreign/unknown id (reports ResourceNotFoundException), the
 // same contract as DeleteKnowledgeBase and real AWS's own DeleteDataSource.
-func DeleteDataSource(ctx context.Context, accountID string, ds *handlers_ochrevector.DataSourceStore, input *bedrockagent.DeleteDataSourceInput) (*bedrockagent.DeleteDataSourceOutput, error) {
+func DeleteDataSource(ctx context.Context, accountID string, ds *ochrevector.DataSourceStore, input *bedrockagent.DeleteDataSourceInput) (*bedrockagent.DeleteDataSourceOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -685,7 +686,7 @@ func DeleteDataSource(ctx context.Context, accountID string, ds *handlers_ochrev
 // addressed kbID/dsID (the caller's own resolved ids, not necessarily rebuilt
 // from job.IndexID/job.DataSourceID, since AWS's IngestionJob always renders
 // under the path it was requested through).
-func jobRecordToOutput(kbID, dsID string, job handlers_ochrevector.JobRecord) *bedrockagent.IngestionJob {
+func jobRecordToOutput(kbID, dsID string, job ochrevector.JobRecord) *bedrockagent.IngestionJob {
 	var failureReasons []*string
 	for _, fd := range job.FailedDocuments {
 		failureReasons = append(failureReasons, aws.String(fmt.Sprintf("%s: %s", fd.SourceKey, fd.Reason)))
@@ -716,7 +717,7 @@ func jobRecordToOutput(kbID, dsID string, job handlers_ochrevector.JobRecord) *b
 // VectorService.Ingest. dsRec.ID is stamped onto the request as DataSourceID,
 // so the resulting job carries an exact link back to the data source that
 // started it.
-func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.StartIngestionJobInput) (*bedrockagent.StartIngestionJobOutput, error) {
+func StartIngestionJob(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *bedrockagent.StartIngestionJobInput) (*bedrockagent.StartIngestionJobOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -739,7 +740,7 @@ func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochre
 		return nil, errDataSourceNotFound(dsID)
 	}
 
-	resp, err := vector.Ingest(ctx, &handlers_ochrevector.IngestRequest{IndexID: kbRec.IndexID, Source: dsRec.Source, DataSourceID: dsRec.ID}, accountID)
+	resp, err := vector.Ingest(ctx, &ochrevector.IngestRequest{IndexID: kbRec.IndexID, Source: dsRec.Source, DataSourceID: dsRec.ID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
@@ -755,7 +756,7 @@ func StartIngestionJob(ctx context.Context, accountID string, kb *handlers_ochre
 // KB/data source's job by guessing its id. A job with an empty DataSourceID
 // (started directly against ochre.vector.ingest, with no bedrock-agent data
 // source involved) never matches any dataSourceId here.
-func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.GetIngestionJobInput) (*bedrockagent.GetIngestionJobOutput, error) {
+func GetIngestionJob(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *bedrockagent.GetIngestionJobInput) (*bedrockagent.GetIngestionJobOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" || aws.StringValue(input.IngestionJobId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -779,7 +780,7 @@ func GetIngestionJob(ctx context.Context, accountID string, kb *handlers_ochreve
 		return nil, errDataSourceNotFound(dsID)
 	}
 
-	resp, err := vector.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, accountID)
+	resp, err := vector.DescribeJob(ctx, &ochrevector.DescribeJobRequest{JobID: jobID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
@@ -810,7 +811,7 @@ type StopIngestionJobOutput struct {
 // must match) before cancelling it via VectorService.StopJob, so a
 // foreign/mismatched knowledgeBaseId or dataSourceId in the path cannot be
 // used to stop another KB/data source's job by guessing its id.
-func StopIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *StopIngestionJobInput) (*StopIngestionJobOutput, error) {
+func StopIngestionJob(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *StopIngestionJobInput) (*StopIngestionJobOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" || aws.StringValue(input.IngestionJobId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -838,7 +839,7 @@ func StopIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrev
 	// enforces: StopJob alone has no knowledge base/data source to compare
 	// against, so a foreign job id must be rejected before anything is
 	// cancelled.
-	describeResp, err := vector.DescribeJob(ctx, &handlers_ochrevector.DescribeJobRequest{JobID: jobID}, accountID)
+	describeResp, err := vector.DescribeJob(ctx, &ochrevector.DescribeJobRequest{JobID: jobID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
@@ -846,7 +847,7 @@ func StopIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrev
 		return nil, errIngestionJobNotFound(jobID)
 	}
 
-	resp, err := vector.StopJob(ctx, &handlers_ochrevector.StopJobRequest{JobID: jobID}, accountID)
+	resp, err := vector.StopJob(ctx, &ochrevector.StopJobRequest{JobID: jobID}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}
@@ -857,7 +858,7 @@ func StopIngestionJob(ctx context.Context, accountID string, kb *handlers_ochrev
 // ListIngestionJobs lists knowledgeBaseId's jobs via the new
 // VectorService.ListJobs, filtered to dataSourceId's own bound index and
 // exact DataSourceID, and sorted by start time.
-func ListIngestionJobs(ctx context.Context, accountID string, kb *handlers_ochrevector.KBStore, ds *handlers_ochrevector.DataSourceStore, vector handlers_ochrevector.VectorService, input *bedrockagent.ListIngestionJobsInput) (*bedrockagent.ListIngestionJobsOutput, error) {
+func ListIngestionJobs(ctx context.Context, accountID string, kb *ochrevector.KBStore, ds *ochrevector.DataSourceStore, vector ochrevector.VectorService, input *bedrockagent.ListIngestionJobsInput) (*bedrockagent.ListIngestionJobsOutput, error) {
 	if input == nil || aws.StringValue(input.KnowledgeBaseId) == "" || aws.StringValue(input.DataSourceId) == "" {
 		return nil, errors.New(awserrors.ErrorValidationException)
 	}
@@ -880,7 +881,7 @@ func ListIngestionJobs(ctx context.Context, accountID string, kb *handlers_ochre
 		return nil, errDataSourceNotFound(dsID)
 	}
 
-	resp, err := vector.ListJobs(ctx, &handlers_ochrevector.ListJobsRequest{}, accountID)
+	resp, err := vector.ListJobs(ctx, &ochrevector.ListJobsRequest{}, accountID)
 	if err != nil {
 		return nil, translateVectorErr(err)
 	}

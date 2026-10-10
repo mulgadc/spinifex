@@ -1,0 +1,262 @@
+package quota
+
+import (
+	"context"
+	"errors"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/nats-io/nats.go"
+)
+
+// vcpuCASRetries bounds AddVCPU's retry on a revision conflict. Each retry
+// implies another writer committed, so a single grow can conflict at most as
+// many times as there are concurrent grows on the account, and this covers a
+// realistic in-flight launch burst.
+//
+// Sized against the backoff, not just the contending set: the retry pauses
+// between attempts, so the budget is a wall-clock one and the counter write
+// sits on the RunInstances response path.
+const vcpuCASRetries = 25
+
+// CheckVCPU rejects with ResourceLimitExceeded when charging want more vCPUs to
+// accountID would exceed the configured cap. It only reads the counter; the
+// caller increments via AddVCPU after the grow succeeds. Two concurrent checks
+// can both pass before either increments (the documented soft-cap window); the
+// per-node physical gate still backstops real overcommit.
+func (s *Service) CheckVCPU(ctx context.Context, accountID string, want int) error {
+	if s.Exempt(accountID) {
+		return nil
+	}
+	current, _, err := s.readVCPU(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(current, want, s.limitsFor(ctx, accountID).VCPUs)
+}
+
+// casVCPU applies next to accountID's counter under bounded JetStream CAS so
+// concurrent writers cannot lose updates. next maps the current value to the new
+// value and a skip flag; skip leaves the counter untouched and never creates a
+// key. A revision conflict is retried; exhausting the bound is a hard error.
+func (s *Service) casVCPU(ctx context.Context, accountID string, next func(current int) (value int, skip bool)) error {
+	return s.usage.Upsert(ctx, accountID, func(current *int) (bool, error) {
+		value, skip := next(*current)
+		if skip {
+			return false, nil
+		}
+		*current = value
+		return true, nil
+	})
+}
+
+// AddVCPU adds delta vCPUs to accountID's counter under CAS so concurrent grows
+// cannot lose updates. A non-positive delta is a no-op: shrinks are never charged
+// and are left to reconcile to lower the counter.
+func (s *Service) AddVCPU(ctx context.Context, accountID string, delta int) error {
+	if s.Exempt(accountID) || delta <= 0 {
+		return nil
+	}
+	return s.casVCPU(ctx, accountID, func(current int) (int, bool) {
+		return current + delta, false
+	})
+}
+
+// setVCPU overwrites accountID's counter to value, the only operation that lowers
+// a counter. A counter already equal to value is left untouched, so a steady-state
+// pass writes nothing and an account with no usage and no key is never created.
+// Reconcile is the sole caller and runs under the leader lock.
+func (s *Service) setVCPU(ctx context.Context, accountID string, value int) error {
+	return s.casVCPU(ctx, accountID, func(current int) (int, bool) {
+		return value, current == value
+	})
+}
+
+// setVCPUAt lowers or raises accountID's counter to value, but only while the
+// counter still stands at sinceRevision.
+//
+// The guard is what stops a scan clobbering a launch it never saw: ChargeLaunch
+// landing between the revision read and this write moves the revision, so the
+// charge wins and the scan is dropped for the next pass to settle. Without it
+// the absolute overwrite would silently undo the charge and lift the cap.
+func (s *Service) setVCPUAt(ctx context.Context, accountID string, value int, sinceRevision uint64) error {
+	current, revision, err := s.readVCPU(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if revision != sinceRevision || current == value {
+		return nil
+	}
+	// Single-shot rather than Upsert: the guard is the revision the caller
+	// observed, so a retry against the winner's revision is the write this
+	// deliberately drops.
+	if revision == 0 {
+		_, err = s.usage.Create(ctx, accountID, &value)
+	} else {
+		_, err = s.usage.CompareAndSet(ctx, accountID, &value, revision)
+	}
+	// Losing the race is the guard working, not a failure: a charge got there
+	// first and the next pass recomputes against it.
+	if errors.Is(err, kvstore.ErrExists) || errors.Is(err, kvstore.ErrConflict) {
+		return nil
+	}
+	return err
+}
+
+// reconcileVCPU writes accountID's counter from a reconcile sweep. A complete
+// sweep overwrites (the only path that may lower a counter), guarded on the
+// counter not having moved since sinceRevision. An incomplete sweep — a failed
+// scan — may only raise the counter: lowering from a partial view would
+// under-count usage and lift the cap, so a short count is dropped and left for
+// the next clean pass. Raising is always safe, since the instances actually
+// observed do exist.
+func (s *Service) reconcileVCPU(ctx context.Context, accountID string, value int, complete bool, sinceRevision uint64) error {
+	if complete {
+		return s.setVCPUAt(ctx, accountID, value, sinceRevision)
+	}
+	current, _, err := s.readVCPU(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	if value <= current {
+		return nil
+	}
+	return s.setVCPU(ctx, accountID, value)
+}
+
+// EnforceLaunch is the check-before gate for RunInstances: it rejects when the
+// worst-case charge of maxCount instances of instanceType would push accountID
+// over its vCPU cap. The actual launched count is charged afterwards via
+// ChargeLaunch. An unknown instance type contributes nothing and is left for the
+// daemon to reject as InvalidInstanceType; the Exempt short-circuit lives in
+// CheckVCPU.
+func (s *Service) EnforceLaunch(ctx context.Context, accountID, instanceType string, maxCount int) error {
+	perType, ok := instancetypes.DefaultVCPUs(instanceType)
+	if !ok {
+		return nil
+	}
+	return s.CheckVCPU(ctx, accountID, perType*maxCount)
+}
+
+// ChargeLaunch is the increment-after for a successful RunInstances: it adds the
+// vCPUs actually launched, summed from the returned reservation, to accountID's
+// counter. The daemon may launch fewer than maxCount, so the charge is the real
+// reservation rather than the checked worst case. The caller treats a write
+// failure as drift for reconcile to correct, never failing the live launch.
+func (s *Service) ChargeLaunch(ctx context.Context, accountID string, reservation *ec2.Reservation) error {
+	return s.AddVCPU(ctx, accountID, sumReservationVCPUs([]*ec2.Reservation{reservation}))
+}
+
+// InstanceTypeResolver returns the current instance type of instanceID owned by
+// accountID. ok is false when the instance does not exist for the account, in
+// which case the retype gate charges nothing and leaves the modify for the daemon
+// to reject. It mirrors reconcile's InstanceLister so unit tests can inject a
+// static type without a NATS round trip.
+type InstanceTypeResolver func(accountID, instanceID string) (instanceType string, ok bool, err error)
+
+// NATSInstanceTypeResolver builds the production resolver: an account-filtered,
+// single-instance describe returning the live type of a running or stopped
+// instance. It uses the strict reconcile variant so an incomplete sweep does not
+// masquerade as "instance absent" and wave a retype past the cap (see
+// confirmInstanceType). expectedNodes is the configured node total, re-evaluated
+// per call so a config change is reflected without a restart.
+func NATSInstanceTypeResolver(natsConn *nats.Conn, expectedNodes func() int) InstanceTypeResolver {
+	return func(accountID, instanceID string) (string, bool, error) {
+		reservations, complete, err := ec2instanceapi.DescribeInstancesForReconcile(
+			context.Background(), &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
+			natsConn, expectedNodes(), accountID)
+		if err != nil {
+			return "", false, err
+		}
+		return confirmInstanceType(reservations, instanceID, complete)
+	}
+}
+
+// confirmInstanceType resolves instanceID's type from a describe sweep. A genuine
+// absence on a complete sweep returns ok false with no error, so the retype gate
+// charges nothing and the daemon rejects the modify. An instance that cannot be
+// found on an incomplete sweep (a node or bucket missed) fails closed with
+// ErrorServerInternal: a partial view must not be read as absent and let a retype
+// skip its cap check. The client retries once the sweep is clean.
+func confirmInstanceType(reservations []*ec2.Reservation, instanceID string, complete bool) (string, bool, error) {
+	instanceType, ok := instanceTypeFromReservations(reservations, instanceID)
+	if !ok && !complete {
+		return "", false, errors.New(awserrors.ErrorServerInternal)
+	}
+	return instanceType, ok, nil
+}
+
+// EnforceRetype is the check-before gate for a ModifyInstanceAttribute that
+// changes InstanceType: it rejects when retyping accountID's instance to newType
+// would push its vCPU counter over the cap. It returns the vCPU delta the caller
+// charges via AddVCPU once the daemon applies the retype. A retype-down or
+// same-size change yields a non-positive delta that charges nothing and is left
+// to reconcile. Exempt accounts, an unknown newType (the daemon rejects it), and
+// an instance the resolver cannot find (the daemon rejects the modify) all return
+// 0 with no check.
+func (s *Service) EnforceRetype(ctx context.Context, resolve InstanceTypeResolver, accountID, instanceID, newType string) (int, error) {
+	if s.Exempt(accountID) {
+		return 0, nil
+	}
+	newVCPUs, ok := instancetypes.DefaultVCPUs(newType)
+	if !ok {
+		return 0, nil
+	}
+	oldType, ok, err := resolve(accountID, instanceID)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, nil
+	}
+	oldVCPUs, ok := instancetypes.DefaultVCPUs(oldType)
+	if !ok {
+		return 0, nil
+	}
+	delta := newVCPUs - oldVCPUs
+	if delta <= 0 {
+		return delta, nil
+	}
+	if err := s.CheckVCPU(ctx, accountID, delta); err != nil {
+		return 0, err
+	}
+	return delta, nil
+}
+
+// instanceTypeFromReservations finds instanceID among reservations and returns
+// its type. ok is false when the instance is absent, terminal, or untyped, so the
+// retype gate charges nothing and defers to the daemon.
+func instanceTypeFromReservations(reservations []*ec2.Reservation, instanceID string) (string, bool) {
+	for _, res := range reservations {
+		if res == nil {
+			continue
+		}
+		for _, inst := range res.Instances {
+			if inst == nil || inst.InstanceType == nil || isTerminalState(inst.State) {
+				continue
+			}
+			if aws.StringValue(inst.InstanceId) == instanceID {
+				return *inst.InstanceType, true
+			}
+		}
+	}
+	return "", false
+}
+
+// readVCPU returns accountID's current reserved vCPU count and the KV revision
+// it was read at. A missing key is the zero counter at revision 0, which AddVCPU
+// treats as a create.
+func (s *Service) readVCPU(ctx context.Context, accountID string) (count int, revision uint64, err error) {
+	value, revision, err := s.usage.Get(ctx, accountID)
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	return *value, revision, nil
+}

@@ -11,8 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go/private/protocol/xml/xmlutil"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/domains/rds/subnetgroup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,9 +62,7 @@ func TestCreateDBSubnetGroup_StoresEverySubnetSupplied(t *testing.T) {
 		subnetGroupInput(testSubnetGroup, "subnet-zebra", "subnet-alpha"), testAccountID)
 	require.NoError(t, err)
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
-	rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	rec, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 
 	require.Len(t, rec.Subnets, 2)
@@ -201,7 +200,7 @@ func TestDescribeDBSubnetGroups_ReportsNetworkTypesAndAnEmptyOutpost(t *testing.
 	require.NoError(t, err)
 	var relayed rds.DescribeDBSubnetGroupsOutput
 	require.NoError(t, json.Unmarshal(wire, &relayed))
-	body, err := utils.MarshalToXML(utils.GenerateIAMXMLPayload("DescribeDBSubnetGroups", &relayed))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload("DescribeDBSubnetGroups", &relayed))
 	require.NoError(t, err)
 	var parsed rds.DescribeDBSubnetGroupsOutput
 	require.NoError(t, xmlutil.UnmarshalXML(&parsed, xml.NewDecoder(bytes.NewReader(body)), "DescribeDBSubnetGroupsResult"))
@@ -382,16 +381,14 @@ func TestModifyDBSubnetGroup_KeepsTheOmittedDescriptionTagsAndCreatedAt(t *testi
 	_, err := h.svc.CreateDBSubnetGroup(t.Context(), create, testAccountID)
 	require.NoError(t, err)
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
-	before, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	before, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 
 	_, err = h.svc.ModifyDBSubnetGroup(t.Context(),
 		modifySubnetGroupInput(testSubnetGroup, "subnet-alpha", "subnet-zebra"), testAccountID)
 	require.NoError(t, err)
 
-	after, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	after, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 	assert.Equal(t, "Database subnets", after.Description)
 	assert.Equal(t, map[string]string{"env": "prod"}, after.Tags)
@@ -419,9 +416,7 @@ func TestModifyDBSubnetGroup_RefusesAMoveToAnotherVPC(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
 
-	kv, err := h.svc.bucket(t.Context(), testAccountID)
-	require.NoError(t, err)
-	rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+	rec, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 	require.NoError(t, err)
 	assert.Equal(t, testDefaultVPC, rec.VpcID)
 }
@@ -483,9 +478,7 @@ func TestModifyDBSubnetGroup_RejectsWhatCreateRejects(t *testing.T) {
 			assert.Equal(t, tc.want, awserrors.ValidErrorCodeFromError(err),
 				"the code has to survive resolution or the client sees a 500")
 
-			kv, err := h.svc.bucket(t.Context(), testAccountID)
-			require.NoError(t, err)
-			rec, _, err := getDBSubnetGroup(t.Context(), kv, testSubnetGroup)
+			rec, err := h.svc.subnetGroups().Get(t.Context(), testAccountID, testSubnetGroup)
 			require.NoError(t, err)
 			require.Len(t, rec.Subnets, 1)
 			assert.Equal(t, "subnet-alpha", rec.Subnets[0].SubnetID)
@@ -502,4 +495,167 @@ func TestModifyDBSubnetGroup_RejectsAnUnknownName(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
 		"the code has to survive resolution or the client sees a 500")
+}
+
+// AWS's delete is not idempotent: a repeat, or a delete of a name never
+// created, reports the group's own not-found fault rather than success.
+func TestDeleteDBSubnetGroup_RepeatReportsNotFound(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+
+	input := &rds.DeleteDBSubnetGroupInput{DBSubnetGroupName: aws.String(testSubnetGroup)}
+	_, err = h.svc.DeleteDBSubnetGroup(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	_, err = h.svc.DeleteDBSubnetGroup(t.Context(), input, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+}
+
+// Identity is the name within one account: another account neither sees nor
+// deletes the group, and may hold its own group of the same name.
+func TestDBSubnetGroup_NameIsScopedToTheAccount(t *testing.T) {
+	t.Parallel()
+	const otherAccount = "210987654321"
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+
+	_, err = h.svc.DescribeDBSubnetGroups(t.Context(),
+		&rds.DescribeDBSubnetGroupsInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, otherAccount)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err))
+	_, err = h.svc.DeleteDBSubnetGroup(t.Context(),
+		&rds.DeleteDBSubnetGroupInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, otherAccount)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err))
+
+	_, err = h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-zebra"), otherAccount)
+	require.NoError(t, err)
+
+	out, err := h.svc.DescribeDBSubnetGroups(t.Context(), &rds.DescribeDBSubnetGroupsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.DBSubnetGroups, 1)
+	require.Len(t, out.DBSubnetGroups[0].Subnets, 1)
+	assert.Equal(t, "subnet-alpha", aws.StringValue(out.DBSubnetGroups[0].Subnets[0].SubnetIdentifier),
+		"the other account's create must not overwrite this one")
+}
+
+// The group is read once, at placement: changing its subnets afterwards
+// shapes later placements only and never moves an instance already placed.
+func TestModifyDBSubnetGroup_LeavesAPlacedInstanceWhereItIs(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-zebra"), testAccountID)
+	require.NoError(t, err)
+
+	input := validCreateInput()
+	input.DBSubnetGroupName = aws.String(testSubnetGroup)
+	_, err = h.svc.CreateDBInstance(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	require.Equal(t, "subnet-zebra", h.record(t, testDBInstanceID).SubnetID)
+
+	_, err = h.svc.ModifyDBSubnetGroup(t.Context(),
+		modifySubnetGroupInput(testSubnetGroup, "subnet-alpha", "subnet-zebra"), testAccountID)
+	require.NoError(t, err)
+
+	rec := h.record(t, testDBInstanceID)
+	assert.Equal(t, "subnet-zebra", rec.SubnetID, "a fresh placement would now pick subnet-alpha")
+	assert.Equal(t, testSubnetGroup, rec.DBSubnetGroupName)
+}
+
+// Only instances hold a group in use: a snapshot records the group's name for
+// a later restore, but does not block the group's delete.
+func TestDeleteDBSubnetGroup_IsNotBlockedByASnapshotNamingIt(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
+	require.NoError(t, err)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey("orders-snap"), &DBSnapshotRecord{
+		DBSnapshotIdentifier: "orders-snap",
+		AccountID:            testAccountID,
+		Status:               SnapshotStatusAvailable,
+		DBSubnetGroupName:    testSubnetGroup,
+	}))
+
+	_, err = h.svc.DeleteDBSubnetGroup(t.Context(),
+		&rds.DeleteDBSubnetGroupInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, testAccountID)
+	require.NoError(t, err)
+}
+
+// Restore is the second consumer of the group's placement: an unknown group
+// fails it with the group's own fault before anything is reserved.
+func TestRestoreDBInstanceFromDBSnapshot_RejectsAnUnknownSubnetGroup(t *testing.T) {
+	t.Parallel()
+	h := newSnapshotHarness(t, false)
+	h.seedSnapshot(t)
+
+	input := restoreInput()
+	input.DBSubnetGroupName = aws.String("absent")
+	_, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), input, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err),
+		"the code has to survive resolution or the client sees a 500")
+	assert.False(t, h.instanceExists(t, testRestoredID), "a rejected restore must reserve nothing")
+}
+
+// Tags live on the group's own record, so they are reached through its ARN and
+// go when the group does.
+func TestDBSubnetGroup_TagsAreReachedThroughItsARN(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	input := subnetGroupInput(testSubnetGroup, "subnet-alpha")
+	input.Tags = awsTags("env", "prod")
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	arn := aws.String(FormatARN(ResourceKindDBSubnetGroup, testRegion, testAccountID, testSubnetGroup))
+	out, err := h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{ResourceName: arn}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.TagList, 1)
+	assert.Equal(t, "env", aws.StringValue(out.TagList[0].Key))
+	assert.Equal(t, "prod", aws.StringValue(out.TagList[0].Value))
+
+	_, err = h.svc.DeleteDBSubnetGroup(t.Context(),
+		&rds.DeleteDBSubnetGroupInput{DBSubnetGroupName: aws.String(testSubnetGroup)}, testAccountID)
+	require.NoError(t, err)
+	_, err = h.svc.ListTagsForResource(t.Context(), &rds.ListTagsForResourceInput{ResourceName: arn}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorDBSubnetGroupNotFound)
+}
+
+// The stored shape outlives any move of the code that writes it, so a record
+// written before a relocation must still decode after it.
+func TestDBSubnetGroupRecord_PersistedFieldNames(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, testBaseDomain)
+	input := subnetGroupInput(testSubnetGroup, "subnet-alpha")
+	input.Tags = awsTags("env", "prod")
+	_, err := h.svc.CreateDBSubnetGroup(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	js, err := kv.KV(t.Context())
+	require.NoError(t, err)
+	entry, err := js.Get(t.Context(), subnetgroup.Key(testSubnetGroup))
+	require.NoError(t, err)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(entry.Value(), &raw))
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	assert.ElementsMatch(t, []string{
+		"name", "accountId", "description", "subnets", "vpcId", "tags", "createdAt", "updatedAt",
+	}, keys)
+
+	var subnets []map[string]string
+	require.NoError(t, json.Unmarshal(raw["subnets"], &subnets))
+	assert.Equal(t, []map[string]string{{"subnetId": "subnet-alpha", "availabilityZone": testZone}}, subnets)
 }

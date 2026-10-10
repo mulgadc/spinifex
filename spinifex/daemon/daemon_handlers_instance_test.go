@@ -3,21 +3,21 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_key "github.com/mulgadc/spinifex/spinifex/handlers/ec2/key"
-	handlers_ec2_tags "github.com/mulgadc/spinifex/spinifex/handlers/ec2/tags"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
-	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +38,7 @@ func daemonWithFakeStateStore(t *testing.T, store *vmmock.StateStore) *Daemon {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.stateStore = store
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
 		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
 	)
@@ -56,7 +56,7 @@ func requestHandler(t *testing.T, nc *nats.Conn, subject string, fn nats.MsgHand
 
 	msg := nats.NewMsg(subject)
 	msg.Data = body
-	msg.Header.Set(utils.AccountIDHeader, accountID)
+	msg.Header.Set(natsmsg.AccountIDHeader, accountID)
 	reply, err := nc.RequestMsg(msg, 5*time.Second)
 	require.NoError(t, err)
 	return reply
@@ -94,7 +94,7 @@ func TestHandleEC2StartStoppedInstance_LoadError(t *testing.T) {
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-load-fail"})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: "i-load-fail"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test1", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -103,7 +103,7 @@ func TestHandleEC2StartStoppedInstance_StateStoreNil(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 	// d.stateStore intentionally left nil.
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-no-store"})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: "i-no-store"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test2", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -113,7 +113,7 @@ func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
 	store.Stopped["i-foreign"] = stoppedVMFixture("i-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: "i-foreign"})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: "i-foreign"})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test3", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 
@@ -130,7 +130,7 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test4", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"])
 }
@@ -169,7 +169,7 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutFallsBackLocally(t *testing
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = silentSub.Unsubscribe() })
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test5", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
 		"a forward timeout must fall back to a local start attempt, not a bare ServerInternal")
@@ -201,7 +201,7 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleSt
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = claimingSub.Unsubscribe() })
 
-	body, _ := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.start.test6", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"],
@@ -217,7 +217,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-load-fail"})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-load-fail"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test1", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -225,7 +225,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 func TestHandleEC2TerminateStoppedInstance_StateStoreNil(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-no-store"})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-no-store"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test2", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 }
@@ -239,7 +239,7 @@ func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testi
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test3", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 
@@ -260,7 +260,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test4", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 
 	var resp map[string]string
@@ -285,7 +285,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *t
 	store.Stopped[v.ID] = v
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: v.ID})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test5", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 
 	var resp map[string]string
@@ -301,7 +301,7 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 	store.Stopped["i-foreign-term"] = stoppedVMFixture("i-foreign-term", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
 
-	body, _ := json.Marshal(handlers_ec2_instance.TerminateStoppedInstanceInput{InstanceID: "i-foreign-term"})
+	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-foreign-term"})
 	reply := requestHandler(t, d.natsConn, "ec2.terminate.test6", asMsgHandler(handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance)), testAccountID, body)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"])
 
@@ -525,17 +525,17 @@ func TestHandleEC2RunInstances_GatewayReservationAndTagStoreFailure(t *testing.T
 	d := createTestDaemon(t, sharedNATSURL)
 	images := objectstore.NewMemoryObjectStore()
 	seedTestAMI(t, images, d.config.Predastore.Bucket, "ami-p1-gateway")
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn, images, d.vmMgr, d.resourceMgr, nil)
 	d.instanceService.SetRunInstancesDeps(
-		handlers_ec2_image.NewImageServiceImplWithStore(images, d.config.Predastore.Bucket),
-		handlers_ec2_key.NewKeyServiceImplWithStore(images, d.config.Predastore.Bucket), nil, nil)
+		ec2image.NewImageServiceImplWithStore(images, d.config.Predastore.Bucket),
+		ec2key.NewKeyServiceImplWithStore(images, d.config.Predastore.Bucket), nil, nil)
 
 	_, tagKV := faultBucket(t)
 	for _, m := range []string{"Put", "Create", "Update"} {
 		tagKV.setFail(m, true)
 	}
-	d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
+	d.tagsService = ec2tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
 	t.Cleanup(d.vmMgr.WaitForBackgroundWork)
 
 	subject := "ec2.RunInstances.p1-gateway"
@@ -554,8 +554,8 @@ func TestHandleEC2RunInstances_GatewayReservationAndTagStoreFailure(t *testing.T
 			Tags:         []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("web")}},
 		}},
 	})
-	msg.Header.Set(utils.AccountIDHeader, testAccountID)
-	msg.Header.Set(utils.ReservationIDHeader, "r-0gateway000000001")
+	msg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
+	msg.Header.Set(natsmsg.ReservationIDHeader, "r-0gateway000000001")
 	reply, err := d.natsConn.RequestMsg(msg, 5*time.Second)
 	require.NoError(t, err)
 
@@ -574,7 +574,7 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 		v.InstanceType = "definitely.not.a.real.type"
 		v.LastNode = lastNode
 		store.Stopped[v.ID] = v
-		body, err := json.Marshal(handlers_ec2_instance.StartStoppedInstanceInput{InstanceID: v.ID})
+		body, err := json.Marshal(ec2instance.StartStoppedInstanceInput{InstanceID: v.ID})
 		require.NoError(t, err)
 		return daemonWithFakeStateStore(t, store), store, body
 	}
@@ -599,7 +599,7 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 		// fallback ran rather than the capacity error being relayed.
 		owner(t, d, "node-p1-cap", func(m *nats.Msg) {
 			_, _ = store.ClaimStoppedInstance("i-p1-fwd-cap")
-			_ = m.Respond(utils.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
+			_ = m.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity))
 		})
 
 		reply := requestHandler(t, d.natsConn, "ec2.start.p1-cap", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
@@ -619,18 +619,18 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 
 		msg := nats.NewMsg("ec2.start.p1-relay")
 		msg.Data = body
-		msg.Header.Set(utils.AccountIDHeader, testAccountID)
+		msg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
 		assert.Equal(t, outcomeError, d.handleEC2StartStoppedInstance(msg))
 	})
 }
 
 // --- handleSetInstanceTags / handleSetInstanceMonitoring ---
 
-func setTagsCommand(id string) types.EC2InstanceCommand {
-	return types.EC2InstanceCommand{
+func setTagsCommand(id string) ec2v1.EC2InstanceCommand {
+	return ec2v1.EC2InstanceCommand{
 		ID:         id,
-		Attributes: types.EC2CommandAttributes{SetInstanceTags: true},
-		InstanceTagsData: &types.InstanceTagsData{
+		Attributes: ec2v1.EC2CommandAttributes{SetInstanceTags: true},
+		InstanceTagsData: &ec2v1.InstanceTagsData{
 			Tags: map[string]string{"env": "dev"},
 		},
 	}
@@ -653,7 +653,7 @@ func TestHandleSetInstanceTags_Failures(t *testing.T) {
 		for _, m := range []string{"Put", "Create", "Update"} {
 			tagKV.setFail(m, true)
 		}
-		d.tagsService = handlers_ec2_tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
+		d.tagsService = ec2tags.NewTagsServiceImplWithStore(d.config, objectstore.NewMemoryObjectStore(), tagKV)
 
 		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, mustMarshal(t, setTagsCommand(id)))
 		assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
@@ -677,18 +677,18 @@ func TestHandleSetInstanceTags_Failures(t *testing.T) {
 		require.True(t, ok)
 
 		msg := nats.NewMsg("ec2.cmd." + id)
-		msg.Header.Set(utils.AccountIDHeader, testAccountID)
+		msg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
 		assert.Equal(t, outcomeSuccess, d.handleSetInstanceTags(t.Context(), msg, setTagsCommand(id), instance))
 		assert.Equal(t, map[string]string{"env": "dev"}, recordTags(t, d, id))
 	})
 }
 
 func TestHandleSetInstanceMonitoring_Failures(t *testing.T) {
-	enable := func(id string) types.EC2InstanceCommand {
-		return types.EC2InstanceCommand{
+	enable := func(id string) ec2v1.EC2InstanceCommand {
+		return ec2v1.EC2InstanceCommand{
 			ID:                     id,
-			Attributes:             types.EC2CommandAttributes{SetInstanceMonitoring: true},
-			InstanceMonitoringData: &types.InstanceMonitoringData{Enabled: true},
+			Attributes:             ec2v1.EC2CommandAttributes{SetInstanceMonitoring: true},
+			InstanceMonitoringData: &ec2v1.InstanceMonitoringData{Enabled: true},
 		}
 	}
 

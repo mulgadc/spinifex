@@ -506,7 +506,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 	// TestAccountScoping_IGWEIGW and TestAccountScoping_Settings.
 	// VPCServiceImpl/IGWServiceImpl/EgressOnlyIGWServiceImpl/
 	// AccountSettingsServiceImpl all resolve ownership from a plain
-	// account-scoped KV key (utils.AccountKey(accountID, id) or an
+	// account-scoped KV key (kvutil.AccountKey(accountID, id) or an
 	// account-keyed settings record) — no vm.Manager, no real guest, no OVN
 	// state that only exists once a VPC has an attached instance. The live
 	// variants proved nothing beyond what the integration tier now asserts

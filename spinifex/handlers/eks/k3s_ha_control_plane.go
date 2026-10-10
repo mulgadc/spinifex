@@ -5,19 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
-	"slices"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
@@ -29,13 +28,13 @@ const haControlPlaneCount = 3
 type controlPlanePlacer interface {
 	CreatePlacementGroup(context.Context, *ec2.CreatePlacementGroupInput, string) (*ec2.CreatePlacementGroupOutput, error)
 	DeletePlacementGroup(context.Context, *ec2.DeletePlacementGroupInput, string) (*ec2.DeletePlacementGroupOutput, error)
-	ReserveSpreadNodes(context.Context, *handlers_ec2_placementgroup.ReserveSpreadNodesInput, string) (*handlers_ec2_placementgroup.ReserveSpreadNodesOutput, error)
-	ReleaseSpreadNodes(context.Context, *handlers_ec2_placementgroup.ReleaseSpreadNodesInput, string) (*handlers_ec2_placementgroup.ReleaseSpreadNodesOutput, error)
-	FinalizeSpreadInstances(context.Context, *handlers_ec2_placementgroup.FinalizeSpreadInstancesInput, string) (*handlers_ec2_placementgroup.FinalizeSpreadInstancesOutput, error)
-	RemoveInstance(context.Context, *handlers_ec2_placementgroup.RemoveInstanceInput, string) (*handlers_ec2_placementgroup.RemoveInstanceOutput, error)
+	ReserveSpreadNodes(context.Context, *ec2placementgroup.ReserveSpreadNodesInput, string) (*ec2placementgroup.ReserveSpreadNodesOutput, error)
+	ReleaseSpreadNodes(context.Context, *ec2placementgroup.ReleaseSpreadNodesInput, string) (*ec2placementgroup.ReleaseSpreadNodesOutput, error)
+	FinalizeSpreadInstances(context.Context, *ec2placementgroup.FinalizeSpreadInstancesInput, string) (*ec2placementgroup.FinalizeSpreadInstancesOutput, error)
+	RemoveInstance(context.Context, *ec2placementgroup.RemoveInstanceInput, string) (*ec2placementgroup.RemoveInstanceOutput, error)
 }
 
-var _ controlPlanePlacer = (handlers_ec2_placementgroup.PlacementGroupService)(nil)
+var _ controlPlanePlacer = (ec2placementgroup.PlacementGroupService)(nil)
 
 // HostScheduler answers capacity + placement fan-out questions for HA CP placement.
 type HostScheduler interface {
@@ -63,13 +62,13 @@ func (s *EKSServiceImpl) placeControlPlane(ctx context.Context, accountID, clust
 		return s.launchSingleControlPlane(ctx, tmpl)
 	}
 
-	pgAccount := admin.SystemAccountID()
+	pgAccount := awsidentifiers.GlobalAccountID
 	groupName := haSpreadGroupName(accountID, clusterName)
 	if err := s.ensureSpreadGroup(ctx, groupName, pgAccount); err != nil {
 		return nil, "", err
 	}
 
-	reserve, err := s.deps.PlacementGroup.ReserveSpreadNodes(ctx, &handlers_ec2_placementgroup.ReserveSpreadNodesInput{
+	reserve, err := s.deps.PlacementGroup.ReserveSpreadNodes(ctx, &ec2placementgroup.ReserveSpreadNodesInput{
 		GroupName:     groupName,
 		EligibleNodes: hosts,
 		MinCount:      haControlPlaneCount,
@@ -117,7 +116,7 @@ func (s *EKSServiceImpl) placeControlPlane(ctx context.Context, accountID, clust
 	for _, n := range launched {
 		nodeInstances[n.NodeID] = []string{n.InstanceID}
 	}
-	if _, err := s.deps.PlacementGroup.FinalizeSpreadInstances(ctx, &handlers_ec2_placementgroup.FinalizeSpreadInstancesInput{
+	if _, err := s.deps.PlacementGroup.FinalizeSpreadInstances(ctx, &ec2placementgroup.FinalizeSpreadInstancesInput{
 		GroupName:     groupName,
 		NodeInstances: nodeInstances,
 	}, pgAccount); err != nil {
@@ -155,7 +154,7 @@ func (s *EKSServiceImpl) ProvisionReplacementCP(ctx context.Context, req Replace
 
 	// Re-derive rotating creds the same way CreateCluster does so a replacement
 	// picks up current credentials rather than a frozen create-time snapshot.
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	in.IamInstanceProfileArn = ""
 	in.AccessKey = ""
 	in.SecretKey = ""
@@ -214,7 +213,7 @@ func (s *EKSServiceImpl) ProvisionFreshControlPlane(ctx context.Context, req Fre
 	in.KonnServerCount = 1
 	in.PrunePeerIP = ""
 
-	sysAcct := admin.SystemAccountID()
+	sysAcct := awsidentifiers.GlobalAccountID
 	in.IamInstanceProfileArn = ""
 	in.AccessKey = ""
 	in.SecretKey = ""
@@ -362,7 +361,7 @@ func (s *EKSServiceImpl) rollbackControlPlaneSpread(ctx context.Context, account
 			slog.WarnContext(ctx, "rollbackControlPlaneSpread: terminate failed", "instanceId", n.InstanceID, "err", err)
 		}
 	}
-	if _, err := s.deps.PlacementGroup.ReleaseSpreadNodes(ctx, &handlers_ec2_placementgroup.ReleaseSpreadNodesInput{
+	if _, err := s.deps.PlacementGroup.ReleaseSpreadNodes(ctx, &ec2placementgroup.ReleaseSpreadNodesInput{
 		GroupName: groupName,
 		Nodes:     reserved,
 	}, pgAccount); err != nil {
@@ -401,12 +400,12 @@ func (s *EKSServiceImpl) teardownSpreadGroup(ctx context.Context, meta *ClusterM
 	if meta.ControlPlaneSpreadGroup == "" {
 		return
 	}
-	pgAccount := admin.SystemAccountID()
+	pgAccount := awsidentifiers.GlobalAccountID
 	for _, cp := range meta.ControlPlaneNodes {
 		if cp.NodeID == "" || cp.InstanceID == "" {
 			continue
 		}
-		if _, err := s.deps.PlacementGroup.RemoveInstance(ctx, &handlers_ec2_placementgroup.RemoveInstanceInput{
+		if _, err := s.deps.PlacementGroup.RemoveInstance(ctx, &ec2placementgroup.RemoveInstanceInput{
 			GroupName:  meta.ControlPlaneSpreadGroup,
 			NodeName:   cp.NodeID,
 			InstanceID: cp.InstanceID,
@@ -500,8 +499,8 @@ func (h *natsHostScheduler) SchedulableHosts(ctx context.Context, instanceType s
 
 	var hosts []azHost
 	seen := make(map[string]bool)
-	h.fanout(ctx, "spinifex.node.status", func(data []byte) {
-		var st types.NodeStatusResponse
+	h.fanout(ctx, clusterv1.NodeStatusSubject, func(data []byte) {
+		var st clusterv1.NodeStatusResponse
 		if json.Unmarshal(data, &st) != nil || st.Node == "" || seen[st.Node] {
 			return
 		}
@@ -554,15 +553,18 @@ func spreadHostsByAZ(hosts []azHost) []string {
 
 // nodeFitsCustomerInstance reports whether a node advertises at least one free
 // slot for the given customer instance type in its node.status capacity.
-func nodeFitsCustomerInstance(st types.NodeStatusResponse, instanceType string) bool {
-	return slices.ContainsFunc(st.InstanceTypes, func(c types.InstanceTypeCap) bool {
-		return c.Name == instanceType && c.Available >= 1
-	})
+func nodeFitsCustomerInstance(st clusterv1.NodeStatusResponse, instanceType string) bool {
+	for _, c := range st.InstanceTypes {
+		if c.Name == instanceType && c.Available >= 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // nodeFitsSystemInstance reports whether a node's headroom (Total - Reserved - Alloc)
 // fits at least one VM of the given vCPU/memory footprint.
-func nodeFitsSystemInstance(st types.NodeStatusResponse, vcpu int, memGB float64) bool {
+func nodeFitsSystemInstance(st clusterv1.NodeStatusResponse, vcpu int, memGB float64) bool {
 	remainVCPU := st.TotalVCPU - st.ReservedVCPU - st.AllocVCPU
 	remainMem := st.TotalMemGB - st.ReservedMemGB - st.AllocMemGB
 	return remainVCPU >= vcpu && remainMem >= memGB
@@ -574,8 +576,8 @@ func (h *natsHostScheduler) InstanceHosts(ctx context.Context, instanceIDs []str
 		want[id] = true
 	}
 	out := make(map[string]string)
-	h.fanout(ctx, "spinifex.node.vms", func(data []byte) {
-		var resp types.NodeVMsResponse
+	h.fanout(ctx, clusterv1.NodeVMsSubject, func(data []byte) {
+		var resp clusterv1.NodeVMsResponse
 		if json.Unmarshal(data, &resp) != nil || resp.Node == "" {
 			return
 		}
@@ -605,7 +607,7 @@ func (h *natsHostScheduler) fanout(ctx context.Context, subject string, handle f
 	msg := nats.NewMsg(subject)
 	msg.Reply = inbox
 	msg.Data = []byte("{}")
-	utils.InjectTraceContext(ctx, msg.Header)
+	natsmsg.InjectTraceContext(ctx, msg.Header)
 	if err := h.nc.PublishMsg(msg); err != nil {
 		slog.WarnContext(ctx, "hostScheduler: publish failed", "subject", subject, "err", err)
 		return

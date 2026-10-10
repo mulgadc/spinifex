@@ -7,13 +7,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // managedENIIDs returns every requester-managed ENI in the account.
-func managedENIIDs(t *testing.T, vpcSvc *handlers_ec2_vpc.VPCServiceImpl) []string {
+func managedENIIDs(t *testing.T, vpcSvc *ec2vpc.VPCServiceImpl) []string {
 	t.Helper()
 	out, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
 	require.NoError(t, err)

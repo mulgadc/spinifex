@@ -2,22 +2,23 @@ package daemon
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/admin"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
 func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) string {
 	promoteImage := func(_ context.Context, input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
-			admin.DialTarget(d.config.Predastore.Host),
+			netaddr.DialTarget(d.config.Predastore.Host),
 			d.config.Predastore.Region,
 			d.config.Predastore.AccessKey,
 			d.config.Predastore.SecretKey,
@@ -40,14 +41,14 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 	slog.Debug("Received message", "subject", msg.Subject)
 
 	input := &ec2.CreateImageInput{}
-	if errResp := utils.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
+	if errResp := awserrors.UnmarshalJsonPayload(input, msg.Data); errResp != nil {
 		if err := msg.Respond(errResp); err != nil {
 			slog.Error("Failed to respond to NATS request", "err", err)
 		}
 		return outcomeError
 	}
 
-	accountID := utils.AccountIDFromMsg(msg)
+	accountID := natsmsg.AccountIDFromMsg(msg)
 
 	if input.InstanceId == nil || *input.InstanceId == "" {
 		respondWithError(d.node, msg, awserrors.ErrorMissingParameter)
@@ -161,7 +162,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 		return outcomeError
 	}
 
-	params := handlers_ec2_image.CreateImageParams{
+	params := ec2image.CreateImageParams{
 		Input:         input,
 		RootVolumeID:  rootVolumeID,
 		SourceImageID: sourceImageID,

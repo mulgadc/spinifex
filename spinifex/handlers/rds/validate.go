@@ -5,7 +5,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // AWS's PostgreSQL range. The upper bound is not a platform limit — it is the
@@ -32,7 +33,7 @@ const (
 // unimplemented parameter already rejected.
 type validatedCreate struct {
 	Identifier       string
-	Engine           Engine
+	Engine           rdsengine.Engine
 	EngineVersion    string
 	InstanceClass    string
 	InstanceType     string
@@ -79,7 +80,7 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 		return nil, err
 	}
 
-	engine, err := LookupEngine(aws.StringValue(input.Engine))
+	engine, err := rdsengine.LookupEngine(aws.StringValue(input.Engine))
 	if err != nil {
 		return nil, err
 	}
@@ -88,10 +89,10 @@ func (s *Service) validateCreateRequest(input *rds.CreateDBInstanceInput) (*vali
 	}
 
 	instanceClass := aws.StringValue(input.DBInstanceClass)
-	instanceType, err := InstanceTypeForClass(instanceClass)
+	instanceType, err := s.sizing.InstanceTypeForClass(instanceClass)
 	if err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(SupportedInstanceClasses(), ", "))
+			"DBInstanceClass %q is not supported; supported classes are %s", instanceClass, strings.Join(rdsengine.SupportedInstanceClasses(), ", "))
 	}
 
 	storage := aws.Int64Value(input.AllocatedStorage)
@@ -268,4 +269,46 @@ func rejectUnimplemented(input *rds.CreateDBInstanceInput) error {
 
 func unimplemented(parameter, why string) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%s is not supported: %s", parameter, why)
+}
+
+// ValidateMasterUserPassword enforces the bounds and printable-ASCII range AWS accepts. The password is
+// never inspected beyond this and never stored in cleartext past the first bootstrap fetch.
+func ValidateMasterUserPassword(password string) error {
+	switch {
+	case password == "":
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUserPassword is required")
+	case len(password) < minMasterPasswordLen || len(password) > maxMasterPasswordLen:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"MasterUserPassword must be between %d and %d characters", minMasterPasswordLen, maxMasterPasswordLen)
+	}
+	for _, r := range password {
+		// A control character would also survive the bootstrap handoff and defeat
+		// the line-oriented redaction that keeps the password off the guest
+		// console, so the range is refused here rather than sanitised there.
+		if r < 0x20 || r > 0x7e {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"MasterUserPassword may only contain printable ASCII characters")
+		}
+		if r == '/' || r == '"' || r == '@' || r == ' ' {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+				"MasterUserPassword may not contain '/', '\"', '@' or spaces")
+		}
+	}
+	return nil
+}
+
+const (
+	minMasterPasswordLen = 8
+	maxMasterPasswordLen = 128
+)
+
+// isLetter and isDigit are duplicated against the engine package's own copy
+// deliberately: that one backs identifier checks this package does not own,
+// and neither may reach across the boundary to the other.
+func isLetter(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+func isDigit(r rune) bool {
+	return r >= '0' && r <= '9'
 }

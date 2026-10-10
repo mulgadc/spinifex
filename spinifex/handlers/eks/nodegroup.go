@@ -21,11 +21,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/auth"
-	"github.com/mulgadc/spinifex/spinifex/arn"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -403,16 +403,14 @@ func gpuFieldsForInstanceTypes(instanceTypes []string) (gpuEnabled bool, gpuVend
 }
 
 // stageGPUDeviceAddon idempotently stages nvidia-device-plugin for a GPU
-// nodegroup's cluster via the normal CreateAddon path. Already-staged
-// (ResourceInUse) is expected on scale-up/repeat nodegroups, not an error;
-// any other failure only logs — a GPU nodegroup must still come up even if
-// addon staging fails.
+// nodegroup's cluster. Any failure only logs: a GPU nodegroup must still come
+// up even if add-on staging fails.
 func (s *EKSServiceImpl) stageGPUDeviceAddon(ctx context.Context, accountID, cluster string) {
-	_, err := s.CreateAddon(ctx, &eks.CreateAddonInput{
-		ClusterName: aws.String(cluster),
-		AddonName:   aws.String(nvidiaDevicePluginAddonName),
-	}, accountID)
-	if err != nil && err.Error() != awserrors.ErrorEKSResourceInUse {
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	if err == nil {
+		err = s.addons().EnsureGPUDevicePlugin(ctx, acctKV, accountID, cluster)
+	}
+	if err != nil {
 		slog.WarnContext(ctx, "createNodegroup: stage nvidia-device-plugin addon", "cluster", cluster, "err", err)
 	}
 }

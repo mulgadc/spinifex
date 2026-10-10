@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/ebsprovider"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +32,7 @@ const testProviderNodeName = "integration-node"
 // because the first CreateVolume pays the real predastore's cold start.
 const providerRequestTimeout = 60 * time.Second
 
-// StartVolumeDaemonLite subscribes a real handlers_ec2_volume.VolumeServiceImpl
+// StartVolumeDaemonLite subscribes a real ec2volume.VolumeServiceImpl
 // — the same production code a live daemon runs (daemon/daemon_handlers_volume.go)
 // — to its ec2.* subjects, backed by a
 // real predastore daemon (testpredastore.Start) rather than the memory-backed
@@ -40,7 +40,7 @@ const providerRequestTimeout = 60 * time.Second
 //
 // This is deliberately a separate opt-in wiring rather than part of
 // StartDaemonLite: CreateVolume constructs viperblock.New and calls
-// Backend.Init() unconditionally (handlers/ec2/volume/service_impl.go), so it
+// Backend.Init() unconditionally (domains/ec2/volume/service_impl.go), so it
 // needs a reachable Predastore to do anything beyond input validation, while
 // every other DaemonLite-wired resource is happy with an in-memory stand-in.
 // Only a test that actually exercises volume storage should pay the shared
@@ -48,7 +48,7 @@ const providerRequestTimeout = 60 * time.Second
 //
 // Must be called before a test issues a volume request; like
 // StartECRDaemonLite it wires its own subjects independent of StartDaemonLite.
-func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_volume.VolumeServiceImpl {
+func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *ec2volume.VolumeServiceImpl {
 	t.Helper()
 
 	fixture := testpredastore.Start(t)
@@ -71,12 +71,12 @@ func StartVolumeDaemonLite(t *testing.T, gw *Gateway) *handlers_ec2_volume.Volum
 	}
 
 	nc := gw.NATSConn
-	svc := handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, store, nc)
+	svc := ec2volume.NewVolumeServiceImplWithStore(cfg, store, nc)
 
 	// The control plane no longer builds volumes itself; it asks a provider.
 	// Serve the provider contract from viperblockd against the same fixture,
 	// so the blocks are still written by real viperblock to real predastore.
-	require.NoError(t, viperblockd.RegisterProviderSubjects(&viperblockd.Config{
+	require.NoError(t, viperblock.RegisterProviderSubjects(&viperblock.Config{
 		S3Host:    "https://" + fixture.Host,
 		Bucket:    testVolumeBucket,
 		Region:    fixture.Region,

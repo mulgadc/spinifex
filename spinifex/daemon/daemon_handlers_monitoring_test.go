@@ -10,11 +10,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/vm"
-	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +26,7 @@ func monitoringTestDaemon(t *testing.T, instanceID string, enabled bool) (*Daemo
 	d := createTestDaemon(t, sharedNATSURL)
 
 	stopped := vmmock.New()
-	d.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
 		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, stopped)
 

@@ -3,14 +3,14 @@
 package harness
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"fmt"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -23,7 +23,7 @@ import (
 func KVReplicaFactors(t *testing.T, env *Env, buckets ...string) map[string]int {
 	t.Helper()
 	host, token, ca := natsConn(t, env)
-	nc, err := utils.ConnectNATS(host, token, ca)
+	nc, err := natsmsg.ConnectNATS(host, token, ca)
 	if err != nil {
 		t.Fatalf("connect NATS %s: %v", host, err)
 	}
@@ -64,7 +64,7 @@ func WantKVReplicas(nodes int) int {
 func DialClusterNATS(t *testing.T, env *Env) *nats.Conn {
 	t.Helper()
 	host, token, ca := natsConn(t, env)
-	nc, err := utils.ConnectNATS(host, token, ca)
+	nc, err := natsmsg.ConnectNATS(host, token, ca)
 	if err != nil {
 		t.Fatalf("connect NATS %s: %v", host, err)
 	}

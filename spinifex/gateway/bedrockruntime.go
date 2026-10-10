@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"log/slog"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/bedrockruntime"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 )
 
@@ -21,7 +22,7 @@ const (
 )
 
 // bedrockRuntimeRoute maps one HTTP method + chi path pattern to an AWS action and handler.
-type bedrockRuntimeRoute = restRoute[bedrockRuntimeRouteHandler]
+type bedrockRuntimeRoute = rest.Route[bedrockRuntimeRouteHandler]
 
 // bedrockRuntimeRouteHandler invokes a per-action bedrock-runtime (data-plane)
 // gateway function. params holds the path params, PathUnescape'd.
@@ -38,8 +39,8 @@ type bedrockRuntimeRouteHandler func(ctx context.Context, accountID string, para
 // function here: BedrockRuntime_Request special-cases its action to bypass
 // the JSON-marshaling dispatch below, since its response is raw bytes.
 var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
-	{"POST", "/model/{modelId}/converse", "Converse",
-		func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error) {
+	{Method: "POST", Pattern: "/model/{modelId}/converse", Action: "Converse",
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, resolver gateway_bedrock.CredentialResolver, endpoints gateway_bedrock.EndpointResolver, recorder gateway_bedrock.Recorder, access gateway_bedrock.AccessResolver, provisioned *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error) {
 			input := new(bedrockruntime.ConverseInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -48,11 +49,11 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 			}
 			return gateway_bedrock.Converse(ctx, acct, p[0], input, resolver, endpoints, recorder, access, provisioned, guardrails, embedder)
 		}},
-	{"POST", "/model/{modelId}/invoke", "InvokeModel", nil},
-	{"POST", "/model/{modelId}/converse-stream", "ConverseStream", nil},
-	{"POST", "/model/{modelId}/invoke-with-response-stream", "InvokeModelWithResponseStream", nil},
-	{"POST", "/guardrail/{guardrailIdentifier}/version/{guardrailVersion}/apply", "ApplyGuardrail",
-		func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ gateway_bedrock.EndpointResolver, _ gateway_bedrock.Recorder, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error) {
+	{Method: "POST", Pattern: "/model/{modelId}/invoke", Action: "InvokeModel", Handler: nil},
+	{Method: "POST", Pattern: "/model/{modelId}/converse-stream", Action: "ConverseStream", Handler: nil},
+	{Method: "POST", Pattern: "/model/{modelId}/invoke-with-response-stream", Action: "InvokeModelWithResponseStream", Handler: nil},
+	{Method: "POST", Pattern: "/guardrail/{guardrailIdentifier}/version/{guardrailVersion}/apply", Action: "ApplyGuardrail",
+		Handler: func(ctx context.Context, acct string, p []string, b []byte, _ gateway_bedrock.CredentialResolver, _ gateway_bedrock.EndpointResolver, _ gateway_bedrock.Recorder, _ gateway_bedrock.AccessResolver, _ *gateway_bedrock.ProvisionedStore, guardrails *gateway_bedrock.GuardrailStore, embedder gateway_bedrock.Embedder) (any, error) {
 			input := new(bedrockruntime.ApplyGuardrailInput)
 			if len(b) > 0 {
 				if err := json.Unmarshal(b, input); err != nil {
@@ -66,13 +67,13 @@ var bedrockRuntimeRoutes = []bedrockRuntimeRoute{
 }
 
 // bedrockRuntimeRouter matches an escaped request path against bedrockRuntimeRoutes.
-var bedrockRuntimeRouter = newRESTRouter("bedrock-runtime", bedrockRuntimeRoutes)
+var bedrockRuntimeRouter = rest.NewRouter("bedrock-runtime", bedrockRuntimeRoutes)
 
 // BedrockRuntime_Request dispatches bedrock-runtime (data-plane) REST-JSON
 // requests: resolves method+path to an action, reads the body, calls the
 // handler, and serialises the output as JSON.
 func (gw *GatewayConfig) BedrockRuntime_Request(w http.ResponseWriter, r *http.Request) error {
-	action, params, handler, ok := bedrockRuntimeRouter.lookup(r.Method, r.URL.EscapedPath())
+	action, params, handler, ok := bedrockRuntimeRouter.Lookup(r.Method, r.URL.EscapedPath())
 	if !ok {
 		slog.DebugContext(r.Context(), "bedrock-runtime: no route for request", "method", r.Method, "path", r.URL.Path)
 		return errors.New(awserrors.ErrorInvalidAction)

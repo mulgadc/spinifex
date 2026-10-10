@@ -6,8 +6,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	"github.com/mulgadc/spinifex/spinifex/vm"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // handleENIPublicIPChanged applies an EIP association to the instance record on
@@ -19,7 +19,7 @@ import (
 // Every node receives this and all but one ignore it: UpdateState reports the
 // instance absent, which is the normal case, not a failure.
 func (d *Daemon) handleENIPublicIPChanged(msg *nats.Msg) string {
-	var evt handlers_ec2_eip.ENIPublicIPChanged
+	var evt ec2eip.ENIPublicIPChanged
 	if err := json.Unmarshal(msg.Data, &evt); err != nil {
 		slog.Error("public-IP change: bad event", "err", err)
 		return outcomeError

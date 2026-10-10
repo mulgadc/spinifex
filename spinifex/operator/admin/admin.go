@@ -1,0 +1,1213 @@
+// Package admin holds the node administration helpers behind spx admin: config
+// and certificate generation, credential bootstrap, image import and host
+// network discovery.
+package admin
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"math/big"
+	"net"
+	"os"
+	"os/user"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"testing"
+	"text/template"
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
+	toml "github.com/pelletier/go-toml/v2"
+	"gopkg.in/ini.v1"
+)
+
+// RemoteNode holds basic info about a remote cluster node for config generation.
+type RemoteNode struct {
+	Name     string
+	Host     string
+	Region   string
+	AZ       string
+	Services []string
+
+	// NorthstarConfigPath marks the peer as running northstar. Its emptiness is
+	// the only thing read from a peer's stanza — no code opens a peer's path —
+	// and it must be rendered for every northstar peer so each node derives the
+	// same nameserver set for the base zone seed.
+	NorthstarConfigPath string
+}
+
+// ConfigSettings is the template data rendered into every generated config file
+// (spinifex.toml, predastore.toml, NATS and the rest) by GenerateConfigFile.
+type ConfigSettings struct {
+	AccessKey string
+	SecretKey string
+	AccountID string
+	Region    string
+	NatsToken string
+	DataDir   string
+	LogDir    string
+	ConfigDir string
+	// PredastoreDataDir is the [[host]] data_dir rendered into predastore.toml.
+	// Derived from DataDir via PredastoreDataDir when left unset.
+	PredastoreDataDir string
+
+	Node   string
+	Az     string
+	Port   string
+	BindIP string
+	// AdvertiseIP is the off-host dial target rendered into [nodes.X].advertise.
+	// Empty → callers fall back to BindIP.
+	AdvertiseIP string
+
+	// PredastoreAdminPort is rendered as predastore.toml's host-level
+	// admin_port, serving /healthz and /readyz on the host's cluster
+	// bind_addr. Zero runs no admin listener.
+	PredastoreAdminPort int
+
+	// Cluster settings
+	ClusterBindIP string
+	ClusterRoutes []string
+	ClusterName   string
+
+	// Predastore multi-node: which [[host]] of the predastore topology this
+	// node is. Zero means single-node, where one process runs every node.
+	PredastoreHostID int
+
+	// CompactionIntervalSeconds gates the predastore [compaction] block. Zero
+	// means unset: no block is emitted and predastore keeps its built-in default.
+	CompactionIntervalSeconds int
+
+	// Node capabilities
+	Services []string
+
+	// OVN Northbound DB address — "tcp:127.0.0.1:6641" on the primary node,
+	// "tcp:<primary-mgmt-ip>:6641" on joining nodes.
+	OVNNBAddr string
+	OVNSBAddr string
+
+	// External networking for public subnets
+	ExternalMode  string               // "pool", "nat" (routed), or "" (disabled)
+	ExternalIface string               // WAN NIC name (e.g., "eth0", "eth1")
+	BridgeMode    string               // vpcd bridge_mode; only written for "nat" (bridged modes auto-detect)
+	Pools         []formation.PoolData // External pools rendered in order (nat mode: transit first, then optional public pool)
+
+	// OperatorEmail is the address collected at install time. Written under [operator]
+	// in spinifex.toml so it survives wipes. Empty means no identity was supplied.
+	OperatorEmail string
+
+	// Other nodes in the cluster (for config source of truth)
+	RemoteNodes []RemoteNode
+
+	// Bootstrap: pre-generated default VPC IDs for vpcd reconciliation.
+	// Written by admin init so [bootstrap] exists before services start.
+	BootstrapAccountId  string
+	BootstrapVpcId      string
+	BootstrapSubnetId   string
+	BootstrapIgwId      string
+	BootstrapCidr       string
+	BootstrapSubnetCidr string
+
+	// GPUPassthrough enables VFIO GPU passthrough in the daemon config.
+	// Sets gpu_passthrough = true under [nodes.<node>.daemon].
+	GPUPassthrough bool
+
+	// IPSecEnabled toggles cluster-wide OVN native IPsec on intra-AZ Geneve.
+	// Written under [network] in spinifex.toml; daemon reads it via cluster config.
+	IPSecEnabled bool
+
+	// EncryptionKeyFile is the path to the cluster-wide viperblock at-rest
+	// encryption key, rendered into [nodes.X.viperblock].encryption_key_file.
+	// Empty means no key was provisioned and volumes are written cleartext
+	// (legacy mode); the template omits the field entirely in that case.
+	EncryptionKeyFile string
+
+	// Northstar (DNS) settings. The northstar service reads zones from a
+	// dedicated, read-only S3 bucket using bucket-scoped credentials rendered
+	// into predastore.toml ([[auth]]) and northstar.toml ([s3]).
+	NorthstarAccessKey      string
+	NorthstarSecretKey      string
+	NorthstarBucket         string // S3 bucket holding zone files (default "northstar")
+	NorthstarDefaultDomain  string // authoritative base domain (default "spx3.net")
+	NorthstarInternalDomain string // AWS-parity private zone (default "compute.internal")
+	NorthstarConfigPath     string // path to northstar.toml, rendered into spinifex.toml
+
+	// PoolDNSServers are the host-detected upstream DNS servers northstar forwards
+	// recursive queries to, rendered into northstar.toml's [recursion] nameservers.
+	PoolDNSServers []string
+
+	// ResolverAllowFrom are the clients allowed to recurse, rendered into
+	// northstar.toml's [upstream].allow_recursion_from. Cluster node addresses:
+	// nodes resolve through northstar directly, and vpcd's per-tap guest DNS
+	// shim relays guest queries from a node address, so this covers both.
+	// Everyone else gets authoritative answers only.
+	ResolverAllowFrom []string
+}
+
+// ConfigFile names one config file to render: Template is the text/template
+// source and Path the destination it is written to.
+type ConfigFile struct {
+	Name     string
+	Path     string
+	Template string
+}
+
+// GenerateConfigFiles renders each of configs with configSettings, printing a
+// line per file and stopping at the first failure.
+func GenerateConfigFiles(configs []ConfigFile, configSettings ConfigSettings) error {
+	for _, cfg := range configs {
+		if err := GenerateConfigFile(cfg.Path, cfg.Template, configSettings); err != nil {
+			return fmt.Errorf("error creating %s: %w", cfg.Name, err)
+		}
+		fmt.Printf("✅ Created: %s\n", cfg.Name)
+	}
+
+	return nil
+}
+
+// GenerateConfigFile creates a configuration file from a template.
+func GenerateConfigFile(configPath string, configTemplate string, configSettings ConfigSettings) error {
+	if configSettings.PredastoreDataDir == "" {
+		configSettings.PredastoreDataDir = PredastoreDataDir(configSettings.DataDir)
+	}
+
+	tmpl, err := template.New("config").Parse(configTemplate)
+	if err != nil {
+		return fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	f, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to create config file: %w", err)
+	}
+	defer f.Close()
+
+	if err := tmpl.Execute(f, configSettings); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return nil
+}
+
+// AWSGWServiceDNSNames builds the AWS-parity TLS SANs for the awsgw cert from
+// the cluster region and internal suffix: the ECR control-plane host, the
+// wildcard covering per-account registry hosts, and one name per service in
+// config.AWSGWServiceNames. Shares that list with domains/dns's
+// ServiceEndpointNames so the SANs and the DNS records can never drift apart.
+// Returns nil if either input is empty so callers omit the SANs rather than
+// emitting malformed names.
+func AWSGWServiceDNSNames(region, suffix string) []string {
+	if region == "" || suffix == "" {
+		return nil
+	}
+	base := "ecr." + region + "." + suffix
+	names := []string{
+		base,            // control plane: ecr.{region}.{suffix}
+		"*.dkr." + base, // registry: *.dkr.ecr.{region}.{suffix}
+	}
+	for _, svc := range config.AWSGWServiceNames {
+		names = append(names, svc+"."+region+"."+suffix)
+	}
+	return names
+}
+
+// GenerateCertificatesIfNeeded prepares the TLS material for a node. The CA is
+// preserved across re-inits — it anchors trust for already-joined nodes, IPsec
+// peer certs, and CA-baked AMIs — so it is regenerated only when absent, never on
+// force. The CA-signed server cert is cheap to reissue, so force refreshes it to
+// pick up a changed bind IP / SANs while keeping the CA (and all trust) intact.
+func GenerateCertificatesIfNeeded(configDir string, force bool, bindIP string, awsRegion, servicesDomain string) (caCertPath string) {
+	caCertPath = filepath.Join(configDir, "ca.pem")
+	caKeyPath := filepath.Join(configDir, "ca.key")
+	serverCertPath := filepath.Join(configDir, "server.pem")
+	serverKeyPath := filepath.Join(configDir, "server.key")
+
+	if !FileExists(caCertPath) || !FileExists(caKeyPath) {
+		fmt.Println("\n🔐 Generating Certificate Authority...")
+		if err := GenerateCACert(caCertPath, caKeyPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating CA certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ CA certificate generated:\n")
+		fmt.Printf("   CA Certificate: %s\n", caCertPath)
+		fmt.Printf("   CA Key: %s\n", caKeyPath)
+
+		// Print manual instructions only when not root (root gets auto-install)
+		if os.Getuid() != 0 {
+			fmt.Println("\n📋 To trust the Spinifex CA system-wide (recommended):")
+			fmt.Printf("   sudo cp %s /usr/local/share/ca-certificates/spinifex-ca.crt\n", caCertPath)
+			fmt.Println("   sudo update-ca-certificates")
+			fmt.Println("\n   This allows AWS CLI and other tools to trust Spinifex services automatically.")
+		}
+	} else {
+		fmt.Println("\n✅ Certificate Authority already exists (preserved)")
+	}
+
+	if force || !FileExists(serverCertPath) || !FileExists(serverKeyPath) {
+		extraDNS := AWSGWServiceDNSNames(awsRegion, servicesDomain)
+		// Always pin the canonical mgmt-bridge IP; the control plane publishes to
+		// it regardless of whether br-mgmt is up when this cert is minted.
+		extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
+		if err := GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating server certificate: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Server certificate generated (signed by CA):\n")
+		fmt.Printf("   Certificate: %s\n", serverCertPath)
+		fmt.Printf("   Key: %s\n", serverKeyPath)
+	} else {
+		fmt.Println("✅ Server certificate already exists")
+	}
+
+	return caCertPath
+}
+
+// GenerateServerCertOnly generates a server certificate signed by an existing CA.
+// Used by joining nodes that receive the CA from the leader. awsRegion and
+// servicesDomain add the AWS-parity ECR SANs; empty values omit them.
+func GenerateServerCertOnly(configDir string, bindIP, awsRegion, servicesDomain string) error {
+	caCertPath := filepath.Join(configDir, "ca.pem")
+	caKeyPath := filepath.Join(configDir, "ca.key")
+	serverCertPath := filepath.Join(configDir, "server.pem")
+	serverKeyPath := filepath.Join(configDir, "server.key")
+
+	if !FileExists(caCertPath) || !FileExists(caKeyPath) {
+		return fmt.Errorf("CA files not found in %s", configDir)
+	}
+
+	extraDNS := AWSGWServiceDNSNames(awsRegion, servicesDomain)
+	// Always pin the canonical mgmt-bridge IP (see GenerateCertificatesIfNeeded).
+	extraIPs := []string{bindIP, config.DefaultMgmtBridgeIP}
+	return GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS)
+}
+
+// PredastoreDataDir is the root a Predastore host keeps its per-node state
+// under. Each node gets a node-<id> subdirectory beneath it, created by
+// predastore itself. The path is absolute because the service runs under
+// systemd, where the working directory the config would otherwise resolve
+// against is not ours to depend on.
+func PredastoreDataDir(spxRoot string) string {
+	return filepath.Join(spxRoot, "predastore", "cluster")
+}
+
+// CreateServiceDirectories creates the per-service directories under spxRoot.
+// A directory that cannot be created is warned about on stderr, not returned.
+func CreateServiceDirectories(spxRoot string) {
+	dirs := []string{
+		filepath.Join(spxRoot, "images"),
+		filepath.Join(spxRoot, "amis"),
+		filepath.Join(spxRoot, "volumes"),
+		filepath.Join(spxRoot, "state"),
+		filepath.Join(spxRoot, "logs"),
+		filepath.Join(spxRoot, "nats"),
+		filepath.Join(spxRoot, "predastore"),
+		filepath.Join(spxRoot, "viperblock"),
+		filepath.Join(spxRoot, "vpcd"),
+		filepath.Join(spxRoot, "spinifex"),
+		filepath.Join(spxRoot, "awsgw"),
+	}
+
+	fmt.Println("\n📁 Creating directory structure...")
+	for _, dir := range dirs {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			if err := os.MkdirAll(dir, 0750); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Could not create %s: %v\n", dir, err)
+			}
+		}
+	}
+	fmt.Printf("✅ Directory structure created in %s\n", spxRoot)
+}
+
+// FileExists reports whether path can be stat'd. Any stat error, including
+// permission denied, reads as false.
+func FileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// ChownRecursive changes ownership of path and its contents to username.
+// Failing to resolve the user is an error, since it leaves path untouched.
+// Per-entry walk failures below path stay best-effort and are only logged.
+func ChownRecursive(path, username string) error {
+	u, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("chown %s: user %q not found: %w", path, username, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("chown %s: invalid UID %q for user %q: %w", path, u.Uid, username, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("chown %s: invalid GID %q for user %q: %w", path, u.Gid, username, err)
+	}
+
+	// Use os.Root to scope filesystem operations and avoid symlink TOCTOU races.
+	// Falls back to direct chown if os.Root is not available.
+	root, rootErr := os.OpenRoot(path)
+	if rootErr != nil {
+		// Fallback: direct chown on the top-level path only — subdirectory contents
+		// will retain their original ownership.
+		slog.Warn("ChownRecursive: OpenRoot not available, only top-level directory ownership changed",
+			"path", path, "err", rootErr)
+		if chownErr := os.Lchown(path, uid, gid); chownErr != nil {
+			slog.Warn("chown failed", "path", path, "err", chownErr)
+		}
+		return nil
+	}
+	defer root.Close()
+
+	_ = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			slog.Debug("chown walk: skipping inaccessible entry", "path", p, "err", err)
+			return nil // best-effort: continue past inaccessible entries
+		}
+		fullPath := filepath.Join(path, p)
+		if chownErr := os.Lchown(fullPath, uid, gid); chownErr != nil {
+			slog.Debug("chown failed", "path", fullPath, "err", chownErr)
+		}
+		return nil
+	})
+	return nil
+}
+
+// servicePaths maps each per-service data/config directory to the system user
+// that must own it. Kept separate from SetServiceOwnership so the aggregation
+// logic can be tested against a small map rather than these absolute paths.
+var servicePaths = map[string]string{
+	"/etc/spinifex/nats":           "spinifex-nats",
+	"/var/lib/spinifex/nats":       "spinifex-nats",
+	"/etc/spinifex/predastore":     "spinifex-storage",
+	"/var/lib/spinifex/predastore": "spinifex-storage",
+	"/etc/spinifex/northstar":      "spinifex-northstar",
+	"/var/lib/spinifex/northstar":  "spinifex-northstar",
+	"/etc/spinifex/viperblock":     "spinifex-viperblock",
+	"/var/lib/spinifex/spinifex":   "spinifex-daemon",
+	"/var/lib/spinifex/viperblock": "spinifex-viperblock",
+	"/var/lib/spinifex/vpcd":       "spinifex-vpcd",
+	"/var/lib/spinifex/awsgw":      "spinifex-gw",
+}
+
+// chownServicePaths applies ChownRecursive to each path in services that
+// exists on disk, collecting every failure instead of stopping at the
+// first so one missing service user doesn't mask problems with the rest.
+func chownServicePaths(services map[string]string) error {
+	var errs []error
+	for path, u := range services {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := ChownRecursive(path, u); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// SetServiceOwnership sets per-service ownership on data/config directories
+// and shared config files to root:spinifex with correct modes. Returns an error
+// naming every service path whose ownership could not be applied.
+func SetServiceOwnership() error {
+	grp, err := user.LookupGroup("spinifex")
+	if err != nil {
+		slog.Error("SetServiceOwnership: spinifex group not found, skipping all ownership changes", "err", err)
+		fmt.Fprintln(os.Stderr, "WARNING: spinifex group not found — service ownership not set. Run setup.sh first or create the group manually.")
+		return fmt.Errorf("spinifex group not found: %w", err)
+	}
+	gid, err := strconv.Atoi(grp.Gid)
+	if err != nil {
+		slog.Error("SetServiceOwnership: invalid spinifex group GID", "gid", grp.Gid, "err", err)
+		fmt.Fprintln(os.Stderr, "WARNING: invalid spinifex group GID — service ownership not set.")
+		return fmt.Errorf("invalid spinifex group GID %q: %w", grp.Gid, err)
+	}
+
+	// Per-service directory trees
+	ownershipErr := chownServicePaths(servicePaths)
+
+	// Shared data directories — root:spinifex 0770 so daemon + admin CLI can write
+	for _, dir := range []string{
+		"/var/lib/spinifex/images",
+		"/var/lib/spinifex/amis",
+		"/var/lib/spinifex/volumes",
+		"/var/lib/spinifex/state",
+		"/run/spinifex/nbd",
+	} {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if err := os.Lchown(dir, 0, gid); err != nil {
+			slog.Warn("SetServiceOwnership: chown failed", "path", dir, "err", err)
+		}
+		if err := os.Chmod(dir, 0770); err != nil { //nolint:gosec // directories need group-write for daemon + admin CLI
+			slog.Warn("SetServiceOwnership: chmod failed", "path", dir, "err", err)
+		}
+	}
+
+	// Shared config files — root:spinifex, ca.key stays root:root 0600
+	// bootstrap.json lives in the awsgw data dir (not /etc/spinifex),
+	// so /etc/spinifex stays at 0750 (no group-write needed).
+	for path, mode := range map[string]os.FileMode{
+		"/etc/spinifex/spinifex.toml":             0640,
+		"/etc/spinifex/awsgw/awsgw.toml":          0640,
+		"/etc/spinifex/master.key":                0640,
+		"/etc/spinifex/viperblock/encryption.key": 0640,
+		"/etc/spinifex/server.pem":                0644,
+		"/etc/spinifex/server.key":                0640,
+		"/etc/spinifex/ca.pem":                    0644,
+	} {
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := os.Lchown(path, 0, gid); err != nil {
+			slog.Warn("SetServiceOwnership: chown failed", "path", path, "err", err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			slog.Warn("SetServiceOwnership: chmod failed", "path", path, "err", err)
+		}
+	}
+
+	return ownershipErr
+}
+
+// awsINIOptions keeps AWS nested settings (an empty key followed by indented
+// lines) intact across a rewrite; without it they are flattened into the
+// enclosing section and lost.
+var awsINIOptions = ini.LoadOptions{AllowNestedValues: true}
+
+// UpdateAWSINIFile updates or creates an AWS INI file section with the given key-value pairs.
+func UpdateAWSINIFile(path, section string, values map[string]string) error {
+	cfg, err := loadAWSINIFile(path)
+	if err != nil {
+		return err
+	}
+	sec, err := awsINISection(cfg, section)
+	if err != nil {
+		return err
+	}
+	for key, value := range values {
+		sec.Key(key).SetValue(value)
+	}
+	return saveAWSINIFile(cfg, path)
+}
+
+// WriteAWSProfileConfig points an AWS CLI profile at this cluster. One profile
+// endpoint_url cannot send S3 to the predastore gate and everything else to the
+// gateway, so S3 goes in the profile's services section, which takes precedence.
+func WriteAWSProfileConfig(path, profileName, region, certPath, endpointHost string) error {
+	cfg, err := loadAWSINIFile(path)
+	if err != nil {
+		return err
+	}
+	profileSection := profileName
+	if profileName != "default" {
+		profileSection = "profile " + profileName
+	}
+	profile, err := awsINISection(cfg, profileSection)
+	if err != nil {
+		return err
+	}
+	for key, value := range map[string]string{
+		"region":       region,
+		"endpoint_url": "https://" + net.JoinHostPort(endpointHost, "9999"),
+		"ca_bundle":    certPath,
+		"output":       "json",
+		"services":     profileName,
+	} {
+		profile.Key(key).SetValue(value)
+	}
+	services, err := awsINISection(cfg, "services "+profileName)
+	if err != nil {
+		return err
+	}
+	s3Endpoint := "https://" + net.JoinHostPort(endpointHost, strconv.Itoa(predastoreGatePort))
+	if err := setNestedAWSSetting(services, "s3", "endpoint_url", s3Endpoint); err != nil {
+		return err
+	}
+	return saveAWSINIFile(cfg, path)
+}
+
+// setNestedAWSSetting sets name inside the nested block under key, keeping any
+// other settings an operator nested there.
+func setNestedAWSSetting(sec *ini.Section, key, name, value string) error {
+	var lines []string
+	if sec.HasKey(key) {
+		for _, line := range sec.Key(key).NestedValues() {
+			if setting, _, _ := strings.Cut(line, "="); strings.TrimSpace(setting) != name {
+				lines = append(lines, line)
+			}
+		}
+		sec.DeleteKey(key)
+	}
+	nested, err := sec.NewKey(key, "")
+	if err != nil {
+		return fmt.Errorf("failed to create key %s: %w", key, err)
+	}
+	for _, line := range append(lines, name+" = "+value) {
+		if err := nested.AddNestedValue(line); err != nil {
+			return fmt.Errorf("failed to set %s.%s: %w", key, name, err)
+		}
+	}
+	return nil
+}
+
+func loadAWSINIFile(path string) (*ini.File, error) {
+	if !FileExists(path) {
+		return ini.Empty(awsINIOptions), nil
+	}
+	cfg, err := ini.LoadSources(awsINIOptions, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load INI file: %w", err)
+	}
+	return cfg, nil
+}
+
+func awsINISection(cfg *ini.File, name string) (*ini.Section, error) {
+	sec, err := cfg.NewSection(name)
+	if err != nil {
+		// Section already exists, get it.
+		sec, err = cfg.GetSection(name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get section: %w", err)
+		}
+	}
+	return sec, nil
+}
+
+func saveAWSINIFile(cfg *ini.File, path string) error {
+	// Write atomically: ini.SaveTo uses os.Create (world-readable); render to a
+	// sibling temp file (0600) and rename to avoid briefly exposing secrets.
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".aws-ini-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp INI file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := cfg.WriteTo(tmp); err != nil {
+		tmp.Close()
+		return fmt.Errorf("failed to write INI file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close INI file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("failed to rename INI file into place: %w", err)
+	}
+	return nil
+}
+
+// Northstar DNS defaults baked into config files at init time.
+const (
+	// NorthstarBucketName is the S3 bucket holding DNS zone files.
+	NorthstarBucketName = "northstar"
+	// NorthstarDefaultDomain is the authoritative base domain for internal names.
+	NorthstarDefaultDomain = "spx3.net"
+	// NorthstarInternalDomain is the AWS-parity private zone for ip-<addr> names.
+	NorthstarInternalDomain = "compute.internal"
+)
+
+// NorthstarCredentials is the bucket-scoped credential pair the northstar DNS
+// service reads zone files with, together with the bucket that scopes it.
+//
+// Every node in a cluster must be provisioned with the same pair: the zone
+// bucket is distributed, and each node's predastore only honours the keys
+// rendered into its own config, so a per-node pair would have node A's
+// predastore reject node B's resolver. A zero value provisions no northstar
+// credentials at all, which renders a config without any northstar stanza.
+type NorthstarCredentials struct {
+	AccessKey string
+	SecretKey string
+	Bucket    string
+}
+
+// GenerateNATSToken generates a secure random token for NATS.
+func GenerateNATSToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("crypto/rand failure: %w", err)
+	}
+	return "nats_" + base64.URLEncoding.EncodeToString(bytes)[:32], nil
+}
+
+// certKeyBits is the RSA key size used when generating certificate keys.
+// It is a seam so tests can lower it for faster key generation; production
+// keeps the 4096-bit default.
+var certKeyBits = 4096
+
+// ShortenCertKeyBitsForTest generates certificate keys at bits for the rest of
+// one test and restores the previous size afterwards. There is one size per
+// process, so the test must not run in parallel with anything generating keys.
+func ShortenCertKeyBitsForTest(tb testing.TB, bits int) {
+	tb.Helper()
+	prev := certKeyBits
+	certKeyBits = bits
+	tb.Cleanup(func() { certKeyBits = prev })
+}
+
+// GenerateCACert generates a Certificate Authority certificate and key.
+func GenerateCACert(caCertPath, caKeyPath string) error {
+	caPrivateKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
+	if err != nil {
+		return fmt.Errorf("failed to generate CA private key: %w", err)
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(3650 * 24 * time.Hour) // 10 years
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return fmt.Errorf("failed to generate serial number: %w", err)
+	}
+
+	caTemplate := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   "Spinifex Local CA",
+			Organization: []string{"Spinifex Platform"},
+		},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            1,
+	}
+
+	caDerBytes, err := x509.CreateCertificate(rand.Reader, &caTemplate, &caTemplate, &caPrivateKey.PublicKey, caPrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to create CA certificate: %w", err)
+	}
+
+	caCertOut, err := os.Create(caCertPath)
+	if err != nil {
+		return fmt.Errorf("failed to create CA cert file: %w", err)
+	}
+	defer caCertOut.Close()
+
+	if err := pem.Encode(caCertOut, &pem.Block{Type: "CERTIFICATE", Bytes: caDerBytes}); err != nil {
+		return fmt.Errorf("failed to write CA cert: %w", err)
+	}
+
+	caKeyOut, err := os.OpenFile(caKeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to create CA key file: %w", err)
+	}
+	defer caKeyOut.Close()
+
+	caPrivBytes, err := x509.MarshalPKCS8PrivateKey(caPrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to marshal CA private key: %w", err)
+	}
+
+	if err := pem.Encode(caKeyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: caPrivBytes}); err != nil {
+		return fmt.Errorf("failed to write CA key: %w", err)
+	}
+
+	return nil
+}
+
+// DiscoverLocalIPs enumerates all non-loopback network interface addresses on
+// this machine and returns them as strings. Link-local addresses are excluded.
+func DiscoverLocalIPs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		slog.Warn("failed to enumerate network interfaces", "error", err)
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var ips []string
+
+	for _, iface := range ifaces {
+		// Skip loopback and down interfaces.
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			slog.Debug("failed to get addresses for interface", "iface", iface.Name, "error", err)
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				continue
+			}
+			s := ip.String()
+			if _, ok := seen[s]; !ok {
+				seen[s] = struct{}{}
+				ips = append(ips, s)
+			}
+		}
+	}
+	return ips
+}
+
+// DiscoverHostname returns the system hostname suitable for use as a DNS SAN.
+// Returns an empty string if the hostname cannot be determined or is "localhost".
+func DiscoverHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		slog.Warn("failed to determine system hostname", "error", err)
+		return ""
+	}
+	if hostname == "" || hostname == "localhost" {
+		return ""
+	}
+	return hostname
+}
+
+// GenerateSignedCert generates a server certificate signed by the CA.
+// All non-loopback interface IPs and the machine hostname are automatically
+// included. extraIPs and extraDNS allow adding additional SANs.
+func GenerateSignedCert(certPath, keyPath, caCertPath, caKeyPath string, extraIPs, extraDNS []string) error {
+	caCertPEM, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return fmt.Errorf("failed to read CA cert: %w", err)
+	}
+	caCertBlock, _ := pem.Decode(caCertPEM)
+	if caCertBlock == nil {
+		return fmt.Errorf("failed to decode CA cert PEM")
+	}
+	caCert, err := x509.ParseCertificate(caCertBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse CA cert: %w", err)
+	}
+
+	caKeyPEM, err := os.ReadFile(caKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to read CA key: %w", err)
+	}
+	caKeyBlock, _ := pem.Decode(caKeyPEM)
+	if caKeyBlock == nil {
+		return fmt.Errorf("failed to decode CA key PEM")
+	}
+	caPrivateKey, err := x509.ParsePKCS8PrivateKey(caKeyBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse CA private key: %w", err)
+	}
+	caRSAKey, ok := caPrivateKey.(*rsa.PrivateKey)
+	if !ok {
+		return fmt.Errorf("CA key is not RSA")
+	}
+
+	serverPrivateKey, err := rsa.GenerateKey(rand.Reader, certKeyBits)
+	if err != nil {
+		return fmt.Errorf("failed to generate server private key: %w", err)
+	}
+
+	notBefore := time.Now()
+	notAfter := notBefore.Add(365 * 24 * time.Hour) // 1 year for server certs
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return fmt.Errorf("failed to generate serial number: %w", err)
+	}
+
+	// Build IP list: localhost IPs + auto-discovered interface IPs + explicit extras.
+	seen := map[string]struct{}{"127.0.0.1": {}, "::1": {}}
+	ipAddresses := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+	addIP := func(s string) {
+		if s == "" || s == "0.0.0.0" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		if parsed := net.ParseIP(s); parsed != nil {
+			seen[s] = struct{}{}
+			ipAddresses = append(ipAddresses, parsed)
+		}
+	}
+	for _, ip := range DiscoverLocalIPs() {
+		addIP(ip)
+	}
+	for _, ip := range extraIPs {
+		addIP(ip)
+	}
+
+	// Build DNS names: always include localhost, plus hostname if available.
+	dnsSeen := map[string]struct{}{"localhost": {}}
+	dnsNames := []string{"localhost"}
+	if hostname := DiscoverHostname(); hostname != "" {
+		if _, ok := dnsSeen[hostname]; !ok {
+			dnsSeen[hostname] = struct{}{}
+			dnsNames = append(dnsNames, hostname)
+		}
+	}
+	for _, dns := range extraDNS {
+		if dns == "" {
+			continue
+		}
+		if _, ok := dnsSeen[dns]; !ok {
+			dnsSeen[dns] = struct{}{}
+			dnsNames = append(dnsNames, dns)
+		}
+	}
+
+	serverTemplate := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   "Spinifex Server",
+			Organization: []string{"Spinifex Platform"},
+		},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              dnsNames,
+		IPAddresses:           ipAddresses,
+	}
+
+	serverDerBytes, err := x509.CreateCertificate(rand.Reader, &serverTemplate, caCert, &serverPrivateKey.PublicKey, caRSAKey)
+	if err != nil {
+		return fmt.Errorf("failed to create server certificate: %w", err)
+	}
+
+	certOut, err := os.Create(certPath)
+	if err != nil {
+		return fmt.Errorf("failed to create cert file: %w", err)
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: serverDerBytes}); err != nil {
+		return fmt.Errorf("failed to write cert: %w", err)
+	}
+
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to create key file: %w", err)
+	}
+	defer keyOut.Close()
+	privBytes, err := x509.MarshalPKCS8PrivateKey(serverPrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
+		return fmt.Errorf("failed to write key: %w", err)
+	}
+
+	return nil
+}
+
+// SetupAWSCredentials updates ~/.aws/credentials and ~/.aws/config.
+// When running under sudo, writes to SUDO_USER's home instead of root's.
+func SetupAWSCredentials(accessKey, secretKey, region, certPath, bindIP string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	sudoUser := os.Getenv("SUDO_USER")
+	if os.Getuid() == 0 && sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			homeDir = u.HomeDir
+		}
+	}
+
+	awsDir := filepath.Join(homeDir, ".aws")
+	if err := os.MkdirAll(awsDir, 0700); err != nil {
+		return err
+	}
+
+	credPath := filepath.Join(awsDir, "credentials")
+	configPath := filepath.Join(awsDir, "config")
+
+	profileName := "spinifex"
+
+	// Empty credentials mean a --force re-init preserving the existing identity:
+	// the admin secret is not recoverable from disk and is unchanged, so leave the
+	// credentials file as-is and refresh only the config (endpoint/CA/region).
+	if accessKey != "" && secretKey != "" {
+		if err := UpdateAWSINIFile(credPath, profileName, map[string]string{
+			"aws_access_key_id":     accessKey,
+			"aws_secret_access_key": secretKey,
+		}); err != nil {
+			return err
+		}
+	}
+
+	endpointHost := bindIP
+	if endpointHost == "" || endpointHost == "0.0.0.0" {
+		endpointHost = "localhost"
+	}
+
+	if err := WriteAWSProfileConfig(configPath, profileName, region, certPath, endpointHost); err != nil {
+		return err
+	}
+
+	// Fix ownership so the sudo invoking user can read the files. This is
+	// cosmetic convenience, not a service-critical permission, so a failure
+	// here is logged and never propagated to fail credential setup.
+	if os.Getuid() == 0 && sudoUser != "" {
+		if err := ChownRecursive(awsDir, sudoUser); err != nil {
+			slog.Warn("failed to fix AWS config ownership for sudo user", "user", sudoUser, "path", awsDir, "err", err)
+		}
+	}
+
+	fmt.Printf("   Profile: %s\n", profileName)
+	if profileName != "default" {
+		fmt.Printf("   Use: export AWS_PROFILE=%s\n", profileName)
+	}
+
+	return nil
+}
+
+// PredastoreClusterNode is one [[host.node]] entry of the Predastore topology:
+// a role pinned to a host, answering on a port unique within it.
+type PredastoreClusterNode struct {
+	ID     int
+	HostID int
+	Role   string
+	Port   int
+}
+
+// Predastore node roles: a gate serves the S3 API, blob nodes hold
+// erasure-coded object shards, and meta nodes form the Raft quorum over global
+// state.
+const (
+	predastoreRoleGate = "gate"
+	predastoreRoleBlob = "blob"
+	predastoreRoleMeta = "meta"
+)
+
+// Predastore node ports. Only a gate binds a socket clients reach; the others
+// are still required and must not collide within a host, so each role gets its
+// own base and colocated siblings count up from it.
+const (
+	predastoreGatePort     = 8443
+	predastoreBlobBasePort = 6660
+	predastoreMetaBasePort = 7660
+)
+
+// PredastoreAdminPort is the port predastore's admin listener serves
+// /healthz and /readyz on. It continues the base ports above's progression by
+// 1000, so it can never collide with a gate, blob or meta node on the same
+// host; exported so single-node config generation can render it too.
+const PredastoreAdminPort = 8660
+
+// PredastoreTopology derives the cluster nodes for a set of machines: each
+// machine hosts a gate, one blob node and one meta node. Node IDs are unique
+// across the whole file, so gates take 1..n, blobs n+1..2n and metas 2n+1..3n.
+func PredastoreTopology(nodes []formation.PredastoreNodeConfig) []PredastoreClusterNode {
+	out := make([]PredastoreClusterNode, 0, len(nodes)*3)
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID, HostID: n.ID, Role: predastoreRoleGate, Port: predastoreGatePort})
+	}
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID + len(nodes), HostID: n.ID, Role: predastoreRoleBlob, Port: predastoreBlobBasePort})
+	}
+	for _, n := range nodes {
+		out = append(out, PredastoreClusterNode{ID: n.ID + 2*len(nodes), HostID: n.ID, Role: predastoreRoleMeta, Port: predastoreMetaBasePort})
+	}
+	return out
+}
+
+// GenerateMultiNodePredastoreConfig produces a complete predastore.toml for a
+// multi-node Predastore cluster. Each machine becomes one [[host]] — a
+// predastore process owning a data directory and a TLS identity — carrying the
+// gate, blob and meta nodes pinned to it under [[host.node]].
+//
+// dataDir is the Spinifex data root; the hosts' data directories are absolute
+// beneath it, since the service runs under systemd with no dependable working
+// directory.
+//
+// A populated northstar credential provisions the zone bucket, grants the
+// system key write access to it, and adds the read-only entry the resolver
+// authenticates with. A zero value omits all three, yielding a config no
+// northstar service can use.
+func GenerateMultiNodePredastoreConfig(templateStr string, nodes []formation.PredastoreNodeConfig, accessKey, secretKey, region, natsToken, configDir, dataDir, bindIP string, compactionIntervalSeconds int, northstar NorthstarCredentials) (string, error) {
+	if len(nodes) < 2 {
+		return "", fmt.Errorf("multi-node predastore requires at least 2 nodes, got %d", len(nodes))
+	}
+
+	data := struct {
+		Nodes                     []formation.PredastoreNodeConfig
+		ClusterNodes              []PredastoreClusterNode
+		AccessKey                 string
+		SecretKey                 string
+		Region                    string
+		NatsToken                 string
+		ConfigDir                 string
+		PredastoreDataDir         string
+		BindIP                    string
+		CompactionIntervalSeconds int
+		NorthstarAccessKey        string
+		NorthstarSecretKey        string
+		NorthstarBucket           string
+		AdminPort                 int
+	}{
+		Nodes: nodes, ClusterNodes: PredastoreTopology(nodes),
+		AccessKey: accessKey, SecretKey: secretKey, Region: region,
+		NatsToken: natsToken, ConfigDir: configDir,
+		PredastoreDataDir:         PredastoreDataDir(dataDir),
+		BindIP:                    bindIP,
+		CompactionIntervalSeconds: compactionIntervalSeconds,
+		NorthstarAccessKey:        northstar.AccessKey,
+		NorthstarSecretKey:        northstar.SecretKey,
+		NorthstarBucket:           northstar.Bucket,
+		AdminPort:                 PredastoreAdminPort,
+	}
+
+	tmpl, err := template.New("predastore-multinode").Parse(templateStr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse predastore template: %w", err)
+	}
+
+	var b strings.Builder
+	if err := tmpl.Execute(&b, data); err != nil {
+		return "", fmt.Errorf("failed to execute predastore template: %w", err)
+	}
+
+	return b.String(), nil
+}
+
+// FindNodeIDByIP returns the node ID for the given IP in the node list,
+// or 0 if the IP is not found.
+func FindNodeIDByIP(nodes []formation.PredastoreNodeConfig, ip string) int {
+	for _, n := range nodes {
+		if n.Host == ip {
+			return n.ID
+		}
+	}
+	return 0
+}
+
+// ParsePredastoreHostIDFromConfig parses a predastore.toml string and returns
+// the ID of the [[host]] whose addr matches the given IP, or 0 if not found.
+// A host addr names one machine and never carries a port; the ports belong to
+// the nodes pinned to it.
+func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
+	var cfg struct {
+		Hosts []struct {
+			ID   int    `toml:"id"`
+			Addr string `toml:"addr"`
+		} `toml:"host"`
+	}
+	if err := toml.Unmarshal([]byte(tomlContent), &cfg); err != nil {
+		slog.Warn("Failed to parse predastore.toml content", "error", err)
+		return 0
+	}
+	for _, h := range cfg.Hosts {
+		if h.Addr == ip {
+			return h.ID
+		}
+	}
+	return 0
+}
+
+// SetMIGProfile idempotently writes mig_profile = "<profile>" for the given node
+// into spinifex.toml. An empty profile clears the setting.
+func SetMIGProfile(tomlPath, node, profile string) error {
+	raw, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", tomlPath, err)
+	}
+	text := string(raw)
+	quoted := `"` + profile + `"`
+
+	sectionHeader := "[nodes." + node + ".daemon]"
+	sectionStart := strings.Index(text, sectionHeader)
+	if sectionStart < 0 {
+		text = strings.TrimRight(text, "\n") +
+			"\n\n[nodes." + node + ".daemon]\nmig_profile = " + quoted + "\n"
+		return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640
+	}
+
+	bodyStart := sectionStart + len(sectionHeader)
+	rest := text[bodyStart:]
+	nextSection := strings.Index(rest, "\n[")
+	var body, suffix string
+	if nextSection < 0 {
+		body = rest
+	} else {
+		body = rest[:nextSection]
+		suffix = rest[nextSection:]
+	}
+
+	if regexp.MustCompile(`mig_profile\s*=\s*` + regexp.QuoteMeta(quoted)).MatchString(body) {
+		return nil
+	}
+
+	flipRe := regexp.MustCompile(`mig_profile\s*=\s*"[^"]*"`)
+	var newBody string
+	if flipRe.MatchString(body) {
+		newBody = flipRe.ReplaceAllString(body, "mig_profile = "+quoted)
+	} else {
+		newBody = "\nmig_profile = " + quoted + body
+	}
+
+	text = text[:bodyStart] + newBody + suffix
+	return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640
+}
+
+// SetGPUPassthrough idempotently writes gpu_passthrough = <enabled> for the
+// given node into spinifex.toml, preserving all other content and comments.
+// Returns nil without touching the file if the setting is already correct.
+func SetGPUPassthrough(tomlPath, node string, enabled bool) error {
+	raw, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", tomlPath, err)
+	}
+	text := string(raw)
+	value := "false"
+	if enabled {
+		value = "true"
+	}
+
+	sectionHeader := "[nodes." + node + ".daemon]"
+
+	sectionStart := strings.Index(text, sectionHeader)
+	if sectionStart < 0 {
+		// No daemon section — append one.
+		text = strings.TrimRight(text, "\n") +
+			"\n\n[nodes." + node + ".daemon]\ngpu_passthrough = " + value + "\n"
+		return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640 so the daemon can read it
+	}
+
+	// Extract body of just this section (stops at the next section header).
+	bodyStart := sectionStart + len(sectionHeader)
+	rest := text[bodyStart:]
+	nextSection := strings.Index(rest, "\n[")
+	var body, suffix string
+	if nextSection < 0 {
+		body = rest
+	} else {
+		body = rest[:nextSection]
+		suffix = rest[nextSection:]
+	}
+
+	// Already correct — no-op.
+	if regexp.MustCompile(`gpu_passthrough\s*=\s*` + value).MatchString(body) {
+		return nil
+	}
+
+	// Key exists with wrong value — flip within this section only.
+	flipRe := regexp.MustCompile(`gpu_passthrough\s*=\s*(?:true|false)`)
+	var newBody string
+	if flipRe.MatchString(body) {
+		newBody = flipRe.ReplaceAllString(body, "gpu_passthrough = "+value)
+	} else {
+		// Key absent — insert right after section header.
+		newBody = "\ngpu_passthrough = " + value + body
+	}
+
+	text = text[:bodyStart] + newBody + suffix
+	return os.WriteFile(tomlPath, []byte(text), 0640) //nolint:gosec // spinifex.toml is root:spinifex 0640 so the daemon can read it
+}

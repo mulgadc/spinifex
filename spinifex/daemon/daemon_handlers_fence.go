@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/services/viperblockd/vbwire"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/nats-io/nats.go"
 )
 
@@ -17,10 +17,10 @@ import (
 // process holding memory and taps, and an instance record claiming this node
 // runs something that runs somewhere else now.
 func (d *Daemon) handleVolumeFenced(msg *nats.Msg) string {
-	ctx, span := utils.StartConsumerSpan(msg)
+	ctx, span := natsmsg.StartConsumerSpan(msg)
 	defer span.End()
 
-	var event vbwire.VolumeFencedEvent
+	var event viperblocklegacyv1.VolumeFencedEvent
 	if err := json.Unmarshal(msg.Data, &event); err != nil {
 		slog.ErrorContext(ctx, "volume fenced: bad event", "err", err)
 		return outcomeError

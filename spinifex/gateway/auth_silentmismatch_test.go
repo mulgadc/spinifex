@@ -5,6 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,8 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/stretchr/testify/require"
-
-	"github.com/mulgadc/spinifex/spinifex/utils"
 )
 
 // captureLogs redirects the default slog logger into a buffer for the duration
@@ -121,7 +122,7 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rl := NewAuthRateLimiter()
+			rl := authlimit.NewAuthRateLimiter()
 			defer rl.Stop()
 			gw := &GatewayConfig{
 				DisableLogging: true,
@@ -148,9 +149,13 @@ func TestSigV4Auth_FailureLogsLoopbackGatedClientIP(t *testing.T) {
 			require.Contains(t, out, "session credential not found")
 			require.Contains(t, out, "sourceIP="+tc.wantLogIP)
 
-			rl.mu.RLock()
-			defer rl.mu.RUnlock()
-			require.NotNil(t, rl.records[utils.ClientIP(tc.remoteAddr)], "lockout must key on the connection peer")
+			// The request's one failure counts against the connection peer: one
+			// fewer probe than the threshold then locks that address.
+			peer := ingresshttp.ClientIP(tc.remoteAddr)
+			recordProbeFailures(rl, peer, "below", authlimit.MaxFailures-2)
+			require.Empty(t, rl.CheckIP(peer), "lockout must key on the connection peer")
+			recordProbeFailures(rl, peer, "edge", 1)
+			require.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(peer), "lockout must key on the connection peer")
 		})
 	}
 }

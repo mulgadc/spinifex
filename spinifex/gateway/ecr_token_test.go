@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +52,7 @@ func TestECRToken_BearerCredentialAccepted(t *testing.T) {
 		IAMService: ecrBridgeTestIAM(ecrTestAccount),
 	}
 
-	tok, _, err := iss.Mint(gateway_ecrauth.Principal{
+	tok, _, err := iss.Mint(ecrauth.Principal{
 		AccountID:   ecrTestAccount,
 		ARN:         "arn:aws:iam::" + ecrTestAccount + ":user/dev",
 		Type:        principalTypeUser,

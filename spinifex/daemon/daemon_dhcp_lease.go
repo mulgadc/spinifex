@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/nats-io/nats.go"
 )
 

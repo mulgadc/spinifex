@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"log/slog"
 	"maps"
@@ -25,22 +27,23 @@ import (
 	bbotel "github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
-	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
-	gateway_ecr "github.com/mulgadc/spinifex/spinifex/gateway/ecr"
-	gateway_ecrauth "github.com/mulgadc/spinifex/spinifex/gateway/ecrauth"
-	gateway_eks "github.com/mulgadc/spinifex/spinifex/gateway/eks"
-	"github.com/mulgadc/spinifex/spinifex/gateway/policy"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_ochrevector "github.com/mulgadc/spinifex/spinifex/handlers/ochrevector"
-	handlers_quota "github.com/mulgadc/spinifex/spinifex/handlers/quota"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/otelsetup"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -78,7 +81,7 @@ const (
 	ctxTargetRegion contextKey = "host.targetRegion"
 
 	// ctxAuthPrincipal carries the verified ECR token subject (principal ARN).
-	// The resolved account is stashed via gateway_ecr.WithAuthAccount so the
+	// The resolved account is stashed via ecrregistry.WithAuthAccount so the
 	// registry package can read it without sharing this package's key type.
 	ctxAuthPrincipal contextKey = "ecr.authPrincipal"
 	// ctxECRPrincipal carries the principalContext resolveECRPrincipal rebuilt
@@ -142,7 +145,7 @@ type GatewayConfig struct {
 	// InstanceStatus backfills DescribeInstanceStatus for instances whose node
 	// stopped answering, which would otherwise drop out of the answer entirely.
 	// Zero value keeps the pre-existing fan-out-only behaviour.
-	InstanceStatus gateway_ec2_instance.StatusSynthesis
+	InstanceStatus ec2instanceapi.StatusSynthesis
 	IAMService     handlers_iam.IAMService
 	// BucketStore reaps a tenant's S3 buckets during account teardown. It
 	// signs with the config service credential, which predastore already
@@ -150,25 +153,25 @@ type GatewayConfig struct {
 	// Nil makes DeleteAccount refuse rather than tear down around the data.
 	BucketStore accountteardown.BucketStore
 	STSService  handlers_sts.STSService
-	RateLimiter *AuthRateLimiter     // Per-IP auth failure rate limiter
-	Throttler   *ratelimit.Throttler // Per-account+action API request throttler
+	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
+	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
 	// status does not add a KV read to every authenticated request.
 	accountStatus *accountStatusCache
 	// Quota enforces per-account service quotas. Built unconditionally; a disabled
 	// config yields a no-op Service whose Exempt always returns true. Nil only in
 	// unit tests of unrelated routes, where no handler reaches the quota checks.
-	Quota   *handlers_quota.Service
+	Quota   *quota.Service
 	Version string // Build-time version string (set from cmd.Version)
 	Commit  string // Build-time commit hash (set from cmd.Commit)
 	// ECRRegistry serves the OCI Distribution v2 (/v2/*) surface. Nil falls back
 	// to the 501 stub (e.g. in unit tests of unrelated routes).
-	ECRRegistry *gateway_ecr.Registry
+	ECRRegistry *ecrregistry.Registry
 	// ECRTokenIssuer mints GetAuthorizationToken JWTs; ECRTokenVerifier validates
 	// them on /v2/*. Both nil disables the auth bridge (registry mounts open, as
 	// in unit tests of unrelated routes).
-	ECRTokenIssuer   *gateway_ecrauth.Issuer
-	ECRTokenVerifier *gateway_ecrauth.Verifier
+	ECRTokenIssuer   *ecrauth.Issuer
+	ECRTokenVerifier *ecrauth.Verifier
 	// BedrockCredentials resolves per-account provider API keys for bedrock
 	// routes. Nil falls back to no external providers (self-host models only).
 	BedrockCredentials *gateway_bedrock.CredentialStore
@@ -222,14 +225,77 @@ type GatewayConfig struct {
 	// not the daemon-owned vector engine). Nil for either fails
 	// BedrockAgent_Request with ServerInternal rather than panicking, the same
 	// as an unconfigured gw.NATSConn does for every other service.
-	BedrockAgentKB          *handlers_ochrevector.KBStore
-	BedrockAgentDataSources *handlers_ochrevector.DataSourceStore
+	BedrockAgentKB          *ochrevector.KBStore
+	BedrockAgentDataSources *ochrevector.DataSourceStore
 	// BedrockAgentVector forwards CreateIndex/DeleteIndex/Ingest/DescribeJob/
 	// ListJobs calls to .9's daemon-side VectorService over NATS
-	// (handlers_ochrevector.NewNATSVectorService). It is the interface, not
+	// (ochrevector.NewNATSVectorService). It is the interface, not
 	// the concrete client, so a test can inject a fake without a live NATS
 	// connection.
-	BedrockAgentVector handlers_ochrevector.VectorService
+	BedrockAgentVector ochrevector.VectorService
+
+	// Services holds the signed AWS services dispatched through the
+	// registration seam. Nil means nothing is registered, so every request
+	// falls through to the legacy switch in Request.
+	Services *dispatch.Registry
+}
+
+// selector answers service selection over Services and the legacy tables. It
+// holds only the two pointers, so it is built per call and needs no cache.
+func (gw *GatewayConfig) selector() *dispatch.Selector {
+	return dispatch.NewSelector(gw.Services, legacyServices{})
+}
+
+// legacyServices answers selection for services still on Request's switch.
+type legacyServices struct{}
+
+var _ dispatch.Legacy = legacyServices{}
+
+func (legacyServices) Serves(svc string) bool { return supportedServices[svc] }
+
+func (legacyServices) ResolveAction(r *http.Request, svc string) string {
+	return resolveNonQueryAction(r, svc)
+}
+
+func (legacyServices) JSONErrors(svc string) bool { return jsonErrorService(svc) }
+
+// registered reports whether svc is served through the registration seam. A
+// nil registry (no registrations) always reports false.
+func (gw *GatewayConfig) registered(svc string) (*dispatch.Entry, bool) {
+	return gw.selector().Lookup(svc)
+}
+
+// ValidateServices fails if a name the registry serves is also served by the
+// legacy supportedServices table, so no service is ever reachable down both
+// dispatch paths at once.
+func (gw *GatewayConfig) ValidateServices() error {
+	return gw.selector().Validate()
+}
+
+// registeredActorFunc returns the lazy Actor resolver a registered
+// dispatcher's Invocation carries. It reads the SigV4 identity context through
+// the shared buildCallerARN helper, so nothing is computed until called.
+func (gw *GatewayConfig) registeredActorFunc(r *http.Request) dispatch.ActorFunc {
+	return func() (dispatch.Actor, error) {
+		ctx := r.Context()
+		accountID, _ := ctx.Value(ctxAccountID).(string)
+		identity, _ := ctx.Value(ctxIdentity).(string)
+		principalType, _ := ctx.Value(ctxPrincipalType).(string)
+		assumedRoleARN, _ := ctx.Value(ctxAssumedRoleARN).(string)
+		userARN, _ := ctx.Value(ctxUserARN).(string)
+		accessKey, _ := ctx.Value(ctxAccessKey).(string)
+
+		callerARN, err := buildCallerARN(accountID, identity, principalType, assumedRoleARN, userARN)
+		if err != nil {
+			return dispatch.Actor{}, err
+		}
+		return dispatch.Actor{
+			AccountID:     accountID,
+			CallerARN:     callerARN,
+			PrincipalType: principalType,
+			AccessKeyID:   accessKey,
+		}, nil
+	}
 }
 
 var supportedServices = map[string]bool{
@@ -239,8 +305,6 @@ var supportedServices = map[string]bool{
 	"elasticloadbalancing":  true,
 	"eks":                   true,
 	"ecs":                   true,
-	"ecr":                   true,
-	"acm":                   true,
 	"rds":                   true,
 	"tagging":               true,
 	"spinifex":              true,
@@ -248,37 +312,6 @@ var supportedServices = map[string]bool{
 	"bedrock-runtime":       true,
 	"bedrock-agent":         true,
 	"bedrock-agent-runtime": true,
-}
-
-// EC2ErrorResponse is the EC2 query-API error envelope.
-// aws-sdk-go v1's ec2query handler rejects the IAM-style <ErrorResponse> envelope
-// with SerializationError, so EC2 errors must use <Response><Errors>...</Errors></Response>.
-type EC2ErrorResponse struct {
-	XMLName   xml.Name  `xml:"Response"`
-	Errors    EC2Errors `xml:"Errors"`
-	RequestID string    `xml:"RequestID"`
-}
-
-// EC2Errors is the <Errors> wrapper inside an EC2ErrorResponse, holding a single error.
-type EC2Errors struct {
-	Error ErrorDetail `xml:"Error"`
-}
-
-// ErrorDetail is the Code and Message of one EC2 query-API error.
-type ErrorDetail struct {
-	Code    string `xml:"Code"`
-	Message string `xml:"Message"`
-}
-
-// S3ErrorResponse is the S3 REST error envelope: a flat <Error> document rather
-// than the query-API wrapper. SDKs look for a top-level <Error><Code> on an S3
-// response and report an empty code for anything else.
-type S3ErrorResponse struct {
-	XMLName   xml.Name `xml:"Error"`
-	Code      string   `xml:"Code"`
-	Message   string   `xml:"Message"`
-	Resource  string   `xml:"Resource,omitempty"`
-	RequestID string   `xml:"RequestId"`
 }
 
 func (gw *GatewayConfig) SetupRoutes() http.Handler {
@@ -297,7 +330,7 @@ func (gw *GatewayConfig) SetupRoutes() http.Handler {
 	bbotel.SetLevel(logLevel)
 
 	if gw.RateLimiter == nil {
-		gw.RateLimiter = NewAuthRateLimiter()
+		gw.RateLimiter = authlimit.NewAuthRateLimiter()
 	}
 
 	r := chi.NewRouter()
@@ -368,30 +401,25 @@ func (gw *GatewayConfig) throttleKeyFuncs() []ratelimit.KeyFunc {
 	}
 }
 
-// eksJSONContentType is the AWS REST-JSON 1.1 content type EKS clients expect.
-const eksJSONContentType = "application/x-amz-json-1.1"
-
 // jsonErrorService reports whether svc returns AWS JSON 1.1 errors rather than
 // XML. One source of truth so every error emitter agrees with ErrorHandler; an
 // XML body to these clients is an unparseable "<?xml…" deserialization error.
 func jsonErrorService(svc string) bool {
 	switch svc {
-	case "eks", "ecr", "acm", "ecs", "tagging",
+	case "eks", "ecs", "tagging",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime":
 		return true
 	}
 	return false
 }
 
-// requestSignalsJSONProtocol reads r's own headers for the AWS JSON-1.x
-// tells, for a scope jsonErrorService has no entry for because the gateway
-// does not serve it. A JSON-1.1 action always carries X-Amz-Target, and a
-// JSON-protocol client always sends an application/x-amz-json-* content type.
-func requestSignalsJSONProtocol(r *http.Request) bool {
-	if r.Header.Get("X-Amz-Target") != "" {
-		return true
-	}
-	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-amz-json")
+// jsonErrorService reports whether svc's errors render in the AWS JSON 1.1
+// envelope: a registered service's own declared envelope, or the legacy
+// table for every service not yet registered through the seam. Every error
+// emitter calls this method, never the free function, so the two can never
+// disagree on a registered service.
+func (gw *GatewayConfig) jsonErrorService(svc string) bool {
+	return gw.selector().JSONErrors(svc)
 }
 
 // clusterUnavailableMsg is the 503 body when NATS is disconnected. Points
@@ -404,10 +432,10 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 	requestID := uuid.NewV4().String()
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if jsonErrorService(svc) {
-		body := gateway_eks.GenerateEKSErrorResponse(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(awserrors.ErrorServiceUnavailable))
+	if gw.jsonErrorService(svc) {
+		body := envelope.JSONBody(awserrors.ErrorServiceUnavailable, clusterUnavailableMsg)
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(awserrors.ErrorServiceUnavailable))
 		w.WriteHeader(http.StatusServiceUnavailable)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write JSON cluster-unavailable response", "err", err)
@@ -417,7 +445,7 @@ func (gw *GatewayConfig) writeClusterUnavailable(w http.ResponseWriter, r *http.
 
 	xmlBody := xmlErrorBody(svc, awserrors.ErrorServiceUnavailable, clusterUnavailableMsg, requestID, r.URL.Path)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(http.StatusServiceUnavailable)
 	if _, err := w.Write(xmlBody); err != nil {
 		slog.Error("Failed to write cluster-unavailable response", "err", err)
@@ -436,10 +464,10 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	errorMsg := awserrors.ErrorLookup[errorCode]
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
-	if jsonErrorService(svc) {
-		body := gateway_eks.GenerateEKSErrorResponse(errorCode, errorMsg.Message)
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(errorCode))
+	if gw.jsonErrorService(svc) {
+		body := envelope.JSONBody(errorCode, errorMsg.Message)
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(errorCode))
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write JSON throttle error response", "err", err)
@@ -449,7 +477,7 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 
 	xmlErr := xmlErrorBody(svc, errorCode, errorMsg.Message, requestID, r.URL.Path)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
 	if _, err := w.Write(xmlErr); err != nil {
 		slog.Error("Failed to write throttle error response", "err", err)
@@ -468,45 +496,47 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fail fast when NATS is down; every NATS-bound handler would otherwise hang
-	// until per-call timeout.
+	// until per-call timeout. Applies ahead of either dispatch path below.
 	if gw.NATSConn == nil || !gw.NATSConn.IsConnected() {
 		gw.writeClusterUnavailable(w, r, svc)
 		return
 	}
 
-	switch svc {
-	case "ec2":
-		err = gw.EC2_Request(w, r)
-	case "iam":
-		err = gw.IAM_Request(w, r)
-	case "sts":
-		err = gw.STS_Request(w, r)
-	case "elasticloadbalancing":
-		err = gw.ELBv2_Request(w, r)
-	case "eks":
-		err = gw.EKS_Request(w, r)
-	case "bedrock":
-		err = gw.Bedrock_Request(w, r)
-	case "bedrock-runtime":
-		err = gw.BedrockRuntime_Request(w, r)
-	case "bedrock-agent":
-		err = gw.BedrockAgent_Request(w, r)
-	case "bedrock-agent-runtime":
-		err = gw.BedrockAgentRuntime_Request(w, r)
-	case "ecs":
-		err = gw.ECS_Request(w, r)
-	case "ecr":
-		err = gw.ECR_Request(w, r)
-	case "acm":
-		err = gw.ACM_Request(w, r)
-	case "rds":
-		err = gw.RDS_Request(w, r)
-	case "tagging":
-		err = gw.Tagging_Request(w, r)
-	case "spinifex":
-		err = gw.Spinifex_Request(w, r)
-	default:
-		err = errors.New(awserrors.ErrorUnsupportedOperation)
+	if entry, ok := gw.registered(svc); ok {
+		err = gw.dispatchRegistered(entry, w, r)
+	} else {
+		// Legacy dispatch path for every service not yet registered through
+		// the seam. This switch must only shrink as services register.
+		switch svc {
+		case "ec2":
+			err = gw.EC2_Request(w, r)
+		case "iam":
+			err = gw.IAM_Request(w, r)
+		case "sts":
+			err = gw.STS_Request(w, r)
+		case "elasticloadbalancing":
+			err = gw.ELBv2_Request(w, r)
+		case "eks":
+			err = gw.EKS_Request(w, r)
+		case "bedrock":
+			err = gw.Bedrock_Request(w, r)
+		case "bedrock-runtime":
+			err = gw.BedrockRuntime_Request(w, r)
+		case "bedrock-agent":
+			err = gw.BedrockAgent_Request(w, r)
+		case "bedrock-agent-runtime":
+			err = gw.BedrockAgentRuntime_Request(w, r)
+		case "ecs":
+			err = gw.ECS_Request(w, r)
+		case "rds":
+			err = gw.RDS_Request(w, r)
+		case "tagging":
+			err = gw.Tagging_Request(w, r)
+		case "spinifex":
+			err = gw.Spinifex_Request(w, r)
+		default:
+			err = errors.New(awserrors.ErrorUnsupportedOperation)
+		}
 	}
 
 	if err != nil {
@@ -517,10 +547,30 @@ func (gw *GatewayConfig) Request(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// dispatchRegistered hands the authenticated request to a registered service
+// with the caller's account, the gateway Region and ingress-owned
+// authorization and actor capabilities.
+func (gw *GatewayConfig) dispatchRegistered(entry *dispatch.Entry, w http.ResponseWriter, r *http.Request) error {
+	return entry.Dispatch(w, dispatch.Invocation{
+		Request:   r,
+		AccountID: mustCtxString(r, ctxAccountID),
+		Region:    gw.Region,
+		Authorize: func(service, action string, resources []string, keys iampolicy.ConditionKeys) error {
+			return gw.checkPolicyResourcesWithKeys(r, service, action, resources, keys)
+		},
+		Actor: gw.registeredActorFunc(r),
+	})
+}
+
 func (gw *GatewayConfig) GetService(r *http.Request) (string, error) {
 	svc, ok := r.Context().Value(ctxService).(string)
 	if !ok {
 		return "", errors.New(awserrors.ErrorAuthFailure)
+	}
+	// A registered service needs no bedrock sub-service rewriting: that
+	// rewrite exists only for the legacy "bedrock" signing-name split below.
+	if _, ok := gw.registered(svc); ok {
+		return svc, nil
 	}
 	// The whole Bedrock family shares the SigV4 signing name "bedrock"; the
 	// request path is the only discriminator, since the gateway serves one endpoint.
@@ -679,7 +729,7 @@ func requestConditionKeys(r *http.Request, principal principalContext) iampolicy
 	// Derived from the request rather than read from the context: the OCI
 	// registry chain never runs SigV4AuthMiddleware, so a context-carried
 	// address would be absent there and every aws:SourceIp condition inert.
-	if ip := utils.ClientIP(r.RemoteAddr); ip != "" {
+	if ip := ingresshttp.ClientIP(r.RemoteAddr); ip != "" {
 		keys[iampolicy.KeySourceIP] = ip
 	}
 	// Resolved from the credential record, never from anything the caller
@@ -773,7 +823,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 
 	switch principal.principalType {
 	case principalTypeUser:
-		if principal.identity == "root" && principal.accountID == utils.GlobalAccountID {
+		if principal.identity == "root" && principal.accountID == awsidentifiers.GlobalAccountID {
 			// Global root bypass — user branch only.
 			return nil
 		}
@@ -891,11 +941,11 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	// EKS, ECR, ACM, ECS, tagging, and the bedrock family use AWS JSON 1.1;
 	// query/XML services fall through.
-	if jsonErrorService(svc) {
-		body := gateway_eks.GenerateEKSErrorResponse(code, errorMsg.Message)
+	if gw.jsonErrorService(svc) {
+		body := envelope.JSONBody(code, errorMsg.Message)
 		slog.Debug("Generated JSON error response", "service", svc, "error", err, "code", code, "json", string(body), "requestId", requestId)
-		w.Header().Set("Content-Type", eksJSONContentType)
-		w.Header().Set("X-Amzn-Errortype", jsonErrorType(code))
+		w.Header().Set("Content-Type", envelope.JSONContentType)
+		w.Header().Set("X-Amzn-Errortype", envelope.JSONErrorType(code))
 		w.WriteHeader(errorMsg.HTTPCode)
 		if _, err := w.Write(body); err != nil {
 			slog.Error("Failed to write EKS error response", "err", err)
@@ -907,7 +957,7 @@ func (gw *GatewayConfig) ErrorHandler(w http.ResponseWriter, r *http.Request, er
 
 	slog.Debug("Generated error response", "error", err, "code", code, "xml", string(xmlError), "requestId", requestId)
 
-	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Content-Type", envelope.XMLContentType)
 	w.WriteHeader(errorMsg.HTTPCode)
 	if _, err := w.Write(xmlError); err != nil {
 		slog.Error("Failed to write error response", "err", err)
@@ -950,89 +1000,6 @@ func ParseAWSQueryArgs(query string) (map[string]string, error) {
 	return params, nil
 }
 
-// GenerateEC2ErrorResponse renders the EC2 <Response><Errors> error envelope with an XML header.
-// If marshalling fails it returns a fixed InternalError document instead.
-func GenerateEC2ErrorResponse(code, message, requestID string) (output []byte) {
-	errorXml := EC2ErrorResponse{
-		Errors: EC2Errors{
-			Error: ErrorDetail{
-				Code:    code,
-				Message: message,
-			},
-		},
-		RequestID: requestID,
-	}
-
-	output, err := xml.MarshalIndent(errorXml, "", "  ")
-
-	if err != nil {
-		slog.Error("Failed to build XML", "error", err)
-		return []byte(xml.Header + `<Response><Errors><Error><Code>InternalError</Code><Message>Internal error</Message></Error></Errors><RequestID>` + requestID + `</RequestID></Response>`)
-	}
-
-	// Add XML header
-	output = append([]byte(xml.Header), output...)
-
-	return output
-}
-
-// IAMErrorResponse is the IAM/STS error XML envelope.
-type IAMErrorResponse struct {
-	XMLName   xml.Name       `xml:"ErrorResponse"`
-	Error     IAMErrorDetail `xml:"Error"`
-	RequestID string         `xml:"RequestId"`
-}
-
-// IAMErrorDetail is the <Error> element of an IAMErrorResponse; Type is Sender or Receiver.
-type IAMErrorDetail struct {
-	Type    string `xml:"Type"`
-	Code    string `xml:"Code"`
-	Message string `xml:"Message"`
-}
-
-// GenerateIAMErrorResponse builds the generic REST-XML/AWS-query ErrorResponse
-// envelope. Originally IAM/STS-specific, it is also xmlErrorBody's default for
-// every scope with no dedicated shape, including ones the gateway does not serve.
-func GenerateIAMErrorResponse(code, message, requestID string) (output []byte) {
-	errorXml := IAMErrorResponse{
-		Error: IAMErrorDetail{
-			Type:    "Sender",
-			Code:    code,
-			Message: message,
-		},
-		RequestID: requestID,
-	}
-
-	output, err := xml.MarshalIndent(errorXml, "", "  ")
-	if err != nil {
-		slog.Error("Failed to build IAM error XML", "error", err)
-		return []byte(xml.Header + "<ErrorResponse><Error><Type>Sender</Type><Code>InternalError</Code><Message>Internal error</Message></Error><RequestId>" + requestID + "</RequestId></ErrorResponse>")
-	}
-
-	output = append([]byte(xml.Header), output...)
-	return output
-}
-
-// GenerateS3ErrorResponse builds the flat S3 REST error document. resource is
-// the request path and is omitted when empty.
-func GenerateS3ErrorResponse(code, message, requestID, resource string) (output []byte) {
-	errorXml := S3ErrorResponse{
-		Code:      code,
-		Message:   message,
-		Resource:  resource,
-		RequestID: requestID,
-	}
-
-	output, err := xml.MarshalIndent(errorXml, "", "  ")
-	if err != nil {
-		slog.Error("Failed to build S3 error XML", "error", err)
-		return []byte(xml.Header + "<Error><Code>InternalError</Code><Message>Internal error</Message><RequestId>" + requestID + "</RequestId></Error>")
-	}
-
-	output = append([]byte(xml.Header), output...)
-	return output
-}
-
 // xmlErrorBody renders an error in the XML envelope svc's clients expect. The
 // one place the service-to-envelope mapping lives, so a service cannot be
 // added to some emitters and missed by others. JSON services never reach
@@ -1040,18 +1007,18 @@ func GenerateS3ErrorResponse(code, message, requestID, resource string) (output 
 func xmlErrorBody(svc, code, message, requestID, resource string) []byte {
 	switch svc {
 	case "s3":
-		return GenerateS3ErrorResponse(code, message, requestID, resource)
+		return envelope.S3Body(code, message, requestID, resource)
 	case "ec2", "spinifex", "":
 		// Both speak the Action-parameter query protocol, and their clients
 		// parse the EC2 <Response><Errors> shape, not the generic ErrorResponse.
 		// Empty means the signature never parsed, so no service is known yet;
 		// keep EC2's shape there rather than changing a path this is not about.
-		return GenerateEC2ErrorResponse(code, message, requestID)
+		return envelope.EC2Body(code, message, requestID)
 	default:
 		// iam, sts, elasticloadbalancing, rds, and any unenumerated or
 		// unserved scope: the generic REST-XML ErrorResponse envelope, never
 		// EC2's shape, which a REST-XML client cannot deserialize.
-		return GenerateIAMErrorResponse(code, message, requestID)
+		return envelope.IAMBody(code, message, requestID)
 	}
 }
 
@@ -1083,8 +1050,8 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 		return count
 	}
 
-	frames, _, err := utils.Gather(ctx, gw.NATSConn, "spinifex.nodes.discover", []byte("{}"),
-		utils.GatherOpts{Timeout: discoverActiveNodesTimeout})
+	frames, _, err := natsmsg.Gather(ctx, gw.NATSConn, clusterv1.NodesDiscoverSubject, []byte("{}"),
+		natsmsg.GatherOpts{Timeout: discoverActiveNodesTimeout})
 	if err != nil {
 		slog.ErrorContext(ctx, "DiscoverActiveNodes: fan-out failed, using ExpectedNodes fallback", "err", err, "fallback", gw.ExpectedNodes)
 		return gw.ExpectedNodes
@@ -1092,7 +1059,7 @@ func (gw *GatewayConfig) DiscoverActiveNodes(ctx context.Context) int {
 
 	nodesSeen := make(map[string]bool)
 	for _, frame := range frames {
-		var response types.NodeDiscoverResponse
+		var response clusterv1.NodeDiscoverResponse
 		if err := json.Unmarshal(frame.Data, &response); err != nil {
 			slog.DebugContext(ctx, "DiscoverActiveNodes: Failed to unmarshal response", "err", err)
 			continue

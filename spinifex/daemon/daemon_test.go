@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"math/big"
 	"net"
 	"net/http"
@@ -28,31 +29,32 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
-	"github.com/mulgadc/spinifex/spinifex/config"
-	"github.com/mulgadc/spinifex/spinifex/ebsmetadata"
-	"github.com/mulgadc/spinifex/spinifex/gpu"
-	handlers_ec2_account "github.com/mulgadc/spinifex/spinifex/handlers/ec2/account"
-	handlers_ec2_eigw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eigw"
-	handlers_ec2_eip "github.com/mulgadc/spinifex/spinifex/handlers/ec2/eip"
-	handlers_ec2_igw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/igw"
-	handlers_ec2_image "github.com/mulgadc/spinifex/spinifex/handlers/ec2/image"
-	handlers_ec2_instance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/instance"
-	handlers_ec2_natgw "github.com/mulgadc/spinifex/spinifex/handlers/ec2/natgw"
-	handlers_ec2_placementgroup "github.com/mulgadc/spinifex/spinifex/handlers/ec2/placementgroup"
-	handlers_ec2_routetable "github.com/mulgadc/spinifex/spinifex/handlers/ec2/routetable"
-	handlers_ec2_snapshot "github.com/mulgadc/spinifex/spinifex/handlers/ec2/snapshot"
-	handlers_ec2_spotinstance "github.com/mulgadc/spinifex/spinifex/handlers/ec2/spotinstance"
-	handlers_ec2_volume "github.com/mulgadc/spinifex/spinifex/handlers/ec2/volume"
-	handlers_ec2_vpc "github.com/mulgadc/spinifex/spinifex/handlers/ec2/vpc"
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	"github.com/mulgadc/spinifex/spinifex/instancetypes"
-	"github.com/mulgadc/spinifex/spinifex/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/qmp"
-	"github.com/mulgadc/spinifex/spinifex/types"
-	"github.com/mulgadc/spinifex/spinifex/utils"
-	"github.com/mulgadc/spinifex/spinifex/vm"
-	vmmock "github.com/mulgadc/spinifex/spinifex/vm/mock"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -129,8 +131,8 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// jsManager is nil here; pass a nil literal to keep the StoppedInstanceStore
 	// interface itself nil (rather than a typed-nil pointer) so the service can
 	// short-circuit cleanly when no KV is available.
-	daemon.instanceService = handlers_ec2_instance.NewInstanceServiceImpl(cfg, daemon.resourceMgr.instanceTypes, nc, objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr, nil)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nc)
+	daemon.instanceService = ec2instance.NewInstanceServiceImpl(cfg, daemon.resourceMgr.instanceTypes, nc, objectstore.NewMemoryObjectStore(), daemon.vmMgr, daemon.resourceMgr, nil)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(cfg, objectstore.NewMemoryObjectStore(), nc)
 
 	// Wire the minimum vm.Deps that handler tests rely on. Lifecycle (Run/Start/
 	// Stop/Terminate) tests still set up their own deps; this gives the
@@ -1444,13 +1446,13 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req types.EBSDeleteRequest
+		var req viperblocklegacyv1.EBSDeleteRequest
 		json.Unmarshal(msg.Data, &req)
 		mu.Lock()
 		ebsDeletedVolumes[req.Volume] = true
 		done := len(ebsDeletedVolumes) == expectedDeletes
 		mu.Unlock()
-		resp := types.EBSDeleteResponse{Volume: req.Volume, Success: true}
+		resp := viperblocklegacyv1.EBSDeleteResponse{Volume: req.Volume, Success: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 		if done {
@@ -1463,8 +1465,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) 
 	instance := &vm.VM{
 		ID:        "i-test-dot",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-root", Boot: true, DeleteOnTermination: true},
 				{Name: "vol-root-efi", EFI: true},
 			},
@@ -1501,13 +1503,13 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	allDeletes := make(chan struct{})
 
 	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req types.EBSDeleteRequest
+		var req viperblocklegacyv1.EBSDeleteRequest
 		json.Unmarshal(msg.Data, &req)
 		mu.Lock()
 		ebsDeletedVolumes[req.Volume] = true
 		done := len(ebsDeletedVolumes) == expectedDeletes
 		mu.Unlock()
-		resp := types.EBSDeleteResponse{Volume: req.Volume, Success: true}
+		resp := viperblocklegacyv1.EBSDeleteResponse{Volume: req.Volume, Success: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 		if done {
@@ -1520,8 +1522,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 	instance := &vm.VM{
 		ID:        "i-test-no-delete",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-keep", Boot: true, DeleteOnTermination: false},
 				{Name: "vol-keep-efi", EFI: true},
 			},
@@ -1569,7 +1571,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
 	})
 	require.NoError(t, err)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
 
 	volumeID := "vol-root-attached"
@@ -1584,8 +1586,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	instance := &vm.VM{
 		ID:        "i-test-boot-delete",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: true},
 			},
 		},
@@ -1622,8 +1624,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 	instance := &vm.VM{
 		ID:        "i-test-boot-detach",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: false},
 			},
 		},
@@ -1662,8 +1664,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 	instance := &vm.VM{
 		ID:        "i-test-data-detach",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1682,8 +1684,8 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 // TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown proves the
 // go-forward self-heal: a stopped-terminate that stamped
 // Teardown[volumes]=failed on a transient error (deleteInstanceVolumes,
-// handlers/ec2/instance/service_impl.go) is retried by
-// TerminatedTeardownReaper.Sweep (vm/teardown_reaper.go) through the real
+// domains/ec2/instance/service_impl.go) is retried by
+// TerminatedTeardownReaper.Sweep (runtime/compute/vm/teardown_reaper.go) through the real
 // instanceCleanerAdapter, which stage 1 rerouted through
 // DeleteVolumeOnTerminate. The retry clears the stale attachment, the delete
 // now succeeds, and the mark flips to done — without abandoning the record.
@@ -1704,7 +1706,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 		Bucket: "snap-kv-" + strings.ReplaceAll(t.Name(), "/", "-"),
 	})
 	require.NoError(t, err)
-	daemon.volumeService = handlers_ec2_volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
+	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
 
 	volumeID := "vol-root-self-heal"
@@ -1726,8 +1728,8 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 		Teardown: map[string]string{
 			vm.TeardownVolumes: string(vm.TeardownFailed),
 		},
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: true},
 			},
 		},
@@ -1787,8 +1789,8 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 		Teardown: map[string]string{
 			vm.TeardownVolumes: string(vm.TeardownFailed),
 		},
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1851,8 +1853,8 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 		AccountID:      testAccountID,
 		Status:         vm.StateShuttingDown,
 		ShuttingDownAt: time.Now().Add(-15 * time.Minute), // past the stuck-terminate backstop timeout
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1899,9 +1901,9 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	t.Run("MissingAttachVolumeData", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				AttachVolume: true,
 			},
 			// No AttachVolumeData
@@ -1923,12 +1925,12 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 		// Temporarily set status to stopped under the manager lock so -race
 		// reflects production discipline.
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateStopped })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				AttachVolume: true,
 			},
-			AttachVolumeData: &types.AttachVolumeData{
+			AttachVolumeData: &ec2v1.AttachVolumeData{
 				VolumeID: volumeID,
 			},
 		}
@@ -1948,12 +1950,12 @@ func TestHandleEC2Events_AttachVolume(t *testing.T) {
 
 	t.Run("VolumeNotFound", func(t *testing.T) {
 		// volumeService.GetVolumeConfig will fail since we have no S3 backend
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				AttachVolume: true,
 			},
-			AttachVolumeData: &types.AttachVolumeData{
+			AttachVolumeData: &ec2v1.AttachVolumeData{
 				VolumeID: "vol-nonexistent",
 				Device:   "/dev/sdf",
 			},
@@ -1998,8 +2000,8 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 			},
 		},
 		QMPClient: &qmp.QMPClient{}, // nil encoder/decoder
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2018,9 +2020,9 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	defer sub.Unsubscribe()
 
 	t.Run("MissingDetachVolumeData", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
 			// No DetachVolumeData
@@ -2040,12 +2042,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		// Temporarily set status to stopped under the manager lock so -race
 		// reflects production discipline.
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateStopped })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: volumeID,
 			},
 		}
@@ -2064,12 +2066,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	})
 
 	t.Run("VolumeNotAttached", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: "vol-nonexistent",
 			},
 		}
@@ -2089,18 +2091,18 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 
 		// Add a boot volume to the instance
 		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, types.EBSRequest{
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 			Name: bootVolumeID,
 			Boot: true,
 		})
 		instance.EBSRequests.Mu.Unlock()
 
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: bootVolumeID,
 			},
 		}
@@ -2124,18 +2126,18 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		efiVolumeID := "vol-efi-protected"
 
 		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, types.EBSRequest{
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
 			Name: efiVolumeID,
 			EFI:  true,
 		})
 		instance.EBSRequests.Mu.Unlock()
 
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: efiVolumeID,
 			},
 		}
@@ -2155,12 +2157,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	})
 
 	t.Run("DeviceMismatch", func(t *testing.T) {
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: volumeID,
 				Device:   "/dev/sdg", // actual is /dev/sdf
 			},
@@ -2179,12 +2181,12 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 	t.Run("QMPDeviceDelFails_NoForce", func(t *testing.T) {
 		// With nil QMPClient encoder/decoder, the QMP device_del returns
 		// error. Without force=true, this should return ServerInternal.
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				DetachVolume: true,
 			},
-			DetachVolumeData: &types.DetachVolumeData{
+			DetachVolumeData: &ec2v1.DetachVolumeData{
 				VolumeID: volumeID,
 				Force:    false,
 			},
@@ -2319,8 +2321,8 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       "vol-root",
 					Boot:       true,
@@ -2339,10 +2341,10 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	// Subscribe a mock ebs.unmount handler
 	ebsUnmountCalled := make(chan string, 1)
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
 		ebsUnmountCalled <- req.Name
-		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2356,12 +2358,12 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -2465,8 +2467,8 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2479,7 +2481,7 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 
 	// Mock ebs.unmount
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2493,12 +2495,12 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 			Force:    true,
 		},
@@ -2579,8 +2581,8 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2598,12 +2600,12 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 		},
 	}
@@ -2669,8 +2671,8 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 			},
 		},
 		QMPClient: qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdh",
@@ -2682,7 +2684,7 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 	daemon.vmMgr.Insert(instance)
 
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2696,12 +2698,12 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			DetachVolume: true,
 		},
-		DetachVolumeData: &types.DetachVolumeData{
+		DetachVolumeData: &ec2v1.DetachVolumeData{
 			VolumeID: volumeID,
 			Device:   "/dev/sdh", // matches actual device
 		},
@@ -2745,8 +2747,8 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 		AccountID:    testAccountID,
 		Instance:     &ec2.Instance{},
 		QMPClient:    qmpClient,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf", // stale entry from before stop
@@ -2759,7 +2761,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 
 	// Mock ebs.mount to return success with a new NBDURI
 	ebsSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-		resp := types.EBSMountResponse{URI: "nbd://new:2222"}
+		resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://new:2222"}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -2773,12 +2775,12 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	command := types.EC2InstanceCommand{
+	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
-		Attributes: types.EC2CommandAttributes{
+		Attributes: ec2v1.EC2CommandAttributes{
 			AttachVolume: true,
 		},
-		AttachVolumeData: &types.AttachVolumeData{
+		AttachVolumeData: &ec2v1.AttachVolumeData{
 			VolumeID: volumeID,
 			Device:   "/dev/sdg", // new device
 		},
@@ -2802,7 +2804,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 
 	// Direct unit test: simulate what the fixed attach handler does
 	instance.EBSRequests.Mu.Lock()
-	newReq := types.EBSRequest{
+	newReq := viperblocklegacyv1.EBSRequest{
 		Name:       volumeID,
 		DeviceName: "/dev/sdg",
 		NBDURI:     "nbd://new:2222",
@@ -3316,17 +3318,17 @@ func TestVolumeMounterAdapter_UnmountOne_Success(t *testing.T) {
 	unmountCalled := make(chan string, 1)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
 		unmountCalled <- req.Name
-		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	adapter.UnmountOne(t.Context(), "", types.EBSRequest{
+	adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{
 		Name:       "vol-rollback-test",
 		DeviceName: "/dev/sdf",
 	})
@@ -3349,14 +3351,14 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Error: "unmount failed: device busy"}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Error: "unmount failed: device busy"}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-rollback-err"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-rollback-err"}),
 		"an ebs.unmount error response must propagate so DetachVolume can keep the volume attached")
 }
 
@@ -3369,14 +3371,14 @@ func TestVolumeMounterAdapter_UnmountOne_StillMounted(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Mounted: true}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Mounted: true}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
 
-	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-still-mounted"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-still-mounted"}),
 		"a still-mounted response must propagate as an error")
 }
 
@@ -3390,7 +3392,7 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 	nc.Close()
 
 	adapter := newVolumeMounterAdapter(nc, "node-1", nil)
-	require.Error(t, adapter.UnmountOne(t.Context(), "", types.EBSRequest{Name: "vol-timeout"}),
+	require.Error(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-timeout"}),
 		"a failed ebs.unmount request must propagate as an error")
 }
 
@@ -3440,9 +3442,9 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
 
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
-		resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 		if req.Name == "vol-fail" {
 			resp.Error = "seal volume: predastore unreachable"
 		}
@@ -3454,8 +3456,8 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 
 	inst := &vm.VM{
 		ID: "i-1",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
 		},
 	}
 	err = adapter.Unmount(t.Context(), inst)
@@ -3479,10 +3481,10 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	volState := &recordingVolState{}
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
 
-	sub, err := daemon.natsConn.Subscribe(adapter.topic("unmount"), func(msg *nats.Msg) {
-		var req types.EBSRequest
+	sub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
+		var req viperblocklegacyv1.EBSRequest
 		json.Unmarshal(msg.Data, &req)
-		resp := types.EBSUnMountResponse{
+		resp := viperblocklegacyv1.EBSUnMountResponse{
 			Volume:   req.Name,
 			NotFound: true,
 			Error:    fmt.Sprintf("Volume %s not found", req.Name),
@@ -3496,8 +3498,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	inst := &vm.VM{
 		ID:        "i-unmount-retry",
 		AccountID: "000000000042",
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-boot-retry", Boot: true, EFI: false},
 				{Name: "vol-data-retry", Boot: false, EFI: false},
 			},
@@ -3518,22 +3520,22 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 // gated DetachVolume path (unmountOne) and the tolerated teardown path (Unmount).
 func TestUnmountResponseError(t *testing.T) {
 	t.Run("success (not mounted, no error)", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: false})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", Mounted: false})
 		require.NoError(t, unmountResponseError(data))
 	})
 	t.Run("seal error propagates", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Error: "seal volume: boom"})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", Error: "seal volume: boom"})
 		require.Error(t, unmountResponseError(data))
 	})
 	t.Run("still mounted propagates", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", Mounted: true})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", Mounted: true})
 		require.Error(t, unmountResponseError(data))
 	})
 	t.Run("malformed payload propagates", func(t *testing.T) {
 		require.Error(t, unmountResponseError([]byte("not json")))
 	})
 	t.Run("not found treated as idempotent success", func(t *testing.T) {
-		data, _ := json.Marshal(types.EBSUnMountResponse{Volume: "v", NotFound: true, Error: "Volume v not found"})
+		data, _ := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: "v", NotFound: true, Error: "Volume v not found"})
 		require.NoError(t, unmountResponseError(data),
 			"a NotFound response means the seal already completed on a prior request; a timeout-then-retry must not be treated as a failure")
 	})
@@ -3557,7 +3559,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 		{
 			name: "MountResponseError",
 			respondVol2: func(msg *nats.Msg) {
-				resp := types.EBSMountResponse{Error: "simulated mount failure"}
+				resp := viperblocklegacyv1.EBSMountResponse{Error: "simulated mount failure"}
 				data, _ := json.Marshal(resp)
 				msg.Respond(data)
 			},
@@ -3578,13 +3580,13 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 			mountSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-				var req types.EBSRequest
+				var req viperblocklegacyv1.EBSRequest
 				require.NoError(t, json.Unmarshal(msg.Data, &req))
 				if req.Name == "vol-2" {
 					tt.respondVol2(msg)
 					return
 				}
-				resp := types.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
+				resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
 				data, _ := json.Marshal(resp)
 				msg.Respond(data)
 			})
@@ -3593,10 +3595,10 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 
 			unmounted := make(chan string, 3)
 			unmountSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-				var req types.EBSRequest
+				var req viperblocklegacyv1.EBSRequest
 				require.NoError(t, json.Unmarshal(msg.Data, &req))
 				unmounted <- req.Name
-				resp := types.EBSUnMountResponse{Volume: req.Name, Mounted: false}
+				resp := viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false}
 				data, _ := json.Marshal(resp)
 				msg.Respond(data)
 			})
@@ -3606,8 +3608,8 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 			instance := &vm.VM{
 				ID:        "i-mount-rollback",
 				AccountID: testAccountID,
-				EBSRequests: types.EBSRequests{
-					Requests: []types.EBSRequest{
+				EBSRequests: vm.EBSRequests{
+					Requests: []viperblocklegacyv1.EBSRequest{
 						{Name: "vol-1"},
 						{Name: "vol-2"},
 						{Name: "vol-3"},
@@ -3639,15 +3641,15 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 
 	mountSub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-		var req types.EBSRequest
+		var req viperblocklegacyv1.EBSRequest
 		require.NoError(t, json.Unmarshal(msg.Data, &req))
 		if req.Name == "vol-2" {
-			resp := types.EBSMountResponse{Error: "primary mount failure"}
+			resp := viperblocklegacyv1.EBSMountResponse{Error: "primary mount failure"}
 			data, _ := json.Marshal(resp)
 			msg.Respond(data)
 			return
 		}
-		resp := types.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
+		resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://mounted-" + req.Name}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -3655,7 +3657,7 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	defer mountSub.Unsubscribe()
 
 	unmountSub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
-		resp := types.EBSUnMountResponse{Error: "rollback unmount failed"}
+		resp := viperblocklegacyv1.EBSUnMountResponse{Error: "rollback unmount failed"}
 		data, _ := json.Marshal(resp)
 		msg.Respond(data)
 	})
@@ -3665,8 +3667,8 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	instance := &vm.VM{
 		ID:        "i-rollback-failure",
 		AccountID: testAccountID,
-		EBSRequests: types.EBSRequests{
-			Requests: []types.EBSRequest{
+		EBSRequests: vm.EBSRequests{
+			Requests: []viperblocklegacyv1.EBSRequest{
 				{Name: "vol-1"},
 				{Name: "vol-2"},
 			},
@@ -3709,9 +3711,9 @@ func TestStopTerminate_IncorrectInstanceState(t *testing.T) {
 
 	t.Run("StopAlreadyStoppedInstance", func(t *testing.T) {
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateStopped })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				StopInstance: true,
 			},
 		}
@@ -3729,9 +3731,9 @@ func TestStopTerminate_IncorrectInstanceState(t *testing.T) {
 
 	t.Run("TerminateAlreadyTerminatedInstance", func(t *testing.T) {
 		daemon.vmMgr.UpdateState(instance.ID, func(v *vm.VM) { v.Status = vm.StateTerminated })
-		command := types.EC2InstanceCommand{
+		command := ec2v1.EC2InstanceCommand{
 			ID: instanceID,
-			Attributes: types.EC2CommandAttributes{
+			Attributes: ec2v1.EC2CommandAttributes{
 				TerminateInstance: true,
 			},
 		}
@@ -3916,9 +3918,9 @@ func TestConnectNATS_RetriesOnFailure(t *testing.T) {
 	clusterCfg.Nodes["node-1"] = cfg
 	daemon, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
-	daemon.natsRetryOpts = []utils.RetryOption{
-		utils.WithMaxWait(500 * time.Millisecond),
-		utils.WithRetryDelay(50 * time.Millisecond),
+	daemon.natsRetryOpts = []natsmsg.RetryOption{
+		natsmsg.WithMaxWait(500 * time.Millisecond),
+		natsmsg.WithRetryDelay(50 * time.Millisecond),
 	}
 
 	start := time.Now()
@@ -4506,20 +4508,20 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 	cases := []fieldCase{
 		{name: "natsConn", set: func(d *Daemon) { d.natsConn = &nats.Conn{} }, wantMsg: "natsConn"},
 		{name: "jsManager", set: func(d *Daemon) { d.jsManager = &JetStreamManager{} }, wantMsg: "jsManager"},
-		{name: "instanceService", set: func(d *Daemon) { d.instanceService = &handlers_ec2_instance.InstanceServiceImpl{} }, wantMsg: "instanceService"},
-		{name: "imageService", set: func(d *Daemon) { d.imageService = &handlers_ec2_image.ImageServiceImpl{} }, wantMsg: "imageService"},
-		{name: "snapshotService", set: func(d *Daemon) { d.snapshotService = &handlers_ec2_snapshot.SnapshotServiceImpl{} }, wantMsg: "snapshotService"},
-		{name: "volumeService", set: func(d *Daemon) { d.volumeService = &handlers_ec2_volume.VolumeServiceImpl{} }, wantMsg: "volumeService"},
-		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &handlers_ec2_eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
-		{name: "igwService", set: func(d *Daemon) { d.igwService = &handlers_ec2_igw.IGWServiceImpl{} }, wantMsg: "igwService"},
-		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &handlers_ec2_placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
-		{name: "spotInstanceService", set: func(d *Daemon) { d.spotInstanceService = &handlers_ec2_spotinstance.SpotInstanceServiceImpl{} }, wantMsg: "spotInstanceService"},
-		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &handlers_ec2_vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
-		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &handlers_ec2_routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
-		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &handlers_ec2_natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
-		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &handlers_ec2_vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
-		{name: "eipService", set: func(d *Daemon) { d.eipService = &handlers_ec2_eip.EIPServiceImpl{} }, wantMsg: "eipService"},
-		{name: "accountService", set: func(d *Daemon) { d.accountService = &handlers_ec2_account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},
+		{name: "instanceService", set: func(d *Daemon) { d.instanceService = &ec2instance.InstanceServiceImpl{} }, wantMsg: "instanceService"},
+		{name: "imageService", set: func(d *Daemon) { d.imageService = &ec2image.ImageServiceImpl{} }, wantMsg: "imageService"},
+		{name: "snapshotService", set: func(d *Daemon) { d.snapshotService = &ec2snapshot.SnapshotServiceImpl{} }, wantMsg: "snapshotService"},
+		{name: "volumeService", set: func(d *Daemon) { d.volumeService = &ec2volume.VolumeServiceImpl{} }, wantMsg: "volumeService"},
+		{name: "eigwService", set: func(d *Daemon) { d.eigwService = &ec2eigw.EgressOnlyIGWServiceImpl{} }, wantMsg: "eigwService"},
+		{name: "igwService", set: func(d *Daemon) { d.igwService = &ec2igw.IGWServiceImpl{} }, wantMsg: "igwService"},
+		{name: "placementGroupService", set: func(d *Daemon) { d.placementGroupService = &ec2placementgroup.PlacementGroupServiceImpl{} }, wantMsg: "placementGroupService"},
+		{name: "spotInstanceService", set: func(d *Daemon) { d.spotInstanceService = &ec2spotinstance.SpotInstanceServiceImpl{} }, wantMsg: "spotInstanceService"},
+		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &ec2vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
+		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &ec2routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
+		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &ec2natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
+		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &ec2vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
+		{name: "eipService", set: func(d *Daemon) { d.eipService = &ec2eip.EIPServiceImpl{} }, wantMsg: "eipService"},
+		{name: "accountService", set: func(d *Daemon) { d.accountService = &ec2account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},
 		{name: "elbv2Service", set: func(d *Daemon) { d.elbv2Service = &handlers_elbv2.ELBv2ServiceImpl{} }, wantMsg: "elbv2Service"},
 	}
 
@@ -4560,10 +4562,10 @@ func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 		config:          cfg,
 		natsConn:        nc,
 		jsManager:       jsManager,
-		instanceService: &handlers_ec2_instance.InstanceServiceImpl{},
-		imageService:    handlers_ec2_image.NewImageServiceImplWithStore(store, cfg.Predastore.Bucket),
-		snapshotService: handlers_ec2_snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc),
-		volumeService:   handlers_ec2_volume.NewVolumeServiceImplWithStore(cfg, store, nc),
+		instanceService: &ec2instance.InstanceServiceImpl{},
+		imageService:    ec2image.NewImageServiceImplWithStore(store, cfg.Predastore.Bucket),
+		snapshotService: ec2snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc),
+		volumeService:   ec2volume.NewVolumeServiceImplWithStore(cfg, store, nc),
 	}
 }
 
@@ -4619,10 +4621,10 @@ func TestNodeIDNamespace_Agrees(t *testing.T) {
 	reply, err := daemon.natsConn.Request("test.nodediscover", nil, 5*time.Second)
 	require.NoError(t, err)
 
-	assert.Equal(t, daemon.node, reply.Header.Get(utils.NodeIDHeader),
+	assert.Equal(t, daemon.node, reply.Header.Get(natsmsg.NodeIDHeader),
 		"the reply header must carry the same node ID as everything else")
 
-	var resp types.NodeDiscoverResponse
+	var resp clusterv1.NodeDiscoverResponse
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	assert.Equal(t, daemon.node, resp.Node)
 }

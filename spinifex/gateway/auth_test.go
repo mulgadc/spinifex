@@ -8,6 +8,12 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
+	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,11 +29,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
-	"github.com/mulgadc/spinifex/spinifex/awserrors"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
-	"github.com/mulgadc/spinifex/spinifex/testutil"
-	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,11 +153,11 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 		},
 	}
 
-	gw := &GatewayConfig{
+	gw := withECR(&GatewayConfig{
 		DisableLogging: true,
 		Region:         testRegion,
 		IAMService:     mockSvc,
-	}
+	}, awsapi.Deps{})
 
 	r := chi.NewRouter()
 	r.Use(gw.SigV4AuthMiddleware())
@@ -550,7 +555,7 @@ func TestSigV4Auth_RequestBodyTooLarge(t *testing.T) {
 func TestSigV4Auth_BodyReadFailureDoesNotCountTowardLockout(t *testing.T) {
 	handler := setupTestApp(testAccessKey, testSecretKey)
 
-	for range maxFailures + 1 {
+	for range authlimit.MaxFailures + 1 {
 		req := httptest.NewRequest(http.MethodPost, "/", iotest.ErrReader(io.ErrUnexpectedEOF))
 		req.Host = "localhost:9999"
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1367,7 +1372,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
 					UserName:        "root",
-					AccountID:       utils.GlobalAccountID,
+					AccountID:       awsidentifiers.GlobalAccountID,
 					Status:          "Active",
 				},
 			},
@@ -2028,7 +2033,7 @@ func TestSigV4Auth_Session_ValidSignature_RunsPrincipalCheck(t *testing.T) {
 // principal survives presents a distinct AKID each time. Legacy must not, and
 // that is not symmetry for its own sake — every record predating the field
 // fails on the deploy that ships this check, so a shared egress address would
-// cross maxFailures on distinct-attempt volume alone and be told to retry
+// cross MaxFailures on distinct-attempt volume alone and be told to retry
 // later by a fleet that has nothing to retry with.
 func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 	cases := []struct {
@@ -2042,7 +2047,7 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rl := NewAuthRateLimiter()
+			rl := authlimit.NewAuthRateLimiter()
 			defer rl.Stop()
 			gw := &GatewayConfig{
 				DisableLogging: true,
@@ -2059,15 +2064,19 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 			code := gw.checkSessionPrincipal(principal, testSessionAKID, authSource{limitKey: ip, logIP: ip})
 			require.Equal(t, awserrors.ErrorInvalidClientTokenId, code)
 
-			rl.mu.RLock()
-			defer rl.mu.RUnlock()
-			rec := rl.records[ip]
-			if !tc.recorded {
-				assert.Nil(t, rec, "a legacy verdict must not count toward the lockout")
-				return
+			// Read at the lockout boundary: with exactly `recorded` failures from
+			// the verdict, n more distinct ones leave the address open and one
+			// further locks it. Zero or two recorded would miss either edge.
+			recorded := 0
+			if tc.recorded {
+				recorded = 1
 			}
-			require.NotNil(t, rec)
-			assert.Len(t, rec.failures, 1)
+			n := authlimit.MaxFailures - 1 - recorded
+			recordProbeFailures(rl, ip, "below", n)
+			assert.Empty(t, rl.CheckIP(ip), "address must stay open below the threshold")
+			recordProbeFailures(rl, ip, "edge", 1)
+			assert.Equal(t, awserrors.ErrorRequestLimitExceeded, rl.CheckIP(ip),
+				"the next distinct failure must lock the address")
 		})
 	}
 }
@@ -2400,7 +2409,7 @@ func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
 // other session.
 func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
 	cred := assumedRoleSessionCred("root",
-		"arn:aws:iam::"+utils.GlobalAccountID+":role/sneaky-role", utils.GlobalAccountID)
+		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/sneaky-role", awsidentifiers.GlobalAccountID)
 	var roleResolved bool
 	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
 		roleResolved = true
@@ -2616,7 +2625,7 @@ func TestSigV4Auth_UnservedServiceJSONClientGetsJSONEnvelope(t *testing.T) {
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
 
 	body, err := io.ReadAll(resp.Body)
@@ -2637,7 +2646,7 @@ func TestSigV4Auth_UnservedServiceJSONContentTypeGetsJSONEnvelope(t *testing.T) 
 
 	resp := doRequest(handler, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	assert.Equal(t, "InvalidActionException", resp.Header.Get("X-Amzn-Errortype"))
 
 	body, err := io.ReadAll(resp.Body)
@@ -2669,6 +2678,10 @@ func TestSigV4Auth_UnservedServiceNoJSONTellGetsXMLEnvelope(t *testing.T) {
 // regression guard proving the fallback widened nothing for served scopes.
 func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	gw.Services = b.Build()
 
 	for _, svc := range []string{"eks", "ecr", "acm", "ecs", "tagging",
 		"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"} {
@@ -2680,7 +2693,7 @@ func TestWriteSigV4Error_JSONErrorServicesUnaffectedByFallback(t *testing.T) {
 			gw.writeSigV4Error(w, req, awserrors.ErrorSignatureDoesNotMatch, "")
 
 			resp := w.Result()
-			assert.Equal(t, eksJSONContentType, resp.Header.Get("Content-Type"))
+			assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 			assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 		})
 	}
@@ -2740,6 +2753,10 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 		},
 	}
 	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: mockSvc}
+	b := dispatch.NewBuilder()
+	require.NoError(t, b.Register(awsapi.NewRegistration(awsapi.Deps{})))
+	require.NoError(t, b.Register(acmawsapi.NewRegistration(acmawsapi.Deps{})))
+	gw.Services = b.Build()
 
 	var gotAction, gotThrottleKey string
 	r := chi.NewRouter()
@@ -2761,6 +2778,10 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 		{"JSON-1.1 X-Amz-Target", http.MethodPost, "/", "tagging",
 			"ResourceGroupsTaggingAPI_20170126.GetResources", "GetResources"},
 		{"path-routed EKS", http.MethodGet, "/clusters", "eks", "", "ListClusters"},
+		{"JSON-1.1 X-Amz-Target ECR", http.MethodPost, "/", "ecr",
+			awsapi.TargetPrefix + ".ListRepositories", "ListRepositories"},
+		{"JSON-1.1 X-Amz-Target ACM", http.MethodPost, "/", "acm",
+			"CertificateManager.ListCertificates", "ListCertificates"},
 	}
 
 	for _, tc := range testCases {

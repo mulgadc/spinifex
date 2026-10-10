@@ -67,6 +67,7 @@ var allowlist = []allowance{
 	{From: "domains/ec2/instance", To: "domains/network/topology", Debt: "EC2 → network implementation", Reason: "EC2 reads network implementation; clears with the EC2-owned projection"},
 	{From: "domains/ec2/instance", To: "runtime/compute/gpu", Debt: "domains/ec2/instance", Reason: "VM/GPU runtime state read directly; needs a domain-owned projection"},
 	{From: "domains/ec2/instance", To: "runtime/compute/vm", Debt: "domains/ec2/instance", Reason: "VM/GPU runtime state read directly; needs a domain-owned projection"},
+	{From: "domains/ec2/instance/state", To: "runtime/compute/vm", Debt: "domains/ec2/instance/state (dependency)", Reason: "the record codec wraps the legacy vm.InstanceRecord alias and its spec and status types"},
 
 	{From: "domains/ec2/volume", To: "runtime/compute/vm", Debt: "Domain → runtime", Reason: "VM runtime state read directly; needs a domain-owned projection"},
 

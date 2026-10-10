@@ -1,4 +1,6 @@
-package vm
+// Package state owns the persisted EC2 instance record and its evolution. It
+// wraps the legacy vm.InstanceRecord until the spec and status types move here.
+package state
 
 import (
 	"bytes"
@@ -16,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // Record formats carried in the top-level "format" member. An absent member
@@ -106,11 +109,11 @@ type InstanceObservation struct {
 }
 
 // transitionWire is the typed shape of a format-2 record. Its first three
-// members are InstanceRecord's, so a format-1 record is its prefix.
+// members are vm.InstanceRecord's, so a format-1 record is its prefix.
 type transitionWire struct {
 	Metadata    resource.Metadata    `json:"metadata"`
-	Spec        InstanceSpec         `json:"spec"`
-	Status      InstanceStatus       `json:"status"`
+	Spec        vm.InstanceSpec      `json:"spec"`
+	Status      vm.InstanceStatus    `json:"status"`
 	Assignment  *InstanceAssignment  `json:"assignment,omitempty"`
 	Observation *InstanceObservation `json:"observation,omitempty"`
 }
@@ -119,7 +122,7 @@ type transitionWire struct {
 // so Encode can write back what the caller did not change as it was read. The
 // zero value encodes as a new format-1 record built from the typed fields.
 type TransitionRecord struct {
-	Record      InstanceRecord
+	Record      vm.InstanceRecord
 	Assignment  *InstanceAssignment
 	Observation *InstanceObservation
 
@@ -172,7 +175,7 @@ func DecodeTransitionRecord(data []byte) (*TransitionRecord, error) {
 		if err := json.Unmarshal(data, &w); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrRecordMalformed, err)
 		}
-		r.Record = InstanceRecord{Metadata: w.Metadata, Spec: w.Spec, Status: w.Status}
+		r.Record = vm.InstanceRecord{Metadata: w.Metadata, Spec: w.Spec, Status: w.Status}
 		r.Assignment, r.Observation = w.Assignment, w.Observation
 	} else if err := json.Unmarshal(data, &r.Record); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrRecordMalformed, err)

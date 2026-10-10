@@ -1,4 +1,4 @@
-package vm_test
+package state_test
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/state"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
@@ -101,14 +102,14 @@ func member(t *testing.T, doc []byte, path ...string) (json.RawMessage, bool) {
 	return cur, true
 }
 
-func decode(t *testing.T, doc string) *vm.TransitionRecord {
+func decode(t *testing.T, doc string) *state.TransitionRecord {
 	t.Helper()
-	r, err := vm.DecodeTransitionRecord([]byte(doc))
+	r, err := state.DecodeTransitionRecord([]byte(doc))
 	require.NoError(t, err)
 	return r
 }
 
-func encode(t *testing.T, r *vm.TransitionRecord) []byte {
+func encode(t *testing.T, r *state.TransitionRecord) []byte {
 	t.Helper()
 	out, err := r.Encode()
 	require.NoError(t, err)
@@ -117,7 +118,7 @@ func encode(t *testing.T, r *vm.TransitionRecord) []byte {
 
 func TestTransitionRecord_V1WithoutMarkerRoundTripsAndEmitsNoMarker(t *testing.T) {
 	r := decode(t, goldenV1)
-	assert.Equal(t, vm.RecordFormatLegacy, r.Format())
+	assert.Equal(t, state.RecordFormatLegacy, r.Format())
 	assert.False(t, r.ReadOnly())
 	assert.Equal(t, "i-0123456789abcdef0", r.Record.Metadata.Name)
 	assert.Nil(t, r.Assignment)
@@ -131,7 +132,7 @@ func TestTransitionRecord_V1WithoutMarkerRoundTripsAndEmitsNoMarker(t *testing.T
 func TestTransitionRecord_ExplicitFormatOneIsKeptAsWritten(t *testing.T) {
 	doc := `{"format":1,"metadata":{"name":"i-1"},"spec":{},"status":{"status":"running"}}`
 	r := decode(t, doc)
-	assert.Equal(t, vm.RecordFormatLegacy, r.Format())
+	assert.Equal(t, state.RecordFormatLegacy, r.Format())
 	r.Record.Status.LastNode = "node-1"
 	assert.Equal(t, edit(t, doc, map[string]any{"status.last_node": "node-1"}), canonical(t, encode(t, r)))
 }
@@ -141,28 +142,28 @@ func TestTransitionRecord_ExplicitFormatOneIsKeptAsWritten(t *testing.T) {
 func TestTransitionRecord_MutationChangesOnlyItsPath(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(*vm.TransitionRecord)
+		mutate func(*state.TransitionRecord)
 		want   map[string]any
 	}{
-		{"spec field beside unknown spec members", func(r *vm.TransitionRecord) {
+		{"spec field beside unknown spec members", func(r *state.TransitionRecord) {
 			r.Record.Spec.InstanceType = "t3.large"
 		}, map[string]any{"spec.instance_type": "t3.large"}},
-		{"metadata generation beside unknown metadata", func(r *vm.TransitionRecord) {
+		{"metadata generation beside unknown metadata", func(r *state.TransitionRecord) {
 			r.Record.Metadata.Generation = 8
 		}, map[string]any{"metadata.generation": json.Number("8")}},
-		{"status field beside raw-form siblings", func(r *vm.TransitionRecord) {
+		{"status field beside raw-form siblings", func(r *state.TransitionRecord) {
 			r.Record.Status.LastNode = "node-2"
 		}, map[string]any{"status.last_node": "node-2"}},
-		{"field the raw config omitted is added alone", func(r *vm.TransitionRecord) {
+		{"field the raw config omitted is added alone", func(r *state.TransitionRecord) {
 			r.Record.Spec.Config.CPUCount = 2
 		}, map[string]any{"spec.config.cpu_count": json.Number("2")}},
-		{"field inside the AWS SDK projection", func(r *vm.TransitionRecord) {
+		{"field inside the AWS SDK projection", func(r *state.TransitionRecord) {
 			r.Record.Status.Instance.State.Name = aws.String("stopped")
 		}, map[string]any{"status.instance.State.Name": "stopped"}},
-		{"map entry added", func(r *vm.TransitionRecord) {
+		{"map entry added", func(r *state.TransitionRecord) {
 			r.Record.Metadata.Tags["Env"] = "prod"
 		}, map[string]any{"metadata.tags.Env": "prod"}},
-		{"desired state", func(r *vm.TransitionRecord) {
+		{"desired state", func(r *state.TransitionRecord) {
 			r.Record.Spec.DesiredState = vm.DesiredStopped
 		}, map[string]any{"spec.desired_state": string(vm.DesiredStopped)}},
 	}
@@ -178,14 +179,14 @@ func TestTransitionRecord_MutationChangesOnlyItsPath(t *testing.T) {
 func TestTransitionRecord_ZeroedOmitemptyFieldIsRemoved(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(*vm.TransitionRecord)
+		mutate func(*state.TransitionRecord)
 		gone   string
 	}{
-		{"string", func(r *vm.TransitionRecord) { r.Record.Status.AZ = "" }, "status.az"},
-		{"map", func(r *vm.TransitionRecord) { r.Record.Metadata.Tags = nil }, "metadata.tags"},
-		{"slice", func(r *vm.TransitionRecord) { r.Record.Metadata.OwnerRefs = nil }, "metadata.owner_refs"},
-		{"omitzero time", func(r *vm.TransitionRecord) { r.Record.Status.TerminatedAt = time.Time{} }, "status.terminated_at"},
-		{"pointer", func(r *vm.TransitionRecord) { r.Record.Spec.RunInstancesInput = nil }, "spec.run_instances_input"},
+		{"string", func(r *state.TransitionRecord) { r.Record.Status.AZ = "" }, "status.az"},
+		{"map", func(r *state.TransitionRecord) { r.Record.Metadata.Tags = nil }, "metadata.tags"},
+		{"slice", func(r *state.TransitionRecord) { r.Record.Metadata.OwnerRefs = nil }, "metadata.owner_refs"},
+		{"omitzero time", func(r *state.TransitionRecord) { r.Record.Status.TerminatedAt = time.Time{} }, "status.terminated_at"},
+		{"pointer", func(r *state.TransitionRecord) { r.Record.Spec.RunInstancesInput = nil }, "spec.run_instances_input"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,15 +251,15 @@ func TestTransitionRecord_Arrays(t *testing.T) {
 
 func TestTransitionRecord_V2DecodesSectionsAndKeepsLegacyMirror(t *testing.T) {
 	r := decode(t, goldenV2)
-	assert.Equal(t, vm.RecordFormatTransition, r.Format())
+	assert.Equal(t, state.RecordFormatTransition, r.Format())
 	assert.False(t, r.ReadOnly())
-	assert.Equal(t, &vm.InstanceAssignment{
-		Node: "node-1", Generation: 3, Epoch: 2, Token: "tok-3", ForDesiredGeneration: 7, Reason: vm.AssignmentLaunch,
+	assert.Equal(t, &state.InstanceAssignment{
+		Node: "node-1", Generation: 3, Epoch: 2, Token: "tok-3", ForDesiredGeneration: 7, Reason: state.AssignmentLaunch,
 	}, r.Assignment)
 	require.NotNil(t, r.Observation)
 	assert.Equal(t, int64(6), r.Observation.DesiredGeneration)
 	require.NotNil(t, r.Observation.Evidence)
-	assert.Equal(t, vm.EvidenceQMP, r.Observation.Evidence.Kind)
+	assert.Equal(t, state.EvidenceQMP, r.Observation.Evidence.Kind)
 
 	// The legacy mirror an R0 reader still consumes.
 	assert.Equal(t, "node-1", r.Record.Status.LastNode)
@@ -275,20 +276,20 @@ func TestTransitionRecord_V2DecodesSectionsAndKeepsLegacyMirror(t *testing.T) {
 func TestTransitionRecord_V2SectionMutationKeepsNestedUnknownMembers(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(*vm.TransitionRecord)
+		mutate func(*state.TransitionRecord)
 		want   map[string]any
 	}{
-		{"assignment", func(r *vm.TransitionRecord) {
+		{"assignment", func(r *state.TransitionRecord) {
 			r.Assignment.Generation = 4
 			r.Assignment.Token = "tok-4"
 		}, map[string]any{"assignment.generation": json.Number("4"), "assignment.token": "tok-4"}},
-		{"observation evidence", func(r *vm.TransitionRecord) {
+		{"observation evidence", func(r *state.TransitionRecord) {
 			r.Observation.Evidence.Incarnation = "inc-2"
 		}, map[string]any{"observation.evidence.incarnation": "inc-2"}},
-		{"observation state", func(r *vm.TransitionRecord) {
-			r.Observation.State = vm.ObservedUnconfirmed
+		{"observation state", func(r *state.TransitionRecord) {
+			r.Observation.State = state.ObservedUnconfirmed
 		}, map[string]any{"observation.state": "unconfirmed"}},
-		{"assignment removed", func(r *vm.TransitionRecord) {
+		{"assignment removed", func(r *state.TransitionRecord) {
 			r.Assignment = nil
 		}, map[string]any{"assignment": nil}},
 	}
@@ -303,9 +304,9 @@ func TestTransitionRecord_V2SectionMutationKeepsNestedUnknownMembers(t *testing.
 
 func TestTransitionRecord_V1RefusesNewSections(t *testing.T) {
 	r := decode(t, goldenV1)
-	r.Assignment = &vm.InstanceAssignment{Node: "node-1"}
+	r.Assignment = &state.InstanceAssignment{Node: "node-1"}
 	_, err := r.Encode()
-	require.ErrorIs(t, err, vm.ErrRecordSectionsNeedFormat)
+	require.ErrorIs(t, err, state.ErrRecordSectionsNeedFormat)
 }
 
 // A format-1 record has no typed sections, so a member named like one is an
@@ -323,15 +324,15 @@ func TestTransitionRecord_NewerFormatIsReadOnly(t *testing.T) {
 		t.Run(marker, func(t *testing.T) {
 			doc := `{"format":` + marker + `,"metadata":{"name":"i-1"},"spec":{},"status":{"status":"running","last_node":"node-1"},` +
 				`"assignment":{"node":"node-1"}}`
-			r, err := vm.DecodeTransitionRecord([]byte(doc))
+			r, err := state.DecodeTransitionRecord([]byte(doc))
 			require.NoError(t, err, "a newer format is readable")
 			assert.True(t, r.ReadOnly())
-			assert.Greater(t, r.Format(), vm.RecordFormatTransition)
+			assert.Greater(t, r.Format(), state.RecordFormatTransition)
 			assert.Equal(t, "node-1", r.Record.Status.LastNode, "legacy fields are decoded")
 			assert.Nil(t, r.Assignment, "sections of a newer format are not interpreted")
 
 			out, err := r.Encode()
-			require.ErrorIs(t, err, vm.ErrRecordFormatAhead)
+			require.ErrorIs(t, err, state.ErrRecordFormatAhead)
 			assert.Nil(t, out)
 		})
 	}
@@ -343,40 +344,40 @@ func TestTransitionRecord_Rejections(t *testing.T) {
 		doc  string
 		want error
 	}{
-		{"truncated", `{"metadata":`, vm.ErrRecordMalformed},
-		{"trailing comma", `{"metadata":{},}`, vm.ErrRecordMalformed},
-		{"empty input", ``, vm.ErrRecordMalformed},
-		{"invalid UTF-8", "{\"metadata\":{\"name\":\"\xff\"}}", vm.ErrRecordMalformed},
-		{"known field of the wrong type", `{"metadata":{"generation":"7"}}`, vm.ErrRecordMalformed},
-		{"array top level", `[]`, vm.ErrRecordNotObject},
-		{"string top level", `"i-1"`, vm.ErrRecordNotObject},
-		{"null top level", `null`, vm.ErrRecordNotObject},
-		{"second value", `{} {}`, vm.ErrRecordTrailingData},
-		{"trailing garbage", `{}x`, vm.ErrRecordTrailingData},
-		{"top-level duplicate", `{"spec":{},"spec":{}}`, vm.ErrRecordDuplicateKey},
-		{"nested known duplicate", `{"status":{"instance":{"InstanceId":"a","InstanceId":"b"}}}`, vm.ErrRecordDuplicateKey},
-		{"duplicate inside unknown member", `{"future":{"x":1,"x":2}}`, vm.ErrRecordDuplicateKey},
-		{"duplicate inside array element", `{"metadata":{"owner_refs":[{"kind":"a","kind":"b"}]}}`, vm.ErrRecordDuplicateKey},
-		{"duplicate format marker", `{"format":1,"format":2}`, vm.ErrRecordDuplicateKey},
-		{"top-level case alias", `{"Metadata":{}}`, vm.ErrRecordCaseAliasKey},
-		{"format marker case alias", `{"Format":2}`, vm.ErrRecordCaseAliasKey},
-		{"nested case alias", `{"spec":{"Instance_Type":"t3.micro"}}`, vm.ErrRecordCaseAliasKey},
-		{"case alias in AWS SDK struct", `{"status":{"instance":{"instanceId":"i-1"}}}`, vm.ErrRecordCaseAliasKey},
-		{"case alias in array element", `{"metadata":{"owner_refs":[{"Kind":"a"}]}}`, vm.ErrRecordCaseAliasKey},
-		{"Unicode fold alias", `{"ſpec":{}}`, vm.ErrRecordCaseAliasKey},
-		{"format zero", `{"format":0}`, vm.ErrRecordFormatOutOfRange},
-		{"format negative", `{"format":-1}`, vm.ErrRecordFormatOutOfRange},
-		{"format negative zero", `{"format":-0}`, vm.ErrRecordFormatOutOfRange},
-		{"format fraction", `{"format":1.5}`, vm.ErrRecordFormatNotInteger},
-		{"format with a fraction part", `{"format":2.0}`, vm.ErrRecordFormatNotInteger},
-		{"format exponent", `{"format":2e0}`, vm.ErrRecordFormatNotInteger},
-		{"format string", `{"format":"2"}`, vm.ErrRecordFormatNotInteger},
-		{"format null", `{"format":null}`, vm.ErrRecordFormatNotInteger},
-		{"format object", `{"format":{"v":2}}`, vm.ErrRecordFormatNotInteger},
+		{"truncated", `{"metadata":`, state.ErrRecordMalformed},
+		{"trailing comma", `{"metadata":{},}`, state.ErrRecordMalformed},
+		{"empty input", ``, state.ErrRecordMalformed},
+		{"invalid UTF-8", "{\"metadata\":{\"name\":\"\xff\"}}", state.ErrRecordMalformed},
+		{"known field of the wrong type", `{"metadata":{"generation":"7"}}`, state.ErrRecordMalformed},
+		{"array top level", `[]`, state.ErrRecordNotObject},
+		{"string top level", `"i-1"`, state.ErrRecordNotObject},
+		{"null top level", `null`, state.ErrRecordNotObject},
+		{"second value", `{} {}`, state.ErrRecordTrailingData},
+		{"trailing garbage", `{}x`, state.ErrRecordTrailingData},
+		{"top-level duplicate", `{"spec":{},"spec":{}}`, state.ErrRecordDuplicateKey},
+		{"nested known duplicate", `{"status":{"instance":{"InstanceId":"a","InstanceId":"b"}}}`, state.ErrRecordDuplicateKey},
+		{"duplicate inside unknown member", `{"future":{"x":1,"x":2}}`, state.ErrRecordDuplicateKey},
+		{"duplicate inside array element", `{"metadata":{"owner_refs":[{"kind":"a","kind":"b"}]}}`, state.ErrRecordDuplicateKey},
+		{"duplicate format marker", `{"format":1,"format":2}`, state.ErrRecordDuplicateKey},
+		{"top-level case alias", `{"Metadata":{}}`, state.ErrRecordCaseAliasKey},
+		{"format marker case alias", `{"Format":2}`, state.ErrRecordCaseAliasKey},
+		{"nested case alias", `{"spec":{"Instance_Type":"t3.micro"}}`, state.ErrRecordCaseAliasKey},
+		{"case alias in AWS SDK struct", `{"status":{"instance":{"instanceId":"i-1"}}}`, state.ErrRecordCaseAliasKey},
+		{"case alias in array element", `{"metadata":{"owner_refs":[{"Kind":"a"}]}}`, state.ErrRecordCaseAliasKey},
+		{"Unicode fold alias", `{"ſpec":{}}`, state.ErrRecordCaseAliasKey},
+		{"format zero", `{"format":0}`, state.ErrRecordFormatOutOfRange},
+		{"format negative", `{"format":-1}`, state.ErrRecordFormatOutOfRange},
+		{"format negative zero", `{"format":-0}`, state.ErrRecordFormatOutOfRange},
+		{"format fraction", `{"format":1.5}`, state.ErrRecordFormatNotInteger},
+		{"format with a fraction part", `{"format":2.0}`, state.ErrRecordFormatNotInteger},
+		{"format exponent", `{"format":2e0}`, state.ErrRecordFormatNotInteger},
+		{"format string", `{"format":"2"}`, state.ErrRecordFormatNotInteger},
+		{"format null", `{"format":null}`, state.ErrRecordFormatNotInteger},
+		{"format object", `{"format":{"v":2}}`, state.ErrRecordFormatNotInteger},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := vm.DecodeTransitionRecord([]byte(tc.doc))
+			r, err := state.DecodeTransitionRecord([]byte(tc.doc))
 			require.ErrorIs(t, err, tc.want)
 			assert.Nil(t, r)
 		})
@@ -407,7 +408,7 @@ func TestTransitionRecord_LargeIntegersKeepPrecision(t *testing.T) {
 }
 
 func TestTransitionRecord_ZeroValueEncodesNewFormatOneRecord(t *testing.T) {
-	r := &vm.TransitionRecord{}
+	r := &state.TransitionRecord{}
 	r.Record.Metadata.Name = "i-1"
 	r.Record.Status.Status = vm.StateRunning
 	plain, err := json.Marshal(&r.Record)
@@ -435,7 +436,7 @@ func TestTransitionRecord_CapableWriterPreservesWhatPlainTypedRoundTripStrips(t 
 	_, has := member(t, stripped, "metadata", "assignment_fence")
 	assert.False(t, has, "plain encoding/json typed round trip strips unknown members")
 
-	r, err := vm.DecodeTransitionRecord(newer)
+	r, err := state.DecodeTransitionRecord(newer)
 	require.NoError(t, err)
 	r.Record.Status.LastNode = "node-2"
 	kept := encode(t, r)
@@ -460,13 +461,13 @@ func FuzzTransitionRecordRoundTrip(f *testing.F) {
 		f.Add([]byte(seed))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		r, err := vm.DecodeTransitionRecord(data)
+		r, err := state.DecodeTransitionRecord(data)
 		if err != nil {
 			return
 		}
 		out, err := r.Encode()
 		if r.ReadOnly() {
-			require.ErrorIs(t, err, vm.ErrRecordFormatAhead)
+			require.ErrorIs(t, err, state.ErrRecordFormatAhead)
 			return
 		}
 		require.NoError(t, err)

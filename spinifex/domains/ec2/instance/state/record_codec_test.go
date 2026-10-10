@@ -230,8 +230,8 @@ func TestTransitionRecord_ExplicitMutationShadowsRawForm(t *testing.T) {
 }
 
 // An unchanged array is written back as read, unknown element members and
-// all. A changed array is the writer's value: unknown members inside its
-// elements are lost. That is a documented limitation, pinned here.
+// all. A changed array is replaced whole, unless a read element carries an
+// unknown member at any depth: then Encode refuses rather than drop it.
 func TestTransitionRecord_Arrays(t *testing.T) {
 	t.Run("unchanged array keeps unknown element members", func(t *testing.T) {
 		r := decode(t, goldenV1)
@@ -240,13 +240,59 @@ func TestTransitionRecord_Arrays(t *testing.T) {
 		refs, _ := member(t, out, "metadata", "owner_refs")
 		assert.JSONEq(t, `[{"kind":"cluster","name":"c-1","future_ref":"r-1"}]`, string(refs))
 	})
-	t.Run("changed array is replaced and loses unknown element members", func(t *testing.T) {
-		r := decode(t, goldenV1)
+	t.Run("changed array with known members only is replaced whole", func(t *testing.T) {
+		doc := `{"metadata":{"name":"i-1","owner_refs":[{"kind":"cluster","name":"c-1"}]},"future":[{"x":1}]}`
+		r := decode(t, doc)
 		r.Record.Metadata.OwnerRefs = append(r.Record.Metadata.OwnerRefs, resource.OwnerRef{Kind: "asg", Name: "a-1"})
-		out := encode(t, r)
-		refs, _ := member(t, out, "metadata", "owner_refs")
-		assert.JSONEq(t, `[{"kind":"cluster","name":"c-1"},{"kind":"asg","name":"a-1"}]`, string(refs))
+		want := edit(t, doc, map[string]any{"metadata.owner_refs": []any{
+			map[string]any{"kind": "cluster", "name": "c-1"},
+			map[string]any{"kind": "asg", "name": "a-1"},
+		}})
+		assert.Equal(t, want, canonical(t, encode(t, r)))
 	})
+	t.Run("changed array of scalars is replaced whole", func(t *testing.T) {
+		doc := `{"metadata":{"name":"i-1","finalizers":["eni","volume"]}}`
+		r := decode(t, doc)
+		r.Record.Metadata.Finalizers = []string{"volume"}
+		want := edit(t, doc, map[string]any{"metadata.finalizers": []any{"volume"}})
+		assert.Equal(t, want, canonical(t, encode(t, r)))
+	})
+
+	conflicts := []struct {
+		name, doc, array, member string
+		mutate                   func(*state.TransitionRecord)
+	}{
+		{
+			"unknown member in an element",
+			goldenV1,
+			"$.metadata.owner_refs",
+			"$.metadata.owner_refs[0].future_ref",
+			func(r *state.TransitionRecord) {
+				r.Record.Metadata.OwnerRefs = append(r.Record.Metadata.OwnerRefs, resource.OwnerRef{Kind: "asg", Name: "a-1"})
+			},
+		},
+		{
+			"unknown member one level deeper in an element",
+			`{"status":{"instance":{"NetworkInterfaces":[{"NetworkInterfaceId":"eni-1",` +
+				`"Attachment":{"DeviceIndex":0,"FutureAttach":"x"}}]}}}`,
+			"$.status.instance.NetworkInterfaces",
+			"$.status.instance.NetworkInterfaces[0].Attachment.FutureAttach",
+			func(r *state.TransitionRecord) {
+				r.Record.Status.Instance.NetworkInterfaces[0].NetworkInterfaceId = aws.String("eni-2")
+			},
+		},
+	}
+	for _, tc := range conflicts {
+		t.Run("changed array refused: "+tc.name, func(t *testing.T) {
+			r := decode(t, tc.doc)
+			tc.mutate(r)
+			out, err := r.Encode()
+			require.ErrorIs(t, err, state.ErrRecordExtensionConflict)
+			assert.Contains(t, err.Error(), "changed array "+tc.array+" ")
+			assert.Contains(t, err.Error(), tc.member)
+			assert.Nil(t, out)
+		})
+	}
 }
 
 func TestTransitionRecord_V2DecodesSectionsAndKeepsLegacyMirror(t *testing.T) {
@@ -451,6 +497,8 @@ func TestTransitionRecord_CapableWriterPreservesWhatPlainTypedRoundTripStrips(t 
 	}
 }
 
+// An unmutated record cannot raise an extension conflict: that needs a
+// changed array, so every accepted, writable input must round-trip.
 func FuzzTransitionRecordRoundTrip(f *testing.F) {
 	for _, seed := range []string{
 		goldenV1, goldenV2,

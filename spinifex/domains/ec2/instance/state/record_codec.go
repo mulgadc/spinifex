@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +45,7 @@ var (
 	ErrRecordFormatOutOfRange   = errors.New("instance record format is below 1")
 	ErrRecordFormatAhead        = errors.New("instance record format is newer than this binary can write")
 	ErrRecordSectionsNeedFormat = errors.New("assignment and observation need record format 2")
+	ErrRecordExtensionConflict  = errors.New("instance record change would drop an unknown member inside an array")
 )
 
 // AssignmentReason says why an assignment changed.
@@ -190,7 +193,7 @@ func DecodeTransitionRecord(data []byte) (*TransitionRecord, error) {
 
 // Encode writes only the typed paths that differ from the decoded snapshot
 // over the input, keeping unknown members. A changed array is replaced whole,
-// losing unknown members in its elements. It never adds a format marker.
+// and refused if its read elements carry unknown members. It adds no marker.
 func (r *TransitionRecord) Encode() ([]byte, error) {
 	if r.readOnly {
 		return nil, fmt.Errorf("%w: format %d", ErrRecordFormatAhead, r.format)
@@ -206,7 +209,11 @@ func (r *TransitionRecord) Encode() ([]byte, error) {
 	if raw == nil {
 		raw, snapshot = map[string]any{}, map[string]any{}
 	}
-	return json.Marshal(mergeChanged(transitionSchema(), raw, snapshot, current))
+	merged, err := mergeChanged(transitionSchema(), raw, snapshot, current, "$")
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(merged)
 }
 
 // typedTree re-encodes the typed fields that the record's format covers.
@@ -238,15 +245,20 @@ func (r *TransitionRecord) typedTree() (map[string]any, error) {
 // mergeChanged applies the paths where current differs from snapshot onto
 // raw. A struct merges per member and keeps members it does not know; a map
 // merges per entry; any other differing value is replaced by current's.
-func mergeChanged(s *fieldSchema, raw, snapshot, current any) any {
+func mergeChanged(s *fieldSchema, raw, snapshot, current any, path string) (any, error) {
 	if reflect.DeepEqual(snapshot, current) {
-		return raw
+		return raw, nil
+	}
+	if rawArr, ok := raw.([]any); ok && s != nil {
+		if at, found := unknownMember(s, rawArr, path); found {
+			return nil, fmt.Errorf("%w: changed array %s would drop unknown member %s", ErrRecordExtensionConflict, path, at)
+		}
 	}
 	rawObj, rawIsObj := raw.(map[string]any)
 	snapObj, snapIsObj := snapshot.(map[string]any)
 	curObj, curIsObj := current.(map[string]any)
 	if s == nil || (s.fields == nil && !s.isMap) || !rawIsObj || !snapIsObj || !curIsObj {
-		return current
+		return current, nil
 	}
 	out := make(map[string]any, len(rawObj))
 	for k, v := range rawObj {
@@ -268,14 +280,49 @@ func mergeChanged(s *fieldSchema, raw, snapshot, current any) any {
 		}
 		switch {
 		case inSnap && inRaw:
-			out[k] = mergeChanged(child, rawV, snapV, curV)
+			merged, err := mergeChanged(child, rawV, snapV, curV, path+"."+k)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = merged
 		case inSnap && !s.isMap && reflect.DeepEqual(snapV, curV):
 			// A zero member the input left out stays out.
 		default:
 			out[k] = curV
 		}
 	}
-	return out
+	return out, nil
+}
+
+// unknownMember finds the first member of v, at any depth, that schema s does
+// not know. An opaque value (nil schema) is not inspected.
+func unknownMember(s *fieldSchema, v any, path string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	switch v := v.(type) {
+	case []any:
+		for i, e := range v {
+			if at, found := unknownMember(s.elem, e, path+"["+strconv.Itoa(i)+"]"); found {
+				return at, true
+			}
+		}
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			child := s.elem
+			if !s.isMap {
+				known, ok := s.fields[k]
+				if !ok {
+					return path + "." + k, true
+				}
+				child = known
+			}
+			if at, found := unknownMember(child, v[k], path+"."+k); found {
+				return at, true
+			}
+		}
+	}
+	return "", false
 }
 
 // recordFormat reads the marker: absent is 1, an integer above 2 is returned

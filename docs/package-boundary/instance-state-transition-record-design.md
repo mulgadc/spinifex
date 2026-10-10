@@ -2,7 +2,8 @@
 
 Code read at `830f70489`; not verified live.
 
-**Status:** Approved design; decisions recorded in Section 9 (D1 to D5) and clauses G15 to G18 and K5; nothing implemented.
+**Status:** Approved design; decisions recorded in Section 9 (D1 to D5) and clauses G15 to G18 and K5.
+Slice 1b step 1 (the record codec, Section 10) is implemented with no production caller; nothing else is implemented and no path conforms yet.
 
 This is the design part of slice 1 ("Transition-record design and expand stage") of `mulga/docs/development/feature/instance-state-authority-migration.md`.
 It changes no production code, schema, writer or test.
@@ -177,6 +178,7 @@ Slice 1b must confirm that no R0 reader enumerates the live bucket without a pre
 **P1. R1 preserves unknown top-level members on every decode–re-encode path.**
 The record codec keeps a retained set of top-level members it did not decode (`map[string]json.RawMessage`) and writes them back unchanged, and writers follow W2.
 Raw JSON merge at every level and `json.RawMessage` for the whole record were considered; both make every typed mutation a merge problem across about 40 status fields and the embedded AWS SDK structs.
+Superseded in part by C2: by user requirement the step 1 codec preserves unknown members at every object level, using a snapshot difference rather than a hand-written merge per field.
 
 **P2. Future format changes add top-level members.**
 Because P1 preserves only top-level members, a later format adds sections at the top level and never adds a field inside `metadata`, `spec`, `status`, `assignment` or `observation` that an older writer must keep.
@@ -315,6 +317,10 @@ Every role is started from the same binary (`build/systemd/spinifex-daemon.servi
 The per-start incarnation in the report and the probe (G2, G3) is what detects such a process; a file version check would not.
 A consequence of not gating `awsgw`: until it is upgraded, `DescribeInstanceStatus` (served from the gateway cache) shows the legacy status checks, so the K5 surfacing of `unconfirmed` is complete only on an R1 gateway; that is a visibility limit, not a corruption path.
 
+**G19. Operator-visible rollout qualification for `awsgw`.**
+Old read-only gateway consumers remain safe, but `DescribeInstanceStatus` gains unconfirmed/degraded visibility only after awsgw upgrades.
+Release notes and the activation status output must state this, so an operator does not read the legacy status checks from an R0 gateway as proof that no instance is `unconfirmed` or `degraded`.
+
 **G16. The stamp is a restart barrier (D2).**
 The owner raises the instance-state bucket stamps (live 5 to 6, terminated 3 to 4) only after the G3 proof and the `PREPARED` to `ACTIVE` CAS have both succeeded.
 The stamp is a restart barrier for an R0 binary: an R0 daemon or `vpcd` that opens the bucket afterwards fails with `SchemaAheadError` (E5).
@@ -398,3 +404,63 @@ The user approved this design and decided the former open questions as follows.
 | D3 | An incompatible writer freezes only the instance-state contract, Region-wide; reads and unrelated services continue; guests keep running unless local safety requires fencing. | G17; G11 |
 | D4 | `unconfirmed` and `degraded` keep the legacy lifecycle state and are surfaced through status checks. | K5; K4 |
 | D5 | Activation participants are the daemon and `vpcd`; `awsgw`, its cache, quota reconciliation and the CLI are read-only non-participants covered by N-1 reader tests. | G15; G1, G2, G6, G9, Section 8 steps 5 and 7 |
+
+## 10. Slice 1b step 1: record codec (C-series)
+
+Implemented at `e62f921d2` in `spinifex/runtime/compute/vm/record_codec.go`, the owner package of `vm.InstanceRecord` today (T1); tests are in `record_codec_test.go` beside it.
+
+**C1. Codec surface.**
+`DecodeTransitionRecord` returns a `TransitionRecord` holding the typed `Record` (`vm.InstanceRecord`), the format-2 `Assignment` (T4) and `Observation` (T5), the decoded input and a snapshot of the typed fields as decoded.
+`Encode` writes the record back; `Format` and `ReadOnly` report the marker and the read-only state.
+`vm.InstanceRecord` is unchanged, so every existing writer encodes the same bytes; `TestCurrentBehaviour_RecordKeyAndWireForm` passes with its literal unchanged.
+No production reader or writer calls the codec; it is exercised by tests only.
+
+**C2. Preservation at every level.**
+`Encode` re-encodes the typed fields, compares them path by path with the decode-time snapshot and applies only the differing paths onto the decoded input.
+Unknown members are kept at every object level: top level, inside `metadata`, `spec`, `status`, `assignment` and `observation`, inside nested structs, and inside the AWS SDK projections.
+A known field the writer did not change keeps the value it was read with, including a form the typed encoder would rewrite (a `time.Time` with trailing zero nanoseconds, an integer map key with a leading zero).
+A field the writer changed takes the writer's value; a field the writer zeroed under `omitempty` or `omitzero` is removed.
+Writing back the value a field already had is indistinguishable from not changing it, and keeps the read form.
+Numbers are kept as their literal text, so integers beyond 2^53 and unknown decimal members do not lose precision.
+A typed map merges per entry; a key the typed decode normalised is written in the typed form only when that map changed.
+
+**C3. Array limitation.**
+An array whose typed value is unchanged is written back as read, including unknown members inside its elements.
+An array the writer changed is replaced whole by the writer's value, so unknown members inside its elements are lost.
+No keyed merge is attempted; a format change that needs element-level preservation in a changing array must raise `format` (T2).
+
+**C4. Format marker handling.**
+Absent decodes as format 1 and is never added on write; an explicit `1` or `2` is written back as read.
+Format 2 decodes the legacy fields and both sections, and every mirrored legacy field (`status.last_node`, `status.az`, `status.status`, `metadata.observed_generation`) is retained.
+An integer above 2 decodes the legacy fields only, sets `ReadOnly`, and `Encode` refuses it with `ErrRecordFormatAhead`, as T2 requires.
+A non-integer marker (a fraction, `2.0`, an exponent, a string, `null`, an object) is refused on decode with `ErrRecordFormatNotInteger`.
+Zero and negative markers are refused on decode with `ErrRecordFormatOutOfRange`; T2 does not name this case and C4 decides it.
+`Encode` refuses `Assignment` or `Observation` on a record that is not format 2 (`ErrRecordSectionsNeedFormat`); in a format-1 record, members named `assignment` or `observation` are unknown members and are kept as such.
+No writer raises a format in this step; that remains G8.
+
+**C5. Rejection classes.**
+Each is a distinct sentinel matched with `errors.Is`.
+
+| Sentinel | Refused input |
+|---|---|
+| `ErrRecordMalformed` | Invalid JSON, empty input, invalid UTF-8, a known field of the wrong type |
+| `ErrRecordNotObject` | A top-level value that is not an object |
+| `ErrRecordTrailingData` | Anything after the top-level value |
+| `ErrRecordDuplicateKey` | A repeated key in any object at any depth, including unknown members and array elements |
+| `ErrRecordCaseAliasKey` | A key that is not a known name but equals one under Unicode case folding at the same level, which `encoding/json` would otherwise decode into the known field |
+| `ErrRecordFormatNotInteger`, `ErrRecordFormatOutOfRange` | An invalid marker (C4) |
+
+Duplicates and case aliases are detected by a `json.Decoder` token walk against a schema reflected from the typed shape, because `encoding/json` keeps the last duplicate and matches names case-insensitively.
+Two unknown members that differ only in case from each other are both kept.
+
+**C6. Capable writers only.**
+The codec protects writers built with it (R1 and later, the N-1 expand release onward).
+It does not make an R0 binary safe: R0 decodes into the typed record and drops every unknown member (E1), and `TestCurrentBehaviour_TypedRecordRoundTripDropsUnknownFields` still passes because the production typed path is unchanged.
+Excluding R0 writers remains the activation gate's job (P3, G3, G16).
+`TestTransitionRecord_CapableWriterPreservesWhatPlainTypedRoundTripStrips` pins the contrast.
+Section 8 step 1 lists that slice-0 test as flipped; it does not flip in this step, because no writer uses the codec, and flips only when step 2 routes writers through it.
+
+**C7. Evidence.**
+Table-driven tests cover the unmarked v1 round trip, single-path mutation, nested unknown members beside a mutated sibling, raw-form retention against a re-encoding precondition, `omitempty` removal, mutation shadowing, both array cases, the v2 round trip and section mutation, read-only newer formats, every rejection class and integer precision.
+`FuzzTransitionRecordRoundTrip`, seeded with the golden inputs, asserts that decode never panics and that an accepted, unmutated record encodes to a semantically equal document; a 120 s run (about 940,000 executions) found no failure.
+`architecture/instancestate` lists `record_codec.go` as an owner file; the allowlist is unchanged.

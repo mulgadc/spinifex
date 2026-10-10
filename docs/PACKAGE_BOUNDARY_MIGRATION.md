@@ -330,6 +330,7 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `6fa09d336` | (governance only) | — | ADR-0007 slice 0 ratchet at `architecture/instancestate`: freezes the 73 direct production uses of raw instance state found by the inventory below. |
 | `2a196f9ba` | (governance only) | — | ADR-0007 slice 0 ratchet narrowed to instance-state access: the `JetStreamManager` type and constructor are no longer matched, the cluster-state consumers INV-09 and INV-19 leave the allowlist, and 67 entries remain. |
 | `e9e11d531` | (design only) | — | ADR-0007 slice 1a: `docs/package-boundary/instance-state-transition-record-design.md` designs the transitional `i.<id>` record (per-record `format` marker, `assignment` with generation, epoch and token, fenced `observation`, legacy mirror), the writer authority table, top-level unknown-member preservation, the activation gate (per-slot capability proof over the daemon and `vpcd`, narrowed by the recorded user decisions D1 to D5; Inactive, `PREPARED`, `ACTIVE`, `DEACTIVATING`, `FINALISED`; stamp raise against R0 restarts; fail closed when unreadable), the journal v2 rules and the slice 1b order. No code, schema, writer or test changed; no conformance claimed. |
+| `e62f921d2` | (new owner code only) | `spinifex/runtime/compute/vm/record_codec.go` | ADR-0007 slice 1b step 1: the instance transition-record codec (`DecodeTransitionRecord`, `TransitionRecord.Encode`) with the per-record `format` marker, the format-2 `assignment` and `observation` types, preservation of unknown members at every object level, and typed rejection of malformed, duplicate-key, case-alias, trailing-data and invalid-marker input. `vm.InstanceRecord` and every existing writer are unchanged, so wire bytes are unchanged (`TestCurrentBehaviour_RecordKeyAndWireForm` passes with its literal unchanged). No production reader or writer uses the codec yet and nothing conforms yet. The ratchet gains the codec as an owner file; the allowlist is unchanged. Full preflight passed except the recorded Go 1.27.0 advisories. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
@@ -618,6 +619,16 @@ The `JetStreamManager` type and `NewJetStreamManager` are not matched, because t
 `TestADR0007_S6_RatchetDetectsFaults` and `TestADR0007_S6_RatchetSeesBareIdentifiersInOwnerPackages` inject synthetic sources to prove the matcher detects each kind of use, ignores declarations, and does not flag the manager type, its constructor or a cluster-state method.
 Adding a `daemon.LocalStatePath` use to `runtime/roles/awsgw` and renaming one allowlist file were each confirmed to fail the gate.
 After narrowing, a `runtime/roles/awsgw` file constructing a manager and calling `InitClusterStateBucket` passed, the same file calling `WriteRunningSet` failed `NoUnrecordedConsumer`, and restoring the removed INV-19 entry failed `Allowlist_NoStaleEntries`.
+
+### Slice 1b step 1: record codec
+
+`e62f921d2` adds the record codec in the owner package; the design records it as Section 10 (C1 to C7) of `docs/package-boundary/instance-state-transition-record-design.md`.
+No production reader or writer uses it, so every row of the generation matrix above still reads as characterised, and no path conforms to ADR-0007 yet.
+The codec protects capable writers only: a deployed binary still decodes into the typed record and drops unknown members, and excluding such writers remains the activation gate's job.
+Within the codec, an unchanged array keeps unknown members inside its elements, and a changed array is replaced whole and loses them.
+`architecture/instancestate` lists `spinifex/runtime/compute/vm/record_codec.go` as an owner file; no allowlist entry was added.
+
+Operator-visible rollout qualification (design clause G19): old read-only gateway consumers remain safe, but DescribeInstanceStatus gains unconfirmed/degraded visibility only after awsgw upgrades.
 
 ## Close-out status
 

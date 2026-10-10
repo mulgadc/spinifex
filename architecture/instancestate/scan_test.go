@@ -76,6 +76,7 @@ var ownerFiles = []string{
 	"spinifex/daemon/jetstream.go",
 	"spinifex/daemon/local_state.go",
 	"spinifex/runtime/compute/vm/record.go",
+	"spinifex/runtime/compute/vm/record_codec.go",
 }
 
 func set(names ...string) map[string]bool {

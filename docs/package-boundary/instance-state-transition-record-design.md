@@ -434,6 +434,7 @@ An array the writer changed is replaced whole by the writer's value only when no
 Otherwise `Encode` refuses with `ErrRecordExtensionConflict`, naming the array's path and the first unknown member's path, so a changed array with element extensions is never silently dropped (`c617914a1`).
 Arrays inside unknown members are never inspected and are always retained.
 No keyed merge is attempted; a format change that needs element-level preservation in a changing array must raise `format` (T2).
+C8 generalises this refusal to every removal or replacement.
 
 **C4. Format marker handling.**
 Absent decodes as format 1 and is never added on write; an explicit `1` or `2` is written back as read.
@@ -456,7 +457,7 @@ Each is a distinct sentinel matched with `errors.Is`.
 | `ErrRecordCaseAliasKey` | A key that is not a known name but equals one under Unicode case folding at the same level, which `encoding/json` would otherwise decode into the known field |
 | `ErrRecordFormatNotInteger`, `ErrRecordFormatOutOfRange` | An invalid marker (C4) |
 
-`Encode` has its own refusals: `ErrRecordFormatAhead` (C4), `ErrRecordSectionsNeedFormat` (C4) and `ErrRecordExtensionConflict` (C3).
+`Encode` has its own refusals: `ErrRecordFormatAhead` (C4), `ErrRecordSectionsNeedFormat` (C4) and `ErrRecordExtensionConflict` (C3, C8), whose message is `changed <array|object|map|value> <container path> would drop unknown member <member path>`.
 
 Duplicates and case aliases are detected by a `json.Decoder` token walk against a schema reflected from the typed shape, because `encoding/json` keeps the last duplicate and matches names case-insensitively.
 Two unknown members that differ only in case from each other are both kept.
@@ -474,3 +475,14 @@ Table-driven tests cover the unmarked v1 round trip, single-path mutation, neste
 An unmutated record cannot raise the extension conflict, so the fuzz invariant is unchanged.
 `architecture/instancestate` lists `spinifex/domains/ec2/instance/state/record_codec.go` as an owner file; its allowlist is unchanged.
 `architecture/layering` allows the edge to `runtime/compute/vm` against the recorded debt entry for `domains/ec2/instance/state`.
+
+**C8. Removal of extended values (uniform rule).**
+A capable writer may not remove or replace a known object, map entry or array when its original value contains unknown structured extension fields.
+`Encode` then returns `ErrRecordExtensionConflict` with the changed container's path and the first extension's path, and returns no bytes.
+Removal or replacement stays allowed when the original value has no unknown extensions, which preserves deliberate lifecycle changes while preventing a partial writer from erasing future state it cannot understand.
+The check runs wherever the merge drops or overwrites a stored value instead of merging into it: a known member deleted under `omitempty` or `omitzero` or set to `null`, a typed map entry removed or stored under a key the typed decode rewrote, a value replaced by another JSON kind, and a changed array (C3).
+It walks the stored value against its schema at every depth; members inside unknown members are never inspected, and map keys are data, not extensions.
+Where the merge still recurses member by member, unknown members are kept and nothing conflicts.
+Implemented at `0d7b4266d`; tests cover object deletion with and without a nested extension, an AWS SDK object replaced by `null`, a format-2 section removed, the array cases, a sibling change inside an extended object, and, through an internal probe type, map-entry removal and rewritten-key replacement with and without extensions and object replacement by `null`.
+The record has no typed map with object values, so the map-entry rule is exercised only by the probe; no schema-typed object can be replaced by a non-null scalar, because a typed decode of such input fails as malformed.
+A 60 s fuzz rerun found no failure.

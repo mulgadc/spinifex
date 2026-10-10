@@ -50,6 +50,7 @@ All of it is from the slice-0 inventory in `docs/PACKAGE_BOUNDARY_MIGRATION.md` 
 **T1. Key and owner.**
 The record stays at `i.<instance-id>` in `spinifex-instance-state` and, once terminal, in `spinifex-terminated-instances`.
 Its codec, keys and format marker belong to the EC2 instance owner (ADR-0007 S1); slice 2 moves them behind `domains/ec2/instance`, and this design does not require that move first.
+`domains/ec2/instance/state` is the eventual owner of the persisted record and its evolution, and holds the codec from slice 1b step 1 (C1); `vm.InstanceRecord` and its spec and status types in `runtime/compute/vm` are the temporary legacy types it wraps.
 Rationale: the key migration already landed (live 3→4); re-keying again would add a second crossing to every consumer INV-03 to INV-18.
 
 **T2. Format marker.**
@@ -183,6 +184,7 @@ Superseded in part by C2: by user requirement the step 1 codec preserves unknown
 **P2. Future format changes add top-level members.**
 Because P1 preserves only top-level members, a later format adds sections at the top level and never adds a field inside `metadata`, `spec`, `status`, `assignment` or `observation` that an older writer must keep.
 A change that cannot follow P2 raises `format` and relies on T2's refusal.
+C2 lets capable writers preserve deeper additions, but P2 keeps future format evolution disciplined while pre-expand writers exist, and it is revisited only at finalisation.
 
 **P3. Preservation alone is insufficient.**
 R0 binaries are deployed and cannot be patched: they drop every unknown member (E1), erase generations (E2, E3), keep writing through open handles (E5) and are ordinary writers on every node (INV-03, INV-05 to INV-08, INV-10).
@@ -407,7 +409,9 @@ The user approved this design and decided the former open questions as follows.
 
 ## 10. Slice 1b step 1: record codec (C-series)
 
-Implemented at `e62f921d2` in `spinifex/runtime/compute/vm/record_codec.go`, the owner package of `vm.InstanceRecord` today (T1); tests are in `record_codec_test.go` beside it.
+Implemented at `e62f921d2` and moved at `8db9771fb` to `spinifex/domains/ec2/instance/state/record_codec.go`, with tests in `record_codec_test.go` beside it.
+`domains/ec2/instance/state` is the eventual owner of the persisted record and its evolution (T1); `vm.InstanceRecord`, `vm.InstanceSpec` and `vm.InstanceStatus` stay in `runtime/compute/vm` as the temporary legacy types the codec wraps.
+That import is recorded dependency-rule debt in `docs/PACKAGE_BOUNDARY_MIGRATION.md`, cleared when those types move into `domains/ec2/instance/state`.
 
 **C1. Codec surface.**
 `DecodeTransitionRecord` returns a `TransitionRecord` holding the typed `Record` (`vm.InstanceRecord`), the format-2 `Assignment` (T4) and `Observation` (T5), the decoded input and a snapshot of the typed fields as decoded.
@@ -424,9 +428,11 @@ Writing back the value a field already had is indistinguishable from not changin
 Numbers are kept as their literal text, so integers beyond 2^53 and unknown decimal members do not lose precision.
 A typed map merges per entry; a key the typed decode normalised is written in the typed form only when that map changed.
 
-**C3. Array limitation.**
+**C3. Changed arrays.**
 An array whose typed value is unchanged is written back as read, including unknown members inside its elements.
-An array the writer changed is replaced whole by the writer's value, so unknown members inside its elements are lost.
+An array the writer changed is replaced whole by the writer's value only when no element of the array as read carries an unknown member at any depth.
+Otherwise `Encode` refuses with `ErrRecordExtensionConflict`, naming the array's path and the first unknown member's path, so a changed array with element extensions is never silently dropped (`c617914a1`).
+Arrays inside unknown members are never inspected and are always retained.
 No keyed merge is attempted; a format change that needs element-level preservation in a changing array must raise `format` (T2).
 
 **C4. Format marker handling.**
@@ -450,6 +456,8 @@ Each is a distinct sentinel matched with `errors.Is`.
 | `ErrRecordCaseAliasKey` | A key that is not a known name but equals one under Unicode case folding at the same level, which `encoding/json` would otherwise decode into the known field |
 | `ErrRecordFormatNotInteger`, `ErrRecordFormatOutOfRange` | An invalid marker (C4) |
 
+`Encode` has its own refusals: `ErrRecordFormatAhead` (C4), `ErrRecordSectionsNeedFormat` (C4) and `ErrRecordExtensionConflict` (C3).
+
 Duplicates and case aliases are detected by a `json.Decoder` token walk against a schema reflected from the typed shape, because `encoding/json` keeps the last duplicate and matches names case-insensitively.
 Two unknown members that differ only in case from each other are both kept.
 
@@ -461,6 +469,8 @@ Excluding R0 writers remains the activation gate's job (P3, G3, G16).
 Section 8 step 1 lists that slice-0 test as flipped; it does not flip in this step, because no writer uses the codec, and flips only when step 2 routes writers through it.
 
 **C7. Evidence.**
-Table-driven tests cover the unmarked v1 round trip, single-path mutation, nested unknown members beside a mutated sibling, raw-form retention against a re-encoding precondition, `omitempty` removal, mutation shadowing, both array cases, the v2 round trip and section mutation, read-only newer formats, every rejection class and integer precision.
-`FuzzTransitionRecordRoundTrip`, seeded with the golden inputs, asserts that decode never panics and that an accepted, unmutated record encodes to a semantically equal document; a 120 s run (about 940,000 executions) found no failure.
-`architecture/instancestate` lists `record_codec.go` as an owner file; the allowlist is unchanged.
+Table-driven tests cover the unmarked v1 round trip, single-path mutation, nested unknown members beside a mutated sibling, raw-form retention against a re-encoding precondition, `omitempty` removal, mutation shadowing, the array cases (unchanged with element extensions, changed with known members only, changed scalars, and the extension conflict at element level and one level deeper), the v2 round trip and section mutation, read-only newer formats, every rejection class and integer precision.
+`FuzzTransitionRecordRoundTrip`, seeded with the golden inputs, asserts that decode never panics and that an accepted, unmutated record encodes to a semantically equal document; a 120 s run (about 940,000 executions) found no failure, and a 60 s rerun after the conflict check (about 660,000 executions) found none.
+An unmutated record cannot raise the extension conflict, so the fuzz invariant is unchanged.
+`architecture/instancestate` lists `spinifex/domains/ec2/instance/state/record_codec.go` as an owner file; its allowlist is unchanged.
+`architecture/layering` allows the edge to `runtime/compute/vm` against the recorded debt entry for `domains/ec2/instance/state`.

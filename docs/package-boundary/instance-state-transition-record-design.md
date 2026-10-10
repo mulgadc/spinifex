@@ -2,7 +2,7 @@
 
 Code read at `830f70489`; not verified live.
 
-**Status:** Draft for review; design only, nothing implemented.
+**Status:** Approved design; decisions recorded in Section 9 (D1 to D5) and clauses G15 to G18 and K5; nothing implemented.
 
 This is the design part of slice 1 ("Transition-record design and expand stage") of `mulga/docs/development/feature/instance-state-authority-migration.md`.
 It changes no production code, schema, writer or test.
@@ -196,17 +196,19 @@ The scope is every process that writes, migrates or decodes instance records or 
 |---|---|---|
 | `daemon`, one per configured node | Writes records (W1), runs migrations, writes the local file | `ec2-instance-record/2-preserve` and `ec2-instance-journal/2` |
 | `vpcd`, one per configured node running it | Reads the local file (a v2 journal fails an R0 `vpcd`, E10), runs migrations today (E7) | `ec2-instance-journal/2-read` and `ec2-instance-record/2-read` |
-| `awsgw`, one per configured node running it | Decodes records into the instance cache and quota counts | `ec2-instance-record/2-read` |
+| `awsgw`, one per configured node running it (superseded by G15: not a slot) | Decodes records into the instance cache and quota counts | `ec2-instance-record/2-read` (superseded by G15) |
 | Operator CLI | Does not touch instance records today (INV-19) | Not a slot; becomes one only if a later command writes records |
 | Migration runner | The daemon slot after G9 removes migration from `vpcd` | Covered by `daemon` |
 
 A slot is (Region, node, role), derived from configured membership (`bootstrap/config` node map and its per-node services), never from who reports.
+The `awsgw` row is superseded by G15: the slot roles are `daemon` and `vpcd` only.
 
 **G2. Capability report.**
 Each R1 process writes a self-report for its slot on start and on an interval: role, node, random incarnation, capability tokens compiled into the binary, configuration epoch and a diagnostic build version.
 The report lives in `spinifex-cluster-state` beside the heartbeat, under a key R0 never reads (`release.<role>.<node>`), as the EKS design chose (E13).
 The R1 daemon heartbeat gains an additive capability marker; an R0 daemon rewrites its heartbeat every 10 s without it, which is positive legacy evidence.
-Each slot also answers a per-slot probe at evaluation time: the daemon's existing per-node health reply gains incarnation and tokens; `vpcd` and `awsgw` need a probe route (awsgw's `GetVersion` may carry it).
+Each slot also answers a per-slot probe at evaluation time: the daemon's existing per-node health reply gains incarnation and tokens; `vpcd` needs a probe route (the `awsgw` probe is superseded by G15).
+The report and probe follow the shared model of G18.
 
 **G3. Proof of compatibility.**
 A slot counts as compatible only when all of these hold at evaluation:
@@ -232,7 +234,7 @@ Each audit entry holds principal, token, from, to, reason and an evidence digest
 | From | To | Condition |
 |---|---|---|
 | absent (Inactive) or `PREPARED` | `PREPARED` | G3 holds for every slot; every record decodes; snapshot of incarnations stored |
-| `PREPARED` | `ACTIVE` | G3 still holds and every incarnation equals the snapshot; both bucket stamps raised (G7); activation generation advanced |
+| `PREPARED` | `ACTIVE` | G3 still holds and every incarnation equals the snapshot; activation generation advanced; bucket stamps raised after this CAS succeeds (G16) |
 | `ACTIVE` | `DEACTIVATING` | Operator authorisation only; freezes format-raising writes and new assignments |
 | `DEACTIVATING` | `PREPARED` | Every record and journal back in format 1 (G12, J4); stamps lowered |
 | `DEACTIVATING` | `ACTIVE` | G3 again (abort rollback) |
@@ -243,9 +245,10 @@ A binary start never activates anything, so first-opener activation (E7) is not 
 
 **G6. Who flips.**
 The operator command reaches an R1 daemon, which evaluates G3 and performs the CAS.
-On a single-node deployment the same command applies with three slots (daemon, vpcd, awsgw); the upgrade procedure may invoke it, but it is still an explicit, audited step.
+On a single-node deployment the same command applies with two slots, `daemon` and `vpcd` (G15; the earlier three-slot text is superseded); the upgrade procedure may invoke it, but it is still an explicit, audited step.
 
 **G7. Bucket stamp as the guard against R0 restarts.**
+Decided by D2; G16 states the ordering and the stamp's role.
 At `ACTIVE`, the owner raises the live bucket from 5 to 6 and the terminated bucket from 3 to 4.
 An R0 daemon or R0 `vpcd` that starts afterwards then fails its open with `SchemaAheadError` (E5) and never writes.
 Limits, stated as measured:
@@ -268,7 +271,8 @@ Before activation, R1 must:
 - give the gateway (INV-16) and network reconcile (INV-15) the same check-only hook, so a later R2 stamp makes them fail visibly rather than misread;
 - keep their decodes tolerant: `json.Unmarshal` into `vm.InstanceRecord` already ignores the new sections (`foundation/state/kvstore/store.go:338`).
 These consumers write nothing (E8), so the gap they open is misreading, not corruption.
-The legacy mirror (T9) keeps their reads correct during `ACTIVE`; they gate activation as slots (G1) so that the journal v2 and `unconfirmed` semantics are understood where they are read.
+The legacy mirror (T9) keeps their reads correct during `ACTIVE`.
+Superseded by G15: the earlier text made them activation slots; only `vpcd` is a slot, for the journal, and the gateway and network reconcile are covered by N-1 reader tests instead.
 
 **G10. Unreadable activation state.**
 When the activation record cannot be read or decoded, an R1 writer emits no format 2 and no journal v2, writes an existing record only in the format it found (G8.2), and refuses creates and assignment changes that would require choosing a format with a retryable unavailable result.
@@ -277,7 +281,7 @@ An absent record means Inactive; only that case selects format-1 semantics.
 This mirrors EKS M3 (`ActivationStateUnavailable`): unreadable selects neither old nor new semantics.
 
 **G11. Legacy writer after activation.**
-An R0 daemon heartbeat or probe answer observed while `ACTIVE` is recorded in the activation record and freezes instance desired mutations and assignment changes Region-wide; reads and fenced observations continue (EKS M2 analogue).
+An R0 daemon heartbeat or probe answer observed while `ACTIVE` is recorded in the activation record and freezes the instance-state contract; the freeze scope is decided by G17, which supersedes the scope stated in the earlier text of this clause.
 The freeze clears only on a compatible new incarnation for that slot or an operator rollback.
 Damage already done by such a writer appears as format-1 records with no assignment; the owner reports them and does not re-derive a fence from `status.last_node` without an operator action.
 
@@ -295,12 +299,42 @@ Activation is impossible until the last slot is R1, which is the gate's purpose 
 
 | Mechanism | Class |
 |---|---|
-| Slot derivation from configured membership; incarnation; capability token compiled into the binary; self-report and probe; legacy signal from the heartbeat | Reusable concept, shared with the EKS design; a common report record per slot is Question 1 |
+| Slot derivation from configured membership; incarnation; capability token compiled into the binary; self-report and probe; legacy signal from the heartbeat | Reusable concept; one platform-internal report and probe model shared with the EKS design (G18) |
 | Activation record shape, CAS transitions with client token and in-record audit; unreadable means fail closed; activation generation | Reusable concept; each contract keeps its own record |
 | `migrate.Registry` understood ceiling; owner-run stamp lowering | Reusable extension of `foundation/state/migrate` and `kvutil` |
 | Per-record `format` marker and top-level member preservation | Reusable pattern; codec is instance-specific |
 | Scope (daemon, vpcd, awsgw), tokens, stamp values, assignment fence, legacy mirror, journal v2, freeze scope | Instance-specific |
 | Rollout driver, global "all upgraded" gate, release manager | Out of scope |
+
+**G15. Activation participants are the daemon and `vpcd` (D5).**
+The slot roles are `daemon`, the canonical writer of records and the journal, and `vpcd`, which reads the journal and must understand journal v2 (E10).
+`awsgw`, the gateway instance cache, quota reconciliation, network reconcile and the operator CLI are read-only (E8, INV-19) and are not activation participants.
+Their safety rests on T9: under `ACTIVE` every format-2 record carries current legacy fields, and slice 1b proves with N-1 reader tests that each of them consumes a format-2 record through those fields.
+Proof (G3) is evaluated for the `daemon` slot of every configured node and the `vpcd` slot of every configured node that runs it; on a single node that is two roles.
+Every role is started from the same binary (`build/systemd/spinifex-daemon.service`, `spinifex-vpcd.service` and `spinifex-awsgw.service` all run `/usr/local/bin/spx service <role> start`), so replacing the file on disk does not change a process already running the old code.
+The per-start incarnation in the report and the probe (G2, G3) is what detects such a process; a file version check would not.
+A consequence of not gating `awsgw`: until it is upgraded, `DescribeInstanceStatus` (served from the gateway cache) shows the legacy status checks, so the K5 surfacing of `unconfirmed` is complete only on an R1 gateway; that is a visibility limit, not a corruption path.
+
+**G16. The stamp is a restart barrier (D2).**
+The owner raises the instance-state bucket stamps (live 5 to 6, terminated 3 to 4) only after the G3 proof and the `PREPARED` to `ACTIVE` CAS have both succeeded.
+The stamp is a restart barrier for an R0 binary: an R0 daemon or `vpcd` that opens the bucket afterwards fails with `SchemaAheadError` (E5).
+It is not the activation proof, which is G3 and the activation record, and it is not a fence, which is T4 and T6.
+A failure to raise the stamp after a successful CAS leaves the record `ACTIVE` and is retried by the owner and reported as an incomplete activation; no R1 behaviour depends on the stamp value.
+This departs from the EKS design's "no stamp bump" invariant on purpose.
+There, readers outside the gated scope would have refused the whole bucket; here, by the time the stamp moves every writer and journal reader has proven R1, so the all-or-nothing refusal falls only on R0 processes that should not start, and it closes the restart gap the EKS design leaves open (its Section 6 item 2).
+The gateway and network reconcile open with no hook today (E8) and are unaffected; G9 gives them a check-only hook so a later raise beyond their ceiling is visible.
+
+**G17. Freeze scope (D3).**
+Detecting an incompatible writer while `ACTIVE` freezes only the instance-state contract, Region-wide: instance lifecycle mutations, assignment and recovery, activation transitions, and journal migration.
+Reads, observations under a valid fence, and every unrelated service continue.
+Existing guests keep running; a node stops or fences a local guest only where local safety requires it (ADR-0007 S4), and records that as local evidence.
+The freeze clears as G11 states.
+
+**G18. Shared capability model, per-contract activation (D1).**
+The slot, incarnation, capability-token, report and probe model is one platform-internal model, reused by this gate and by the EKS add-on design.
+Each contract keeps its own activation record; this one is G4.
+The shared model is a future foundation component; the instance-state gate does not import, call or wait on EKS code, and if the instance work lands first it creates the model where the foundation layer allows.
+No release manager, rollout driver or "all upgraded" gate is built in this refactor.
 
 ## 6. Local execution journal (J-series)
 
@@ -329,7 +363,12 @@ A journal v1 entry has no fence, so reattachment needs format 2 to be active; un
 
 **K3.** On reconnection, the node publishes an observation only if the canonical fence tuple equals the journal's; otherwise it quarantines or tears down per ADR-0007 S5 and writes recovered evidence (W4).
 
-**K4.** AWS keeps a host-impaired instance in state `running` and reports it through status checks; the AWS-visible projection of `unconfirmed` is therefore a status-check result, not a new instance state (Question 4 covers the legacy mirror).
+**K4.** AWS keeps a host-impaired instance in state `running` and reports it through status checks; the AWS-visible projection of `unconfirmed` is therefore a status-check result, not a new instance state (decided by K5).
+
+**K5. Unconfirmed keeps the lifecycle state (D4).**
+An `unconfirmed` or `degraded` instance keeps its legacy lifecycle state, for example `running`, in `status.status` and in `DescribeInstances`.
+The condition is surfaced through the instance or system status check on the `DescribeInstanceStatus` surface, matching AWS, which keeps a host-impaired instance `running` and reports the impairment through status checks.
+K1 still holds for the canonical observation: `observation.state` is never `running` without live-process evidence; only the lifecycle projection keeps the legacy value.
 
 ## 8. Slice 1b sequence
 
@@ -339,20 +378,23 @@ A journal v1 entry has no fence, so reattachment needs format 2 to be active; un
 | 2 | W2 for existing writers: `WriteRunningSet`, stopped and terminated writers and `mutateInstance` preserve identity, generations and members | Every matrix row reads Preserved; a node write does not move `metadata.generation` | 8 / 2, 7 | `TestCurrentBehaviour_GenerationAcrossKVWriters` "Lost" rows; `TestCurrentBehaviour_RecordKeyAndWireForm` if the wire bytes gain members |
 | 3 | G8 write-time format check inside CAS | Concurrent raise between read and write loses the CAS; format above ceiling refused | 8 / 7 | none |
 | 4 | Open hooks: understood ceiling, owner-only migrations, check-only hooks in `vpcd`, gateway and network reconcile (G7, G9) | Each process refuses a stamp above its ceiling; `vpcd` runs no migration | 8, 10 / 7 | `TestCurrentBehaviour_BucketVersionGate` (reader without a hook) |
-| 5 | Capability report, probe fields and heartbeat marker for daemon, `vpcd`, `awsgw` (G2) | R0 heartbeat recognised as legacy; restart changes incarnation | 8 / 7 | none |
+| 5 | Capability report, probe fields and heartbeat marker for `daemon` and `vpcd` (G2, G15, G18) | R0 heartbeat recognised as legacy; restart changes incarnation | 8 / 7 | none |
 | 6 | Activation record and `spx admin` status, prepare, activate, deactivate (G4 to G6, G10) | Refusal for an R0 slot, stale slot, absent slot, unexpected node, restart after prepare; CAS race; same-token retry; unreadable state fails closed | 8 / 7 | none |
-| 7 | Dual write under `ACTIVE`: format 2 with assignment generation, epoch and token minted on every assignment change, legacy mirror kept | R0 reader sees unchanged legacy fields; assignment generation monotonic across claim, release, start | 4, 8 / 2, 7 | none |
+| 7 | Dual write under `ACTIVE`: format 2 with assignment generation, epoch and token minted on every assignment change, legacy mirror kept | Assignment generation monotonic across claim, release, start; N-1 reader tests: `awsgw` instance cache (INV-17), quota counts (INV-18), network reconcile (INV-15), DNS reconcile (INV-11) and the ENI orphan reaper (INV-12), each at R0 code, consume a format-2 record through the mirrored legacy fields with the same result as for format 1 | 4, 8 / 2, 7 | none |
 | 8 | Journal v2 reader in daemon and `vpcd`, v2 writer under `ACTIVE`, down-conversion (J1 to J4) | v1 and v2 both read; v2 only after `ACTIVE`; deactivation returns v1 | 2, 8 / 7 | `TestCurrentBehaviour_LocalStateSchemaVersionFailures` (version 2 becomes valid), `TestCurrentBehaviour_LocalStateFileExactBytes` under `ACTIVE` only |
 | 9 | Upgrade and rollback evidence: both rollout orders; activation refused until the last slot; rollback after activation; R0 restart refused after activation | ADR-0006 S8 items 1, 5, 6 | 7, 8 / 7 | none |
 
 Not in slice 1b: fence enforcement in realization and observation (slice 3), `unconfirmed` and reattachment (slice 5, flips `TestCurrentBehaviour_RestoreWithKVUnavailableLeavesLocalUnlaunched`), missing-key and terminated-bucket recovery (slice 5, flips `TestCurrentBehaviour_RestoreMissingCanonicalKeyRepublishesFromLocal` and `TestCurrentBehaviour_RestoreIgnoresTerminatedBucket`), and the `vpcd` projection (slice 6).
 ADR-0007 evidence items 1, 3, 5, 6, 9 and plan items 1, 3 to 6 and 8 belong to those slices.
 
-## 9. Open questions
+## 9. Decisions
 
-| # | Question | Recommendation | Alternative |
-|---|---|---|---|
-| 1 | Should the per-slot capability report be one record shared with the EKS add-on design? | Yes: one report per slot listing every capability token, with each contract keeping its own activation record; this avoids two heartbeat-adjacent writers per process without creating a release manager. | Instance-specific report keys, accepting duplication until a second consumer is real (ADR-0003 S2). |
-| 2 | Raise the bucket stamps at activation (G7)? | Yes: after every slot is proven R1, a refused R0 open is the wanted result, and it closes the "R0 restarted after activation" gap the EKS design leaves open. | No stamp change; rely on legacy detection and the G11 freeze, accepting that an R0 restart can strip fields before it is detected. |
-| 3 | Freeze scope when a legacy writer appears after activation (G11)? | Region-wide for desired mutations and assignment changes, because any daemon may accept an instance mutation. | Freeze only the affected node's instances, which leaves records it can reach unprotected. |
-| 4 | What does the legacy `status.status` mirror show for `unconfirmed`? | Keep the last confirmed value for R0 readers and expose `unconfirmed` through the observation and the AWS status-check projection (K4). | Map it to an existing state such as `pending` or `error`, which changes what R0 readers and `DescribeInstances` show. |
+The user approved this design and decided the former open questions as follows.
+
+| # | Decision | Recorded in |
+|---|---|---|
+| D1 | One platform-internal capability report and probe model shared with the EKS design; activation records stay per contract; no generic release manager; the instance gate does not depend on EKS code. | G18; G2, G14 |
+| D2 | Raise the instance-state bucket stamps at `ACTIVE`, after the proof and the activation CAS; the stamp is a restart barrier for R0, not the proof and not a fence; a deliberate departure from the EKS invariant. | G16; G7 |
+| D3 | An incompatible writer freezes only the instance-state contract, Region-wide; reads and unrelated services continue; guests keep running unless local safety requires fencing. | G17; G11 |
+| D4 | `unconfirmed` and `degraded` keep the legacy lifecycle state and are surfaced through status checks. | K5; K4 |
+| D5 | Activation participants are the daemon and `vpcd`; `awsgw`, its cache, quota reconciliation and the CLI are read-only non-participants covered by N-1 reader tests. | G15; G1, G2, G6, G9, Section 8 steps 5 and 7 |

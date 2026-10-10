@@ -45,7 +45,7 @@ var (
 	ErrRecordFormatOutOfRange   = errors.New("instance record format is below 1")
 	ErrRecordFormatAhead        = errors.New("instance record format is newer than this binary can write")
 	ErrRecordSectionsNeedFormat = errors.New("assignment and observation need record format 2")
-	ErrRecordExtensionConflict  = errors.New("instance record change would drop an unknown member inside an array")
+	ErrRecordExtensionConflict  = errors.New("instance record change would drop an unknown member")
 )
 
 // AssignmentReason says why an assignment changed.
@@ -192,8 +192,8 @@ func DecodeTransitionRecord(data []byte) (*TransitionRecord, error) {
 }
 
 // Encode writes only the typed paths that differ from the decoded snapshot
-// over the input, keeping unknown members. A changed array is replaced whole,
-// and refused if its read elements carry unknown members. It adds no marker.
+// over the input, keeping unknown members. It refuses to remove or replace a
+// value whose stored form carries unknown members, and adds no format marker.
 func (r *TransitionRecord) Encode() ([]byte, error) {
 	if r.readOnly {
 		return nil, fmt.Errorf("%w: format %d", ErrRecordFormatAhead, r.format)
@@ -249,38 +249,38 @@ func mergeChanged(s *fieldSchema, raw, snapshot, current any, path string) (any,
 	if reflect.DeepEqual(snapshot, current) {
 		return raw, nil
 	}
-	if rawArr, ok := raw.([]any); ok && s != nil {
-		if at, found := unknownMember(s, rawArr, path); found {
-			return nil, fmt.Errorf("%w: changed array %s would drop unknown member %s", ErrRecordExtensionConflict, path, at)
-		}
-	}
 	rawObj, rawIsObj := raw.(map[string]any)
 	snapObj, snapIsObj := snapshot.(map[string]any)
 	curObj, curIsObj := current.(map[string]any)
 	if s == nil || (s.fields == nil && !s.isMap) || !rawIsObj || !snapIsObj || !curIsObj {
+		if err := refuseDrop(s, raw, path); err != nil {
+			return nil, err
+		}
 		return current, nil
 	}
 	out := make(map[string]any, len(rawObj))
-	for k, v := range rawObj {
+	for _, k := range slices.Sorted(maps.Keys(rawObj)) {
 		_, inSnap := snapObj[k]
 		_, inCur := curObj[k]
 		switch {
 		case !s.isMap && (!inSnap || inCur):
-			out[k] = v // unknown, or known and still present
+			out[k] = rawObj[k] // unknown, or known and still present
 		case s.isMap && inSnap && inCur:
-			out[k] = v // a map key the typed decode did not normalise
+			out[k] = rawObj[k] // a map key the typed decode did not normalise
+		default:
+			// A removed member or entry, or a map key the typed decode rewrote.
+			if err := refuseDrop(childSchema(s, k), rawObj[k], path+"."+k); err != nil {
+				return nil, err
+			}
 		}
 	}
-	for k, curV := range curObj {
+	for _, k := range slices.Sorted(maps.Keys(curObj)) {
+		curV := curObj[k]
 		snapV, inSnap := snapObj[k]
 		rawV, inRaw := out[k]
-		child := s.elem
-		if !s.isMap {
-			child = s.fields[k]
-		}
 		switch {
 		case inSnap && inRaw:
-			merged, err := mergeChanged(child, rawV, snapV, curV, path+"."+k)
+			merged, err := mergeChanged(childSchema(s, k), rawV, snapV, curV, path+"."+k)
 			if err != nil {
 				return nil, err
 			}
@@ -288,10 +288,42 @@ func mergeChanged(s *fieldSchema, raw, snapshot, current any, path string) (any,
 		case inSnap && !s.isMap && reflect.DeepEqual(snapV, curV):
 			// A zero member the input left out stays out.
 		default:
+			if inRaw {
+				if err := refuseDrop(childSchema(s, k), rawV, path+"."+k); err != nil {
+					return nil, err
+				}
+			}
 			out[k] = curV
 		}
 	}
 	return out, nil
+}
+
+func childSchema(s *fieldSchema, key string) *fieldSchema {
+	if s.isMap {
+		return s.elem
+	}
+	return s.fields[key]
+}
+
+// refuseDrop fails when the raw value about to be removed or replaced holds a
+// member its schema does not know, so a writer cannot erase what it cannot read.
+func refuseDrop(s *fieldSchema, raw any, path string) error {
+	at, found := unknownMember(s, raw, path)
+	if !found {
+		return nil
+	}
+	kind := "value"
+	switch raw.(type) {
+	case []any:
+		kind = "array"
+	case map[string]any:
+		kind = "object"
+		if s.isMap {
+			kind = "map"
+		}
+	}
+	return fmt.Errorf("%w: changed %s %s would drop unknown member %s", ErrRecordExtensionConflict, kind, path, at)
 }
 
 // unknownMember finds the first member of v, at any depth, that schema s does

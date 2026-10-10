@@ -176,25 +176,81 @@ func TestTransitionRecord_MutationChangesOnlyItsPath(t *testing.T) {
 	}
 }
 
+// plainDoc carries no unknown member inside any known value, so removing a
+// known value drops nothing a newer writer added.
+const plainDoc = `{"format":2,"metadata":{"name":"i-1","owner_refs":[{"kind":"cluster","name":"c-1"}]},` +
+	`"spec":{"run_instances_input":{"MaxCount":1,"Placement":{"AvailabilityZone":"a"}}},` +
+	`"assignment":{"node":"node-1","generation":3},"future":{"keep":[{"x":1}]}}`
+
 func TestTransitionRecord_ZeroedOmitemptyFieldIsRemoved(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(*state.TransitionRecord)
-		gone   string
+		name, doc string
+		mutate    func(*state.TransitionRecord)
+		gone      string
 	}{
-		{"string", func(r *state.TransitionRecord) { r.Record.Status.AZ = "" }, "status.az"},
-		{"map", func(r *state.TransitionRecord) { r.Record.Metadata.Tags = nil }, "metadata.tags"},
-		{"slice", func(r *state.TransitionRecord) { r.Record.Metadata.OwnerRefs = nil }, "metadata.owner_refs"},
-		{"omitzero time", func(r *state.TransitionRecord) { r.Record.Status.TerminatedAt = time.Time{} }, "status.terminated_at"},
-		{"pointer", func(r *state.TransitionRecord) { r.Record.Spec.RunInstancesInput = nil }, "spec.run_instances_input"},
+		{"string", goldenV1, func(r *state.TransitionRecord) { r.Record.Status.AZ = "" }, "status.az"},
+		{"map of strings", goldenV1, func(r *state.TransitionRecord) { r.Record.Metadata.Tags = nil }, "metadata.tags"},
+		{"omitzero time", goldenV1, func(r *state.TransitionRecord) { r.Record.Status.TerminatedAt = time.Time{} }, "status.terminated_at"},
+		{"slice", plainDoc, func(r *state.TransitionRecord) { r.Record.Metadata.OwnerRefs = nil }, "metadata.owner_refs"},
+		{"pointer", plainDoc, func(r *state.TransitionRecord) { r.Record.Spec.RunInstancesInput = nil }, "spec.run_instances_input"},
+		{"section", plainDoc, func(r *state.TransitionRecord) { r.Assignment = nil }, "assignment"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := decode(t, goldenV1)
+			r := decode(t, tc.doc)
 			tc.mutate(r)
-			assert.Equal(t, edit(t, goldenV1, map[string]any{tc.gone: nil}), canonical(t, encode(t, r)))
+			assert.Equal(t, edit(t, tc.doc, map[string]any{tc.gone: nil}), canonical(t, encode(t, r)))
 		})
 	}
+}
+
+// Removing or replacing a known value whose stored form carries an unknown
+// member would erase state this writer cannot read, so Encode refuses it.
+func TestTransitionRecord_RemovalOfExtendedValueIsRefused(t *testing.T) {
+	const extended = `{"metadata":{"name":"i-1"},` +
+		`"spec":{"run_instances_input":{"MaxCount":1,"Placement":{"AvailabilityZone":"a","FuturePlacement":1}}}}`
+	cases := []struct {
+		name, doc, container, member string
+		mutate                       func(*state.TransitionRecord)
+	}{
+		{"object with a nested unknown member", extended,
+			"changed object $.spec.run_instances_input ", "$.spec.run_instances_input.Placement.FuturePlacement",
+			func(r *state.TransitionRecord) { r.Record.Spec.RunInstancesInput = nil }},
+		{"AWS SDK object replaced by null", extended,
+			"changed object $.spec.run_instances_input.Placement ", "$.spec.run_instances_input.Placement.FuturePlacement",
+			func(r *state.TransitionRecord) { r.Record.Spec.RunInstancesInput.Placement = nil }},
+		{"array with an unknown element member", goldenV1,
+			"changed array $.metadata.owner_refs ", "$.metadata.owner_refs[0].future_ref",
+			func(r *state.TransitionRecord) { r.Record.Metadata.OwnerRefs = nil }},
+		{"format-2 section", goldenV2,
+			"changed object $.assignment ", "$.assignment.future_assignment",
+			func(r *state.TransitionRecord) { r.Assignment = nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := decode(t, tc.doc)
+			tc.mutate(r)
+			out, err := r.Encode()
+			require.ErrorIs(t, err, state.ErrRecordExtensionConflict)
+			assert.Contains(t, err.Error(), tc.container)
+			assert.Contains(t, err.Error(), "would drop unknown member "+tc.member)
+			assert.Nil(t, out)
+		})
+	}
+
+	t.Run("AWS SDK object without unknown members replaced by null", func(t *testing.T) {
+		r := decode(t, plainDoc)
+		r.Record.Spec.RunInstancesInput.Placement = nil
+		placement, _ := member(t, encode(t, r), "spec", "run_instances_input", "Placement")
+		assert.JSONEq(t, `null`, string(placement))
+	})
+
+	t.Run("sibling change inside an extended object keeps the extension", func(t *testing.T) {
+		r := decode(t, extended)
+		r.Record.Spec.RunInstancesInput.Placement.AvailabilityZone = aws.String("b")
+		want := edit(t, extended, map[string]any{"spec.run_instances_input.Placement.AvailabilityZone": "b"})
+		assert.Equal(t, want, canonical(t, encode(t, r)))
+	})
 }
 
 // terminated_at and hostfwd_port_map are read in forms that the typed encoder
@@ -335,9 +391,6 @@ func TestTransitionRecord_V2SectionMutationKeepsNestedUnknownMembers(t *testing.
 		{"observation state", func(r *state.TransitionRecord) {
 			r.Observation.State = state.ObservedUnconfirmed
 		}, map[string]any{"observation.state": "unconfirmed"}},
-		{"assignment removed", func(r *state.TransitionRecord) {
-			r.Assignment = nil
-		}, map[string]any{"assignment": nil}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

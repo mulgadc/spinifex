@@ -27,7 +27,8 @@ const (
 )
 
 // daemonSymbols are the daemon's instance-state bucket, key and local-file
-// identifiers. A consumer naming one knows where instance state lives.
+// identifiers. The JetStreamManager type and constructor are not listed: they
+// also serve cluster state, so only the instance-state methods below count.
 var daemonSymbols = set(
 	"InstanceStateBucket", "InstanceStateBucketVersion",
 	"TerminatedInstanceBucket", "TerminatedInstanceBucketVersion",
@@ -36,7 +37,6 @@ var daemonSymbols = set(
 	"LocalState", "LocalStateSchemaVersion", "LocalStatePath", "ReadLocalState",
 	"MarshalLocalState", "WriteLocalStateBytes", "LocalStateFileName",
 	"LocalStateFileMode", "DefaultLocalStateDir",
-	"JetStreamManager", "NewJetStreamManager",
 )
 
 // vmSymbols are the raw persisted record and its conversion.

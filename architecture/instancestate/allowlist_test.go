@@ -14,8 +14,6 @@ var allowlist = []allowance{
 	{File: "spinifex/daemon/daemon.go", Symbol: "daemon.ReadLocalState", Inv: "INV-01"},
 	{File: "spinifex/daemon/daemon.go", Symbol: "daemon.MarshalLocalState", Inv: "INV-01"},
 	{File: "spinifex/daemon/daemon.go", Symbol: "daemon.WriteLocalStateBytes", Inv: "INV-01"},
-	{File: "spinifex/daemon/daemon.go", Symbol: "daemon.JetStreamManager", Inv: "INV-02"},
-	{File: "spinifex/daemon/daemon.go", Symbol: "daemon.NewJetStreamManager", Inv: "INV-02"},
 	{File: "spinifex/daemon/daemon.go", Symbol: "JetStreamManager.InitKVBucket", Inv: "INV-02"},
 	{File: "spinifex/daemon/daemon.go", Symbol: "JetStreamManager.InitTerminatedInstanceBucket", Inv: "INV-02"},
 	{File: "spinifex/daemon/daemon.go", Symbol: "JetStreamManager.WriteNodeMarkerBestEffort", Inv: "INV-03"},
@@ -23,7 +21,6 @@ var allowlist = []allowance{
 	{File: "spinifex/daemon/instance_record_repair.go", Symbol: "JetStreamManager.WriteRunningSet", Inv: "INV-03"},
 	{File: "spinifex/daemon/daemon.go", Symbol: "JetStreamManager.ListTerminatedInstances", Inv: "INV-04"},
 
-	{File: "spinifex/daemon/vm_adapters.go", Symbol: "daemon.JetStreamManager", Inv: "INV-05"},
 	{File: "spinifex/daemon/vm_adapters.go", Symbol: "JetStreamManager.LoadState", Inv: "INV-05"},
 	{File: "spinifex/daemon/vm_adapters.go", Symbol: "JetStreamManager.WriteStoppedInstance", Inv: "INV-05"},
 	{File: "spinifex/daemon/vm_adapters.go", Symbol: "JetStreamManager.LoadStoppedInstance", Inv: "INV-05"},
@@ -56,8 +53,6 @@ var allowlist = []allowance{
 	{File: "spinifex/daemon/daemon_handlers_image.go", Symbol: "JetStreamManager.LoadStoppedInstance", Inv: "INV-08"},
 	{File: "spinifex/daemon/daemon_handlers_image.go", Symbol: "JetStreamManager.UpdateStoppedInstance", Inv: "INV-08"},
 
-	{File: "spinifex/daemon/daemon_mgmt_ip.go", Symbol: "daemon.JetStreamManager", Inv: "INV-09"},
-
 	{File: "spinifex/daemon/instance_recovery.go", Symbol: "vm.InstanceRecord", Inv: "INV-10"},
 	{File: "spinifex/daemon/instance_recovery.go", Symbol: "JetStreamManager.ListInstanceRecords", Inv: "INV-10"},
 	{File: "spinifex/daemon/instance_recovery.go", Symbol: "JetStreamManager.ClaimRecoverableInstance", Inv: "INV-10"},
@@ -76,7 +71,6 @@ var allowlist = []allowance{
 	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.LocalState", Inv: "INV-13"},
 	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.LocalStatePath", Inv: "INV-13"},
 	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.ReadLocalState", Inv: "INV-13"},
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.NewJetStreamManager", Inv: "INV-13"},
 	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.InstanceStateBucket", Inv: "INV-13"},
 	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "JetStreamManager.InitKVBucket", Inv: "INV-13"},
 	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "vm.InstanceRecord", Inv: "INV-13"},
@@ -96,6 +90,4 @@ var allowlist = []allowance{
 	{File: "spinifex/runtime/compute/cache/cache.go", Symbol: "vm.VMFromRecord", Inv: "INV-17"},
 
 	{File: "spinifex/domains/admission/quota/records.go", Symbol: "vm.InstanceRecord", Inv: "INV-18"},
-
-	{File: "spinifex/operator/cli/cluster.go", Symbol: "daemon.NewJetStreamManager", Inv: "INV-19"},
 }

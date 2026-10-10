@@ -535,7 +535,7 @@ Line numbers are the first use in each file.
 | INV-06 | `runtime/compute/vm/{migrate,shutdown,orphan_qemu_reaper,teardown_reaper}.go` | `vm` | daemon | Uses the `StateStore` port for stopped and terminated writes, terminated listing, update and delete. |
 | INV-07 | `domains/ec2/instance/service_impl.go:511`–`:2847` | `ec2/instance` | daemon | Stopped and terminated read, update, claim, write and delete through the `StateStore`-shaped port. |
 | INV-08 | `daemon/daemon_handlers_image.go:35`, `:89` | `daemon` | daemon | Loads and updates a stopped instance for image creation. |
-| INV-09 | `daemon/daemon_mgmt_ip.go:18` | `daemon` | daemon | Names `JetStreamManager` for cluster-state management-IP allocation; no instance key, recorded because the type is frozen. |
+| INV-09 | `daemon/daemon_mgmt_ip.go:18` | `daemon` | daemon | Cluster-state consumer outside the ratchet: names `JetStreamManager` only for management-IP allocation in the cluster-state bucket and touches no instance key. |
 | INV-10 | `daemon/instance_recovery.go:85`–`:546` | `daemon` | daemon | Lists and decodes records, claims, releases and abandons recovery, reloads a record. Typed CAS writes. |
 | INV-11 | `daemon/dns_reconcile.go:38`, `:48`, `:179` | `daemon` | daemon | Constructs keys from the prefix, names the bucket, lists records for DNS. |
 | INV-12 | `daemon/eni_orphan_reaper.go:26`–`:27` | `daemon` | daemon | Lists live and terminated records to find orphaned ENIs. |
@@ -545,7 +545,7 @@ Line numbers are the first use in each file.
 | INV-16 | `runtime/roles/awsgw/awsgw.go:573`–`:633` | `awsgw` | gateway | Opens the bucket by name with no migration hook for the instance cache and the quota reconcile loop. |
 | INV-17 | `runtime/compute/cache/cache.go:97`, `:248` | `instancecache` | gateway | Watches `i.` records into a `vm.VM` map through `kvstore.Store[vm.InstanceRecord]`. |
 | INV-18 | `domains/admission/quota/records.go:33` | `quota` | gateway | Snapshots records to count vCPUs. |
-| INV-19 | `operator/cli/cluster.go:170` | `operator/cli` | operator CLI | Constructs a `JetStreamManager` for the cluster-state shutdown marker; touches no instance key. |
+| INV-19 | `operator/cli/cluster.go:170` | `operator/cli` | operator CLI | Cluster-state consumer outside the ratchet: constructs a `JetStreamManager` only for the cluster-state shutdown marker and touches no instance key. |
 
 Test packages are excluded; `daemon/instance_records_vpcd_test.go` pins INV-15's duplicated literals to the daemon constants.
 
@@ -578,6 +578,15 @@ Recovery on return (`daemon/instance_state_recovery_baseline_internal_test.go`),
 
 The first two cases are the ones ADR-0007 S5 rules out: a node republishes local state as authority without the canonical record.
 
+Owner disposition of the KV-unavailable result:
+
+- Correct: while canonical KV is unavailable, the daemon does not launch, recreate, migrate or report a healthy new realization.
+- Permitted later: reattaching only to a demonstrably already-running local guest covered by a valid local journal assignment and fence.
+- Not acceptable as the final model: keeping an in-memory record as `running` when no live process has been confirmed; the later recovery slice must make that an explicit unconfirmed or degraded state.
+
+The safety goal is that a partition does not kill an existing workload, while a daemon restart plus a stale file cannot resurrect one.
+`TestCurrentBehaviour_RestoreWithKVUnavailableLeavesLocalUnlaunched` stays as the current-behaviour pin until that slice changes it.
+
 ### Generation preservation
 
 `Generation` and `ObservedGeneration` are the only generation fields; KV entry revisions are used for CAS and never persisted in the record.
@@ -601,10 +610,12 @@ Unknown fields are a field a newer binary adds.
 
 ### Regression ratchet
 
-`architecture/instancestate` parses every non-test production file with `go/parser` and fails on any new use of the daemon's instance-state bucket, key and local-file identifiers, `JetStreamManager` and its constructor, `vm.InstanceRecord`, `InstanceSpec`, `InstanceStatus`, `VMFromRecord` and `VM.Record()`, the `JetStreamManager` instance-state methods, or the bucket and file names as string literals.
-`TestADR0007_S6_NoNewRawInstanceStateConsumers` holds 73 allow-listed file and symbol pairs, each citing an inventory item above; the list only shrinks, a stale entry fails, and a walk that finds too little fails rather than passing vacuously.
-`TestADR0007_S6_RatchetDetectsFaults` and `TestADR0007_S6_RatchetSeesBareIdentifiersInOwnerPackages` inject synthetic sources to prove the matcher detects each kind of use and ignores declarations.
+`architecture/instancestate` parses every non-test production file with `go/parser` and fails on any new use of the daemon's instance-state bucket, key and local-file identifiers, `vm.InstanceRecord`, `InstanceSpec`, `InstanceStatus`, `VMFromRecord` and `VM.Record()`, the `JetStreamManager` instance-state methods (instance and terminated record access, the running-set projection, `LoadState`, and `InitKVBucket` and `InitTerminatedInstanceBucket`, which open the instance buckets), or the bucket and file names as string literals.
+The `JetStreamManager` type and `NewJetStreamManager` are not matched, because the manager also serves cluster state; a cluster-state-only consumer such as INV-09 or INV-19 is not instance-state debt and is not flagged.
+`TestADR0007_S6_NoNewRawInstanceStateConsumers` holds 67 allow-listed file and symbol pairs, each citing an inventory item above; the list only shrinks, a stale entry fails, and a walk that finds too little fails rather than passing vacuously.
+`TestADR0007_S6_RatchetDetectsFaults` and `TestADR0007_S6_RatchetSeesBareIdentifiersInOwnerPackages` inject synthetic sources to prove the matcher detects each kind of use, ignores declarations, and does not flag the manager type, its constructor or a cluster-state method.
 Adding a `daemon.LocalStatePath` use to `runtime/roles/awsgw` and renaming one allowlist file were each confirmed to fail the gate.
+After narrowing, a `runtime/roles/awsgw` file constructing a manager and calling `InitClusterStateBucket` passed, the same file calling `WriteRunningSet` failed `NoUnrecordedConsumer`, and restoring the removed INV-19 entry failed `Allowlist_NoStaleEntries`.
 
 ## Close-out status
 

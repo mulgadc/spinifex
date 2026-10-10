@@ -117,6 +117,9 @@ func use(h holder, raw []byte, jsManager *spxd.JetStreamManager, other interface
 	_, _, _ = jsManager.LoadState("node")
 	other.LoadState()
 	_ = "spinifex-instance-state"
+	cluster, _ := spxd.NewJetStreamManager(nil)
+	_ = cluster.InitClusterStateBucket()
+	_ = cluster.WriteRunningSet("node", nil)
 }
 `
 
@@ -139,9 +142,10 @@ func TestADR0007_S6_RatchetDetectsFaults(t *testing.T) {
 	s := parseFault(t, rel, "widget")
 
 	want := []string{
-		"daemon.InstanceStateBucket", "daemon.LocalStatePath", "daemon.JetStreamManager",
+		"daemon.InstanceStateBucket", "daemon.LocalStatePath",
 		"vm.InstanceRecord", "vm.VMFromRecord", "VM.Record()",
 		"JetStreamManager.LoadInstanceRecord", "JetStreamManager.LoadState",
+		"JetStreamManager.WriteRunningSet",
 		`literal "spinifex-instance-state"`,
 	}
 	for _, sym := range want {
@@ -150,7 +154,7 @@ func TestADR0007_S6_RatchetDetectsFaults(t *testing.T) {
 		}
 	}
 	if len(s) != len(want) {
-		t.Errorf("want exactly %d uses (field names, method declarations and an unrelated LoadState excluded), got %v",
+		t.Errorf("want exactly %d uses (the manager type, its constructor, cluster-state methods, field names, method declarations and an unrelated LoadState excluded), got %v",
 			len(want), s.sorted())
 	}
 

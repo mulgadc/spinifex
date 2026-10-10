@@ -117,9 +117,9 @@ func TestCurrentBehaviour_RestoreTerminalCanonicalRecordRetiresLocal(t *testing.
 	assert.NotNil(t, terminated, "CURRENT: migrated to the terminated bucket")
 }
 
-// Current behaviour: with KV unreachable, restore stops after the failed
-// cluster read. Local instances stay in memory as the file left them, are
-// neither reset nor relaunched, and the local file is rewritten unchanged.
+// Current behaviour: with KV unreachable, restore stops after the failed read
+// and launches nothing, but a local instance stays in memory as running with no
+// live process confirmed; the target makes that an explicit unconfirmed state.
 func TestCurrentBehaviour_RestoreWithKVUnavailableLeavesLocalUnlaunched(t *testing.T) {
 	d := createDaemonWithJetStream(t)
 	d.vmMgr.Insert(&vm.VM{ID: "i-kvdown", Status: vm.StateRunning, InstanceType: "t3.micro"})

@@ -326,6 +326,8 @@ while the branch is in flight; they do not describe the umbrella repository's
 | `105048594` | Subjects and payload types in `domains/network/subscribers`, `domains/ec2/{vpc,eip,natgw}`, `handlers/eks` and `contracts/ec2/v1/igw.go` | `contracts/network/v1` | Producers and the subscribers use one vocabulary; the duplicates are deleted, including the IGW attach/detach declarations in `contracts/ec2/v1` (network is the sole owner). Wire bytes are unchanged: `networkv1.SecurityGroupRule` carries the publisher's nine fields with its tags (the subscriber-side golden now pins the `"rule_id"` the publisher always sent), and both NAT-gateway publisher shapes marshal as before. `domains/ec2/vpc.SGRule` stays because it is EC2's persisted rule record, converted at the publish boundary. |
 | `3aa82953e`, `46f448963` | `spinifex/utils/vpcd_event.go` and the raw `vpc.*` publishes in EC2, ELBv2, EKS, the daemon and `domains/network/systemvpc` | `spinifex/domains/network/projection` | A typed projection client with one method per operation and delivery mode; callers pass no subject strings. Timeouts (5s, 45s NAT add, 15s NAT delete), the NAT add barrier, the ErrNoResponders retry (3 attempts, 500ms) and non-fatal teardown are unchanged, and the inconsistent NAT paths keep their current mode under honest names (recorded below). The IGW, NAT-gateway, IGW-route and egress-gate publishes previously logged their own `WarnContext` messages with `subnetId`; they now log the shared publish warning without request context or subnet, a diagnostic loss only. |
 | `fd88e8ceb` | `spinifex/utils/encryption.go` (`LoadViperblockMasterKey`) | `spinifex/domains/ec2/ebs/encryption` (`Enabled`) | EC2's AWS-visible EBS encryption posture, a temporary reading of the provider's key-file setting rather than an encryption implementation. Cache, error text and each caller's handling are unchanged (image reports unencrypted on a load failure; instance and volume return InternalError). `utils/` is deleted; the layering test retires `utils` and `services` and fails if either regains files. The S7 subject-prefix scan now walks `contracts/network`, where the `vpc.*` literals live; after the projection move it had silently stopped listing them. Full preflight (excluding the recorded Go 1.27.0 advisories) and `manifest-check` passed for each commit. |
+| `38fbd1499` | (characterisation only) | — | ADR-0007 slice 0: pins the local file's exact bytes and schema failure modes, the instance bucket configuration, the `i.<id>` key and wire form, the bucket version gate, generation preservation across every KV writer and the VM conversion, and what a returning node does with a missing, foreign, terminal or unreadable canonical record. Current behaviour, not the ADR target; see the slice 0 section below. |
+| `6fa09d336` | (governance only) | — | ADR-0007 slice 0 ratchet at `architecture/instancestate`: freezes the 73 direct production uses of raw instance state found by the inventory below. |
 
 The EC2 contract row is intentionally different from the directory moves: it creates
 a compatibility boundary. `ec2.cmd.*` retains its deployed one-token NATS
@@ -495,6 +497,114 @@ Findings to resolve before extraction:
 
 - `dev` is merged in (`9e77181f2`), including `ModifyDBSubnetGroup` (#1152); the subnet-group inventory is superseded by its lifecycle contract, `docs/package-boundary/rds-db-subnet-group-lifecycle.md`.
 - The EKS control-plane template persists the OIDC signing key and k3s join token; see the `handlers/eks` potential security risk in the dependency-rule debt.
+
+## ADR-0007 instance-state inventory (slice 0)
+
+This is the baseline for ADR-0007 (instance state authority and partition recovery), produced by reading the code at `cf9e8ce0d` and pinned by tests in `38fbd1499` and `6fa09d336`.
+Nothing here conforms to ADR-0007 yet.
+Every behaviour below is current behaviour, recorded so later slices can show what they change; none of it is a target.
+`vpcd` stays blocked: it still reads the daemon's local file and opens the instance bucket through the daemon's manager (INV-13), and no slice has given it a narrower capability.
+
+Shared KV is primary for accepted lifecycle intent and assignment.
+The local file is a durable execution journal for an already-assigned local guest and is not authority to create or reassign resources.
+The characterisation below shows several places where today's code treats it as more than that.
+
+### Persisted state
+
+| Item | Location | Shape |
+|---|---|---|
+| Local file | `daemon/local_state.go` | `<DataDir>/state/instance-state.json` (default `DataDir` `/var/lib/spinifex`), mode `0640`, parent `0750`, written to a temp file then renamed. Body is `{"schema_version":1,"vms":{<id>: vm.VM}}`, compact JSON, no trailing newline, the whole `vm.VM` per instance, no generation of any kind. |
+| Live bucket | `daemon/jetstream.go:130` | `spinifex-instance-state`, history 1, no TTL, `RecreateIfMissing`, version stamp 5 via `kvutil` on open through `migrate.DefaultRegistry.RunKV`. Created at one replica and raised to cluster size by `kvutil.RaiseAllBucketReplicas` (`daemon/daemon.go:2536`). |
+| Terminated bucket | `daemon/jetstream.go:146` | `spinifex-terminated-instances`, history 1, TTL 1 hour, version stamp 3, same open hook. |
+| Record keys | `daemon/instance_records.go` | `i.<id>` holds a `vm.InstanceRecord` (`metadata`, `spec`, `status`) in both buckets; the live bucket also holds node presence and ownership keys and the legacy per-node and stopped prefixes. Records carry no per-record schema version. |
+| KV migrations | `daemon/instance_records_migrate.go` | Live 1→2 stopped instances to per-resource keys, 2→3 running sets to per-resource keys, 3→4 `i/<id>` to `i.<id>`, 4→5 node presence and ownership out of the running-set blob; terminated 1→2 per-resource keys, 2→3 re-key. `operator/upgrade` touches no instance state; its `VERSIONS.md` points KV migrations at the owning package. |
+| Record type | `runtime/compute/vm/record.go` | `vm.InstanceRecord` with `resource.Metadata` (`Generation`, `ObservedGeneration`, `UID`, `Region`, `OwnerRefs`, `Finalizers`, `Tags`, `DeletionTimestamp`); `VM.Record()` and `VMFromRecord` convert to and from `vm.VM`. |
+
+### Consumer inventory
+
+The owner files (`daemon/{instance_membership,instance_records,instance_records_migrate,instance_running_set,jetstream,local_state}.go` and `runtime/compute/vm/record.go`) define the state and are not listed as consumers.
+Line numbers are the first use in each file.
+
+| Item | Location | Package | Process | Access |
+|---|---|---|---|---|
+| INV-01 | `daemon/daemon.go:2686`, `:2889`, `:2912`, `:2922` | `daemon` | daemon | Reads the local file at boot (`LoadState`) and rewrites it whole in `persistState`, the single path every state change reaches, before the KV write and regardless of its outcome. |
+| INV-02 | `daemon/daemon.go:221`, `:2485`–`:2495` | `daemon` | daemon | Constructs the manager and opens both buckets, which runs the version gate and migrations. |
+| INV-03 | `daemon/daemon.go:2936`–`:2937`, `daemon/instance_record_repair.go:65` | `daemon` | daemon | Writes the node marker and projects the in-memory running set to `i.<id>` records (whole-record write from `vm.VM`). |
+| INV-04 | `daemon/daemon.go:2423` | `daemon` | daemon | Lists terminated instances (decodes to `vm.VM`). |
+| INV-05 | `daemon/vm_adapters.go:32`–`:91` | `daemon` | daemon | Adapts the manager into `vm.StateStore`: `LoadState`, stopped and terminated read, write, update, claim, list and delete, all through `vm.VM`. |
+| INV-06 | `runtime/compute/vm/{migrate,shutdown,orphan_qemu_reaper,teardown_reaper}.go` | `vm` | daemon | Uses the `StateStore` port for stopped and terminated writes, terminated listing, update and delete. |
+| INV-07 | `domains/ec2/instance/service_impl.go:511`–`:2847` | `ec2/instance` | daemon | Stopped and terminated read, update, claim, write and delete through the `StateStore`-shaped port. |
+| INV-08 | `daemon/daemon_handlers_image.go:35`, `:89` | `daemon` | daemon | Loads and updates a stopped instance for image creation. |
+| INV-09 | `daemon/daemon_mgmt_ip.go:18` | `daemon` | daemon | Names `JetStreamManager` for cluster-state management-IP allocation; no instance key, recorded because the type is frozen. |
+| INV-10 | `daemon/instance_recovery.go:85`–`:546` | `daemon` | daemon | Lists and decodes records, claims, releases and abandons recovery, reloads a record. Typed CAS writes. |
+| INV-11 | `daemon/dns_reconcile.go:38`, `:48`, `:179` | `daemon` | daemon | Constructs keys from the prefix, names the bucket, lists records for DNS. |
+| INV-12 | `daemon/eni_orphan_reaper.go:26`–`:27` | `daemon` | daemon | Lists live and terminated records to find orphaned ENIs. |
+| INV-13 | `vpcd/imds_instance_state.go:24`–`:94` | `vpcd` | vpcd | Reads and caches the daemon's local file by path and mtime; constructs a `JetStreamManager` and calls `InitKVBucket`, which runs the version gate and the instance migrations; decodes records. |
+| INV-14 | `domains/ec2/guestmetadata/instance_lookup.go:60`, `:120` | `guestmetadata` | vpcd (IMDS) | Loads a record through a `LoadInstanceRecord` interface satisfied by the manager and converts it to `vm.VM`. |
+| INV-15 | `domains/network/reconcile/intent.go:48`, `:444`–`:474` | `network/reconcile` | vpcd | Duplicates the bucket name and prefix as literals, opens the bucket by name with no gate, gets `i.<id>` and decodes `vm.InstanceRecord`. |
+| INV-16 | `runtime/roles/awsgw/awsgw.go:573`–`:633` | `awsgw` | gateway | Opens the bucket by name with no migration hook for the instance cache and the quota reconcile loop. |
+| INV-17 | `runtime/compute/cache/cache.go:97`, `:248` | `instancecache` | gateway | Watches `i.` records into a `vm.VM` map through `kvstore.Store[vm.InstanceRecord]`. |
+| INV-18 | `domains/admission/quota/records.go:33` | `quota` | gateway | Snapshots records to count vCPUs. |
+| INV-19 | `operator/cli/cluster.go:170` | `operator/cli` | operator CLI | Constructs a `JetStreamManager` for the cluster-state shutdown marker; touches no instance key. |
+
+Test packages are excluded; `daemon/instance_records_vpcd_test.go` pins INV-15's duplicated literals to the daemon constants.
+
+### Characterised behaviour
+
+Local file (`daemon/instance_state_baseline_test.go`):
+
+- `TestCurrentBehaviour_LocalStateFileExactBytes` pins the exact bytes.
+- `TestCurrentBehaviour_LocalStateSchemaVersionFailures`: a missing or older `schema_version` reads as `unknown schema_version 0 (expected 1)`, a newer one as `unknown schema_version 2 (expected 1)`, a wrong type or truncated body as `parse local state`; every case returns no state.
+  `Daemon.LoadState` turns any of these into a boot failure (`TestDaemonLoadState_CorruptFile`).
+- `TestCurrentBehaviour_LocalStateUnknownFieldsAreDroppedOnRewrite`: a file at the same version with fields this binary does not know is accepted, and those fields are gone after the next rewrite.
+- Already covered and relied on: `daemon/local_state_test.go` (`TestWriteLocalState_GroupReadable`, `_AtomicReplace`, `_NoTmpLeftBehind`, `_MkdirParent`, `_Failures`, `TestReadLocalState_Missing`, `_CorruptJSON`, `_UnknownSchema`, `_Unreadable`) and `daemon/disconnect_test.go` (`TestDaemonWriteState_LocalFile`, `TestDaemonLoadState_*`).
+
+KV (`daemon/instance_state_baseline_test.go`):
+
+- `TestCurrentBehaviour_InstanceBucketConfiguration` pins names, history, TTL and version stamps.
+- `TestCurrentBehaviour_RecordKeyAndWireForm` pins the `i.<id>` key and the exact record bytes; the running-set writer stamps the node and AZ it was given over whatever the instance carried.
+- `TestCurrentBehaviour_BucketVersionGate`: a daemon-configured open of a bucket stamped ahead fails with `migrate.SchemaAheadError`, a handle already open keeps writing, and a reader configured without the migration hook (the gateway's form) opens and decodes regardless.
+- Already covered and relied on: `daemon/instance_records_test.go` (round trip, absent is nil, disjoint prefixes, `TestWriteInstanceRecord_ReplacesWholesale`, `TestUpdateInstanceRecord_*`), `daemon/instance_claim_test.go` (claim, release and abandon CAS), `daemon/instance_running_set_test.go`, `daemon/instance_records_transition_test.go` (every migration step), `daemon/jetstream_test.go` (`TestJetStreamManager_InitBuckets_WritesVersion`, `_InstanceRecordKVErrors`), `foundation/state/kvutil/kvutil_test.go` and `foundation/state/migrate/kv_test.go`.
+
+Recovery on return (`daemon/instance_state_recovery_baseline_internal_test.go`), with the local file reloaded and `restoreInstances` run:
+
+| Case | Current outcome | Test |
+|---|---|---|
+| Canonical key missing | Local instance kept; the next state write recreates the record from the local file, owned by this node. | `TestCurrentBehaviour_RestoreMissingCanonicalKeyRepublishesFromLocal` |
+| Live key missing, terminated record present | Terminated bucket not consulted; the instance is revived from the local file and republished as live and non-terminal. | `TestCurrentBehaviour_RestoreIgnoresTerminatedBucket` |
+| Record owned by another node | Local copy dropped and removed from the rewritten file; the other node's record is left untouched. | `TestCurrentBehaviour_RestoreRecordOwnedElsewhereDropsLocal` |
+| Terminal record owned by this node | The canonical record wins the merge and the instance is migrated to the terminated bucket, not restarted. | `TestCurrentBehaviour_RestoreTerminalCanonicalRecordRetiresLocal` |
+| KV unavailable | Restore stops after the failed cluster read; local instances stay as the file left them, are not reset or relaunched, and the file is rewritten unchanged. | `TestCurrentBehaviour_RestoreWithKVUnavailableLeavesLocalUnlaunched` |
+
+The first two cases are the ones ADR-0007 S5 rules out: a node republishes local state as authority without the canonical record.
+
+### Generation preservation
+
+`Generation` and `ObservedGeneration` are the only generation fields; KV entry revisions are used for CAS and never persisted in the record.
+Unknown fields are a field a newer binary adds.
+
+| Path | Generation and ObservedGeneration | Unknown fields | Test |
+|---|---|---|---|
+| `UpdateInstanceRecord` | Preserved | Lost | `TestCurrentBehaviour_GenerationAcrossKVWriters` |
+| `LoadInstanceRecord` then `WriteInstanceRecord` | Preserved | Lost | same |
+| `ClaimRecoverableInstance`, `AbandonRecovery` | Preserved | Lost | same |
+| `ClaimStoppedInstance` | Preserved | Lost | same |
+| `UpdateTerminatedInstanceRecord` | Preserved | Lost | same |
+| `WriteRunningSet` | Lost | Lost | same |
+| `UpdateStoppedInstance`, `WriteStoppedInstance` | Lost | Lost | same |
+| `UpdateTerminatedInstance`, `WriteTerminatedInstance` | Lost | Lost | same |
+| KV → `LoadState` → running set → recovery merge | Lost | Lost | `TestCurrentBehaviour_LoadStateDropsGeneration` |
+| Record → `VMFromRecord` → `Record()` | Lost, with `UID`, `Region`, `OwnerRefs`, `Finalizers` and `Metadata.Tags`; `Name`, `AccountID` and `DeletionTimestamp` survive | Lost | `runtime/compute/vm/record_generation_test.go` `TestCurrentBehaviour_RecordThroughVMLosesGenerationAndBookkeeping` |
+| `vm.VM` → `Record()` | Never written | n/a | `TestCurrentBehaviour_RecordFromVMHasNoGenerationKeys` |
+| Typed record decode then encode | Preserved | Lost at every level | `TestCurrentBehaviour_TypedRecordRoundTripDropsUnknownFields` |
+| `vm.VM` → local file → `vm.VM` | Not represented | Lost | `TestCurrentBehaviour_LocalStateFileExactBytes`, `TestCurrentBehaviour_LocalStateUnknownFieldsAreDroppedOnRewrite` |
+
+### Regression ratchet
+
+`architecture/instancestate` parses every non-test production file with `go/parser` and fails on any new use of the daemon's instance-state bucket, key and local-file identifiers, `JetStreamManager` and its constructor, `vm.InstanceRecord`, `InstanceSpec`, `InstanceStatus`, `VMFromRecord` and `VM.Record()`, the `JetStreamManager` instance-state methods, or the bucket and file names as string literals.
+`TestADR0007_S6_NoNewRawInstanceStateConsumers` holds 73 allow-listed file and symbol pairs, each citing an inventory item above; the list only shrinks, a stale entry fails, and a walk that finds too little fails rather than passing vacuously.
+`TestADR0007_S6_RatchetDetectsFaults` and `TestADR0007_S6_RatchetSeesBareIdentifiersInOwnerPackages` inject synthetic sources to prove the matcher detects each kind of use and ignores declarations.
+Adding a `daemon.LocalStatePath` use to `runtime/roles/awsgw` and renaming one allowlist file were each confirmed to fail the gate.
 
 ## Close-out status
 

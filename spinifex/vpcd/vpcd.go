@@ -184,6 +184,12 @@ type Config struct {
 	// EgressBlockExemptVPCs are VPC IDs the WAN egress block skips — the
 	// operator workaround for a tenant with a legitimate need.
 	EgressBlockExemptVPCs []string
+	// LocalVMs reads this node's on-disk VM state for IMDS's local-first
+	// lookup. The composition root wires domains/ec2/instance/state's reader.
+	LocalVMs guestmetadata.LocalStateReader
+	// OpenInstanceRecords opens the shared instance record space over vpcd's
+	// NATS connection. Required: vpcd fails to start without it.
+	OpenInstanceRecords func(ctx context.Context, nc *nats.Conn) (guestmetadata.RecordLoader, error)
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -580,10 +586,13 @@ func launchService(cfg *Config) error {
 		}
 		return live, nil
 	}
-	// vpcd is the composition root for both planes IMDS straddles: it wires the
-	// on-disk VM state reader and the shared record space, so domains/ec2/guestmetadata
-	// itself never needs to import the compute plane beyond vm.VM.
-	records, err := newInstanceRecordLoader(ctx, nc)
+	// vpcd is the composition root for both planes IMDS straddles:
+	// domains/ec2/instance/state supplies the on-disk VM state reader and the
+	// record-space opener, so guestmetadata never imports the compute plane.
+	if cfg.OpenInstanceRecords == nil {
+		return fmt.Errorf("open instance record space: no instance record opener configured")
+	}
+	records, err := cfg.OpenInstanceRecords(ctx, nc)
 	if err != nil {
 		return fmt.Errorf("open instance record space: %w", err)
 	}
@@ -593,7 +602,7 @@ func launchService(cfg *Config) error {
 		guestmetadata.NewNATSSTSAssumer(nc),
 		guestmetadata.NewNATSProfileLookup(nc),
 		guestmetadata.NewNATSPublicKeyLookup(nc),
-		newLocalVMStateReader(cfg.DataDir),
+		cfg.LocalVMs,
 		records,
 		listTaps,
 		cfg.NorthstarBaseDomain,

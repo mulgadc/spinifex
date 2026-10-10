@@ -98,7 +98,7 @@ type IMDSServiceImpl struct {
 // nil, degrading that source to a miss rather than failing IMDS to start —
 // the caller (vpcd) owns their construction and availability.
 // ctx bounds the bucket opens only; each served request carries its own.
-func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState localStateReader, records recordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
+func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer, iamSvc profileLookup, pubKeys publicKeyLookup, localState LocalStateReader, records RecordLoader, listTaps listTapsFunc, baseDomain, internalDomain, servicesDomain, caCertPath string, resolverIPs []string, bind HostBindAddrs) (*IMDSServiceImpl, error) {
 	if bind.Meta == "" || bind.DNS == "" {
 		return nil, errors.New("IMDS host bind addresses required (use NewHostBindAddrs)")
 	}

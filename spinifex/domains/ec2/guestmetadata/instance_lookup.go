@@ -46,17 +46,17 @@ func retryGather[T any](ctx context.Context, label, instanceID string, fn func()
 	return out, err
 }
 
-// localStateReader reads this node's on-disk VM state. Narrowed to what IMDS
+// LocalStateReader reads this node's on-disk VM state. Narrowed to what IMDS
 // consumes: it does not know the state lives in a file, so caching and
 // invalidation are the implementation's business, not this package's.
-type localStateReader interface {
+type LocalStateReader interface {
 	LocalVM(instanceID string) (*vm.VM, error)
 }
 
-// recordLoader is the shared instance record space accessor the fallback
+// RecordLoader is the shared instance record space accessor the fallback
 // path needs. Satisfied by *daemon.JetStreamManager; narrowed to an interface
 // so the fallback can be exercised without a live JetStream connection.
-type recordLoader interface {
+type RecordLoader interface {
 	LoadInstanceRecord(instanceID string) (*vm.InstanceRecord, error)
 }
 
@@ -65,8 +65,8 @@ type recordLoader interface {
 // VM state is the authoritative, instant answer. It falls back to a direct
 // read of the shared instance record space and never fans out over NATS.
 type localInstanceLookup struct {
-	local   localStateReader // nil-safe: local hit is skipped without it
-	records recordLoader     // nil-safe: fallback is skipped without it
+	local   LocalStateReader // nil-safe: local hit is skipped without it
+	records RecordLoader     // nil-safe: fallback is skipped without it
 }
 
 var _ instanceLookup = (*localInstanceLookup)(nil)

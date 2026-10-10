@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/otelsetup"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/state"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
@@ -799,6 +800,8 @@ var vpcdStartCmd = &cobra.Command{
 			EgressBlockExemptVPCs:   clusterConfig.Network.EgressBlockExemptVPCs,
 			IMDSHostMetaIP:          clusterConfig.Network.IMDSHostMetaIP,
 			IMDSHostDNSIP:           clusterConfig.Network.IMDSHostDNSIP,
+			LocalVMs:                state.NewLocalVMReader(nodeConfig.DataDir),
+			OpenInstanceRecords:     state.OpenInstanceRecordLoader,
 		})
 		if err != nil {
 			return fmt.Errorf("create vpcd service: %w", err)

@@ -1,4 +1,4 @@
-package vpcd
+package state
 
 import (
 	"context"
@@ -8,16 +8,16 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
-// localVMStateReader adapts this node's on-disk instance state to IMDS's
-// local-first lookup. vpcd is the composition root for both the network and
-// compute planes IMDS straddles, so this adapter — not domains/ec2/guestmetadata — is
-// what knows the state lives in a daemon-owned file.
-type localVMStateReader struct {
+// LocalVMReader adapts a node's on-disk instance state to IMDS's
+// local-first lookup. The composition root wires it with that node's data
+// directory into vpcd's guestmetadata construction.
+type LocalVMReader struct {
 	dataDir string
 
 	// readState parses the local state file; overridable in tests to count
@@ -30,16 +30,17 @@ type localVMStateReader struct {
 	cached *daemon.LocalState
 }
 
-func newLocalVMStateReader(dataDir string) *localVMStateReader {
-	return &localVMStateReader{dataDir: dataDir}
+var _ guestmetadata.LocalStateReader = (*LocalVMReader)(nil)
+
+// NewLocalVMReader builds a reader over dataDir, this node's data directory.
+func NewLocalVMReader(dataDir string) *LocalVMReader {
+	return &LocalVMReader{dataDir: dataDir}
 }
 
 // LocalVM reads the instance straight off this node's on-disk VM state,
-// reusing the last parse while the file's mtime and size are unchanged. IMDS
-// serves concurrent requests across per-tap responders, so this is
-// mutex-guarded; a stat or parse failure clears the cache and returns the
-// error rather than serving a stale hit.
-func (r *localVMStateReader) LocalVM(instanceID string) (*vm.VM, error) {
+// reusing the last parse while mtime and size are unchanged; concurrent
+// callers are mutex-guarded, and a stat or parse failure clears the cache.
+func (r *LocalVMReader) LocalVM(instanceID string) (*vm.VM, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -74,18 +75,10 @@ func (r *localVMStateReader) LocalVM(instanceID string) (*vm.VM, error) {
 	return r.cached.VMS[instanceID], nil
 }
 
-// recordLoader mirrors domains/ec2/guestmetadata's own narrow instance-record accessor
-// interface, so a construction failure below returns a true nil interface
-// rather than a *daemon.JetStreamManager typed nil boxed into one.
-type recordLoader interface {
-	LoadInstanceRecord(instanceID string) (*vm.InstanceRecord, error)
-}
-
-// newInstanceRecordLoader opens the shared instance record space, retrying while
-// JetStream comes up. Failing here is fatal by design: without it an instance
-// this node does not hold locally resolves to nothing, and IMDS serves that as
-// "no such instance" — a guest that boots with no key and no error anywhere.
-func newInstanceRecordLoader(ctx context.Context, nc *nats.Conn) (recordLoader, error) {
+// OpenInstanceRecordLoader opens the shared instance record space, retrying
+// while JetStream comes up. A failure here is fatal by design: without it an
+// unresolved instance serves IMDS "no such instance" with no error anywhere.
+func OpenInstanceRecordLoader(ctx context.Context, nc *nats.Conn) (guestmetadata.RecordLoader, error) {
 	jsm, err := daemon.NewJetStreamManager(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream manager: %w", err)

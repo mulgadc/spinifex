@@ -1,12 +1,12 @@
-package vpcd_test
+package state_test
 
 import (
 	"os"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/daemon"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/state"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,30 +18,30 @@ func writeInstanceState(t *testing.T, dataDir string, vms map[string]*vm.VM) {
 	require.NoError(t, daemon.WriteLocalStateBytes(daemon.LocalStatePath(dataDir), data))
 }
 
-func TestLocalVMStateReader_MissingFileIsAMiss(t *testing.T) {
-	r := vpcd.NewLocalVMStateReaderForTest(t.TempDir(), nil)
+func TestLocalVMReader_MissingFileIsAMiss(t *testing.T) {
+	r := state.NewLocalVMReaderForTest(t.TempDir(), nil)
 	v, err := r.LocalVM("i-absent")
 	require.NoError(t, err)
 	assert.Nil(t, v)
 }
 
-func TestLocalVMStateReader_ResolvesAKnownInstance(t *testing.T) {
+func TestLocalVMReader_ResolvesAKnownInstance(t *testing.T) {
 	dataDir := t.TempDir()
 	writeInstanceState(t, dataDir, map[string]*vm.VM{"i-a": {ID: "i-a", InstanceType: "t3.micro"}})
 
-	r := vpcd.NewLocalVMStateReaderForTest(dataDir, nil)
+	r := state.NewLocalVMReaderForTest(dataDir, nil)
 	v, err := r.LocalVM("i-a")
 	require.NoError(t, err)
 	require.NotNil(t, v)
 	assert.Equal(t, "t3.micro", v.InstanceType)
 }
 
-func TestLocalVMStateReader_CachesParseUntilFileChanges(t *testing.T) {
+func TestLocalVMReader_CachesParseUntilFileChanges(t *testing.T) {
 	dataDir := t.TempDir()
 	writeInstanceState(t, dataDir, map[string]*vm.VM{"i-a": {ID: "i-a"}})
 
 	parses := 0
-	r := vpcd.NewLocalVMStateReaderForTest(dataDir, func(path string) (*daemon.LocalState, error) {
+	r := state.NewLocalVMReaderForTest(dataDir, func(path string) (*daemon.LocalState, error) {
 		parses++
 		return daemon.ReadLocalState(path)
 	})
@@ -58,15 +58,15 @@ func TestLocalVMStateReader_CachesParseUntilFileChanges(t *testing.T) {
 	assert.Equal(t, 2, parses, "a changed file must be re-parsed")
 }
 
-// TestLocalVMStateReader_CorruptFileDoesNotServeStaleCache proves a stat/parse
+// TestLocalVMReader_CorruptFileDoesNotServeStaleCache proves a stat/parse
 // failure clears the cache and surfaces the error rather than replaying the
 // last good parse — the caller (localInstanceLookup) treats this as a
 // fall-through to the record space, not a silently stale answer.
-func TestLocalVMStateReader_CorruptFileDoesNotServeStaleCache(t *testing.T) {
+func TestLocalVMReader_CorruptFileDoesNotServeStaleCache(t *testing.T) {
 	dataDir := t.TempDir()
 	writeInstanceState(t, dataDir, map[string]*vm.VM{"i-a": {ID: "i-a"}})
 
-	r := vpcd.NewLocalVMStateReaderForTest(dataDir, nil)
+	r := state.NewLocalVMReaderForTest(dataDir, nil)
 	v, err := r.LocalVM("i-a")
 	require.NoError(t, err)
 	require.NotNil(t, v, "warm the cache with a good parse")

@@ -68,12 +68,11 @@ var allowlist = []allowance{
 	{File: "spinifex/daemon/eni_orphan_reaper.go", Symbol: "JetStreamManager.ListInstanceRecords", Inv: "INV-12"},
 	{File: "spinifex/daemon/eni_orphan_reaper.go", Symbol: "JetStreamManager.ListTerminatedInstanceRecords", Inv: "INV-12"},
 
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.LocalState", Inv: "INV-13"},
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.LocalStatePath", Inv: "INV-13"},
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.ReadLocalState", Inv: "INV-13"},
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "daemon.InstanceStateBucket", Inv: "INV-13"},
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "JetStreamManager.InitKVBucket", Inv: "INV-13"},
-	{File: "spinifex/vpcd/imds_instance_state.go", Symbol: "vm.InstanceRecord", Inv: "INV-13"},
+	{File: "spinifex/domains/ec2/instance/state/imds_readers.go", Symbol: "daemon.LocalState", Inv: "INV-13"},
+	{File: "spinifex/domains/ec2/instance/state/imds_readers.go", Symbol: "daemon.LocalStatePath", Inv: "INV-13"},
+	{File: "spinifex/domains/ec2/instance/state/imds_readers.go", Symbol: "daemon.ReadLocalState", Inv: "INV-13"},
+	{File: "spinifex/domains/ec2/instance/state/imds_readers.go", Symbol: "daemon.InstanceStateBucket", Inv: "INV-13"},
+	{File: "spinifex/domains/ec2/instance/state/imds_readers.go", Symbol: "JetStreamManager.InitKVBucket", Inv: "INV-13"},
 
 	{File: "spinifex/domains/ec2/guestmetadata/instance_lookup.go", Symbol: "vm.InstanceRecord", Inv: "INV-14"},
 	{File: "spinifex/domains/ec2/guestmetadata/instance_lookup.go", Symbol: "vm.VMFromRecord", Inv: "INV-14"},

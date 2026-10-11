@@ -8,7 +8,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
-	"github.com/mulgadc/spinifex/spinifex/vpcd"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 	"github.com/stretchr/testify/assert"
 )
 

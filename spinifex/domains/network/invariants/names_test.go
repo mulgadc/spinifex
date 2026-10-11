@@ -247,7 +247,7 @@ func s4ScanRoots(t *testing.T) []string {
 	root := repoRoot(t)
 	return []string{
 		filepath.Join(root, "spinifex", "domains", "network"),
-		filepath.Join(root, "spinifex", "vpcd"),
+		filepath.Join(root, "spinifex", "runtime", "roles", "vpcd"),
 		filepath.Join(root, "spinifex", "daemon"),
 		filepath.Join(root, "spinifex", "handlers"),
 		filepath.Join(root, "spinifex", "runtime", "compute", "vm"),

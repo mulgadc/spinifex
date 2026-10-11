@@ -53,9 +53,9 @@ type LocalStateReader interface {
 	LocalVM(instanceID string) (*vm.VM, error)
 }
 
-// RecordLoader is the shared instance record space accessor the fallback
-// path needs. Satisfied by *daemon.JetStreamManager; narrowed to an interface
-// so the fallback can be exercised without a live JetStream connection.
+// RecordLoader is a consumer contract: the shared instance-record accessor
+// the fallback path needs, narrowed so the fallback can be tested without
+// JetStream. The composition root supplies the implementation.
 type RecordLoader interface {
 	LoadInstanceRecord(instanceID string) (*vm.InstanceRecord, error)
 }

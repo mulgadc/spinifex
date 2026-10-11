@@ -14,7 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifex"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/viperblockd"
-	"github.com/mulgadc/spinifex/spinifex/vpcd"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 )
 
 // Service is a Spinifex component the CLI can launch. Start runs it and

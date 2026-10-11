@@ -32,12 +32,11 @@ var frozenLegacyPackages = []string{
 	"handlers/rds",
 	"handlers/sts",
 	"lbagent",
-	"vpcd",
 }
 
 // retiredLegacyRoots were legacy roots whose every package has moved to its
 // ADR-0001 target; recreating one would reopen a closed migration row.
-var retiredLegacyRoots = []string{"services", "utils"}
+var retiredLegacyRoots = []string{"services", "utils", "vpcd"}
 
 // TestADR0001_LegacyRootsFrozen: the current-to-target map gives every legacy
 // root a destination, so none may gain a package and no retired root may return.

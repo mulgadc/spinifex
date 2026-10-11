@@ -22,8 +22,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/service"
-	"github.com/mulgadc/spinifex/spinifex/vpcd"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

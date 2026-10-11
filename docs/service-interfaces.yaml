@@ -241,7 +241,7 @@ services:
       - "s3.*"
 
   vpcd:
-    path: spinifex/vpcd
+    path: spinifex/runtime/roles/vpcd
     # OVN-backed VPC / subnet / SG / NAT / IGW data plane.
     subscribes:
       - "vpc.create"

@@ -169,5 +169,4 @@ var allowlist = []allowance{
 	{From: "operator/cli", To: "gateway/bedrock", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "handlers/eks", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "handlers/iam", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
-	{From: "operator/cli", To: "vpcd", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 }

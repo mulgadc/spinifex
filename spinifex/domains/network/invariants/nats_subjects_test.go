@@ -33,7 +33,7 @@ func TestS7_NATSSubjectsCarryAZPrefix(t *testing.T) {
 
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "domains", "network"),
-		filepath.Join(repoRoot(t), "spinifex", "vpcd"),
+		filepath.Join(repoRoot(t), "spinifex", "runtime", "roles", "vpcd"),
 		filepath.Join(repoRoot(t), "spinifex", "daemon"),
 		filepath.Join(repoRoot(t), "spinifex", "handlers"),
 		filepath.Join(repoRoot(t), "internal", "testkit"),

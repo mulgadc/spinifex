@@ -298,7 +298,7 @@ func TestSelect_RealManifest_Smoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load real manifest: %v", err)
 	}
-	res := Select(m, DefaultConfig(), []string{"spinifex/vpcd/topology.go"}, nil)
+	res := Select(m, DefaultConfig(), []string{"spinifex/runtime/roles/vpcd/topology.go"}, nil)
 	if len(res.Suites) == 0 {
 		t.Fatalf("real manifest vpcd change selected no suites")
 	}

@@ -43,7 +43,7 @@ type Fixture struct {
 // it. The server and client are torn down via t.Cleanup.
 //
 // The managers are the production types a live vpcd constructs
-// (spinifex/vpcd/vpcd.go), minus the host-dependent options: NAT runs in
+// (spinifex/runtime/roles/vpcd/vpcd.go), minus the host-dependent options: NAT runs in
 // distributed mode with no chassis list, IGW allocates link-local addresses
 // rather than drawing from a configured pool, and nothing seeds a nexthop MAC
 // or waits on an OpenFlow barrier. Those all reach for the host datapath,

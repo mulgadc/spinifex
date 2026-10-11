@@ -33,7 +33,7 @@ func TestS3_NATModeInitTimeConstant(t *testing.T) {
 
 	roots := []string{
 		filepath.Join(repoRoot(t), "spinifex", "domains", "network"),
-		filepath.Join(repoRoot(t), "spinifex", "vpcd"),
+		filepath.Join(repoRoot(t), "spinifex", "runtime", "roles", "vpcd"),
 		filepath.Join(repoRoot(t), "spinifex", "daemon"),
 	}
 	for _, root := range roots {
@@ -134,7 +134,7 @@ func isS3Exempt(path string) bool {
 		return true
 	case strings.HasSuffix(clean, "/network/policy/policy.go"):
 		return true
-	case strings.HasSuffix(clean, "/vpcd/vpcd.go"):
+	case strings.HasSuffix(clean, "/runtime/roles/vpcd/vpcd.go"):
 		return true
 	case strings.Contains(clean, "/network/invariants/"):
 		return true

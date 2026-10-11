@@ -11,5 +11,5 @@
 # see spinifex/domains/network/invariants/
 # mulga docs/development/proposals/region-local-architecture/0006-spinifex-network-layer-contract.md (proposal, not accepted)
 /spinifex/domains/network/          @joshsiv-mulga
-/spinifex/vpcd/             @joshsiv-mulga
+/spinifex/runtime/roles/vpcd/ @joshsiv-mulga
 /spinifex/domains/network/invariants/ @joshsiv-mulga

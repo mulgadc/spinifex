@@ -1,6 +1,6 @@
 // Package admin holds what non-operator code still needs from the former admin
-// package: default account identifiers and AWS credential generators (awaiting
-// IAM owners) and system-image promotion (awaiting domains/ec2/image).
+// package: default account identifiers and AWS credential generators,
+// awaiting IAM owners.
 package admin
 
 import (

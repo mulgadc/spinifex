@@ -32,6 +32,7 @@ import (
 	legacyadmin "github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -1122,7 +1123,7 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	bucket := node.Predastore.Bucket
 
 	// Read current metadata for the confirmation prompt.
-	meta, err := legacyadmin.GetAMIMetadata(store, bucket, imageID)
+	meta, err := ec2image.GetAMIMetadata(store, bucket, imageID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
 		os.Exit(1)
@@ -1133,7 +1134,7 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Image ID:       %s\n", imageID)
 	fmt.Printf("  Name:           %s\n", meta.Name)
 	fmt.Printf("  Current owner:  %s\n", meta.ImageOwnerAlias)
-	fmt.Printf("  New owner:      %s\n", legacyadmin.SystemOwnerAlias)
+	fmt.Printf("  New owner:      %s\n", ec2image.SystemOwnerAlias)
 	if !meta.CreationDate.IsZero() {
 		fmt.Printf("  Created:        %s\n", meta.CreationDate.UTC().Format("2006-01-02T15:04:05Z"))
 	}
@@ -1150,12 +1151,12 @@ func runimagesPromoteCmd(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	if _, err := legacyadmin.PromoteSystemImage(store, bucket, legacyadmin.PromoteImageOpts{ImageID: imageID}); err != nil {
+	if _, err := ec2image.PromoteSystemImage(store, bucket, ec2image.PromoteImageOpts{ImageID: imageID}); err != nil {
 		fmt.Fprintln(os.Stderr, "Promote failed:", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, legacyadmin.SystemOwnerAlias)
+	fmt.Printf("✅ Promoted %s to system image (owner: %s).\n", imageID, ec2image.SystemOwnerAlias)
 }
 
 func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
@@ -1180,7 +1181,7 @@ func runimagesDescribeCmd(cmd *cobra.Command, args []string) {
 		node.Predastore.SecretKey,
 	)
 
-	meta, err := legacyadmin.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
+	meta, err := ec2image.GetAMIMetadata(store, node.Predastore.Bucket, imageID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to describe AMI:", err)
 		os.Exit(1)

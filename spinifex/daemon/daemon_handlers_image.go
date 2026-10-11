@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -16,14 +15,14 @@ import (
 )
 
 func (d *Daemon) handleSpinifexPromoteImage(msg *nats.Msg) string {
-	promoteImage := func(_ context.Context, input *admin.PromoteImageOpts, _ string) (*admin.PromoteImageResult, error) {
+	promoteImage := func(_ context.Context, input *ec2image.PromoteImageOpts, _ string) (*ec2image.PromoteImageResult, error) {
 		store := objectstore.NewS3ObjectStoreFromConfig(
 			netaddr.DialTarget(d.config.Predastore.Host),
 			d.config.Predastore.Region,
 			d.config.Predastore.AccessKey,
 			d.config.Predastore.SecretKey,
 		)
-		return admin.PromoteSystemImage(store, d.config.Predastore.Bucket, *input)
+		return ec2image.PromoteSystemImage(store, d.config.Predastore.Bucket, *input)
 	}
 	return handleNATSRequest(d.node, promoteImage)(msg)
 }

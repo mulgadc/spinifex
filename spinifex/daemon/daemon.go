@@ -41,7 +41,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
@@ -2213,11 +2212,11 @@ func (d *Daemon) startCluster() error {
 	// (matches AWS: every account has a default VPC with IGW + default SG)
 	if d.vpcService != nil {
 		failedDefaultVPCs := map[string]struct{}{}
-		for _, accountID := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
+		for _, accountID := range []string{awsidentifiers.GlobalAccountID, awsidentifiers.DefaultAccountID()} {
 			// Pass bootstrap IDs for the admin account so EnsureDefaultVPC uses
 			// the same IDs that admin init wrote to [bootstrap] in spinifex.toml.
 			var opts []ec2vpc.BootstrapIDs
-			if accountID == admin.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.VpcId != "" {
+			if accountID == awsidentifiers.DefaultAccountID() && d.clusterConfig != nil && d.clusterConfig.Bootstrap.VpcId != "" {
 				opts = append(opts, ec2vpc.BootstrapIDs{
 					VpcId:    d.clusterConfig.Bootstrap.VpcId,
 					SubnetId: d.clusterConfig.Bootstrap.SubnetId,

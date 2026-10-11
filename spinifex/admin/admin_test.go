@@ -44,9 +44,3 @@ func TestGenerateAWSSecretKey_Uniqueness(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEqual(t, k1, k2)
 }
-
-func TestDefaultAccountID(t *testing.T) {
-	id := DefaultAccountID()
-	assert.Equal(t, "000000000001", id)
-	assert.Len(t, id, 12)
-}

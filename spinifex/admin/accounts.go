@@ -1,6 +1,5 @@
-// Package admin holds what non-operator code still needs from the former admin
-// package: default account identifiers and AWS credential generators,
-// awaiting IAM owners.
+// Package admin holds the AWS credential generators non-operator code still
+// needs from the former admin package, awaiting an IAM credential owner.
 package admin
 
 import (
@@ -9,17 +8,6 @@ import (
 	"fmt"
 	"math/big"
 )
-
-// DefaultAccountID returns the default admin account ID (000000000001).
-// This is the first human-facing account created during bootstrap.
-func DefaultAccountID() string {
-	return "000000000001"
-}
-
-// DefaultAccountName returns the default admin account name ("spinifex").
-func DefaultAccountName() string {
-	return "spinifex"
-}
 
 // GenerateAWSAccessKey generates an AWS-style access key (AKIA + 16 random alphanumeric chars).
 func GenerateAWSAccessKey() (string, error) {

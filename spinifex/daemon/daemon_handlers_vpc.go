@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/nats-io/nats.go"
 )
 
@@ -108,7 +107,7 @@ func (d *Daemon) handleEnsureDefaultVpc(msg *nats.Msg) string {
 // in skipAccounts are not touched — used to avoid attaching infrastructure to
 // a half-built VPC when EnsureDefaultVPC failed earlier in startup.
 func (d *Daemon) ensureDefaultVPCInfrastructure(skipAccounts map[string]struct{}) {
-	for _, accountID := range []string{awsidentifiers.GlobalAccountID, admin.DefaultAccountID()} {
+	for _, accountID := range []string{awsidentifiers.GlobalAccountID, awsidentifiers.DefaultAccountID()} {
 		if _, skip := skipAccounts[accountID]; skip {
 			continue
 		}

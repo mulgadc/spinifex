@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +41,7 @@ func TestSpinifex_GetVersion_Admin(t *testing.T) {
 		Commit:         "ae1deb5",
 		IAMService:     allowAllIAMService(),
 	}
-	w := spinifexRequest(t, gw, "GetVersion", admin.DefaultAccountID(), "admin")
+	w := spinifexRequest(t, gw, "GetVersion", awsidentifiers.DefaultAccountID(), "admin")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"version":"v0.5.0-43-gae1deb5"`)
 	assert.Contains(t, w.Body.String(), `"license":"open-source"`)
@@ -75,7 +75,7 @@ func TestSpinifex_GetVMs_NonAdmin_Denied(t *testing.T) {
 
 func TestSpinifex_InvalidAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	w := spinifexRequest(t, gw, "DoesNotExist", admin.DefaultAccountID(), "admin")
+	w := spinifexRequest(t, gw, "DoesNotExist", awsidentifiers.DefaultAccountID(), "admin")
 	require.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), awserrors.ErrorInvalidAction)
 }
@@ -84,7 +84,7 @@ func TestSpinifex_MissingAction(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
 	ctx := context.WithValue(req.Context(), ctxService, "spinifex")
-	ctx = context.WithValue(ctx, ctxAccountID, admin.DefaultAccountID())
+	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.DefaultAccountID())
 	ctx = context.WithValue(ctx, ctxIdentity, "admin")
 	req = req.WithContext(ctx)
 
@@ -115,7 +115,7 @@ func TestSpinifex_GetNodes_NoNATS(t *testing.T) {
 		NATSConn:       nil,
 		IAMService:     allowAllIAMService(),
 	}
-	w := spinifexRequest(t, gw, "GetNodes", admin.DefaultAccountID(), "admin")
+	w := spinifexRequest(t, gw, "GetNodes", awsidentifiers.DefaultAccountID(), "admin")
 	require.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), awserrors.ErrorServerInternal)
 }

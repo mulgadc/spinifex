@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	legacyadmin "github.com/mulgadc/spinifex/spinifex/admin"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/spf13/cobra"
 )
@@ -73,7 +73,7 @@ func runCertForceRenew(cmd *cobra.Command, _ []string) {
 	certArn, _ := cmd.Flags().GetString("arn")
 	accountID, _ := cmd.Flags().GetString("account")
 	if accountID == "" {
-		accountID = legacyadmin.DefaultAccountID()
+		accountID = awsidentifiers.DefaultAccountID()
 	}
 
 	_, nc, err := loadConfigAndConnect()

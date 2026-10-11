@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -261,7 +260,7 @@ func TestHandleEnsureDefaultVpc_ErrorEnvelopes(t *testing.T) {
 func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 	daemon, _ := createDefaultVPCTestDaemon(t)
 
-	adminAccount := admin.DefaultAccountID()
+	adminAccount := awsidentifiers.DefaultAccountID()
 	for _, accountID := range []string{awsidentifiers.GlobalAccountID, adminAccount} {
 		_, err := daemon.vpcService.EnsureDefaultVPC(accountID)
 		require.NoError(t, err)

@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/spf13/cobra"
@@ -46,7 +46,7 @@ func runAdminPrincipalCreate(cmd *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	accountID := admin.DefaultAccountID()
+	accountID := awsidentifiers.DefaultAccountID()
 
 	if _, err := svc.CreateUser(accountID, &iam.CreateUserInput{
 		UserName: aws.String(userName),
@@ -119,7 +119,7 @@ func runAdminPrincipalList(_ *cobra.Command, _ []string) error {
 	}
 	defer cleanup()
 
-	accountID := admin.DefaultAccountID()
+	accountID := awsidentifiers.DefaultAccountID()
 	users, err := svc.ListUsers(accountID, &iam.ListUsersInput{})
 	if err != nil {
 		return fmt.Errorf("list users: %w", err)
@@ -249,7 +249,7 @@ func runAdminPrincipalRevoke(_ *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	accountID := admin.DefaultAccountID()
+	accountID := awsidentifiers.DefaultAccountID()
 	if _, err := svc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(userName)}); err != nil {
 		return fmt.Errorf("no principal %q in account %s", userName, accountID)
 	}
@@ -316,7 +316,7 @@ func runAdminPrincipalDelete(_ *cobra.Command, args []string) error {
 	}
 	defer cleanup()
 
-	accountID := admin.DefaultAccountID()
+	accountID := awsidentifiers.DefaultAccountID()
 	if _, err := svc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(userName)}); err != nil {
 		return fmt.Errorf("no principal %q in account %s", userName, accountID)
 	}
@@ -479,7 +479,7 @@ func runAdminPrincipalAudit(_ *cobra.Command, _ []string) error {
 	}
 	defer cleanup()
 
-	accountID := admin.DefaultAccountID()
+	accountID := awsidentifiers.DefaultAccountID()
 	roles, err := svc.ListRoles(accountID, &iam.ListRolesInput{})
 	if err != nil {
 		return fmt.Errorf("list roles: %w", err)

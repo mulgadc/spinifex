@@ -36,3 +36,22 @@ func TestGlobalAccountID(t *testing.T) {
 		t.Error("GlobalAccountID should be a valid account ID")
 	}
 }
+
+func TestDefaultAccountID(t *testing.T) {
+	id := DefaultAccountID()
+	if id != "000000000001" {
+		t.Errorf("DefaultAccountID() = %q, want %q", id, "000000000001")
+	}
+	if !IsAccountID(id) {
+		t.Errorf("DefaultAccountID() = %q is not a valid account ID", id)
+	}
+	if id == GlobalAccountID {
+		t.Error("DefaultAccountID() must differ from GlobalAccountID")
+	}
+}
+
+func TestDefaultAccountName(t *testing.T) {
+	if got := DefaultAccountName(); got != "spinifex" {
+		t.Errorf("DefaultAccountName() = %q, want %q", got, "spinifex")
+	}
+}

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_spx "github.com/mulgadc/spinifex/spinifex/gateway/spx"
 )
@@ -50,7 +50,7 @@ func (gw *GatewayConfig) Spinifex_Request(w http.ResponseWriter, r *http.Request
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	if spinifexAdminActions[action] && accountID != admin.DefaultAccountID() {
+	if spinifexAdminActions[action] && accountID != awsidentifiers.DefaultAccountID() {
 		slog.Info("Spinifex_Request: non-admin access denied", "action", action, "accountID", accountID)
 		return errors.New(awserrors.ErrorAccessDenied)
 	}

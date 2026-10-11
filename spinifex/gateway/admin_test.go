@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,7 +78,7 @@ func TestAuthorizeAdminGates(t *testing.T) {
 		{
 			name:          "permitted signup principal",
 			service:       "spinifex",
-			accountID:     admin.DefaultAccountID(),
+			accountID:     awsidentifiers.DefaultAccountID(),
 			identity:      "signup",
 			principalType: principalTypeUser,
 			policy:        createAccountPolicy(),
@@ -86,7 +86,7 @@ func TestAuthorizeAdminGates(t *testing.T) {
 		{
 			name:          "credential scope is not spinifex",
 			service:       "ec2",
-			accountID:     admin.DefaultAccountID(),
+			accountID:     awsidentifiers.DefaultAccountID(),
 			identity:      "signup",
 			principalType: principalTypeUser,
 			policy:        createAccountPolicy(),
@@ -104,7 +104,7 @@ func TestAuthorizeAdminGates(t *testing.T) {
 		{
 			name:          "assumed-role session",
 			service:       "spinifex",
-			accountID:     admin.DefaultAccountID(),
+			accountID:     awsidentifiers.DefaultAccountID(),
 			identity:      "signup",
 			principalType: principalTypeAssumedRole,
 			policy:        createAccountPolicy(),
@@ -113,7 +113,7 @@ func TestAuthorizeAdminGates(t *testing.T) {
 		{
 			name:          "no identity",
 			service:       "spinifex",
-			accountID:     admin.DefaultAccountID(),
+			accountID:     awsidentifiers.DefaultAccountID(),
 			identity:      "",
 			principalType: principalTypeUser,
 			policy:        createAccountPolicy(),
@@ -122,7 +122,7 @@ func TestAuthorizeAdminGates(t *testing.T) {
 		{
 			name:          "policy does not grant CreateAccount",
 			service:       "spinifex",
-			accountID:     admin.DefaultAccountID(),
+			accountID:     awsidentifiers.DefaultAccountID(),
 			identity:      "signup",
 			principalType: principalTypeUser,
 			policy:        &policyMockIAMService{},
@@ -256,7 +256,7 @@ func authorizedAdminRequestForMethod(gw *GatewayConfig, method, body string) *ht
 
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
 	ctx = context.WithValue(ctx, ctxService, "spinifex")
-	ctx = context.WithValue(ctx, ctxAccountID, admin.DefaultAccountID())
+	ctx = context.WithValue(ctx, ctxAccountID, awsidentifiers.DefaultAccountID())
 	ctx = context.WithValue(ctx, ctxIdentity, "admin")
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeUser)
 

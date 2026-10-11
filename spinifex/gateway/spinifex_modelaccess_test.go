@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,7 +58,7 @@ func accessGateway(t *testing.T) *GatewayConfig {
 // revoke takes it away again.
 func TestSpinifex_ModelAccess_GrantListRevoke(t *testing.T) {
 	gw := accessGateway(t)
-	adminAccount := admin.DefaultAccountID()
+	adminAccount := awsidentifiers.DefaultAccountID()
 
 	w := spinifexAccessRequest(t, gw, "ListModelAccess", adminAccount, url.Values{"AccountId": {"000000000002"}})
 	require.Equal(t, http.StatusOK, w.Code)
@@ -97,7 +97,7 @@ func TestSpinifex_ModelAccess_NonAdminDenied(t *testing.T) {
 
 func TestSpinifex_ModelAccess_MissingParameters(t *testing.T) {
 	gw := accessGateway(t)
-	adminAccount := admin.DefaultAccountID()
+	adminAccount := awsidentifiers.DefaultAccountID()
 
 	cases := []struct {
 		action string
@@ -119,7 +119,7 @@ func TestSpinifex_ModelAccess_MissingParameters(t *testing.T) {
 // a grant store: the admin actions refuse rather than panicking on nil.
 func TestSpinifex_ModelAccess_NoStoreIsServerError(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService()}
-	adminAccount := admin.DefaultAccountID()
+	adminAccount := awsidentifiers.DefaultAccountID()
 
 	for _, action := range []string{"GrantModelAccess", "RevokeModelAccess", "ListModelAccess"} {
 		w := spinifexAccessRequest(t, gw, action, adminAccount,

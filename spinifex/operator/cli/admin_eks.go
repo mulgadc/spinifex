@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/spf13/cobra"
 )
@@ -46,7 +46,7 @@ func runAdminEksRestoreSnapshot(cmd *cobra.Command, _ []string) {
 	snapshot, _ := cmd.Flags().GetString("snapshot")
 	accountID, _ := cmd.Flags().GetString("account")
 	if accountID == "" {
-		accountID = admin.DefaultAccountID()
+		accountID = awsidentifiers.DefaultAccountID()
 	}
 
 	_, nc, err := loadConfigAndConnect()

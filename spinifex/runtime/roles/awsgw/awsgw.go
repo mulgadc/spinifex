@@ -23,7 +23,6 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/ratelimit"
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/daemon"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
@@ -372,12 +371,12 @@ func launchService(config *config.ClusterConfig) error {
 	// start. Tenant accounts are unaffected and still begin with no access.
 	// Best-effort: the gateway must serve even if this fails, and because the
 	// marker is written only on success, the next start retries.
-	if seeded, err := bedrockAccess.SeedAccountGrants(context.Background(), admin.DefaultAccountID(), gateway_bedrock.CatalogModelIDs()); err != nil {
+	if seeded, err := bedrockAccess.SeedAccountGrants(context.Background(), awsidentifiers.DefaultAccountID(), gateway_bedrock.CatalogModelIDs()); err != nil {
 		slog.Warn("Bedrock model access: seeding admin grants failed, will retry on next start",
-			"accountID", admin.DefaultAccountID(), "err", err)
+			"accountID", awsidentifiers.DefaultAccountID(), "err", err)
 	} else if seeded {
 		slog.Info("Bedrock model access: seeded admin account with the model catalog",
-			"accountID", admin.DefaultAccountID(), "models", len(gateway_bedrock.CatalogModelIDs()))
+			"accountID", awsidentifiers.DefaultAccountID(), "models", len(gateway_bedrock.CatalogModelIDs()))
 	}
 
 	// Bedrock self-host endpoints: OCHRE_VLLM_ENDPOINTS pins a modelId=baseURL

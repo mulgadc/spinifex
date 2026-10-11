@@ -12,8 +12,8 @@ import (
 	"uuid"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 )
 
@@ -177,7 +177,7 @@ func (gw *GatewayConfig) authorizeAdmin(r *http.Request, method string) error {
 	if service != "spinifex" {
 		return deny("credential scope is not spinifex")
 	}
-	if accountID != admin.DefaultAccountID() {
+	if accountID != awsidentifiers.DefaultAccountID() {
 		return deny("not the super-admin account")
 	}
 	// Long-lived IAM users only. This excludes assumed-role sessions outright,

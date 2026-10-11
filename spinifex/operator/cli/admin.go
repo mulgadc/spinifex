@@ -1687,7 +1687,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		// which persists them for the life of the node. They are recoverable from
 		// bootstrap.json and ~/.aws/credentials.
 		fmt.Printf("\n🔑 Generated admin credentials (written to ~/.aws/credentials)\n")
-		fmt.Printf("   Account:     %s (%s)\n", legacyadmin.DefaultAccountName(), legacyadmin.DefaultAccountID())
+		fmt.Printf("   Account:     %s (%s)\n", awsidentifiers.DefaultAccountName(), awsidentifiers.DefaultAccountID())
 		fmt.Printf("   AWS Profile: spinifex\n")
 	}
 
@@ -1763,7 +1763,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 			networkConfig.ExternalMode = externalMode
 			networkConfig.Pools = externalPools
 			networkConfig.PoolDNSServers = dnsServers
-			networkConfig.BootstrapAccountId = legacyadmin.DefaultAccountID()
+			networkConfig.BootstrapAccountId = awsidentifiers.DefaultAccountID()
 			networkConfig.BootstrapVpcId = bootstrapVpcId
 			networkConfig.BootstrapSubnetId = bootstrapSubnetId
 			networkConfig.BootstrapIgwId = bootstrapIgwId
@@ -1883,7 +1883,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		Pools:         externalPools,
 
 		OperatorEmail:       email,
-		BootstrapAccountId:  legacyadmin.DefaultAccountID(),
+		BootstrapAccountId:  awsidentifiers.DefaultAccountID(),
 		BootstrapVpcId:      bootstrapVpcId,
 		BootstrapSubnetId:   bootstrapSubnetId,
 		BootstrapIgwId:      bootstrapIgwId,
@@ -3476,8 +3476,8 @@ func writeBootstrapFilesWithAdmin(configDir, bootstrapDir string, masterKey []by
 		EncryptedSecret: encryptedSecret,
 		AccountID:       accountID,
 		Admin: &handlers_iam.AdminBootstrapData{
-			AccountID:       legacyadmin.DefaultAccountID(),
-			AccountName:     legacyadmin.DefaultAccountName(),
+			AccountID:       awsidentifiers.DefaultAccountID(),
+			AccountName:     awsidentifiers.DefaultAccountName(),
 			UserName:        "admin",
 			AccessKeyID:     adminAccessKey,
 			EncryptedSecret: adminEncryptedSecret,

@@ -2,7 +2,7 @@ package handlers_ecs
 
 import (
 	"context"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -192,8 +192,8 @@ func TestRunTask_AssignCarriesPortMappingsAndSystemControls(t *testing.T) {
 	require.Len(t, poll.Assignments, 1)
 	require.Len(t, poll.Assignments[0].Containers, 1)
 	c := poll.Assignments[0].Containers[0]
-	assert.Equal(t, []bus.PortMapping{{ContainerPort: 80, HostPort: 8080, Protocol: "udp", Name: "web"}}, c.PortMappings)
-	assert.Equal(t, []bus.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}}, c.SystemControls)
+	assert.Equal(t, []ecsv1.PortMapping{{ContainerPort: 80, HostPort: 8080, Protocol: "udp", Name: "web"}}, c.PortMappings)
+	assert.Equal(t, []ecsv1.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}}, c.SystemControls)
 }
 
 // TestRunTask_AssignCarriesGPU verifies that a
@@ -531,7 +531,7 @@ func TestRegisterTaskDefinition_RejectsSharedMemoryAndTmpfs(t *testing.T) {
 }
 
 // TestRunTask_AssignCarriesRuntimeFields verifies the enforced runtime fields
-// reach bus.AssignContainer, the daemon-to-agent wire contract — the third of
+// reach ecsv1.AssignContainer, the daemon-to-agent wire contract — the third of
 // the four drop points this fix closes (stored, sent, applied, returned).
 func TestRunTask_AssignCarriesRuntimeFields(t *testing.T) {
 	svc, _ := newTestService(t)

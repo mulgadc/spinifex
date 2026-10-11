@@ -9,8 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -175,11 +175,11 @@ func TestService_DescribeTaskDefinition_Unknown(t *testing.T) {
 // register path (the way the agent registers in production).
 func registerInstance(t *testing.T, svc *Service, cluster, id string, cpu, mem int) {
 	t.Helper()
-	require.NoError(t, svc.recordRegister(t.Context(), &bus.RegisterInstance{
+	require.NoError(t, svc.recordRegister(t.Context(), &ecsv1.RegisterInstance{
 		AccountID:   testAccountID,
 		ClusterName: cluster,
 		InstanceID:  id,
-		Capacity:    bus.InstanceCapacity{CPU: cpu, MemoryMiB: mem},
+		Capacity:    ecsv1.InstanceCapacity{CPU: cpu, MemoryMiB: mem},
 	}))
 }
 
@@ -290,9 +290,9 @@ func TestService_PollAssignments_AckAndReclaim(t *testing.T) {
 	out2, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
 	require.NoError(t, err)
 	task2 := ContainerInstanceShortID(aws.StringValue(out2.Tasks[0].TaskArn))
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: task2,
-		LastStatus: bus.TaskStatusStopped,
+		LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	p4, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{Cluster: "web", ContainerInstance: "i-1"}, testAccountID)
 	require.NoError(t, err)
@@ -332,15 +332,15 @@ func TestService_RecordTaskState_ReleasesCapacityOnStop(t *testing.T) {
 	require.NoError(t, err)
 	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
-		LastStatus: bus.TaskStatusRunning,
+		LastStatus: ecsv1.TaskStatusRunning,
 	}))
 	exit := 0
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
-		LastStatus: bus.TaskStatusStopped, Reason: "exited",
-		Containers: []bus.ContainerStatus{{Name: "app", Status: bus.TaskStatusStopped, ExitCode: &exit}},
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "exited",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
 	}))
 
 	dt, err := svc.DescribeTasks(context.Background(), &ecs.DescribeTasksInput{Cluster: aws.String("web"), Tasks: []*string{aws.String(taskID)}}, testAccountID)
@@ -379,9 +379,9 @@ func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
 	exit := int64(0)
 	ack, err := svc.SubmitTaskStateChange(context.Background(), &ecs.SubmitTaskStateChangeInput{
 		Cluster: aws.String("web"), Task: aws.String(taskARN),
-		Status: aws.String(bus.TaskStatusStopped), Reason: aws.String("exited"),
+		Status: aws.String(ecsv1.TaskStatusStopped), Reason: aws.String("exited"),
 		Containers: []*ecs.ContainerStateChange{
-			{ContainerName: aws.String("app"), Status: aws.String(bus.TaskStatusStopped),
+			{ContainerName: aws.String("app"), Status: aws.String(ecsv1.TaskStatusStopped),
 				ExitCode: &exit, RuntimeId: aws.String("ctr-1")},
 		},
 	}, testAccountID)
@@ -405,8 +405,8 @@ func TestService_SubmitTaskStateChange_StopsTask(t *testing.T) {
 func TestService_RecordHeartbeat_UpdatesStatus(t *testing.T) {
 	svc, _ := newTestService(t)
 	registerInstance(t, svc, "web", "i-1", 1024, 2048)
-	require.NoError(t, svc.recordHeartbeat(t.Context(), &bus.Heartbeat{
-		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", Status: bus.StatusDraining,
+	require.NoError(t, svc.recordHeartbeat(t.Context(), &ecsv1.Heartbeat{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", Status: ecsv1.StatusDraining,
 	}))
 	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
 		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
@@ -540,11 +540,11 @@ func registerTaskDefGPU(t *testing.T, svc *Service, family string, cpu, mem, gpu
 // capacity via the bus register path.
 func registerInstanceGPU(t *testing.T, svc *Service, cluster, id string, cpu, mem, gpu int) {
 	t.Helper()
-	require.NoError(t, svc.recordRegister(t.Context(), &bus.RegisterInstance{
+	require.NoError(t, svc.recordRegister(t.Context(), &ecsv1.RegisterInstance{
 		AccountID:   testAccountID,
 		ClusterName: cluster,
 		InstanceID:  id,
-		Capacity:    bus.InstanceCapacity{CPU: cpu, MemoryMiB: mem, GPU: gpu},
+		Capacity:    ecsv1.InstanceCapacity{CPU: cpu, MemoryMiB: mem, GPU: gpu},
 	}))
 }
 
@@ -600,9 +600,9 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 	assert.Equal(t, 1, rec.ReservedGPU)
 
 	// Stopping the task releases the GPU reservation.
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
-		LastStatus: bus.TaskStatusStopped, Reason: "exited",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "exited",
 	}))
 	found, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
@@ -688,9 +688,9 @@ func TestRegisterContainerInstance_GPU_StringSetResource(t *testing.T) {
 // path (Epic C3 register report-back).
 func TestRecordRegister_GPU_CarriesDeviceUUIDs(t *testing.T) {
 	svc, _ := newTestService(t)
-	require.NoError(t, svc.recordRegister(t.Context(), &bus.RegisterInstance{
+	require.NoError(t, svc.recordRegister(t.Context(), &ecsv1.RegisterInstance{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
-		Capacity: bus.InstanceCapacity{CPU: 1024, MemoryMiB: 2048, GPU: 2, GPUIDs: []string{"GPU-aaa", "GPU-bbb"}},
+		Capacity: ecsv1.InstanceCapacity{CPU: 1024, MemoryMiB: 2048, GPU: 2, GPUIDs: []string{"GPU-aaa", "GPU-bbb"}},
 	}))
 
 	rec := instanceStatus(t, svc, "web", "i-1")

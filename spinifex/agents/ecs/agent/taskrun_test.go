@@ -7,17 +7,17 @@ import (
 	"testing"
 	"time"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
-func testAssign() *bus.Assign {
-	return &bus.Assign{
+func testAssign() *ecsv1.Assign {
+	return &ecsv1.Assign{
 		AccountID:   "123456789012",
 		ClusterName: "default",
 		InstanceID:  "i-abc123",
 		TaskID:      "t-001",
-		Containers: []bus.AssignContainer{
+		Containers: []ecsv1.AssignContainer{
 			{Name: "web", Image: "registry/web:1", Command: []string{"/bin/true"},
 				Environment: map[string]string{"FOO": "bar"}},
 		},
@@ -35,7 +35,7 @@ func TestRunTask_NoRuntimeReportsStopped(t *testing.T) {
 	a.runTask(context.Background(), testAssign())
 
 	st := cp.taskStates()
-	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+	if len(st) != 1 || st[0].LastStatus != ecsv1.TaskStatusStopped {
 		t.Fatalf("want one STOPPED state, got %+v", st)
 	}
 	if st[0].Reason == "" {
@@ -63,7 +63,7 @@ func TestRunTask_PullRunReportsRunning(t *testing.T) {
 	}
 
 	st := cp.taskStates()
-	if len(st) == 0 || st[len(st)-1].LastStatus != bus.TaskStatusRunning {
+	if len(st) == 0 || st[len(st)-1].LastStatus != ecsv1.TaskStatusRunning {
 		t.Fatalf("want RUNNING final state, got %+v", st)
 	}
 	if len(st[len(st)-1].Containers) != 1 || st[len(st)-1].Containers[0].ContainerID != "t-001-web" {
@@ -87,7 +87,7 @@ func TestRunTask_RuntimeFieldsCarriedToRunSpec(t *testing.T) {
 	as.Containers[0].Privileged = &priv
 	as.Containers[0].PseudoTerminal = &tty
 	as.Containers[0].Interactive = &interactive
-	as.Containers[0].SystemControls = []bus.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}}
+	as.Containers[0].SystemControls = []ecsv1.SystemControl{{Namespace: "net.core.somaxconn", Value: "1024"}}
 	as.Containers[0].CapAdd = []string{"SYS_PTRACE"}
 	as.Containers[0].CapDrop = []string{"NET_RAW"}
 	a.runTask(context.Background(), as)
@@ -194,7 +194,7 @@ func TestStopTask_UsesContainerStopTimeout(t *testing.T) {
 	}}}
 	a := newRunAgent(cp, rt)
 
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "bye"})
 
 	if len(rt.Stopped) != 1 || rt.Stopped[0] != "t-001-web" {
 		t.Fatalf("want t-001-web stopped, got %+v", rt.Stopped)
@@ -215,7 +215,7 @@ func TestStopTask_DefaultStopTimeoutWhenUnset(t *testing.T) {
 	}}}
 	a := newRunAgent(cp, rt)
 
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "bye"})
 
 	if len(rt.StopTimeouts) != 1 || rt.StopTimeouts[0] != defaultStopTimeout {
 		t.Fatalf("want default stopTimeout %v, got %+v", defaultStopTimeout, rt.StopTimeouts)
@@ -230,7 +230,7 @@ func TestRunTask_GPUCarriedToRunSpec(t *testing.T) {
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
 	a := newRunAgent(cp, rt)
 	as := testAssign()
-	as.Containers = append(as.Containers, bus.AssignContainer{
+	as.Containers = append(as.Containers, ecsv1.AssignContainer{
 		Name: "trainer", Image: "registry/trainer:1", GPU: 2,
 	})
 	a.runTask(context.Background(), as)
@@ -254,17 +254,17 @@ func TestRunTask_GPUPinsAndReportsUUIDs(t *testing.T) {
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
 	a := newAgent(Config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, nil)
 	as := testAssign()
-	as.Containers = append(as.Containers, bus.AssignContainer{
+	as.Containers = append(as.Containers, ecsv1.AssignContainer{
 		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
 	})
 	a.runTask(context.Background(), as)
 
 	st := cp.taskStates()
-	if len(st) == 0 || st[len(st)-1].LastStatus != bus.TaskStatusRunning {
+	if len(st) == 0 || st[len(st)-1].LastStatus != ecsv1.TaskStatusRunning {
 		t.Fatalf("want RUNNING final state, got %+v", st)
 	}
 	last := st[len(st)-1]
-	var trainer *bus.ContainerStatus
+	var trainer *ecsv1.ContainerStatus
 	for i := range last.Containers {
 		if last.Containers[i].Name == "trainer" {
 			trainer = &last.Containers[i]
@@ -298,7 +298,7 @@ func TestRunTask_GPUIDsReachRunSpec(t *testing.T) {
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
 	a := newAgent(Config{}, testIdentityWithGPUs("GPU-aaa", "GPU-bbb"), cp, rt, nil)
 	as := testAssign()
-	as.Containers = append(as.Containers, bus.AssignContainer{
+	as.Containers = append(as.Containers, ecsv1.AssignContainer{
 		Name: "trainer", Image: "registry/trainer:1", GPU: 1,
 	})
 	a.runTask(context.Background(), as)
@@ -339,7 +339,7 @@ func TestRunTask_GPUShortLedgerStillRuns(t *testing.T) {
 	rt := &ctrruntime.FakePuller{WaitErr: errors.New("blocked")}
 	a := newRunAgent(cp, rt) // testIdentity() has no discovered GPU UUIDs
 	as := testAssign()
-	as.Containers = append(as.Containers, bus.AssignContainer{
+	as.Containers = append(as.Containers, ecsv1.AssignContainer{
 		Name: "trainer", Image: "registry/trainer:1", GPU: 2,
 	})
 	a.runTask(context.Background(), as)
@@ -369,7 +369,7 @@ func TestStopTask_ReleasesGPUsBackToLedger(t *testing.T) {
 		t.Fatalf("setup: want ledger fully pinned, free = %v", a.gpu.free)
 	}
 
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "bye"})
 
 	if len(a.gpu.free) != 1 {
 		t.Errorf("want the GPU released back to the ledger, free = %v", a.gpu.free)
@@ -387,7 +387,7 @@ func TestRunTask_PullFailureReportsStopped(t *testing.T) {
 		t.Errorf("container should not run after pull failure, got %+v", rt.Runs)
 	}
 	st := cp.taskStates()
-	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+	if len(st) != 1 || st[0].LastStatus != ecsv1.TaskStatusStopped {
 		t.Fatalf("want STOPPED, got %+v", st)
 	}
 }
@@ -400,7 +400,7 @@ func TestRunTask_RunFailureReportsStopped(t *testing.T) {
 	a.runTask(context.Background(), testAssign())
 
 	st := cp.taskStates()
-	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+	if len(st) != 1 || st[0].LastStatus != ecsv1.TaskStatusStopped {
 		t.Fatalf("want STOPPED, got %+v", st)
 	}
 }
@@ -415,7 +415,7 @@ func TestRunTask_ExitReportsStoppedWithCode(t *testing.T) {
 	deadline := time.After(time.Second)
 	for {
 		st := cp.taskStates()
-		if len(st) > 0 && st[len(st)-1].LastStatus == bus.TaskStatusStopped {
+		if len(st) > 0 && st[len(st)-1].LastStatus == ecsv1.TaskStatusStopped {
 			last := st[len(st)-1]
 			if len(last.Containers) != 1 || last.Containers[0].ExitCode == nil || *last.Containers[0].ExitCode != 7 {
 				t.Fatalf("want exit code 7, got %+v", last.Containers)
@@ -433,7 +433,7 @@ func TestRunTask_ExitReportsStoppedWithCode(t *testing.T) {
 // pollAssignments dispatches each assign once and acks it on the next poll.
 func TestPollAssignments_DispatchesOnceAndAcks(t *testing.T) {
 	as := testAssign()
-	cp := &fakeCP{pollReplies: [][]bus.Assign{
+	cp := &fakeCP{pollReplies: [][]ecsv1.Assign{
 		{*as}, // poll 1: one pending assign
 		{*as}, // poll 2: still present (not yet acked when poll 2 was issued)
 		nil,   // poll 3: gateway dropped it after the ack
@@ -449,7 +449,7 @@ func TestPollAssignments_DispatchesOnceAndAcks(t *testing.T) {
 	// exactly one RUNNING report.
 	deadline := time.After(time.Second)
 	for {
-		if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running >= 1 {
+		if running := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusRunning); running >= 1 {
 			break
 		}
 		select {
@@ -461,7 +461,7 @@ func TestPollAssignments_DispatchesOnceAndAcks(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 
-	if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running != 1 {
+	if running := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusRunning); running != 1 {
 		t.Errorf("task dispatched %d times, want exactly 1 (dedup on taskID)", running)
 	}
 	// The taskID must appear in a later poll's ack list.
@@ -492,19 +492,19 @@ func TestStopTask_ReapsLabeledContainersAndReportsStopped(t *testing.T) {
 	}}
 	a := newRunAgent(cp, rt)
 
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "bye"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "bye"})
 
 	if len(rt.Stopped) != 1 || rt.Stopped[0] != "t-001-web" {
 		t.Fatalf("want only t-001-web stopped, got %+v", rt.Stopped)
 	}
 	st := cp.taskStates()
-	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+	if len(st) != 1 || st[0].LastStatus != ecsv1.TaskStatusStopped {
 		t.Fatalf("want one STOPPED report, got %+v", st)
 	}
 	if st[0].Reason != "bye" {
 		t.Errorf("want reason %q, got %q", "bye", st[0].Reason)
 	}
-	if len(st[0].Containers) != 1 || st[0].Containers[0].Status != bus.TaskStatusStopped {
+	if len(st[0].Containers) != 1 || st[0].Containers[0].Status != ecsv1.TaskStatusStopped {
 		t.Errorf("want one STOPPED container, got %+v", st[0].Containers)
 	}
 }
@@ -516,13 +516,13 @@ func TestStopTask_NoContainersStillReportsStopped(t *testing.T) {
 	rt := &ctrruntime.FakePuller{}
 	a := newRunAgent(cp, rt)
 
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "gone"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "gone"})
 
 	if len(rt.Removed) != 0 {
 		t.Errorf("nothing to remove, got %+v", rt.Removed)
 	}
 	st := cp.taskStates()
-	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+	if len(st) != 1 || st[0].LastStatus != ecsv1.TaskStatusStopped {
 		t.Fatalf("want one STOPPED report, got %+v", st)
 	}
 }
@@ -532,8 +532,8 @@ func TestStopTask_NoContainersStillReportsStopped(t *testing.T) {
 func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	as := testAssign()
 	cp := &fakeCP{
-		pollReplies: [][]bus.Assign{{*as}, {*as}, nil},
-		stopPending: []bus.StopDirective{{TaskID: as.TaskID, Reason: "bye"}},
+		pollReplies: [][]ecsv1.Assign{{*as}, {*as}, nil},
+		stopPending: []ecsv1.StopDirective{{TaskID: as.TaskID, Reason: "bye"}},
 	}
 	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
 		{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
@@ -545,7 +545,7 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 
 	deadline := time.After(time.Second)
 	for {
-		if stopped := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusStopped); stopped >= 1 {
+		if stopped := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusStopped); stopped >= 1 {
 			break
 		}
 		select {
@@ -561,7 +561,7 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	if len(rt.Runs) != 0 {
 		t.Errorf("assign for a stopping task should not run, got %+v", rt.Runs)
 	}
-	if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running != 0 {
+	if running := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusRunning); running != 0 {
 		t.Errorf("stopping task should never report RUNNING, got %d", running)
 	}
 	acked := false
@@ -591,7 +591,7 @@ func countStopAcks(acks [][]string, taskID string) int {
 // A reap that cannot run is never acked, so the directive stays in the gateway's
 // inbox and is redelivered and retried until the runtime comes back.
 func TestPollAssignments_UnperformableStopIsNotAckedAndRetried(t *testing.T) {
-	cp := &fakeCP{stopPending: []bus.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
+	cp := &fakeCP{stopPending: []ecsv1.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
 	rt := &ctrruntime.FakePuller{ListErr: errors.New("containerd is down")}
 	a := newAgent(Config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
@@ -612,7 +612,7 @@ func TestPollAssignments_UnperformableStopIsNotAckedAndRetried(t *testing.T) {
 	if n := countStopAcks(cp.stopAcks(), "t-001"); n != 0 {
 		t.Errorf("a reap that never ran was acked %d times; stopAcks=%v", n, cp.stopAcks())
 	}
-	if stopped := countStatus(cp.taskStates(), "t-001", bus.TaskStatusStopped); stopped != 0 {
+	if stopped := countStatus(cp.taskStates(), "t-001", ecsv1.TaskStatusStopped); stopped != 0 {
 		t.Errorf("a reap that never ran reported STOPPED %d times", stopped)
 	}
 }
@@ -620,7 +620,7 @@ func TestPollAssignments_UnperformableStopIsNotAckedAndRetried(t *testing.T) {
 // Once the runtime recovers, the redelivered directive is reaped, reported
 // STOPPED and acked exactly once, which deletes it from the inbox.
 func TestPollAssignments_RecoveredStopIsAckedExactlyOnce(t *testing.T) {
-	cp := &fakeCP{stopPending: []bus.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
+	cp := &fakeCP{stopPending: []ecsv1.StopDirective{{TaskID: "t-001", Reason: "bye"}}}
 	rt := &ctrruntime.FakePuller{
 		ListErr:    errors.New("containerd is down"),
 		ListErrFor: 1,
@@ -648,7 +648,7 @@ func TestPollAssignments_RecoveredStopIsAckedExactlyOnce(t *testing.T) {
 	if n := countStopAcks(cp.stopAcks(), "t-001"); n != 1 {
 		t.Errorf("stop acked %d times, want exactly 1; stopAcks=%v", n, cp.stopAcks())
 	}
-	if stopped := countStatus(cp.taskStates(), "t-001", bus.TaskStatusStopped); stopped != 1 {
+	if stopped := countStatus(cp.taskStates(), "t-001", ecsv1.TaskStatusStopped); stopped != 1 {
 		t.Errorf("task reported STOPPED %d times, want exactly 1", stopped)
 	}
 	if reaped := rt.Reaped(); len(reaped) != 1 || reaped[0] != "t-001-web" {
@@ -661,8 +661,8 @@ func TestPollAssignments_RecoveredStopIsAckedExactlyOnce(t *testing.T) {
 func TestPollAssignments_StoppedTaskIsNotRerunByRedeliveredAssign(t *testing.T) {
 	as := testAssign()
 	cp := &fakeCP{
-		pollReplies: [][]bus.Assign{{*as}, {*as}, {*as}, {*as}, {*as}, {*as}},
-		stopPending: []bus.StopDirective{{TaskID: as.TaskID, Reason: "bye"}},
+		pollReplies: [][]ecsv1.Assign{{*as}, {*as}, {*as}, {*as}, {*as}, {*as}},
+		stopPending: []ecsv1.StopDirective{{TaskID: as.TaskID, Reason: "bye"}},
 	}
 	rt := &ctrruntime.FakePuller{Containers: []ctrruntime.Container{
 		{ID: "t-001-web", Running: true, Labels: map[string]string{"mulga.ecs.taskID": "t-001"}},
@@ -688,7 +688,7 @@ func TestPollAssignments_StoppedTaskIsNotRerunByRedeliveredAssign(t *testing.T) 
 	if runs := rt.RunCalls(); len(runs) != 0 {
 		t.Errorf("stopped task was started by a redelivered assign: %+v", runs)
 	}
-	if running := countStatus(cp.taskStates(), as.TaskID, bus.TaskStatusRunning); running != 0 {
+	if running := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusRunning); running != 0 {
 		t.Errorf("stopped task reported RUNNING %d times", running)
 	}
 }
@@ -697,7 +697,7 @@ func TestPollAssignments_StoppedTaskIsNotRerunByRedeliveredAssign(t *testing.T) 
 func TestStopTask_NilRunnerNoOp(t *testing.T) {
 	cp := &fakeCP{}
 	a := newAgent(Config{}, testIdentity(), cp, nil, nil)
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "x"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "x"})
 	if len(cp.taskStates()) != 0 {
 		t.Fatalf("nil runner should report no state, got %+v", cp.taskStates())
 	}
@@ -708,7 +708,7 @@ func TestStopTask_ListErrorNoReport(t *testing.T) {
 	cp := &fakeCP{}
 	rt := &ctrruntime.FakePuller{ListErr: errors.New("list boom")}
 	a := newRunAgent(cp, rt)
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001", Reason: "x"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001", Reason: "x"})
 	if len(cp.taskStates()) != 0 {
 		t.Fatalf("list error should report no state, got %+v", cp.taskStates())
 	}
@@ -725,13 +725,13 @@ func TestStopTask_EmptyReasonReapsWithDefault(t *testing.T) {
 		},
 	}}}
 	a := newRunAgent(cp, rt)
-	a.stopTask(context.Background(), bus.StopDirective{TaskID: "t-001"})
+	a.stopTask(context.Background(), ecsv1.StopDirective{TaskID: "t-001"})
 
 	if len(rt.Stopped) != 1 || rt.Stopped[0] != "t-001-web" {
 		t.Fatalf("want container t-001-web reaped, got %+v", rt.Stopped)
 	}
 	st := cp.taskStates()
-	if len(st) != 1 || st[0].LastStatus != bus.TaskStatusStopped {
+	if len(st) != 1 || st[0].LastStatus != ecsv1.TaskStatusStopped {
 		t.Fatalf("want one STOPPED report, got %+v", st)
 	}
 	if st[0].Reason != "Task stopped" {
@@ -739,7 +739,7 @@ func TestStopTask_EmptyReasonReapsWithDefault(t *testing.T) {
 	}
 }
 
-func countStatus(states []bus.TaskState, taskID, status string) int {
+func countStatus(states []ecsv1.TaskState, taskID, status string) int {
 	n := 0
 	for _, st := range states {
 		if st.TaskID == taskID && st.LastStatus == status {
@@ -809,10 +809,10 @@ func TestPullResolver(t *testing.T) {
 	fake := sentinelResolver{}
 	a := newAgent(Config{Region: "us-east-1"}, testIdentity(), &fakeCP{}, nil, fake)
 
-	if got := a.pullResolver(&bus.Assign{TaskID: "t1"}); got != fake {
+	if got := a.pullResolver(&ecsv1.Assign{TaskID: "t1"}); got != fake {
 		t.Fatalf("no execution role: want instance resolver fallback")
 	}
-	execAssign := &bus.Assign{TaskID: "t1", ExecutionRoleARN: "arn:aws:iam::1:role/e"}
+	execAssign := &ecsv1.Assign{TaskID: "t1", ExecutionRoleARN: "arn:aws:iam::1:role/e"}
 	if got := a.pullResolver(execAssign); got != fake {
 		t.Fatalf("nil cred endpoint: want instance resolver fallback")
 	}

@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,10 +92,10 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 	}))
 
 	// RUNNING report pins the GPU UUIDs onto the container.
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-1",
-		LastStatus: bus.TaskStatusRunning,
-		Containers: []bus.ContainerStatus{{Name: "trainer", Status: bus.TaskStatusRunning, GPUIDs: []string{"GPU-aaa", "GPU-bbb"}}},
+		LastStatus: ecsv1.TaskStatusRunning,
+		Containers: []ecsv1.ContainerStatus{{Name: "trainer", Status: ecsv1.TaskStatusRunning, GPUIDs: []string{"GPU-aaa", "GPU-bbb"}}},
 	}))
 
 	var rec TaskRecord
@@ -108,10 +108,10 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 	// STOPPED report arrives without GPUIDs (the agent doesn't re-send them) —
 	// the previously pinned UUIDs must survive the transition.
 	exit := 0
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-1",
-		LastStatus: bus.TaskStatusStopped, Reason: "exited",
-		Containers: []bus.ContainerStatus{{Name: "trainer", Status: bus.TaskStatusStopped, ExitCode: &exit}},
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "exited",
+		Containers: []ecsv1.ContainerStatus{{Name: "trainer", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
 	}))
 
 	found, err = getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
@@ -143,10 +143,10 @@ func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 		Containers:          []ContainerState{{Name: "trainer", Status: "RUNNING", GPUIDs: []string{"GPU-aaa"}}},
 	}))
 
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-1",
-		LastStatus: bus.TaskStatusRunning,
-		Containers: []bus.ContainerStatus{{Name: "trainer", Status: bus.TaskStatusRunning, GPUIDs: []string{"GPU-ccc"}}},
+		LastStatus: ecsv1.TaskStatusRunning,
+		Containers: []ecsv1.ContainerStatus{{Name: "trainer", Status: ecsv1.TaskStatusRunning, GPUIDs: []string{"GPU-ccc"}}},
 	}))
 
 	var rec TaskRecord
@@ -169,17 +169,17 @@ func TestRecordTaskState_NonGPUContainerStaysEmpty(t *testing.T) {
 		Containers:          []ContainerState{{Name: "web", Status: "PENDING"}},
 	}))
 
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-1",
-		LastStatus: bus.TaskStatusRunning,
-		Containers: []bus.ContainerStatus{{Name: "web", Status: bus.TaskStatusRunning}},
+		LastStatus: ecsv1.TaskStatusRunning,
+		Containers: []ecsv1.ContainerStatus{{Name: "web", Status: ecsv1.TaskStatusRunning}},
 	}))
 
 	exit := 0
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-1",
-		LastStatus: bus.TaskStatusStopped,
-		Containers: []bus.ContainerStatus{{Name: "web", Status: bus.TaskStatusStopped, ExitCode: &exit}},
+		LastStatus: ecsv1.TaskStatusStopped,
+		Containers: []ecsv1.ContainerStatus{{Name: "web", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
 	}))
 
 	var rec TaskRecord

@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -172,7 +172,7 @@ func (s *Service) requestStopTask(ctx context.Context, kv jetstream.KeyValue, ac
 		slog.ErrorContext(ctx, "ECS requestStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
 	}
-	sd := bus.StopDirective{TaskID: task.TaskID, Reason: reason}
+	sd := ecsv1.StopDirective{TaskID: task.TaskID, Reason: reason}
 	if perr := putJSON(ctx, kv, StopKey(task.Cluster, task.ContainerInstanceID, task.TaskID), &sd); perr != nil {
 		slog.ErrorContext(ctx, "ECS requestStopTask: post stop directive failed", "task", task.TaskID, "err", perr)
 	}

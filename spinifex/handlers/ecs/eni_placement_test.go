@@ -11,7 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -170,7 +170,7 @@ func TestTaskStop_ReleasesENIReservation(t *testing.T) {
 
 	// The agent reporting STOPPED is what releases a reservation; a StopTask only
 	// asks for it, and the release still waits on the report.
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID:   testAccountID,
 		ClusterName: "web",
 		TaskID:      ContainerInstanceShortID(aws.StringValue(first.Tasks[0].TaskArn)),

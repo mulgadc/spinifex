@@ -6,11 +6,11 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 )
 
 // Lifecycle status constants matching the AWS ECS enums. Task statuses are
-// re-exported from the bus package so the scheduler and the wire payloads agree.
+// re-exported from contracts/ecs/v1 so the scheduler and the wire payloads agree.
 const (
 	ClusterStatusActive   = "ACTIVE"
 	ClusterStatusInactive = "INACTIVE"
@@ -18,9 +18,9 @@ const (
 	InstanceStatusActive   = "ACTIVE"
 	InstanceStatusDraining = "DRAINING"
 
-	TaskStatusPending = bus.TaskStatusPending
-	TaskStatusRunning = bus.TaskStatusRunning
-	TaskStatusStopped = bus.TaskStatusStopped
+	TaskStatusPending = ecsv1.TaskStatusPending
+	TaskStatusRunning = ecsv1.TaskStatusRunning
+	TaskStatusStopped = ecsv1.TaskStatusStopped
 
 	ServiceStatusActive   = "ACTIVE"
 	ServiceStatusDraining = "DRAINING"

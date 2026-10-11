@@ -85,6 +85,8 @@ services:
       - spinifex/domains/eks/addon
       # Guest add-on wire contract (subject, report, staged-manifest body).
       - contracts/eks/v1
+      # ECS agent/scheduler Layer-2 bus wire contract (subjects, message types).
+      - contracts/ecs/v1
       - spinifex/domains/ochre/vector
     subscribes:
       # EC2 instance lifecycle.
@@ -162,6 +164,10 @@ services:
       # {account}.{db-instance}, so the subject is built at runtime and only the
       # prefix is declarable.
       - "rds.bus.*"
+      # ECS Layer-2 scheduler/agent bus (contracts/ecs/v1): account, cluster and
+      # instance/task IDs are runtime-built, so only the prefix is declarable.
+      # Only the leader holds these subscriptions, so there is no queue group.
+      - "ecs.bus.*"
       # Ochre vector store tenant surface (domains/ochre/vector/api.go),
       # gated behind config.OchreVectorConfig.Enabled (default off).
       - "ochre.vector.createIndex"
@@ -235,6 +241,10 @@ services:
       # → the in-guest rds-agent: set-password and the like, published on the
       # per-instance command subject and answered on its reply subject.
       - "rds.bus.*"
+      # ECS service-reconcile self-wake (contracts/ecs/v1): the worker that
+      # recorded a task-state change is rarely the leader, so this fans the
+      # wake out and the leader's own "ecs.bus.*" subscription picks it up.
+      - "ecs.bus.*"
     depends_on:
       - "vpc.*"
       - "ebs.*"

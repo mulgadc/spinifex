@@ -5,8 +5,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -114,7 +114,7 @@ func TestRecordTaskState_SelfExitMovesDesiredStatusToStopped(t *testing.T) {
 		&handlers_ecs.TaskRecord{TaskID: "t-1", DesiredStatus: handlers_ecs.TaskStatusRunning, LastStatus: handlers_ecs.TaskStatusRunning},
 	)
 
-	require.NoError(t, svc.RecordTaskState(t.Context(), &bus.TaskState{
+	require.NoError(t, svc.RecordTaskState(t.Context(), &ecsv1.TaskState{
 		AccountID: handlers_ecs.TestAccountID, ClusterName: "web", TaskID: "t-1",
 		LastStatus: handlers_ecs.TaskStatusStopped, Reason: "container exited (1)",
 	}))

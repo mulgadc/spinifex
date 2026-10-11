@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -291,9 +291,9 @@ func TestRecordTaskState_Awsvpc_ReleasesENIOnStopOnce(t *testing.T) {
 	require.NoError(t, err)
 	taskID := ContainerInstanceShortID(aws.StringValue(out.Tasks[0].TaskArn))
 
-	stop := &bus.TaskState{
+	stop := &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
-		LastStatus: bus.TaskStatusStopped, Reason: "exited",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "exited",
 	}
 	require.NoError(t, svc.recordTaskState(context.Background(), stop))
 	require.NoError(t, svc.recordTaskState(context.Background(), stop)) // re-report STOPPED

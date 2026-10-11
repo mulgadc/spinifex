@@ -1,4 +1,4 @@
-package bus
+package ecsv1
 
 import "time"
 
@@ -13,9 +13,9 @@ type InstanceCapacity struct {
 	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
-// RegisterInstance is published on RegisterSubject when an ecs-agent boots and
-// joins its cluster. The scheduler records a container-instance entry keyed by
-// InstanceID (handlers_ecs.InstanceKey).
+// RegisterInstance is the registration payload the scheduler decodes from
+// RegisterSubject, which has no current publisher. It records a
+// container-instance entry keyed by InstanceID.
 type RegisterInstance struct {
 	AccountID    string           `json:"accountId"`
 	ClusterName  string           `json:"clusterName"`
@@ -27,9 +27,9 @@ type RegisterInstance struct {
 	RegisteredAt time.Time        `json:"registeredAt"`
 }
 
-// Heartbeat is published on HeartbeatSubject every ~30s while the agent is
-// healthy. A missed heartbeat past the scheduler's TTL marks the instance
-// DISCONNECTED (wired in Sprint 4e).
+// Heartbeat is the liveness payload the scheduler decodes from HeartbeatSubject,
+// which has no current publisher; the agent's registration action carries
+// liveness instead.
 type Heartbeat struct {
 	AccountID    string    `json:"accountId"`
 	ClusterName  string    `json:"clusterName"`
@@ -78,7 +78,7 @@ type AssignContainer struct {
 	CPU       int    `json:"cpu,omitempty"`
 	MemoryMiB int    `json:"memoryMiB,omitempty"`
 	// GPU is the whole-GPU count requested via resourceRequirements type=GPU.
-	// Device pinning/CDI injection is not wired yet (later Epic C tasks).
+	// Device pinning/CDI injection is not wired yet.
 	GPU          int               `json:"gpu,omitempty"`
 	Essential    bool              `json:"essential"`
 	Command      []string          `json:"command,omitempty"`
@@ -106,9 +106,9 @@ type AssignContainer struct {
 	StopTimeout  *int64 `json:"stopTimeout,omitempty"`
 }
 
-// Assign is published on AssignSubject when the scheduler places a task on this
-// instance (scheduler → agent). The agent pulls each container image, creates and
-// starts the containers via containerd, then reports progress on TaskStateSubject.
+// Assign places a task on an instance (scheduler → agent). It is the payload of
+// the gateway's PollAssignments action; AssignSubject carries nothing today.
+// The agent pulls each image, starts the containers, then reports TaskState.
 type Assign struct {
 	AccountID       string            `json:"accountId"`
 	ClusterName     string            `json:"clusterName"`
@@ -157,9 +157,9 @@ type ContainerStatus struct {
 	GPUIDs []string `json:"gpuIds,omitempty"`
 }
 
-// TaskState is published on TaskStateSubject as the agent drives a task through
-// its lifecycle (agent → scheduler). The scheduler updates the task record and
-// recomputes the instance's remaining capacity.
+// TaskState reports a task's lifecycle (agent → scheduler). It is the payload of
+// the gateway's SubmitTaskStateChange action; TaskStateSubject carries nothing
+// today. The scheduler updates the task record and the instance's capacity.
 type TaskState struct {
 	AccountID   string            `json:"accountId"`
 	ClusterName string            `json:"clusterName"`

@@ -3,7 +3,7 @@ package handlers_ecs
 import (
 	"context"
 
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -30,6 +30,6 @@ func (s *Service) UpsertInstance(ctx context.Context, kv jetstream.KeyValue, acc
 	return s.upsertInstance(ctx, kv, accountID, cluster, instanceID, mutate)
 }
 
-func (s *Service) RecordTaskState(ctx context.Context, msg *bus.TaskState) error {
+func (s *Service) RecordTaskState(ctx context.Context, msg *ecsv1.TaskState) error {
 	return s.recordTaskState(ctx, msg)
 }

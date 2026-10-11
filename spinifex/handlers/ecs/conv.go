@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 )
 
 // awsStringSlice dereferences a []*string, dropping nils/empties.
@@ -266,8 +266,8 @@ func containerToAWS(c taskdefinition.Container) *ecs.ContainerDefinition {
 }
 
 // containerToAssign maps a persisted container def to its bus assign payload.
-func containerToAssign(c taskdefinition.Container) bus.AssignContainer {
-	return bus.AssignContainer{
+func containerToAssign(c taskdefinition.Container) ecsv1.AssignContainer {
+	return ecsv1.AssignContainer{
 		Name:                   c.Name,
 		Image:                  c.Image,
 		CPU:                    c.CPU,
@@ -291,24 +291,24 @@ func containerToAssign(c taskdefinition.Container) bus.AssignContainer {
 	}
 }
 
-func portMappingsToAssign(in []taskdefinition.PortMapping) []bus.PortMapping {
+func portMappingsToAssign(in []taskdefinition.PortMapping) []ecsv1.PortMapping {
 	if in == nil {
 		return nil
 	}
-	out := make([]bus.PortMapping, len(in))
+	out := make([]ecsv1.PortMapping, len(in))
 	for i, p := range in {
-		out[i] = bus.PortMapping{ContainerPort: p.ContainerPort, HostPort: p.HostPort, Protocol: p.Protocol, Name: p.Name}
+		out[i] = ecsv1.PortMapping{ContainerPort: p.ContainerPort, HostPort: p.HostPort, Protocol: p.Protocol, Name: p.Name}
 	}
 	return out
 }
 
-func systemControlsToAssign(in []taskdefinition.SystemControl) []bus.SystemControl {
+func systemControlsToAssign(in []taskdefinition.SystemControl) []ecsv1.SystemControl {
 	if in == nil {
 		return nil
 	}
-	out := make([]bus.SystemControl, len(in))
+	out := make([]ecsv1.SystemControl, len(in))
 	for i, sc := range in {
-		out[i] = bus.SystemControl{Namespace: sc.Namespace, Value: sc.Value}
+		out[i] = ecsv1.SystemControl{Namespace: sc.Namespace, Value: sc.Value}
 	}
 	return out
 }

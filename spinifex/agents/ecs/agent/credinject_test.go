@@ -3,18 +3,18 @@ package agent
 import (
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 )
 
 func TestTaskCredID(t *testing.T) {
 	cases := []struct {
 		name string
-		as   bus.Assign
+		as   ecsv1.Assign
 		want string
 	}{
-		{"no role", bus.Assign{TaskID: "t1"}, ""},
-		{"role, no credID -> taskID", bus.Assign{TaskID: "t1", TaskRoleARN: "arn:role"}, "t1"},
-		{"role + credID", bus.Assign{TaskID: "t1", CredID: "c9", TaskRoleARN: "arn:role"}, "c9"},
+		{"no role", ecsv1.Assign{TaskID: "t1"}, ""},
+		{"role, no credID -> taskID", ecsv1.Assign{TaskID: "t1", TaskRoleARN: "arn:role"}, "t1"},
+		{"role + credID", ecsv1.Assign{TaskID: "t1", CredID: "c9", TaskRoleARN: "arn:role"}, "c9"},
 	}
 	for _, tc := range cases {
 		if got := taskCredID(&tc.as); got != tc.want {

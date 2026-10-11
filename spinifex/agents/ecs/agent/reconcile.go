@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 // reconcile re-syncs the gateway with what this instance is actually running
@@ -38,7 +38,7 @@ func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 	// Assign is reconstructed from labels — enough to re-register creds and tear
 	// down netns.
 	type task struct {
-		as      *bus.Assign
+		as      *ecsv1.Assign
 		running []ctrruntime.Container
 		dead    []ctrruntime.Container
 	}
@@ -53,7 +53,7 @@ func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 		}
 		t := tasks[taskID]
 		if t == nil {
-			t = &task{as: &bus.Assign{
+			t = &task{as: &ecsv1.Assign{
 				TaskID:        taskID,
 				ClusterName:   a.id.ClusterName,
 				CredID:        c.Labels[labelCredID],
@@ -80,13 +80,13 @@ func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 		}
 
 		a.registerTaskCreds(t.as)
-		statuses := make([]bus.ContainerStatus, 0, len(t.running))
+		statuses := make([]ecsv1.ContainerStatus, 0, len(t.running))
 		for _, c := range t.running {
 			name := c.Labels[labelContainerName]
 			go a.waitContainer(ctx, t.as, name, c.ID)
-			statuses = append(statuses, bus.ContainerStatus{Name: name, Status: bus.TaskStatusRunning, ContainerID: c.ID})
+			statuses = append(statuses, ecsv1.ContainerStatus{Name: name, Status: ecsv1.TaskStatusRunning, ContainerID: c.ID})
 		}
-		a.reportTaskState(t.as, bus.TaskStatusRunning, "", statuses)
+		a.reportTaskState(t.as, ecsv1.TaskStatusRunning, "", statuses)
 		adopted[taskID] = true
 		slog.Info("ecs-agent: re-adopted running task", "task", taskID, "containers", len(t.running))
 	}
@@ -96,9 +96,9 @@ func (a *Agent) reconcile(ctx context.Context) map[string]bool {
 // reportStoppedTask clears a task's leftover containers and tells the gateway it
 // is STOPPED, so the scheduler stops counting a task this instance is not
 // running and its service can place a replacement.
-func (a *Agent) reportStoppedTask(ctx context.Context, as *bus.Assign, dead []ctrruntime.Container) {
+func (a *Agent) reportStoppedTask(ctx context.Context, as *ecsv1.Assign, dead []ctrruntime.Container) {
 	runner := a.rt.get()
-	statuses := make([]bus.ContainerStatus, 0, len(dead))
+	statuses := make([]ecsv1.ContainerStatus, 0, len(dead))
 	for _, c := range dead {
 		if runner == nil {
 			break
@@ -106,10 +106,10 @@ func (a *Agent) reportStoppedTask(ctx context.Context, as *bus.Assign, dead []ct
 		if err := runner.Remove(ctx, c.ID); err != nil {
 			slog.Warn("ecs-agent: reconcile remove failed", "task", as.TaskID, "container", c.ID, "err", err)
 		}
-		statuses = append(statuses, bus.ContainerStatus{
-			Name: c.Labels[labelContainerName], Status: bus.TaskStatusStopped, ContainerID: c.ID,
+		statuses = append(statuses, ecsv1.ContainerStatus{
+			Name: c.Labels[labelContainerName], Status: ecsv1.TaskStatusStopped, ContainerID: c.ID,
 		})
 	}
-	a.reportTaskState(as, bus.TaskStatusStopped, "Container exited while the agent was not running", statuses)
+	a.reportTaskState(as, ecsv1.TaskStatusStopped, "Container exited while the agent was not running", statuses)
 	slog.Info("ecs-agent: reported stopped task", "task", as.TaskID, "containers", len(dead))
 }

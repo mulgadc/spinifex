@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 // Agent wires the ecs-agent's runtime seams: a gateway control-plane client, a
@@ -174,8 +174,8 @@ func (a *Agent) Stop() error {
 // detectCapacity reports the host's total CPU units (1 vCPU = 1024), memory,
 // and GPU count/UUIDs from the caller's nvidia-smi discovery (nil on a
 // non-GPU host).
-func detectCapacity(gpuUUIDs []string) bus.InstanceCapacity {
-	return bus.InstanceCapacity{
+func detectCapacity(gpuUUIDs []string) ecsv1.InstanceCapacity {
+	return ecsv1.InstanceCapacity{
 		CPU:       goruntime.NumCPU() * 1024,
 		MemoryMiB: memTotalMiB(),
 		GPU:       len(gpuUUIDs),

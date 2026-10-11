@@ -13,8 +13,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -248,7 +248,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *taskdefin
 // subscribing to NATS, so the bus stays host-internal. Durable + restart-safe:
 // an unacked assign survives an agent crash and is re-delivered on the next poll.
 func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string, rec *TaskRecord, td *taskdefinition.Record) error {
-	msg := bus.Assign{
+	msg := ecsv1.Assign{
 		AccountID:        accountID,
 		ClusterName:      cluster,
 		InstanceID:       instanceID,

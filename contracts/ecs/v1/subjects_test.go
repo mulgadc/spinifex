@@ -1,4 +1,4 @@
-package bus
+package ecsv1
 
 import "testing"
 

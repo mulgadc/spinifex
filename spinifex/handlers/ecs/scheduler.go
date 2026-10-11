@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -278,7 +278,7 @@ func (sc *Scheduler) unsubscribeBus() {
 }
 
 func (sc *Scheduler) onRegister(msg *nats.Msg) {
-	var m bus.RegisterInstance
+	var m ecsv1.RegisterInstance
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		slog.Warn("ECS scheduler: bad register payload", "err", err)
 		return
@@ -293,7 +293,7 @@ func (sc *Scheduler) onRegister(msg *nats.Msg) {
 }
 
 func (sc *Scheduler) onHeartbeat(msg *nats.Msg) {
-	var m bus.Heartbeat
+	var m ecsv1.Heartbeat
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		return
 	}
@@ -303,7 +303,7 @@ func (sc *Scheduler) onHeartbeat(msg *nats.Msg) {
 }
 
 func (sc *Scheduler) onTaskState(msg *nats.Msg) {
-	var m bus.TaskState
+	var m ecsv1.TaskState
 	if err := json.Unmarshal(msg.Data, &m); err != nil {
 		return
 	}

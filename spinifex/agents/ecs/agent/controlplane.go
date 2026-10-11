@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/internal/ecsgw"
 	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 // controlPlane is the agent's channel to the AWS gateway. It replaces the direct
@@ -21,14 +21,14 @@ import (
 type controlPlane interface {
 	// Register (re-)registers the container instance. Called at boot and on every
 	// heartbeat tick — the gateway's RegisterContainerInstance is idempotent and
-	// refreshes LastSeen, folding liveness into registration (no bus.Heartbeat).
+	// refreshes LastSeen, folding liveness into registration (no ecsv1.Heartbeat).
 	Register(id identity) error
 	// SubmitTaskState reports a task's RUNNING/STOPPED transition.
-	SubmitTaskState(st bus.TaskState) error
+	SubmitTaskState(st ecsv1.TaskState) error
 	// PollAssignments drains this instance's assignment + stop inboxes, acking the
 	// assign taskIDs and stop taskIDs accepted on the previous poll. Returns the
 	// still-pending assignments and stop directives.
-	PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error)
+	PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]ecsv1.Assign, []ecsv1.StopDirective, error)
 	// ReportTaskGPU reports the local ledger's pinned device UUIDs for a task's
 	// containers, so the control plane can populate DescribeTasks gpuIds.
 	ReportTaskGPU(cluster, task string, containers []handlers_ecs.ContainerGPUReport) error
@@ -96,7 +96,7 @@ func (g *gatewayControlPlane) Register(id identity) error {
 	return nil
 }
 
-func (g *gatewayControlPlane) SubmitTaskState(st bus.TaskState) error {
+func (g *gatewayControlPlane) SubmitTaskState(st ecsv1.TaskState) error {
 	in := &ecs.SubmitTaskStateChangeInput{
 		Cluster: aws.String(st.ClusterName),
 		Task:    aws.String(st.TaskID),
@@ -124,7 +124,7 @@ func (g *gatewayControlPlane) SubmitTaskState(st bus.TaskState) error {
 	return nil
 }
 
-func (g *gatewayControlPlane) PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error) {
+func (g *gatewayControlPlane) PollAssignments(cluster, instance string, ackAssigns, ackStops []string) ([]ecsv1.Assign, []ecsv1.StopDirective, error) {
 	in := &handlers_ecs.PollAssignmentsInput{
 		Cluster:           cluster,
 		ContainerInstance: instance,

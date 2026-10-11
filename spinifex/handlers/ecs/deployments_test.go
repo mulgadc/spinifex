@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +34,7 @@ func driveRunning(t *testing.T, svc *Service, kv jetstream.KeyValue, cluster, na
 		if tasks[i].LastStatus != TaskStatusPending {
 			continue
 		}
-		require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+		require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 			AccountID: testAccountID, ClusterName: cluster, TaskID: tasks[i].TaskID,
 			LastStatus: TaskStatusRunning,
 		}))
@@ -51,7 +51,7 @@ func failPending(t *testing.T, svc *Service, kv jetstream.KeyValue, cluster, nam
 		if tasks[i].LastStatus != TaskStatusPending {
 			continue
 		}
-		require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+		require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 			AccountID: testAccountID, ClusterName: cluster, TaskID: tasks[i].TaskID,
 			LastStatus: TaskStatusStopped, Reason: "image pull failed",
 		}))

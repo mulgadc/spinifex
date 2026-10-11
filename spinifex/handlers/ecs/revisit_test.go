@@ -12,8 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -74,12 +74,12 @@ func TestScheduler_ATaskStateTriggersAPassAndAHeartbeatDoesNot(t *testing.T) {
 	sc, svc, kv := schedulerRig(t)
 	taskID := runOneTask(t, svc, kv)
 
-	sc.onHeartbeat(busMsg(t, &bus.Heartbeat{
+	sc.onHeartbeat(busMsg(t, &ecsv1.Heartbeat{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
 	}))
 	assert.False(t, woke(sc), "a heartbeat says only that an instance is alive: the reaper reads it, the reconcile does not")
 
-	sc.onTaskState(busMsg(t, &bus.TaskState{
+	sc.onTaskState(busMsg(t, &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", TaskID: taskID, LastStatus: TaskStatusRunning,
 	}))
 	assert.True(t, woke(sc), "a task changing state moves a service's running count, so it must wake the reconcile")
@@ -90,7 +90,7 @@ func TestScheduler_ABurstOfTaskStatesLeavesOneSignal(t *testing.T) {
 	taskID := runOneTask(t, svc, kv)
 
 	for range 5 {
-		sc.onTaskState(busMsg(t, &bus.TaskState{
+		sc.onTaskState(busMsg(t, &ecsv1.TaskState{
 			AccountID: testAccountID, ClusterName: "web", TaskID: taskID, LastStatus: TaskStatusRunning,
 		}))
 	}
@@ -238,7 +238,7 @@ func TestScheduler_AnInFlightServiceAsksToBeRevisited(t *testing.T) {
 	found, err := getJSON(t.Context(), kv, keys[0], &task)
 	require.NoError(t, err)
 	require.True(t, found)
-	require.NoError(t, svc.recordTaskState(t.Context(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", TaskID: task.TaskID, LastStatus: TaskStatusRunning,
 	}))
 

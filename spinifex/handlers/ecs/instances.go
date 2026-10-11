@@ -10,8 +10,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -322,7 +322,7 @@ func instanceAttributes(r *InstanceRecord) []*ecs.Attribute {
 // --- Layer-2 bus event handlers (called by the scheduler) ---
 
 // recordRegister upserts a container-instance record from a bus RegisterInstance.
-func (s *Service) recordRegister(ctx context.Context, msg *bus.RegisterInstance) error {
+func (s *Service) recordRegister(ctx context.Context, msg *ecsv1.RegisterInstance) error {
 	kv, err := s.bucket(ctx, msg.AccountID)
 	if err != nil {
 		return err
@@ -339,7 +339,7 @@ func (s *Service) recordRegister(ctx context.Context, msg *bus.RegisterInstance)
 }
 
 // recordHeartbeat refreshes an instance's LastSeen and status from a bus beat.
-func (s *Service) recordHeartbeat(ctx context.Context, msg *bus.Heartbeat) error {
+func (s *Service) recordHeartbeat(ctx context.Context, msg *ecsv1.Heartbeat) error {
 	kv, err := s.bucket(ctx, msg.AccountID)
 	if err != nil {
 		return err
@@ -358,7 +358,7 @@ func (s *Service) recordHeartbeat(ctx context.Context, msg *bus.Heartbeat) error
 
 // recordTaskState applies an agent task-state report: it updates the task record
 // and, on STOPPED, releases the reserved capacity back to the instance.
-func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error {
+func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) error {
 	kv, err := s.bucket(ctx, msg.AccountID)
 	if err != nil {
 		return err
@@ -439,11 +439,11 @@ func (s *Service) recordTaskState(ctx context.Context, msg *bus.TaskState) error
 }
 
 // SubmitTaskStateChange is the AWS-API task-state path (agent → gateway → here).
-// It maps the SDK input onto the same bus.TaskState shape the Layer-2 bus
+// It maps the SDK input onto the same ecsv1.TaskState shape the Layer-2 bus
 // delivers and converges on recordTaskState, so a gateway-routed agent reports
 // state without touching NATS. The account is authoritative from accountID.
 func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTaskStateChangeInput, accountID string) (*ecs.SubmitTaskStateChangeOutput, error) {
-	msg := bus.TaskState{
+	msg := ecsv1.TaskState{
 		AccountID:   accountID,
 		ClusterName: ClusterShortName(aws.StringValue(input.Cluster)),
 		TaskID:      TaskShortID(aws.StringValue(input.Task)),
@@ -452,7 +452,7 @@ func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTa
 		ReportedAt:  time.Now().UTC(),
 	}
 	for _, c := range input.Containers {
-		cs := bus.ContainerStatus{
+		cs := ecsv1.ContainerStatus{
 			Name:        aws.StringValue(c.ContainerName),
 			Status:      aws.StringValue(c.Status),
 			ContainerID: aws.StringValue(c.RuntimeId),
@@ -469,7 +469,7 @@ func (s *Service) SubmitTaskStateChange(ctx context.Context, input *ecs.SubmitTa
 	// A task changing state is what moves a service's running count, so the
 	// scheduler is woken here rather than left to find out on its own deadline.
 	// The worker serving this call is rarely the leader, hence a published wake.
-	if err := s.nc.Publish(bus.ServiceReconcileSubject(accountID, msg.ClusterName), nil); err != nil {
+	if err := s.nc.Publish(ecsv1.ServiceReconcileSubject(accountID, msg.ClusterName), nil); err != nil {
 		slog.Debug("ECS: reconcile wake failed", "cluster", msg.ClusterName, "err", err)
 	}
 	return &ecs.SubmitTaskStateChangeOutput{Acknowledgment: aws.String("OK")}, nil

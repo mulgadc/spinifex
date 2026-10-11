@@ -9,7 +9,7 @@ import (
 // heartbeater keeps the container instance alive by periodically re-registering
 // it through the gateway. Real ECS folds liveness into ACS; v1 folds it into an
 // idempotent RegisterContainerInstance, which refreshes the instance's LastSeen
-// so the scheduler can tell live instances from dead ones (no bus.Heartbeat).
+// so the scheduler can tell live instances from dead ones (no ecsv1.Heartbeat).
 type heartbeater struct {
 	cp       controlPlane
 	id       identity

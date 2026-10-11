@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -113,9 +113,9 @@ func TestService_Reconcile_ReplacesStoppedTask(t *testing.T) {
 	require.Len(t, tasks, 2)
 
 	// One task stops (agent report).
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
-		TaskID: tasks[0].TaskID, LastStatus: bus.TaskStatusStopped,
+		TaskID: tasks[0].TaskID, LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	live, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
@@ -482,16 +482,16 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 	assert.Equal(t, TaskStatusStopped, aws.StringValue(out.Task.DesiredStatus))
 	assert.Empty(t, reg.deregistered)
 
-	var sd bus.StopDirective
+	var sd ecsv1.StopDirective
 	found, err := getJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, "bye", sd.Reason)
 
 	// Agent reports STOPPED → deregister + stop-inbox reclaimed.
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
-		TaskID: "t-9", LastStatus: bus.TaskStatusStopped,
+		TaskID: "t-9", LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.9", 80)}, reg.deregistered)
 	found, err = getJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
@@ -553,17 +553,17 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), task))
 
 	// RUNNING → register.
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
-		TaskID: "t-1", LastStatus: bus.TaskStatusRunning,
+		TaskID: "t-1", LastStatus: ecsv1.TaskStatusRunning,
 	}))
 	require.Equal(t, []string{key(tgARN, "10.0.1.5", 80)}, reg.registered)
 	assert.Empty(t, reg.deregistered)
 
 	// STOPPED → deregister.
-	require.NoError(t, svc.recordTaskState(context.Background(), &bus.TaskState{
+	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1",
-		TaskID: "t-1", LastStatus: bus.TaskStatusStopped,
+		TaskID: "t-1", LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.5", 80)}, reg.deregistered)
 }

@@ -3,7 +3,7 @@ package handlers_ecs
 import (
 	"context"
 
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -25,8 +25,8 @@ type PollAssignmentsInput struct {
 // PollAssignmentsOutput carries the instance's currently pending assignments and
 // stop directives.
 type PollAssignmentsOutput struct {
-	Assignments []bus.Assign        `json:"assignments,omitempty"`
-	Stops       []bus.StopDirective `json:"stops,omitempty"`
+	Assignments []ecsv1.Assign        `json:"assignments,omitempty"`
+	Stops       []ecsv1.StopDirective `json:"stops,omitempty"`
 }
 
 // PollAssignments acks any completed assignments (deletes their inbox keys) then
@@ -61,7 +61,7 @@ func (s *Service) PollAssignments(ctx context.Context, input *PollAssignmentsInp
 	}
 	out := &PollAssignmentsOutput{}
 	for _, key := range keys {
-		var as bus.Assign
+		var as ecsv1.Assign
 		found, err := getJSON(ctx, kv, key, &as)
 		if err != nil {
 			return nil, err
@@ -76,7 +76,7 @@ func (s *Service) PollAssignments(ctx context.Context, input *PollAssignmentsInp
 		return nil, err
 	}
 	for _, key := range stopKeys {
-		var sd bus.StopDirective
+		var sd ecsv1.StopDirective
 		found, err := getJSON(ctx, kv, key, &sd)
 		if err != nil {
 			return nil, err

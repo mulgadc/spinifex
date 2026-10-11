@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 // fakeCP is a test double for the gateway control-plane. It records registers,
@@ -20,13 +20,13 @@ type fakeCP struct {
 
 	registers      int
 	lastRegistered identity
-	states         []bus.TaskState
+	states         []ecsv1.TaskState
 	gpuReports     []gpuReport
 	pollAcks       [][]string
 	pollStopAcks   [][]string
-	pollReplies    [][]bus.Assign
-	stopReplies    [][]bus.StopDirective
-	stopPending    []bus.StopDirective
+	pollReplies    [][]ecsv1.Assign
+	stopReplies    [][]ecsv1.StopDirective
+	stopPending    []ecsv1.StopDirective
 	pollCalls      int
 
 	registerErr bool
@@ -60,7 +60,7 @@ func (f *fakeCP) registered() identity {
 	return f.lastRegistered
 }
 
-func (f *fakeCP) SubmitTaskState(st bus.TaskState) error {
+func (f *fakeCP) SubmitTaskState(st ecsv1.TaskState) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.submitErr {
@@ -70,22 +70,22 @@ func (f *fakeCP) SubmitTaskState(st bus.TaskState) error {
 	return nil
 }
 
-func (f *fakeCP) PollAssignments(_, _ string, ackAssigns, ackStops []string) ([]bus.Assign, []bus.StopDirective, error) {
+func (f *fakeCP) PollAssignments(_, _ string, ackAssigns, ackStops []string) ([]ecsv1.Assign, []ecsv1.StopDirective, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pollAcks = append(f.pollAcks, append([]string(nil), ackAssigns...))
 	f.pollStopAcks = append(f.pollStopAcks, append([]string(nil), ackStops...))
-	var out []bus.Assign
+	var out []ecsv1.Assign
 	if f.pollCalls < len(f.pollReplies) {
 		out = f.pollReplies[f.pollCalls]
 	}
-	var stops []bus.StopDirective
+	var stops []ecsv1.StopDirective
 	if f.pollCalls < len(f.stopReplies) {
 		stops = f.stopReplies[f.pollCalls]
 	}
 	// stopPending is the durable inbox the gateway keeps: an acked directive is
 	// deleted, and everything still in it is redelivered on every poll.
-	f.stopPending = slices.DeleteFunc(f.stopPending, func(sd bus.StopDirective) bool {
+	f.stopPending = slices.DeleteFunc(f.stopPending, func(sd ecsv1.StopDirective) bool {
 		return slices.Contains(ackStops, sd.TaskID)
 	})
 	stops = slices.Concat(stops, f.stopPending)
@@ -118,10 +118,10 @@ func (f *fakeCP) registerCount() int {
 	return f.registers
 }
 
-func (f *fakeCP) taskStates() []bus.TaskState {
+func (f *fakeCP) taskStates() []ecsv1.TaskState {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]bus.TaskState(nil), f.states...)
+	return append([]ecsv1.TaskState(nil), f.states...)
 }
 
 func (f *fakeCP) acks() [][]string {
@@ -143,7 +143,7 @@ func testIdentity() identity {
 		InstanceID:   "i-abc123",
 		AZ:           "us-east-1a",
 		Hostname:     "ecs-host",
-		Capacity:     bus.InstanceCapacity{CPU: 2048, MemoryMiB: 4096},
+		Capacity:     ecsv1.InstanceCapacity{CPU: 2048, MemoryMiB: 4096},
 		AgentVersion: "test",
 	}
 }

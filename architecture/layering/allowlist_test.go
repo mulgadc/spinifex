@@ -24,7 +24,6 @@ var allowlist = []allowance{
 	{From: "accountteardown", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 
 	{From: "agents/ecs/agent", To: "handlers/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
-	{From: "agents/ecs/agent", To: "handlers/ecs/bus", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},
 
 	{From: "agents/eks/tokenwebhook", To: "handlers/eks", Debt: "agents/eks/tokenwebhook", Reason: "WebhookTokenReviewResult from the EKS implementation; needs an EKS contract or projection"},
 

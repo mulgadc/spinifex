@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 const testTaskRole = "arn:aws:iam::111122223333:role/task"
@@ -66,7 +66,7 @@ func TestReconcile_AdoptsRunningLabeledContainer(t *testing.T) {
 	if got := a.cred.roles["t-001"]; got != testTaskRole {
 		t.Errorf("cred not re-registered: roles[t-001] = %q, want %q", got, testTaskRole)
 	}
-	if n := countStatus(cp.taskStates(), "t-001", bus.TaskStatusRunning); n != 1 {
+	if n := countStatus(cp.taskStates(), "t-001", ecsv1.TaskStatusRunning); n != 1 {
 		t.Errorf("RUNNING reports for t-001 = %d, want 1", n)
 	}
 	waitedFor(t, rt, containerID("t-001", "web"))
@@ -89,10 +89,10 @@ func TestReconcile_ReportsTaskWhoseContainerDied(t *testing.T) {
 
 	adopted := a.reconcile(context.Background())
 
-	if n := countStatus(cp.taskStates(), "t-dead", bus.TaskStatusStopped); n != 1 {
+	if n := countStatus(cp.taskStates(), "t-dead", ecsv1.TaskStatusStopped); n != 1 {
 		t.Errorf("STOPPED reports for t-dead = %d, want 1", n)
 	}
-	if n := countStatus(cp.taskStates(), "t-dead", bus.TaskStatusRunning); n != 0 {
+	if n := countStatus(cp.taskStates(), "t-dead", ecsv1.TaskStatusRunning); n != 0 {
 		t.Errorf("t-dead must not be reported RUNNING, got %d such reports", n)
 	}
 	// Seeded so a re-delivered assignment for the dead task is acked, not re-run.
@@ -121,10 +121,10 @@ func TestReconcile_PartiallyDeadTaskStaysRunning(t *testing.T) {
 
 	a.reconcile(context.Background())
 
-	if n := countStatus(cp.taskStates(), "t-mixed", bus.TaskStatusRunning); n != 1 {
+	if n := countStatus(cp.taskStates(), "t-mixed", ecsv1.TaskStatusRunning); n != 1 {
 		t.Errorf("RUNNING reports for t-mixed = %d, want 1", n)
 	}
-	if n := countStatus(cp.taskStates(), "t-mixed", bus.TaskStatusStopped); n != 0 {
+	if n := countStatus(cp.taskStates(), "t-mixed", ecsv1.TaskStatusStopped); n != 0 {
 		t.Errorf("t-mixed must not be reported STOPPED while a container still runs, got %d", n)
 	}
 }
@@ -132,14 +132,14 @@ func TestReconcile_PartiallyDeadTaskStaysRunning(t *testing.T) {
 // pollAssignments seeded with an adopted task acks its re-delivered assignment
 // but does not re-run it, while a genuinely new task still dispatches.
 func TestPollAssignments_SeededTaskNotRerun(t *testing.T) {
-	mk := func(id string) bus.Assign {
-		return bus.Assign{
+	mk := func(id string) ecsv1.Assign {
+		return ecsv1.Assign{
 			AccountID: "123456789012", ClusterName: "default", InstanceID: "i-abc123", TaskID: id,
-			Containers: []bus.AssignContainer{{Name: "web", Image: "registry/web:1", Command: []string{"/bin/true"}}},
+			Containers: []ecsv1.AssignContainer{{Name: "web", Image: "registry/web:1", Command: []string{"/bin/true"}}},
 		}
 	}
 	adopted, fresh := mk("t-001"), mk("t-002")
-	cp := &fakeCP{pollReplies: [][]bus.Assign{
+	cp := &fakeCP{pollReplies: [][]ecsv1.Assign{
 		{adopted, fresh},
 		{adopted, fresh},
 		nil,
@@ -151,7 +151,7 @@ func TestPollAssignments_SeededTaskNotRerun(t *testing.T) {
 	go a.pollAssignments(ctx, map[string]bool{"t-001": true})
 
 	deadline := time.After(time.Second)
-	for countStatus(cp.taskStates(), "t-002", bus.TaskStatusRunning) < 1 {
+	for countStatus(cp.taskStates(), "t-002", ecsv1.TaskStatusRunning) < 1 {
 		select {
 		case <-deadline:
 			t.Fatal("fresh task t-002 was never dispatched")
@@ -161,10 +161,10 @@ func TestPollAssignments_SeededTaskNotRerun(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 
-	if n := countStatus(cp.taskStates(), "t-001", bus.TaskStatusRunning); n != 0 {
+	if n := countStatus(cp.taskStates(), "t-001", ecsv1.TaskStatusRunning); n != 0 {
 		t.Errorf("adopted task t-001 was re-run %d times, want 0", n)
 	}
-	if n := countStatus(cp.taskStates(), "t-002", bus.TaskStatusRunning); n != 1 {
+	if n := countStatus(cp.taskStates(), "t-002", ecsv1.TaskStatusRunning); n != 1 {
 		t.Errorf("fresh task t-002 dispatched %d times, want 1", n)
 	}
 	var t1Acked bool
@@ -205,7 +205,7 @@ func TestReconcile_IgnoresOtherClusterContainers(t *testing.T) {
 		t.Fatalf("adopted = %v, want only t-ok", adopted)
 	}
 	for _, id := range []string{"t-other", "t-other-dead"} {
-		if n := countStatus(cp.taskStates(), id, bus.TaskStatusStopped); n != 0 {
+		if n := countStatus(cp.taskStates(), id, ecsv1.TaskStatusStopped); n != 0 {
 			t.Errorf("reported %d STOPPED states for another cluster's task %s, want 0", n, id)
 		}
 	}
@@ -227,7 +227,7 @@ func TestReconcile_DegradesGracefully(t *testing.T) {
 
 // taskLabels emits the optional cred/role/MAC labels only when set.
 func TestTaskLabels_OmitsEmptyOptionalLabels(t *testing.T) {
-	full := taskLabels(&bus.Assign{
+	full := taskLabels(&ecsv1.Assign{
 		TaskID: "t1", ClusterName: "c", CredID: "x", TaskRoleARN: testTaskRole, ENIMacAddress: "mac",
 	}, "web")
 	for k, want := range map[string]string{
@@ -238,7 +238,7 @@ func TestTaskLabels_OmitsEmptyOptionalLabels(t *testing.T) {
 		}
 	}
 
-	bare := taskLabels(&bus.Assign{TaskID: "t1", ClusterName: "c"}, "web")
+	bare := taskLabels(&ecsv1.Assign{TaskID: "t1", ClusterName: "c"}, "web")
 	if len(bare) != 3 {
 		t.Errorf("bare labels = %v, want only taskID/containerName/clusterName", bare)
 	}

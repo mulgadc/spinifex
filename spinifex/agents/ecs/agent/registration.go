@@ -5,8 +5,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 // identity is the container instance's stable identity, assembled at boot from
@@ -19,7 +19,7 @@ type identity struct {
 	AZ           string
 	InstanceType string
 	Hostname     string
-	Capacity     bus.InstanceCapacity
+	Capacity     ecsv1.InstanceCapacity
 	AgentVersion string
 }
 
@@ -48,7 +48,7 @@ func advertisedIdentity(id identity, runtimeReady bool) identity {
 	if runtimeReady {
 		return id
 	}
-	id.Capacity = bus.InstanceCapacity{}
+	id.Capacity = ecsv1.InstanceCapacity{}
 	return id
 }
 

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	"github.com/mulgadc/spinifex/spinifex/handlers/ecs/bus"
 )
 
 // defaultStopTimeout is applied when a container carries no explicit
@@ -127,7 +127,7 @@ func (l *stopLedger) seen(taskID string) bool {
 // Idempotent — a task with no live containers still reports STOPPED so the
 // scheduler releases its capacity. Reports whether it got as far as saying
 // STOPPED: a caller may only ack the directive when it did.
-func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
+func (a *Agent) stopTask(ctx context.Context, sd ecsv1.StopDirective) bool {
 	runner := a.rt.get()
 	if runner == nil {
 		slog.Warn("ecs-agent: stop deferred, no container runtime", "task", sd.TaskID)
@@ -138,7 +138,7 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
 		slog.Warn("ecs-agent: stop list failed", "task", sd.TaskID, "err", err)
 		return false
 	}
-	statuses := make([]bus.ContainerStatus, 0)
+	statuses := make([]ecsv1.ContainerStatus, 0)
 	for _, c := range containers {
 		if c.Labels[labelTaskID] != sd.TaskID {
 			continue
@@ -146,15 +146,15 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
 		if rerr := runner.Stop(ctx, c.ID, containerStopTimeout(c.Labels)); rerr != nil {
 			slog.Warn("ecs-agent: stop failed", "task", sd.TaskID, "container", c.ID, "err", rerr)
 		}
-		statuses = append(statuses, bus.ContainerStatus{
-			Name: c.Labels[labelContainerName], Status: bus.TaskStatusStopped, ContainerID: c.ID,
+		statuses = append(statuses, ecsv1.ContainerStatus{
+			Name: c.Labels[labelContainerName], Status: ecsv1.TaskStatusStopped, ContainerID: c.ID,
 		})
 	}
 	reason := sd.Reason
 	if reason == "" {
 		reason = "Task stopped"
 	}
-	a.reportTaskState(&bus.Assign{TaskID: sd.TaskID}, bus.TaskStatusStopped, reason, statuses)
+	a.reportTaskState(&ecsv1.Assign{TaskID: sd.TaskID}, ecsv1.TaskStatusStopped, reason, statuses)
 	slog.Info("ecs-agent: task reaped", "task", sd.TaskID, "containers", len(statuses))
 	return true
 }
@@ -162,10 +162,10 @@ func (a *Agent) stopTask(ctx context.Context, sd bus.StopDirective) bool {
 // runTask pulls each container image, starts the containers, and reports task
 // state on the bus. A missing runtime or any per-container failure reports the
 // task STOPPED with a reason; success reports RUNNING and waits for exit.
-func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
+func (a *Agent) runTask(ctx context.Context, as *ecsv1.Assign) {
 	rt := a.rt.get()
 	if rt == nil {
-		a.reportTaskState(as, bus.TaskStatusStopped, "containerd unavailable on agent", nil)
+		a.reportTaskState(as, ecsv1.TaskStatusStopped, "containerd unavailable on agent", nil)
 		return
 	}
 
@@ -173,14 +173,14 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 	netnsPath, err := a.setupTaskNetns(as)
 	if err != nil {
 		slog.Error("ecs-agent: task netns setup failed", "task", as.TaskID, "err", err)
-		a.reportTaskState(as, bus.TaskStatusStopped, "network setup failed: "+err.Error(), nil)
+		a.reportTaskState(as, ecsv1.TaskStatusStopped, "network setup failed: "+err.Error(), nil)
 		return
 	}
 
 	credID := a.registerTaskCreds(as)
 	resolver := a.pullResolver(as)
 
-	statuses := make([]bus.ContainerStatus, 0, len(as.Containers))
+	statuses := make([]ecsv1.ContainerStatus, 0, len(as.Containers))
 	for _, c := range as.Containers {
 		// startTimeout bounds pull-through-start as a unit: real ECS measures a
 		// container's time-to-RUNNING from the same starting point.
@@ -190,7 +190,7 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 			cancel()
 			slog.Error("ecs-agent: pull failed", "task", as.TaskID, "image", c.Image, "err", err)
 			a.teardownTaskNetns(as)
-			a.reportTaskState(as, bus.TaskStatusStopped, "image pull failed: "+err.Error(), statuses)
+			a.reportTaskState(as, ecsv1.TaskStatusStopped, "image pull failed: "+err.Error(), statuses)
 			return
 		}
 
@@ -222,22 +222,22 @@ func (a *Agent) runTask(ctx context.Context, as *bus.Assign) {
 		if err != nil {
 			slog.Error("ecs-agent: run failed", "task", as.TaskID, "container", c.Name, "err", err)
 			a.teardownTaskNetns(as)
-			a.reportTaskState(as, bus.TaskStatusStopped, "container start failed: "+err.Error(), statuses)
+			a.reportTaskState(as, ecsv1.TaskStatusStopped, "container start failed: "+err.Error(), statuses)
 			return
 		}
-		statuses = append(statuses, bus.ContainerStatus{
-			Name: c.Name, Status: bus.TaskStatusRunning, ContainerID: id, GPUIDs: gpuIDs,
+		statuses = append(statuses, ecsv1.ContainerStatus{
+			Name: c.Name, Status: ecsv1.TaskStatusRunning, ContainerID: id, GPUIDs: gpuIDs,
 		})
 		go a.waitContainer(ctx, as, c.Name, id)
 	}
 
-	a.reportTaskState(as, bus.TaskStatusRunning, "", statuses)
+	a.reportTaskState(as, ecsv1.TaskStatusRunning, "", statuses)
 	slog.Info("ecs-agent: task running", "task", as.TaskID, "containers", len(statuses))
 }
 
 // waitContainer blocks until a container exits, then reports the task STOPPED
 // with the exit code. v1 stops the whole task when its first container exits.
-func (a *Agent) waitContainer(ctx context.Context, as *bus.Assign, name, containerID string) {
+func (a *Agent) waitContainer(ctx context.Context, as *ecsv1.Assign, name, containerID string) {
 	runner := a.rt.get()
 	if runner == nil {
 		slog.Warn("ecs-agent: cannot wait on container, no container runtime", "task", as.TaskID, "container", name)
@@ -250,14 +250,14 @@ func (a *Agent) waitContainer(ctx context.Context, as *bus.Assign, name, contain
 	}
 	exit := status.ExitCode
 	a.teardownTaskNetns(as)
-	statuses := []bus.ContainerStatus{{Name: name, Status: bus.TaskStatusStopped, ContainerID: containerID, ExitCode: &exit}}
-	a.reportTaskState(as, bus.TaskStatusStopped, fmt.Sprintf("container %s exited (%d)", name, exit), statuses)
+	statuses := []ecsv1.ContainerStatus{{Name: name, Status: ecsv1.TaskStatusStopped, ContainerID: containerID, ExitCode: &exit}}
+	a.reportTaskState(as, ecsv1.TaskStatusStopped, fmt.Sprintf("container %s exited (%d)", name, exit), statuses)
 	slog.Info("ecs-agent: task stopped", "task", as.TaskID, "container", name, "exitCode", exit)
 }
 
 // setupTaskNetns builds the awsvpc task netns from the hot-plugged ENI. Bridge/
 // host tasks (no ENI MAC) and a nil controller are no-ops returning an empty path.
-func (a *Agent) setupTaskNetns(as *bus.Assign) (string, error) {
+func (a *Agent) setupTaskNetns(as *ecsv1.Assign) (string, error) {
 	if as.ENIMacAddress == "" || a.netns == nil {
 		return "", nil
 	}
@@ -267,7 +267,7 @@ func (a *Agent) setupTaskNetns(as *bus.Assign) (string, error) {
 // teardownTaskNetns releases the task's IAM credential registration, then removes
 // the awsvpc task netns (the latter is a no-op for bridge/host tasks). It runs at
 // every task-stop path so credentials never outlive the task that owns them.
-func (a *Agent) teardownTaskNetns(as *bus.Assign) {
+func (a *Agent) teardownTaskNetns(as *ecsv1.Assign) {
 	if a.cred != nil {
 		a.cred.Deregister(taskCredID(as))
 	}
@@ -283,7 +283,7 @@ func (a *Agent) teardownTaskNetns(as *bus.Assign) {
 // assign carries an execution role, it authorizes pulls as that role (assumed
 // over the gateway); an empty role or a nil credential endpoint (unit tests)
 // falls back to the instance-role resolver, so a pull is never worse off.
-func (a *Agent) pullResolver(as *bus.Assign) ctrruntime.Resolver {
+func (a *Agent) pullResolver(as *ecsv1.Assign) ctrruntime.Resolver {
 	if as.ExecutionRoleARN == "" || a.cred == nil {
 		return a.resolver
 	}
@@ -293,7 +293,7 @@ func (a *Agent) pullResolver(as *bus.Assign) ctrruntime.Resolver {
 
 // registerTaskCreds registers the task's credID -> role mapping with the
 // credential endpoint and returns the credID (empty when the task has no role).
-func (a *Agent) registerTaskCreds(as *bus.Assign) string {
+func (a *Agent) registerTaskCreds(as *ecsv1.Assign) string {
 	credID := taskCredID(as)
 	if credID == "" || a.cred == nil {
 		return credID
@@ -305,7 +305,7 @@ func (a *Agent) registerTaskCreds(as *bus.Assign) string {
 // taskCredID is the credential ID a task's containers fetch credentials under:
 // the scheduler-assigned CredID, falling back to the taskID. Empty when the task
 // carries no IAM role.
-func taskCredID(as *bus.Assign) string {
+func taskCredID(as *ecsv1.Assign) string {
 	if as.TaskRoleARN == "" {
 		return ""
 	}
@@ -353,9 +353,9 @@ func containerStopTimeout(labels map[string]string) time.Duration {
 }
 
 // toRuntimeSystemControls maps the assign's sysctl pairs to the runtime
-// package's own type, keeping agents/ecs/runtime decoupled from the ecs
-// handlers' bus package.
-func toRuntimeSystemControls(in []bus.SystemControl) []ctrruntime.SystemControl {
+// package's own type, keeping agents/ecs/runtime decoupled from
+// contracts/ecs/v1.
+func toRuntimeSystemControls(in []ecsv1.SystemControl) []ctrruntime.SystemControl {
 	if len(in) == 0 {
 		return nil
 	}
@@ -386,11 +386,11 @@ func (a *Agent) pinContainerGPUs(taskID, containerName string, n int) []string {
 // reportTaskState reports a task transition through the gateway's
 // SubmitTaskStateChange action, then (RUNNING with pinned GPUs) reports the
 // per-container device UUIDs, and (STOPPED) releases them back to the ledger.
-func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, containers []bus.ContainerStatus) {
+func (a *Agent) reportTaskState(as *ecsv1.Assign, status, reason string, containers []ecsv1.ContainerStatus) {
 	if a.cp == nil {
 		return
 	}
-	msg := bus.TaskState{
+	msg := ecsv1.TaskState{
 		AccountID:   a.id.AccountID,
 		ClusterName: a.id.ClusterName,
 		InstanceID:  a.id.InstanceID,
@@ -404,7 +404,7 @@ func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, container
 		slog.Error("ecs-agent: report task-state failed", "task", as.TaskID, "err", err)
 	}
 	a.reportTaskGPUs(as.TaskID, containers)
-	if status == bus.TaskStatusStopped && a.gpu != nil {
+	if status == ecsv1.TaskStatusStopped && a.gpu != nil {
 		a.gpu.ReleaseTask(as.TaskID)
 	}
 }
@@ -412,7 +412,7 @@ func (a *Agent) reportTaskState(as *bus.Assign, status, reason string, container
 // reportTaskGPUs sends the control plane the pinned device UUIDs for any
 // container in the report that has them, so DescribeTasks can surface gpuIds.
 // A no-op when nothing was pinned (the common non-GPU-task case).
-func (a *Agent) reportTaskGPUs(taskID string, containers []bus.ContainerStatus) {
+func (a *Agent) reportTaskGPUs(taskID string, containers []ecsv1.ContainerStatus) {
 	reports := make([]handlers_ecs.ContainerGPUReport, 0, len(containers))
 	for _, c := range containers {
 		if len(c.GPUIDs) > 0 {
@@ -450,7 +450,7 @@ const (
 
 // taskLabels are the mulga.ecs.* labels stamped on a container. The cred/role/MAC
 // labels are omitted when empty so a container carries only what it needs.
-func taskLabels(as *bus.Assign, name string) map[string]string {
+func taskLabels(as *ecsv1.Assign, name string) map[string]string {
 	labels := map[string]string{
 		labelTaskID:        as.TaskID,
 		labelContainerName: name,

@@ -8,11 +8,15 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-
-	"github.com/nats-io/nats.go/jetstream"
-
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 )
+
+// ClusterJWKSResolver resolves the raw JWKS document published for an EKS
+// cluster's OIDC issuer. Not found (missing account bucket or missing key)
+// is (nil, false, nil); a dependency failure (KV unavailable, timeout) is
+// reported as err. Implemented by the EKS handler and wired in at composition.
+type ClusterJWKSResolver interface {
+	LookupClusterJWKS(ctx context.Context, accountID, clusterName string) (jwks []byte, found bool, err error)
+}
 
 // JWK is one entry of an RFC 7517 JSON Web Key Set. EKS publishes EC P-256 keys;
 // RSA fields are kept for future compatibility.
@@ -88,35 +92,26 @@ func ParseEKSIssuerURL(issuer string) (accountID, clusterName string, err error)
 	return segments[eksIssuerSegAccountID], segments[eksIssuerSegCluster], nil
 }
 
-// FetchClusterJWKS reads the JWKS for an EKS cluster from the per-account EKS KV bucket.
+// FetchClusterJWKS resolves and decodes the JWKS for an EKS cluster via resolver.
 // Returns (nil, nil) when the cluster has no JWKS published; callers map that to InvalidIdentityToken.
-func FetchClusterJWKS(ctx context.Context, js jetstream.JetStream, accountID, clusterName string) (*JWKS, error) {
-	if js == nil {
-		return nil, errors.New("nil JetStream context")
+func FetchClusterJWKS(ctx context.Context, resolver ClusterJWKSResolver, accountID, clusterName string) (*JWKS, error) {
+	if resolver == nil {
+		return nil, errors.New("nil JWKS resolver")
 	}
 	if accountID == "" || clusterName == "" {
 		return nil, errors.New("accountID and clusterName must be non-empty")
 	}
 
-	bucketName := handlers_eks.AccountBucketName(accountID)
-	kv, err := js.KeyValue(ctx, bucketName)
+	raw, found, err := resolver.LookupClusterJWKS(ctx, accountID, clusterName)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrBucketNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("open EKS account bucket %s: %w", bucketName, err)
+		return nil, err
 	}
-
-	entry, err := kv.Get(ctx, handlers_eks.OIDCJWKSKey(clusterName))
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read JWKS for cluster %s: %w", clusterName, err)
+	if !found {
+		return nil, nil
 	}
 
 	var jwks JWKS
-	if err := json.Unmarshal(entry.Value(), &jwks); err != nil {
+	if err := json.Unmarshal(raw, &jwks); err != nil {
 		return nil, fmt.Errorf("decode JWKS for cluster %s: %w", clusterName, err)
 	}
 	if len(jwks.Keys) == 0 {

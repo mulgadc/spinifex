@@ -41,6 +41,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
+	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -54,6 +55,10 @@ import (
 )
 
 var serviceName = "awsgw"
+
+// OIDCJWKSReader is wired into STS here, not beside its own definition in
+// handlers/eks, because handlers/eks must not import handlers/sts.
+var _ handlers_sts.ClusterJWKSResolver = (*handlers_eks.OIDCJWKSReader)(nil)
 
 // Version and Commit are set by the cmd package before Start() to pass
 // build-time ldflags to the gateway without creating an import cycle.
@@ -217,9 +222,17 @@ func launchService(config *config.ClusterConfig) error {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
 
+	// STS's web-identity verification resolves EKS-published JWKS through this
+	// reader; handlers/eks owns the account-bucket and JWKS-key layout.
+	jwksJS, err := jetstream.New(natsConn)
+	if err != nil {
+		return fmt.Errorf("jetstream client for OIDC JWKS resolver: %w", err)
+	}
+	jwksResolver := handlers_eks.NewOIDCJWKSReader(jwksJS)
+
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.
-	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey)
+	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, jwksResolver)
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}

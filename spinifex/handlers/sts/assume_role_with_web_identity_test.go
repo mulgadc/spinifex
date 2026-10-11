@@ -17,7 +17,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +38,7 @@ type webIdentityFixture struct {
 	clusterName  string
 	issuer       string
 	kid          string
+	jwk          JWK
 	signingKey   *ecdsa.PrivateKey
 	federatedARN string
 }
@@ -73,13 +73,11 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 	issuerHostPath := strings.TrimPrefix(issuer, "https://")
 	federatedARN := handlers_iam.OIDCProviderARN(accountID, issuerHostPath)
 
-	// Publish JWKS to the per-cluster EKS bucket.
-	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), svc.js, accountID)
-	require.NoError(t, err)
+	// Seed the fake JWKS resolver for this (account, cluster) — no real KV
+	// involved.
 	raw, err := json.Marshal(jwks)
 	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey(testWebClusterName), raw)
-	require.NoError(t, err)
+	fakeResolver(t, svc).seed(accountID, testWebClusterName, raw)
 
 	// Register the OIDC provider on the role-account's IAM bucket. Bucket is
 	// created on-the-fly here — the IAM CreateOpenIDConnectProvider API lands
@@ -97,6 +95,7 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 		clusterName:  testWebClusterName,
 		issuer:       issuer,
 		kid:          kid,
+		jwk:          *jwk,
 		signingKey:   priv,
 		federatedARN: federatedARN,
 	}
@@ -363,16 +362,13 @@ func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
 	issuerHostPath := strings.TrimPrefix(issuer, "https://")
 	federatedARN := handlers_iam.OIDCProviderARN(testCallerAccountID, issuerHostPath)
 
-	// Publish JWKS — but skip the IAM provider registration.
-	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), svc.js, testCallerAccountID)
-	require.NoError(t, err)
+	// Seed the JWKS resolver — but skip the IAM provider registration.
 	jwk := signingJWK(t, &priv.PublicKey)
 	jwk.Alg, jwk.Use, jwk.Kid = "ES256", "sig", kid
 	jwks := &JWKS{Keys: []JWK{*jwk}}
 	raw, err := json.Marshal(jwks)
 	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey("unregistered-cluster"), raw)
-	require.NoError(t, err)
+	fakeResolver(t, svc).seed(testCallerAccountID, "unregistered-cluster", raw)
 
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-unreg",
 		webIdentityTrustPolicyNoCondition(federatedARN))

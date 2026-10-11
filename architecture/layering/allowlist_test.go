@@ -158,7 +158,6 @@ var allowlist = []allowance{
 	{From: "handlers/rds", To: "handlers/iam", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 	{From: "handlers/rds", To: "runtime/compute/vm", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 
-	{From: "handlers/sts", To: "handlers/eks", Debt: "handlers/sts/oidc_jwks.go:14 imports handlers/eks (Q-22)", Reason: "needs an EKS-owned OIDC projection or identity-owned contract"},
 	{From: "handlers/sts", To: "handlers/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 
 	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},

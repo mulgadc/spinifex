@@ -2,6 +2,7 @@ package handlers_sts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -13,10 +14,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// nopJWKSResolver satisfies ClusterJWKSResolver via a never-found stub so the
+// constructor's nil-check tests can pass a non-nil resolver without wiring
+// real KV state.
+type nopJWKSResolver struct{}
+
+func (nopJWKSResolver) LookupClusterJWKS(context.Context, string, string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
 // newTestSetup spins up a NATS+JetStream test server, builds a real
 // IAMServiceImpl (cheaper than hand-rolling a 40-method stub), and returns
 // the wired-up STSServiceImpl together with the underlying NATS conn for
-// tests that need to interact with KV directly.
+// tests that need to interact with KV directly. The JWKS resolver is a
+// fakeJWKSResolver (see fakeResolver) — no EKS package is involved.
 func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -27,14 +38,24 @@ func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey)
+	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, newFakeJWKSResolver())
 	require.NoError(t, err)
 	return stsSvc, nc
 }
 
+// fakeResolver returns the fakeJWKSResolver newTestSetup wired into svc, so a
+// test can seed JWKS data or inspect which (account, cluster) pairs were
+// looked up.
+func fakeResolver(t *testing.T, svc *STSServiceImpl) *fakeJWKSResolver {
+	t.Helper()
+	fr, ok := svc.jwksResolver.(*fakeJWKSResolver)
+	require.True(t, ok, "newTestSetup must wire a *fakeJWKSResolver")
+	return fr
+}
+
 func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
-	_, err := NewSTSServiceImpl(t.Context(), nil, nopIAMService{}, masterKey)
+	_, err := NewSTSServiceImpl(t.Context(), nil, nopIAMService{}, masterKey, nopJWKSResolver{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "NATS")
 }
@@ -42,16 +63,24 @@ func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 func TestNewSTSServiceImpl_RejectsNilIAMService(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
-	_, err := NewSTSServiceImpl(t.Context(), nc, nil, masterKey)
+	_, err := NewSTSServiceImpl(t.Context(), nc, nil, masterKey, nopJWKSResolver{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "IAM")
+}
+
+func TestNewSTSServiceImpl_RejectsNilJWKSResolver(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
+	_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, masterKey, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolver")
 }
 
 func TestNewSTSServiceImpl_RejectsWrongMasterKeySize(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	for _, size := range []int{0, 1, 16, 31, 33, 64} {
 		t.Run("size", func(t *testing.T) {
-			_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size))
+			_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size), nopJWKSResolver{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "master key")
 		})
@@ -71,7 +100,7 @@ func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	svc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey)
+	svc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, nopJWKSResolver{})
 	require.NoError(t, err)
 	require.NotNil(t, svc)
 }

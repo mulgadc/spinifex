@@ -2,29 +2,15 @@ package handlers_sts
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
-	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestParseEKSIssuerURL_Valid(t *testing.T) {
 	accountID, clusterName, err := ParseEKSIssuerURL("https://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012/my-cluster")
-	require.NoError(t, err)
-	assert.Equal(t, "123456789012", accountID)
-	assert.Equal(t, "my-cluster", clusterName)
-}
-
-// Cross-component contract: a token whose iss is built by ClusterOIDCIssuer
-// must parse cleanly via ParseEKSIssuerURL and resolve to the same
-// (accountID, clusterName). This is the collision the lookup must avoid.
-func TestParseEKSIssuerURL_RoundTripsClusterOIDCIssuer(t *testing.T) {
-	issuer, err := handlers_eks.ClusterOIDCIssuer("https://10.0.0.1:9999", "au-mel-1", "123456789012", "my-cluster")
-	require.NoError(t, err)
-
-	accountID, clusterName, err := ParseEKSIssuerURL(issuer)
 	require.NoError(t, err)
 	assert.Equal(t, "123456789012", accountID)
 	assert.Equal(t, "my-cluster", clusterName)
@@ -68,30 +54,21 @@ func TestJWKS_FindByKID(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_NotFoundReturnsNil(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-
-	jwks, err := FetchClusterJWKS(t.Context(), js, "123456789012", "missing-cluster")
+	jwks, err := FetchClusterJWKS(t.Context(), newFakeJWKSResolver(), "123456789012", "missing-cluster")
 	require.NoError(t, err)
 	assert.Nil(t, jwks)
 }
 
 func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-
-	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "123456789012")
-	require.NoError(t, err)
-
 	want := &JWKS{Keys: []JWK{
 		{Kid: "abc123", Kty: "EC", Crv: "P-256", Alg: "ES256", Use: "sig", X: "x-coord", Y: "y-coord"},
 	}}
 	raw, err := json.Marshal(want)
 	require.NoError(t, err)
-	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey("my-cluster"), raw)
-	require.NoError(t, err)
 
-	got, err := FetchClusterJWKS(t.Context(), js, "123456789012", "my-cluster")
+	resolver := newFakeJWKSResolver()
+	resolver.seed("123456789012", "my-cluster", raw)
+	got, err := FetchClusterJWKS(t.Context(), resolver, "123456789012", "my-cluster")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.Len(t, got.Keys, 1)
@@ -101,31 +78,48 @@ func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_EmptyKeysIsError(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-
-	kv, err := handlers_eks.GetOrCreateAccountBucket(t.Context(), js, "123456789012")
-	require.NoError(t, err)
-
-	_, err = kv.Put(t.Context(), handlers_eks.OIDCJWKSKey("empty-cluster"), []byte(`{"keys":[]}`))
-	require.NoError(t, err)
-
-	jwks, err := FetchClusterJWKS(t.Context(), js, "123456789012", "empty-cluster")
+	resolver := newFakeJWKSResolver()
+	resolver.seed("123456789012", "empty-cluster", []byte(`{"keys":[]}`))
+	jwks, err := FetchClusterJWKS(t.Context(), resolver, "123456789012", "empty-cluster")
 	require.Error(t, err)
 	assert.Nil(t, jwks)
 }
 
-func TestFetchClusterJWKS_NilJetStream(t *testing.T) {
+// Malformed stored bytes fail JSON decode; this is the STS-owned half of the
+// error semantics, the resolver's half is pinned in the EKS package.
+func TestFetchClusterJWKS_MalformedIsDecodeError(t *testing.T) {
+	resolver := newFakeJWKSResolver()
+	resolver.seed("123456789012", "my-cluster", []byte(`not-json`))
+	jwks, err := FetchClusterJWKS(t.Context(), resolver, "123456789012", "my-cluster")
+	require.Error(t, err)
+	assert.Nil(t, jwks)
+	assert.Contains(t, err.Error(), "decode JWKS for cluster my-cluster")
+}
+
+// A resolver dependency failure is returned unchanged, not wrapped or
+// swallowed: the caller sees the exact error value the resolver raised.
+func TestFetchClusterJWKS_PropagatesResolverErrorUnchanged(t *testing.T) {
+	resolverErr := errors.New("kv dependency failure")
+	resolver := newFakeJWKSResolver()
+	resolver.seedErr("123456789012", "my-cluster", resolverErr)
+
+	jwks, err := FetchClusterJWKS(t.Context(), resolver, "123456789012", "my-cluster")
+	require.Error(t, err)
+	assert.Nil(t, jwks)
+	assert.Same(t, resolverErr, err, "FetchClusterJWKS must return the resolver's error unchanged, not wrapped")
+	require.ErrorIs(t, err, resolverErr)
+}
+
+func TestFetchClusterJWKS_NilResolver(t *testing.T) {
 	_, err := FetchClusterJWKS(t.Context(), nil, "123456789012", "c1")
 	require.Error(t, err)
 }
 
 func TestFetchClusterJWKS_EmptyArgs(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-	_, err := FetchClusterJWKS(t.Context(), js, "", "c1")
+	resolver := newFakeJWKSResolver()
+	_, err := FetchClusterJWKS(t.Context(), resolver, "", "c1")
 	require.Error(t, err)
-	_, err = FetchClusterJWKS(t.Context(), js, "123456789012", "")
+	_, err = FetchClusterJWKS(t.Context(), resolver, "123456789012", "")
 	require.Error(t, err)
 }
 

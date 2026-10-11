@@ -27,11 +27,12 @@ const masterKeySize = 32 // AES-256, must match handlers_iam.
 // change. RunJanitor is the exception: it already owns a real context and
 // threads it into the sweep.
 type STSServiceImpl struct {
-	natsConn  *nats.Conn
-	js        jetstream.JetStream
-	sessions  *kvstore.Store[SessionCredential]
-	iamSvc    handlers_iam.IAMService
-	masterKey []byte
+	natsConn     *nats.Conn
+	js           jetstream.JetStream
+	sessions     *kvstore.Store[SessionCredential]
+	iamSvc       handlers_iam.IAMService
+	masterKey    []byte
+	jwksResolver ClusterJWKSResolver
 }
 
 var (
@@ -40,14 +41,19 @@ var (
 )
 
 // NewSTSServiceImpl constructs an STSServiceImpl. masterKey must be the 32-byte
-// key shared with IAMServiceImpl. The context bounds bucket creation and the
-// schema migration only.
-func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, masterKey []byte) (*STSServiceImpl, error) {
+// key shared with IAMServiceImpl. jwksResolver resolves EKS-published JWKS
+// documents for AssumeRoleWithWebIdentity; a nil resolver is rejected so a
+// missing binding fails at start-up rather than as a permissive path. The
+// context bounds bucket creation and the schema migration only.
+func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, masterKey []byte, jwksResolver ClusterJWKSResolver) (*STSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}
 	if iamSvc == nil {
 		return nil, errors.New("nil IAM service")
+	}
+	if jwksResolver == nil {
+		return nil, errors.New("nil cluster JWKS resolver")
 	}
 	if len(masterKey) != masterKeySize {
 		return nil, fmt.Errorf("master key must be %d bytes, got %d", masterKeySize, len(masterKey))
@@ -67,10 +73,11 @@ func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers
 		"sessions_bucket", KVBucketSessionCredentials)
 
 	return &STSServiceImpl{
-		natsConn:  natsConn,
-		js:        js,
-		sessions:  sessions,
-		iamSvc:    iamSvc,
-		masterKey: masterKey,
+		natsConn:     natsConn,
+		js:           js,
+		sessions:     sessions,
+		iamSvc:       iamSvc,
+		masterKey:    masterKey,
+		jwksResolver: jwksResolver,
 	}, nil
 }

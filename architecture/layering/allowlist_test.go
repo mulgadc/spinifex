@@ -148,8 +148,6 @@ var allowlist = []allowance{
 	{From: "handlers/elbv2", To: "handlers/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "system-instance role ensurer; needs an IAM capability"},
 	{From: "handlers/elbv2", To: "lbagent", Debt: "handlers/elbv2/{agent_types,haproxy,health_checker,nginx}.go import lbagent", Reason: "health-report and cert/PID-path vocabulary; needs a guest/controller contract"},
 
-	{From: "handlers/iam", To: "admin", Debt: "handlers/iam/service_impl.go:30 imports admin", Reason: "credential and account helpers; awaits an IAM-credentials owner"},
-
 	{From: "handlers/rds", To: "domains/dns", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 	{From: "handlers/rds", To: "domains/ec2/instance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 	{From: "handlers/rds", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
@@ -161,7 +159,6 @@ var allowlist = []allowance{
 	{From: "handlers/sts", To: "handlers/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 
 	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
-	{From: "operator/cli", To: "admin", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "daemon", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "gateway/bedrock", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},

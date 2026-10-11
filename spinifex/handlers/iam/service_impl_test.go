@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/admin"
+	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1065,11 +1065,11 @@ func TestGenerateAccessKeyID(t *testing.T) {
 
 func TestGenerateSecretAccessKey(t *testing.T) {
 	t.Parallel()
-	secret, err := admin.GenerateAWSSecretKey()
+	secret, err := awscredentials.GenerateAWSSecretKey()
 	assert.NoError(t, err)
 	assert.Len(t, secret, 40)
 
-	secret2, err := admin.GenerateAWSSecretKey()
+	secret2, err := awscredentials.GenerateAWSSecretKey()
 	assert.NoError(t, err)
 	assert.NotEqual(t, secret, secret2)
 }

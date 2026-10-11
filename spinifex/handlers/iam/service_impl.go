@@ -27,8 +27,8 @@ import (
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	"github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -638,7 +638,7 @@ func (s *IAMServiceImpl) CreateAccessKey(accountID string, input *iam.CreateAcce
 	if err != nil {
 		return nil, fmt.Errorf("generate access key ID: %w", err)
 	}
-	secretAccessKey, err := admin.GenerateAWSSecretKey()
+	secretAccessKey, err := awscredentials.GenerateAWSSecretKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate secret key: %w", err)
 	}

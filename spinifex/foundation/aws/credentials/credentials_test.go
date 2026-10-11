@@ -1,4 +1,4 @@
-package admin
+package awscredentials
 
 import (
 	"encoding/base64"

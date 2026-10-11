@@ -29,12 +29,12 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	legacyadmin "github.com/mulgadc/spinifex/spinifex/admin"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
@@ -1634,12 +1634,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		fmt.Printf("   Admin credentials reissued in %s\n", filepath.Join(bootstrapDir, "bootstrap.json"))
 	} else {
 		// Fresh install: mint system + admin credentials and seed the bootstrap files.
-		accessKey, err = legacyadmin.GenerateAWSAccessKey()
+		accessKey, err = awscredentials.GenerateAWSAccessKey()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating access key: %v\n", err)
 			os.Exit(1)
 		}
-		secretKey, err = legacyadmin.GenerateAWSSecretKey()
+		secretKey, err = awscredentials.GenerateAWSSecretKey()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating secret key: %v\n", err)
 			os.Exit(1)
@@ -1729,12 +1729,12 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// Generated above the multi-node dispatch because the pair is cluster-wide:
 	// a node's predastore only honours the keys rendered into its own config, so
 	// every node must present this same pair to read the distributed zone bucket.
-	northstarAccessKey, err := legacyadmin.GenerateAWSAccessKey()
+	northstarAccessKey, err := awscredentials.GenerateAWSAccessKey()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating northstar access key: %v\n", err)
 		os.Exit(1)
 	}
-	northstarSecretKey, err := legacyadmin.GenerateAWSSecretKey()
+	northstarSecretKey, err := awscredentials.GenerateAWSSecretKey()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating northstar secret key: %v\n", err)
 		os.Exit(1)
@@ -3347,11 +3347,11 @@ func loadSystemCredentials(configDir string) (accessKey, secretKey string, err e
 // files (master.key to configDir, bootstrap.json to bootstrapDir).
 // Used by init flows (single and multi-node).
 func writeBootstrapFiles(configDir, bootstrapDir string, masterKey []byte, accessKey, secretKey, accountID string) (*writeBootstrapResult, error) {
-	adminAccessKey, err := legacyadmin.GenerateAWSAccessKey()
+	adminAccessKey, err := awscredentials.GenerateAWSAccessKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate admin access key: %w", err)
 	}
-	adminSecretKey, err := legacyadmin.GenerateAWSSecretKey()
+	adminSecretKey, err := awscredentials.GenerateAWSSecretKey()
 	if err != nil {
 		return nil, fmt.Errorf("generate admin secret key: %w", err)
 	}

@@ -1,6 +1,6 @@
-// Package admin holds the AWS credential generators non-operator code still
-// needs from the former admin package, awaiting an IAM credential owner.
-package admin
+// Package awscredentials generates AWS-format access key IDs and secret keys.
+// It is a stateless format primitive: it issues, stores and authorises nothing.
+package awscredentials
 
 import (
 	"crypto/rand"

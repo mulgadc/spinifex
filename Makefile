@@ -155,7 +155,7 @@ install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share
 # -Otarget keeps each gate's output in one block instead of interleaving them.
 # manifest-check manifest-lint test-package-check removed, can add back later
 preflight:
-	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts
+	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts manifest-check manifest-lint
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # Shell suites + shellcheck for build/scripts/, the systemd-unit helpers that

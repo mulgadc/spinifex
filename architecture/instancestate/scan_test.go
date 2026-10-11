@@ -75,7 +75,6 @@ var ownerFiles = []string{
 	"spinifex/daemon/instance_running_set.go",
 	"spinifex/daemon/jetstream.go",
 	"spinifex/daemon/local_state.go",
-	"spinifex/domains/ec2/instance/state/record_codec.go",
 	"spinifex/runtime/compute/vm/record.go",
 }
 

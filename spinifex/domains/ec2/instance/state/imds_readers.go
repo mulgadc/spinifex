@@ -1,3 +1,6 @@
+// Package state provides EC2-domain readers for persisted instance state.
+// Today it holds only the vpcd IMDS readers, which wrap the daemon's local-file
+// reader and instance-record bucket opener unchanged.
 package state
 
 import (

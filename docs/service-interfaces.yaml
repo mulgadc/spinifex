@@ -33,6 +33,7 @@ services:
       - "acm.*"
       - "iam.*"
       - "rds.*"
+      - "ecs.*"
       - "ochre.vector.*"
     depends_on:
       - "ec2.*"
@@ -40,6 +41,7 @@ services:
       - "acm.*"
       - "iam.*"
       - "rds.*"
+      - "ecs.*"
       - "ochre.vector.*"
 
   spinifex_daemon:
@@ -160,6 +162,10 @@ services:
       # per-subject list would be a hand-mirror of that file with nothing
       # checking it.
       - "rds.*"
+      # ECS control plane (handlers/ecs/service_nats.go, registered in
+      # daemon.go). One wildcard, as for RDS: every action subject is a literal
+      # in those two files, so a per-subject list would only mirror them.
+      - "ecs.*"
       # Layer-2 agent bus: register and health are wildcard subscriptions over
       # {account}.{db-instance}, so the subject is built at runtime and only the
       # prefix is declarable.

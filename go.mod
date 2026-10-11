@@ -1,6 +1,6 @@
 module github.com/mulgadc/spinifex
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/aws/aws-sdk-go v1.55.8

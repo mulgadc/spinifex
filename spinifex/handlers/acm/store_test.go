@@ -8,6 +8,7 @@ import (
 	"time"
 
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	"github.com/mulgadc/spinifex/spinifex/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -66,6 +67,24 @@ func TestAddInUseBy_NoopOnMissingCert(t *testing.T) {
 	require.NoError(t, store.AddInUseBy(t.Context(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing", "arn:lb/one"))
 
 	got, err := store.GetCert(t.Context(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// A certificate deleted after the ownership check must surface as not found
+// rather than a silent success, and must not be recreated by the tag write.
+func TestUpdateTags_MissingCertReturnsNotFound(t *testing.T) {
+	store := setupACMStore(t)
+	const certArn = "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing"
+	called := false
+	err := store.UpdateTags(t.Context(), certArn, func(tags map[string]string) map[string]string {
+		called = true
+		return map[string]string{"k": "v"}
+	})
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
+	assert.False(t, called, "mutate must not run without a stored record")
+
+	got, err := store.GetCert(t.Context(), certArn)
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }

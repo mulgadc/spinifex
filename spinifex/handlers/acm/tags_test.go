@@ -109,6 +109,70 @@ func TestTagOps_CrossAccountHidden(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorResourceNotFound, err.Error())
 }
 
+// Tag writes must change only the stored tag field: the encrypted key
+// survives byte-for-byte and still decrypts, and the tag change takes effect.
+func TestTagOps_PreserveStoredPrivateKey(t *testing.T) {
+	cases := map[string]struct {
+		write    func(svc *ACMServiceImpl, certArn string) error
+		wantTags map[string]string
+	}{
+		"AddTagsToCertificate": {
+			write: func(svc *ACMServiceImpl, certArn string) error {
+				_, err := svc.AddTagsToCertificate(context.Background(), &acm.AddTagsToCertificateInput{
+					CertificateArn: aws.String(certArn),
+					Tags:           []*acm.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
+				}, testAccountID)
+				return err
+			},
+			wantTags: map[string]string{"Name": "ingress", "env": "dev"},
+		},
+		"RemoveTagsFromCertificate": {
+			write: func(svc *ACMServiceImpl, certArn string) error {
+				_, err := svc.RemoveTagsFromCertificate(context.Background(), &acm.RemoveTagsFromCertificateInput{
+					CertificateArn: aws.String(certArn),
+					Tags:           []*acm.Tag{{Key: aws.String("Name")}},
+				}, testAccountID)
+				return err
+			},
+			wantTags: map[string]string{},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc := setupACMService(t)
+			certArn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
+
+			beforeRaw := rawStoredRecord(t, svc, certArn)
+			require.NotEmpty(t, beforeRaw.PrivateKey, "import must store an encrypted key")
+			beforeUsable, err := svc.store.GetCert(context.Background(), certArn)
+			require.NoError(t, err)
+			require.NotEmpty(t, beforeUsable.PrivateKey, "import must store a usable key")
+
+			require.NoError(t, tc.write(svc, certArn))
+
+			afterRaw := rawStoredRecord(t, svc, certArn)
+			assert.Equal(t, beforeRaw.PrivateKey, afterRaw.PrivateKey, "a tag write must not touch the stored encrypted key")
+			assert.Equal(t, beforeRaw.Certificate, afterRaw.Certificate, "the certificate body survives")
+
+			afterUsable, err := svc.store.GetCert(context.Background(), certArn)
+			require.NoError(t, err)
+			assert.Equal(t, beforeUsable.PrivateKey, afterUsable.PrivateKey, "the key must still decrypt to the original plaintext")
+
+			assert.Equal(t, tc.wantTags, listTagMap(t, svc, certArn), "the requested tag change must still take effect")
+		})
+	}
+}
+
+// rawStoredRecord reads the certificate record exactly as Store.PutCert wrote
+// it, with PrivateKey still AES-256-GCM ciphertext, bypassing both GetCert's
+// decrypt and GetCertMetadata's blank.
+func rawStoredRecord(t *testing.T, svc *ACMServiceImpl, certArn string) *CertRecord {
+	t.Helper()
+	rec, _, err := svc.store.store.Get(context.Background(), certKey(certArn))
+	require.NoError(t, err)
+	return rec
+}
+
 func listTagMap(t *testing.T, svc *ACMServiceImpl, arn string) map[string]string {
 	t.Helper()
 	out, err := svc.ListTagsForCertificate(context.Background(), &acm.ListTagsForCertificateInput{

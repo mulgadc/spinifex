@@ -53,11 +53,11 @@ AWS_PROFILE=spinifex aws ec2 describe-instance-types
 
 A list of instance types means the cluster is up.
 
-`make preflight` also needs `shellcheck` and `golangci-lint` (CI pins v2.13.0):
+`make preflight` also needs `shellcheck` and `golangci-lint`
 
 ```bash
 sudo apt-get install -y shellcheck
-curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.13.0
+curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
 ```
 
 The web console additionally needs Node.js 24 and `pnpm`.

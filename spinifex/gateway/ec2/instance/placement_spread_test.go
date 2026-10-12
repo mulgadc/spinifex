@@ -143,9 +143,9 @@ func TestDistributeInstancesSpread_OnePerNode(t *testing.T) {
 		map[string]int{"node-1": 4, "node-2": 3, "node-3": 2},
 		[]string{"node-1", "node-2", "node-3"},
 		map[string][]byte{
-			"node-1": spreadReservation(t, "r-spread", "i-n1"),
-			"node-2": spreadReservation(t, "r-spread2", "i-n2"),
-			"node-3": spreadReservation(t, "r-spread3", "i-n3"),
+			"node-1": spreadReservation(t, "r-spread", "i-900cea8dd0184c1ea"),
+			"node-2": spreadReservation(t, "r-spread2", "i-4985b8a3ce18c08ef"),
+			"node-3": spreadReservation(t, "r-spread3", "i-4b976aa6829e7cc09"),
 		}, "")
 
 	reservation, err := distributeInstancesSpread(context.Background(), spreadInput(3, 3), nc, "test-account", "my-spread", 3)
@@ -165,9 +165,9 @@ func TestDistributeInstancesSpread_OnePerNode(t *testing.T) {
 	assert.Equal(t, 3, h.reserveInput.MaxCount)
 
 	assert.Equal(t, map[string][]string{
-		"node-1": {"i-n1"},
-		"node-2": {"i-n2"},
-		"node-3": {"i-n3"},
+		"node-1": {"i-900cea8dd0184c1ea"},
+		"node-2": {"i-4985b8a3ce18c08ef"},
+		"node-3": {"i-4b976aa6829e7cc09"},
 	}, h.finalizeInput.NodeInstances)
 
 	assert.Empty(t, h.releaseInputs, "no release when every reserved node launched")
@@ -214,7 +214,7 @@ func TestDistributeInstancesSpread_ReserveErrorPropagates(t *testing.T) {
 	launched := false
 	daemonSub, err := nc.Subscribe("ec2.RunInstances.t3.micro.node-1", func(msg *nats.Msg) {
 		launched = true
-		_ = msg.Respond(spreadReservation(t, "r-x", "i-x"))
+		_ = msg.Respond(spreadReservation(t, "r-x", "i-5d166bc283d57a85f"))
 	})
 	require.NoError(t, err)
 	defer daemonSub.Unsubscribe()
@@ -236,8 +236,8 @@ func TestDistributeInstancesSpread_PartialSuccessMeetsMinCount(t *testing.T) {
 		map[string]int{"node-1": 2, "node-2": 2, "node-3": 2},
 		[]string{"node-1", "node-2", "node-3"},
 		map[string][]byte{
-			"node-1": spreadReservation(t, "r-p1", "i-p1"),
-			"node-2": spreadReservation(t, "r-p2", "i-p2"),
+			"node-1": spreadReservation(t, "r-p1", "i-456a27c936ac90cbe"),
+			"node-2": spreadReservation(t, "r-p2", "i-a5ac4ef7131e1a178"),
 			"node-3": utils.GenerateErrorPayload(awserrors.ErrorServerInternal),
 		}, "")
 
@@ -248,7 +248,7 @@ func TestDistributeInstancesSpread_PartialSuccessMeetsMinCount(t *testing.T) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	assert.Equal(t, map[string][]string{"node-1": {"i-p1"}, "node-2": {"i-p2"}}, h.finalizeInput.NodeInstances)
+	assert.Equal(t, map[string][]string{"node-1": {"i-456a27c936ac90cbe"}, "node-2": {"i-a5ac4ef7131e1a178"}}, h.finalizeInput.NodeInstances)
 
 	// Only the node that failed to launch gets its slot back.
 	require.Len(t, h.releaseInputs, 1)
@@ -265,7 +265,7 @@ func TestDistributeInstancesSpread_BelowMinCountRollsBackAndReleases(t *testing.
 		map[string]int{"node-1": 2, "node-2": 2},
 		[]string{"node-1", "node-2"},
 		map[string][]byte{
-			"node-1": spreadReservation(t, "r-b1", "i-b1"),
+			"node-1": spreadReservation(t, "r-b1", "i-115789d2ae9c27206"),
 			"node-2": utils.GenerateErrorPayload(awserrors.ErrorServerInternal),
 		}, "")
 
@@ -278,7 +278,7 @@ func TestDistributeInstancesSpread_BelowMinCountRollsBackAndReleases(t *testing.
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	assert.False(t, h.finalizeCalled, "a short launch must not be finalized")
-	assert.Equal(t, []string{"i-b1"}, h.terminatedIDs, "the one launched instance is rolled back")
+	assert.Equal(t, []string{"i-115789d2ae9c27206"}, h.terminatedIDs, "the one launched instance is rolled back")
 	require.Len(t, h.releaseInputs, 1)
 	assert.Equal(t, []string{"node-1", "node-2"}, h.releaseInputs[0].Nodes,
 		"every reserved node is released, not just the failed one")
@@ -314,8 +314,8 @@ func TestDistributeInstancesSpread_FinalizeFailureRollsBack(t *testing.T) {
 		map[string]int{"node-1": 2, "node-2": 2},
 		[]string{"node-1", "node-2"},
 		map[string][]byte{
-			"node-1": spreadReservation(t, "r-f1", "i-f1"),
-			"node-2": spreadReservation(t, "r-f2", "i-f2"),
+			"node-1": spreadReservation(t, "r-f1", "i-2ba7fe6e5300e7c3a"),
+			"node-2": spreadReservation(t, "r-f2", "i-a95c8791805440ee5"),
 		}, awserrors.ErrorServerInternal)
 
 	_, err := distributeInstancesSpread(context.Background(), spreadInput(2, 2), nc, "test-account", "my-spread", 2)
@@ -325,7 +325,7 @@ func TestDistributeInstancesSpread_FinalizeFailureRollsBack(t *testing.T) {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	assert.ElementsMatch(t, []string{"i-f1", "i-f2"}, h.terminatedIDs,
+	assert.ElementsMatch(t, []string{"i-2ba7fe6e5300e7c3a", "i-a95c8791805440ee5"}, h.terminatedIDs,
 		"instances launched before a failed finalize must be terminated")
 	require.Len(t, h.releaseInputs, 1)
 	assert.Equal(t, []string{"node-1", "node-2"}, h.releaseInputs[0].Nodes)

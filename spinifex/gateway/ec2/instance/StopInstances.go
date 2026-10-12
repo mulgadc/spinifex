@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
@@ -16,7 +14,8 @@ import (
 )
 
 // ValidateStopInstancesInput rejects a nil input with InvalidParameterValue and an empty
-// InstanceIds list with MissingParameter.
+// InstanceIds list with MissingParameter, and a malformed instance ID with
+// InvalidInstanceID.Malformed before any NATS traffic.
 func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -24,7 +23,7 @@ func ValidateStopInstancesInput(input *ec2.StopInstancesInput) error {
 	if len(input.InstanceIds) == 0 {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	return validateInstanceIDFormat(input.InstanceIds)
 }
 
 // StopInstances sends stop commands via NATS using system_powerdown with stop_instance
@@ -58,16 +57,27 @@ func StopInstances(ctx context.Context, input *ec2.StopInstancesInput, natsConn 
 			continue
 		}
 
-		subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
-		reqMsg := nats.NewMsg(subject)
-		reqMsg.Data = jsonData
-		reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-		utils.InjectTraceContext(ctx, reqMsg.Header)
-		msg, err := natsConn.RequestMsg(reqMsg, 5*time.Second)
+		msg, err := requestInstanceCmd(ctx, natsConn, instanceID, accountID, jsonData)
 		if err != nil {
 			slog.ErrorContext(ctx, "StopInstances: Failed to send command", "instance_id", instanceID, "err", err)
-			stateChanges = append(stateChanges, newStateChange(instanceID, 16, "running", 16, "running"))
-			continue
+			// A timeout is a slow or wedged owner, which says nothing about
+			// where the instance is.
+			if !errors.Is(err, nats.ErrNoResponders) {
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			state, queryOK := classifyUnownedInstance(ctx, natsConn, instanceID, accountID)
+			switch {
+			case state == bucketStateStopped:
+				// Stopping a stopped instance succeeds as a no-op, as on AWS.
+				stateChanges = append(stateChanges, newStateChange(instanceID, 80, "stopped", 80, "stopped"))
+				continue
+			case state == bucketStateTerminated:
+				return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+			case queryOK:
+				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			default:
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
 		}
 
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {

@@ -21,11 +21,9 @@ type terminateStoppedInstanceRequest struct {
 	InstanceID string `json:"instance_id"`
 }
 
-// terminateRetrySleep is the backoff seam between NoResponders retries; tests override it.
-var terminateRetrySleep = time.Sleep
-
 // ValidateTerminateInstancesInput rejects a nil input with InvalidParameterValue and an empty
-// InstanceIds list with MissingParameter.
+// InstanceIds list with MissingParameter, and a malformed instance ID with
+// InvalidInstanceID.Malformed before any NATS traffic.
 func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -33,7 +31,7 @@ func ValidateTerminateInstancesInput(input *ec2.TerminateInstancesInput) error {
 	if len(input.InstanceIds) == 0 {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	return validateInstanceIDFormat(input.InstanceIds)
 }
 
 // TerminateInstances sends terminate commands via NATS with stop_instance set to prevent restart.
@@ -66,24 +64,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 			continue
 		}
 
-		// Retry on ErrNoResponders: per-instance NATS subscription may not have propagated yet after a cluster restart.
-		subject := fmt.Sprintf("ec2.cmd.%s", instanceID)
-		var msg *nats.Msg
-		for attempt := range 3 {
-			reqMsg := nats.NewMsg(subject)
-			reqMsg.Data = jsonData
-			reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-			utils.InjectTraceContext(ctx, reqMsg.Header)
-			msg, err = natsConn.RequestMsg(reqMsg, 5*time.Second)
-			if err == nil || !errors.Is(err, nats.ErrNoResponders) {
-				break
-			}
-			if attempt < 2 {
-				slog.DebugContext(ctx, "TerminateInstances: No responder on per-instance topic, retrying",
-					"instance_id", instanceID, "attempt", attempt+1)
-				terminateRetrySleep(time.Duration(attempt+1) * time.Second)
-			}
-		}
+		msg, err := requestInstanceCmd(ctx, natsConn, instanceID, accountID, jsonData)
 		if err != nil {
 			// If no daemon owns this instance, try the ec2.terminate topic for stopped instances
 			if errors.Is(err, nats.ErrNoResponders) {
@@ -99,6 +80,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 				terminateReqMsg.Header.Set(utils.AccountIDHeader, accountID)
 				utils.InjectTraceContext(ctx, terminateReqMsg.Header)
 				terminateMsg, terminateErr := natsConn.RequestMsg(terminateReqMsg, 30*time.Second)
+				daemonReportedAbsent := false
 				if terminateErr == nil {
 					responseError, parseErr := utils.ValidateErrorPayload(terminateMsg.Data)
 					if parseErr == nil {
@@ -107,39 +89,36 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 						continue
 					}
 
-					// Only a genuine absence may fall through to the idempotent
-					// branch below. Any other refusal is a terminate that did not
-					// happen, so returning success for it strands a record the
-					// caller has been told is gone.
+					// Only a genuine absence may fall through to the bucket check
+					// below. Any other refusal is a terminate that did not happen,
+					// so returning success for it strands a record the caller has
+					// been told is gone.
 					code := aws.StringValue(responseError.Code)
 					if code != awserrors.ErrorInvalidInstanceIDNotFound {
 						slog.ErrorContext(ctx, "TerminateInstances: ec2.terminate refused the instance",
 							"instance_id", instanceID, "code", code)
 						return nil, errors.New(code)
 					}
-					slog.InfoContext(ctx, "TerminateInstances: instance is not a stopped instance, checking the terminated bucket",
+					daemonReportedAbsent = true
+					slog.InfoContext(ctx, "TerminateInstances: instance is not a stopped instance, checking the instance buckets",
 						"instance_id", instanceID)
 				}
 
-				// Idempotent terminate (rule #1): no daemon owns the instance and it
-				// is not a stopped instance. If the terminated-bucket query succeeds
-				// (KV reachable) the instance is already gone — return success so
-				// tofu destroy retries converge. KV-health gated: a failed query does
-				// NOT fabricate success (never trust an empty desired-state we cannot
-				// read — ADR-0003 §3).
-				found, queryOK := lookupTerminated(ctx, natsConn, instanceID, accountID)
-				if found {
+				// An instance still in the terminated bucket returns 48/48 so repeat
+				// terminates converge. NotFound needs the daemon's own NotFound plus
+				// both buckets readable and empty; anything less cannot prove absence.
+				state, queryOK := classifyUnownedInstance(ctx, natsConn, instanceID, accountID)
+				if state == bucketStateTerminated {
 					slog.InfoContext(ctx, "TerminateInstances: Instance already terminated", "instance_id", instanceID)
 					stateChanges = append(stateChanges, newStateChange(instanceID, 48, "terminated", 48, "terminated"))
 					continue
 				}
-				if queryOK {
-					slog.InfoContext(ctx, "TerminateInstances: Instance absent, terminate is idempotent", "instance_id", instanceID)
-					stateChanges = append(stateChanges, newStateChange(instanceID, 48, "terminated", 48, "terminated"))
-					continue
+				if queryOK && state == bucketStateAbsent && daemonReportedAbsent {
+					slog.InfoContext(ctx, "TerminateInstances: Instance does not exist", "instance_id", instanceID)
+					return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 				}
-				slog.ErrorContext(ctx, "TerminateInstances: terminated-bucket query failed, cannot confirm absence",
-					"instance_id", instanceID)
+				slog.ErrorContext(ctx, "TerminateInstances: cannot confirm instance state",
+					"instance_id", instanceID, "bucket_state", state, "query_ok", queryOK, "terminate_err", terminateErr)
 			}
 
 			slog.ErrorContext(ctx, "TerminateInstances: Failed to send command", "instance_id", instanceID, "err", err)
@@ -162,41 +141,4 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 
 	slog.InfoContext(ctx, "TerminateInstances: Completed", "total_instances", len(stateChanges))
 	return output, nil
-}
-
-// lookupTerminated reports whether an instance exists in the terminated KV
-// bucket. queryOK is false when the lookup itself failed (KV unreachable /
-// malformed reply), so callers can KV-health gate any idempotent-absence
-// decision rather than treating a failed query as "not found".
-func lookupTerminated(ctx context.Context, natsConn *nats.Conn, instanceID, accountID string) (found, queryOK bool) {
-	describeInput := &ec2.DescribeInstancesInput{
-		InstanceIds: []*string{&instanceID},
-	}
-	reqData, err := json.Marshal(describeInput)
-	if err != nil {
-		slog.WarnContext(ctx, "lookupTerminated: failed to marshal request", "instanceId", instanceID, "err", err)
-		return false, false
-	}
-	reqMsg := nats.NewMsg("ec2.DescribeTerminatedInstances")
-	reqMsg.Data = reqData
-	reqMsg.Header.Set(utils.AccountIDHeader, accountID)
-	utils.InjectTraceContext(ctx, reqMsg.Header)
-	msg, err := natsConn.RequestMsg(reqMsg, 3*time.Second)
-	if err != nil {
-		slog.WarnContext(ctx, "lookupTerminated: failed to query terminated instances", "instanceId", instanceID, "err", err)
-		return false, false
-	}
-	var output ec2.DescribeInstancesOutput
-	if unmarshalErr := json.Unmarshal(msg.Data, &output); unmarshalErr != nil {
-		slog.WarnContext(ctx, "lookupTerminated: failed to unmarshal response", "instanceId", instanceID, "err", unmarshalErr)
-		return false, false
-	}
-	for _, res := range output.Reservations {
-		for _, inst := range res.Instances {
-			if inst.InstanceId != nil && *inst.InstanceId == instanceID {
-				return true, true
-			}
-		}
-	}
-	return false, true
 }

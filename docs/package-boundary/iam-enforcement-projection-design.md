@@ -113,7 +113,7 @@ P20. Access-key deactivation or deletion, principal deletion, account suspension
 Effect at every current consumer is bounded by S plus one watermark interval H.
 
 P21. Session revocation by principal deletion (`RevokeUserSessions`, `RevokeRoleSessions`, `handlers/sts/session_credentials.go:201,212`) publishes `Deleted` CredentialFacts for every affected session, and the principal's own `deleted` PrincipalFact independently invalidates any session the sweep misses (P23 check 3).
-This clause describes how today's delete-the-record mechanism would be projected; whether that mechanism stays or is replaced by an AWS-style deny on token issue time is D12 (Open), and who publishes session-validity facts is D9 (Open).
+This clause describes how today's delete-the-record mechanism would be projected; whether that mechanism stays or is replaced by an AWS-style deny on token issue time is D12 (Open), and the IAM authority is the sole publisher of session-validity facts (D9).
 A GetSessionToken session today outlives deletion of its source access key (`TestCurrentBehaviour_Session_GetSessionTokenOutlivesMintingKey`); whether it should is D11 (Open).
 
 P22. Deleted-key and deleted-session facts are retained as tombstones until the next snapshot; a consumer that misses a tombstone recovers by resynchronising to a snapshot in which the key is absent.
@@ -196,9 +196,9 @@ P32. Transport must give consumers read-only access to the projection channel on
 
 | Consumer | Needs from projection | Currently reads directly | Must stop reading | Failure behaviour required | Migration blockers |
 |---|---|---|---|---|---|
-| AWSGW SigV4 ingress | Account, Principal, Credential, PolicySet, unless D4 (Open) permits an in-process synchronous path while co-located with the authority | `gateway/auth.go:375-520`, `gateway/auth_accountstatus.go:67`, `gateway/gateway.go:771,809` via `IAMService`/`STSService` | `LookupAccessKey`, `DecryptSecret`, `LookupSessionCredential`, `GetUserPolicies`, `GetRolePolicies`, `GetAccount` on the auth path | P24 table; NATS-down 503 preserved | D4 decided; AKID user-ID migration (P23); the audit and context-key boundary still in `gateway` (`PACKAGE_BOUNDARY_MIGRATION.md`, ingress pipeline debt) |
+| AWSGW SigV4 ingress | Account, Principal, Credential, PolicySet, or the in-process enforcement profile while co-located with the authority (D4) | `gateway/auth.go:375-520`, `gateway/auth_accountstatus.go:67`, `gateway/gateway.go:771,809` via `IAMService`/`STSService` | `LookupAccessKey`, `DecryptSecret`, `LookupSessionCredential`, `GetUserPolicies`, `GetRolePolicies`, `GetAccount` on the auth path | P24 table; NATS-down 503 preserved | AKID user-ID migration (P23); the audit and context-key boundary still in `gateway` (`PACKAGE_BOUNDARY_MIGRATION.md`, ingress pipeline debt) |
 | AWSGW ECR registry path | Account, Principal, Credential | `gateway/ecr_principal.go:97-250` | Same reads as above | 401 Bearer for Invalid, 503 for Unavailable or Stale (present split, `classifyIAMLookupErr` 67) | Same as AWSGW; not covered by the Phase 0 tests |
-| STS presigned verify and `GetAccessKeyInfo` | Credential (verifier for `sts`), Principal | `handlers/sts/presigned_url_verify.go:150-200`, `get_access_key_info.go:73` | Raw `DecryptSecret(…, s.masterKey)` and `LookupAccessKey` | `InvalidIdentityToken`/`ExpiredToken` as today; Unavailable is an error, never a token verdict | STS extraction (ADR-0005 S6(4)); whether STS or the IAM authority publishes session CredentialFacts is D9 (Open) |
+| STS presigned verify and `GetAccessKeyInfo` | Credential (verifier for `sts`), Principal | `handlers/sts/presigned_url_verify.go:150-200`, `get_access_key_info.go:73` | Raw `DecryptSecret(…, s.masterKey)` and `LookupAccessKey` | `InvalidIdentityToken`/`ExpiredToken` as today; Unavailable is an error, never a token verdict | STS extraction (ADR-0005 S6(4)); session CredentialFacts are published by the IAM authority through its session-lifecycle capability (D9) |
 | Predastore | Account (D7), Principal, Credential (verifier for `s3`), PolicySet | `predastore:internal/gate/auth/auth.go:84-998` (P1-P5) | Every `spinifex-iam-*` bucket, `master.key` for IAM, duplicated record structs, group resolution | P24 table; inactive key → 403 not 500; token digest and principal checks added; policy only after signature | Independently released (P29); config `[[auth]]` keys (P7) may not override IAM or bypass ownership or policy (D8), so any bootstrap exception needs a separately designed, bounded bootstrap principal; Predastore characterisation tests |
 | Goanna (future, deferred: D6) | Credential (verifier for `monitoring`), Principal, Account (D7), PolicySet | `goanna:internal/auth/provider.go:33-260` (G1-G4), code reading only | Both IAM buckets and `master.key` | P24 table, plus IAM identity-policy enforcement it does not have today | Deferred (D6); not characterised in Phase 0; before production use it must adopt this projection and enforce IAM identity policy, not keep its account-only authentication |
 | Daemon system-role ensurer | None: it writes IAM, so it needs an IAM lifecycle capability, not the projection | `daemon/eks_deps.go:27-48`, `daemon/ecs_deps.go:39-51` | Second `IAMServiceImpl` and `master.key` | Fail closed instead of static-credential fallback (ADR-0005 S5, Q-25) | ADR-0005 S6(3) capability extraction |
@@ -235,13 +235,13 @@ Citations:
 ## 13. Later code stack
 
 Each step is its own PR, in order; none starts before ADR-0005 S6(1) characterisation tests for its consumer have landed.
-Phase 1 begins at step 1, and it may not begin while D4 or D9 is Open.
+Phase 1 begins at step 1.
 
 | # | Change | Entry criteria | Exit criteria |
 |---|---|---|---|
-| 1 | Bluebottle: projection v1 types, canonical encoding, Ed25519 verify, freshness predicate, failure classes, `sigv4` verify-by-signing-key, conformance fixtures (valid, tampered, wrong key, unknown major, unknown critical, stale, replayed generation, replaced principal, expired, missing token, unresolvable policy set) | This design accepted; D4 and D9 decided | Fixtures pass in Bluebottle; AWSGW and Predastore test suites both run the fixtures without importing Spinifex (ADR-0005 evidence 2); no Spinifex import in Bluebottle |
+| 1 | Bluebottle: projection v1 types, canonical encoding, Ed25519 verify, freshness predicate, failure classes, `sigv4` verify-by-signing-key, conformance fixtures (valid, tampered, wrong key, unknown major, unknown critical, stale, replayed generation, replaced principal, expired, missing token, unresolvable policy set) | This design accepted | Fixtures pass in Bluebottle; AWSGW and Predastore test suites both run the fixtures without importing Spinifex (ADR-0005 evidence 2); no Spinifex import in Bluebottle |
 | 2 | Spinifex IAM authority: add user ID to `AccessKey` (expand, migrate per ADR-0006 S4); produce, sign and publish snapshot, incremental facts and watermarks; signing key custody; publication on every revocation path | PR 1 released; transport design reviewed; D1 gate met (recipient-key rotation and scope issuance reviewed); D12 decided before any change to session revocation | For the characterisation corpus, the projection's decision equals `IAMService`'s on every case; revocation visible within S + H in a test; no consumer changed |
-| 3a | AWSGW ingress and ECR path consume the projection, or the in-process path if D4 permits it | PR 2 deployed; AWSGW characterisation green | No `LookupAccessKey`, `DecryptSecret`, session lookup or policy resolution on the auth path; ADR-0005 evidence 3 tests pass |
+| 3a | AWSGW ingress and ECR path consume the projection, or the in-process enforcement profile (D4) | PR 2 deployed; AWSGW characterisation green | No `LookupAccessKey`, `DecryptSecret`, session lookup or policy resolution on the auth path; ADR-0005 evidence 3 tests pass |
 | 3b | STS presigned verify and `GetAccessKeyInfo` consume the projection | 3a merged | No raw master-key decrypt in `presigned_url_verify.go` |
 | 3c | Predastore consumes the projection | PR 2 published at a major Predastore declares; Predastore characterisation green; D8 bootstrap principal designed if any exception is kept | No `spinifex-iam-*` read, IAM struct copy or IAM `master.key` load; no `[[auth]]` override of IAM; ADR-0005 evidence 7 tests pass; compatibility matrix per P29 |
 | 3d | Goanna consumes the projection | D6 deferral lifted; Goanna characterisation tests written and green | No IAM bucket or IAM `master.key` access; IAM identity policy enforced on every action; account status enforced (D7) |
@@ -286,9 +286,14 @@ An implementation gate names what must exist or be reviewed before code that dep
 ### D4: AWSGW in-process synchronous path
 
 - **Question:** May AWSGW, co-located with the IAM authority, verify and authorize through an in-process synchronous capability instead of consuming the projection?
-- **Status:** Open; not decided.
-- **Context:** ADR-0005 S1 allows a synchronous verification capability only for a consumer profile that explicitly accepts its availability dependency; this design does not make that choice for AWSGW.
-- **Implementation gate:** D4 must be explicitly decided before Phase 1 (Section 13 step 1) begins.
+- **Status:** Accepted.
+- **Decision:** While AWSGW is co-located with the IAM authority, it may use an in-process synchronous enforcement profile that accepts the authority's availability dependency (ADR-0005 S1).
+  That profile uses the same narrow, versioned enforcement semantics as the projection; it must not use `IAMService`, raw IAM KV, master-key decryption or a gateway-owned cache.
+  Composition selects the profile at startup, and no request falls back between the in-process and projection profiles.
+  Authority-state failure stays fail-closed with a retryable 503 (D5).
+  If AWSGW is decoupled from the authority, it moves to the signed projection.
+- **Rationale:** Structural AWSGW cleanup does not wait for the full distributed projection, and AWSGW still enforces through one model shared with every other consumer.
+- **Implementation gate:** Before AWSGW adopts the in-process profile (Section 13 step 3a), tests show the profile is selected only at composition and that authority-state failure returns 503.
 - **Links:** Section 11 (AWSGW rows), Section 13 step 3a; inventory S11-S15, 4.1.
 
 ### D5: Failure class when projection state is unavailable or stale
@@ -332,9 +337,13 @@ An implementation gate names what must exist or be reviewed before code that dep
 ### D9: Owner and publisher of session-validity facts
 
 - **Question:** Which component owns and publishes session CredentialFacts: the IAM authority, or the STS session store that physically holds session records today?
-- **Status:** Open; not decided.
-- **Context:** ADR-0005 S2 makes IAM the logical authority for session-credential validity and revocation, while STS writes and reads `spinifex-iam-session-credentials` today (inventory S2).
-- **Implementation gate:** D9 must be explicitly decided before Phase 1 (Section 13 step 1) begins.
+- **Status:** Accepted.
+- **Decision:** The IAM authority owns session-validity facts and is their sole publisher.
+  STS owns protocol handling and session-issuance orchestration; it is not a second authority for session validity or revocation.
+  The current STS session store may remain during transition, but every session creation, revocation and reconciliation flows through an IAM-owned session-lifecycle capability that produces the matching CredentialFact update.
+  This decision does not settle D11 or D12.
+- **Rationale:** ADR-0005 S2 makes IAM the logical authority for session-credential validity and revocation, while STS writes and reads `spinifex-iam-session-credentials` today (inventory S2); one publisher keeps a single source of revocation truth.
+- **Implementation gate:** Before the producer publishes session CredentialFacts (Section 13 step 2), STS session creation and revocation go through the IAM-owned session-lifecycle capability.
 - **Links:** P2, P7, P20, P21, Section 11 (STS row); inventory S2, S12.
 
 ### D10: Error ordering for expired sessions

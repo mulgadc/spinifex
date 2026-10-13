@@ -8,6 +8,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -554,12 +555,9 @@ func spreadHostsByAZ(hosts []azHost) []string {
 // nodeFitsCustomerInstance reports whether a node advertises at least one free
 // slot for the given customer instance type in its node.status capacity.
 func nodeFitsCustomerInstance(st clusterv1.NodeStatusResponse, instanceType string) bool {
-	for _, c := range st.InstanceTypes {
-		if c.Name == instanceType && c.Available >= 1 {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(st.InstanceTypes, func(c clusterv1.InstanceTypeCap) bool {
+		return c.Name == instanceType && c.Available >= 1
+	})
 }
 
 // nodeFitsSystemInstance reports whether a node's headroom (Total - Reserved - Alloc)

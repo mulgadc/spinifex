@@ -111,6 +111,9 @@ func (s *Service) ModifyDBSubnetGroup(ctx context.Context, input *rds.ModifyDBSu
 	return &rds.ModifyDBSubnetGroupOutput{DBSubnetGroup: s.projectSubnetGroup(rec)}, nil
 }
 
+// DeleteDBSubnetGroup is refused while any instance still names the group, including one that is only
+// deleting: releasing it early would let a teardown lose the record of where its ENI was placed, and
+// would make destroy ordering ambiguous.
 func (s *Service) DeleteDBSubnetGroup(ctx context.Context, input *rds.DeleteDBSubnetGroupInput, accountID string) (*rds.DeleteDBSubnetGroupOutput, error) {
 	if input == nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")

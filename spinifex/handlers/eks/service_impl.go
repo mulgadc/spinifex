@@ -1744,8 +1744,8 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 // accessPolicyName extracts the policy short name from its ARN
 // (…/cluster-access-policy/AmazonEKSViewPolicy → AmazonEKSViewPolicy).
 func accessPolicyName(arn string) string {
-	if i := strings.LastIndex(arn, "/"); i >= 0 {
-		return arn[i+1:]
+	if _, after, ok := strings.CutLast(arn, "/"); ok {
+		return after
 	}
 	return arn
 }

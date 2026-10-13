@@ -24,8 +24,8 @@ var taggingActions = map[string]taggingHandler{
 
 // taggingActionFromTarget extracts the action suffix from an X-Amz-Target header.
 func taggingActionFromTarget(target string) string {
-	if i := strings.LastIndex(target, "."); i >= 0 {
-		return target[i+1:]
+	if _, after, ok := strings.CutLast(target, "."); ok {
+		return after
 	}
 	return target
 }

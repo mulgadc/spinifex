@@ -308,8 +308,8 @@ func localName(id string) string {
 	if strings.HasPrefix(id, smithyPrelude) {
 		return id
 	}
-	if separator := strings.LastIndex(id, "#"); separator >= 0 {
-		return id[separator+1:]
+	if _, after, ok := strings.CutLast(id, "#"); ok {
+		return after
 	}
 	return id
 }

@@ -38,8 +38,8 @@ func ClusterShortName(ref string) string {
 
 // ContainerInstanceShortID extracts the container-instance UUID from an ID or ARN.
 func ContainerInstanceShortID(ref string) string {
-	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
-		return ref[i+1:]
+	if _, after, ok := strings.CutLast(ref, "/"); ok {
+		return after
 	}
 	return ref
 }
@@ -47,8 +47,8 @@ func ContainerInstanceShortID(ref string) string {
 // TaskShortID extracts the task UUID from a bare id or a task ARN
 // (arn:...:task/{cluster}/{taskID}); the final path segment is the task id.
 func TaskShortID(ref string) string {
-	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
-		return ref[i+1:]
+	if _, after, ok := strings.CutLast(ref, "/"); ok {
+		return after
 	}
 	return ref
 }

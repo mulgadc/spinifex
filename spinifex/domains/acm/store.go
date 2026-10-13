@@ -496,6 +496,20 @@ func (s *Store) updateInUseByCAS(ctx context.Context, certArn string, mutate fun
 	return err
 }
 
+// UpdateTags rewrites only certArn's tag set under the revision-guarded CAS
+// loop; the encrypted PrivateKey is never read back through GetCertMetadata.
+// A missing certificate returns kvstore.ErrNotFound.
+func (s *Store) UpdateTags(ctx context.Context, certArn string, mutate func(tags map[string]string) map[string]string) error {
+	key := certKey(certArn)
+	if key == "" {
+		return fmt.Errorf("acm store: not a certificate ARN: %q", certArn)
+	}
+	return s.store.Mutate(ctx, key, func(rec *CertRecord) (bool, error) {
+		rec.Tags = mutate(rec.Tags)
+		return true, nil
+	})
+}
+
 // AcquireLease attempts to take the per-certificate issuance/renewal lease on
 // certArn for holderID, valid until now+ttl. The lease lives on the record
 // itself (CertRecord.LeaseHolder/LeaseExpiresAt) rather than in a separate

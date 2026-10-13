@@ -276,8 +276,8 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 // query-protocol Action parameter. Empty on no match.
 func resolveNonQueryAction(r *http.Request, service string) string {
 	if target := r.Header.Get("X-Amz-Target"); target != "" {
-		if i := strings.LastIndex(target, "."); i >= 0 {
-			return target[i+1:]
+		if _, after, ok := strings.CutLast(target, "."); ok {
+			return after
 		}
 		return target
 	}

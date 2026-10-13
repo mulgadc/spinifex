@@ -167,8 +167,8 @@ func nonEmptyStringPtr(s string) *string {
 // caller-supplied plain model id still works.
 func embeddingModelIDFromARN(arn string) string {
 	const marker = "foundation-model/"
-	if idx := strings.LastIndex(arn, marker); idx != -1 {
-		return arn[idx+len(marker):]
+	if _, after, ok := strings.CutLast(arn, marker); ok {
+		return after
 	}
 	return arn
 }

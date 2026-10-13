@@ -394,8 +394,8 @@ func (s *Store) TargetGroupsForLB(ctx context.Context, lbID string) ([]*TargetGr
 			return
 		}
 		// TG ARN format: arn:aws:elasticloadbalancing:{region}:{account}:targetgroup/{name}/{tgID}
-		if idx := strings.LastIndex(tgArn, "/"); idx >= 0 {
-			seen[tgArn[idx+1:]] = struct{}{}
+		if _, after, ok := strings.CutLast(tgArn, "/"); ok {
+			seen[after] = struct{}{}
 		}
 	}
 	for _, l := range listeners {

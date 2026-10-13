@@ -268,11 +268,11 @@ func threadJiffies(procRoot string, tid int) (uint64, error) {
 		return 0, err
 	}
 	raw := string(data)
-	idx := strings.LastIndexByte(raw, ')')
-	if idx < 0 {
+	_, after, ok := strings.CutLast(raw, ")")
+	if !ok {
 		return 0, fmt.Errorf("malformed stat for tid %d", tid)
 	}
-	fields := strings.Fields(raw[idx+1:])
+	fields := strings.Fields(after)
 	if len(fields) < 14 {
 		return 0, fmt.Errorf("short stat for tid %d: %d fields", tid, len(fields))
 	}

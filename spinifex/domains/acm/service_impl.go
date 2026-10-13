@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 )
 
@@ -724,15 +725,21 @@ func (s *ACMServiceImpl) AddTagsToCertificate(ctx context.Context, input *acm.Ad
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
-	if err != nil {
+	if _, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID); err != nil {
 		return nil, err
 	}
-	if rec.Tags == nil {
-		rec.Tags = map[string]string{}
+	newTags := tagsToMap(input.Tags)
+	err := s.store.UpdateTags(ctx, aws.StringValue(input.CertificateArn), func(tags map[string]string) map[string]string {
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		maps.Copy(tags, newTags)
+		return tags
+	})
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, errors.New(awserrors.ErrorResourceNotFound)
 	}
-	maps.Copy(rec.Tags, tagsToMap(input.Tags))
-	if err := s.store.PutCert(ctx, rec); err != nil {
+	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	return &acm.AddTagsToCertificateOutput{}, nil
@@ -745,21 +752,26 @@ func (s *ACMServiceImpl) RemoveTagsFromCertificate(ctx context.Context, input *a
 	if input == nil || aws.StringValue(input.CertificateArn) == "" {
 		return nil, errors.New(awserrors.ErrorACMInvalidArn)
 	}
-	rec, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID)
-	if err != nil {
+	if _, err := s.lookupOwned(ctx, aws.StringValue(input.CertificateArn), accountID); err != nil {
 		return nil, err
 	}
-	for _, tag := range input.Tags {
-		if tag == nil {
-			continue
+	err := s.store.UpdateTags(ctx, aws.StringValue(input.CertificateArn), func(tags map[string]string) map[string]string {
+		for _, tag := range input.Tags {
+			if tag == nil {
+				continue
+			}
+			key := aws.StringValue(tag.Key)
+			if tag.Value != nil && tags[key] != aws.StringValue(tag.Value) {
+				continue
+			}
+			delete(tags, key)
 		}
-		key := aws.StringValue(tag.Key)
-		if tag.Value != nil && rec.Tags[key] != aws.StringValue(tag.Value) {
-			continue
-		}
-		delete(rec.Tags, key)
+		return tags
+	})
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil, errors.New(awserrors.ErrorResourceNotFound)
 	}
-	if err := s.store.PutCert(ctx, rec); err != nil {
+	if err != nil {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 	return &acm.RemoveTagsFromCertificateOutput{}, nil

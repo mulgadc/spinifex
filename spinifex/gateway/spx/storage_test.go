@@ -3,6 +3,8 @@ package spx
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -103,4 +105,90 @@ func TestQueryMetaNodeStatus_Unreachable(t *testing.T) {
 
 	assert.False(t, out.Healthy)
 	assert.Empty(t, out.State)
+}
+
+// readyzServer stands in for a predastore admin listener whose /readyz
+// answers code with body.
+func readyzServer(t *testing.T, code int, body string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().String()
+}
+
+// serveStorageConfig answers spinifex.storage.config with resp, as the daemon
+// would, and returns the gateway's report.
+func serveStorageConfig(t *testing.T, resp types.StorageConfigResponse) *StorageStatusOutput {
+	t.Helper()
+	_, nc := startEmbeddedNATS(t)
+	sub, err := nc.Subscribe("spinifex.storage.config", func(msg *nats.Msg) {
+		data, _ := json.Marshal(resp)
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+
+	out, err := GetStorageStatus(nc, nil)
+	require.NoError(t, err)
+	require.Len(t, out.MetaNodes, 1)
+	return out
+}
+
+// singleHostMeta is the default install's meta node: nothing listens on its
+// QUIC port, so its health can only come from the admin listener at addr.
+func singleHostMeta(addr string) types.StorageConfigResponse {
+	return types.StorageConfigResponse{
+		MetaNodes: []types.StorageMetaNode{{ID: 3, Host: "127.0.0.1", Port: 1, AdminAddr: addr}},
+	}
+}
+
+func TestGetStorageStatus_FallsBackToReadyz(t *testing.T) {
+	addr := readyzServer(t, http.StatusOK,
+		`{"checks":{"blob_nodes":"ok","meta_leader":"ok","meta_reachable":"ok"},"status":"ready"}`)
+
+	node := serveStorageConfig(t, singleHostMeta(addr)).MetaNodes[0]
+
+	assert.True(t, node.Healthy)
+	assert.Empty(t, node.State, "/readyz carries no raft detail to report")
+	assert.Empty(t, node.Leader)
+}
+
+// /readyz answers 503 when any check fails; a blob failure must not mark a
+// meta node that observes a leader unreachable.
+func TestGetStorageStatus_ReadyzBlobFailureKeepsMetaHealthy(t *testing.T) {
+	addr := readyzServer(t, http.StatusServiceUnavailable,
+		`{"checks":{"blob_nodes":"fewer than 1 blob nodes answered","meta_leader":"ok"},"status":"unready"}`)
+
+	assert.True(t, serveStorageConfig(t, singleHostMeta(addr)).MetaNodes[0].Healthy)
+}
+
+func TestGetStorageStatus_ReadyzWithoutLeaderStaysUnhealthy(t *testing.T) {
+	addr := readyzServer(t, http.StatusServiceUnavailable,
+		`{"checks":{"meta_leader":"no raft leader observed"},"status":"unready"}`)
+
+	assert.False(t, serveStorageConfig(t, singleHostMeta(addr)).MetaNodes[0].Healthy)
+}
+
+// Before the sampler's first cycle /readyz names no checks at all.
+func TestGetStorageStatus_ReadyzBeforeFirstSampleStaysUnhealthy(t *testing.T) {
+	addr := readyzServer(t, http.StatusServiceUnavailable, `{"checks":{},"status":"unready"}`)
+
+	assert.False(t, serveStorageConfig(t, singleHostMeta(addr)).MetaNodes[0].Healthy)
+}
+
+func TestQueryMetaNodeReadyz_Unreachable(t *testing.T) {
+	out := &MetaNodeStatus{ID: 3}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	queryMetaNodeReadyz(ctx, out, "127.0.0.1:1")
+
+	assert.False(t, out.Healthy)
 }

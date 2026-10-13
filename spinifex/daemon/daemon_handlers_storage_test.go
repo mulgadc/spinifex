@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -116,6 +117,46 @@ func TestHandleStorageConfig_SplitsNodesByRole(t *testing.T) {
 	require.Len(t, resp.Buckets, 1)
 	assert.Equal(t, "predastore", resp.Buckets[0].Name)
 	assert.Equal(t, "ap-southeast-2", resp.Buckets[0].Region)
+}
+
+// singleHostAdminTOML is the default install: every node on one host, which
+// opens no QUIC socket, so raft status is only on its admin port.
+const singleHostAdminTOML = `
+[rs]
+data = 1
+parity = 0
+
+[[host]]
+id = 1
+addr = "10.0.0.1"
+bind_addr = "%s"
+admin_port = 8660
+
+[[host.node]]
+id = 3
+role = "meta"
+port = 7660
+`
+
+// TestHandleStorageConfig_SingleHostNamesTheAdminListener pins where the
+// gateway falls back to for raft status: the host's bind address when it
+// names one, its addr when it binds a wildcard.
+func TestHandleStorageConfig_SingleHostNamesTheAdminListener(t *testing.T) {
+	for i, tc := range []struct{ bind, want string }{
+		{"127.0.0.1", "127.0.0.1:8660"},
+		{"0.0.0.0", "10.0.0.1:8660"},
+		{"", "10.0.0.1:8660"},
+	} {
+		t.Run("bind="+tc.bind, func(t *testing.T) {
+			payload := storageConfigResponse(t, fmt.Sprintf(singleHostAdminTOML, tc.bind),
+				fmt.Sprintf("test.storage.config.single.%d", i))
+
+			var resp types.StorageConfigResponse
+			require.NoError(t, json.Unmarshal(payload, &resp))
+			require.Len(t, resp.MetaNodes, 1)
+			assert.Equal(t, tc.want, resp.MetaNodes[0].AdminAddr)
+		})
+	}
 }
 
 // TestHandleStorageConfig_ReportsAMissingConfig covers the node that has no

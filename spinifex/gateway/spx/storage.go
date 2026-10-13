@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -53,7 +55,8 @@ const metaNodeQueryTimeout = 2 * time.Second
 // pool: every meta node in the cluster is queried, not just a local one, so
 // verifying each one's identity against the shared CA (rather than a local
 // TLS config only the node owning it could read) is what makes every dial
-// trusted.
+// trusted. A single-host cluster opens no QUIC socket, so a node QUIC cannot
+// reach falls back to its host's /readyz.
 func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutput, error) {
 	msg, err := nc.Request("spinifex.storage.config", []byte("{}"), 3*time.Second)
 	if err != nil {
@@ -77,10 +80,17 @@ func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutp
 			Port: meta.Port,
 		}
 		wg.Add(1)
-		go func(idx int, host string, port int) {
+		go func(idx int, meta types.StorageMetaNode) {
 			defer wg.Done()
-			queryMetaNodeStatus(ctx, &metaStatuses[idx], rootCAs, host, port)
-		}(i, meta.Host, meta.Port)
+			queryMetaNodeStatus(ctx, &metaStatuses[idx], rootCAs, meta.Host, meta.Port)
+			if metaStatuses[idx].Healthy || meta.AdminAddr == "" {
+				return
+			}
+			// The QUIC attempt spent ctx, so the fallback gets its own budget.
+			adminCtx, adminCancel := context.WithTimeout(context.Background(), metaNodeQueryTimeout)
+			defer adminCancel()
+			queryMetaNodeReadyz(adminCtx, &metaStatuses[idx], meta.AdminAddr)
+		}(i, meta)
 	}
 	wg.Wait()
 
@@ -134,6 +144,44 @@ func queryMetaNodeStatus(ctx context.Context, out *MetaNodeStatus, rootCAs *x509
 		return
 	}
 	applyMetaStatus(out, status)
+}
+
+// queryMetaNodeReadyz marks a meta node healthy when its host's /readyz reports
+// that it observes a raft leader. It carries no raft detail, so every raft
+// field stays blank; a node that does not answer within ctx stays unhealthy.
+func queryMetaNodeReadyz(ctx context.Context, out *MetaNodeStatus, adminAddr string) {
+	host, port, err := net.SplitHostPort(adminAddr)
+	if err != nil {
+		slog.Debug("queryMetaNodeReadyz: invalid admin address", "id", out.ID, "admin_addr", adminAddr, "err", err)
+		return
+	}
+	if host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	url := "http://" + net.JoinHostPort(host, port) + "/readyz"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		slog.Debug("queryMetaNodeReadyz: build request failed", "id", out.ID, "url", url, "err", err)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Debug("queryMetaNodeReadyz: probe failed", "id", out.ID, "url", url, "err", err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// A 503 still names each check, and a blob failure there says nothing
+	// about the meta node, so only the leader check is read.
+	var body struct {
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		slog.Debug("queryMetaNodeReadyz: decode failed", "id", out.ID, "url", url, "status", resp.StatusCode, "err", err)
+		return
+	}
+	out.Healthy = body.Checks["meta_leader"] == "ok"
 }
 
 // metaNodeID converts a meta node's id — plain int on the wire, predastore's

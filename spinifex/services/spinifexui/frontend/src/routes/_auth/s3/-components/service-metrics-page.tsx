@@ -122,18 +122,15 @@ export function ServiceMetricsPage() {
   )
 }
 
-// hasQuorum reads the raft view each meta node reports, not just whether it
-// answered: a replica that has lost quorum still replies, so reachability
-// alone would call a leaderless cluster healthy.
+// hasQuorum reads the raft view each meta node reports, since a leaderless
+// replica still answers. A healthy node with no raft state was vouched for by
+// its host's /readyz leader check, so it has no leader to compare.
 function hasQuorum(nodes: MetaNodeStatus[]) {
-  if (nodes.length === 0) {
+  if (nodes.length === 0 || !nodes.every((n) => n.healthy)) {
     return false
   }
-  const leader = nodes[0]?.leader
-  if (!leader) {
-    return false
-  }
-  return nodes.every((n) => n.healthy && n.leader === leader)
+  const leaders = new Set(nodes.filter((n) => n.state).map((n) => n.leader))
+  return leaders.size <= 1 && !leaders.has("") && !leaders.has(undefined)
 }
 
 function ClusterHealthBadge({

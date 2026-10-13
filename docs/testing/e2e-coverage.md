@@ -28,7 +28,7 @@ The largest suite, 25 top-level tests. Notable entry points:
 - `TestWANEgressSMTPBlock` — egress port blocking.
 - `TestInstanceMetadata` — IMDS from inside a guest.
 - `TestStopStart`, `TestEarlyRebootLiveness`, `TestGuestChurnDurability`, `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch`, `TestCreateImage`, `TestVolumeLifecycle`, `TestSpotInstanceLifecycle`, `TestLaunchTemplateBoot`.
-- `TestNegativeErrorPaths` — the `8a`–`8h` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, and so on).
+- `TestNegativeErrorPaths` — the `8a`–`8t` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, unknown or malformed instance IDs on the lifecycle verbs, and so on).
 - **`TestKVReplication`** — the single-node half of the KV replication policy, and it is not the multi-node assertion with a smaller number in it. On one node one replica per bucket is the correct answer rather than the defect, so what it proves is the opposite: that nothing declared a replica count this deployment cannot place, that `spx admin kv replicas` exits 0 and reports `WANT 1`, and that `--repair` run twice against a cluster with nothing to repair changes no bucket's replica count and leaves every bucket serving. The multi-node suites cannot cover any of that, because on three nodes the unplaceable count is the right one. It lives here rather than in its own suite so it runs in every single-node nightly cell, across all three host and network permutations.
 
 ### `natuplink` — routed NAT (`external_mode = "nat"`), one node or three

@@ -173,9 +173,9 @@ func TestInstanceReaperTerminates(t *testing.T) {
 	reaper := &instanceReaper{nc: cluster.nc, expectedNodes: 1}
 
 	require.NoError(t, reaper.Delete(testCtx(t), "000000000042",
-		Resource{Kind: "instance", ID: "i-abc"}, false))
+		Resource{Kind: "instance", ID: "i-0abc0123456789def"}, false))
 
-	assert.Contains(t, cluster.called(), "ec2.cmd.i-abc")
+	assert.Contains(t, cluster.called(), "ec2.cmd.i-0abc0123456789def")
 }
 
 // The attachment is the reason a volume will not go, so it has to reach the

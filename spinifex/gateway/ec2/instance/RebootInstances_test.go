@@ -47,7 +47,7 @@ func TestRebootInstances_MultipleInstances(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	ids := []string{"i-001", "i-002"}
+	ids := []string{"i-06794c450e770fbc0", "i-70aee04c61ac4d963"}
 
 	for _, id := range ids {
 		nc.Subscribe("ec2.cmd."+id, func(msg *nats.Msg) {
@@ -78,17 +78,48 @@ func TestRebootInstances_EmptyInstanceIds(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
-func TestRebootInstances_NATSRequestFails(t *testing.T) {
+func TestRebootInstances_NeverExistedIsNotFound(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
+	serveEmptyBuckets(t, nc)
 
 	input := &ec2.RebootInstancesInput{
-		InstanceIds: []*string{aws.String("i-nosubscriber")},
+		InstanceIds: []*string{aws.String("i-d2d5fe795b6b57882")},
 	}
 
 	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestRebootInstances_BucketsUnreachableIsServerError(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	input := &ec2.RebootInstancesInput{
+		InstanceIds: []*string{aws.String("i-0cc1dd2ee3ff40516")},
+	}
+
+	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+func TestRebootInstances_TerminatedInstanceIsIncorrectState(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0bb1cc2dd3ee4ff50"
+	serveInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances", instanceID)
+	serveInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+
+	input := &ec2.RebootInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}
+
+	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
 }
 
 // TestRebootInstances_SlowDaemonIsNotAMissingInstance covers a daemon that
@@ -102,7 +133,7 @@ func TestRebootInstances_SlowDaemonIsNotAMissingInstance(t *testing.T) {
 	rebootInstancesTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { rebootInstancesTimeout = previous })
 
-	instanceID := "i-slow"
+	instanceID := "i-6ed2716331719b275"
 	// A live subscriber that never replies forces a real ErrTimeout rather
 	// than the immediate ErrNoResponders a missing subscriber would give.
 	_, err := nc.Subscribe("ec2.cmd."+instanceID, func(*nats.Msg) {})
@@ -120,7 +151,7 @@ func TestRebootInstances_StoppedInstance(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-stopped"
+	instanceID := "i-42798f10e29985019"
 
 	// No ec2.cmd subscription — simulates a stopped instance with no daemon listener.
 	// Subscribe to the stopped-instances describe topic to return the instance.
@@ -152,7 +183,7 @@ func TestRebootInstances_DaemonError(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			t.Parallel()
 			_, nc := startTestNATSServer(t)
-			instanceID := "i-error"
+			instanceID := "i-156a87e2dd55d1967"
 
 			nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
 				msg.Respond(utils.GenerateErrorPayload(code))

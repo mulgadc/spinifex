@@ -54,7 +54,7 @@ func TestTerminateInstances_MultipleInstances(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	ids := []string{"i-001", "i-002", "i-003"}
+	ids := []string{"i-06794c450e770fbc0", "i-70aee04c61ac4d963", "i-ed828a4ce70b0199c"}
 
 	for _, id := range ids {
 		nc.Subscribe("ec2.cmd."+id, func(msg *nats.Msg) {
@@ -95,7 +95,7 @@ func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-valid"
+	instanceID := "i-476e190637b456de0"
 	nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
 		msg.Respond([]byte(`{"return":{}}`))
 	})
@@ -114,7 +114,7 @@ func TestTerminateInstances_NilInstanceIdSkipped(t *testing.T) {
 func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-nosubscriber"
+	instanceID := "i-d2d5fe795b6b57882"
 
 	input := &ec2.TerminateInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
@@ -130,8 +130,8 @@ func TestTerminateInstances_NATSRequestFails(t *testing.T) {
 func TestTerminateInstances_MixedSuccessAndFailure(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	goodID := "i-good"
-	badID := "i-bad"
+	goodID := "i-fd00438116c1f2ce2"
+	badID := "i-587b21c4147f9d9d8"
 
 	nc.Subscribe("ec2.cmd."+goodID, func(msg *nats.Msg) {
 		msg.Respond([]byte(`{"return":{}}`))
@@ -153,7 +153,7 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-verify"
+	instanceID := "i-aaca8ef21b7bcf3c1"
 	var receivedCmd types.EC2InstanceCommand
 
 	nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
@@ -177,7 +177,7 @@ func TestTerminateInstances_VerifiesQMPAttributes(t *testing.T) {
 func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-stopped-term"
+	instanceID := "i-b727f5c80b8852641"
 
 	// No ec2.cmd.<id> subscriber — simulate stopped instance with no daemon owning it.
 	// Subscribe to ec2.terminate to handle the fallback.
@@ -208,8 +208,8 @@ func TestTerminateInstances_StoppedInstanceFallback(t *testing.T) {
 func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	runningID := "i-running-mix"
-	stoppedID := "i-stopped-mix"
+	runningID := "i-eedceec2e5f2de227"
+	stoppedID := "i-8d23f24b13d54a30c"
 
 	// Running instance responds on ec2.cmd.<id>
 	nc.Subscribe("ec2.cmd."+runningID, func(msg *nats.Msg) {
@@ -253,7 +253,7 @@ func TestTerminateInstances_MixedRunningAndStopped(t *testing.T) {
 func TestTerminateInstances_RefusalIsNotReportedAsTerminated(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-refused-term"
+	instanceID := "i-7488538f97c0a8654"
 
 	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
 		msg.Respond([]byte(`{"code":"` + awserrors.ErrorIncorrectInstanceState + `","message":"wrong state"}`))
@@ -273,20 +273,41 @@ func TestTerminateInstances_RefusalIsNotReportedAsTerminated(t *testing.T) {
 	assert.Nil(t, output)
 }
 
-// A genuine absence still converges: the stopped bucket does not hold the
-// instance and neither does the terminated bucket, so the terminate is a no-op
-// on something already gone.
-func TestTerminateInstances_AbsentInstanceStaysIdempotent(t *testing.T) {
+// The reported bug: an id the system never issued was answered with a
+// fabricated terminated/terminated state change instead of NotFound.
+func TestTerminateInstances_NeverExistedIsNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-absent-term"
+	instanceID := "i-d419ad3c922169e6e"
 
 	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
 		msg.Respond([]byte(`{"code":"` + awserrors.ErrorInvalidInstanceIDNotFound + `","message":"not found"}`))
 	})
-	nc.Subscribe("ec2.DescribeTerminatedInstances", func(msg *nats.Msg) {
-		msg.Respond([]byte(`{"Reservations":[]}`))
+	serveEmptyBuckets(t, nc)
+
+	output, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.Nil(t, output)
+}
+
+// A repeat terminate of an instance still in the terminated bucket converges,
+// which is what lets a retried destroy finish.
+func TestTerminateInstances_AlreadyTerminatedStaysIdempotent(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0aa1bb2cc3dd4ee5f"
+
+	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"code":"` + awserrors.ErrorInvalidInstanceIDNotFound + `","message":"not found"}`))
 	})
+	serveInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances", instanceID)
+	serveInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
 
 	output, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
@@ -294,6 +315,71 @@ func TestTerminateInstances_AbsentInstanceStaysIdempotent(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, output.TerminatingInstances, 1)
-	assert.Equal(t, int64(48), *output.TerminatingInstances[0].CurrentState.Code)
-	assert.Equal(t, "terminated", *output.TerminatingInstances[0].CurrentState.Name)
+	sc := output.TerminatingInstances[0]
+	assert.Equal(t, int64(48), *sc.CurrentState.Code)
+	assert.Equal(t, "terminated", *sc.CurrentState.Name)
+	assert.Equal(t, int64(48), *sc.PreviousState.Code)
+	assert.Equal(t, "terminated", *sc.PreviousState.Name)
+}
+
+// With the buckets unreadable absence cannot be proved, so the call fails
+// with neither a fabricated terminate nor a NotFound.
+func TestTerminateInstances_BucketsUnreachableIsNeitherSuccessNorNotFound(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0bb1cc2dd3ee4ff50"
+
+	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"code":"` + awserrors.ErrorInvalidInstanceIDNotFound + `","message":"not found"}`))
+	})
+	serveInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+
+	output, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.Nil(t, output)
+}
+
+// NotFound needs the stopped-instance path's own NotFound. When ec2.terminate
+// does not answer, empty buckets alone could be hiding a stopped instance.
+func TestTerminateInstances_NoStoppedPathAnswerIsNotNotFound(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	serveEmptyBuckets(t, nc)
+
+	_, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String("i-0cc1dd2ee3ff40516")},
+	}, nc, "123456789012")
+
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+}
+
+func TestTerminateInstances_MixedBatchWithUnknownIDFails(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	runningID := "i-0dd1ee2ff30415263"
+	unknownID := "i-0ee1ff203142536a7"
+
+	nc.Subscribe("ec2.cmd."+runningID, func(msg *nats.Msg) {
+		msg.Respond([]byte(`{}`))
+	})
+	nc.QueueSubscribe("ec2.terminate", "spinifex-workers", func(msg *nats.Msg) {
+		msg.Respond([]byte(`{"code":"` + awserrors.ErrorInvalidInstanceIDNotFound + `","message":"not found"}`))
+	})
+	serveEmptyBuckets(t, nc)
+
+	output, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String(runningID), aws.String(unknownID)},
+	}, nc, "123456789012")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.Nil(t, output)
 }

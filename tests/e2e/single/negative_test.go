@@ -36,6 +36,8 @@ import (
 //	8p (idempotent)                 — DeleteKeyPair for unknown key must succeed
 //	8q InvalidInstanceID.NotFound   — ModifyInstanceAttribute on running inst
 //	8r InvalidInstanceID.NotFound   — RebootInstances on unknown id
+//	8s InvalidInstanceID.NotFound   — Terminate/Stop/StartInstances on unknown id
+//	8t InvalidInstanceID.Malformed  — lifecycle verbs on a malformed id
 func runNegativeErrorPaths(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Negative / Error Path Tests")
 
@@ -298,13 +300,48 @@ func runNegativeErrorPaths(t *testing.T, fix *Fixture) {
 	// 8r: RebootInstances on a non-existent instance id.
 	t.Run("8r_RebootInstanceNotFound", func(t *testing.T) {
 		t.Parallel()
-		harness.Step(t, "reboot-instances i-nonexistent")
+		harness.Step(t, "reboot-instances %s", unknownInstanceID)
 		_, err := fix.AWS.EC2.RebootInstances(&ec2.RebootInstancesInput{
-			InstanceIds: []*string{aws.String("i-nonexistent")},
+			InstanceIds: []*string{aws.String(unknownInstanceID)},
 		})
 		harness.AssertAWSError(t, err, "InvalidInstanceID.NotFound")
 	})
+
+	// 8s: Terminate/Stop/Start on a well-formed id that was never issued must
+	// not report a state change.
+	t.Run("8s_LifecycleInstanceNotFound", func(t *testing.T) {
+		t.Parallel()
+		ids := []*string{aws.String(unknownInstanceID)}
+		harness.Step(t, "terminate-instances %s", unknownInstanceID)
+		_, err := fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.NotFound")
+		harness.Step(t, "stop-instances %s", unknownInstanceID)
+		_, err = fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.NotFound")
+		harness.Step(t, "start-instances %s", unknownInstanceID)
+		_, err = fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.NotFound")
+	})
+
+	// 8t: an id that is not i- plus 8 or 17 hex characters is malformed.
+	t.Run("8t_LifecycleInstanceIDMalformed", func(t *testing.T) {
+		t.Parallel()
+		const malformedID = "i-9decec9b6a07590efasdasdsd"
+		ids := []*string{aws.String(malformedID)}
+		harness.Step(t, "terminate/stop/start/reboot-instances %s", malformedID)
+		_, err := fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.Malformed")
+		_, err = fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.Malformed")
+		_, err = fix.AWS.EC2.StartInstances(&ec2.StartInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.Malformed")
+		_, err = fix.AWS.EC2.RebootInstances(&ec2.RebootInstancesInput{InstanceIds: ids})
+		harness.AssertAWSError(t, err, "InvalidInstanceID.Malformed")
+	})
 }
+
+// unknownInstanceID is a well-formed instance id that no cluster issues.
+const unknownInstanceID = "i-0123456789abcdef0"
 
 // cleanupUnexpectedInstances registers a t.Cleanup that terminates any
 // instances the gateway accidentally launched from a negative RunInstances

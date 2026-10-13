@@ -22,7 +22,8 @@ import (
 var rebootInstancesTimeout = 5 * time.Second
 
 // ValidateRebootInstancesInput rejects a nil input with InvalidParameterValue and an empty
-// InstanceIds list with MissingParameter.
+// InstanceIds list with MissingParameter, and a malformed instance ID with
+// InvalidInstanceID.Malformed before any NATS traffic.
 func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -30,7 +31,7 @@ func ValidateRebootInstancesInput(input *ec2.RebootInstancesInput) error {
 	if len(input.InstanceIds) == 0 {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	return validateInstanceIDFormat(input.InstanceIds)
 }
 
 // RebootInstances sends reboot commands to specified instances via NATS.
@@ -79,19 +80,17 @@ func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsC
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
 
-			// No daemon subscription: check stopped-KV to return IncorrectInstanceState instead of NotFound.
-			describeInput := &ec2.DescribeInstancesInput{
-				InstanceIds: []*string{&instanceID},
-			}
-			describeData, err := json.Marshal(describeInput)
-			if err != nil {
-				return nil, fmt.Errorf("marshal describe input: %w", err)
-			}
-			if reservations, _ := queryInstanceBucket(ctx, natsConn, "ec2.DescribeStoppedInstances", describeData, accountID); len(reservations) > 0 {
+			// No daemon subscription: a stopped or terminated instance cannot be
+			// rebooted; only readable, empty buckets prove it does not exist.
+			state, queryOK := classifyUnownedInstance(ctx, natsConn, instanceID, accountID)
+			switch {
+			case state != bucketStateAbsent:
 				return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+			case queryOK:
+				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			default:
+				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
-
-			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		}
 
 		if responseError, parseErr := utils.ValidateErrorPayload(msg.Data); parseErr != nil {

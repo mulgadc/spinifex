@@ -1,7 +1,4 @@
-// Package gateway_tagging is the HTTP-side glue between awsgw and the Resource
-// Groups Tagging API. Speaks AWS JSON 1.1; GetResources aggregates the elbv2
-// and ec2 tag stores over NATS. Errors are handled by the shared gateway ErrorHandler.
-package gateway_tagging
+package tagging
 
 import (
 	"encoding/json"

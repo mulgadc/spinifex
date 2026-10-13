@@ -6,7 +6,7 @@ package gateway
 import (
 	"testing"
 
-	gateway_tagging "github.com/mulgadc/spinifex/spinifex/gateway/tagging"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -15,13 +15,13 @@ import (
 // left behind by a deleted or renamed action fails too.
 func TestTaggingScopeTableIsExhaustive(t *testing.T) {
 	for action := range taggingActions {
-		assert.True(t, gateway_tagging.HasScope(action),
-			"tagging action %q has no resource scope entry: add one to taggingScopes in gateway/tagging/authz.go", action)
+		assert.True(t, tagging.HasScope(action),
+			"tagging action %q has no resource scope entry: add one to taggingScopes in domains/tagging/authz.go", action)
 	}
 
-	for _, action := range gateway_tagging.ScopedActions() {
+	for _, action := range tagging.ScopedActions() {
 		_, ok := taggingActions[action]
 		assert.True(t, ok,
-			"taggingScopes has an entry for %q, which the dispatch table does not serve: remove it from gateway/tagging/authz.go", action)
+			"taggingScopes has an entry for %q, which the dispatch table does not serve: remove it from domains/tagging/authz.go", action)
 	}
 }

@@ -14,6 +14,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// newTaggingAggregator wires GetResources over ELBv2 then the EC2 tag index,
+// the order results have always been gathered in.
+func newTaggingAggregator(nc *nats.Conn, region string) *tagging.Aggregator {
+	return tagging.NewAggregator(newELBv2Lister(nc), newEC2IndexLister(nc, region))
+}
+
 // elbv2DescribeTagsBatchSize is the AWS ceiling on ARNs per ELBv2 DescribeTags call.
 const elbv2DescribeTagsBatchSize = 20
 

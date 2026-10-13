@@ -515,6 +515,7 @@ func launchService(config *config.ClusterConfig) error {
 		BedrockAgentKB:          bedrockAgentKB,
 		BedrockAgentDataSources: bedrockAgentDataSources,
 		BedrockAgentVector:      bedrockAgentVector,
+		TaggingResources:        newTaggingAggregator(natsConn, nodeConfig.Region),
 	}
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{

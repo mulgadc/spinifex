@@ -1,4 +1,4 @@
-package gateway_tagging
+package tagging
 
 import (
 	"errors"

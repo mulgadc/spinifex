@@ -34,6 +34,7 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -233,6 +234,11 @@ type GatewayConfig struct {
 	// the concrete client, so a test can inject a fake without a live NATS
 	// connection.
 	BedrockAgentVector ochrevector.VectorService
+
+	// TaggingResources serves Resource Groups Tagging API GetResources over the
+	// owner listers AWSGW wires. Nil fails Tagging_Request with ServerInternal,
+	// the same as an unconfigured gw.NATSConn.
+	TaggingResources *tagging.Aggregator
 
 	// Services holds the signed AWS services dispatched through the
 	// registration seam. Nil means nothing is registered, so every request

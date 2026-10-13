@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,4 +65,28 @@ func TestTaggingRequest_KnownActionNoNATS(t *testing.T) {
 	err := gw.Tagging_Request(w, setupTaggingRequest("ResourceGroupsTaggingAPI_20170126.GetResources", "{}"))
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// A connected gateway with no GetResources aggregator wired fails the same way
+// as one with no NATS connection.
+func TestTaggingRequest_KnownActionNoAggregator(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), NATSConn: nc}
+	w := httptest.NewRecorder()
+	err := gw.Tagging_Request(w, setupTaggingRequest("ResourceGroupsTaggingAPI_20170126.GetResources", "{}"))
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// A wired aggregator is what GetResources dispatches to, and its output is
+// written as an AWS JSON 1.1 response.
+func TestTaggingRequest_WiredAggregatorServesGetResources(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	gw := &GatewayConfig{DisableLogging: true, IAMService: allowAllIAMService(), NATSConn: nc, TaggingResources: tagging.NewAggregator()}
+	w := httptest.NewRecorder()
+	err := gw.Tagging_Request(w, setupTaggingRequest("ResourceGroupsTaggingAPI_20170126.GetResources", "{}"))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, tagging.JSONContentType, w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"PaginationToken":""}`, w.Body.String())
 }

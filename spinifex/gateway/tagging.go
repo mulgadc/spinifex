@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_tagging "github.com/mulgadc/spinifex/spinifex/gateway/tagging"
 )
 
 // taggingHandler invokes a per-action Resource Groups Tagging API function.
@@ -18,7 +18,7 @@ type taggingHandler func(ctx context.Context, gw *GatewayConfig, accountID strin
 // The action is carried in "X-Amz-Target: ResourceGroupsTaggingAPI_20170126.<Action>".
 var taggingActions = map[string]taggingHandler{
 	"GetResources": func(ctx context.Context, gw *GatewayConfig, acct string, b []byte) (any, error) {
-		return gateway_tagging.GetResources(ctx, gw.NATSConn, gw.Region, acct, b)
+		return gw.TaggingResources.GetResources(ctx, acct, b)
 	},
 }
 
@@ -44,7 +44,7 @@ func (gw *GatewayConfig) Tagging_Request(w http.ResponseWriter, r *http.Request)
 		return errors.New(awserrors.ErrorInvalidAction)
 	}
 
-	resources, err := gateway_tagging.ResourceARNs(action)
+	resources, err := tagging.ResourceARNs(action)
 	if err != nil {
 		return err
 	}
@@ -66,7 +66,7 @@ func (gw *GatewayConfig) Tagging_Request(w http.ResponseWriter, r *http.Request)
 		return err
 	}
 
-	if gw.NATSConn == nil {
+	if gw.NATSConn == nil || gw.TaggingResources == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -75,6 +75,6 @@ func (gw *GatewayConfig) Tagging_Request(w http.ResponseWriter, r *http.Request)
 		return err
 	}
 
-	gateway_tagging.WriteJSONResponse(w, output)
+	tagging.WriteJSONResponse(w, output)
 	return nil
 }

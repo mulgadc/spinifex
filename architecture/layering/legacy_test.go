@@ -21,7 +21,6 @@ var frozenLegacyPackages = []string{
 	"gateway/rds",
 	"gateway/spx",
 	"gateway/sts",
-	"gateway/tagging",
 	"handlers/ecs",
 	"handlers/eks",
 	"handlers/elbv2",

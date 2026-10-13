@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	gateway_tagging "github.com/mulgadc/spinifex/spinifex/gateway/tagging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +56,7 @@ func TestTaggingRequest_ScopedDenyDoesNotFire(t *testing.T) {
 func TestTaggingRequest_WildcardPolicyStillPermitsEveryAction(t *testing.T) {
 	gw := scopedPolicyGateway(statement("Allow", "tagging:*", "*"))
 
-	for _, action := range gateway_tagging.ScopedActions() {
+	for _, action := range tagging.ScopedActions() {
 		t.Run(action, func(t *testing.T) {
 			assertPermitted(t, dispatchTagging(t, gw, action, `{}`))
 		})

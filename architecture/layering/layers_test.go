@@ -67,7 +67,7 @@ var legacyRoots = map[string]bool{
 // Bedrock is the AWS surface of the Ochre domain.
 var gatewayDomains = map[string]string{
 	"bedrock": "ochre", "ecs": "ecs", "eks": "eks", "elbv2": "elbv2", "iam": "iam",
-	"rds": "rds", "sts": "sts", "tagging": "tagging",
+	"rds": "rds", "sts": "sts",
 }
 
 // runtimeLegacy and operatorLegacy are the legacy roots whose ADR-0001 target

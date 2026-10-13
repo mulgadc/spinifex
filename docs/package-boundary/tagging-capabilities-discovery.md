@@ -3,11 +3,13 @@
 **Status:** Discovery only.
 Nothing here is a decision.
 It records current behaviour at the head of the ADR-0001 checkpoint branch and proposes a capability shape for review.
+The ADR-0001 structural cut in [section 4](#4-proposal-the-adr-0001-structural-cut) has since been implemented; the [future direction](#future-direction-outside-the-adr-0001-structural-cut) has not.
 
 ## Scope and method
 
 This covers every Spinifex path that reads or writes resource tags, grouped by the owner of the record the tags live on.
 File references are relative to the repository root at that revision.
+References to `gateway/tagging` describe the code before the structural cut moved `GetResources` to `domains/tagging` and the listers to `runtime/roles/awsgw`.
 
 What was measured:
 
@@ -82,7 +84,7 @@ Cross-owner reach: the daemon is the composition point that writes the central i
 - **Validation:** 50 tags after merge, 128-character key, 256-character value, `aws:` refused (`tags.go:21`, `:236`).
 - **ARN check:** region and account must match the caller (`handlers/rds/arn.go:66`, `:69`).
 - **Cross-owner reach:** `handlers/rds/tags.go` writes `domains/rds/subnetgroup` and `domains/rds/parametergroup` records directly (`tags.go:53`, `:67`, `:72`).
-  These are the legacy edges recorded in `docs/PACKAGE_BOUNDARY_MIGRATION.md:452` and `:453`.
+  These are the `handlers/rds` → `domains/rds/subnetgroup` and `handlers/rds` → `domains/rds/parametergroup` legacy edges in the `docs/PACKAGE_BOUNDARY_MIGRATION.md` "Dependency-rule debt to clear after the moves" list.
 
 ### ECS
 
@@ -90,7 +92,7 @@ Cross-owner reach: the daemon is the composition point that writes the central i
 - **Writes:** `TagResource`, `UntagResource` (`tags.go:228`, `:255`) via `mutateResourceTags` (`tags.go:141`), which re-puts the whole record with no revision.
 - **ARN check:** `parseResourceARN` keeps only the resource segment (`tags.go:41`); the ARN's account and region are not compared with the caller's.
 - **Validation:** none on count, length or prefix.
-- **Cross-owner reach:** reads and writes `domains/ecs/taskdefinition` records directly (`tags.go:89`, `:154`), the legacy edge at `docs/PACKAGE_BOUNDARY_MIGRATION.md:454`.
+- **Cross-owner reach:** reads and writes `domains/ecs/taskdefinition` records directly (`tags.go:89`, `:154`), the `handlers/ecs` → `domains/ecs/taskdefinition` legacy edge in the `docs/PACKAGE_BOUNDARY_MIGRATION.md` "Dependency-rule debt to clear after the moves" list.
 
 ### EKS
 
@@ -133,7 +135,7 @@ Cross-owner reach: the daemon is the composition point that writes the central i
 - `gateway/tagging.go:19` serves only `GetResources`; any other action, including `TagResources`, `UntagResources`, `GetTagKeys` and `GetTagValues`, returns `InvalidAction` (`gateway/tagging.go:41`).
 - Authorization evaluates `tagging:GetResources` against `*` (`spinifex/spinifex/gateway/tagging/authz.go:28`).
 - `GetResources` aggregates ELBv2 load balancers and target groups plus the EC2 central index (`gateway/tagging/GetResources.go:45`), then filters by tag, sorts by ARN and slices by an integer offset token (`:264`).
-- The layering ratchet records the two cross-owner imports as debt (`architecture/layering/allowlist_test.go:125`, `:126`), and `gateway/tagging` is a frozen legacy package (`architecture/layering/legacy_test.go:24`).
+- The layering ratchet records the two cross-owner imports as debt (two `gateway/tagging` rows in `architecture/layering/allowlist_test.go`), and `gateway/tagging` is a frozen legacy package (`architecture/layering/legacy_test.go`).
 
 ### Authorization against tags
 
@@ -303,6 +305,9 @@ Sources were fetched on 2026-10-13.
 
 ## 4. Proposal: the ADR-0001 structural cut
 
+**Status:** Done.
+Steps 1 to 4 of the [migration order](#migration-order-and-exit-criteria) are implemented and recorded in `docs/PACKAGE_BOUNDARY_MIGRATION.md`.
+
 ADR-0001 (accepted 2026-09-28) gives the rule this proposal works within: a consumer declares its own narrow in-process capability interface, an owner owns any versioned process contract under `contracts/<domain>/v1`, and a composition root wires them.
 The ADR's package map row for `tags` sends generic helpers to `foundation/aws/tags` and says each resource owner retains canonical tag state.
 
@@ -361,10 +366,10 @@ A daemon-side owner cannot satisfy a Go interface declared in the AWSGW process,
 
 ### Ratchet rows removed
 
-- `architecture/layering/allowlist_test.go:125`: `gateway/tagging` → `domains/ec2/tags`.
-- `architecture/layering/allowlist_test.go:126`: `gateway/tagging` → `handlers/elbv2`.
-- `architecture/layering/legacy_test.go:24`: `gateway/tagging` as a frozen legacy package.
-- `docs/PACKAGE_BOUNDARY_MIGRATION.md:653` and `:673` record `gateway/tagging` as open debt; both rows are updated when it clears.
+- `architecture/layering/allowlist_test.go` row `gateway/tagging` → `domains/ec2/tags`.
+- `architecture/layering/allowlist_test.go` row `gateway/tagging` → `handlers/elbv2`.
+- `architecture/layering/legacy_test.go` entry `gateway/tagging` as a frozen legacy package.
+- The `gateway/tagging` row of the `docs/PACKAGE_BOUNDARY_MIGRATION.md` "Close-out status" table and the "One narrow missing boundary" row of its "Remaining legacy roots by blocker class" matrix record `gateway/tagging` as open debt; both rows are updated when it clears.
 
 `domains/tagging` starts with no allowlist rows and imports only `foundation` packages and the AWS SDK model types it already uses.
 
@@ -372,15 +377,19 @@ A daemon-side owner cannot satisfy a Go interface declared in the AWSGW process,
 
 1. **Interfaces in `domains/tagging`, read/list only.**
    Exit: `TaggedLister` and `TaggedResource` exist, the package imports no domain, handler or contract package, and the ratchet classifies it with zero allowlist rows.
+   Done in `e6b0e43ee`.
 2. **EC2 index and ELBv2 adapters in AWSGW.**
    Exit: both adapters compile with their `var _ tagging.TaggedLister` checks, each has a test against embedded JetStream equivalent to today's `listEC2` and `elbv2Resources`, and nothing calls them yet.
+   Done in `c11c6182c`; type matching is exported once as `tagging.MatchesType`.
 3. **Move `GetResources` aggregation from `gateway/tagging` to `domains/tagging`.**
    The request parsing, type and tag filtering, sorting, offset token and `authz.go` move; the gateway dispatch in `gateway/tagging.go` calls the aggregator wired by AWSGW.
    Exit: the `TestCurrentBehaviour_Tagging_GetResources*` tests and the existing `gateway/tagging` unit tests pass with unchanged assertions after moving with the code.
+   Done in `ddc8a3d13`: AWSGW sets `GatewayConfig.TaggingResources`, the `GetResources` characterisation tests run in `runtime/roles/awsgw`, and the aggregator unit tests run in `domains/tagging`.
 4. **Remove the ratchet rows.**
-   Exit: `allowlist_test.go:125`, `:126` and `legacy_test.go:24` are deleted, the `gateway/tagging` package is gone, `make preflight`'s layering tests pass, and `docs/PACKAGE_BOUNDARY_MIGRATION.md:653` and `:673` record the debt as cleared.
+   Exit: the two `gateway/tagging` allowlist rows and its `legacy_test.go` frozen-legacy entry are deleted, the `gateway/tagging` package is gone, `make preflight`'s layering tests pass, and the "Close-out status" `gateway/tagging` row and the "One narrow missing boundary" matrix row record the debt as cleared.
+   Done: the package and ratchet rows went with `ddc8a3d13`, and the migration record now marks `gateway/tagging` cleared.
 
-The RDS and ECS record-writing edges at `docs/PACKAGE_BOUNDARY_MIGRATION.md:452` to `:454` are not cleared by this cut.
+The RDS and ECS record-writing edges in the `docs/PACKAGE_BOUNDARY_MIGRATION.md` "Dependency-rule debt to clear after the moves" list are not cleared by this cut.
 They need owner tag mutation capabilities, which are future direction.
 
 ## Future direction (outside the ADR-0001 structural cut)
@@ -418,7 +427,7 @@ No owner would be asked for cross-resource atomicity.
 ### Work that would use it
 
 - `TagResources` and `UntagResources` in `domains/tagging`, which are an API expansion, reporting per-ARN failures in `FailedResourcesMap`.
-- Clearing the RDS subnet-group and parameter-group edges and the ECS task-definition edge (`docs/PACKAGE_BOUNDARY_MIGRATION.md:452` to `:454`) by calling owner mutation capabilities.
+- Clearing the RDS subnet-group and parameter-group edges and the ECS task-definition edge (the `handlers/rds` and `handlers/ecs` legacy edges in the `docs/PACKAGE_BOUNDARY_MIGRATION.md` "Dependency-rule debt to clear after the moves" list) by calling owner mutation capabilities.
 - ACM, EKS, ECR and IAM owners; ACM's key-loss defect is already fixed (`mulga-ncn9f`).
 - EC2 record owners, once the canonical EC2 tag store is decided (`mulga-36wn6`, `mulga-6maav`).
 - `foundation/aws/tags` validation helpers shared by every owner.
@@ -489,7 +498,7 @@ Each asserts current behaviour:
 | `TestCurrentBehaviour_Tagging_RecordMirrorRevertsInterleavedWrites` | `spinifex/spinifex/domains/ec2/tagmirror/tagging_current_behaviour_test.go` |
 | `TestCurrentBehaviour_Tagging_EC2CreateTagsStoresUnresolvedIDsInCallerNamespace` | `spinifex/spinifex/daemon/tagging_current_behaviour_test.go` |
 | `TestCurrentBehaviour_Tagging_EC2CreateTagsAppliesNoLengthOrCountLimits` | `spinifex/spinifex/gateway/tagging_current_behaviour_test.go` |
-| `TestCurrentBehaviour_Tagging_GetResourcesListsUnresolvedEC2IDs` | same |
+| `TestCurrentBehaviour_Tagging_GetResourcesListsUnresolvedEC2IDs` | `spinifex/spinifex/runtime/roles/awsgw/tagging_current_behaviour_test.go` |
 | `TestCurrentBehaviour_Tagging_GetResourcesOmitsResourceWhoseTagsWereAllRemoved` | same |
 | `TestCurrentBehaviour_Tagging_GetResourcesOffsetTokenRepeatsAfterInterleavedWrite` | same |
 | `TestCurrentBehaviour_Tagging_GetResourcesPaginationValidation` | same |
@@ -503,5 +512,5 @@ Each asserts current behaviour:
 | `TestCurrentBehaviour_Tagging_ACMAddTagsAppliesNoTagLimits` | same |
 | `TestCurrentBehaviour_Tagging_CreatePolicyRefusesTagConditionKeys` | `spinifex/spinifex/handlers/iam/tagging_current_behaviour_test.go` |
 
-The gateway tests serve the EC2 tag subjects from a real `TagsServiceImpl` without the daemon's record-mirror fan-out, so they cover the central index only.
+The gateway and AWSGW tests serve the EC2 tag subjects from a real `TagsServiceImpl` without the daemon's record-mirror fan-out, so they cover the central index only.
 The interleaving tests wrap the KV handle to run one write between the handler's read and its write; they show the window exists, not how often real nodes hit it.

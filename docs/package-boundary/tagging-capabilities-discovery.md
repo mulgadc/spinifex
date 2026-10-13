@@ -110,8 +110,9 @@ Cross-owner reach: the daemon is the composition point that writes the central i
 ### ACM
 
 - **Store:** certificate record (`CertRecord.Tags`) (`spinifex/spinifex/domains/acm/store.go:223`).
-- **Writes:** `AddTagsToCertificate`, `RemoveTagsFromCertificate` (`spinifex/spinifex/domains/acm/service_impl.go:723`, `:744`).
-  Both read through `lookupOwned` (`:613`), which calls `GetCertMetadata` (`store.go:260`) and returns the record with an empty private key, and then write the whole record back through `PutCert`.
+- **Writes:** `AddTagsToCertificate`, `RemoveTagsFromCertificate` (`spinifex/spinifex/domains/acm/service_impl.go:724`, `:751`), through `Store.UpdateTags` (`store.go:502`).
+  Both check ownership through `lookupOwned`, then change only `Tags` through `Store.UpdateTags`, a revision-checked update of the raw record that leaves the encrypted private key untouched.
+  Before `mulga-ncn9f` was fixed they wrote back the `GetCertMetadata` copy through `PutCert`, which replaced the stored key with an empty one.
 - **Validation:** none on count, length or prefix.
 
 ### IAM
@@ -152,7 +153,7 @@ Cross-owner reach: the daemon is the composition point that writes the central i
 | ECS | five record kinds | `TagResource`/`UntagResource` | plain read then put | none | no | no | writes `domains/ecs/taskdefinition` records |
 | EKS | cluster meta, nodegroup | `TagResource`/`UntagResource` | CAS | none | no | no | none |
 | ECR | repo meta | `TagResource`/`UntagResource` | plain read then put, from the gateway process | empty key only | no | no | none |
-| ACM | certificate record | `AddTagsToCertificate`/`RemoveTagsFromCertificate` | plain read then put of a key-less copy | none | owner checked via `lookupOwned` | no | none |
+| ACM | certificate record | `AddTagsToCertificate`/`RemoveTagsFromCertificate` | revision-checked update of the tag field only | none | owner checked via `lookupOwned` | no | none |
 | IAM | five record kinds | `Tag*`/`Untag*` | CAS for role, policy, instance profile; plain put for user, OIDC provider | full | names, not ARNs, except policy and OIDC | no | none |
 
 ## 2. Error and atomicity behaviour
@@ -169,9 +170,9 @@ Each line states current behaviour and how it was established.
   Code, and the closed plan's tests.
 - ECS: the tag write reverts a record change committed between its read and its put.
   Test: `ECSTagWriteRevertsInterleavedRecordWrite` (an interleaved `DesiredCount` change is lost).
-- ACM: every tag write replaces the stored private key with an empty one, because it writes back the metadata copy that `GetCertMetadata` returns without the key.
-  Test: `ACMTagWritesReplaceStoredPrivateKey`.
-  A certificate that loses its key can no longer be served by any listener that loads it (INFERRED).
+- ACM: tag writes are revision-checked and change only the tag field; the stored private key survives (resolved by `mulga-ncn9f`).
+  Test: `ACMTagWritesPreserveStoredPrivateKey`.
+  A certificate that lost its key before the fix can no longer be served by any listener that loads it (INFERRED); recovery is `mulga-o436p`.
 - ELBv2: load balancer, listener and rule tag writes can revert a concurrent record change, and the target group CAS assigns a map merged from an earlier read, so two concurrent `AddTags` on one target group can lose a key.
   INFERRED from `service_impl_tags.go:41`, `:57`, `:74`, `:88`.
 - ECR, IAM user, IAM OIDC provider: read then plain put; concurrent tag writes can lose a key.
@@ -221,7 +222,7 @@ Each line states current behaviour and how it was established.
 | ECS | `ErrorECSClusterNotFound`, `ErrorECSServiceNotFound`, otherwise `ErrorECSInvalidParameter` | none | error passed through |
 | EKS | `ErrorEKSResourceNotFound` for clusters (`service_impl.go:1958`); other ARNs `ErrorNotImplemented` | none | error passed through |
 | ECR | `RepositoryNotFoundError` | `ErrorInvalidTagParameter` (empty key only) | error passed through |
-| ACM | `ErrorACMInvalidArn` or `ErrorResourceNotFound` (`service_impl.go:613`) | none | `ErrorInternalError` |
+| ACM | `ErrorACMInvalidArn` or `ErrorResourceNotFound` (`service_impl.go:614`; also when the certificate is deleted between the ownership check and the write) | none | `ErrorInternalError` |
 | IAM | `ErrorIAMNoSuchEntity` | `validationError`, `ErrorIAMInvalidInput`, `ErrorIAMLimitExceeded` | error passed through |
 
 Names are `awserrors` constants or package helpers.
@@ -297,7 +298,8 @@ Sources were fetched on 2026-10-13.
   AWS error for that case is unverified.
   Ours acts on the caller's same-named resource (ECS by test, EKS and ECR by code).
 - **ACM private key.**
-  No AWS documentation addresses this; tagging is metadata only on every AWS page fetched, and losing key material is a defect, not a parity question.
+  No AWS documentation addresses this; tagging is metadata only on every AWS page fetched.
+  The key-loss defect is resolved (`mulga-ncn9f`).
 
 ## 4. Proposal: the ADR-0001 structural cut
 
@@ -417,7 +419,7 @@ No owner would be asked for cross-resource atomicity.
 
 - `TagResources` and `UntagResources` in `domains/tagging`, which are an API expansion, reporting per-ARN failures in `FailedResourcesMap`.
 - Clearing the RDS subnet-group and parameter-group edges and the ECS task-definition edge (`docs/PACKAGE_BOUNDARY_MIGRATION.md:452` to `:454`) by calling owner mutation capabilities.
-- ACM first among the remaining owners because its tag write destroys key material (`mulga-ncn9f`), then EKS, ECR and IAM.
+- ACM, EKS, ECR and IAM owners; ACM's key-loss defect is already fixed (`mulga-ncn9f`).
 - EC2 record owners, once the canonical EC2 tag store is decided (`mulga-36wn6`, `mulga-6maav`).
 - `foundation/aws/tags` validation helpers shared by every owner.
 - `GetResources` pagination, supported-resource scope and ever-tagged tracking (`mulga-t6cuv`).
@@ -451,11 +453,11 @@ Decided by the user and removed from this list: where `domains/tagging` runs (AW
 
 ## Findings
 
-Current behaviour only; none is fixed.
+Current behaviour only; none is fixed except finding 1, marked resolved.
 
 | # | Finding | Evidence | Bead |
 | --- | --- | --- | --- |
-| 1 | ACM tag writes erase the stored private key. | Test: `ACMTagWritesReplaceStoredPrivateKey` | `mulga-ncn9f` (P1) |
+| 1 | Resolved: ACM tag writes erased the stored private key; they now preserve it. Certificates tagged before the fix may have lost their key and need re-import or re-issuance. | Test: `ACMTagWritesPreserveStoredPrivateKey` | `mulga-ncn9f` (P1, closed); remediation `mulga-o436p` (P1, open) |
 | 2 | EC2 record mirrors revert concurrent tag and non-tag writes. | Test: `RecordMirrorRevertsInterleavedWrites` | `mulga-36wn6` (P1) |
 | 3 | ECS tag writes revert concurrent record writes, including a `DesiredCount` change. | Test: `ECSTagWriteRevertsInterleavedRecordWrite` | `mulga-c0d5x` (P1) |
 | 4 | ECS acts on the caller's resource for an ARN naming another account. | Test: `ECSForeignAccountARNTagsCallerResource`; EKS and ECR INFERRED | `mulga-k8d9b` (P2) |
@@ -497,7 +499,7 @@ Each asserts current behaviour:
 | `TestCurrentBehaviour_Tagging_ECSTagWriteRevertsInterleavedRecordWrite` | `spinifex/spinifex/handlers/ecs/tagging_current_behaviour_test.go` |
 | `TestCurrentBehaviour_Tagging_ECSForeignAccountARNTagsCallerResource` | same |
 | `TestCurrentBehaviour_Tagging_ECSTagResourceAppliesNoTagLimits` | same |
-| `TestCurrentBehaviour_Tagging_ACMTagWritesReplaceStoredPrivateKey` | `spinifex/spinifex/domains/acm/tagging_current_behaviour_test.go` |
+| `TestCurrentBehaviour_Tagging_ACMTagWritesPreserveStoredPrivateKey` | `spinifex/spinifex/domains/acm/tagging_current_behaviour_test.go` |
 | `TestCurrentBehaviour_Tagging_ACMAddTagsAppliesNoTagLimits` | same |
 | `TestCurrentBehaviour_Tagging_CreatePolicyRefusesTagConditionKeys` | `spinifex/spinifex/handlers/iam/tagging_current_behaviour_test.go` |
 

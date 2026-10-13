@@ -14,10 +14,9 @@ import (
 // the certificate record today. They describe current behaviour, not the
 // target design, and a failure means the behaviour changed.
 
-// The tag writers read the record through GetCertMetadata, which blanks the
-// private key, and write it back whole through PutCert, which encrypts
-// whatever key the record carries. The stored key is replaced with an empty one.
-func TestCurrentBehaviour_Tagging_ACMTagWritesReplaceStoredPrivateKey(t *testing.T) {
+// The tag writers change only the stored tag field, so the private key and
+// certificate body survive a tag or untag unchanged.
+func TestCurrentBehaviour_Tagging_ACMTagWritesPreserveStoredPrivateKey(t *testing.T) {
 	cases := map[string]func(svc *ACMServiceImpl, certArn string) error{
 		"AddTagsToCertificate": func(svc *ACMServiceImpl, certArn string) error {
 			_, err := svc.AddTagsToCertificate(context.Background(), &acm.AddTagsToCertificateInput{
@@ -47,7 +46,7 @@ func TestCurrentBehaviour_Tagging_ACMTagWritesReplaceStoredPrivateKey(t *testing
 
 			after, err := svc.store.GetCert(context.Background(), certArn)
 			require.NoError(t, err)
-			assert.Empty(t, after.PrivateKey, "a tag write leaves the certificate with no private key")
+			assert.Equal(t, before.PrivateKey, after.PrivateKey, "a tag write keeps the stored private key")
 			assert.Equal(t, before.Certificate, after.Certificate, "the certificate body survives")
 		})
 	}

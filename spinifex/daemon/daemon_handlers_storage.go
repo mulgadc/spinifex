@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"log/slog"
+	"net"
 	"os"
+	"strconv"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/nats-io/nats.go"
@@ -26,9 +28,24 @@ type predastoreRS struct {
 // names the machine and carries no port; the nodes pinned to it supply their
 // own.
 type predastoreHost struct {
-	ID    int              `toml:"id"`
-	Addr  string           `toml:"addr"`
-	Nodes []predastoreNode `toml:"node"`
+	ID        int              `toml:"id"`
+	Addr      string           `toml:"addr"`
+	BindAddr  string           `toml:"bind_addr"`
+	AdminPort int              `toml:"admin_port"`
+	Nodes     []predastoreNode `toml:"node"`
+}
+
+// adminAddr is where another machine dials this host's admin listener, empty
+// when it runs none. A wildcard bind is reached at the host's addr.
+func (h predastoreHost) adminAddr() string {
+	if h.AdminPort == 0 {
+		return ""
+	}
+	host := h.BindAddr
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = h.Addr
+	}
+	return net.JoinHostPort(host, strconv.Itoa(h.AdminPort))
 }
 
 // predastoreNode is a role pinned to the host it is written under. Its address
@@ -79,11 +96,16 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) string {
 
 	// A node's address is its host's addr plus its own port: colocated nodes
 	// share a machine but never a port.
+	singleHost := len(cfg.Hosts) == 1
 	for _, h := range cfg.Hosts {
 		for _, n := range h.Nodes {
 			switch n.Role {
 			case predastoreRoleMeta:
-				resp.MetaNodes = append(resp.MetaNodes, operatorv1.StorageMetaNode{ID: n.ID, Host: h.Addr, Port: n.Port})
+				meta := operatorv1.StorageMetaNode{ID: n.ID, Host: h.Addr, Port: n.Port}
+				if singleHost {
+					meta.AdminAddr = h.adminAddr()
+				}
+				resp.MetaNodes = append(resp.MetaNodes, meta)
 			case predastoreRoleBlob:
 				resp.BlobNodes = append(resp.BlobNodes, operatorv1.StorageBlobNode{ID: n.ID, Host: h.Addr, Port: n.Port})
 			case predastoreRoleGate:

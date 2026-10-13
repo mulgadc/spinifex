@@ -3,6 +3,7 @@ import { useState } from "react"
 import type { UseFormReturn } from "react-hook-form"
 
 import { Button } from "@/components/ui/button"
+import { FieldError } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import type { CreateVpcWizardFormData } from "@/types/ec2"
 
@@ -22,6 +23,9 @@ export function SubnetCidrInputs({
   const [expanded, setExpanded] = useState(false)
   const fieldName =
     type === "public" ? "publicSubnetCidrs" : "privateSubnetCidrs"
+  const fieldErrors = form.formState.errors[fieldName]
+  // A subnet error must be visible, or Create appears to do nothing.
+  const isOpen = expanded || fieldErrors !== undefined
 
   if (count === 0) {
     return null
@@ -37,7 +41,7 @@ export function SubnetCidrInputs({
         type="button"
         variant="link"
       >
-        {expanded ? (
+        {isOpen ? (
           <ChevronDown className="size-3" />
         ) : (
           <ChevronRight className="size-3" />
@@ -45,18 +49,23 @@ export function SubnetCidrInputs({
         Customize {type} subnet CIDR blocks
       </Button>
 
-      {expanded && (
+      {isOpen && (
         <div className="mt-2 space-y-2">
           {Array.from({ length: count }, (_, i) => (
-            <div className="flex items-center gap-2" key={i}>
-              <span className="w-32 text-xs text-muted-foreground">
-                {type === "public" ? "Public" : "Private"} subnet {i + 1}
-              </span>
-              <Input
-                defaultValue={defaults[i]}
-                placeholder={defaults[i]}
-                {...form.register(`${fieldName}.${i}`)}
-              />
+            <div key={i}>
+              <div className="flex items-center gap-2">
+                <span className="w-32 shrink-0 text-xs text-muted-foreground">
+                  {type === "public" ? "Public" : "Private"} subnet {i + 1}
+                </span>
+                {/* Left empty, the subnet uses the default shown as placeholder. */}
+                <Input
+                  aria-invalid={fieldErrors?.[i] !== undefined}
+                  aria-label={`${type === "public" ? "Public" : "Private"} subnet ${i + 1} CIDR`}
+                  placeholder={defaults[i]}
+                  {...form.register(`${fieldName}.${i}`)}
+                />
+              </div>
+              <FieldError className="ml-34" errors={[fieldErrors?.[i]]} />
             </div>
           ))}
         </div>

@@ -29,7 +29,10 @@ import {
 } from "@/components/ui/select"
 import { SubnetCidrInputs } from "@/components/vpc-wizard/subnet-cidr-inputs"
 import { VpcPreview } from "@/components/vpc-wizard/vpc-preview"
-import { calculateSubnetCidrs } from "@/lib/subnet-calculator"
+import {
+  calculateSubnetCidrs,
+  resolveSubnetCidrs,
+} from "@/lib/subnet-calculator"
 import {
   type WizardResult,
   useCreateVpc,
@@ -89,12 +92,24 @@ function CreateVpc() {
   const cidrBlock = useWatch({ control, name: "cidrBlock" })
   const publicSubnetCount = useWatch({ control, name: "publicSubnetCount" })
   const privateSubnetCount = useWatch({ control, name: "privateSubnetCount" })
+  const publicSubnetCidrs = useWatch({ control, name: "publicSubnetCidrs" })
+  const privateSubnetCidrs = useWatch({ control, name: "privateSubnetCidrs" })
 
-  // Compute preview subnet CIDRs
-  const subnetCidrs = calculateSubnetCidrs(
-    cidrBlock || "10.0.0.0/16",
-    mode === "vpc-and-more" ? publicSubnetCount : 0,
-    mode === "vpc-and-more" ? privateSubnetCount : 0,
+  // Defaults are the input placeholders; the preview and CLI show what will be
+  // created, custom CIDRs included.
+  const vpcCidr = cidrBlock || "10.0.0.0/16"
+  const shownPublicCount = mode === "vpc-and-more" ? publicSubnetCount : 0
+  const shownPrivateCount = mode === "vpc-and-more" ? privateSubnetCount : 0
+  const defaultCidrs = calculateSubnetCidrs(
+    vpcCidr,
+    shownPublicCount,
+    shownPrivateCount,
+  )
+  const subnetCidrs = resolveSubnetCidrs(
+    vpcCidr,
+    shownPublicCount,
+    shownPrivateCount,
+    { publicCidrs: publicSubnetCidrs, privateCidrs: privateSubnetCidrs },
   )
 
   const [progressMessage, setProgressMessage] = useState("")
@@ -316,7 +331,7 @@ function CreateVpc() {
                 />
                 <SubnetCidrInputs
                   count={publicSubnetCount}
-                  defaults={subnetCidrs.publicSubnets.map((s) => s.cidr)}
+                  defaults={defaultCidrs.publicSubnets.map((s) => s.cidr)}
                   form={form}
                   type="public"
                 />
@@ -348,7 +363,7 @@ function CreateVpc() {
                 />
                 <SubnetCidrInputs
                   count={privateSubnetCount}
-                  defaults={subnetCidrs.privateSubnets.map((s) => s.cidr)}
+                  defaults={defaultCidrs.privateSubnets.map((s) => s.cidr)}
                   form={form}
                   type="private"
                 />
@@ -407,7 +422,7 @@ function CreateVpc() {
             mode={mode}
             privateSubnets={subnetCidrs.privateSubnets}
             publicSubnets={subnetCidrs.publicSubnets}
-            vpcCidr={cidrBlock || "10.0.0.0/16"}
+            vpcCidr={vpcCidr}
           />
         </div>
       </div>

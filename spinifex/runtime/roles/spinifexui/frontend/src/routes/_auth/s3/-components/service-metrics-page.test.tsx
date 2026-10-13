@@ -139,6 +139,21 @@ describe("service metrics cluster health", () => {
     expect(within(metaRow(2)).getByText("Unreachable")).toBeInTheDocument()
   })
 
+  it("reports Healthy for a single-host node vouched for by /readyz", async () => {
+    await renderPage([
+      metaNode(3, {
+        state: undefined,
+        leader: undefined,
+        term: undefined,
+        commit_index: undefined,
+        applied_index: undefined,
+      }),
+    ])
+
+    expect(clusterHealth()).toBe("Healthy")
+    expect(within(metaRow(0)).getByText("Healthy")).toBeInTheDocument()
+  })
+
   it("reports Unknown when the topology has no meta nodes", async () => {
     await renderPage([])
 

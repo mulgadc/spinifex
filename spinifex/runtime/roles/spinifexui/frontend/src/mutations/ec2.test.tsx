@@ -1,3 +1,4 @@
+import { DeleteSecurityGroupCommand } from "@aws-sdk/client-ec2"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
@@ -55,6 +56,26 @@ import {
 } from "./ec2"
 
 let queryClient: QueryClient
+
+/* oxlint-disable promise/avoid-new -- holding one SDK call open is the only way to order it after a sibling's failure */
+interface HeldResponse<T> {
+  promise: Promise<T>
+  release: (value: T) => void
+}
+
+function heldResponse<T>(): HeldResponse<T> {
+  let release!: (value: T) => void
+  const promise = new Promise<T>((resolve) => {
+    release = resolve
+  })
+  return { promise, release }
+}
+
+const settleTimers = async () =>
+  await new Promise((resolve) => {
+    setTimeout(resolve, 10)
+  })
+/* oxlint-enable promise/avoid-new */
 
 function wrapper({ children }: { children: ReactNode }) {
   return (
@@ -353,6 +374,91 @@ describe("useCreateInstance", () => {
   })
 })
 
+describe("useCreateInstance in create-group mode", () => {
+  const createModeParams = {
+    imageId: "ami-123",
+    instanceType: "t2.micro",
+    count: 1,
+    securityGroupMode: "create" as const,
+    newSgName: "launch-wizard-1",
+    allowSsh: true,
+  }
+
+  it("deletes the new group when RunInstances fails", async () => {
+    createQueryClient()
+    const launchError = new Error("no capacity")
+    mockSend
+      .mockResolvedValueOnce({ GroupId: "sg-new" })
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(launchError)
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate(createModeParams)
+
+    await waitFor(() => {
+      expect(result.current.error).toBe(launchError)
+    })
+    expect(mockSend).toHaveBeenCalledTimes(4)
+    expect(mockSend.mock.calls[3]?.[0]).toBeInstanceOf(
+      DeleteSecurityGroupCommand,
+    )
+    expect(mockSend.mock.calls[3]?.[0].input).toStrictEqual({
+      GroupId: "sg-new",
+    })
+  })
+
+  it("deletes the new group when authorizing its ingress fails", async () => {
+    createQueryClient()
+    mockSend
+      .mockResolvedValueOnce({ GroupId: "sg-new" })
+      .mockRejectedValueOnce(new Error("bad rule"))
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate(createModeParams)
+
+    await waitFor(() => {
+      expect(result.current.isError).toBeTruthy()
+    })
+    expect(mockSend).toHaveBeenCalledTimes(3)
+    expect(mockSend.mock.calls[2]?.[0]).toBeInstanceOf(
+      DeleteSecurityGroupCommand,
+    )
+  })
+
+  it("reports the launch error when the cleanup delete also fails", async () => {
+    createQueryClient()
+    const launchError = new Error("no capacity")
+    mockSend
+      .mockResolvedValueOnce({ GroupId: "sg-new" })
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(launchError)
+      .mockRejectedValueOnce(new Error("delete failed"))
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate(createModeParams)
+
+    await waitFor(() => {
+      expect(result.current.error).toBe(launchError)
+    })
+  })
+
+  it("keeps the new group when the launch succeeds", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({ GroupId: "sg-new" })
+    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+
+    result.current.mutate(createModeParams)
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(mockSend).toHaveBeenCalledTimes(3)
+    expect(mockSend.mock.calls[2]?.[0].input.SecurityGroupIds).toStrictEqual([
+      "sg-new",
+    ])
+  })
+})
+
 describe("buildLaunchTemplateData", () => {
   it("maps the core launch fields", () => {
     const data = buildLaunchTemplateData({
@@ -539,6 +645,34 @@ describe("useDeleteLaunchTemplateVersions", () => {
       LaunchTemplateId: "lt-1",
       Versions: ["2", "3"],
     })
+  })
+
+  it("fails when a version comes back in the unsuccessful list", async () => {
+    createQueryClient()
+    mockSend.mockResolvedValueOnce({
+      SuccessfullyDeletedLaunchTemplateVersions: [],
+      UnsuccessfullyDeletedLaunchTemplateVersions: [
+        {
+          VersionNumber: 2,
+          ResponseError: {
+            Code: "unexpectedError",
+            Message: "storage unavailable",
+          },
+        },
+      ],
+    })
+    const { result } = renderHook(() => useDeleteLaunchTemplateVersions(), {
+      wrapper,
+    })
+
+    result.current.mutate({ launchTemplateId: "lt-1", versions: ["2"] })
+
+    await waitFor(() => {
+      expect(result.current.isError).toBeTruthy()
+    })
+    expect(result.current.error?.message).toBe(
+      "Version 2 was not deleted: storage unavailable",
+    )
   })
 })
 
@@ -1585,6 +1719,67 @@ describe("useCreateVpcWizard", () => {
     )
     expect(result.current.data?.vpcId).toBe("vpc-111")
     expect(result.current.data?.created).toHaveLength(2)
+  })
+
+  it("reports every created subnet when a parallel create fails", async () => {
+    createQueryClient()
+    const secondPrivate = heldResponse<{ Subnet: { SubnetId: string } }>()
+    mockSend
+      .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
+      .mockRejectedValueOnce(new Error("CIDR conflict"))
+      .mockImplementationOnce(async () => await secondPrivate.promise)
+
+    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    let settled = false
+    void result.current
+      .mutateAsync({
+        ...baseParams,
+        mode: "vpc-and-more",
+        publicSubnetCount: 0,
+        privateSubnetCount: 2,
+      })
+      .then(() => {
+        settled = true
+      })
+
+    await waitFor(() => {
+      expect(mockSend).toHaveBeenCalledTimes(3)
+    })
+    await settleTimers()
+    expect(settled).toBeFalsy()
+
+    secondPrivate.release({ Subnet: { SubnetId: "subnet-priv-2" } })
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(result.current.data?.error?.message).toBe("CIDR conflict")
+    expect(result.current.data?.created).toContainEqual({
+      type: "Private Subnet",
+      id: "subnet-priv-2",
+    })
+  })
+
+  it("fills subnets beyond the custom CIDR list with defaults", async () => {
+    createQueryClient()
+    mockSend
+      .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
+      .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
+      .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-2" } })
+
+    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    result.current.mutate({
+      ...baseParams,
+      mode: "vpc-and-more",
+      publicSubnetCount: 0,
+      privateSubnetCount: 2,
+      privateSubnetCidrs: ["10.0.200.0/24"],
+    })
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(mockSend.mock.calls[1]?.[0].input.CidrBlock).toBe("10.0.200.0/24")
+    expect(mockSend.mock.calls[2]?.[0].input.CidrBlock).toBe("10.0.144.0/20")
   })
 
   it("returns error when VPC creation fails", async () => {

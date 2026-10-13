@@ -2,7 +2,6 @@ package spinifexui
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -21,30 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPrefixConn_Read_ReplaysPrefixThenStream(t *testing.T) {
-	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
-
-	go func() {
-		_, _ = client.Write([]byte("est"))
-	}()
-
-	pc := &prefixConn{
-		Conn: server,
-		r:    io.MultiReader(bytes.NewReader([]byte{'t'}), server),
-	}
-
-	buf := make([]byte, 4)
-	n, err := io.ReadFull(pc, buf)
-	require.NoError(t, err)
-	assert.Equal(t, 4, n)
-	assert.Equal(t, "test", string(buf))
-}
-
 // startSplitListener returns a tlsSplitListener on a random local port. Caller
 // should close the returned net.Listener when done. The Accept loop runs in a
-// goroutine and accepted TLS connections are pushed onto the returned channel.
+// goroutine and accepted connections are pushed onto the returned channel.
 func startSplitListener(t *testing.T, tlsCfg *tls.Config, redirectPort int) (*tlsSplitListener, net.Listener, <-chan net.Conn) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -56,7 +34,7 @@ func startSplitListener(t *testing.T, tlsCfg *tls.Config, redirectPort int) (*tl
 		tlsCfg:   tlsCfg,
 	}
 
-	accepted := make(chan net.Conn, 1)
+	accepted := make(chan net.Conn, 16)
 	go func() {
 		defer close(accepted)
 		for {
@@ -69,6 +47,19 @@ func startSplitListener(t *testing.T, tlsCfg *tls.Config, redirectPort int) (*tl
 	}()
 
 	return splitLn, ln, accepted
+}
+
+// handshakeAll runs the TLS handshake on each accepted connection, as
+// http.Server does, which is where the first byte is sniffed.
+func handshakeAll(accepted <-chan net.Conn) {
+	go func() {
+		for c := range accepted {
+			go func() {
+				defer c.Close()
+				_ = c.(*tls.Conn).Handshake()
+			}()
+		}
+	}()
 }
 
 func TestTLSSplitListener_Accept_TLSHandshakeByteWrapsTLS(t *testing.T) {
@@ -102,8 +93,9 @@ func TestTLSSplitListener_Accept_TLSHandshakeByteWrapsTLS(t *testing.T) {
 }
 
 func TestTLSSplitListener_Accept_PlainHTTPRedirectsToHTTPS(t *testing.T) {
-	_, ln, _ := startSplitListener(t, &tls.Config{}, 8443)
+	_, ln, accepted := startSplitListener(t, &tls.Config{}, 8443)
 	defer ln.Close()
+	handshakeAll(accepted)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
@@ -122,8 +114,9 @@ func TestTLSSplitListener_Accept_PlainHTTPRedirectsToHTTPS(t *testing.T) {
 }
 
 func TestTLSSplitListener_Accept_PlainHTTPStripsHostPort(t *testing.T) {
-	_, ln, _ := startSplitListener(t, &tls.Config{}, 9443)
+	_, ln, accepted := startSplitListener(t, &tls.Config{}, 9443)
 	defer ln.Close()
+	handshakeAll(accepted)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
@@ -142,8 +135,9 @@ func TestTLSSplitListener_Accept_PlainHTTPStripsHostPort(t *testing.T) {
 }
 
 func TestTLSSplitListener_Accept_MalformedHTTPClosesSilently(t *testing.T) {
-	_, ln, _ := startSplitListener(t, &tls.Config{}, 8443)
+	_, ln, accepted := startSplitListener(t, &tls.Config{}, 8443)
 	defer ln.Close()
+	handshakeAll(accepted)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
@@ -160,7 +154,7 @@ func TestTLSSplitListener_Accept_MalformedHTTPClosesSilently(t *testing.T) {
 	assert.Equal(t, 0, n, "no response expected for malformed request")
 }
 
-func TestTLSSplitListener_Accept_ClientClosesBeforeFirstByte(t *testing.T) {
+func TestTLSSplitListener_TLSClientCompletesHandshake(t *testing.T) {
 	cert := loadTLSCert(t)
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
@@ -170,27 +164,56 @@ func TestTLSSplitListener_Accept_ClientClosesBeforeFirstByte(t *testing.T) {
 	_, ln, accepted := startSplitListener(t, tlsCfg, 8443)
 	defer ln.Close()
 
-	// Dial and immediately close — listener should drop the conn and keep looping.
+	errc := make(chan error, 1)
+	go func() {
+		c, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{InsecureSkipVerify: true})
+		if err == nil {
+			_ = c.Close()
+		}
+		errc <- err
+	}()
+
+	got := <-accepted
+	defer got.Close()
+	require.NoError(t, got.SetDeadline(time.Now().Add(3*time.Second)))
+	require.NoError(t, got.(*tls.Conn).Handshake(), "sniffed first byte must be replayed to the TLS layer")
+	require.NoError(t, <-errc)
+}
+
+func TestTLSSplitListener_ClientClosesBeforeFirstByteFailsHandshake(t *testing.T) {
+	_, ln, accepted := startSplitListener(t, &tls.Config{}, 8443)
+	defer ln.Close()
+
 	c, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
 	require.NoError(t, c.Close())
 
-	// Now send a valid TLS first byte from a fresh connection to verify the
-	// loop still serves subsequent clients.
-	c2, err := net.Dial("tcp", ln.Addr().String())
-	require.NoError(t, err)
-	defer c2.Close()
-	_, err = c2.Write([]byte{0x16})
-	require.NoError(t, err)
+	got := <-accepted
+	defer got.Close()
+	require.NoError(t, got.SetDeadline(time.Now().Add(3*time.Second)))
+	assert.ErrorIs(t, got.(*tls.Conn).Handshake(), io.EOF)
+}
 
-	select {
-	case got := <-accepted:
-		require.NotNil(t, got)
-		defer got.Close()
-		_, ok := got.(*tls.Conn)
-		assert.True(t, ok)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Accept loop did not recover after client disconnect")
+func TestTLSSplitListener_Accept_SilentClientsDoNotDelayOthers(t *testing.T) {
+	_, ln, accepted := startSplitListener(t, &tls.Config{}, 8443)
+	defer ln.Close()
+
+	// Connections that never send a byte, e.g. a port scanner or `nc host port`.
+	const clients = 4
+	for range clients {
+		idle, err := net.Dial("tcp", ln.Addr().String())
+		require.NoError(t, err)
+		defer idle.Close()
+	}
+
+	deadline := time.After(time.Second)
+	for i := range clients {
+		select {
+		case got := <-accepted:
+			defer got.Close()
+		case <-deadline:
+			t.Fatalf("Accept returned %d of %d silent connections; it must not read from them", i, clients)
+		}
 	}
 }
 

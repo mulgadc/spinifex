@@ -1,6 +1,6 @@
 import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query"
 
-import { clearCredentials } from "./auth"
+import { clearCredentials, onSessionChangedInOtherTab } from "./auth"
 import { isStaleCredentialsError } from "./auth-error"
 import { clearClients } from "./awsClient"
 
@@ -26,6 +26,19 @@ function recoverFromStaleCredentials(
   if (window.location.pathname !== "/login") {
     window.location.href = "/login?reason=expired"
   }
+}
+
+// A sign-out or sign-in in another tab ends this tab's session too. The reload
+// at /login drops everything held in memory and lands on the login form, or on
+// the console if the other tab signed in.
+export function followSessionChangesInOtherTabs(
+  queryClient: QueryClient,
+): () => void {
+  return onSessionChangedInOtherTab(() => {
+    clearClients()
+    queryClient.clear()
+    window.location.href = "/login"
+  })
 }
 
 export function createQueryClient(): QueryClient {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,9 +15,12 @@ import (
 
 const tlsRecordTypeHandshake = 0x16
 
-// tlsSplitListener accepts connections and reads the first byte. If it looks
-// like a TLS ClientHello (0x16), the connection is wrapped with TLS. Otherwise,
-// a plain-HTTP redirect to HTTPS is sent and the connection is closed.
+// errPlainHTTP fails the TLS handshake after a plain-HTTP client was redirected.
+var errPlainHTTP = errors.New("plain HTTP redirected to HTTPS")
+
+// tlsSplitListener serves TLS and plain HTTP on one port. Accept never reads:
+// the first byte is sniffed during the handshake, in the connection's own
+// goroutine, so a client that sends nothing cannot stall other clients.
 type tlsSplitListener struct {
 	net.Listener
 
@@ -25,37 +29,36 @@ type tlsSplitListener struct {
 }
 
 func (ln *tlsSplitListener) Accept() (net.Conn, error) {
-	for {
-		conn, err := ln.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-
-		// Set a deadline for the initial protocol detection byte so a
-		// slow/malicious client cannot block the accept loop.
-		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-		var buf [1]byte
-		if _, err := io.ReadFull(conn, buf[:]); err != nil {
-			_ = conn.Close()
-			continue
-		}
-
-		// Clear the deadline before handing off the connection.
-		_ = conn.SetReadDeadline(time.Time{})
-
-		if buf[0] == tlsRecordTypeHandshake {
-			// Prepend the peeked byte and upgrade to TLS.
-			merged := &prefixConn{
-				Conn: conn,
-				r:    io.MultiReader(bytes.NewReader(buf[:]), conn),
-			}
-			return tls.Server(merged, ln.tlsCfg), nil
-		}
-
-		// Plain HTTP — send redirect and close.
-		go ln.redirectHTTP(conn, buf[0])
+	conn, err := ln.Listener.Accept()
+	if err != nil {
+		return nil, err
 	}
+	return tls.Server(&sniffConn{Conn: conn, ln: ln}, ln.tlsCfg), nil
+}
+
+// sniffConn reads the first byte on its first Read. A TLS ClientHello (0x16)
+// is replayed to the TLS layer; anything else gets an HTTPS redirect. Reads
+// are serialised by tls.Conn and bounded by http.Server's handshake timeout.
+type sniffConn struct {
+	net.Conn
+
+	ln *tlsSplitListener
+	r  io.Reader
+}
+
+func (c *sniffConn) Read(b []byte) (int, error) {
+	if c.r == nil {
+		var buf [1]byte
+		if _, err := io.ReadFull(c.Conn, buf[:]); err != nil {
+			return 0, err
+		}
+		if buf[0] != tlsRecordTypeHandshake {
+			c.ln.redirectHTTP(c.Conn, buf[0])
+			return 0, errPlainHTTP
+		}
+		c.r = io.MultiReader(bytes.NewReader(buf[:]), c.Conn)
+	}
+	return c.r.Read(b)
 }
 
 // redirectHTTP reads an HTTP request from conn (with the first byte already
@@ -90,15 +93,4 @@ func (ln *tlsSplitListener) redirectHTTP(conn net.Conn, firstByte byte) {
 		Body:       http.NoBody,
 	}
 	_ = resp.Write(conn)
-}
-
-// prefixConn wraps a net.Conn with a reader that replays prefixed bytes.
-type prefixConn struct {
-	net.Conn
-
-	r io.Reader
-}
-
-func (c *prefixConn) Read(b []byte) (int, error) {
-	return c.r.Read(b)
 }

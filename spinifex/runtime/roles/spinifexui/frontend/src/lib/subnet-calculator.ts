@@ -3,7 +3,8 @@
  * Subnet CIDR auto-calculation from a VPC CIDR block.
  *
  * Strategy: public subnets start from the beginning of the VPC range,
- * private subnets start from the midpoint. Each subnet gets a /20 within
+ * private subnets start from the midpoint, or straight after the public
+ * subnets when the midpoint leaves no room. Each subnet gets a /20 within
  * a /16 VPC (adjusted proportionally for other prefix lengths).
  */
 
@@ -60,8 +61,9 @@ export interface SubnetCidr {
 /**
  * Calculate default subnet CIDRs for a VPC.
  *
- * Public subnets occupy the first half of the VPC address space,
- * private subnets occupy the second half.
+ * Public subnets occupy the first half of the VPC address space and private
+ * subnets the second half. A small VPC may not fit the plan; the wizard schema
+ * rejects subnets that fall outside the VPC.
  */
 export interface SubnetCidrPlan {
   publicSubnets: SubnetCidr[]
@@ -77,6 +79,11 @@ export function calculateSubnetCidrs(
   const subPrefix = subnetPrefix(vpcPrefix)
   const subSize = cidrSize(subPrefix)
   const halfOffset = cidrSize(vpcPrefix) / 2
+  const midpointFits =
+    halfOffset % subSize === 0 &&
+    halfOffset >= publicCount * subSize &&
+    halfOffset + privateCount * subSize <= cidrSize(vpcPrefix)
+  const privateOffset = midpointFits ? halfOffset : publicCount * subSize
 
   const publicSubnets: SubnetCidr[] = []
   for (let i = 0; i < publicCount; i++) {
@@ -89,7 +96,7 @@ export function calculateSubnetCidrs(
 
   const privateSubnets: SubnetCidr[] = []
   for (let i = 0; i < privateCount; i++) {
-    const addr = (network + halfOffset + i * subSize) >>> 0
+    const addr = (network + privateOffset + i * subSize) >>> 0
     privateSubnets.push({
       cidr: `${numberToIp(addr)}/${subPrefix}`,
       label: `Private Subnet ${i + 1}`,
@@ -97,6 +104,30 @@ export function calculateSubnetCidrs(
   }
 
   return { publicSubnets, privateSubnets }
+}
+
+function withCustom(subnets: SubnetCidr[], overrides: string[]): SubnetCidr[] {
+  return subnets.map((subnet, i) => {
+    const override = overrides[i]?.trim()
+    return override ? { ...subnet, cidr: override } : subnet
+  })
+}
+
+/**
+ * Resolve the subnet CIDRs a wizard plan creates: each custom CIDR that is
+ * set, else the calculated default, trimmed to the subnet counts.
+ */
+export function resolveSubnetCidrs(
+  vpcCidr: string,
+  publicCount: number,
+  privateCount: number,
+  custom: { publicCidrs: string[]; privateCidrs: string[] },
+): SubnetCidrPlan {
+  const defaults = calculateSubnetCidrs(vpcCidr, publicCount, privateCount)
+  return {
+    publicSubnets: withCustom(defaults.publicSubnets, custom.publicCidrs),
+    privateSubnets: withCustom(defaults.privateSubnets, custom.privateCidrs),
+  }
 }
 
 /** Check whether two CIDR blocks overlap. */

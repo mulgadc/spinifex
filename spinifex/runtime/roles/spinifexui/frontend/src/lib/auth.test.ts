@@ -19,11 +19,17 @@ function sessionCreds(
 let getCredentials: typeof import("./auth").getCredentials
 let setSessionCredentials: typeof import("./auth").setSessionCredentials
 let clearCredentials: typeof import("./auth").clearCredentials
+let onSessionChangedInOtherTab: typeof import("./auth").onSessionChangedInOtherTab
 
 async function loadAuth() {
   vi.resetModules()
   const auth = await import("./auth")
-  ;({ getCredentials, setSessionCredentials, clearCredentials } = auth)
+  ;({
+    getCredentials,
+    setSessionCredentials,
+    clearCredentials,
+    onSessionChangedInOtherTab,
+  } = auth)
 }
 
 describe("setSessionCredentials", () => {
@@ -121,5 +127,66 @@ describe("clearCredentials", () => {
     setSessionCredentials(sessionCreds())
     clearCredentials()
     expect(getCredentials()).toBeNull()
+  })
+})
+
+// What the browser fires in this tab when another tab writes localStorage.
+function storageEvent(key: string | null) {
+  window.dispatchEvent(new StorageEvent("storage", { key }))
+}
+
+describe("onSessionChangedInOtherTab", () => {
+  beforeEach(loadAuth)
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it("drops the cached session when another tab signs out", () => {
+    setSessionCredentials(sessionCreds())
+    const handler = vi.fn()
+    const stop = onSessionChangedInOtherTab(handler)
+
+    localStorage.removeItem(STORAGE_KEY)
+    storageEvent(STORAGE_KEY)
+    stop()
+
+    expect(handler).toHaveBeenCalledOnce()
+    expect(getCredentials()).toBeNull()
+  })
+
+  it("picks up the session another tab signed in with", () => {
+    setSessionCredentials(sessionCreds({ accessKeyId: "ASIAOLDSESSION" }))
+    const stop = onSessionChangedInOtherTab(vi.fn())
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(sessionCreds({ accessKeyId: "ASIANEWSESSION" })),
+    )
+    storageEvent(STORAGE_KEY)
+    stop()
+
+    expect(getCredentials()?.accessKeyId).toBe("ASIANEWSESSION")
+  })
+
+  it("reacts when another tab clears all of localStorage", () => {
+    const handler = vi.fn()
+    const stop = onSessionChangedInOtherTab(handler)
+
+    storageEvent(null)
+    stop()
+
+    expect(handler).toHaveBeenCalledOnce()
+  })
+
+  it("ignores changes to other keys", () => {
+    setSessionCredentials(sessionCreds())
+    const handler = vi.fn()
+    const stop = onSessionChangedInOtherTab(handler)
+
+    storageEvent("spinifex-ui-theme")
+    stop()
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(getCredentials()).not.toBeNull()
   })
 })

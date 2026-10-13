@@ -746,6 +746,62 @@ describe("useRemoveRoleFromInstanceProfile", () => {
   })
 })
 
+describe("instance profile membership changes", () => {
+  const roleProfilesKey = ["iam", "instance-profiles-for-role", "app"]
+
+  function seedRoleProfiles() {
+    createQueryClient()
+    queryClient.setQueryData(roleProfilesKey, { InstanceProfiles: [] })
+  }
+
+  function roleProfilesInvalidated() {
+    return queryClient.getQueryCache().find({ queryKey: roleProfilesKey })
+      ?.state.isInvalidated
+  }
+
+  it("refreshes the role page after adding a role", async () => {
+    seedRoleProfiles()
+    const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({ instanceProfileName: "p", roleName: "app" })
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(roleProfilesInvalidated()).toBeTruthy()
+  })
+
+  it("refreshes the role page after removing a role", async () => {
+    seedRoleProfiles()
+    const { result } = renderHook(() => useRemoveRoleFromInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate({ instanceProfileName: "p", roleName: "app" })
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(roleProfilesInvalidated()).toBeTruthy()
+  })
+
+  it("refreshes the role page after deleting a profile", async () => {
+    seedRoleProfiles()
+    const { result } = renderHook(() => useDeleteInstanceProfile(), {
+      wrapper,
+    })
+
+    result.current.mutate("p")
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(roleProfilesInvalidated()).toBeTruthy()
+  })
+})
+
 describe("useCreateGroup", () => {
   it("sends CreateGroupCommand with groupName", async () => {
     createQueryClient()

@@ -1,12 +1,10 @@
 // AWS error codes that indicate the credentials themselves are stale or
-// invalid (authentication failures), as opposed to authorization denials
-// (AccessDenied / UnauthorizedOperation) where valid creds lack permission.
+// invalid, as opposed to authorization denials. Signature errors are left out:
+// clock skew and a rewritten request path also cause them.
 const AUTH_ERROR_CODES = new Set([
   "InvalidClientTokenId",
-  "SignatureDoesNotMatch",
   "AuthFailure",
   "MissingAuthenticationToken",
-  "IncompleteSignature",
   "UnrecognizedClientException",
   "ExpiredToken",
   "ExpiredTokenException",

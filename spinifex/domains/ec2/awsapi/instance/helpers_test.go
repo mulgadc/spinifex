@@ -18,12 +18,12 @@ func startTestNATSServer(t *testing.T) (*server.Server, *nats.Conn) {
 	return testutil.StartTestNATS(t)
 }
 
-// TestMain neuters the terminate NoResponders backoff for the whole binary, so
+// TestMain neuters the ec2.cmd NoResponders backoff for the whole binary, so
 // retry paths do not burn real seconds. Installed once rather than swapped per
 // test: the seam is a package global and the tests that need it run in
 // parallel, so their restores raced each other.
 func TestMain(m *testing.M) {
-	terminateRetrySleep = func(time.Duration) {}
+	cmdRetrySleep = func(time.Duration) {}
 	os.Exit(m.Run())
 }
 

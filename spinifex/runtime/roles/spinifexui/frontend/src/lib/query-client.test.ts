@@ -3,7 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const clearCredentialsMock = vi.fn()
 const clearClientsMock = vi.fn()
 
-vi.mock("./auth", () => ({ clearCredentials: clearCredentialsMock }))
+const otherTabHandlers: (() => void)[] = []
+
+vi.mock("./auth", () => ({
+  clearCredentials: clearCredentialsMock,
+  onSessionChangedInOtherTab: (handler: () => void) => {
+    otherTabHandlers.push(handler)
+    return () => undefined
+  },
+}))
 vi.mock("./awsClient", () => ({ clearClients: clearClientsMock }))
 
 let createQueryClient: typeof import("./query-client").createQueryClient
@@ -81,5 +89,30 @@ describe("createQueryClient stale-credential recovery", () => {
 
     expect(clearCredentialsMock).toHaveBeenCalledOnce()
     expect(window.location.href).toBe("/login?reason=expired")
+  })
+})
+
+describe("followSessionChangesInOtherTabs", () => {
+  beforeEach(() => {
+    otherTabHandlers.length = 0
+    vi.stubGlobal("location", { pathname: "/ec2", href: "" })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("drops clients and cached data and goes to /login", async () => {
+    const { createQueryClient: create, followSessionChangesInOtherTabs } =
+      await import("./query-client")
+    const client = create()
+    client.setQueryData(["ec2", "instances"], { Reservations: [] })
+    followSessionChangesInOtherTabs(client)
+
+    otherTabHandlers[0]?.()
+
+    expect(clearClientsMock).toHaveBeenCalledOnce()
+    expect(client.getQueryData(["ec2", "instances"])).toBeUndefined()
+    expect(window.location.href).toBe("/login")
   })
 })

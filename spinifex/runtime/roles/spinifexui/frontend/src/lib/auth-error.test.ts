@@ -12,10 +12,8 @@ function sdkError(name: string): Error {
 describe("isStaleCredentialsError", () => {
   const authCodes = [
     "InvalidClientTokenId",
-    "SignatureDoesNotMatch",
     "AuthFailure",
     "MissingAuthenticationToken",
-    "IncompleteSignature",
     "UnrecognizedClientException",
     "ExpiredToken",
     "ExpiredTokenException",
@@ -37,6 +35,9 @@ describe("isStaleCredentialsError", () => {
     ["UnauthorizedOperation denial", sdkError("UnauthorizedOperation")],
     ["ValidationError", sdkError("ValidationError")],
     ["InvalidParameterValue", sdkError("InvalidParameterValue")],
+    // Clock skew and path rewrites also produce these; logging out would loop.
+    ["SignatureDoesNotMatch", sdkError("SignatureDoesNotMatch")],
+    ["IncompleteSignature", sdkError("IncompleteSignature")],
     ["NotFound", sdkError("InvalidInstanceID.NotFound")],
     ["plain Error", new Error("boom")],
     ["network failure", new TypeError("Failed to fetch")],

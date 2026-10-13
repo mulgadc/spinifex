@@ -105,6 +105,11 @@ function RouteTableDetail() {
   const disassociate = useDisassociateRouteTable()
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [routeToDelete, setRouteToDelete] = useState<string | null>(null)
+  const [associationToRemove, setAssociationToRemove] = useState<{
+    associationId: string
+    subnetId: string
+  } | null>(null)
 
   const rtb = data.RouteTables?.[0]
 
@@ -160,6 +165,35 @@ function RouteTableDetail() {
       navigate({ to: "/ec2/describe-route-tables" })
     } finally {
       setShowDeleteDialog(false)
+    }
+  }
+
+  const handleDeleteRoute = async () => {
+    if (!routeToDelete) {
+      return
+    }
+    try {
+      await deleteRoute.mutateAsync({
+        routeTableId,
+        destinationCidrBlock: routeToDelete,
+      })
+    } catch {
+      // Error is stored in deleteRoute.error and rendered below the routes
+    } finally {
+      setRouteToDelete(null)
+    }
+  }
+
+  const handleDisassociate = async () => {
+    if (!associationToRemove) {
+      return
+    }
+    try {
+      await disassociate.mutateAsync(associationToRemove.associationId)
+    } catch {
+      // Error is stored in disassociate.error and rendered below the list
+    } finally {
+      setAssociationToRemove(null)
     }
   }
 
@@ -278,16 +312,16 @@ function RouteTableDetail() {
                             {!isLocal && cidr && (
                               <Button
                                 disabled={deleteRoute.isPending}
-                                onClick={async () =>
-                                  await deleteRoute.mutateAsync({
-                                    routeTableId,
-                                    destinationCidrBlock: cidr,
-                                  })
-                                }
+                                onClick={() => {
+                                  setRouteToDelete(cidr)
+                                }}
                                 size="sm"
                                 variant="ghost"
                               >
                                 <Trash2 className="size-4" />
+                                <span className="sr-only">
+                                  Delete route to {cidr}
+                                </span>
                               </Button>
                             )}
                           </td>
@@ -431,15 +465,21 @@ function RouteTableDetail() {
                       </Link>
                       <Button
                         disabled={!associationId || disassociate.isPending}
-                        onClick={async () => {
+                        onClick={() => {
                           if (associationId) {
-                            await disassociate.mutateAsync(associationId)
+                            setAssociationToRemove({
+                              associationId,
+                              subnetId: assoc.SubnetId ?? associationId,
+                            })
                           }
                         }}
                         size="sm"
                         variant="ghost"
                       >
                         <Trash2 className="size-4" />
+                        <span className="sr-only">
+                          Disassociate {assoc.SubnetId}
+                        </span>
                       </Button>
                     </li>
                   )
@@ -521,6 +561,34 @@ function RouteTableDetail() {
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
         title="Delete Route Table"
+      />
+
+      <DeleteConfirmationDialog
+        description={`Delete the route to ${routeToDelete} from "${routeTableId}"? Traffic to that destination from every subnet using this table stops being routed.`}
+        isPending={deleteRoute.isPending}
+        onConfirm={handleDeleteRoute}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRouteToDelete(null)
+          }
+        }}
+        open={routeToDelete !== null}
+        title="Delete Route"
+      />
+
+      <DeleteConfirmationDialog
+        confirmLabel="Disassociate"
+        description={`Disassociate "${associationToRemove?.subnetId}" from "${routeTableId}"? The subnet stops using this table's routes.`}
+        isPending={disassociate.isPending}
+        onConfirm={handleDisassociate}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAssociationToRemove(null)
+          }
+        }}
+        open={associationToRemove !== null}
+        pendingLabel="Disassociating…"
+        title="Disassociate Subnet"
       />
     </>
   )

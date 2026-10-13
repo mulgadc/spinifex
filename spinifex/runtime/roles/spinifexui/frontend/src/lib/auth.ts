@@ -78,3 +78,20 @@ export function clearCredentials(): void {
   }
   credentialsCache = null
 }
+
+// Another tab signing in or out rewrites STORAGE_KEY. The cache is dropped so
+// this tab rereads storage, and the handler discards anything built from the
+// old session. A null key means another tab cleared all of localStorage.
+export function onSessionChangedInOtherTab(handler: () => void): () => void {
+  const listener = (event: StorageEvent) => {
+    if (event.key !== STORAGE_KEY && event.key !== null) {
+      return
+    }
+    credentialsCache = undefined
+    handler()
+  }
+  window.addEventListener("storage", listener)
+  return () => {
+    window.removeEventListener("storage", listener)
+  }
+}

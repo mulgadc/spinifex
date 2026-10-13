@@ -154,6 +154,7 @@ function LaunchTemplateDetail() {
   const createVersion = useCreateLaunchTemplateVersion()
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [versionToDelete, setVersionToDelete] = useState<number | null>(null)
 
   const lt = listData.LaunchTemplates?.find((t) => t.LaunchTemplateId === id)
   const versions = (versionsData.LaunchTemplateVersions ?? []).toSorted(
@@ -213,11 +214,20 @@ function LaunchTemplateDetail() {
     })
   }
 
-  const handleDeleteVersion = async (versionNumber: number) => {
-    await deleteVersions.mutateAsync({
-      launchTemplateId: id,
-      versions: [String(versionNumber)],
-    })
+  const handleDeleteVersion = async () => {
+    if (versionToDelete === null) {
+      return
+    }
+    try {
+      await deleteVersions.mutateAsync({
+        launchTemplateId: id,
+        versions: [String(versionToDelete)],
+      })
+    } catch {
+      // Error is stored in deleteVersions.error and rendered above the table
+    } finally {
+      setVersionToDelete(null)
+    }
   }
 
   const handleDeleteTemplate = async () => {
@@ -364,15 +374,18 @@ function LaunchTemplateDetail() {
                                 deleteVersions.isPending ||
                                 versionNumber === undefined
                               }
-                              onClick={async () => {
+                              onClick={() => {
                                 if (versionNumber !== undefined) {
-                                  await handleDeleteVersion(versionNumber)
+                                  setVersionToDelete(versionNumber)
                                 }
                               }}
                               size="sm"
                               variant="ghost"
                             >
                               <Trash2 className="size-4" />
+                              <span className="sr-only">
+                                Delete version {versionNumber}
+                              </span>
                             </Button>
                           </div>
                         </td>
@@ -467,6 +480,19 @@ function LaunchTemplateDetail() {
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
         title="Delete Launch Template"
+      />
+
+      <DeleteConfirmationDialog
+        description={`Delete version ${versionToDelete} of "${lt.LaunchTemplateName ?? lt.LaunchTemplateId}"? This action cannot be undone.`}
+        isPending={deleteVersions.isPending}
+        onConfirm={handleDeleteVersion}
+        onOpenChange={(open) => {
+          if (!open) {
+            setVersionToDelete(null)
+          }
+        }}
+        open={versionToDelete !== null}
+        title="Delete Launch Template Version"
       />
     </>
   )

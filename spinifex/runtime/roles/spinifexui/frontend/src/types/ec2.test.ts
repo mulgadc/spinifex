@@ -169,6 +169,39 @@ describe("createInstanceSchema", () => {
     })
     expect(result.success).toBeTruthy()
   })
+
+  const customSource = {
+    imageId: "ami-123",
+    instanceType: "t2.micro",
+    keyName: "my-key",
+    count: 1,
+    securityGroupMode: "create",
+    newSgName: "launch-wizard-1",
+    ruleSource: "custom",
+  } as const
+
+  // AWS accepts any prefix from /0 to /32 as a security-group rule source.
+  it.each(["203.0.113.5/32", "10.0.0.0/8", "0.0.0.0/0"])(
+    "accepts custom SSH source %s",
+    (customCidr) => {
+      const result = createInstanceSchema.safeParse({
+        ...customSource,
+        customCidr,
+      })
+      expect(result.success).toBeTruthy()
+    },
+  )
+
+  it.each(["203.0.113.5/33", "203.0.113.5", "300.0.0.0/8"])(
+    "rejects custom SSH source %s",
+    (customCidr) => {
+      const result = createInstanceSchema.safeParse({
+        ...customSource,
+        customCidr,
+      })
+      expect(result.success).toBeFalsy()
+    },
+  )
 })
 
 describe("launchTemplateFormSchema", () => {
@@ -835,6 +868,49 @@ describe("createVpcWizardSchema", () => {
       privateSubnetCount: 1,
       publicSubnetCidrs: ["10.0.0.0/20"],
       privateSubnetCidrs: ["10.0.128.0/20"],
+    })
+    expect(result.success).toBeTruthy()
+  })
+
+  it("rejects a default plan that overruns a small VPC", () => {
+    const result = createVpcWizardSchema.safeParse({
+      ...validBase,
+      mode: "vpc-and-more",
+      cidrBlock: "10.0.0.0/27",
+      publicSubnetCount: 1,
+      privateSubnetCount: 2,
+    })
+    if (result.success) {
+      throw new Error("expected validation to fail")
+    }
+    expect(result.error.issues.map((i) => i.path)).toContainEqual([
+      "privateSubnetCidrs",
+      1,
+    ])
+  })
+
+  it("rejects a custom CIDR that overlaps a default one", () => {
+    const result = createVpcWizardSchema.safeParse({
+      ...validBase,
+      mode: "vpc-and-more",
+      publicSubnetCount: 1,
+      privateSubnetCount: 1,
+      privateSubnetCidrs: ["10.0.0.0/20"],
+    })
+    if (result.success) {
+      throw new Error("expected validation to fail")
+    }
+    const issue = result.error.issues.find((i) => i.message.includes("overlap"))
+    expect(issue?.path).toStrictEqual(["privateSubnetCidrs", 0])
+  })
+
+  it("accepts more subnets than custom CIDRs by using defaults", () => {
+    const result = createVpcWizardSchema.safeParse({
+      ...validBase,
+      mode: "vpc-and-more",
+      publicSubnetCount: 1,
+      privateSubnetCount: 2,
+      privateSubnetCidrs: ["10.0.200.0/24"],
     })
     expect(result.success).toBeTruthy()
   })

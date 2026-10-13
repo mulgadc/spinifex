@@ -29,7 +29,11 @@ import {
   RemoveUserFromGroupCommand,
   UpdateAccessKeyCommand,
 } from "@aws-sdk/client-iam"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import {
+  type QueryClient,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query"
 
 import { getIamClient } from "@/lib/awsClient"
 import type {
@@ -361,6 +365,14 @@ export function useCreateInstanceProfile() {
   })
 }
 
+// Profile membership changes also change what each role page lists.
+function invalidateInstanceProfiles(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ["iam", "instance-profiles"] })
+  void queryClient.invalidateQueries({
+    queryKey: ["iam", "instance-profiles-for-role"],
+  })
+}
+
 export function useDeleteInstanceProfile() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -371,9 +383,7 @@ export function useDeleteInstanceProfile() {
       return await getIamClient().send(command)
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "instance-profiles"],
-      })
+      invalidateInstanceProfiles(queryClient)
     },
   })
 }
@@ -392,9 +402,7 @@ export function useAddRoleToInstanceProfile() {
       return await getIamClient().send(command)
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "instance-profiles"],
-      })
+      invalidateInstanceProfiles(queryClient)
     },
   })
 }
@@ -413,9 +421,7 @@ export function useRemoveRoleFromInstanceProfile() {
       return await getIamClient().send(command)
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "instance-profiles"],
-      })
+      invalidateInstanceProfiles(queryClient)
     },
   })
 }

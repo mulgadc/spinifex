@@ -65,7 +65,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
 import { getEc2Client } from "@/lib/awsClient"
-import { calculateSubnetCidrs } from "@/lib/subnet-calculator"
+import { resolveSubnetCidrs } from "@/lib/subnet-calculator"
 import { ec2KeyPairsQueryOptions } from "@/queries/ec2"
 import type {
   AttachVolumeFormData,
@@ -160,36 +160,31 @@ export function useCreateInstance() {
   return useMutation({
     mutationFn: async (params: CreateInstanceParams) => {
       const client = getEc2Client()
-      const securityGroupIds = await resolveSecurityGroupIds(client, params)
-      const command = new RunInstancesCommand({
-        ImageId: params.imageId || undefined,
-        InstanceType: params.instanceType
-          ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
-            (params.instanceType as _InstanceType)
-          : undefined,
-        KeyName: params.keyName || undefined,
-        MinCount: params.count,
-        MaxCount: params.count,
-        SubnetId: params.subnetId || undefined,
-        SecurityGroupIds:
-          securityGroupIds.length > 0 ? securityGroupIds : undefined,
-        Placement: params.placementGroupName
-          ? { GroupName: params.placementGroupName }
-          : undefined,
-        BlockDeviceMappings: buildBlockDeviceMappings(params),
-        // When a template is chosen the backend expands it, then the direct
-        // params above overlay it (direct params win, matching AWS).
-        LaunchTemplate: params.launchTemplateId
-          ? {
-              LaunchTemplateId: params.launchTemplateId,
-              Version: params.launchTemplateVersion || "$Default",
-            }
-          : undefined,
-      })
-      return await client.send(command)
+      // Only the explicit create path provisions an SG; existing / undefined
+      // modes pass through the selected IDs (none by default).
+      if (params.securityGroupMode !== "create") {
+        return await runInstances(client, params, params.securityGroupIds ?? [])
+      }
+      const groupId = await createLaunchWizardGroup(client, params)
+      try {
+        await authorizeLaunchWizardIngress(client, groupId, params)
+        return await runInstances(client, params, [groupId])
+      } catch (error) {
+        // Delete the group so a retry can reuse its name.
+        try {
+          await client.send(
+            new DeleteSecurityGroupCommand({ GroupId: groupId }),
+          )
+        } catch {
+          // The launch error is still the one worth showing.
+        }
+        throw error
+      }
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({
         queryKey: ["ec2", "securityGroups"],
       })
@@ -197,20 +192,45 @@ export function useCreateInstance() {
   })
 }
 
-// resolveSecurityGroupIds returns the SG IDs to attach to the new instance.
-// In "existing" mode it passes the selected IDs through; in "create" mode it
-// creates a launch-wizard SG, authorizes the ticked inbound rules, and returns
-// the new group's ID.
-async function resolveSecurityGroupIds(
+async function runInstances(
   client: ReturnType<typeof getEc2Client>,
   params: CreateInstanceParams,
-): Promise<string[]> {
-  // Only the explicit create path provisions an SG; existing / undefined modes
-  // pass through the selected IDs (none by default), preserving prior behaviour.
-  if (params.securityGroupMode !== "create") {
-    return params.securityGroupIds ?? []
-  }
+  securityGroupIds: string[],
+) {
+  const command = new RunInstancesCommand({
+    ImageId: params.imageId || undefined,
+    InstanceType: params.instanceType
+      ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
+        (params.instanceType as _InstanceType)
+      : undefined,
+    KeyName: params.keyName || undefined,
+    MinCount: params.count,
+    MaxCount: params.count,
+    SubnetId: params.subnetId || undefined,
+    SecurityGroupIds:
+      securityGroupIds.length > 0 ? securityGroupIds : undefined,
+    Placement: params.placementGroupName
+      ? { GroupName: params.placementGroupName }
+      : undefined,
+    BlockDeviceMappings: buildBlockDeviceMappings(params),
+    // When a template is chosen the backend expands it, then the direct
+    // params above overlay it (direct params win, matching AWS).
+    LaunchTemplate: params.launchTemplateId
+      ? {
+          LaunchTemplateId: params.launchTemplateId,
+          Version: params.launchTemplateVersion || "$Default",
+        }
+      : undefined,
+  })
+  return await client.send(command)
+}
 
+// createLaunchWizardGroup creates the launch-wizard SG for "create" mode and
+// returns its ID.
+async function createLaunchWizardGroup(
+  client: ReturnType<typeof getEc2Client>,
+  params: CreateInstanceParams,
+): Promise<string> {
   const sg = await client.send(
     new CreateSecurityGroupCommand({
       GroupName: params.newSgName,
@@ -218,35 +238,41 @@ async function resolveSecurityGroupIds(
       VpcId: params.resolvedVpcId,
     }),
   )
-  const groupId = sg.GroupId
-  if (!groupId) {
+  if (!sg.GroupId) {
     throw new Error("Security group was created but no ID was returned")
   }
+  return sg.GroupId
+}
 
+// authorizeLaunchWizardIngress opens the ticked inbound ports on the new group.
+async function authorizeLaunchWizardIngress(
+  client: ReturnType<typeof getEc2Client>,
+  groupId: string,
+  params: CreateInstanceParams,
+): Promise<void> {
   const ports: number[] = [
     ...(params.allowSsh ? [22] : []),
     ...(params.allowHttp ? [80] : []),
     ...(params.allowHttps ? [443] : []),
   ]
-  if (ports.length > 0) {
-    const cidrIp =
-      params.ruleSource === "custom" && params.customCidr
-        ? params.customCidr
-        : "0.0.0.0/0"
-    await client.send(
-      new AuthorizeSecurityGroupIngressCommand({
-        GroupId: groupId,
-        IpPermissions: ports.map((port) => ({
-          IpProtocol: "tcp",
-          FromPort: port,
-          ToPort: port,
-          IpRanges: [{ CidrIp: cidrIp }],
-        })),
-      }),
-    )
+  if (ports.length === 0) {
+    return
   }
-
-  return [groupId]
+  const cidrIp =
+    params.ruleSource === "custom" && params.customCidr
+      ? params.customCidr
+      : "0.0.0.0/0"
+  await client.send(
+    new AuthorizeSecurityGroupIngressCommand({
+      GroupId: groupId,
+      IpPermissions: ports.map((port) => ({
+        IpProtocol: "tcp",
+        FromPort: port,
+        ToPort: port,
+        IpRanges: [{ CidrIp: cidrIp }],
+      })),
+    }),
+  )
 }
 
 function buildBlockDeviceMappings(params: CreateInstanceParams) {
@@ -422,7 +448,15 @@ export function useDeleteLaunchTemplateVersions() {
         LaunchTemplateId: params.launchTemplateId,
         Versions: params.versions,
       })
-      return await getEc2Client().send(command)
+      const result = await getEc2Client().send(command)
+      // A failed delete comes back as HTTP 200 with the version listed here.
+      const failed = result.UnsuccessfullyDeletedLaunchTemplateVersions?.[0]
+      if (failed) {
+        throw new Error(
+          `Version ${failed.VersionNumber} was not deleted: ${failed.ResponseError?.Message ?? failed.ResponseError?.Code ?? "unknown error"}`,
+        )
+      }
+      return result
     },
     onSuccess: (_data, params) => {
       void queryClient.invalidateQueries({
@@ -1392,6 +1426,20 @@ export interface WizardResult {
   failedStep?: string
 }
 
+// Waits for every task before rethrowing the first failure, so a failed
+// subnet does not hide the ones still being created.
+async function settleAll<T>(tasks: Promise<T>[]): Promise<T[]> {
+  const results = await Promise.allSettled(tasks)
+  const values: T[] = []
+  for (const result of results) {
+    if (result.status === "rejected") {
+      throw result.reason
+    }
+    values.push(result.value)
+  }
+  return values
+}
+
 export function useCreateVpcWizard() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -1433,33 +1481,28 @@ export function useCreateVpcWizard() {
           return { vpcId, created }
         }
 
-        // Compute subnet CIDRs (use custom values if provided, else auto-calculate)
-        const defaults = calculateSubnetCidrs(
+        const plan = resolveSubnetCidrs(
           params.cidrBlock,
           params.publicSubnetCount,
           params.privateSubnetCount,
+          {
+            publicCidrs: params.publicSubnetCidrs,
+            privateCidrs: params.privateSubnetCidrs,
+          },
         )
-        const publicCidrs =
-          params.publicSubnetCidrs.length > 0
-            ? params.publicSubnetCidrs
-            : defaults.publicSubnets.map((s) => s.cidr)
-        const privateCidrs =
-          params.privateSubnetCidrs.length > 0
-            ? params.privateSubnetCidrs
-            : defaults.privateSubnets.map((s) => s.cidr)
 
         // Step 2: Create public subnets. Each subnet's CIDR is fixed up front, so
         // the creations are independent — run them concurrently. Each task records
-        // its subnet in `created` before the attribute call so a later failure
-        // still rolls back what was made.
+        // its subnet in `created` before the attribute call so the failure report
+        // lists every subnet that was made. Nothing is rolled back.
         currentStep = "creating public subnets"
-        const publicSubnetIds = await Promise.all(
-          Array.from({ length: params.publicSubnetCount }, async (_, i) => {
+        const publicSubnetIds = await settleAll(
+          plan.publicSubnets.map(async ({ cidr }, i) => {
             const name = prefix ? `${prefix}-subnet-public-${i + 1}` : undefined
             const result = await client.send(
               new CreateSubnetCommand({
                 VpcId: vpcId,
-                CidrBlock: publicCidrs[i],
+                CidrBlock: cidr,
                 TagSpecifications: buildTagSpec(
                   ResourceType.subnet,
                   name,
@@ -1490,15 +1533,15 @@ export function useCreateVpcWizard() {
 
         // Step 3: Create private subnets (independent CIDRs — concurrent).
         currentStep = "creating private subnets"
-        const privateSubnetIds = await Promise.all(
-          Array.from({ length: params.privateSubnetCount }, async (_, i) => {
+        const privateSubnetIds = await settleAll(
+          plan.privateSubnets.map(async ({ cidr }, i) => {
             const name = prefix
               ? `${prefix}-subnet-private-${i + 1}`
               : undefined
             const result = await client.send(
               new CreateSubnetCommand({
                 VpcId: vpcId,
-                CidrBlock: privateCidrs[i],
+                CidrBlock: cidr,
                 TagSpecifications: buildTagSpec(
                   ResourceType.subnet,
                   name,

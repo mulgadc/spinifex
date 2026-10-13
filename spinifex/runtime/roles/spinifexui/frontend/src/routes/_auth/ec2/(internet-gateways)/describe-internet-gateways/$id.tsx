@@ -62,6 +62,7 @@ function InternetGatewayDetail() {
   const detachMutation = useDetachInternetGateway()
   const deleteMutation = useDeleteInternetGateway()
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [vpcToDetach, setVpcToDetach] = useState<string | null>(null)
   const [selectedVpcId, setSelectedVpcId] = useState("")
 
   const igw = data.InternetGateways?.[0]
@@ -86,8 +87,20 @@ function InternetGatewayDetail() {
     })
   }
 
-  const handleDetach = async (vpcId: string) => {
-    await detachMutation.mutateAsync({ internetGatewayId: id, vpcId })
+  const handleDetach = async () => {
+    if (!vpcToDetach) {
+      return
+    }
+    try {
+      await detachMutation.mutateAsync({
+        internetGatewayId: id,
+        vpcId: vpcToDetach,
+      })
+    } catch {
+      // Error is stored in detachMutation.error and rendered above
+    } finally {
+      setVpcToDetach(null)
+    }
   }
 
   if (!igw?.InternetGatewayId) {
@@ -172,8 +185,8 @@ function InternetGatewayDetail() {
                 </Link>
                 <Button
                   disabled={detachMutation.isPending}
-                  onClick={async () => {
-                    await handleDetach(attachment.VpcId ?? "")
+                  onClick={() => {
+                    setVpcToDetach(attachment.VpcId ?? "")
                   }}
                   size="sm"
                   variant="outline"
@@ -227,6 +240,21 @@ function InternetGatewayDetail() {
         onOpenChange={setShowDeleteDialog}
         open={showDeleteDialog}
         title="Delete Internet Gateway"
+      />
+
+      <DeleteConfirmationDialog
+        confirmLabel="Detach"
+        description={`Detach "${igw.InternetGatewayId}" from "${vpcToDetach}"? Every subnet in the VPC that routes through it loses internet access.`}
+        isPending={detachMutation.isPending}
+        onConfirm={handleDetach}
+        onOpenChange={(open) => {
+          if (!open) {
+            setVpcToDetach(null)
+          }
+        }}
+        open={vpcToDetach !== null}
+        pendingLabel="Detaching…"
+        title="Detach Internet Gateway"
       />
     </>
   )

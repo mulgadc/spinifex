@@ -7,6 +7,7 @@ import {
   isValidCidr,
   numberToIp,
   parseCidr,
+  resolveSubnetCidrs,
   subnetPrefix,
 } from "./subnet-calculator"
 
@@ -83,6 +84,49 @@ describe("calculateSubnetCidrs", () => {
     const result = calculateSubnetCidrs("10.0.0.0/16", 1, 1)
     expect(result.publicSubnets[0]?.label).toBe("Public Subnet 1")
     expect(result.privateSubnets[0]?.label).toBe("Private Subnet 1")
+  })
+})
+
+describe("calculateSubnetCidrs in a small VPC", () => {
+  it("packs private subnets after the public ones when the midpoint has no room", () => {
+    const result = calculateSubnetCidrs("10.0.0.0/27", 0, 2)
+    expect(result.privateSubnets.map((s) => s.cidr)).toStrictEqual([
+      "10.0.0.0/28",
+      "10.0.0.16/28",
+    ])
+  })
+
+  it("keeps every default CIDR aligned to its prefix", () => {
+    const result = calculateSubnetCidrs("10.0.0.0/28", 1, 1)
+    expect(result.publicSubnets[0]?.cidr).toBe("10.0.0.0/28")
+    expect(result.privateSubnets[0]?.cidr).toBe("10.0.0.16/28")
+  })
+})
+
+describe("resolveSubnetCidrs", () => {
+  it("uses each custom CIDR that is set and the default otherwise", () => {
+    const result = resolveSubnetCidrs("10.0.0.0/16", 1, 2, {
+      publicCidrs: [" "],
+      privateCidrs: ["10.0.200.0/24"],
+    })
+    expect(result.publicSubnets.map((s) => s.cidr)).toStrictEqual([
+      "10.0.0.0/20",
+    ])
+    expect(result.privateSubnets.map((s) => s.cidr)).toStrictEqual([
+      "10.0.200.0/24",
+      "10.0.144.0/20",
+    ])
+  })
+
+  it("drops custom CIDRs beyond the subnet count", () => {
+    const result = resolveSubnetCidrs("10.0.0.0/16", 1, 0, {
+      publicCidrs: ["10.0.1.0/24", "10.0.2.0/24"],
+      privateCidrs: ["10.0.200.0/24"],
+    })
+    expect(result.publicSubnets.map((s) => s.cidr)).toStrictEqual([
+      "10.0.1.0/24",
+    ])
+    expect(result.privateSubnets).toHaveLength(0)
   })
 })
 

@@ -4,6 +4,7 @@ import {
   cidrContains,
   cidrsOverlap,
   isValidCidr,
+  resolveSubnetCidrs,
 } from "@/lib/subnet-calculator"
 
 const CIDR_REGEX = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/
@@ -109,7 +110,7 @@ export const createInstanceSchema = z
     }
     if (
       data.ruleSource === "custom" &&
-      (!data.customCidr || !isValidCidr(data.customCidr))
+      (!data.customCidr || !isValidCidr(data.customCidr, 0, 32))
     ) {
       ctx.addIssue({
         code: "custom",
@@ -338,59 +339,58 @@ export const createVpcWizardSchema = z
     tags: z.array(formTagSchema),
   })
   .superRefine((data, ctx) => {
-    if (data.mode !== "vpc-and-more") {
+    if (data.mode !== "vpc-and-more" || !isValidCidr(data.cidrBlock)) {
       return
     }
 
-    const allCidrs: { cidr: string; field: string; index: number }[] = []
+    // Validate the CIDRs the mutation will send, defaults included, so a plan
+    // that cannot be built is rejected before anything is created.
+    const plan = resolveSubnetCidrs(
+      data.cidrBlock,
+      data.publicSubnetCount,
+      data.privateSubnetCount,
+      {
+        publicCidrs: data.publicSubnetCidrs,
+        privateCidrs: data.privateSubnetCidrs,
+      },
+    )
+    const subnets = [
+      ...plan.publicSubnets.map(({ cidr }, index) => ({
+        cidr,
+        path: ["publicSubnetCidrs", index],
+      })),
+      ...plan.privateSubnets.map(({ cidr }, index) => ({
+        cidr,
+        path: ["privateSubnetCidrs", index],
+      })),
+    ]
 
-    for (const [i, cidr] of data.publicSubnetCidrs.entries()) {
-      if (isValidCidr(cidr, 16, 28)) {
-        if (!cidrContains(data.cidrBlock, cidr)) {
-          ctx.addIssue({
-            code: "custom",
-            message: "Subnet CIDR must be within the VPC CIDR range",
-            path: ["publicSubnetCidrs", i],
-          })
-        }
-        allCidrs.push({ cidr, field: "publicSubnetCidrs", index: i })
-      } else {
+    const inRange: typeof subnets = []
+    for (const subnet of subnets) {
+      if (!isValidCidr(subnet.cidr, 16, 28)) {
         ctx.addIssue({
           code: "custom",
           message: "Invalid subnet CIDR format or prefix length",
-          path: ["publicSubnetCidrs", i],
+          path: subnet.path,
+        })
+      } else if (cidrContains(data.cidrBlock, subnet.cidr)) {
+        inRange.push(subnet)
+      } else {
+        ctx.addIssue({
+          code: "custom",
+          message: `Subnet CIDR ${subnet.cidr} must be within the VPC CIDR range`,
+          path: subnet.path,
         })
       }
     }
 
-    for (const [i, cidr] of data.privateSubnetCidrs.entries()) {
-      if (isValidCidr(cidr, 16, 28)) {
-        if (!cidrContains(data.cidrBlock, cidr)) {
+    for (const [i, a] of inRange.entries()) {
+      for (const b of inRange.slice(i + 1)) {
+        if (cidrsOverlap(a.cidr, b.cidr)) {
           ctx.addIssue({
             code: "custom",
-            message: "Subnet CIDR must be within the VPC CIDR range",
-            path: ["privateSubnetCidrs", i],
-          })
-        }
-        allCidrs.push({ cidr, field: "privateSubnetCidrs", index: i })
-      } else {
-        ctx.addIssue({
-          code: "custom",
-          message: "Invalid subnet CIDR format or prefix length",
-          path: ["privateSubnetCidrs", i],
-        })
-      }
-    }
-
-    for (let i = 0; i < allCidrs.length; i++) {
-      for (let j = i + 1; j < allCidrs.length; j++) {
-        const a = allCidrs[i]
-        const b = allCidrs[j]
-        if (a && b && cidrsOverlap(a.cidr, b.cidr)) {
-          ctx.addIssue({
-            code: "custom",
-            message: "Subnet CIDRs must not overlap",
-            path: [b.field, b.index],
+            message: `Subnet CIDR ${b.cidr} must not overlap ${a.cidr}`,
+            path: b.path,
           })
         }
       }

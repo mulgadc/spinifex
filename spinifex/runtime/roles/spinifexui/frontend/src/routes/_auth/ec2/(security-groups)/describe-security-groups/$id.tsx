@@ -289,6 +289,7 @@ function RuleRow({ rule, source, groupId, direction }: RuleRowProps) {
   const revokeIngress = useRevokeSecurityGroupIngress()
   const revokeEgress = useRevokeSecurityGroupEgress()
   const mutation = direction === "ingress" ? revokeIngress : revokeEgress
+  const [showRemoveDialog, setShowRemoveDialog] = useState(false)
 
   const handleRemove = async () => {
     try {
@@ -303,6 +304,8 @@ function RuleRow({ rule, source, groupId, direction }: RuleRowProps) {
       })
     } catch {
       // Error is stored in mutation.error and rendered below
+    } finally {
+      setShowRemoveDialog(false)
     }
   }
 
@@ -332,7 +335,9 @@ function RuleRow({ rule, source, groupId, direction }: RuleRowProps) {
         </div>
         <Button
           disabled={mutation.isPending}
-          onClick={handleRemove}
+          onClick={() => {
+            setShowRemoveDialog(true)
+          }}
           size="icon-xs"
           variant="ghost"
         >
@@ -345,6 +350,16 @@ function RuleRow({ rule, source, groupId, direction }: RuleRowProps) {
           <ErrorBanner error={mutation.error} msg="Failed to remove rule" />
         </div>
       )}
+      <DeleteConfirmationDialog
+        confirmLabel="Remove"
+        description={`Remove the ${direction === "ingress" ? "inbound" : "outbound"} rule (protocol ${formatProtocol(rule.IpProtocol)}, port range ${formatPortRange(rule.FromPort, rule.ToPort, rule.IpProtocol)}, ${direction === "ingress" ? "source" : "destination"} ${sourceLabel}) from "${groupId}"?`}
+        isPending={mutation.isPending}
+        onConfirm={handleRemove}
+        onOpenChange={setShowRemoveDialog}
+        open={showRemoveDialog}
+        pendingLabel="Removing…"
+        title="Remove Rule"
+      />
     </div>
   )
 }

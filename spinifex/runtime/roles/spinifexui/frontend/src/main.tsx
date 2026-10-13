@@ -7,13 +7,17 @@ import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
 import { AdminProvider } from "@/contexts/admin-context"
 import { loadClusterConfig } from "@/lib/cluster-config"
-import { createQueryClient } from "@/lib/query-client"
+import {
+  createQueryClient,
+  followSessionChangesInOtherTabs,
+} from "@/lib/query-client"
 
 import { routeTree } from "./routeTree.gen"
 
 import "./styles.css"
 
 const queryClient = createQueryClient()
+followSessionChangesInOtherTabs(queryClient)
 
 const router = createRouter({
   routeTree,

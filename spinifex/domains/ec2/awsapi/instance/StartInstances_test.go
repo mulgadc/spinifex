@@ -52,7 +52,7 @@ func TestStartInstances_MultipleInstances(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	ids := []string{"i-001", "i-002", "i-003"}
+	ids := []string{"i-06794c450e770fbc0", "i-70aee04c61ac4d963", "i-ed828a4ce70b0199c"}
 
 	// Single subscriber handles all start requests via queue group
 	nc.QueueSubscribe("ec2.start", "spinifex-workers", func(msg *nats.Msg) {
@@ -94,7 +94,7 @@ func TestStartInstances_NilInstanceIdSkipped(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	instanceID := "i-valid"
+	instanceID := "i-476e190637b456de0"
 	nc.QueueSubscribe("ec2.start", "spinifex-workers", func(msg *nats.Msg) {
 		msg.Respond([]byte(`{"status":"running","instanceId":"` + instanceID + `"}`))
 	})
@@ -117,7 +117,7 @@ func TestStartInstances_NATSRequestFails(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 
 	// No subscriber for ec2.start, so NATS request will fail
-	instanceID := "i-nosubscriber"
+	instanceID := "i-d2d5fe795b6b57882"
 
 	input := &ec2.StartInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
@@ -125,25 +125,19 @@ func TestStartInstances_NATSRequestFails(t *testing.T) {
 
 	output, err := StartInstances(context.Background(), input, nc, "123456789012")
 
-	require.NoError(t, err) // Function itself doesn't error, it records state change
-	require.NotNil(t, output)
-	require.Len(t, output.StartingInstances, 1)
-
-	// On NATS failure, state should reflect "still stopped"
-	sc := output.StartingInstances[0]
-	assert.Equal(t, instanceID, *sc.InstanceId)
-	assert.Equal(t, int64(80), *sc.CurrentState.Code)
-	assert.Equal(t, "stopped", *sc.CurrentState.Name)
-	assert.Equal(t, int64(80), *sc.PreviousState.Code)
-	assert.Equal(t, "stopped", *sc.PreviousState.Name)
+	// No daemon answered, so nothing is known about the instance: neither a
+	// fabricated stopped/stopped change nor NotFound.
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Nil(t, output)
 }
 
 func TestStartInstances_MixedSuccessAndFailure(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 
-	goodID := "i-good"
-	badID := "i-bad"
+	goodID := "i-fd00438116c1f2ce2"
+	badID := "i-587b21c4147f9d9d8"
 
 	// Subscribe to ec2.start but only respond for goodID
 	nc.QueueSubscribe("ec2.start", "spinifex-workers", func(msg *nats.Msg) {

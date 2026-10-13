@@ -59,6 +59,7 @@ function AddressDetail() {
   const disassociateMutation = useDisassociateAddress()
   const releaseMutation = useReleaseAddress()
   const [showReleaseDialog, setShowReleaseDialog] = useState(false)
+  const [showDisassociateDialog, setShowDisassociateDialog] = useState(false)
   const [selectedInstanceId, setSelectedInstanceId] = useState("")
 
   const address = data.Addresses?.[0]
@@ -90,7 +91,13 @@ function AddressDetail() {
     if (!address?.AssociationId) {
       return
     }
-    await disassociateMutation.mutateAsync(address.AssociationId)
+    try {
+      await disassociateMutation.mutateAsync(address.AssociationId)
+    } catch {
+      // Error is stored in disassociateMutation.error and rendered above
+    } finally {
+      setShowDisassociateDialog(false)
+    }
   }
 
   if (!address?.AllocationId) {
@@ -168,7 +175,9 @@ function AddressDetail() {
             {isAssociated ? (
               <Button
                 disabled={disassociateMutation.isPending}
-                onClick={handleDisassociate}
+                onClick={() => {
+                  setShowDisassociateDialog(true)
+                }}
                 size="sm"
                 variant="outline"
               >
@@ -223,6 +232,17 @@ function AddressDetail() {
         onOpenChange={setShowReleaseDialog}
         open={showReleaseDialog}
         title="Release Elastic IP"
+      />
+
+      <DeleteConfirmationDialog
+        confirmLabel="Disassociate"
+        description={`Disassociate "${address.PublicIp}" from "${address.InstanceId ?? address.AssociationId}"? The instance stops being reachable at this address.`}
+        isPending={disassociateMutation.isPending}
+        onConfirm={handleDisassociate}
+        onOpenChange={setShowDisassociateDialog}
+        open={showDisassociateDialog}
+        pendingLabel="Disassociating…"
+        title="Disassociate Elastic IP"
       />
     </>
   )

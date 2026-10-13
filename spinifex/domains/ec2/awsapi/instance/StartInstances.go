@@ -20,7 +20,8 @@ type startStoppedInstanceRequest struct {
 }
 
 // ValidateStartInstancesInput rejects a nil input with InvalidParameterValue and an empty
-// InstanceIds list with MissingParameter.
+// InstanceIds list with MissingParameter, and a malformed instance ID with
+// InvalidInstanceID.Malformed before any NATS traffic.
 func ValidateStartInstancesInput(input *ec2.StartInstancesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -28,7 +29,7 @@ func ValidateStartInstancesInput(input *ec2.StartInstancesInput) error {
 	if len(input.InstanceIds) == 0 {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	return validateInstanceIDFormat(input.InstanceIds)
 }
 
 // StartInstances starts the requested instances via the per-instance ec2.cmd topic,
@@ -127,8 +128,9 @@ func startStoppedInstance(ctx context.Context, natsConn *nats.Conn, instanceID, 
 	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 	msg, err := natsConn.RequestMsg(reqMsg, 30*time.Second)
 	if err != nil {
+		// A daemon that answers reports NotFound itself; no answer proves nothing.
 		slog.ErrorContext(ctx, "StartInstances: Failed to send start request", "instance_id", instanceID, "err", err)
-		return newStateChange(instanceID, 80, "stopped", 80, "stopped"), nil
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {

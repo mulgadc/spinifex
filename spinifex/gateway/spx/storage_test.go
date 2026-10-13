@@ -150,7 +150,7 @@ func singleHostMeta(addr string) types.StorageConfigResponse {
 	}
 }
 
-func TestGetStorageStatus_FallsBackToReadyz(t *testing.T) {
+func TestGetStorageStatus_SingleHostReadsReadyz(t *testing.T) {
 	addr := readyzServer(t, http.StatusOK,
 		`{"checks":{"blob_nodes":"ok","meta_leader":"ok","meta_reachable":"ok"},"status":"ready"}`)
 

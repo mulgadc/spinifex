@@ -21,8 +21,8 @@ type StorageMetaNode struct {
 	ID   int    `json:"id"`
 	Host string `json:"host"`
 	Port int    `json:"port"`
-	// AdminAddr is the host's predastore admin listener, empty when the host
-	// configures no admin_port. Its /readyz is the health fallback when QUIC fails.
+	// AdminAddr is set only on a single-host cluster, which opens no QUIC socket:
+	// its host's admin listener, whose /readyz answers for the node's health.
 	AdminAddr string `json:"admin_addr,omitempty"`
 }
 

@@ -96,13 +96,16 @@ func (d *Daemon) handleStorageConfig(msg *nats.Msg) string {
 
 	// A node's address is its host's addr plus its own port: colocated nodes
 	// share a machine but never a port.
+	singleHost := len(cfg.Hosts) == 1
 	for _, h := range cfg.Hosts {
 		for _, n := range h.Nodes {
 			switch n.Role {
 			case predastoreRoleMeta:
-				resp.MetaNodes = append(resp.MetaNodes, types.StorageMetaNode{
-					ID: n.ID, Host: h.Addr, Port: n.Port, AdminAddr: h.adminAddr(),
-				})
+				meta := types.StorageMetaNode{ID: n.ID, Host: h.Addr, Port: n.Port}
+				if singleHost {
+					meta.AdminAddr = h.adminAddr()
+				}
+				resp.MetaNodes = append(resp.MetaNodes, meta)
 			case predastoreRoleBlob:
 				resp.BlobNodes = append(resp.BlobNodes, types.StorageBlobNode{ID: n.ID, Host: h.Addr, Port: n.Port})
 			case predastoreRoleGate:

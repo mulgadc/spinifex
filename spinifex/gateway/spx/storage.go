@@ -55,8 +55,8 @@ const metaNodeQueryTimeout = 2 * time.Second
 // pool: every meta node in the cluster is queried, not just a local one, so
 // verifying each one's identity against the shared CA (rather than a local
 // TLS config only the node owning it could read) is what makes every dial
-// trusted. A single-host cluster opens no QUIC socket, so a node QUIC cannot
-// reach falls back to its host's /readyz.
+// trusted. A single-host cluster opens no QUIC socket, so its nodes are read
+// from their host's /readyz instead.
 func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutput, error) {
 	msg, err := nc.Request("spinifex.storage.config", []byte("{}"), 3*time.Second)
 	if err != nil {
@@ -82,14 +82,11 @@ func GetStorageStatus(nc *nats.Conn, rootCAs *x509.CertPool) (*StorageStatusOutp
 		wg.Add(1)
 		go func(idx int, meta types.StorageMetaNode) {
 			defer wg.Done()
-			queryMetaNodeStatus(ctx, &metaStatuses[idx], rootCAs, meta.Host, meta.Port)
-			if metaStatuses[idx].Healthy || meta.AdminAddr == "" {
+			if meta.AdminAddr != "" {
+				queryMetaNodeReadyz(ctx, &metaStatuses[idx], meta.AdminAddr)
 				return
 			}
-			// The QUIC attempt spent ctx, so the fallback gets its own budget.
-			adminCtx, adminCancel := context.WithTimeout(context.Background(), metaNodeQueryTimeout)
-			defer adminCancel()
-			queryMetaNodeReadyz(adminCtx, &metaStatuses[idx], meta.AdminAddr)
+			queryMetaNodeStatus(ctx, &metaStatuses[idx], rootCAs, meta.Host, meta.Port)
 		}(i, meta)
 	}
 	wg.Wait()

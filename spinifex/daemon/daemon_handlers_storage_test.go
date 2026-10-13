@@ -29,6 +29,7 @@ parity = 1
 id = 1
 bind_addr = "0.0.0.0"
 addr = "10.0.0.1"
+admin_port = 8660
 data_dir = "/var/lib/spinifex/predastore/cluster"
 
 [[host.node]]
@@ -95,9 +96,8 @@ func storageConfigResponse(t *testing.T, cfg string, reply string) []byte {
 }
 
 // TestHandleStorageConfig_SplitsNodesByRole pins what the gateway builds its
-// storage report from: every node is reported at its host address and its own
-// port, meta and blob in separate tables, and the gate in neither — it serves
-// the S3 API and holds no cluster state to report.
+// storage report from: every node at its host address and own port, meta and
+// blob apart, no gate, and no admin address since a multi-host cluster has QUIC.
 func TestHandleStorageConfig_SplitsNodesByRole(t *testing.T) {
 	payload := storageConfigResponse(t, clusterTOML, "test.storage.config.ok")
 
@@ -139,7 +139,7 @@ port = 7660
 `
 
 // TestHandleStorageConfig_SingleHostNamesTheAdminListener pins where the
-// gateway falls back to for raft status: the host's bind address when it
+// gateway reads a single-host node's health: the host's bind address when it
 // names one, its addr when it binds a wildcard.
 func TestHandleStorageConfig_SingleHostNamesTheAdminListener(t *testing.T) {
 	for i, tc := range []struct{ bind, want string }{

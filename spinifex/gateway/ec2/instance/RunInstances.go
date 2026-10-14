@@ -43,8 +43,8 @@ type RunInstancesResponse struct {
 }
 
 // ValidateRunInstancesInput checks MinCount/MaxCount (present, within 1..MaxInt32, Min <= Max), ImageId
-// (ami- prefix) and InstanceType. It also refuses a pinned private IP on a multi-instance launch
-// and any block device mapping the launch cannot create.
+// (ami- prefix), InstanceType and the KeyName format. It also refuses a pinned private IP on a
+// multi-instance launch and any block device mapping the launch cannot create.
 func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 	if input == nil {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -80,6 +80,12 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 
 	if !strings.HasPrefix(*input.ImageId, "ami-") {
 		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
+	}
+
+	// No key pair can carry a name outside the key-name rule, so the launch names
+	// one the account does not have, and the name never reaches an instance record.
+	if keyName := aws.StringValue(input.KeyName); keyName != "" && utils.ValidateKeyPairName(keyName) != nil {
+		return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 	}
 
 	// AWS only accepts a pinned private IP for a single-instance launch: a

@@ -265,6 +265,15 @@ func TestParseRunInstances(t *testing.T) {
 		assert.NoError(t, ValidateRunInstancesInput(&input))
 	})
 
+	t.Run("KeyNameOutsideTheKeyNameRuleIsNotFound", func(t *testing.T) {
+		t.Parallel()
+		for _, name := range []string{"../222222222222/other-key", "..", ".", "a/b"} {
+			input := defaults
+			input.KeyName = aws.String(name)
+			assert.Equal(t, errors.New(awserrors.ErrorInvalidKeyPairNotFound), ValidateRunInstancesInput(&input), name)
+		}
+	})
+
 	t.Run("PinnedPrivateIPWithSingleInstanceIsValid", func(t *testing.T) {
 		t.Parallel()
 		input := defaults

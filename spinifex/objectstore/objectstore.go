@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -38,6 +39,21 @@ func (e *NoSuchKeyError) Code() string {
 func IsNoSuchKeyError(err error) bool {
 	var noSuchKey *NoSuchKeyError
 	return errors.As(err, &noSuchKey)
+}
+
+// ErrUnsafeKey is returned for an object key with a "." or ".." segment. The S3
+// client resolves those before sending, so the request would address a
+// different object, possibly in another bucket, from the one named.
+var ErrUnsafeKey = errors.New("object key has a . or .. segment")
+
+// checkKey refuses key if any of its segments is "." or "..".
+func checkKey(key *string) error {
+	for seg := range strings.SplitSeq(aws.StringValue(key), "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("%w: %q", ErrUnsafeKey, aws.StringValue(key))
+		}
+	}
+	return nil
 }
 
 // ObjectStore defines the interface for S3-like object storage operations.
@@ -90,6 +106,9 @@ func NewS3ObjectStore(client *s3.S3) *S3ObjectStore {
 }
 
 func (s *S3ObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	out, err := s.client.GetObjectWithContext(ctx, input)
 	if err != nil {
 		var aerr awserr.Error
@@ -103,6 +122,9 @@ func (s *S3ObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput)
 }
 
 func (s *S3ObjectStore) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	out, err := s.client.HeadObjectWithContext(ctx, input)
 	if err != nil {
 		var aerr awserr.Error
@@ -116,6 +138,9 @@ func (s *S3ObjectStore) HeadObject(ctx context.Context, input *s3.HeadObjectInpu
 }
 
 func (s *S3ObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	return s.client.PutObjectWithContext(ctx, input)
 }
 
@@ -123,6 +148,9 @@ func (s *S3ObjectStore) PutObject(ctx context.Context, input *s3.PutObjectInput)
 // already-deleted object from a backend failure. S3 itself answers 204 here, but
 // Predastore answers 404, and a delete sweep must treat both as done.
 func (s *S3ObjectStore) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	out, err := s.client.DeleteObjectWithContext(ctx, input)
 	if err != nil {
 		var aerr awserr.Error
@@ -180,6 +208,9 @@ func makeKey(bucket, key string) string {
 }
 
 func (m *MemoryObjectStore) GetObject(_ context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -196,6 +227,9 @@ func (m *MemoryObjectStore) GetObject(_ context.Context, input *s3.GetObjectInpu
 }
 
 func (m *MemoryObjectStore) HeadObject(_ context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -211,6 +245,9 @@ func (m *MemoryObjectStore) HeadObject(_ context.Context, input *s3.HeadObjectIn
 }
 
 func (m *MemoryObjectStore) PutObject(_ context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -227,6 +264,9 @@ func (m *MemoryObjectStore) PutObject(_ context.Context, input *s3.PutObjectInpu
 }
 
 func (m *MemoryObjectStore) DeleteObject(_ context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	if err := checkKey(input.Key); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

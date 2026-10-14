@@ -1252,3 +1252,45 @@ func assertAWSError(t *testing.T, err error, wantCode, wantMessage string) {
 	assert.Equal(t, wantCode, code)
 	assert.Equal(t, wantMessage, msg)
 }
+
+// ============================================================
+// Lookup name validation
+// ============================================================
+
+// readCountingStore counts object reads so a test can assert none was issued.
+type readCountingStore struct {
+	*objectstore.MemoryObjectStore
+
+	reads []string
+}
+
+var _ objectstore.ObjectStore = (*readCountingStore)(nil)
+
+func (r *readCountingStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	r.reads = append(r.reads, aws.StringValue(input.Key))
+	return r.MemoryObjectStore.GetObject(ctx, input)
+}
+
+// The object client resolves ".." before sending, so a name that is not a key
+// pair name would address another account's object, or another bucket's. Such a
+// name is absent from the caller's key pairs and must never reach the store.
+func TestKeyLookups_RejectNamesOutsideTheAccountPrefix(t *testing.T) {
+	names := []string{"../222222222222/other-key", "../../spinifex/ebsmetadata/v2/volume/x.json", ".", "..", "a/b"}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			store := &readCountingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
+			putStoredObject(t, store, "keys/222222222222/other-key", testED25519PubKey)
+			svc := NewKeyServiceImplWithStore(store, testBucket)
+
+			err := svc.ValidateKeyPairExists(context.Background(), testAccountID, name)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+
+			_, err = svc.GetPublicKeyMaterial(testAccountID, name)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorInvalidKeyPairNotFound, err.Error())
+
+			assert.Empty(t, store.reads)
+		})
+	}
+}

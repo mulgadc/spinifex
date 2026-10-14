@@ -79,6 +79,21 @@ func TestValidateKeyPairName(t *testing.T) {
 			expectErr: true,
 		},
 		{
+			name:      "ValidName-OnlyPeriods",
+			input:     "...",
+			expectErr: false,
+		},
+		{
+			name:      "InvalidName-Dot",
+			input:     ".",
+			expectErr: true,
+		},
+		{
+			name:      "InvalidName-DotDot",
+			input:     "..",
+			expectErr: true,
+		},
+		{
 			name:      "InvalidName-Empty",
 			input:     "",
 			expectErr: true,

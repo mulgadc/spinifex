@@ -536,6 +536,11 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 // from one replica's view and can lag a write that has already been
 // acknowledged, which reports a key created moments earlier as absent.
 func (s *KeyServiceImpl) ValidateKeyPairExists(ctx context.Context, accountID, keyName string) error {
+	// A name no key pair can have is absent, and reading it would let ".."
+	// segments address objects outside the caller's keys.
+	if utils.ValidateKeyPairName(keyName) != nil {
+		return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+	}
 	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
 	if _, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
@@ -555,6 +560,11 @@ func (s *KeyServiceImpl) ValidateKeyPairExists(ctx context.Context, accountID, k
 // GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a single
 // line. NoSuchKey maps to ErrorInvalidKeyPairNotFound; other errors are returned as-is.
 func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string, error) {
+	// A name no key pair can have is absent, and reading it would let ".."
+	// segments address objects outside the caller's keys.
+	if utils.ValidateKeyPairName(keyName) != nil {
+		return "", errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+	}
 	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
 	result, err := s.store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),

@@ -72,6 +72,7 @@ func TestIMDSv1_TokenedRequestSkipsLookup(t *testing.T) {
 	h := withTapENI(svc.httpHandler(), testENI())
 
 	token := issueToken(t, h)
+	res.calls = 0 // the PUT resolves the hop limit; only the GET is under test
 	rec := get(t, h, prefixMetaData+"local-ipv4", token)
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Zero(t, res.calls, "a valid token must not trigger an http-tokens lookup")

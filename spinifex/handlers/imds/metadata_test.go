@@ -120,11 +120,21 @@ func testENI() *eniFacts {
 // request, the way the per-tap responder's BaseContext does in production. A nil
 // eni leaves the context empty so resolveCaller misses and the request 404s.
 func withTapENI(h http.Handler, eni *eniFacts) http.Handler {
+	return withTapConn(h, eni, func(int) error { return nil })
+}
+
+// withTapConn is withTapENI with an explicit connection TTL setter, standing in
+// for the responder's ConnContext. A nil setter leaves it out of the context.
+func withTapConn(h http.Handler, eni *eniFacts, setTTL connTTLSetter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		if eni != nil {
-			r = r.WithContext(context.WithValue(r.Context(), ctxKeyENI, eni))
+			ctx = context.WithValue(ctx, ctxKeyENI, eni)
 		}
-		h.ServeHTTP(w, r)
+		if setTTL != nil {
+			ctx = context.WithValue(ctx, ctxKeyConnTTL, setTTL)
+		}
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

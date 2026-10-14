@@ -67,7 +67,7 @@ func testVM(id string) *vm.VM {
 			Architecture:    aws.String("x86_64"),
 			AmiLaunchIndex:  aws.Int64(0),
 			LaunchTime:      aws.Time(launch),
-			MetadataOptions: &ec2.InstanceMetadataOptionsResponse{HttpTokens: aws.String("optional")},
+			MetadataOptions: &ec2.InstanceMetadataOptionsResponse{HttpTokens: aws.String("optional"), HttpPutResponseHopLimit: aws.Int64(3)},
 			BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{
 				{DeviceName: aws.String("/dev/vda")},
 			},
@@ -91,6 +91,7 @@ func TestDescribe_LocalHit_ResolvesWithoutRecordSpace(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::111111111111:instance-profile/demo", facts.iamInstanceProfileArn)
 	assert.Equal(t, "spot", facts.lifecycleType)
 	assert.Equal(t, "optional", facts.httpTokens)
+	assert.Equal(t, int64(3), facts.putHopLimit)
 	assert.Equal(t, int64(0), facts.amiLaunchIndex)
 	assert.Equal(t, "r-abc123", facts.reservationID)
 	assert.Equal(t, []byte("hello"), facts.userData)

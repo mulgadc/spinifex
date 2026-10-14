@@ -31,9 +31,9 @@ import (
 // They drive the same NATS-backed operations the gateway serves a customer
 // request with, which is what keeps OVN teardown, IPAM release and quota
 // accounting correct without teardown having to reimplement any of it.
-func EC2Reapers(nc *nats.Conn, expectedNodes int) []Reaper {
+func EC2Reapers(nc *nats.Conn, expectedNodes int, nodeIDs []string) []Reaper {
 	return []Reaper{
-		&instanceReaper{nc: nc, expectedNodes: expectedNodes},
+		&instanceReaper{nc: nc, nodeIDs: nodeIDs},
 
 		// Snapshots before volumes: a volume with a live snapshot refuses to
 		// delete, because snapshot-backed clones read from its chunk prefix.
@@ -67,17 +67,22 @@ func EC2Reapers(nc *nats.Conn, expectedNodes int) []Reaper {
 var terminalInstanceStates = map[string]bool{"terminated": true, "shutting-down": true}
 
 type instanceReaper struct {
-	nc            *nats.Conn
-	expectedNodes int
+	nc *nats.Conn
+	// nodeIDs is the configured node set; all must answer before an empty
+	// listing counts as drained.
+	nodeIDs []string
+
+	// describeOpts tunes the inventory fan-out; production leaves it empty.
+	describeOpts []gateway_ec2_instance.DescribeOption
 }
 
 func (r *instanceReaper) Kind() string { return "instance" }
 func (r *instanceReaper) Stage() Stage { return StageCompute }
 
 func (r *instanceReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	// Checked: a partial answer here would read as "no instances left" and let
-	// storage deletion start while a guest still holds a volume.
-	out, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{}, r.nc, r.expectedNodes, nil, accountID)
+	// Complete or nothing: a partial answer would read as "no instances left"
+	// and let storage deletion start while a guest still holds a volume.
+	out, err := gateway_ec2_instance.DescribeAccountInstancesComplete(ctx, r.nc, r.nodeIDs, accountID, r.describeOpts...)
 	if err != nil {
 		return nil, err
 	}

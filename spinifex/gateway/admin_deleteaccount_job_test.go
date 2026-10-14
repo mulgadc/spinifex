@@ -17,6 +17,7 @@ import (
 	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/testutil"
+	"github.com/mulgadc/spinifex/spinifex/utils"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -44,8 +45,13 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 	require.NoError(t, err)
 
 	for _, subject := range teardownSubjects {
+		// Replies carry a node ID: the instance inventory only counts a frame
+		// it can attribute to a configured node.
 		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-			_ = msg.Respond([]byte(`{}`))
+			reply := nats.NewMsg(msg.Reply)
+			reply.Data = []byte(`{}`)
+			reply.Header.Set(utils.NodeIDHeader, "node-1")
+			_ = msg.RespondMsg(reply)
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
@@ -57,6 +63,7 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 		IAMService:     svc,
 		NATSConn:       nc,
 		ExpectedNodes:  1,
+		NodeIDs:        []string{"node-1"},
 		BucketStore:    emptyBucketStore{},
 	}
 }

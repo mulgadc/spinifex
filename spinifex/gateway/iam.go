@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/spinifex/spinifex/arn"
 	"github.com/mulgadc/spinifex/spinifex/awsec2query"
 	"github.com/mulgadc/spinifex/spinifex/awserrors"
 	gateway_ec2_instance "github.com/mulgadc/spinifex/spinifex/gateway/ec2/instance"
@@ -370,6 +372,11 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 	if err := gw.checkPolicyResources(r, "iam", action, resources); err != nil {
 		return err
 	}
+	if in, ok := input.(*iam.AddRoleToInstanceProfileInput); ok {
+		if err := gw.checkInstanceProfilePassRole(r, accountID, in); err != nil {
+			return err
+		}
+	}
 
 	xmlOutput, err := handler.dispatch(action, input, gw, accountID)
 	if err != nil {
@@ -382,4 +389,26 @@ func (gw *GatewayConfig) IAM_Request(w http.ResponseWriter, r *http.Request) err
 		slog.Error("Failed to write IAM response", "err", err)
 	}
 	return nil
+}
+
+// checkInstanceProfilePassRole requires iam:PassRole on the role being added to
+// an instance profile: once added, every instance holding the profile receives
+// its credentials, and the EC2 association check never sees the role.
+func (gw *GatewayConfig) checkInstanceProfilePassRole(r *http.Request, accountID string, input *iam.AddRoleToInstanceProfileInput) error {
+	roleName := aws.StringValue(input.RoleName)
+	if roleName == "" {
+		return nil
+	}
+	roleARN, err := gw.IAMService.CanonicalResourceARN(accountID, arn.IAMRole, roleName)
+	switch {
+	case awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity):
+		// Still evaluated, so a caller who cannot pass the role cannot use
+		// the handler's NoSuchEntity to probe which roles exist.
+		roleARN = arn.FormatIAMPath(arn.IAMRole, accountID, "/", roleName)
+	case err != nil:
+		slog.Error("IAM: role lookup for iam:PassRole failed, failing closed",
+			"account_id", accountID, "role_name", roleName, "err", err)
+		return errors.New(awserrors.ErrorInternalError)
+	}
+	return gw.checkPassRole(r, roleARN, ec2ServicePrincipal)
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -30,12 +31,18 @@ type PassRoleChecker func(roleARN string) error
 // validation and PassRole authorization, but before the launch is dispatched.
 type LaunchQuotaChecker func() error
 
+// validInstanceCount reports whether n is a usable MinCount or MaxCount. AWS
+// types both as a 32-bit Integer of at least 1.
+func validInstanceCount(n int64) bool {
+	return n >= 1 && n <= math.MaxInt32
+}
+
 // RunInstancesResponse wraps a Reservation under the RunInstancesResponse XML element name.
 type RunInstancesResponse struct {
 	Reservation *ec2.Reservation `locationName:"RunInstancesResponse"`
 }
 
-// ValidateRunInstancesInput checks MinCount/MaxCount (present, non-zero, Min <= Max), ImageId
+// ValidateRunInstancesInput checks MinCount/MaxCount (present, within 1..MaxInt32, Min <= Max), ImageId
 // (ami- prefix) and InstanceType. It also refuses a pinned private IP on a multi-instance launch
 // and any block device mapping the launch cannot create.
 func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
@@ -47,7 +54,7 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if *input.MinCount == 0 {
+	if !validInstanceCount(*input.MinCount) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -55,7 +62,7 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if *input.MaxCount == 0 {
+	if !validInstanceCount(*input.MaxCount) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 

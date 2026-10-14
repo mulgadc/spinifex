@@ -1,6 +1,7 @@
 package handlers_quota
 
 import (
+	"math"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -40,6 +41,10 @@ func TestEnforceLaunch(t *testing.T) {
 		{"headroom respected", "100000000003", "t3.micro", 1, 6, ""},
 		{"headroom exceeded", "100000000004", "t3.micro", 2, 6, awserrors.ErrorResourceLimitExceeded},
 		{"unknown type passes", "100000000005", "made.up", 1000, 0, ""},
+		{"charge overflow at 2^62 rejects", "100000000006", "t3.micro", 1 << 62, 0, awserrors.ErrorResourceLimitExceeded},
+		{"charge overflow at MaxInt rejects", "100000000007", "t3.micro", math.MaxInt, 0, awserrors.ErrorResourceLimitExceeded},
+		{"zero count refused", "100000000008", "t3.micro", 0, 0, awserrors.ErrorInvalidParameterValue},
+		{"negative count refused", "100000000009", "t3.micro", -1, 0, awserrors.ErrorInvalidParameterValue},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,6 +136,9 @@ func TestLaunchExemptShortCircuits(t *testing.T) {
 		{"enforce disabled", func() error { return disabled.EnforceLaunch(t.Context(), testAccount, "t3.micro", 1000) }},
 		{"charge disabled", func() error { return disabled.ChargeLaunch(t.Context(), testAccount, reservationOf("t3.micro", 1000)) }},
 		{"enforce system account", func() error { return enabled.EnforceLaunch(t.Context(), utils.GlobalAccountID, "t3.micro", 1000) }},
+		{"enforce system account overflowing count", func() error {
+			return enabled.EnforceLaunch(t.Context(), utils.GlobalAccountID, "t3.micro", math.MaxInt)
+		}},
 		{"charge system account", func() error {
 			return enabled.ChargeLaunch(t.Context(), utils.GlobalAccountID, reservationOf("t3.micro", 1000))
 		}},

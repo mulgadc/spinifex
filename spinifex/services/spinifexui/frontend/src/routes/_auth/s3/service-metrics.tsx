@@ -1,20 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router"
 
-import { RequireAdmin } from "@/components/require-admin"
+import { requireAdmin } from "@/lib/require-admin"
 
 import { ServiceMetricsPage } from "./-components/service-metrics-page"
 
 export const Route = createFileRoute("/_auth/s3/service-metrics")({
+  beforeLoad: requireAdmin,
   head: () => ({
     meta: [{ title: "Service Metrics | S3 | Mulga" }],
   }),
-  component: RouteComponent,
+  component: ServiceMetricsPage,
 })
-
-function RouteComponent() {
-  return (
-    <RequireAdmin>
-      <ServiceMetricsPage />
-    </RequireAdmin>
-  )
-}

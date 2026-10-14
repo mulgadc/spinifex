@@ -18,7 +18,7 @@ vi.mock("@tanstack/react-query", () => ({
 }))
 
 const mockUseAdmin = vi.fn()
-vi.mock("@/contexts/admin-context", () => ({
+vi.mock("@/hooks/use-admin", () => ({
   useAdmin: (): unknown => mockUseAdmin(),
 }))
 

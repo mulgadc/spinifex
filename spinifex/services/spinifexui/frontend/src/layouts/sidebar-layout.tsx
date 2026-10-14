@@ -50,7 +50,7 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import { clearCredentials } from "@/lib/auth"
 import { clearClients } from "@/lib/awsClient"
 import { isOchreEnabled } from "@/lib/cluster-config"

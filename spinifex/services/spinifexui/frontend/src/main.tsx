@@ -5,7 +5,6 @@ import ReactDOM from "react-dom/client"
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
-import { AdminProvider } from "@/contexts/admin-context"
 import { loadClusterConfig } from "@/lib/cluster-config"
 import {
   createQueryClient,
@@ -66,11 +65,9 @@ async function bootstrap(root: ReactDOM.Root) {
     <StrictMode>
       <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
         <QueryClientProvider client={queryClient}>
-          <AdminProvider>
-            <SidebarProvider>
-              <RouterProvider router={router} />
-            </SidebarProvider>
-          </AdminProvider>
+          <SidebarProvider>
+            <RouterProvider router={router} />
+          </SidebarProvider>
         </QueryClientProvider>
       </ThemeProvider>
     </StrictMode>,

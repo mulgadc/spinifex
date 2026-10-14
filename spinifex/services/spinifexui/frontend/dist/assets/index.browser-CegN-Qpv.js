@@ -1,0 +1,1 @@
+import"./awsClient-Jo9UG6oN.js";import{r as e,t}from"./index.browser-BsX6pxfE.js";export{t as EventStreamSerde,e as eventStreamSerdeProvider};

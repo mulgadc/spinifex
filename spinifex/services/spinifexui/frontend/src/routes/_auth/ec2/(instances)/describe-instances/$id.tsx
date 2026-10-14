@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Field, FieldTitle } from "@/components/ui/field"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import { formatDateTime } from "@/lib/utils"
 import {
   useGetConsoleOutput,

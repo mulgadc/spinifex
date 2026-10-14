@@ -4,7 +4,7 @@ import { useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import {
   adminNodesQueryOptions,
   adminVMsQueryOptions,

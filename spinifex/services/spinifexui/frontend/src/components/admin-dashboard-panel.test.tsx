@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 import { renderWithProviders } from "@/test/utils"
 
 const mockUseAdmin = vi.fn()
-vi.mock("@/contexts/admin-context", () => ({
+vi.mock("@/hooks/use-admin", () => ({
   useAdmin: (): unknown => mockUseAdmin(),
 }))
 

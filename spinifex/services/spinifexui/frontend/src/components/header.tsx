@@ -1,7 +1,7 @@
 import { ThemeSwitch } from "@/components/theme-switch"
 import { buttonVariants } from "@/components/ui/button"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import { cn } from "@/lib/utils"
 
 export function Header() {

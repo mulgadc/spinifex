@@ -20,10 +20,6 @@ vi.mock("@/lib/signed-fetch", () => ({
   signedAdminFetch: vi.fn(),
 }))
 
-vi.mock("@/contexts/admin-context", () => ({
-  useAdmin: () => ({ isAdmin: true }),
-}))
-
 import { signedFetch } from "@/lib/signed-fetch"
 import type { MetaNodeStatus, StorageStatusOutput } from "@/queries/admin"
 

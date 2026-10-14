@@ -31,10 +31,11 @@ const (
 
 // genAuditShapedCert builds a certificate shaped like the one the audit
 // imported into real ACM (openssl req -x509 -newkey rsa:2048 -subj /CN=...):
-// RSA-2048, SHA-256 with RSA, CN only, no SAN, key-usage or EKU extension.
+// SHA-256 with RSA, CN only, no SAN, key-usage or EKU extension. The key is
+// 1024 bits rather than the audit's 2048 to keep generation fast.
 func genAuditShapedCert(t *testing.T) (certPEM, keyPEM []byte) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 	serial, ok := new(big.Int).SetString(awsAuditSerialHex, 16)
 	require.True(t, ok)
@@ -82,6 +83,7 @@ func wireJSON(t *testing.T, v any) map[string]any {
 // Expected values are copied from real ACM's DescribeCertificate response for
 // the audit's certificate. Export is absent: aws-sdk-go v1 cannot carry it.
 func TestDescribeCertificate_ImportedMatchesAWSAuditResponse(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genAuditShapedCert(t)
 	d := describeCert(t, svc, importCert(t, svc, certPEM, keyPEM))
@@ -105,6 +107,7 @@ func TestDescribeCertificate_ImportedMatchesAWSAuditResponse(t *testing.T) {
 }
 
 func TestListCertificates_ImportedSummaryMatchesAWSAuditResponse(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genAuditShapedCert(t)
 	importCert(t, svc, certPEM, keyPEM)
@@ -125,6 +128,7 @@ func TestListCertificates_ImportedSummaryMatchesAWSAuditResponse(t *testing.T) {
 }
 
 func TestImportCertificate_ReimportKeepsCreatedAtAndMovesImportedAt(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genAuditShapedCert(t)
 	certArn := importCert(t, svc, c1, k1)
@@ -144,6 +148,7 @@ func TestImportCertificate_ReimportKeepsCreatedAtAndMovesImportedAt(t *testing.T
 // A record stored before these fields existed holds the old Serial and Issuer
 // spellings, no SANs and no CreatedAt; it must still describe as AWS does.
 func TestDescribeCertificate_LegacyImportedRecordDerivedFromPEM(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genAuditShapedCert(t)
 	certArn := svc.mintCertificateArn(testAccountID)
@@ -175,6 +180,7 @@ func TestDescribeCertificate_LegacyImportedRecordDerivedFromPEM(t *testing.T) {
 // a self-signed P-384 import carrying an O, SANs that omit the CN, and both
 // usage extensions.
 func TestDescribeCertificate_ImportedWithExtensionsMatchesAWS(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	require.NoError(t, err)

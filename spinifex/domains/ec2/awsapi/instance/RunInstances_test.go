@@ -3,6 +3,7 @@ package instance
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -228,11 +229,49 @@ func TestParseRunInstances(t *testing.T) {
 		},
 	}
 
+	// Counts outside AWS's 1..MaxInt32 range must be refused before they reach
+	// the vCPU quota gate, where a huge MaxCount would overflow the charge.
+	t.Run("OutOfRangeCountsAreRefused", func(t *testing.T) {
+		t.Parallel()
+		for _, c := range []struct {
+			name     string
+			min, max int64
+		}{
+			{"NegativeMinAndMax", -1, -1},
+			{"NegativeMin", -1, 1},
+			{"MaxPastInt32", 1, math.MaxInt32 + 1},
+			{"MaxTwoToTheSixtyTwo", 1, 1 << 62},
+			{"MaxInt64", 1, math.MaxInt64},
+			{"MinAndMaxInt64", math.MaxInt64, math.MaxInt64},
+		} {
+			input := defaults
+			input.MinCount = aws.Int64(c.min)
+			input.MaxCount = aws.Int64(c.max)
+			assert.Equal(t, errors.New(awserrors.ErrorInvalidParameterValue), ValidateRunInstancesInput(&input), c.name)
+		}
+	})
+
+	t.Run("MaxCountAtInt32IsValid", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.MaxCount = aws.Int64(math.MaxInt32)
+		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
 	t.Run("MissingKeyNameIsValid", func(t *testing.T) {
 		t.Parallel()
 		input := defaults
 		input.KeyName = nil
 		assert.NoError(t, ValidateRunInstancesInput(&input))
+	})
+
+	t.Run("KeyNameOutsideTheKeyNameRuleIsNotFound", func(t *testing.T) {
+		t.Parallel()
+		for _, name := range []string{"../222222222222/other-key", "..", ".", "a/b"} {
+			input := defaults
+			input.KeyName = aws.String(name)
+			assert.Equal(t, errors.New(awserrors.ErrorInvalidKeyPairNotFound), ValidateRunInstancesInput(&input), name)
+		}
 	})
 
 	t.Run("PinnedPrivateIPWithSingleInstanceIsValid", func(t *testing.T) {

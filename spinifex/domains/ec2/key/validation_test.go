@@ -21,12 +21,15 @@ func TestValidateKeyPairName(t *testing.T) {
 		{name: "dollar", input: "key$name", expectErr: true},
 		{name: "hash", input: "key#name", expectErr: true},
 		{name: "semicolon", input: "key;name", expectErr: true},
+		{name: "only periods", input: "..."},
+		{name: "dot", input: ".", expectErr: true},
+		{name: "dot dot", input: "..", expectErr: true},
 		{name: "empty", input: "", expectErr: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateKeyPairName(tt.input)
+			err := ValidateKeyPairName(tt.input)
 			if tt.expectErr && err == nil {
 				t.Errorf("expected error for input %q, but got none", tt.input)
 			}

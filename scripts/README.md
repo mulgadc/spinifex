@@ -38,14 +38,12 @@ Both ship to `/usr/local/share/spinifex/` on every node, so they are available o
 |---|---|
 | `smoke-test.sh` | End-to-end sanity check on a running node: imports an SSH keypair and the Ubuntu AMI, then launches an instance. `--create-vpc` builds the VPC, gateway, subnet and routes first and tears them down after; `--nodes N` launches through a spread placement group so each instance lands on a different physical server. `TEST_GPU=1` adds GPU passthrough checks. |
 | `verify-network.sh` | Asserts a node's datapath matches its declared planes — EIP reachability, which plane carries Geneve, and which interfaces services bind. Catches what `smoke-test.sh` cannot, since none of its traffic leaves the box. |
-| `test-ddil-phase1.sh` | systemd-level smoke test for daemon-local-autonomy tier 1. Destructive on the local node: stops and starts `spinifex-nats` and restarts `spinifex-daemon`, restoring both via a cleanup trap. |
 | `check-coverage.sh` | Fails the build if total Go coverage falls below the minimum threshold, excluding packages exempt from the requirement. |
 | `diff-coverage.sh` | Coverage check scoped to changed lines only, against an auto-detected base ref (`HEAD~1` on main, `origin/main` on dev, otherwise `origin/dev`). |
 | `sync-aws-models.sh` | Replaces the embedded AWS Smithy models under `internal/awsmodel/models/` with the ten service files from `aws/api-models-aws` at the given commit, and records that commit in `internal/awsmodel/model_source.go`. Takes a full 40-character SHA. |
 | `run-bench.sh` | Launches a benchmark against running Ubuntu instances, auto-detecting the AMI for the host architecture. Tracks nbdkit and perf alongside the run. |
 | `disk-performance.sh` | Runs a `fio` random 70/30 read-write benchmark swept across 4k/16k/128k/1M. Writes JSON results to `/tmp/spinifex-disk-bench`; override with `BENCH_DIR`, `OUT_DIR`, `SIZE`, `JOBS`, `BLOCK_SIZES`. |
 | `network-performance.sh` | iperf throughput from several clients to one server, driven over SSH, writing a `summary.txt` of Gbit/s per client. `--server-ip` sets the address clients dial, so pointing it at instance private addresses measures the VPC overlay rather than the external pool. |
-| `workload-performance.sh` | In-guest memory, disk, CPU and network workload test. Installs Go and runs the Badger test suite with jemalloc disabled and reduced parallelism. |
 
 ## Guest images
 
@@ -92,13 +90,6 @@ Installed into the EKS node AMI and run at boot or on a timer. All host communic
 | `mulga-ebs-byid.sh` | Mints the EBS-style `/dev/disk/by-id` symlink the upstream EBS CSI node plugin resolves, from the virtio-blk serial. Alpine's busybox mdev has no eudev to do it. |
 | `mulga-mgmt-net.sh` | Boot oneshot bringing a multi-NIC system VM's interfaces up by MAC from the QEMU fw_cfg netcfg blob, before cloud-init's network stage. cloud-init cannot reliably pick the right NIC out of two. |
 | `mulga-vpc-mtu.sh` | Boot oneshot pinning the VPC data NIC MTU so flannel sizes its VXLAN overlay to fit the OVN geneve underlay. Otherwise large frames are silently dropped while handshakes pass. |
-
-## Launch helpers
-
-| Script | What it does |
-|---|---|
-| `launch-gpu.sh` | Launches a GPU instance from the AMD or NVIDIA GPU AMI, selecting the AMI from the instance type's GPU brand. `--amd` / `--nvidia` override the detection. |
-| `ecs-node-bringup.sh` | Launches an ECS container-instance VM. Renders the cloud-init user-data seeding the agent's control-plane config, IAM credentials and gateway CA — there is no ECS-specific launch API, by design. |
 
 ## `demo/` — GPU demo
 

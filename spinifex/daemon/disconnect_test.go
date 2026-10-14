@@ -55,7 +55,7 @@ func TestDaemonModeFlipsOnConnectAndDisconnect(t *testing.T) {
 	assert.Equal(t, DaemonModeCluster, d.Mode())
 
 	ns.Shutdown()
-	require.Eventually(t, func() bool { return d.Mode() == DaemonModeStandalone }, 3*time.Second, 50*time.Millisecond,
+	require.Eventually(t, func() bool { return d.Mode() == DaemonModeStandalone }, 3*time.Second, 10*time.Millisecond,
 		"mode should flip to standalone after NATS shutdown")
 }
 
@@ -76,10 +76,10 @@ func TestDaemonReconnectBumpsRetryCount(t *testing.T) {
 	require.Equal(t, int64(0), d.NATSRetryCount())
 
 	ns.Shutdown()
-	require.Eventually(t, func() bool { return !d.natsConn.IsConnected() }, 3*time.Second, 50*time.Millisecond)
+	require.Eventually(t, func() bool { return !d.natsConn.IsConnected() }, 3*time.Second, 10*time.Millisecond)
 
 	startTestNATSOnPortForTest(t, port)
-	require.Eventually(t, func() bool { return d.Mode() == DaemonModeCluster }, 5*time.Second, 50*time.Millisecond,
+	require.Eventually(t, func() bool { return d.Mode() == DaemonModeCluster }, 5*time.Second, 10*time.Millisecond,
 		"mode should flip back to cluster on reconnect")
 	assert.GreaterOrEqual(t, d.NATSRetryCount(), int64(1))
 }
@@ -340,7 +340,7 @@ func TestStartCluster_StrictRequireNATS_BoundedAndExits(t *testing.T) {
 
 	d, err := NewDaemon(cfg)
 	require.NoError(t, err)
-	d.requireNATSTimeout = 200 * time.Millisecond
+	d.requireNATSTimeout = 50 * time.Millisecond
 	d.natsRetryOpts = []natsmsg.RetryOption{natsmsg.WithRetryDelay(20 * time.Millisecond)}
 
 	exitCh := make(chan int, 1)
@@ -417,6 +417,7 @@ func TestStartCluster_NoStrictEnv_UsesInfiniteRetry(t *testing.T) {
 // connect loop honours d.ctx. Cancelling the daemon context unblocks an
 // otherwise-infinite retry.
 func TestStartCluster_RetriesUntilContextCancelled(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	cfg := &config.ClusterConfig{
 		Node: "node-1",

@@ -21,6 +21,7 @@ import (
 // exactly on renewalDueAt rather than depending on it landing on a whole
 // unit of time.
 func TestRenewable_ProportionalWindow(t *testing.T) {
+	t.Parallel()
 	const arn = "arn:aws:acm:ap-southeast-2:1:certificate/window-test"
 	jitter := renewalJitter(arn)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -38,6 +39,7 @@ func TestRenewable_ProportionalWindow(t *testing.T) {
 	}
 
 	t.Run("not yet due", func(t *testing.T) {
+		t.Parallel()
 		lifetime := 90 * 24 * time.Hour
 		window := renewalWindow(lifetime)
 		rec := newRec(lifetime, window+jitter-time.Minute)
@@ -45,6 +47,7 @@ func TestRenewable_ProportionalWindow(t *testing.T) {
 	})
 
 	t.Run("exactly at threshold", func(t *testing.T) {
+		t.Parallel()
 		lifetime := 90 * 24 * time.Hour
 		window := renewalWindow(lifetime)
 		rec := newRec(lifetime, window+jitter)
@@ -52,6 +55,7 @@ func TestRenewable_ProportionalWindow(t *testing.T) {
 	})
 
 	t.Run("overdue", func(t *testing.T) {
+		t.Parallel()
 		lifetime := 90 * 24 * time.Hour
 		window := renewalWindow(lifetime)
 		rec := newRec(lifetime, window+jitter+24*time.Hour)
@@ -59,6 +63,7 @@ func TestRenewable_ProportionalWindow(t *testing.T) {
 	})
 
 	t.Run("very short lifetime hits the floor", func(t *testing.T) {
+		t.Parallel()
 		lifetime := 10 * time.Minute
 		window := renewalWindow(lifetime)
 		require.Equal(t, minRenewalWindow, window,
@@ -78,6 +83,7 @@ func TestRenewable_ProportionalWindow(t *testing.T) {
 // only a PRIVATE, ISSUED, ELIGIBLE certificate is ever renewable, regardless
 // of how overdue it is.
 func TestRenewable_GatesOnTypeStatusEligibility(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	overdue := func() *CertRecord {
 		return &CertRecord{
@@ -102,6 +108,7 @@ func TestRenewable_GatesOnTypeStatusEligibility(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			rec := overdue()
 			tt.mutate(rec)
 			assert.False(t, renewable(rec, now))
@@ -112,6 +119,7 @@ func TestRenewable_GatesOnTypeStatusEligibility(t *testing.T) {
 // --- Deterministic per-ARN jitter -------------------------------------------
 
 func TestRenewalJitter_DeterministicPerARN(t *testing.T) {
+	t.Parallel()
 	const arn = "arn:aws:acm:ap-southeast-2:1:certificate/jitter-test"
 	first := renewalJitter(arn)
 	second := renewalJitter(arn)
@@ -121,6 +129,7 @@ func TestRenewalJitter_DeterministicPerARN(t *testing.T) {
 }
 
 func TestRenewalJitter_SpreadsAcrossDistinctARNs(t *testing.T) {
+	t.Parallel()
 	offsets := make(map[time.Duration]bool)
 	for i := range 8 {
 		arn := fmt.Sprintf("arn:aws:acm:ap-southeast-2:1:certificate/cert-%d", i)
@@ -145,6 +154,7 @@ func backdateToOverdue(t *testing.T, svc *ACMServiceImpl, certArn string) {
 // TestWorker_RenewOne_PreservesIdentityChangesKeyAndSerial is the core
 // renewal contract: same ARN, same domain and SANs, fresh key and serial.
 func TestWorker_RenewOne_PreservesIdentityChangesKeyAndSerial(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{
 		"renew.example.com":     true,
@@ -185,6 +195,7 @@ func TestWorker_RenewOne_PreservesIdentityChangesKeyAndSerial(t *testing.T) {
 // mandatory push described in the ACM design doc's ELBv2 propagation
 // section.
 func TestWorker_CertMaterialUpdated_InvokedExactlyOnceOnSuccess(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"fanout.example.com": true}}
 	var calls int
@@ -215,6 +226,7 @@ func TestWorker_CertMaterialUpdated_InvokedExactlyOnceOnSuccess(t *testing.T) {
 // scan over a mix of certificate shapes and asserts only the eligible,
 // overdue PRIVATE_CA certificate is renewed.
 func TestWorker_ScanOnce_SkipsIneligibleAndImported_RenewsEligible(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{
 		"eligible.example.com": true,
@@ -267,6 +279,7 @@ func TestWorker_ScanOnce_SkipsIneligibleAndImported_RenewsEligible(t *testing.T)
 // RenewalSummary (the sole DescribeCertificate diagnostic surface) and must
 // not re-attempt on the very next scan.
 func TestWorker_ScanOnce_DomainOutsideConstraints_RecordsFailureAndBacksOff(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	ca := &fakeCertAuthority{permitted: map[string]bool{"narrowed.example.com": true}}
 	svc.TenantCA = ca
@@ -305,6 +318,7 @@ func TestWorker_ScanOnce_DomainOutsideConstraints_RecordsFailureAndBacksOff(t *t
 // lease actually excludes a second worker: node-a's live lease must stop
 // node-b's worker from reissuing the same certificate underneath it.
 func TestWorker_LeaseContention_OnlyOneNodeRenews(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"contended.example.com": true}}
 
@@ -338,6 +352,7 @@ func TestWorker_LeaseContention_OnlyOneNodeRenews(t *testing.T) {
 // path: a freshly issued certificate, nowhere near its renewal window, must
 // still reissue on demand.
 func TestForceRenewCertificate_BypassesRenewalWindow(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"force.example.com": true}}
 
@@ -365,6 +380,7 @@ func TestForceRenewCertificate_BypassesRenewalWindow(t *testing.T) {
 // an imported certificate rather than silently no-op'ing or crashing — this
 // worker only ever drives PRIVATE_CA reissuance.
 func TestForceRenewCertificate_RejectsNonPrivateType(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c, k := genCert(t, "force-import.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c, PrivateKey: k}, testAccountID)
@@ -379,6 +395,7 @@ func TestForceRenewCertificate_RejectsNonPrivateType(t *testing.T) {
 // ownership check: an ARN that does not exist, or belongs to another
 // account, must be rejected rather than disclosing anything about it.
 func TestForceRenewCertificate_UnknownArnRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	worker := NewWorker(svc, "node-1")
 	_, err := worker.ForceRenewCertificate(context.Background(), &ForceRenewCertificateInput{

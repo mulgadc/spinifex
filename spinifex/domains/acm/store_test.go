@@ -39,6 +39,7 @@ func rawKV(t *testing.T, s *Store) jetstream.KeyValue {
 }
 
 func TestAddInUseBy_AddsAndDedupes(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	rec := &CertRecord{CertificateArn: "arn:aws:acm:ap-southeast-2:000000000001:certificate/inuse-1", AccountID: testAccountID}
 	require.NoError(t, store.PutCert(t.Context(), rec))
@@ -62,6 +63,7 @@ func TestAddInUseBy_AddsAndDedupes(t *testing.T) {
 }
 
 func TestAddInUseBy_NoopOnMissingCert(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	// No cert exists under this ARN — must not error and must not create one.
 	require.NoError(t, store.AddInUseBy(t.Context(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing", "arn:lb/one"))
@@ -74,6 +76,7 @@ func TestAddInUseBy_NoopOnMissingCert(t *testing.T) {
 // A certificate deleted after the ownership check must surface as not found
 // rather than a silent success, and must not be recreated by the tag write.
 func TestUpdateTags_MissingCertReturnsNotFound(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	const certArn = "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing"
 	called := false
@@ -90,6 +93,7 @@ func TestUpdateTags_MissingCertReturnsNotFound(t *testing.T) {
 }
 
 func TestRemoveInUseBy_RemovesEntry(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	rec := &CertRecord{
 		CertificateArn: "arn:aws:acm:ap-southeast-2:000000000001:certificate/inuse-2",
@@ -116,6 +120,7 @@ func TestRemoveInUseBy_RemovesEntry(t *testing.T) {
 // a healthy, renewed certificate. Only asserting the exact final set
 // catches that; asserting "no errors" does not.
 func TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	certArn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/inuse-concurrent"
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{CertificateArn: certArn, AccountID: testAccountID}))
@@ -146,6 +151,7 @@ func TestAddInUseBy_ConcurrentDistinctResourcesAllSurvive(t *testing.T) {
 }
 
 func TestRemoveInUseBy_NoopWhenAbsentOrMissingCert(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	rec := &CertRecord{
 		CertificateArn: "arn:aws:acm:ap-southeast-2:000000000001:certificate/inuse-3",
@@ -165,6 +171,7 @@ func TestRemoveInUseBy_NoopWhenAbsentOrMissingCert(t *testing.T) {
 }
 
 func TestStore_PutCert_EncryptsPrivateKeyAtRest(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/enc"
@@ -186,6 +193,7 @@ func TestStore_PutCert_EncryptsPrivateKeyAtRest(t *testing.T) {
 }
 
 func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	const plaintext = "-----BEGIN RSA PRIVATE KEY-----\nYmFy\n-----END RSA PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/legacy"
@@ -215,6 +223,7 @@ func TestStore_GetCert_LegacyPlaintextPassthroughAndReencrypt(t *testing.T) {
 // as a PEM private key block must be a hard error, never silently trusted as
 // legacy plaintext.
 func TestStore_GetCert_RejectsGarbageAsLegacyPlaintext(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/garbage"
 
@@ -233,6 +242,7 @@ func TestStore_GetCert_RejectsGarbageAsLegacyPlaintext(t *testing.T) {
 // bucket would disagree silently, with the reader getting ciphertext where
 // it expects PEM.
 func TestNewStore_RequiresMasterKey(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	_, err := NewStore(t.Context(), nc, nil)
 	require.Error(t, err)
@@ -243,6 +253,7 @@ func TestNewStore_RequiresMasterKey(t *testing.T) {
 // delegation token, and the resumable ACME/lease state — survive a
 // PutCert/GetCert round trip unchanged, alongside the encrypted PrivateKey.
 func TestStore_PutGetCert_RoundTripsManagedIssuanceFields(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/managed-1"
 	rec := &CertRecord{
@@ -284,6 +295,7 @@ func TestStore_PutGetCert_RoundTripsManagedIssuanceFields(t *testing.T) {
 // the renewal predicate never reads PrivateKey and the scan runs on every
 // tick for every certificate in the store.
 func TestListAllCertMetadata_DoesNotDecryptPrivateKey(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/metadata-only"
@@ -309,6 +321,7 @@ func TestListAllCertMetadata_DoesNotDecryptPrivateKey(t *testing.T) {
 // sees every account's certificates, unlike the account-scoped ListCerts used
 // by the ListCertificates API.
 func TestListAllCertMetadata_CrossesAccounts(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	require.NoError(t, store.PutCert(t.Context(), &CertRecord{
 		CertificateArn: "arn:aws:acm:ap-southeast-2:1:certificate/acct-a", AccountID: "000000000001",
@@ -328,6 +341,7 @@ func TestListAllCertMetadata_CrossesAccounts(t *testing.T) {
 // and that shape has already produced one silent-plaintext-write bug in this
 // package, so every write path over CertRecord gets this guard.
 func TestAcquireLease_LeavesPrivateKeyEncrypted(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/lease-encrypted"
@@ -353,6 +367,7 @@ func TestAcquireLease_LeavesPrivateKeyEncrypted(t *testing.T) {
 // TestReleaseLease_LeavesPrivateKeyEncrypted is AcquireLease's counterpart
 // for the release path — same raw-CAS shape, same guard.
 func TestReleaseLease_LeavesPrivateKeyEncrypted(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	const plaintext = "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n"
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/lease-release-encrypted"

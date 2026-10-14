@@ -3,6 +3,7 @@ package quota
 import (
 	"context"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"math"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -25,6 +26,7 @@ func TestExceeds(t *testing.T) {
 		{"empty fills to limit", 0, 8, 8, ""},
 		{"want overshoots limit", 0, 9, 8, awserrors.ErrorResourceLimitExceeded},
 		{"count plus want overshoots", 6, 3, 8, awserrors.ErrorResourceLimitExceeded},
+		{"want that would overflow count plus want", 2, math.MaxInt, 8, awserrors.ErrorResourceLimitExceeded},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

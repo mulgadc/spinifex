@@ -315,7 +315,9 @@ func TestHandleShutdownGate(t *testing.T) {
 // local drain off every other node: the phase subjects are fan-out, so a
 // request naming another node must be dropped before any service is stopped.
 func TestShutdownRequestTarget(t *testing.T) {
+	t.Parallel()
 	t.Run("request for another node is ignored with no ack", func(t *testing.T) {
+		t.Parallel()
 		daemon := createTestDaemon(t, sharedNATSURL)
 		daemon.config.Services = []string{"awsgw", "ui", "vpcd"}
 		pidDir := configurePidDir(t, daemon)
@@ -341,6 +343,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 	})
 
 	t.Run("request for this node is honoured", func(t *testing.T) {
+		t.Parallel()
 		daemon := createTestDaemon(t, sharedNATSURL)
 		daemon.config.Services = []string{}
 		configurePidDir(t, daemon)
@@ -368,6 +371,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 	// STORAGE and PERSIST stop another node's storage, and INFRA exits its
 	// daemon outright.
 	t.Run("every phase handler ignores another node's request", func(t *testing.T) {
+		t.Parallel()
 		daemon := createTestDaemon(t, sharedNATSURL)
 		daemon.config.Services = []string{}
 		configurePidDir(t, daemon)
@@ -379,6 +383,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 			"infra":   asMsgHandler(daemon.handleShutdownInfra),
 		} {
 			t.Run(phase, func(t *testing.T) {
+				t.Parallel()
 				subject := "spinifex.cluster.shutdown." + phase + ".elsewhere"
 				sub, err := daemon.natsConn.Subscribe(subject, handler)
 				require.NoError(t, err)
@@ -395,6 +400,7 @@ func TestShutdownRequestTarget(t *testing.T) {
 	})
 
 	t.Run("untargeted request still reaches every node", func(t *testing.T) {
+		t.Parallel()
 		daemon := createTestDaemon(t, sharedNATSURL)
 		daemon.config.Services = []string{}
 		configurePidDir(t, daemon)
@@ -643,9 +649,11 @@ func TestHandleShutdownDrain(t *testing.T) {
 		require.NoError(t, json.Unmarshal(reply.Data, &ack))
 		assert.Empty(t, ack.Error)
 
+		// Progress is published on the daemon's connection before the ACK, so by
+		// the time the reply lands every progress message is already queued.
 		var progresses []ShutdownProgress
 		for {
-			msg, err := progressSub.NextMsg(500 * time.Millisecond)
+			msg, err := progressSub.NextMsg(noReplyWait)
 			if err != nil {
 				break
 			}

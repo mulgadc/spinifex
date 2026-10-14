@@ -21,6 +21,7 @@ func hostsZoneFake(hosted ...string) func(string) bool {
 // deriveValidationMode, independent of RequestCertificate's surrounding
 // plumbing.
 func TestDeriveValidationMode(t *testing.T) {
+	t.Parallel()
 	tenantCA := &fakeCertAuthority{permitted: map[string]bool{
 		"private.example.com": true,
 	}}
@@ -93,6 +94,7 @@ func TestDeriveValidationMode(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := &ACMServiceImpl{
 				TenantCA:              tc.tenantCA,
 				dnsProviderConfigured: tc.dnsProviderConfigured,

@@ -13,6 +13,7 @@ import (
 )
 
 func TestGetCertificate_ReturnsBodyAndChain(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	leafPEM, keyPEM := genCert(t, "get.example.com")
 	chainPEM, _ := genCert(t, "issuer.example.com")
@@ -36,6 +37,7 @@ func TestGetCertificate_ReturnsBodyAndChain(t *testing.T) {
 // itself as the chain. The substitution is response-only: the stored record
 // keeps no chain, which is what ELBv2 builds its leaf+chain bundle from.
 func TestGetCertificate_AbsentChainReturnsCertificate(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	leafPEM, keyPEM := genCert(t, "nochain.example.com")
 
@@ -62,6 +64,7 @@ func TestGetCertificate_AbsentChainReturnsCertificate(t *testing.T) {
 // A re-import without a chain drops the chain the first import carried, so
 // GetCertificate falls back to the new certificate, not the stale chain.
 func TestGetCertificate_ReimportWithoutChainReturnsNewCertificate(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	leafPEM, keyPEM := genCert(t, "reimport.example.com")
 	chainPEM, _ := genCert(t, "issuer.example.com")
@@ -90,6 +93,7 @@ func TestGetCertificate_ReimportWithoutChainReturnsNewCertificate(t *testing.T) 
 }
 
 func TestGetCertificate_UnknownArnNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 
 	_, err := svc.GetCertificate(context.Background(), &acm.GetCertificateInput{
@@ -103,6 +107,7 @@ func TestGetCertificate_UnknownArnNotFound(t *testing.T) {
 // body is the material itself, so a cross-account read must not confirm the
 // certificate even exists.
 func TestGetCertificate_CrossAccountNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	leafPEM, keyPEM := genCert(t, "other.example.com")
 
@@ -123,6 +128,7 @@ func TestGetCertificate_CrossAccountNotFound(t *testing.T) {
 // and distinct from not-found, so a client polling for issuance can tell them
 // apart.
 func TestGetCertificate_PendingIssuanceIsRequestInProgress(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/pending-1"
 	require.NoError(t, svc.store.PutCert(t.Context(), &CertRecord{
@@ -140,6 +146,7 @@ func TestGetCertificate_PendingIssuanceIsRequestInProgress(t *testing.T) {
 }
 
 func TestGetCertificate_EmptyArnRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 
 	_, err := svc.GetCertificate(context.Background(), &acm.GetCertificateInput{}, testAccountID)
@@ -170,6 +177,7 @@ func putUndecryptableCert(t *testing.T, store *Store, arn, domain string) {
 // than instrumentation: an undecryptable key is fatal to a decrypting read, so a
 // list that still returns the certificate cannot have decrypted it.
 func TestListPath_NeverTouchesKeyMaterial(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/nokeyread-1"
 	putUndecryptableCert(t, svc.store, arn, "nokeyread.example.com")
@@ -202,6 +210,7 @@ func TestListPath_NeverTouchesKeyMaterial(t *testing.T) {
 // caller cannot mistake ciphertext for usable key material in a field that is
 // plaintext PEM everywhere else.
 func TestMetadataReads_ClearPrivateKey(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 	arn := "arn:aws:acm:ap-southeast-2:000000000001:certificate/cleared-1"
 	_, keyPEM := genCert(t, "cleared.example.com")
@@ -230,6 +239,7 @@ func TestMetadataReads_ClearPrivateKey(t *testing.T) {
 }
 
 func TestGetCertMetadata_AbsentReturnsNil(t *testing.T) {
+	t.Parallel()
 	store := setupACMStore(t)
 
 	rec, err := store.GetCertMetadata(t.Context(), "arn:aws:acm:ap-southeast-2:000000000001:certificate/missing")

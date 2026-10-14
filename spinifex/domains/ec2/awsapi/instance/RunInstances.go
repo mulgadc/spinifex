@@ -9,6 +9,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -31,14 +33,20 @@ type PassRoleChecker func(roleARN string) error
 // validation and PassRole authorization, but before the launch is dispatched.
 type LaunchQuotaChecker func() error
 
+// validInstanceCount reports whether n is a usable MinCount or MaxCount. AWS
+// types both as a 32-bit Integer of at least 1.
+func validInstanceCount(n int64) bool {
+	return n >= 1 && n <= math.MaxInt32
+}
+
 // RunInstancesResponse wraps a Reservation under the RunInstancesResponse XML element name.
 type RunInstancesResponse struct {
 	Reservation *ec2.Reservation `locationName:"RunInstancesResponse"`
 }
 
-// ValidateRunInstancesInput checks MinCount/MaxCount (present, non-zero, Min <= Max), ImageId
-// (ami- prefix) and InstanceType. It also refuses a pinned private IP on a multi-instance launch
-// and any block device mapping the launch cannot create.
+// ValidateRunInstancesInput checks MinCount/MaxCount (present, within 1..MaxInt32, Min <= Max), ImageId
+// (ami- prefix), InstanceType and the KeyName format. It also refuses a pinned private IP on a
+// multi-instance launch and any block device mapping the launch cannot create.
 func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 	if input == nil {
 		return errors.New(awserrors.ErrorMissingParameter)
@@ -48,7 +56,7 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if *input.MinCount == 0 {
+	if !validInstanceCount(*input.MinCount) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -56,7 +64,7 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	if *input.MaxCount == 0 {
+	if !validInstanceCount(*input.MaxCount) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
@@ -74,6 +82,12 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 
 	if !strings.HasPrefix(*input.ImageId, "ami-") {
 		return errors.New(awserrors.ErrorInvalidAMIIDMalformed)
+	}
+
+	// No key pair can carry a name outside the key-name rule, so the launch names
+	// one the account does not have, and the name never reaches an instance record.
+	if keyName := aws.StringValue(input.KeyName); keyName != "" && ec2key.ValidateKeyPairName(keyName) != nil {
+		return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 	}
 
 	// AWS only accepts a pinned private IP for a single-instance launch: a

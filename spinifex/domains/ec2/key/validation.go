@@ -6,10 +6,14 @@ import (
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// validateKeyPairName applies the EC2 key-pair-name character rules.
-func validateKeyPairName(name string) error {
+// ValidateKeyPairName applies the EC2 key-pair-name character rules. "." and
+// ".." are rejected too, since the name is an object path segment.
+func ValidateKeyPairName(name string) error {
 	if name == "" {
 		return errors.New("key name cannot be empty")
+	}
+	if name == "." || name == ".." {
+		return errors.New(awserrors.ErrorInvalidKeyPairFormat)
 	}
 
 	for _, char := range name {

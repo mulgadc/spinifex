@@ -24,6 +24,7 @@ func importTagged(t *testing.T, svc *ACMServiceImpl, tags ...*acm.Tag) string {
 }
 
 func TestListTagsForCertificate_ReturnsImportTags(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
@@ -37,6 +38,7 @@ func TestListTagsForCertificate_ReturnsImportTags(t *testing.T) {
 }
 
 func TestListTagsForCertificate_NoTagsReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc)
 
@@ -48,6 +50,7 @@ func TestListTagsForCertificate_NoTagsReturnsEmpty(t *testing.T) {
 }
 
 func TestAddTagsToCertificate_MergesAndPersists(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
@@ -72,6 +75,7 @@ func TestAddTagsToCertificate_MergesAndPersists(t *testing.T) {
 }
 
 func TestRemoveTagsFromCertificate_ByKeyAndByValue(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc,
 		&acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")},
@@ -100,6 +104,7 @@ func TestRemoveTagsFromCertificate_ByKeyAndByValue(t *testing.T) {
 }
 
 func TestTagOps_CrossAccountHidden(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
@@ -112,6 +117,7 @@ func TestTagOps_CrossAccountHidden(t *testing.T) {
 // Tag writes must change only the stored tag field: the encrypted key
 // survives byte-for-byte and still decrypts, and the tag change takes effect.
 func TestTagOps_PreserveStoredPrivateKey(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		write    func(svc *ACMServiceImpl, certArn string) error
 		wantTags map[string]string
@@ -139,6 +145,7 @@ func TestTagOps_PreserveStoredPrivateKey(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			svc := setupACMService(t)
 			certArn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
@@ -189,6 +196,7 @@ func listTagMap(t *testing.T, svc *ACMServiceImpl, arn string) map[string]string
 // AWS answers a re-import carrying Tags with ValidationException and leaves
 // the stored certificate, material and tags alike, untouched.
 func TestImportCertificate_ReimportWithTagsRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 
@@ -216,6 +224,7 @@ func TestImportCertificate_ReimportWithTagsRejected(t *testing.T) {
 // A re-import without Tags keeps the tags already on the certificate rather
 // than clearing them, as InUseBy is kept.
 func TestImportCertificate_ReimportKeepsStoredTags(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	arn := importTagged(t, svc, &acm.Tag{Key: aws.String("Name"), Value: aws.String("ingress")})
 	_, err := svc.AddTagsToCertificate(context.Background(), &acm.AddTagsToCertificateInput{
@@ -242,6 +251,7 @@ func TestImportCertificate_ReimportKeepsStoredTags(t *testing.T) {
 // AWS resolves the ARN before refusing the tags, so an unknown ARN with tags is
 // a ResourceNotFoundException, not the tagging ValidationException.
 func TestImportCertificate_ReimportWithTagsUnknownArnIsNotFound(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c, k := genCert(t, "x.example.com", "x.example.com")
 	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{

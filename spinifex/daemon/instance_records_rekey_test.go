@@ -128,6 +128,7 @@ func TestRecordKeys_AreWatchableByASubjectFilter(t *testing.T) {
 // what this change exists to fix. If this ever stops failing to deliver, the
 // re-key was unnecessary and the reasoning above is wrong.
 func TestRecordKeys_SlashSeparatorWasNotWatchable(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)

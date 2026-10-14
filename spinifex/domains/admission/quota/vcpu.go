@@ -3,6 +3,7 @@ package quota
 import (
 	"context"
 	"errors"
+	"math"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -133,13 +134,22 @@ func (s *Service) reconcileVCPU(ctx context.Context, accountID string, value int
 // over its vCPU cap. The actual launched count is charged afterwards via
 // ChargeLaunch. An unknown instance type contributes nothing and is left for the
 // daemon to reject as InvalidInstanceType; the Exempt short-circuit lives in
-// CheckVCPU.
+// CheckVCPU. A maxCount below 1 is refused as InvalidParameterValue.
 func (s *Service) EnforceLaunch(ctx context.Context, accountID, instanceType string, maxCount int) error {
+	if maxCount < 1 {
+		return errors.New(awserrors.ErrorInvalidParameterValue)
+	}
 	perType, ok := instancetypes.DefaultVCPUs(instanceType)
 	if !ok {
 		return nil
 	}
-	return s.CheckVCPU(ctx, accountID, perType*maxCount)
+	// Saturate rather than multiply past MaxInt: a wrapped product goes negative
+	// and slips under any cap, while MaxInt still exceeds every finite limit.
+	want := math.MaxInt
+	if perType <= 0 || maxCount <= math.MaxInt/perType {
+		want = perType * maxCount
+	}
+	return s.CheckVCPU(ctx, accountID, want)
 }
 
 // ChargeLaunch is the increment-after for a successful RunInstances: it adds the

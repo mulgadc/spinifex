@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats-server/v2/server"
 )
 
@@ -74,6 +75,13 @@ func TestMain(m *testing.M) {
 	}
 	sharedJSServer = jsNS
 	sharedJSNATSURL = jsNS.ClientURL()
+
+	// The shared JetStream server is a one-node cluster. Declaring it here keeps
+	// tests that use it independent of whichever earlier test happened to declare.
+	if err := clustersize.Declare(1); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to declare cluster size: %v\n", err)
+		os.Exit(1)
+	}
 
 	code := m.Run()
 

@@ -3905,6 +3905,7 @@ func TestCanAllocate(t *testing.T) {
 
 // TestConnectNATS_RetriesOnFailure tests that connectNATS retries when NATS is not immediately available.
 func TestConnectNATS_RetriesOnFailure(t *testing.T) {
+	t.Parallel()
 	// Use a port that nothing is listening on
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",

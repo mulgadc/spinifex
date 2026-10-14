@@ -17,13 +17,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMain lowers the RSA key sizes for the whole privateca test file. 2048
-// (CA) and 1024 (leaf) bits are still valid RSA keys and generate several
-// times faster than the production defaults, and the tests here care about
-// certificate structure, not cryptographic strength — mirrors
-// admin.certKeyBits's test seam.
+// TestMain lowers the RSA key sizes for the whole package to 1024 bits, the
+// smallest crypto/rsa accepts; the tests care about certificate structure,
+// not cryptographic strength — mirrors admin.certKeyBits's test seam.
 func TestMain(m *testing.M) {
-	caKeyBits = 2048
+	caKeyBits = 1024
 	leafKeyBits = 1024
 	os.Exit(m.Run())
 }
@@ -35,6 +33,7 @@ func tenantCAPaths(t *testing.T) (certPath, keyPath string) {
 }
 
 func TestLoadOrCreateTenantCA_CreatesConstrainedRoot(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
@@ -79,6 +78,7 @@ func TestLoadOrCreateTenantCA_CreatesConstrainedRoot(t *testing.T) {
 }
 
 func TestLoadOrCreateTenantCA_RefusesEmptyPermittedDomains(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	_, err := LoadOrCreateTenantCA(certPath, keyPath, nil)
@@ -88,6 +88,7 @@ func TestLoadOrCreateTenantCA_RefusesEmptyPermittedDomains(t *testing.T) {
 }
 
 func TestLoadOrCreateTenantCA_Idempotent(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	first, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
@@ -111,6 +112,7 @@ func TestLoadOrCreateTenantCA_Idempotent(t *testing.T) {
 }
 
 func TestLoadOrCreateTenantCA_DriftIsRejectedAndLeavesRootUntouched(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	_, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
@@ -135,6 +137,7 @@ func TestLoadOrCreateTenantCA_DriftIsRejectedAndLeavesRootUntouched(t *testing.T
 }
 
 func TestLoadOrCreateTenantCA_SubdomainRequestCoveredByExistingApex(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	_, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"example.com"})
@@ -147,6 +150,7 @@ func TestLoadOrCreateTenantCA_SubdomainRequestCoveredByExistingApex(t *testing.T
 }
 
 func TestLoadOrCreateTenantCA_IncompletePairIsRejected(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	_, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
@@ -161,6 +165,7 @@ func TestLoadOrCreateTenantCA_IncompletePairIsRejected(t *testing.T) {
 }
 
 func TestIssueLeaf_ChainsToRootAndCoversWildcard(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)
@@ -193,6 +198,7 @@ func TestIssueLeaf_ChainsToRootAndCoversWildcard(t *testing.T) {
 }
 
 func TestIssueLeaf_RejectsDomainOutsidePermittedDomains(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)
@@ -211,6 +217,7 @@ func TestIssueLeaf_RejectsDomainOutsidePermittedDomains(t *testing.T) {
 // calls out. If this leaf were to verify, the constraints baked into the
 // root would be decorative, not enforced.
 func TestLeafOutsidePermittedDomains_FailsVerify(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)
@@ -240,6 +247,7 @@ func TestLeafOutsidePermittedDomains_FailsVerify(t *testing.T) {
 // the CA key so the test does not depend on IssueLeaf ever choosing to
 // offer an IP SAN option.
 func TestLeafWithIPSAN_FailsVerify(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)
@@ -270,6 +278,7 @@ func TestLeafWithIPSAN_FailsVerify(t *testing.T) {
 // one), uses that intermediate to sign a leaf, and asserts the resulting
 // chain fails verification even though every individual signature is valid.
 func TestTenantRootCannotSignSubordinateCA(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)
@@ -320,6 +329,7 @@ func TestTenantRootCannotSignSubordinateCA(t *testing.T) {
 }
 
 func TestAuthorized(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)
@@ -342,12 +352,14 @@ func TestAuthorized(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.want, ca.Authorized(tc.domain))
 		})
 	}
 }
 
 func TestLoadTenantCA_MissingReturnsActionableError(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	_, err := LoadTenantCA(certPath, keyPath)
@@ -356,6 +368,7 @@ func TestLoadTenantCA_MissingReturnsActionableError(t *testing.T) {
 }
 
 func TestLoadTenantCA_IncompletePairReturnsActionableError(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	_, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
@@ -369,6 +382,7 @@ func TestLoadTenantCA_IncompletePairReturnsActionableError(t *testing.T) {
 }
 
 func TestLoadTenantCA_RoundTripsCreatedCA(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 
 	created, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com", "lab.example.org"})
@@ -391,6 +405,7 @@ func TestLoadTenantCA_RoundTripsCreatedCA(t *testing.T) {
 }
 
 func TestPermittedDomains_ReturnsDefensiveCopy(t *testing.T) {
+	t.Parallel()
 	certPath, keyPath := tenantCAPaths(t)
 	ca, err := LoadOrCreateTenantCA(certPath, keyPath, []string{"home.example.com"})
 	require.NoError(t, err)

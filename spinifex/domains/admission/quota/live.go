@@ -18,12 +18,13 @@ import (
 // exceeds rejects with ResourceLimitExceeded when an account already holding
 // count of a live-counted dimension would pass its cap by adding want more. It is
 // the shared comparison for every live dimension; the per-dimension methods
-// supply count from the relevant Describe* call.
+// supply count from the relevant Describe* call. It compares against the
+// remaining headroom so a huge want cannot overflow count+want past the cap.
 func exceeds(count, want, limit int) error {
 	if limit == Unlimited {
 		return nil
 	}
-	if count+want > limit {
+	if want > limit-count {
 		return errors.New(awserrors.ErrorResourceLimitExceeded)
 	}
 	return nil

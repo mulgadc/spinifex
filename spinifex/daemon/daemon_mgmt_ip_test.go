@@ -173,6 +173,7 @@ func TestMgmtIPAllocator_ReleaseNonexistent(t *testing.T) {
 }
 
 func TestMgmtIPAllocator_Exhaustion(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 	a, err := NewMgmtIPAllocator("10.17.8.1")
 	if err != nil {
@@ -372,6 +373,7 @@ func TestMgmtIPAllocator_SharedKV_NoDuplicates(t *testing.T) {
 // unique — this is the exact shape of CI run 29912697556, where independent
 // per-node allocation raced onto the same br-mgmt address.
 func TestMgmtIPAllocator_ConcurrentAcrossNodes(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	const nodeCount = 3
@@ -503,6 +505,7 @@ func TestMgmtIPAllocator_Release_FreesAddressClusterWide(t *testing.T) {
 // locally believes the range is full) and a third allocation from either
 // must still fail.
 func TestMgmtIPAllocator_Exhaustion_ClusterWide(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.25.8.1")

@@ -20,9 +20,9 @@ import (
 
 // genRSACert returns a self-signed RSA leaf with only a CN, the shape of the
 // certificate the AWS conformance audit imported.
-func genRSACert(t *testing.T, cn string, bits int) (certPEM, keyPEM []byte) {
+func genRSACert(t *testing.T, cn string) (certPEM, keyPEM []byte) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, bits)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
@@ -57,11 +57,12 @@ func describeAndListKeyAlgorithm(t *testing.T, svc *ACMServiceImpl, certArn stri
 	return "", ""
 }
 
-// AWS returns RSA-2048 with a hyphen from both Describe and List, although the
-// API enum (and the ListCertificates keyTypes filter) spells it RSA_2048.
+// AWS returns RSA-1024 with a hyphen from both Describe and List, although the
+// API enum (and the ListCertificates keyTypes filter) spells it RSA_1024.
 func TestImportCertificate_RSAKeyAlgorithmIsHyphenated(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
-	certPEM, keyPEM := genRSACert(t, "rsa.example.com", 2048)
+	certPEM, keyPEM := genRSACert(t, "rsa.example.com")
 
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate: certPEM,
@@ -70,18 +71,19 @@ func TestImportCertificate_RSAKeyAlgorithmIsHyphenated(t *testing.T) {
 	require.NoError(t, err)
 
 	described, listed := describeAndListKeyAlgorithm(t, svc, aws.StringValue(out.CertificateArn))
-	assert.Equal(t, "RSA-2048", described)
-	assert.Equal(t, "RSA-2048", listed)
+	assert.Equal(t, "RSA-1024", described)
+	assert.Equal(t, "RSA-1024", listed)
 
 	// The read path normalises, so check the stored spelling separately.
 	raw, _, err := svc.store.store.Get(t.Context(), certKey(aws.StringValue(out.CertificateArn)))
 	require.NoError(t, err)
-	assert.Equal(t, "RSA-2048", raw.KeyAlgorithm)
+	assert.Equal(t, "RSA-1024", raw.KeyAlgorithm)
 }
 
 // Records written before the spelling fix hold RSA_<bits> or EC_<Go curve>;
 // they must read back in the AWS spelling without a migration.
 func TestKeyAlgorithm_StoredUnderscoreSpellingReadsBackHyphenated(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		stored, want string
 	}{
@@ -93,6 +95,7 @@ func TestKeyAlgorithm_StoredUnderscoreSpellingReadsBackHyphenated(t *testing.T) 
 	svc := setupACMService(t)
 	for i, tc := range cases {
 		t.Run(tc.stored, func(t *testing.T) {
+			t.Parallel()
 			certArn := "arn:aws:acm:ap-southeast-2:" + testAccountID + ":certificate/legacy-" + string(rune('a'+i))
 			require.NoError(t, svc.store.PutCert(t.Context(), &CertRecord{
 				CertificateArn: certArn,
@@ -111,8 +114,9 @@ func TestKeyAlgorithm_StoredUnderscoreSpellingReadsBackHyphenated(t *testing.T) 
 // AWS refuses a re-import whose key type differs from the current one, naming
 // both in the API enum spelling.
 func TestImportCertificate_ReimportWithDifferentKeyTypeRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
-	c1, k1 := genRSACert(t, "k.example.com", 2048)
+	c1, k1 := genRSACert(t, "k.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
 	require.NoError(t, err)
 
@@ -123,12 +127,13 @@ func TestImportCertificate_ReimportWithDifferentKeyTypeRejected(t *testing.T) {
 	code, msg, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorValidationException, code)
-	assert.Equal(t, "New certificate has a key of EC_prime256v1 which is different from RSA_2048 in the current certificate.", msg)
+	assert.Equal(t, "New certificate has a key of EC_prime256v1 which is different from RSA_1024 in the current certificate.", msg)
 }
 
 func TestImportCertificate_SerialZeroRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(0),

@@ -120,7 +120,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	slog.InfoContext(ctx, "Creating key pair", "keyName", keyName)
 
 	// Validate key name contains only allowed characters
-	if err := validateKeyPairName(keyName); err != nil {
+	if err := ValidateKeyPairName(keyName); err != nil {
 		slog.ErrorContext(ctx, "Invalid key pair name", "keyName", keyName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 	}
@@ -538,6 +538,11 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 // from one replica's view and can lag a write that has already been
 // acknowledged, which reports a key created moments earlier as absent.
 func (s *KeyServiceImpl) ValidateKeyPairExists(ctx context.Context, accountID, keyName string) error {
+	// A name no key pair can have is absent, and reading it would let ".."
+	// segments address objects outside the caller's keys.
+	if ValidateKeyPairName(keyName) != nil {
+		return errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+	}
 	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
 	if _, err := s.store.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
@@ -557,6 +562,11 @@ func (s *KeyServiceImpl) ValidateKeyPairExists(ctx context.Context, accountID, k
 // GetPublicKeyMaterial returns the stored OpenSSH public key line, trimmed to a single
 // line. NoSuchKey maps to ErrorInvalidKeyPairNotFound; other errors are returned as-is.
 func (s *KeyServiceImpl) GetPublicKeyMaterial(accountID, keyName string) (string, error) {
+	// A name no key pair can have is absent, and reading it would let ".."
+	// segments address objects outside the caller's keys.
+	if ValidateKeyPairName(keyName) != nil {
+		return "", errors.New(awserrors.ErrorInvalidKeyPairNotFound)
+	}
 	keyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
 	result, err := s.store.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
@@ -618,7 +628,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 
 		// Validate keyPairId format (strip "key-" prefix before validation)
 		keyPairIDStripped := strings.TrimPrefix(keyPairID, "key-")
-		if err := validateKeyPairName(keyPairIDStripped); err != nil {
+		if err := ValidateKeyPairName(keyPairIDStripped); err != nil {
 			slog.ErrorContext(ctx, "Invalid key pair ID format", "keyPairId", keyPairID, "err", err)
 			return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 		}
@@ -638,7 +648,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 		keyName = *input.KeyName
 
 		// Validate keyName format
-		if err := validateKeyPairName(keyName); err != nil {
+		if err := ValidateKeyPairName(keyName); err != nil {
 			slog.ErrorContext(ctx, "Invalid key pair name format", "keyName", keyName, "err", err)
 			return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 		}
@@ -911,7 +921,7 @@ func (s *KeyServiceImpl) ImportKeyPair(ctx context.Context, input *ec2.ImportKey
 	slog.InfoContext(ctx, "Importing key pair", "keyName", keyName)
 
 	// Validate key name contains only allowed characters
-	if err := validateKeyPairName(keyName); err != nil {
+	if err := ValidateKeyPairName(keyName); err != nil {
 		slog.ErrorContext(ctx, "Invalid key pair name", "keyName", keyName, "err", err)
 		return nil, errors.New(awserrors.ErrorInvalidKeyPairFormat)
 	}

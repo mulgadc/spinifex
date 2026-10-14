@@ -49,7 +49,7 @@ func testClient(t *testing.T, h http.HandlerFunc) (oci.Client, *[]capture) {
 	}))
 	t.Cleanup(srv.Close)
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
 	pemKey := pem.EncodeToMemory(&pem.Block{
 		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),

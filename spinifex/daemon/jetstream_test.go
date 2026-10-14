@@ -840,6 +840,15 @@ func TestJetStreamManager_WriteServiceManifest_ClusterKVNotInitialized(t *testin
 // during NATS cluster formation when catchup resets corrupt a stream) and verify
 // that operations recover by re-creating the bucket.
 
+// isolatedJetStreamConn connects to a JetStream server of the test's own. The
+// recovery tests delete a bucket's stream, so a private server lets them run in
+// parallel without pulling the bucket out from under any other test.
+func isolatedJetStreamConn(t *testing.T) *nats.Conn {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	return nc
+}
+
 // deleteInstanceStateBucket deletes the underlying JetStream stream for the instance-state KV bucket.
 func deleteInstanceStateBucket(t *testing.T, nc *nats.Conn) {
 	t.Helper()
@@ -850,9 +859,8 @@ func deleteInstanceStateBucket(t *testing.T, nc *nats.Conn) {
 }
 
 func TestJetStreamManager_WriteState_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -877,9 +885,8 @@ func TestJetStreamManager_WriteState_RecoverAfterStreamLost(t *testing.T) {
 }
 
 func TestJetStreamManager_LoadState_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -896,9 +903,8 @@ func TestJetStreamManager_LoadState_RecoverAfterStreamLost(t *testing.T) {
 }
 
 func TestJetStreamManager_DeleteState_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -913,9 +919,8 @@ func TestJetStreamManager_DeleteState_RecoverAfterStreamLost(t *testing.T) {
 }
 
 func TestJetStreamManager_WriteStoppedInstance_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -939,9 +944,8 @@ func TestJetStreamManager_WriteStoppedInstance_RecoverAfterStreamLost(t *testing
 }
 
 func TestJetStreamManager_LoadStoppedInstance_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -957,9 +961,8 @@ func TestJetStreamManager_LoadStoppedInstance_RecoverAfterStreamLost(t *testing.
 }
 
 func TestJetStreamManager_DeleteStoppedInstance_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -973,9 +976,8 @@ func TestJetStreamManager_DeleteStoppedInstance_RecoverAfterStreamLost(t *testin
 }
 
 func TestJetStreamManager_ListStoppedInstances_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1024,9 +1026,8 @@ func swapToNonJSContext(t *testing.T, jsm *JetStreamManager) {
 }
 
 func TestJetStreamManager_WriteState_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1042,9 +1043,8 @@ func TestJetStreamManager_WriteState_RecoveryFailure(t *testing.T) {
 }
 
 func TestJetStreamManager_LoadState_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1060,9 +1060,8 @@ func TestJetStreamManager_LoadState_RecoveryFailure(t *testing.T) {
 }
 
 func TestJetStreamManager_DeleteState_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1077,9 +1076,8 @@ func TestJetStreamManager_DeleteState_RecoveryFailure(t *testing.T) {
 }
 
 func TestJetStreamManager_WriteStoppedInstance_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1095,9 +1093,8 @@ func TestJetStreamManager_WriteStoppedInstance_RecoveryFailure(t *testing.T) {
 }
 
 func TestJetStreamManager_LoadStoppedInstance_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1113,9 +1110,8 @@ func TestJetStreamManager_LoadStoppedInstance_RecoveryFailure(t *testing.T) {
 }
 
 func TestJetStreamManager_DeleteStoppedInstance_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1130,9 +1126,8 @@ func TestJetStreamManager_DeleteStoppedInstance_RecoveryFailure(t *testing.T) {
 }
 
 func TestJetStreamManager_ListStoppedInstances_RecoveryFailure(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1425,9 +1420,8 @@ func deleteTerminatedInstanceBucket(t *testing.T, nc *nats.Conn) {
 }
 
 func TestJetStreamManager_WriteTerminatedInstance_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1448,9 +1442,8 @@ func TestJetStreamManager_WriteTerminatedInstance_RecoverAfterStreamLost(t *test
 }
 
 func TestJetStreamManager_LoadTerminatedInstance_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1464,9 +1457,8 @@ func TestJetStreamManager_LoadTerminatedInstance_RecoverAfterStreamLost(t *testi
 }
 
 func TestJetStreamManager_DeleteTerminatedInstance_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1479,9 +1471,8 @@ func TestJetStreamManager_DeleteTerminatedInstance_RecoverAfterStreamLost(t *tes
 }
 
 func TestJetStreamManager_ListTerminatedInstances_RecoverAfterStreamLost(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1525,9 +1516,8 @@ func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
 }
 
 func TestJetStreamManager_ListStoppedInstances_SkipsVersionKey(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)
@@ -1540,9 +1530,8 @@ func TestJetStreamManager_ListStoppedInstances_SkipsVersionKey(t *testing.T) {
 }
 
 func TestJetStreamManager_ListTerminatedInstances_SkipsVersionKey(t *testing.T) {
-	nc, err := nats.Connect(sharedJSNATSURL)
-	require.NoError(t, err)
-	defer nc.Close()
+	t.Parallel()
+	nc := isolatedJetStreamConn(t)
 
 	jsm, err := NewJetStreamManager(nc)
 	require.NoError(t, err)

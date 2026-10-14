@@ -67,6 +67,7 @@ func genCert(t *testing.T, cn string, dnsNames ...string) (certPEM, keyPEM []byt
 }
 
 func TestImportCertificate_MintsArnAndParsesLeaf(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genCert(t, "example.com", "example.com", "www.example.com")
 
@@ -93,6 +94,7 @@ func TestImportCertificate_MintsArnAndParsesLeaf(t *testing.T) {
 }
 
 func TestImportCertificate_MismatchedKeyRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, _ := genCert(t, "a.example.com")
 	_, otherKey := genCert(t, "b.example.com")
@@ -106,6 +108,7 @@ func TestImportCertificate_MismatchedKeyRejected(t *testing.T) {
 }
 
 func TestImportCertificate_GarbagePEMRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
 		Certificate: []byte("not a pem"),
@@ -116,6 +119,7 @@ func TestImportCertificate_GarbagePEMRejected(t *testing.T) {
 }
 
 func TestListCertificates_ScopedToAccount(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "one.example.com")
 	c2, k2 := genCert(t, "two.example.com")
@@ -132,6 +136,7 @@ func TestListCertificates_ScopedToAccount(t *testing.T) {
 }
 
 func TestDescribeCertificate_CrossAccountHidden(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "secret.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
@@ -145,6 +150,7 @@ func TestDescribeCertificate_CrossAccountHidden(t *testing.T) {
 }
 
 func TestDeleteCertificate(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "del.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
@@ -165,6 +171,7 @@ func TestDeleteCertificate(t *testing.T) {
 }
 
 func TestImportCertificate_ReimportPreservesInUseBy(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "inuse.example.com")
 
@@ -190,6 +197,7 @@ func TestImportCertificate_ReimportPreservesInUseBy(t *testing.T) {
 }
 
 func TestImportCertificate_ReimportInvokesFanoutHook(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "hook.example.com")
 
@@ -215,6 +223,7 @@ func TestImportCertificate_ReimportInvokesFanoutHook(t *testing.T) {
 }
 
 func TestImportCertificate_ReimportZeroInUseBy_HookNotCalled(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "unused.example.com")
 
@@ -240,6 +249,7 @@ func TestImportCertificate_ReimportZeroInUseBy_HookNotCalled(t *testing.T) {
 }
 
 func TestImportCertificate_FreshImportDoesNotInvokeHook(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	called := false
 	svc.CertMaterialUpdated = func(ctx context.Context, arn string) error {
@@ -254,6 +264,7 @@ func TestImportCertificate_FreshImportDoesNotInvokeHook(t *testing.T) {
 }
 
 func TestImportCertificate_ReimportUnknownArnRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "re.example.com")
 	_, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
@@ -270,6 +281,7 @@ func TestImportCertificate_ReimportUnknownArnRejected(t *testing.T) {
 // contain the plaintext PEM key, and reading it back through the Store must
 // still recover the original plaintext.
 func TestImportCertificate_PrivateKeyEncryptedAtRest(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genCert(t, "atrest.example.com")
 
@@ -297,6 +309,7 @@ func TestImportCertificate_PrivateKeyEncryptedAtRest(t *testing.T) {
 // record is stored. Precedent: TestSensitiveDataNotLogged_MasterKey in
 // handlers/iam/service_impl_test.go.
 func TestDescribeCertificate_DoesNotLeakPrivateKey(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genCert(t, "noleak.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{
@@ -370,6 +383,7 @@ func genLeafPEM(cn string, dnsNames []string) (certPEM, keyPEM string, err error
 }
 
 func TestRequestCertificate_ProviderAPI_PendingValidationNoResourceRecord(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.dnsProviderConfigured = true
 
@@ -395,6 +409,7 @@ func TestRequestCertificate_ProviderAPI_PendingValidationNoResourceRecord(t *tes
 }
 
 func TestRequestCertificate_ManualTXT_EmitsTXTResourceRecordAndIneligible(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.NorthstarHostsZone = func(domain string) bool { return true }
 
@@ -423,6 +438,7 @@ func TestRequestCertificate_ManualTXT_EmitsTXTResourceRecordAndIneligible(t *tes
 // PRIVATE_CA (automatic, offline, renewable), not MANUAL_TXT (which can never
 // complete against an internal zone a public CA cannot resolve).
 func TestRequestCertificate_PrivateCA_WinsOverNorthstarHostedZone(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"home.example.com": true}}
 	svc.NorthstarHostsZone = func(domain string) bool { return domain == "home.example.com" }
@@ -442,6 +458,7 @@ func TestRequestCertificate_PrivateCA_WinsOverNorthstarHostedZone(t *testing.T) 
 }
 
 func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"private.example.com": true}}
 
@@ -470,6 +487,7 @@ func TestRequestCertificate_PrivateCA_IssuesSynchronously(t *testing.T) {
 // the daemon-wiring slice adds no coverage for the seam between
 // RequestCertificate and the real implementation without a test like this one.
 func TestRequestCertificate_PrivateCA_RealTenantCA_IssuesAndChains(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	dir := t.TempDir()
 	ca, err := LoadOrCreateTenantCA(
@@ -509,6 +527,7 @@ func TestRequestCertificate_PrivateCA_RealTenantCA_IssuesAndChains(t *testing.T)
 }
 
 func TestRequestCertificate_PrivateCA_DomainOutsidePermittedRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"allowed.example.com": true}}
 
@@ -520,6 +539,7 @@ func TestRequestCertificate_PrivateCA_DomainOutsidePermittedRejected(t *testing.
 }
 
 func TestRequestCertificate_PrivateCA_SANOutsidePermittedRejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"allowed.example.com": true}}
 
@@ -532,6 +552,7 @@ func TestRequestCertificate_PrivateCA_SANOutsidePermittedRejected(t *testing.T) 
 }
 
 func TestRequestCertificate_PrivateCA_NoTenantCAWired_FailsLoudly(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	// TenantCA deliberately left nil: PRIVATE_CA is derived (no dns provider, no
 	// northstar zone) but nothing can drive it.
@@ -542,6 +563,7 @@ func TestRequestCertificate_PrivateCA_NoTenantCAWired_FailsLoudly(t *testing.T) 
 }
 
 func TestRequestCertificate_PrivateCA_IssueLeafErrorNotStored(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{
 		permitted: map[string]bool{"broken.example.com": true},
@@ -559,6 +581,7 @@ func TestRequestCertificate_PrivateCA_IssueLeafErrorNotStored(t *testing.T) {
 }
 
 func TestRequestCertificate_NoDomainName_Rejected(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	_, err := svc.RequestCertificate(context.Background(), &acm.RequestCertificateInput{}, testAccountID)
 	require.Error(t, err)
@@ -566,6 +589,7 @@ func TestRequestCertificate_NoDomainName_Rejected(t *testing.T) {
 }
 
 func TestRequestCertificate_PrivateCA_DescribeDoesNotLeakPrivateKey(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	svc.TenantCA = &fakeCertAuthority{permitted: map[string]bool{"noleak-priv.example.com": true}}
 
@@ -583,6 +607,7 @@ func TestRequestCertificate_PrivateCA_DescribeDoesNotLeakPrivateKey(t *testing.T
 }
 
 func TestImportCertificate_RenewalEligibilityIneligible(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "imported-ineligible.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
@@ -595,6 +620,7 @@ func TestImportCertificate_RenewalEligibilityIneligible(t *testing.T) {
 }
 
 func TestDeleteCertificate_RefusesWhenInUse(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "inuse-delete.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
@@ -612,6 +638,7 @@ func TestDeleteCertificate_RefusesWhenInUse(t *testing.T) {
 }
 
 func TestDeleteCertificate_SucceedsWhenNotInUse(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "notinuse-delete.example.com")
 	out, err := svc.ImportCertificate(context.Background(), &acm.ImportCertificateInput{Certificate: c1, PrivateKey: k1}, testAccountID)
@@ -625,6 +652,8 @@ func TestDeleteCertificate_SucceedsWhenNotInUse(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorResourceNotFound)
 }
 
+// Not parallel: it swaps the process-wide slog default, which parallel tests
+// would write to concurrently.
 func TestSensitiveDataNotLogged_ACMPrivateKey(t *testing.T) {
 	var buf strings.Builder
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -654,6 +683,7 @@ func TestSensitiveDataNotLogged_ACMPrivateKey(t *testing.T) {
 // on one either: every spelling below names a real certificate under certKey's
 // old last-slash rule while resolving account-wide at the gate.
 func TestCertificateArnSpellingsTheGateCannotRead(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	certPEM, keyPEM := genCert(t, "fenced.example.com")
 
@@ -681,6 +711,7 @@ func TestCertificateArnSpellingsTheGateCannotRead(t *testing.T) {
 
 	for _, tt := range spellings {
 		t.Run(tt.certArn, func(t *testing.T) {
+			t.Parallel()
 			_, err := svc.DescribeCertificate(context.Background(),
 				&acm.DescribeCertificateInput{CertificateArn: aws.String(tt.certArn)}, testAccountID)
 			require.Error(t, err)
@@ -710,6 +741,7 @@ func TestCertificateArnSpellingsTheGateCannotRead(t *testing.T) {
 // The handler mints the ARN the gate builds, or every resource-scoped statement
 // names an object that does not exist.
 func TestMintedArnRoundTripsThroughTheGatesFormatter(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	minted := svc.mintCertificateArn(testAccountID)
 
@@ -722,6 +754,7 @@ func TestMintedArnRoundTripsThroughTheGatesFormatter(t *testing.T) {
 // empty: the SDK marshaller drops a nil slice, so a caller that ranges over the
 // result without a nil check breaks on every account's first state.
 func TestListCertificates_EmptyAccountReturnsEmptyList(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 
 	list, err := svc.ListCertificates(context.Background(), &acm.ListCertificatesInput{}, testAccountID)
@@ -737,6 +770,7 @@ func TestListCertificates_EmptyAccountReturnsEmptyList(t *testing.T) {
 // The populated case must keep working: an empty slice that never fills is just
 // a different way of losing the list.
 func TestListCertificates_PopulatedAccountReturnsSummaries(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	c1, k1 := genCert(t, "filled-one.example.com")
 	c2, k2 := genCert(t, "filled-two.example.com")
@@ -760,6 +794,7 @@ func TestListCertificates_PopulatedAccountReturnsSummaries(t *testing.T) {
 // fault. InternalErrorException is a retryable 500, so Terraform sat on
 // "Still creating..." instead of failing; this asserts the 4xx and the reason.
 func TestRequestCertificate_NoTenantCAIsAClientErrorNamingTheCause(t *testing.T) {
+	t.Parallel()
 	svc := setupACMService(t)
 	require.Nil(t, svc.TenantCA, "this test only means anything with no tenant CA wired")
 

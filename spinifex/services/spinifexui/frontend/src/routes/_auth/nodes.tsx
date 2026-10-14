@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
-import { createFileRoute, redirect } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 
 import { GPUInventoryCard } from "@/components/gpu-inventory-card"
 import { PageHeading } from "@/components/page-heading"
+import { RequireAdmin } from "@/components/require-admin"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useAdmin } from "@/contexts/admin-context"
@@ -19,7 +20,7 @@ export const Route = createFileRoute("/_auth/nodes")({
   head: () => ({
     meta: [{ title: "Nodes | Mulga" }],
   }),
-  component: NodesPage,
+  component: RouteComponent,
 })
 
 function formatUptime(seconds: number): string {
@@ -56,6 +57,14 @@ function formatAge(launchTime: number): string {
   return `${days}d ${hours % 24}h`
 }
 
+function RouteComponent() {
+  return (
+    <RequireAdmin>
+      <NodesPage />
+    </RequireAdmin>
+  )
+}
+
 function NodesPage() {
   const { isAdmin } = useAdmin()
   const { data: nodesData } = useQuery({
@@ -68,10 +77,6 @@ function NodesPage() {
     enabled: isAdmin,
     refetchInterval: 5000,
   })
-
-  if (!isAdmin) {
-    throw redirect({ to: "/" })
-  }
 
   const nodes = nodesData?.nodes ?? []
   const vms = (vmsData?.vms ?? []).filter((vm) => !vm.managed_by)

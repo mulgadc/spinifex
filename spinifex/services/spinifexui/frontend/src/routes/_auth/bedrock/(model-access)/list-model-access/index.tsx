@@ -1,6 +1,6 @@
-import { createFileRoute, redirect } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 
-import { useAdmin } from "@/contexts/admin-context"
+import { RequireAdmin } from "@/components/require-admin"
 
 import { ModelAccessPage } from "../-components/model-access-page"
 
@@ -14,11 +14,9 @@ export const Route = createFileRoute(
 })
 
 function RouteComponent() {
-  const { isAdmin } = useAdmin()
-
-  if (!isAdmin) {
-    throw redirect({ to: "/" })
-  }
-
-  return <ModelAccessPage />
+  return (
+    <RequireAdmin>
+      <ModelAccessPage />
+    </RequireAdmin>
+  )
 }

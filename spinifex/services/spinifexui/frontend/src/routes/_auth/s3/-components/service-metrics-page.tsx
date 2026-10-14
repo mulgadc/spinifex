@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query"
-import { redirect } from "@tanstack/react-router"
 
 import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
@@ -18,10 +17,6 @@ export function ServiceMetricsPage() {
     enabled: isAdmin,
     refetchInterval: 5000,
   })
-
-  if (!isAdmin) {
-    throw redirect({ to: "/" })
-  }
 
   const encoding = data?.encoding
   const metaNodes = data?.meta_nodes ?? []

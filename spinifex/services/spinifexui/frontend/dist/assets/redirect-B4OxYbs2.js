@@ -1,1 +1,0 @@
-function e(e){e.statusCode=e.statusCode||e.code||307;let t=new Headers(e.headers);e.href&&t.get(`Location`)===null&&t.set(`Location`,e.href);let n=new Response(null,{status:e.statusCode,headers:t});if(n.options=e,e.throw)throw n;return n}function t(e){return e instanceof Response&&!!e.options}export{e as n,t};

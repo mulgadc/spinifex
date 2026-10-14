@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/netutil"
 	"golang.org/x/sys/unix"
 )
 
@@ -122,6 +123,8 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	if err != nil {
 		return fmt.Errorf("listen on endpoint %s: %w", endpoint, err)
 	}
+	// Cap per-tap connections so one guest cannot exhaust vpcd's shared descriptors.
+	listener = netutil.LimitListener(listener, 32)
 	ifindex, err := m.ifindex(endpoint)
 	if err != nil {
 		slog.DebugContext(ctx, "IMDS: endpoint ifindex unavailable; recreated-endpoint detection degraded", "endpoint", endpoint, "err", err)
@@ -130,6 +133,10 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	server := &http.Server{
 		Handler:           m.handler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 		BaseContext: func(net.Listener) context.Context {
 			return context.WithValue(ctx, ctxKeyENI, eni)
 		},

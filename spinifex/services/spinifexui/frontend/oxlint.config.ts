@@ -54,7 +54,6 @@ export default defineConfig({
       "error",
     "react-you-might-not-need-an-effect/no-pass-data-to-parent": "error",
     "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
-    "shadcn/no-restyle": "off",
     "typescript/no-floating-promises": [
       "error",
       {

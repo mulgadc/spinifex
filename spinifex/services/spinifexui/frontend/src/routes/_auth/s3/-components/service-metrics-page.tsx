@@ -28,7 +28,7 @@ export function ServiceMetricsPage() {
         {/* Section 1: Storage Overview */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Predastore (S3) Overview</CardTitle>
+            <CardTitle>Predastore (S3) Overview</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4 text-xs md:grid-cols-4">
@@ -83,9 +83,7 @@ export function ServiceMetricsPage() {
         {/* Section 2: Meta Consensus Nodes */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">
-              Meta Consensus Nodes (Raft)
-            </CardTitle>
+            <CardTitle>Meta Consensus Nodes (Raft)</CardTitle>
           </CardHeader>
           <CardContent>
             {metaNodes.length === 0 ? (
@@ -99,7 +97,7 @@ export function ServiceMetricsPage() {
         {/* Section 3: Blob Nodes */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Object Storage Blob Nodes</CardTitle>
+            <CardTitle>Object Storage Blob Nodes</CardTitle>
           </CardHeader>
           <CardContent>
             {blobNodes.length === 0 ? (

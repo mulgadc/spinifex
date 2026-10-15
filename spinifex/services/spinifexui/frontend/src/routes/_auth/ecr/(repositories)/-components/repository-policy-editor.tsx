@@ -77,7 +77,7 @@ export function RepositoryPolicyEditor({
         </div>
       </div>
       <JsonEditor
-        className="text-xs"
+        size="sm"
         error={invalidJson}
         onChange={setDraft}
         placeholder="No policy attached. Paste an IAM policy document to set one."

@@ -18,12 +18,7 @@ export function ThemeSwitch() {
   }
 
   return (
-    <Button
-      className="rounded-full transition-none hover:bg-transparent dark:hover:bg-transparent"
-      onClick={toggleTheme}
-      size="icon-sm"
-      variant="ghost"
-    >
+    <Button onClick={toggleTheme} size="icon-sm" variant="bare">
       <Sun className="size-[1.2rem] scale-100 rotate-0 transition-transform dark:scale-0 dark:-rotate-90" />
       <Moon className="absolute size-[1.2rem] scale-0 rotate-90 transition-transform dark:scale-100 dark:rotate-0" />
       <span className="sr-only">Toggle theme</span>

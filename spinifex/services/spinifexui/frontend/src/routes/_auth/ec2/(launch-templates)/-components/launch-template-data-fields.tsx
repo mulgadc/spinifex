@@ -284,7 +284,8 @@ export function LaunchTemplateDataFields({
           Cloud-init or shell script run at first boot.
         </FieldDescription>
         <Textarea
-          className="min-h-32 font-mono"
+          className="min-h-32"
+          variant="code"
           id="userData"
           placeholder="#!/bin/bash&#10;echo hello"
           {...register("userData")}
@@ -293,7 +294,8 @@ export function LaunchTemplateDataFields({
 
       <Collapsible>
         <CollapsibleTrigger
-          className="group flex h-7 w-full items-center justify-between rounded-md border border-input bg-input/20 px-2 py-0.5 text-sm transition-colors outline-none hover:bg-input/40 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 md:text-xs/relaxed dark:bg-input/30 dark:hover:bg-input/50"
+          className="group"
+          variant="field"
           render={
             <button
               aria-label="Block Device Mappings (root volume)"
@@ -304,7 +306,7 @@ export function LaunchTemplateDataFields({
           <span>Block Device Mappings (root volume)</span>
           <ChevronDown className="size-3.5 text-muted-foreground transition-transform group-data-[panel-open]:rotate-180" />
         </CollapsibleTrigger>
-        <CollapsibleContent className="mt-3 space-y-4 rounded-md border border-border p-4">
+        <CollapsibleContent className="mt-3" variant="panel">
           <Field>
             <FieldTitle>
               <label htmlFor="rootVolumeSize">Volume Size (GiB)</label>

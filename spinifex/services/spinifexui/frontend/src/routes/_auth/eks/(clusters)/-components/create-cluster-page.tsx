@@ -385,7 +385,7 @@ export function CreateClusterPage() {
                 <div className="flex items-center gap-2" key={index}>
                   <Input
                     aria-label={`Public access CIDR ${index + 1}`}
-                    className="font-mono"
+                    variant="code"
                     onChange={(e) => {
                       updateCidr(index, e.target.value)
                     }}

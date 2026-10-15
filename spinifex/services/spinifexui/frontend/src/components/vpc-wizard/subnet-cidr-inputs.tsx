@@ -34,12 +34,12 @@ export function SubnetCidrInputs({
   return (
     <div className="mt-2">
       <Button
-        className="gap-1 px-0 text-xs text-muted-foreground"
         onClick={() => {
           setExpanded(!expanded)
         }}
         type="button"
-        variant="link"
+        size="inline"
+        variant="link-muted"
       >
         {isOpen ? (
           <ChevronDown className="size-3" />

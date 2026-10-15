@@ -100,7 +100,7 @@ function NodesPage() {
         {/* Section 1: Nodes (spx get nodes) */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Cluster Nodes</CardTitle>
+            <CardTitle>Cluster Nodes</CardTitle>
           </CardHeader>
           <CardContent>
             {nodes.length === 0 ? (
@@ -116,9 +116,7 @@ function NodesPage() {
         {/* Section 2: EC2 Instances */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">
-              Elastic Compute Cloud (EC2)
-            </CardTitle>
+            <CardTitle>Elastic Compute Cloud (EC2)</CardTitle>
           </CardHeader>
           <CardContent>
             {vms.length === 0 ? (
@@ -134,24 +132,26 @@ function NodesPage() {
         {/* Section 3: Resource Usage + Instance Types (spx top nodes) */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Resource Usage</CardTitle>
+            <CardTitle>Resource Usage</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {nodes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No data</p>
-            ) : (
-              <>
-                <ResourceTable nodes={nodes} />
-                {instanceTypes.length > 0 && (
-                  <>
-                    <h4 className="mt-4 text-xs font-medium text-muted-foreground">
-                      Instance Type Capacity
-                    </h4>
-                    <InstanceTypesTable instanceTypes={instanceTypes} />
-                  </>
-                )}
-              </>
-            )}
+          <CardContent>
+            <div className="space-y-4">
+              {nodes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No data</p>
+              ) : (
+                <>
+                  <ResourceTable nodes={nodes} />
+                  {instanceTypes.length > 0 && (
+                    <>
+                      <h4 className="mt-4 text-xs font-medium text-muted-foreground">
+                        Instance Type Capacity
+                      </h4>
+                      <InstanceTypesTable instanceTypes={instanceTypes} />
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -159,7 +159,7 @@ function NodesPage() {
         {nodes.some((n) => (n.gpus?.length ?? 0) > 0) && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">GPU Inventory</CardTitle>
+              <CardTitle>GPU Inventory</CardTitle>
             </CardHeader>
             <CardContent>
               <GPUInventoryCard nodes={nodes} />

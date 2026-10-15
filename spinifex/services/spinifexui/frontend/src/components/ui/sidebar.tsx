@@ -348,13 +348,26 @@ export function SidebarInput({
   )
 }
 
+export const sidebarHeaderVariants = cva("flex flex-col gap-2 p-2", {
+  variants: {
+    variant: {
+      default: "",
+      brand: "flex-row items-center px-4 py-3",
+    },
+  },
+  defaultVariants: {
+    variant: "default",
+  },
+})
+
 export function SidebarHeader({
   className,
+  variant = "default",
   ...props
-}: React.ComponentProps<"div">) {
+}: React.ComponentProps<"div"> & VariantProps<typeof sidebarHeaderVariants>) {
   return (
     <div
-      className={cn("flex flex-col gap-2 p-2", className)}
+      className={cn(sidebarHeaderVariants({ variant, className }))}
       data-sidebar="header"
       data-slot="sidebar-header"
       {...props}

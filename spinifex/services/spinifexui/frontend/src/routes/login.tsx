@@ -203,8 +203,8 @@ function LoginPage() {
 
 function CertificateInstallBanner() {
   return (
-    <Card className="border-muted bg-muted/30">
-      <CardContent className="pt-4 pb-4">
+    <Card variant="muted">
+      <CardContent className="my-4">
         <div className="flex flex-col gap-3">
           <div>
             <p className="text-sm font-medium">
@@ -223,7 +223,7 @@ function CertificateInstallBanner() {
             Download CA Certificate
           </a>
           <Collapsible>
-            <CollapsibleTrigger className="cursor-pointer text-xs text-muted-foreground underline-offset-4 hover:underline">
+            <CollapsibleTrigger variant="link">
               Installation instructions
             </CollapsibleTrigger>
             <CollapsibleContent>

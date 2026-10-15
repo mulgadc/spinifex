@@ -18,6 +18,9 @@ export const buttonVariants = cva(
         destructive:
           "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
         link: "text-primary underline-offset-4 hover:underline",
+        "link-muted":
+          "text-muted-foreground underline-offset-4 hover:underline",
+        bare: "rounded-full transition-none hover:text-foreground",
       },
       size: {
         default:
@@ -29,6 +32,7 @@ export const buttonVariants = cva(
         "icon-xs": "size-5 rounded-sm [&_svg:not([class*='size-'])]:size-2.5",
         "icon-sm": "size-6 [&_svg:not([class*='size-'])]:size-3",
         "icon-lg": "size-8 [&_svg:not([class*='size-'])]:size-4",
+        inline: "h-7 gap-1 px-0 text-xs [&_svg:not([class*='size-'])]:size-3.5",
       },
     },
     defaultVariants: {

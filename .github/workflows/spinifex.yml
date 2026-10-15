@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
           fetch-depth: 2
@@ -40,28 +40,28 @@ jobs:
         working-directory: spinifex
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Checkout Northstar
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: ${{ steps.siblings.outputs.northstar }}
           path: northstar
 
       - name: Checkout Bluebottle
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: ${{ steps.siblings.outputs.bluebottle }}
@@ -71,7 +71,7 @@ jobs:
       # the last go.sum change and never refreshed it. Both caches are managed
       # below instead.
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: "spinifex/go.mod"
           cache: false
@@ -80,7 +80,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -93,7 +93,7 @@ jobs:
       # a PR reads the base branch's entry without spending a minute uploading
       # one only that PR would ever read.
       - name: Restore Go build cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -150,7 +150,7 @@ jobs:
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -161,7 +161,7 @@ jobs:
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
@@ -173,28 +173,28 @@ jobs:
         working-directory: spinifex
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Checkout Northstar
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: ${{ steps.siblings.outputs.northstar }}
           path: northstar
 
       - name: Checkout Bluebottle
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: ${{ steps.siblings.outputs.bluebottle }}
@@ -204,7 +204,7 @@ jobs:
       # the last go.sum change and never refreshed it. Both caches are managed
       # below instead.
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: "spinifex/go.mod"
           cache: false
@@ -213,7 +213,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -226,7 +226,7 @@ jobs:
       # a PR reads the base branch's entry without spending a minute uploading
       # one only that PR would ever read.
       - name: Restore Go build cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -251,7 +251,7 @@ jobs:
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -262,7 +262,7 @@ jobs:
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
           fetch-depth: 2
@@ -275,28 +275,28 @@ jobs:
         working-directory: spinifex
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Checkout Northstar
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: ${{ steps.siblings.outputs.northstar }}
           path: northstar
 
       - name: Checkout Bluebottle
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: ${{ steps.siblings.outputs.bluebottle }}
@@ -306,7 +306,7 @@ jobs:
       # the last go.sum change and never refreshed it. Both caches are managed
       # below instead.
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: "spinifex/go.mod"
           cache: false
@@ -315,7 +315,7 @@ jobs:
       # setup-go hashed spinifex/go.sum alone, which left the sibling modules'
       # dependencies out of the key and re-downloading on every run.
       - name: Cache Go modules
-        uses: actions/cache@v6
+        uses: actions/cache@v6.1.0
         with:
           path: ~/go/pkg/mod
           key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
@@ -328,7 +328,7 @@ jobs:
       # a PR reads the base branch's entry without spending a minute uploading
       # one only that PR would ever read.
       - name: Restore Go build cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
@@ -338,7 +338,7 @@ jobs:
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.14.0
           working-directory: spinifex
@@ -363,7 +363,7 @@ jobs:
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v6.1.0
         with:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}

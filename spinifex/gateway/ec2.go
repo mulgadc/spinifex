@@ -351,7 +351,7 @@ var ec2Actions = map[string]ec2Action{
 		return ec2volumeapi.CreateVolume(ctx, input, gw.NATSConn, accountID)
 	}),
 	"DeleteVolume": ec2Handler(func(ctx context.Context, input *ec2.DeleteVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
-		return ec2volumeapi.DeleteVolume(ctx, input, gw.NATSConn, gw.DiscoverActiveNodes(ctx), accountID)
+		return ec2volumeapi.DeleteVolume(ctx, input, gw.NATSConn, gw.NodeIDs, accountID)
 	}),
 	"AttachVolume": ec2Handler(func(ctx context.Context, input *ec2.AttachVolumeInput, gw *GatewayConfig, accountID string) (any, error) {
 		return ec2volumeapi.AttachVolume(ctx, input, gw.NATSConn, accountID)

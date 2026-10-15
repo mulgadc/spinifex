@@ -43,7 +43,7 @@ jobs:
       cells: ${{ steps.pick.outputs.cells }}
       any: ${{ steps.pick.outputs.any }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: |
             .github/e2e-cells.json
@@ -128,21 +128,21 @@ jobs:
           if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
@@ -151,7 +151,7 @@ jobs:
       # links each cell's telemetry to the job log that produced it. Runs
       # before Bootstrap bakes SPINIFEX_OTEL_ATTRS into the VM's telemetry.env.
       - name: Resolve CI job id
-        uses: ./spinifex/.github/actions/otel-job-id
+        uses: $/.github/actions/otel-job-id
         with:
           job-name: "cell-${{ matrix.cell }} (${{ matrix.topo }}/${{ matrix.net }}/${{ matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
 
@@ -795,7 +795,8 @@ jobs:
       - name: Install go-junit-report
         if: always()
         run: |
-          go install github.com/jstemmer/go-junit-report/v2@latest
+          # Version from go.mod's tool directive, checked against go.sum.
+          GOWORK=off go -C spinifex install github.com/jstemmer/go-junit-report/v2
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Convert test logs to JUnit XML
@@ -812,20 +813,20 @@ jobs:
       - name: Ship test results to Elasticsearch
         if: always()
         continue-on-error: true
-        uses: ./spinifex/.github/actions/junit-to-es
+        uses: $/.github/actions/junit-to-es
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           cell: ${{ matrix.cell }}
 
       - name: Analyze e2e failures
         if: always()
-        uses: ./spinifex/.github/actions/e2e-analyze
+        uses: $/.github/actions/e2e-analyze
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           log-dir: ${{ env.ARTIFACT_DIR }}
           title: "E2E failure analysis (cell ${{ matrix.cell }})"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-artifacts-cell-${{ matrix.cell }}-${{ github.run_id }}
@@ -837,7 +838,7 @@ jobs:
       # pulling nineteen journals it has no use for.
       - name: Upload junit only
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: junit-cell-${{ matrix.cell }}-${{ github.run_id }}
           path: ${{ env.ARTIFACT_DIR }}/junit-*.xml
@@ -868,7 +869,7 @@ jobs:
 
       - name: Upload tofu log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: tofu-log-cell-${{ matrix.cell }}-${{ github.run_id }}
           path: ${{ env.TOFU_LOG }}
@@ -973,20 +974,20 @@ jobs:
             { sudo mkdir -p "$E2E_ROOT/work" && sudo chown "$(id -u):$(id -g)" "$E2E_ROOT" "$E2E_ROOT/work"; }
           echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           path: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ env.GIT_BRANCH }}
           path: mulga/spinifex
@@ -998,25 +999,25 @@ jobs:
         run: bash .github/resolve-sibling-refs.sh
         working-directory: mulga/spinifex
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: ${{ steps.siblings.outputs.viperblock }}
           path: mulga/viperblock
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
           path: mulga/predastore
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: ${{ steps.siblings.outputs.northstar }}
           path: mulga/northstar
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: ${{ steps.siblings.outputs.bluebottle }}
@@ -1151,7 +1152,7 @@ jobs:
                  /tmp/smoke-$GITHUB_RUN_ID.log | tail -1)
           [ -n "$qemu" ] && cp "$qemu" /tmp/cell21-artifacts-$GITHUB_RUN_ID/qemu.log || true
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-artifacts-cell-21-${{ github.run_id }}
@@ -1220,20 +1221,20 @@ jobs:
           # disks, which is what the tmpfs assertion below is about.
           echo "WORK_DIR=$E2E_ROOT/work/cell22-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           path: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ env.GIT_BRANCH }}
           path: mulga/spinifex
@@ -1245,25 +1246,25 @@ jobs:
         run: bash .github/resolve-sibling-refs.sh
         working-directory: mulga/spinifex
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: ${{ steps.siblings.outputs.viperblock }}
           path: mulga/viperblock
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
           path: mulga/predastore
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: ${{ steps.siblings.outputs.northstar }}
           path: mulga/northstar
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: ${{ steps.siblings.outputs.bluebottle }}
@@ -1317,7 +1318,7 @@ jobs:
           cp "$WORK_DIR"/*-serial.log /tmp/cell22-artifacts-$GITHUB_RUN_ID/ 2>/dev/null ||
             echo "no per-node serial logs — the run passed and cleaned up after itself"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-artifacts-cell-22-${{ github.run_id }}
@@ -1369,7 +1370,7 @@ jobs:
           echo "PERF_RESULTS_ROOT=$E2E_ROOT/predastore-perf-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
@@ -1384,7 +1385,7 @@ jobs:
         working-directory: spinifex
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
@@ -1437,7 +1438,7 @@ jobs:
       # Report-only. The baseline comparison and the -10% gate are mulga-wpjsx;
       # until the run-to-run spread is known from real nights, a threshold would
       # be a guess, and a gate that cries wolf gets muted.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: predastore-perf-${{ github.run_id }}
@@ -1496,7 +1497,7 @@ jobs:
           echo "STRESS_RESULTS_ROOT=$E2E_ROOT/predastore-stress-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
@@ -1508,7 +1509,7 @@ jobs:
         working-directory: spinifex
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
@@ -1563,7 +1564,7 @@ jobs:
           mkdir -p "$STRESS_RESULTS_ROOT"
           make e2e-stress 2>&1 | tee "$STRESS_RESULTS_ROOT/e2e-stress.log"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: predastore-stress-${{ github.run_id }}
@@ -1600,13 +1601,13 @@ jobs:
     if: always()
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: .github/scripts/e2e-run-summary.py
           sparse-checkout-cone-mode: false
 
       - name: Collect junit
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           pattern: junit-cell-*-${{ github.run_id }}
           path: junit

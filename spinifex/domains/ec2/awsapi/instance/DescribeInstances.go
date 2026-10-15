@@ -170,8 +170,8 @@ func missingInstanceIDs(reservations []*ec2.Reservation, instanceIDs []*string) 
 // every expected node and both instance buckets; a partial sweep — a node down,
 // a timed-out fan-out, or a failed bucket query — returns complete=false so the
 // caller can decline to act rather than act on a short count. The quota vCPU
-// sweep reads the instance record space instead of this; the retype gate and the
-// volume delete guard are what still call it.
+// sweep reads the instance record space instead of this; the retype gate is
+// what still calls it.
 func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInstancesInput, natsConn *nats.Conn, expectedNodes int, accountID string) (reservations []*ec2.Reservation, complete bool, err error) {
 	reservations, complete, _, err = gatherInstances(ctx, input, natsConn, expectedNodes, nil, accountID)
 	return reservations, complete, err

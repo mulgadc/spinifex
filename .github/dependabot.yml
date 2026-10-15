@@ -23,11 +23,6 @@ updates:
       timezone: Australia/Sydney
     cooldown:
       default-days: 3
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-minor"
-          - "version-update:semver-patch"
     groups:
       github-actions:
         patterns:
@@ -48,5 +43,30 @@ updates:
           - "version-update:semver-major"
     groups:
       npm-dependencies:
+        patterns:
+          - "*"
+
+  # Base images are pinned by digest, so this is what moves them. The golang
+  # version is deliberate and changes with go.mod; only its digest moves here.
+  - package-ecosystem: docker
+    target-branch: dev
+    directories:
+      - /build
+      - /scripts
+      - /docs/terraform-workbooks/demo-app
+    schedule:
+      interval: weekly
+      day: sunday
+      timezone: Australia/Sydney
+    cooldown:
+      default-days: 3
+    ignore:
+      - dependency-name: golang
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+    groups:
+      docker-images:
         patterns:
           - "*"

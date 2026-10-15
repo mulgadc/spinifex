@@ -30,17 +30,17 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: spinifex/runtime/roles/spinifexui/frontend
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v6.0.10
         with:
           package_json_file: spinifex/runtime/roles/spinifexui/frontend/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           cache: "pnpm"
           cache-dependency-path: spinifex/runtime/roles/spinifexui/frontend/pnpm-lock.yaml
@@ -58,5 +58,14 @@ jobs:
       - name: Build Frontend
         run: pnpm build
 
+      # spx embeds the committed dist/, so a bundle that differs from a clean
+      # build of this source would ship JavaScript CI never built. Porcelain
+      # rather than git diff, so added and deleted chunks count too.
       - name: Check for generated file drift
-        run: git diff --exit-code -- src/routeTree.gen.ts src/lib/cn-tables.gen.ts
+        run: |
+          drift=$(git status --porcelain -- src/routeTree.gen.ts src/lib/cn-tables.gen.ts dist)
+          if [ -n "$drift" ]; then
+            echo "::error::Generated files differ from a clean build. Run pnpm build and commit the result."
+            echo "$drift"
+            exit 1
+          fi

@@ -17,28 +17,12 @@ name: Publish System AMIs
 #   spx admin images import --name spinifex-rds-postgres
 #   spx admin images import --name spinifex-rds-mariadb
 #
-# Publishing overwrites the mirror artifact, so it is a deliberate action, not
-# something every push should trigger: it runs manually, or from release.yml
-# once a tag has passed its gates. The `variant` input scopes which images
-# build — the Ubuntu GPU legs are 16G and much slower (NVIDIA driver download +
-# DKMS build), so publishing only the CPU AMIs stays cheap.
+# Publishing overwrites the mirror artifact, so it runs only from release.yml
+# once a tag has passed its gates, with siblings at the tags go.mod requires.
+# The `variant` input scopes which images build — the Ubuntu GPU legs are 16G
+# and much slower (NVIDIA driver download + DKMS build).
 
 on:
-  workflow_dispatch:
-    inputs:
-      variant:
-        description: "Which images to build"
-        type: choice
-        default: all
-        options:
-          - all
-          - cpu
-          - gpu
-          - rds
-      dry_run:
-        description: "Build + convert only; skip the R2 upload"
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       variant:
@@ -94,40 +78,44 @@ jobs:
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
+      - name: Resolve sibling release tags from go.mod
+        id: siblings
+        run: bash spinifex/.github/resolve-release-sibling-refs.sh spinifex/go.mod
+
       - name: Checkout Viperblock
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
-          ref: dev
+          ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
-          ref: dev
+          ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Checkout Northstar
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
-          ref: dev
+          ref: ${{ steps.siblings.outputs.northstar }}
           path: northstar
 
       - name: Checkout Bluebottle
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
-          ref: dev
+          ref: ${{ steps.siblings.outputs.bluebottle }}
           path: bluebottle
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: "spinifex/go.mod"
           # Self-hosted runner: the Go module + build cache already persists on

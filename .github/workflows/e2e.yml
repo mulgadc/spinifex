@@ -54,7 +54,7 @@ jobs:
       single_timeout: ${{ steps.budgets.outputs.single_timeout }}
       multi_timeout: ${{ steps.budgets.outputs.multi_timeout }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
           sparse-checkout: .github/scripts
@@ -142,25 +142,25 @@ jobs:
           # stale suite-status.txt / analysis dirs can't leak into this attempt.
           rm -rf "${ARTIFACT_DIR}"
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: spinifex/go.mod
           cache: false
@@ -178,7 +178,7 @@ jobs:
       # Adds ci.job_id alongside ci.cell, before Bootstrap bakes the attrs into
       # the VM, so a telemetry doc points back at this job's log directly.
       - name: Resolve CI job id
-        uses: ./spinifex/.github/actions/otel-job-id
+        uses: $/.github/actions/otel-job-id
         with:
           job-name: Single-Node E2E
 
@@ -372,7 +372,8 @@ jobs:
 
       - name: Install go-junit-report on runner
         run: |
-          go install github.com/jstemmer/go-junit-report/v2@latest
+          # Version from go.mod's tool directive, checked against go.sum.
+          GOWORK=off go -C spinifex install github.com/jstemmer/go-junit-report/v2
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Ship test binaries to VM
@@ -512,7 +513,7 @@ jobs:
 
       - name: Publish test summary
         if: always()
-        uses: ./spinifex/.github/actions/junit-report
+        uses: $/.github/actions/junit-report
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "E2E results"
@@ -522,20 +523,20 @@ jobs:
       - name: Ship test results to Elasticsearch
         if: always()
         continue-on-error: true
-        uses: ./spinifex/.github/actions/junit-to-es
+        uses: $/.github/actions/junit-to-es
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           cell: single
 
       - name: Analyze e2e failures
         if: always()
-        uses: ./spinifex/.github/actions/e2e-analyze
+        uses: $/.github/actions/e2e-analyze
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           log-dir: ${{ env.ARTIFACT_DIR }}
           title: "E2E failure analysis"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-artifacts-${{ github.run_id }}
@@ -579,7 +580,7 @@ jobs:
 
       - name: Upload tofu log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: tofu-log-single-${{ github.run_id }}
           path: ${{ env.TOFU_LOG }}
@@ -642,25 +643,25 @@ jobs:
           # stale suite-status.txt / analysis dirs can't leak into this attempt.
           rm -rf "${ARTIFACT_DIR}"
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: spinifex/go.mod
           cache: false
@@ -677,7 +678,7 @@ jobs:
 
       # See the matching note on e2e_single.
       - name: Resolve CI job id
-        uses: ./spinifex/.github/actions/otel-job-id
+        uses: $/.github/actions/otel-job-id
         with:
           job-name: Multi-Node E2E
 
@@ -758,7 +759,8 @@ jobs:
 
       - name: Install go-junit-report on runner
         run: |
-          go install github.com/jstemmer/go-junit-report/v2@latest
+          # Version from go.mod's tool directive, checked against go.sum.
+          GOWORK=off go -C spinifex install github.com/jstemmer/go-junit-report/v2
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Ship test binaries to node1
@@ -965,7 +967,7 @@ jobs:
 
       - name: Publish test summary
         if: always()
-        uses: ./spinifex/.github/actions/junit-report
+        uses: $/.github/actions/junit-report
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "Multi-Node E2E results"
@@ -975,20 +977,20 @@ jobs:
       - name: Ship test results to Elasticsearch
         if: always()
         continue-on-error: true
-        uses: ./spinifex/.github/actions/junit-to-es
+        uses: $/.github/actions/junit-to-es
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           cell: multi
 
       - name: Analyze e2e failures
         if: always()
-        uses: ./spinifex/.github/actions/e2e-analyze
+        uses: $/.github/actions/e2e-analyze
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           log-dir: ${{ env.ARTIFACT_DIR }}
           title: "Multi-Node E2E failure analysis"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-multi-artifacts-${{ github.run_id }}
@@ -1035,7 +1037,7 @@ jobs:
 
       - name: Upload tofu log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: tofu-log-multi-${{ github.run_id }}
           path: ${{ env.TOFU_LOG }}
@@ -1105,14 +1107,14 @@ jobs:
       # the aggregation script below treats an absent suite-status.txt as
       # "no failures from that leg".
       - name: Download single-node artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         continue-on-error: true
         with:
           name: e2e-artifacts-${{ github.run_id }}
           path: ${{ github.workspace }}/es-summary-single
 
       - name: Download multi-node artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         continue-on-error: true
         with:
           name: e2e-multi-artifacts-${{ github.run_id }}

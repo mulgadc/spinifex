@@ -29,17 +29,17 @@ func TestCreateVolume_NilNATS(t *testing.T) {
 }
 
 func TestDeleteVolume_ValidationErrors(t *testing.T) {
-	_, err := DeleteVolume(context.Background(), nil, nil, 1, "")
+	_, err := DeleteVolume(context.Background(), nil, nil, []string{"node-1"}, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 
-	_, err = DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String("bad")}, nil, 1, "")
+	_, err = DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String("bad")}, nil, []string{"node-1"}, "")
 	assert.EqualError(t, err, awserrors.ErrorInvalidVolumeIDMalformed)
 }
 
 func TestDeleteVolume_NilNATS(t *testing.T) {
 	_, err := DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String("vol-1234567890abcdef0"),
-	}, nil, 1, "acct-123")
+	}, nil, []string{"node-1"}, "acct-123")
 	assert.Error(t, err)
 }
 

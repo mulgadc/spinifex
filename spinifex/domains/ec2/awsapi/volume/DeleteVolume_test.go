@@ -1,12 +1,19 @@
 package volume
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateDeleteVolumeInput(t *testing.T) {
@@ -173,4 +180,49 @@ func TestVolumeHeldByInstance(t *testing.T) {
 			assert.Equal(t, tt.want, volumeHeldByInstance(tt.reservations, vol))
 		})
 	}
+}
+
+// replyAsNode answers every request on subject with data, attributed to node.
+func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, data []byte) {
+	t.Helper()
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		out := nats.NewMsg(msg.Reply)
+		out.Data = data
+		if node != "" {
+			out.Header.Set(natsmsg.NodeIDHeader, node)
+		}
+		_ = msg.RespondMsg(out)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+// node-2 never answers and node-1 answers twice. Counting replies reads that
+// as every node heard from, so a volume a guest on node-2 maps would be
+// destroyed; the guard must see node-2 is missing and refuse.
+func TestDeleteVolume_GuardRefusesWhenOneNodeAnswersTwiceAndAnotherIsSilent(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	replyAsNode(t, nc, "ec2.DescribeStoppedInstances", "", []byte(`{}`))
+	replyAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", []byte(`{}`))
+	var deletes atomic.Int32
+	sub, err := nc.Subscribe("ec2.DeleteVolume", func(msg *nats.Msg) {
+		deletes.Add(1)
+		_ = msg.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err = DeleteVolume(ctx, &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-0123456789abcdef0")},
+		nc, []string{"node-1", "node-2"}, "000000000042")
+
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, code, "an unanswered node is retryable, not an internal fault")
+	assert.Zero(t, deletes.Load(), "the volume service must not be asked to destroy the backing")
 }

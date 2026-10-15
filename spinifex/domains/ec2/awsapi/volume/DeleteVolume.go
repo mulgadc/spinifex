@@ -61,8 +61,10 @@ func volumeHeldByInstance(reservations []*ec2.Reservation, volumeID string) stri
 // BlockDeviceMappings: the daemon-side gate trusts persisted volume metadata,
 // which the attach/detach lifecycle can leave desynced (a running root with
 // State:"" / AttachedInstance:""), so a drifted-but-live volume could be
-// deleted under a running QEMU. The check fails closed on an incomplete view.
-func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *nats.Conn, expectedNodes int, accountID string) (ec2.DeleteVolumeOutput, error) {
+// deleted under a running QEMU. The check fails closed unless every node in
+// nodeIDs answered by identity, so a duplicate reply cannot stand in for a
+// silent node.
+func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *nats.Conn, nodeIDs []string, accountID string) (ec2.DeleteVolumeOutput, error) {
 	var output ec2.DeleteVolumeOutput
 
 	err := ValidateDeleteVolumeInput(input)
@@ -72,20 +74,20 @@ func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *n
 
 	volumeID := aws.StringValue(input.VolumeId)
 
-	// Strict fan-out: complete is true only when every active node answered and
-	// both instance buckets queried, so a node that owns the attachment cannot be
-	// silently missing from the survey. Refuse rather than delete against a
-	// partial view of the cluster.
-	reservations, complete, err := ec2instanceapi.DescribeInstancesForReconcile(ctx, &ec2.DescribeInstancesInput{}, natsConn, expectedNodes, accountID)
+	// Every configured node and both instance buckets must answer, judged by
+	// responder identity, or the node owning the attachment could be the one
+	// missing. Refuse rather than delete against a partial view of the cluster.
+	listing, err := ec2instanceapi.DescribeAccountInstancesComplete(ctx, natsConn, nodeIDs, accountID)
 	if err != nil {
-		slog.ErrorContext(ctx, "DeleteVolume: in-use precheck fan-out failed", "volumeId", volumeID, "err", err)
+		slog.ErrorContext(ctx, "DeleteVolume: refusing delete without a complete instance view", "volumeId", volumeID, "err", err)
+		// An unanswered node is retryable once the cluster is whole again, so
+		// keep the ServiceUnavailable and its Retry-After; anything else is ours.
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorServiceUnavailable {
+			return output, err
+		}
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}
-	if !complete {
-		slog.ErrorContext(ctx, "DeleteVolume: refusing delete on incomplete instance view", "volumeId", volumeID)
-		return output, errors.New(awserrors.ErrorServerInternal)
-	}
-	if holder := volumeHeldByInstance(reservations, volumeID); holder != "" {
+	if holder := volumeHeldByInstance(listing.Reservations, volumeID); holder != "" {
 		slog.ErrorContext(ctx, "DeleteVolume: volume still attached to a live instance",
 			"volumeId", volumeID, "instanceId", holder)
 		return output, errors.New(awserrors.ErrorVolumeInUse)

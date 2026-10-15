@@ -230,7 +230,7 @@ function CertificateInstallBanner() {
               <div className="mt-2 flex flex-col gap-2 text-xs text-muted-foreground">
                 <div>
                   <p className="font-medium text-foreground">macOS</p>
-                  <code className="mt-1 block rounded bg-muted p-2 text-[11px] break-all">
+                  <code className="mt-1 block rounded bg-muted p-2 text-code-block break-all">
                     sudo security add-trusted-cert -d -r trustRoot -k
                     /Library/Keychains/System.keychain spinifex-ca.pem
                   </code>
@@ -244,7 +244,7 @@ function CertificateInstallBanner() {
                 </div>
                 <div>
                   <p className="font-medium text-foreground">Linux</p>
-                  <code className="mt-1 block rounded bg-muted p-2 text-[11px] break-all">
+                  <code className="mt-1 block rounded bg-muted p-2 text-code-block break-all">
                     sudo cp spinifex-ca.pem
                     /usr/local/share/ca-certificates/spinifex-ca.crt && sudo
                     update-ca-certificates

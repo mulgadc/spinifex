@@ -25,6 +25,13 @@ describe("cn", () => {
     expect(cn("p-4", "p-2")).toBe("p-2")
   })
 
+  it("treats custom text size tokens as font sizes, not colors", () => {
+    expect(cn("text-code-inline", "text-muted-foreground")).toBe(
+      "text-code-inline text-muted-foreground",
+    )
+    expect(cn("text-2xs", "text-code-block")).toBe("text-code-block")
+  })
+
   it("returns empty string with no inputs", () => {
     expect(cn()).toBe("")
   })

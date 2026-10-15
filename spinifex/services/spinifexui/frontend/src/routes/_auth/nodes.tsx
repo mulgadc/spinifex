@@ -207,7 +207,6 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
                 <td className="py-1.5 pr-4">
                   <Badge
                     variant={node.status === "Ready" ? "default" : "secondary"}
-                    className="text-[0.625rem]"
                   >
                     {node.status}
                   </Badge>
@@ -270,7 +269,6 @@ function VMsTable({ vms }: { vms: VMInfo[] }) {
               <td className="py-1.5 pr-4">
                 <Badge
                   variant={vm.status === "running" ? "default" : "secondary"}
-                  className="text-[0.625rem]"
                 >
                   {vm.status}
                 </Badge>

@@ -49,6 +49,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@shadcn/lint": "^0.2.1",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/eslint-plugin-query": "^5.104.1",
     "@tanstack/eslint-plugin-router": "^1.162.0",

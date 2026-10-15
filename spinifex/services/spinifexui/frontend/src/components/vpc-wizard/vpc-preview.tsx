@@ -21,8 +21,8 @@ function SubnetCard({
     <div
       className={`rounded-md border px-3 py-2 text-xs ${
         variant === "public"
-          ? "border-emerald-500/30 bg-emerald-500/10"
-          : "border-blue-500/30 bg-blue-500/10"
+          ? "border-success/30 bg-success/10"
+          : "border-info/30 bg-info/10"
       }`}
     >
       <div className="font-medium">{label}</div>
@@ -106,7 +106,7 @@ export function VpcPreview({
                 Network Connections
               </div>
               {hasIgw && (
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs">
                   <div className="font-medium">Internet Gateway</div>
                   <div className="text-muted-foreground">Attached to VPC</div>
                 </div>

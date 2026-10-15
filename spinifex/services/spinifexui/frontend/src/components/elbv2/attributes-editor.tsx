@@ -142,7 +142,7 @@ export function AttributesEditor({
         </div>
       )}
       {isSuccess && changed.length === 0 && (
-        <output className="mb-4 block rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400">
+        <output className="mb-4 block rounded-md border border-success bg-success/10 p-3 text-sm text-success-foreground">
           Attributes saved.
         </output>
       )}

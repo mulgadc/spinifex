@@ -1,5 +1,11 @@
 import { type ClassValue, clsx } from "clsx"
-import { twMerge } from "tailwind-merge"
+import { extendTailwindMerge } from "tailwind-merge"
+
+// Custom font-size tokens from styles.css; unregistered, tailwind-merge reads
+// text-code-inline as a color and drops it beside text-muted-foreground.
+const twMerge = extendTailwindMerge({
+  extend: { theme: { text: ["2xs", "code-block", "code-inline"] } },
+})
 
 export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs))

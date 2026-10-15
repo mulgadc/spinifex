@@ -398,10 +398,7 @@ function RuleDialog({
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent
-        className="grid-cols-[minmax(0,1fr)]"
-        style={{ maxWidth: "40rem", width: "calc(100vw - 2rem)" }}
-      >
+      <AlertDialogContent width="xl">
         <AlertDialogHeader>
           <AlertDialogTitle>
             {mode === "add" ? "Add rule" : "Edit rule"}

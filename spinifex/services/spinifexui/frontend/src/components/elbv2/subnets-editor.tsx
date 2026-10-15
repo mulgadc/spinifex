@@ -66,7 +66,7 @@ export function SubnetsEditor({
       }}
     >
       <div
-        className="mb-4 rounded-md border border-amber-500 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+        className="mb-4 rounded-md border border-warning bg-warning/10 p-3 text-sm text-warning-foreground"
         role="note"
       >
         Applying a subnet change re-homes the load balancer by relaunching its
@@ -82,7 +82,7 @@ export function SubnetsEditor({
         </div>
       )}
       {isSuccess && !dirty && (
-        <output className="mb-4 block rounded-md border border-emerald-500 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-400">
+        <output className="mb-4 block rounded-md border border-success bg-success/10 p-3 text-sm text-success-foreground">
           Subnets updated.
         </output>
       )}

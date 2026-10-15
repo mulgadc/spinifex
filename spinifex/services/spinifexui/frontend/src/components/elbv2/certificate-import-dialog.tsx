@@ -71,10 +71,7 @@ export function CertificateImportDialog({
 
   return (
     <AlertDialog onOpenChange={handleOpenChange} open={open}>
-      <AlertDialogContent
-        className="grid-cols-[minmax(0,1fr)]"
-        style={{ maxWidth: "36rem", width: "calc(100vw - 2rem)" }}
-      >
+      <AlertDialogContent width="lg">
         <AlertDialogHeader>
           <AlertDialogTitle>Import certificate</AlertDialogTitle>
           <AlertDialogDescription>

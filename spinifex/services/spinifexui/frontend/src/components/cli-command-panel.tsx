@@ -97,7 +97,7 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
       {expanded && (
         <div className="border-t border-border">
           <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
-            <span className="text-[0.625rem] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               {commands.length > 1 ? `${commands.length} commands` : "command"}
             </span>
             <Button
@@ -120,7 +120,7 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
             {commands.map((cmd, i) => (
               <div key={cmd.label}>
                 {commands.length > 1 && (
-                  <div className="mb-1 text-[0.625rem] font-medium text-muted-foreground">
+                  <div className="mb-1 text-2xs font-medium text-muted-foreground">
                     {cmd.label}
                   </div>
                 )}

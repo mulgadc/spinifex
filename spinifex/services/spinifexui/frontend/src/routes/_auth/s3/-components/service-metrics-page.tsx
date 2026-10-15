@@ -68,7 +68,7 @@ export function ServiceMetricsPage() {
               </div>
             </div>
             {encoding && (
-              <p className="mt-3 text-[0.625rem] text-muted-foreground">
+              <p className="mt-3 text-2xs text-muted-foreground">
                 Reed-Solomon erasure coding: {encoding.data_shards} data shards
                 + {encoding.parity_shards} parity{" "}
                 {encoding.parity_shards === 1 ? "shard" : "shards"}. Can
@@ -165,10 +165,7 @@ function MetaNodesTable({ nodes }: { nodes: MetaNodeStatus[] }) {
               <td className="py-1.5 pr-4 font-mono">{node.host}</td>
               <td className="py-1.5 pr-4 font-mono">{node.port}</td>
               <td className="py-1.5 pr-4">
-                <Badge
-                  variant={node.healthy ? "default" : "destructive"}
-                  className="text-[0.625rem]"
-                >
+                <Badge variant={node.healthy ? "default" : "destructive"}>
                   {node.healthy ? "Healthy" : "Unreachable"}
                 </Badge>
               </td>
@@ -176,7 +173,6 @@ function MetaNodesTable({ nodes }: { nodes: MetaNodeStatus[] }) {
                 {node.state ? (
                   <Badge
                     variant={node.state === "Leader" ? "default" : "secondary"}
-                    className="text-[0.625rem]"
                   >
                     {node.state}
                   </Badge>

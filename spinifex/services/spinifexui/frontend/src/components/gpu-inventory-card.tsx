@@ -83,7 +83,7 @@ export function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
                   <td className="py-1.5 pr-4">{gpu.model}</td>
                   <td className="py-1.5 pr-4">{formatVRAMMiB(gpu.vram_mib)}</td>
                   <td className="py-1.5 pr-4">
-                    <Badge className="text-[0.625rem]" variant="secondary">
+                    <Badge variant="secondary">
                       {gpu.mig_enabled ? "MIG" : "Passthrough"}
                     </Badge>
                   </td>
@@ -121,7 +121,7 @@ export function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
                             {slice.instance_id}
                           </Link>
                         ) : (
-                          <span className="text-green-600">free</span>
+                          <span className="text-positive">free</span>
                         )}
                       </td>
                     </tr>

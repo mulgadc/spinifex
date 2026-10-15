@@ -1,4 +1,5 @@
 import { AlertDialog as AlertDialogPrimitive } from "@base-ui/react/alert-dialog"
+import { cva, type VariantProps } from "class-variance-authority"
 import type * as React from "react"
 
 import { Button } from "@/components/ui/button"
@@ -40,21 +41,40 @@ export function AlertDialogOverlay({
   )
 }
 
+// Width is separate from size: the header, title and media layouts key off
+// data-size=default, so a wider dialog keeps size="default".
+export const alertDialogContentVariants = cva(
+  "data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 group/alert-dialog-content data-closed:animate-out data-open:animate-in fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-3 rounded-xl bg-background p-4 ring-1 ring-foreground/10 duration-100 outline-none",
+  {
+    variants: {
+      width: {
+        default:
+          "data-[size=default]:max-w-xs data-[size=sm]:max-w-64 data-[size=default]:sm:max-w-sm",
+        md: "w-[calc(100vw-2rem)] max-w-lg grid-cols-[minmax(0,1fr)]",
+        lg: "w-[calc(100vw-2rem)] max-w-xl grid-cols-[minmax(0,1fr)]",
+        xl: "w-[calc(100vw-2rem)] max-w-160 grid-cols-[minmax(0,1fr)]",
+      },
+    },
+    defaultVariants: {
+      width: "default",
+    },
+  },
+)
+
 export function AlertDialogContent({
   className,
   size = "default",
+  width = "default",
   ...props
-}: AlertDialogPrimitive.Popup.Props & {
-  size?: "default" | "sm"
-}) {
+}: AlertDialogPrimitive.Popup.Props &
+  VariantProps<typeof alertDialogContentVariants> & {
+    size?: "default" | "sm"
+  }) {
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Popup
-        className={cn(
-          "data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 group/alert-dialog-content data-closed:animate-out data-open:animate-in fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-3 rounded-xl bg-background p-4 ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-64 data-[size=default]:sm:max-w-sm",
-          className,
-        )}
+        className={cn(alertDialogContentVariants({ className, width }))}
         data-size={size}
         data-slot="alert-dialog-content"
         {...props}

@@ -2,11 +2,12 @@ import { defineConfig } from "oxlint"
 import antiSlop from "ultracite/oxlint/anti-slop"
 import core from "ultracite/oxlint/core"
 import react from "ultracite/oxlint/react"
+import shadcn from "ultracite/oxlint/shadcn"
 import tanstack from "ultracite/oxlint/tanstack"
 import vitest from "ultracite/oxlint/vitest"
 
 export default defineConfig({
-  extends: [core, react, vitest, tanstack, antiSlop],
+  extends: [core, react, vitest, tanstack, shadcn, antiSlop],
   jsPlugins: [
     "@tanstack/eslint-plugin-query",
     "@tanstack/eslint-plugin-router",
@@ -53,6 +54,8 @@ export default defineConfig({
       "error",
     "react-you-might-not-need-an-effect/no-pass-data-to-parent": "error",
     "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
+    "shadcn/no-restyle": "off",
+    "shadcn/no-unknown-classes": "off",
     "typescript/no-floating-promises": [
       "error",
       {

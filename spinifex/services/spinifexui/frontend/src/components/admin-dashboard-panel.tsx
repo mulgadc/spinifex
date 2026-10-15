@@ -202,9 +202,7 @@ export function AdminDashboardPanel() {
                 {isOpenSource ? (
                   <Lock className="size-3 text-muted-foreground" />
                 ) : (
-                  <Badge variant="outline" className="text-[0.625rem]">
-                    Active
-                  </Badge>
+                  <Badge variant="outline">Active</Badge>
                 )}
               </div>
             ))}
@@ -249,7 +247,6 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
               <td className="py-1.5 pr-4">
                 <Badge
                   variant={node.status === "Ready" ? "default" : "secondary"}
-                  className="text-[0.625rem]"
                 >
                   {node.status}
                 </Badge>

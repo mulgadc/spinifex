@@ -184,7 +184,7 @@ fstype_of() {
 # weights_device_ordinal maps this member's BEDROCK_WEIGHTS_DEVICE (/dev/sdf,
 # /dev/sdg, ...) to its 0-based position among the bundle's members: sdf -> 0,
 # sdg -> 1, and so on, mirroring nthWeightsDevice's own 'f'+n scheme
-# (handlers/bedrock/launch.go) exactly. Named-letter arithmetic, not ASCII
+# (spinifex/domains/ochre/launch.go) exactly. Named-letter arithmetic, not ASCII
 # math: POSIX sh has no portable char-to-int builtin, and a bundle never
 # carries more than a handful of co-served members, so the alphabet is not a
 # real ceiling to enumerate by hand. Prints the ordinal and returns 0, or

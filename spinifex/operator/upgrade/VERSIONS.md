@@ -61,8 +61,8 @@ git show <commit>^:spinifex/migrate/003_ipam_purpose.go
 
 ## Framework
 
-The framework (`migrate.go`, `version_readers.go`) covers three kinds of target:
+The framework covers three kinds of target, split between two packages:
 
-- `RunKV` is called from service-startup paths to stamp NATS KV bucket versions.
-- `RunConfig` / `RunAllConfig` / `PendingConfig` back `spx admin upgrade`, which `scripts/setup.sh` runs with `--yes` while the services are stopped.
+- `RunKV` (`spinifex/foundation/state/migrate/kv.go`) is called from service-startup paths to stamp NATS KV bucket versions.
+- `RunConfig` / `RunAllConfig` / `PendingConfig` (this package's `migrate.go` and `version_readers.go`) back `spx admin upgrade`, which `scripts/setup.sh` runs with `--yes` while the services are stopped.
 - `RunObject` migrates object-store data, stamping its version in a caller-supplied JetStream KV bucket. The stamp is a read-then-write, not a compare-and-swap, so two nodes can race to run the same step — every `ObjectMigration.Run` must be safe to re-execute.

@@ -32,6 +32,7 @@ type fakeCluster struct {
 	requests  map[string][]byte
 	replies   map[string]any
 	errorCode map[string]string
+	handlers  map[string]func(data []byte) (reply any, errorCode string)
 }
 
 func newFakeCluster(t *testing.T) *fakeCluster {
@@ -43,6 +44,7 @@ func newFakeCluster(t *testing.T) *fakeCluster {
 		requests:  map[string][]byte{},
 		replies:   map[string]any{},
 		errorCode: map[string]string{},
+		handlers:  map[string]func([]byte) (any, string){},
 	}
 
 	sub, err := nc.Subscribe("ec2.>", cluster.serve)
@@ -63,6 +65,7 @@ func (c *fakeCluster) serve(msg *nats.Msg) {
 	c.requests[msg.Subject] = msg.Data
 	code, isError := c.errorCode[msg.Subject]
 	reply, hasReply := c.replies[msg.Subject]
+	handler, hasHandler := c.handlers[msg.Subject]
 	c.mu.Unlock()
 
 	respond := func(data []byte) {
@@ -71,6 +74,11 @@ func (c *fakeCluster) serve(msg *nats.Msg) {
 		out.Header.Set(utils.NodeIDHeader, fakeClusterNode)
 		_ = msg.RespondMsg(out)
 	}
+	if hasHandler && !isError {
+		reply, code = handler(msg.Data)
+		isError, hasReply = code != "", true
+	}
+
 	switch {
 	case isError:
 		respond(utils.GenerateErrorPayload(code))
@@ -98,6 +106,29 @@ func (c *fakeCluster) fail(subject, code string) {
 	c.errorCode[subject] = code
 }
 
+// handle answers subject from state the test owns, for doubles whose answer
+// must change as the reaper acts — an attachment a force detach clears.
+func (c *fakeCluster) handle(subject string, handler func(data []byte) (any, string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.handlers[subject] = handler
+}
+
+// echoAsNode adds a second reply to every request on subject, attributed to
+// node, so one node can answer twice while another stays silent.
+func (c *fakeCluster) echoAsNode(t *testing.T, subject, node string) {
+	t.Helper()
+	sub, err := c.nc.Subscribe(subject, func(msg *nats.Msg) {
+		out := nats.NewMsg(msg.Reply)
+		out.Data = []byte(`{}`)
+		out.Header.Set(utils.NodeIDHeader, node)
+		_ = msg.RespondMsg(out)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, c.nc.Flush())
+}
+
 func (c *fakeCluster) called() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -115,6 +146,13 @@ func (c *fakeCluster) request(t *testing.T, subject string, into any) {
 
 func testCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// silentClusterCtx outlasts the full fan-out deadline a silent node costs.
+func silentClusterCtx(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -201,7 +239,7 @@ func TestVolumeReaperCarriesItsAttachment(t *testing.T) {
 		},
 	})
 
-	reaper := &volumeReaper{nc: cluster.nc, expectedNodes: 1}
+	reaper := newVolumeReaper(cluster.nc, fakeClusterNode)
 	found, err := reaper.List(testCtx(t), "000000000042")
 	require.NoError(t, err)
 
@@ -216,31 +254,250 @@ func TestVolumeReaperReportsRefusalWithoutForce(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.fail("ec2.DeleteVolume", "VolumeInUse")
 
-	reaper := &volumeReaper{nc: cluster.nc, expectedNodes: 1}
+	reaper := newVolumeReaper(cluster.nc, fakeClusterNode)
 	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, false)
 
 	require.Error(t, err)
 	assert.NotContains(t, cluster.called(), forceDetachSubject)
 }
 
-// The deadlock the force path exists for: the ordinary delete refuses, so the
-// attachment is cleared cluster-wide and the delete retried.
-func TestVolumeReaperForceClearsTheAttachment(t *testing.T) {
+// heldVolume is one volume record as its owner keeps it: the ordinary delete
+// refuses while the record names an instance, and a force detach clears it.
+type heldVolume struct {
+	mu       sync.Mutex
+	id       string
+	holder   string
+	deleted  bool
+	detaches int
+}
+
+func newHeldVolume(cluster *fakeCluster, id, holder string) *heldVolume {
+	volume := &heldVolume{id: id, holder: holder}
+	cluster.handle("ec2.DescribeVolumes", func(data []byte) (any, string) {
+		var input ec2.DescribeVolumesInput
+		_ = json.Unmarshal(data, &input)
+		volume.mu.Lock()
+		defer volume.mu.Unlock()
+		if volume.deleted {
+			if len(input.VolumeIds) > 0 {
+				return nil, awserrors.ErrorInvalidVolumeNotFound
+			}
+			return ec2.DescribeVolumesOutput{}, ""
+		}
+		described := &ec2.Volume{VolumeId: aws.String(volume.id), State: aws.String("available")}
+		if volume.holder != "" {
+			described.State = aws.String("in-use")
+			described.Attachments = []*ec2.VolumeAttachment{
+				{VolumeId: aws.String(volume.id), InstanceId: aws.String(volume.holder), State: aws.String("attached")},
+			}
+		}
+		return ec2.DescribeVolumesOutput{Volumes: []*ec2.Volume{described}}, ""
+	})
+	cluster.handle(forceDetachSubject, func([]byte) (any, string) {
+		volume.mu.Lock()
+		defer volume.mu.Unlock()
+		volume.detaches++
+		previous := volume.holder
+		volume.holder = ""
+		return ec2.VolumeAttachment{VolumeId: aws.String(volume.id), InstanceId: aws.String(previous)}, ""
+	})
+	cluster.handle("ec2.DeleteVolume", func([]byte) (any, string) {
+		volume.mu.Lock()
+		defer volume.mu.Unlock()
+		switch {
+		case volume.deleted:
+			return nil, awserrors.ErrorInvalidVolumeNotFound
+		case volume.holder != "":
+			return nil, awserrors.ErrorVolumeInUse
+		}
+		volume.deleted = true
+		return ec2.DeleteVolumeOutput{}, ""
+	})
+	return volume
+}
+
+func (v *heldVolume) state() (deleted bool, holder string, detaches int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.deleted, v.holder, v.detaches
+}
+
+func instancesIn(state string, instanceIDs ...string) ec2.DescribeInstancesOutput {
+	reservation := &ec2.Reservation{ReservationId: aws.String("r-" + state)}
+	for _, id := range instanceIDs {
+		reservation.Instances = append(reservation.Instances, &ec2.Instance{
+			InstanceId: aws.String(id), State: &ec2.InstanceState{Name: aws.String(state)},
+		})
+	}
+	return ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{reservation}}
+}
+
+// Force must not clear an attachment a live guest still holds. The instance
+// carries no block device mapping for the volume, so the attachment record is
+// the only thing standing between the guest and a deleted disk.
+func TestVolumeReaperForceRetainsAVolumeALiveInstanceHolds(t *testing.T) {
+	for _, state := range []string{"running", "stopped", "shutting-down", "pending"} {
+		t.Run(state, func(t *testing.T) {
+			cluster := newFakeCluster(t)
+			volume := newHeldVolume(cluster, "vol-held", "i-live")
+			subject := "ec2.DescribeInstances"
+			if state == "stopped" {
+				subject = "ec2.DescribeStoppedInstances"
+			}
+			cluster.reply(subject, instancesIn(state, "i-live"))
+
+			reaper := newVolumeReaper(cluster.nc, fakeClusterNode)
+			err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "vol-held")
+			assert.Contains(t, err.Error(), "i-live")
+			assert.Contains(t, err.Error(), state)
+			deleted, holder, detaches := volume.state()
+			assert.False(t, deleted, "a volume a live guest holds must survive teardown")
+			assert.Equal(t, "i-live", holder, "the attachment must not be cleared under a live guest")
+			assert.Zero(t, detaches)
+		})
+	}
+}
+
+// "Cannot prove gone" is not "gone": every way the proof can fall short keeps
+// the volume and its attachment exactly as they were.
+func TestVolumeReaperForceRetainsAVolumeWhenTheHolderCannotBeProvenGone(t *testing.T) {
+	twoNodes := []string{fakeClusterNode, "node-2"}
+	cases := []struct {
+		name  string
+		setup func(cluster *fakeCluster)
+		nodes []string
+	}{
+		{"configured node set unknown", func(*fakeCluster) {}, []string{}},
+		{"lone node answers NotFound while another is silent", func(cluster *fakeCluster) {
+			cluster.fail("ec2.DescribeInstances", awserrors.ErrorInvalidInstanceIDNotFound)
+		}, twoNodes},
+		{"terminated copy found while the holder node is silent", func(cluster *fakeCluster) {
+			cluster.reply("ec2.DescribeTerminatedInstances", instancesIn("terminated", "i-held"))
+		}, twoNodes},
+		{"node describe fails", func(cluster *fakeCluster) {
+			cluster.fail("ec2.DescribeInstances", awserrors.ErrorServerInternal)
+		}, nil},
+		{"terminated bucket unreachable", func(cluster *fakeCluster) {
+			cluster.fail("ec2.DescribeTerminatedInstances", awserrors.ErrorServerInternal)
+		}, nil},
+		{"stopped bucket unreachable", func(cluster *fakeCluster) {
+			cluster.fail("ec2.DescribeStoppedInstances", awserrors.ErrorServerInternal)
+		}, nil},
+		{"sources disagree", func(cluster *fakeCluster) {
+			cluster.reply("ec2.DescribeTerminatedInstances", instancesIn("terminated", "i-held"))
+			cluster.reply("ec2.DescribeInstances", instancesIn("running", "i-held"))
+		}, nil},
+		{"volume describe fails", func(cluster *fakeCluster) {
+			cluster.fail("ec2.DescribeVolumes", awserrors.ErrorServerInternal)
+		}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := newFakeCluster(t)
+			volume := newHeldVolume(cluster, "vol-held", "i-held")
+			tc.setup(cluster)
+			nodes := tc.nodes
+			if nodes == nil {
+				nodes = []string{fakeClusterNode}
+			}
+
+			reaper := newVolumeReaper(cluster.nc, nodes...)
+			err := reaper.Delete(silentClusterCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "vol-held")
+			deleted, holder, detaches := volume.state()
+			assert.False(t, deleted)
+			assert.Equal(t, "i-held", holder)
+			assert.Zero(t, detaches)
+		})
+	}
+}
+
+// The deadlock force exists for: the instance is gone but its volume record
+// still names it, so the ordinary delete refuses forever. Once the holder is
+// proven absent the attachment is cleared and the volume deleted.
+func TestVolumeReaperForceDeletesOnceTheHolderIsProvenGone(t *testing.T) {
+	cases := map[string]func(cluster *fakeCluster){
+		"terminated": func(cluster *fakeCluster) {
+			cluster.reply("ec2.DescribeTerminatedInstances", instancesIn("terminated", "i-gone"))
+		},
+		"not found": func(*fakeCluster) {},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			cluster := newFakeCluster(t)
+			volume := newHeldVolume(cluster, "vol-held", "i-gone")
+			setup(cluster)
+
+			reaper := newVolumeReaper(cluster.nc, fakeClusterNode)
+			require.NoError(t, reaper.Delete(testCtx(t), "000000000042",
+				Resource{Kind: "volume", ID: "vol-held"}, true))
+
+			deleted, holder, detaches := volume.state()
+			assert.True(t, deleted)
+			assert.Empty(t, holder)
+			assert.Equal(t, 1, detaches)
+
+			var input ec2.DetachVolumeInput
+			cluster.request(t, forceDetachSubject, &input)
+			assert.Equal(t, "vol-held", aws.StringValue(input.VolumeId))
+		})
+	}
+}
+
+// With no holder on record, the refusal is about something else — a snapshot,
+// a mapping the delete guard found — and clearing the record cannot help.
+func TestVolumeReaperForceLeavesAnUnattachedRefusalAlone(t *testing.T) {
 	cluster := newFakeCluster(t)
-	cluster.fail("ec2.DeleteVolume", "VolumeInUse")
+	cluster.reply("ec2.DescribeVolumes", ec2.DescribeVolumesOutput{
+		Volumes: []*ec2.Volume{{VolumeId: aws.String("vol-snapped"), State: aws.String("available")}},
+	})
+	cluster.fail("ec2.DeleteVolume", awserrors.ErrorVolumeInUse)
 
-	reaper := &volumeReaper{nc: cluster.nc, expectedNodes: 1}
-	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
+	reaper := newVolumeReaper(cluster.nc, fakeClusterNode)
+	err := reaper.Delete(testCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-snapped"}, true)
 
-	// The delete still fails here because the double refuses every attempt;
-	// what matters is that force reached for the detach at all.
 	require.Error(t, err)
-	assert.Contains(t, cluster.called(), forceDetachSubject)
+	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
+	assert.NotContains(t, cluster.called(), forceDetachSubject)
+}
 
-	var input ec2.DetachVolumeInput
-	cluster.request(t, forceDetachSubject, &input)
-	assert.Equal(t, "vol-held", aws.StringValue(input.VolumeId))
-	assert.True(t, aws.BoolValue(input.Force))
+// End to end through the engine: a forced teardown whose guest is still up
+// leaves the volume, names why, and keeps the account TERMINATING.
+func TestForcedTeardownKeepsTheAccountWhileALiveGuestHoldsAVolume(t *testing.T) {
+	cluster := newFakeCluster(t)
+	volume := newHeldVolume(cluster, "vol-held", "i-live")
+	cluster.reply("ec2.DescribeInstances", instancesIn("running", "i-live"))
+
+	accounts := newFakeAccounts()
+	engine := quietEngine(accounts, newVolumeReaper(cluster.nc, fakeClusterNode))
+	req := request()
+	req.Force = true
+
+	result, err := engine.Teardown(testCtx(t), req)
+
+	require.ErrorIs(t, err, ErrResourcesStuck)
+	require.Equal(t, 1, result.StuckCount())
+	var stuck Stuck
+	for _, stage := range result.Stages {
+		if len(stage.Stuck) > 0 {
+			stuck = stage.Stuck[0]
+		}
+	}
+	assert.Equal(t, "vol-held", stuck.Resource.ID)
+	assert.Contains(t, stuck.Reason, "vol-held")
+	assert.Contains(t, stuck.Reason, "i-live")
+	assert.Contains(t, stuck.Reason, "running")
+	assert.False(t, result.AccountDeleted)
+	assert.False(t, accounts.deleted)
+	assert.Equal(t, AccountStatusTerminating, accounts.account.Status)
+	deleted, holder, _ := volume.state()
+	assert.False(t, deleted)
+	assert.Equal(t, "i-live", holder)
 }
 
 // A volume that is already gone is a success. Teardown re-runs after a crash
@@ -249,7 +506,7 @@ func TestVolumeReaperTreatsAMissingVolumeAsDeleted(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.fail("ec2.DeleteVolume", "InvalidVolume.NotFound")
 
-	reaper := &volumeReaper{nc: cluster.nc, expectedNodes: 1}
+	reaper := newVolumeReaper(cluster.nc, fakeClusterNode)
 
 	assert.NoError(t, reaper.Delete(testCtx(t), "000000000042",
 		Resource{Kind: "volume", ID: "vol-gone"}, false))
@@ -552,7 +809,7 @@ func TestAListingFailureIsReported(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.fail("ec2.DescribeVolumes", "InternalError")
 
-	_, err := (&volumeReaper{nc: cluster.nc, expectedNodes: 1}).List(testCtx(t), "000000000042")
+	_, err := (newVolumeReaper(cluster.nc, fakeClusterNode)).List(testCtx(t), "000000000042")
 
 	assert.Error(t, err)
 }
@@ -699,4 +956,61 @@ func TestEC2ReapersRemoveInterfacesBeforeSubnets(t *testing.T) {
 	}
 	require.NotEqual(t, -1, eni, "there is no network-interface reaper")
 	require.Less(t, eni, subnet, "interfaces must be reaped before the subnets holding them")
+}
+
+func newVolumeReaper(nc *nats.Conn, nodeIDs ...string) *volumeReaper {
+	return &volumeReaper{nc: nc, nodeIDs: nodeIDs}
+}
+
+// The holder lives on node-2, which never answers, while node-1 answers every
+// fan-out twice. A count of replies reads that as complete and the holder as
+// gone; only judging by responder identity sees that node-2 is missing.
+func TestVolumeReaperForceRetainsAVolumeWhenOneNodeAnswersTwiceAndTheHolderNodeIsSilent(t *testing.T) {
+	cluster := newFakeCluster(t)
+	volume := newHeldVolume(cluster, "vol-held", "i-on-silent-node")
+	cluster.echoAsNode(t, "ec2.DescribeInstances", fakeClusterNode)
+
+	reaper := newVolumeReaper(cluster.nc, fakeClusterNode, "node-2")
+	err := reaper.Delete(silentClusterCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vol-held")
+	assert.Contains(t, err.Error(), "i-on-silent-node")
+	deleted, holder, detaches := volume.state()
+	assert.False(t, deleted, "a holder on a silent node is not proven gone")
+	assert.Equal(t, "i-on-silent-node", holder)
+	assert.Zero(t, detaches)
+	assert.NotContains(t, cluster.called(), forceDetachSubject)
+}
+
+func TestForcedTeardownKeepsTheAccountWhenOneNodeAnswersTwiceAndTheHolderNodeIsSilent(t *testing.T) {
+	cluster := newFakeCluster(t)
+	volume := newHeldVolume(cluster, "vol-held", "i-on-silent-node")
+	cluster.echoAsNode(t, "ec2.DescribeInstances", fakeClusterNode)
+
+	accounts := newFakeAccounts()
+	engine := quietEngine(accounts, newVolumeReaper(cluster.nc, fakeClusterNode, "node-2"))
+	req := request()
+	req.Force = true
+
+	result, err := engine.Teardown(silentClusterCtx(t), req)
+
+	require.ErrorIs(t, err, ErrResourcesStuck)
+	require.Equal(t, 1, result.StuckCount())
+	var stuck Stuck
+	for _, stage := range result.Stages {
+		if len(stage.Stuck) > 0 {
+			stuck = stage.Stuck[0]
+		}
+	}
+	assert.Equal(t, "vol-held", stuck.Resource.ID)
+	assert.Contains(t, stuck.Reason, "vol-held")
+	assert.Contains(t, stuck.Reason, "i-on-silent-node")
+	assert.False(t, result.AccountDeleted)
+	assert.False(t, accounts.deleted)
+	assert.Equal(t, AccountStatusTerminating, accounts.account.Status)
+	deleted, holder, detaches := volume.state()
+	assert.False(t, deleted)
+	assert.Equal(t, "i-on-silent-node", holder)
+	assert.Zero(t, detaches)
 }

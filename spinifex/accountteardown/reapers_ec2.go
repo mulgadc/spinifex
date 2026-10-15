@@ -39,7 +39,7 @@ func EC2Reapers(nc *nats.Conn, expectedNodes int, nodeIDs []string) []Reaper {
 		// delete, because snapshot-backed clones read from its chunk prefix.
 		&snapshotReaper{nc: nc},
 		&imageReaper{nc: nc},
-		&volumeReaper{nc: nc, expectedNodes: expectedNodes},
+		&volumeReaper{nc: nc, nodeIDs: nodeIDs},
 
 		// Reverse of creation order. The VPC cannot go until everything
 		// inside it has, and the gateway enforces that.
@@ -114,8 +114,10 @@ func (r *instanceReaper) Delete(ctx context.Context, accountID string, resource 
 }
 
 type volumeReaper struct {
-	nc            *nats.Conn
-	expectedNodes int
+	nc *nats.Conn
+	// nodeIDs is the configured node set; every one must answer, by identity,
+	// before a volume's holder can be proven gone or the delete guard passes.
+	nodeIDs []string
 }
 
 func (r *volumeReaper) Kind() string { return "volume" }
@@ -149,16 +151,16 @@ func (r *volumeReaper) List(ctx context.Context, accountID string) ([]Resource, 
 func (r *volumeReaper) Delete(ctx context.Context, accountID string, resource Resource, force bool) error {
 	_, err := gateway_ec2_volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(resource.ID),
-	}, r.nc, r.expectedNodes, accountID)
+	}, r.nc, r.nodeIDs, accountID)
 	if isAlreadyGone(err) {
 		return nil
 	}
 	if !force {
 		return err
 	}
-	// Force path: the ordinary delete refuses an attached volume, and an
-	// instance that will not terminate would otherwise strand it forever.
-	return forceDeleteVolume(ctx, r.nc, r.expectedNodes, accountID, resource.ID)
+	// Force path: the ordinary delete refuses an attached volume, and a holder
+	// that is gone but still on the record would otherwise strand it forever.
+	return forceDeleteVolume(ctx, r.nc, r.nodeIDs, accountID, resource.ID, err)
 }
 
 type snapshotReaper struct{ nc *nats.Conn }
@@ -698,22 +700,120 @@ const forceDetachSubject = "ec2.ForceDetachVolume"
 // unwell rather than that the work is large.
 const forceDetachTimeout = 30 * time.Second
 
-// forceDeleteVolume clears the attachment the ordinary delete refuses to
-// override, then deletes.
-//
-// This is the deadlock the force path exists for: a volume attached to an
-// instance that will not terminate leaves both undeletable, and the account
-// can never be emptied.
-func forceDeleteVolume(ctx context.Context, nc *nats.Conn, expectedNodes int, accountID, volumeID string) error {
-	_, err := utils.NATSRequest[ec2.VolumeAttachment](ctx, nc, forceDetachSubject,
+// forceDeleteVolume clears an attachment the ordinary delete refuses to
+// override, then deletes, but only once every instance the volume names is
+// proven absent. Anything short of proof leaves the volume and its record alone.
+func forceDeleteVolume(ctx context.Context, nc *nats.Conn, nodeIDs []string, accountID, volumeID string, refusal error) error {
+	holders, err := volumeHolders(ctx, nc, accountID, volumeID)
+	if err != nil {
+		if isAlreadyGone(err) {
+			return nil
+		}
+		return fmt.Errorf("volume %s retained: cannot read its attachment: %w", volumeID, err)
+	}
+	if len(holders) == 0 {
+		// No holder on record, so the refusal is not an attachment and
+		// clearing the record would change nothing but the evidence.
+		return refusal
+	}
+	for _, instanceID := range holders {
+		if err := proveInstanceAbsent(ctx, nc, nodeIDs, accountID, instanceID); err != nil {
+			return fmt.Errorf("volume %s retained: %w", volumeID, err)
+		}
+	}
+
+	_, err = utils.NATSRequest[ec2.VolumeAttachment](ctx, nc, forceDetachSubject,
 		&ec2.DetachVolumeInput{VolumeId: aws.String(volumeID), Force: aws.Bool(true)},
 		forceDetachTimeout, accountID)
 	if err != nil && !isAlreadyGone(err) {
 		return fmt.Errorf("force detach %s: %w", volumeID, err)
 	}
 
+	// The ordinary delete re-checks that the record is unattached and that no
+	// live instance maps the volume, so a re-attach in between still refuses.
 	_, err = gateway_ec2_volume.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
-	}, nc, expectedNodes, accountID)
+	}, nc, nodeIDs, accountID)
 	return ignoreAlreadyGone(err)
+}
+
+// volumeHolders returns the instances the volume's own record says hold it,
+// read fresh rather than from the listing that queued the delete.
+func volumeHolders(ctx context.Context, nc *nats.Conn, accountID, volumeID string) ([]string, error) {
+	out, err := gateway_ec2_volume.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+		VolumeIds: []*string{aws.String(volumeID)},
+	}, nc, accountID)
+	if err != nil {
+		return nil, err
+	}
+	var holders []string
+	for _, volume := range out.Volumes {
+		if volume == nil || aws.StringValue(volume.VolumeId) != volumeID {
+			continue
+		}
+		for _, attachment := range volume.Attachments {
+			if attachment != nil && aws.StringValue(attachment.InstanceId) != "" {
+				holders = append(holders, aws.StringValue(attachment.InstanceId))
+			}
+		}
+	}
+	return holders, nil
+}
+
+// proveInstanceAbsent accepts only a definitive InvalidInstanceID.NotFound or
+// a terminated copy from a describe naming the instance, then confirms both on
+// a listing every configured node answered by identity. Anything else is not proof.
+func proveInstanceAbsent(ctx context.Context, nc *nats.Conn, nodeIDs []string, accountID, instanceID string) error {
+	if len(nodeIDs) == 0 {
+		return fmt.Errorf("cannot prove holding instance %s is gone: the configured node set is unknown", instanceID)
+	}
+	named, err := gateway_ec2_instance.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, 0, nodeIDs, accountID)
+	if err != nil {
+		if code, ok := awserrors.ResolveErrorCode(err); !ok || code != awserrors.ErrorInvalidInstanceIDNotFound {
+			return fmt.Errorf("cannot prove holding instance %s is gone: %w", instanceID, err)
+		}
+	} else {
+		found, err := requireTerminated(named.Reservations, instanceID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("cannot prove holding instance %s is gone: the describe naming it returned neither the instance nor NotFound", instanceID)
+		}
+	}
+
+	// The named describe stops collecting once the id turns up, and a lone
+	// node's 4xx can surface as NotFound, so neither answer is complete alone.
+	listing, err := gateway_ec2_instance.DescribeAccountInstancesComplete(ctx, nc, nodeIDs, accountID)
+	if err != nil {
+		return fmt.Errorf("cannot prove holding instance %s is gone: %w", instanceID, err)
+	}
+	_, err = requireTerminated(listing.Reservations, instanceID)
+	return err
+}
+
+// requireTerminated reports whether instanceID appears in reservations, and
+// fails if any copy of it is in a state other than terminated.
+func requireTerminated(reservations []*ec2.Reservation, instanceID string) (found bool, err error) {
+	for _, reservation := range reservations {
+		if reservation == nil {
+			continue
+		}
+		for _, instance := range reservation.Instances {
+			if instance == nil || aws.StringValue(instance.InstanceId) != instanceID {
+				continue
+			}
+			found = true
+			state := "in an unknown state"
+			if instance.State != nil && aws.StringValue(instance.State.Name) != "" {
+				state = aws.StringValue(instance.State.Name)
+			}
+			if state != ec2.InstanceStateNameTerminated {
+				return true, fmt.Errorf("holding instance %s is still %s", instanceID, state)
+			}
+		}
+	}
+	return found, nil
 }

@@ -377,17 +377,17 @@ A daemon-side owner cannot satisfy a Go interface declared in the AWSGW process,
 
 1. **Interfaces in `domains/tagging`, read/list only.**
    Exit: `TaggedLister` and `TaggedResource` exist, the package imports no domain, handler or contract package, and the ratchet classifies it with zero allowlist rows.
-   Done in `e6b0e43ee`.
+   Done in `0d830e901`.
 2. **EC2 index and ELBv2 adapters in AWSGW.**
    Exit: both adapters compile with their `var _ tagging.TaggedLister` checks, each has a test against embedded JetStream equivalent to today's `listEC2` and `elbv2Resources`, and nothing calls them yet.
-   Done in `c11c6182c`; type matching is exported once as `tagging.MatchesType`.
+   Done in `f3545e3ea`; type matching is exported once as `tagging.MatchesType`.
 3. **Move `GetResources` aggregation from `gateway/tagging` to `domains/tagging`.**
    The request parsing, type and tag filtering, sorting, offset token and `authz.go` move; the gateway dispatch in `gateway/tagging.go` calls the aggregator wired by AWSGW.
    Exit: the `TestCurrentBehaviour_Tagging_GetResources*` tests and the existing `gateway/tagging` unit tests pass with unchanged assertions after moving with the code.
-   Done in `ddc8a3d13`: AWSGW sets `GatewayConfig.TaggingResources`, the `GetResources` characterisation tests run in `runtime/roles/awsgw`, and the aggregator unit tests run in `domains/tagging`.
+   Done in `aedd0b2c4`: AWSGW sets `GatewayConfig.TaggingResources`, the `GetResources` characterisation tests run in `runtime/roles/awsgw`, and the aggregator unit tests run in `domains/tagging`.
 4. **Remove the ratchet rows.**
    Exit: the two `gateway/tagging` allowlist rows and its `legacy_test.go` frozen-legacy entry are deleted, the `gateway/tagging` package is gone, `make preflight`'s layering tests pass, and the "Close-out status" `gateway/tagging` row and the "One narrow missing boundary" matrix row record the debt as cleared.
-   Done: the package and ratchet rows went with `ddc8a3d13`, and the migration record now marks `gateway/tagging` cleared.
+   Done: the package and ratchet rows went with `aedd0b2c4`, and the migration record now marks `gateway/tagging` cleared.
 
 The RDS and ECS record-writing edges in the `docs/PACKAGE_BOUNDARY_MIGRATION.md` "Dependency-rule debt to clear after the moves" list are not cleared by this cut.
 They need owner tag mutation capabilities, which are future direction.

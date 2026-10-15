@@ -30,17 +30,17 @@ jobs:
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: spinifex/services/spinifexui/frontend
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v6.0.10
         with:
           package_json_file: spinifex/services/spinifexui/frontend/package.json
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           cache: "pnpm"
           cache-dependency-path: spinifex/services/spinifexui/frontend/pnpm-lock.yaml

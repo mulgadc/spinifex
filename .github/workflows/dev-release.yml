@@ -34,7 +34,7 @@ jobs:
       # Full history and tags, because the tag name is git describe and a shallow
       # clone has no tag to describe against.
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
           fetch-depth: 0
@@ -42,38 +42,38 @@ jobs:
       # dev, not each repository's default branch, which is what release.yml takes.
       # A dev build of spinifex against main of the others is a pairing nobody runs.
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: dev
           path: predastore
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: dev
           path: viperblock
 
       - name: Checkout Northstar
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: dev
           path: northstar
 
       - name: Checkout Bluebottle
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: dev
           path: bluebottle
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: spinifex/go.mod
 

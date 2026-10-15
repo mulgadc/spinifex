@@ -38,19 +38,19 @@ jobs:
       - name: Clean Workspace
         run: sudo rm -rf "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         name: Checkout Spinifex
         with:
           path: spinifex
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         name: Checkout Mulga (tofu-cluster)
         with:
           repository: mulgadc/mulga
@@ -81,7 +81,7 @@ jobs:
       # Adds ci.job_id alongside ci.cell, before Bootstrap bakes the attrs into
       # the VMs, so a telemetry doc points back at this job's log directly.
       - name: Resolve CI job id
-        uses: ./spinifex/.github/actions/otel-job-id
+        uses: $/.github/actions/otel-job-id
         with:
           job-name: DDIL Real Multi-Node
 
@@ -175,7 +175,7 @@ jobs:
 
       - name: Publish test summary
         if: always()
-        uses: ./spinifex/.github/actions/junit-report
+        uses: $/.github/actions/junit-report
         with:
           junit-glob: ${{ runner.temp }}/ddil-results/junit-*.xml
           title: "DDIL scenario results"
@@ -185,7 +185,7 @@ jobs:
       - name: Ship test results to Elasticsearch
         if: always()
         continue-on-error: true
-        uses: ./spinifex/.github/actions/junit-to-es
+        uses: $/.github/actions/junit-to-es
         with:
           junit-glob: ${{ runner.temp }}/ddil-results/junit-*.xml
           cell: ddil
@@ -214,7 +214,7 @@ jobs:
 
       - name: Upload DDIL Results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: ddil-results-${{ github.run_id }}
           path: ${{ runner.temp }}/ddil-results
@@ -234,7 +234,7 @@ jobs:
 
       - name: Upload tofu log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: tofu-log-ddil-${{ github.run_id }}
           path: ${{ env.TOFU_LOG }}

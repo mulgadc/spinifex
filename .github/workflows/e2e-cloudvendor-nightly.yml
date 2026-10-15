@@ -76,11 +76,11 @@ jobs:
       - name: Put the Terraform state outside the checkout
         run: echo "OCI_STATE_ROOT=$RUNNER_WORKSPACE/oci-state" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -92,14 +92,14 @@ jobs:
 
       # build-install-artifacts.sh lives in mulga. The workbooks and their driver
       # are in spinifex, so only the one directory is needed here.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           path: mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_wrapper: false
 
@@ -273,7 +273,7 @@ jobs:
       # collect step above chose, so terraform.tfstate cannot reach an artifact.
       - name: Upload the run
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: e2e-oci-${{ github.run_id }}
           path: |

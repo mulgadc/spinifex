@@ -80,25 +80,25 @@ jobs:
           echo "TMPDIR=$E2E_ROOT/work" >> "$GITHUB_ENV"
           echo "PERF_RESULTS_ROOT=$E2E_ROOT/predastore-perf-3node-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
 
-      - uses: actions/create-github-app-token@v3
+      - uses: actions/create-github-app-token@v3.3.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           repositories: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/mulga
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/tofu-cluster
           path: mulga
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: spinifex/go.mod
           cache: false
@@ -116,7 +116,7 @@ jobs:
         run: bash .github/resolve-sibling-refs.sh
         working-directory: spinifex
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         id: predastore
         with:
           repository: mulgadc/predastore
@@ -366,7 +366,7 @@ jobs:
       # Report-only, matching cell-23: the baseline comparison and any
       # regression gate are future work once run-to-run spread is known from
       # real bare-metal runs.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: predastore-perf-3node-${{ github.run_id }}
@@ -407,7 +407,7 @@ jobs:
 
       - name: Upload tofu log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: tofu-log-perf3node-${{ github.run_id }}
           path: ${{ env.TOFU_LOG }}

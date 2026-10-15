@@ -78,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout Spinifex
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: spinifex
 
@@ -87,35 +87,35 @@ jobs:
         run: bash spinifex/.github/resolve-release-sibling-refs.sh spinifex/go.mod
 
       - name: Checkout Viperblock
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/viperblock
           ref: ${{ steps.siblings.outputs.viperblock }}
           path: viperblock
 
       - name: Checkout Predastore
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/predastore
           ref: ${{ steps.siblings.outputs.predastore }}
           path: predastore
 
       - name: Checkout Northstar
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/northstar
           ref: ${{ steps.siblings.outputs.northstar }}
           path: northstar
 
       - name: Checkout Bluebottle
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: mulgadc/bluebottle
           ref: ${{ steps.siblings.outputs.bluebottle }}
           path: bluebottle
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@v7.0.0
         with:
           go-version-file: "spinifex/go.mod"
           # Self-hosted runner: the Go module + build cache already persists on

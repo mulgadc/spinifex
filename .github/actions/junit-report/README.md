@@ -8,7 +8,7 @@ Actions job summary and emits one `::error` annotation per failed test case.
 ```yaml
 - name: Publish test summary
   if: always()
-  uses: ./spinifex/.github/actions/junit-report   # or your own checkout path
+  uses: $/.github/actions/junit-report
   with:
     junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
     title: "Go E2E results"

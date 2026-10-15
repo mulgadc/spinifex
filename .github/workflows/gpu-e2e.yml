@@ -95,10 +95,10 @@ jobs:
         if: steps.gate.outputs.paused != 'true'
         run: sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: steps.gate.outputs.paused != 'true'
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7.0.0
         if: steps.gate.outputs.paused != 'true'
         with:
           go-version-file: go.mod
@@ -244,7 +244,7 @@ jobs:
 
       - name: Publish test summary
         if: always() && steps.gate.outputs.paused != 'true'
-        uses: ./.github/actions/junit-report
+        uses: $/.github/actions/junit-report
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           title: "GPU E2E results"
@@ -252,20 +252,20 @@ jobs:
       - name: Ship test results to Elasticsearch
         if: always() && steps.gate.outputs.paused != 'true'
         continue-on-error: true
-        uses: ./.github/actions/junit-to-es
+        uses: $/.github/actions/junit-to-es
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           cell: gpu
 
       - name: Analyze e2e failures
         if: always() && steps.gate.outputs.paused != 'true'
-        uses: ./.github/actions/e2e-analyze
+        uses: $/.github/actions/e2e-analyze
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
           log-dir: ${{ env.ARTIFACT_DIR }}
           title: "GPU E2E failure analysis"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7.0.2
         if: always() && steps.gate.outputs.paused != 'true'
         with:
           name: gpu-e2e-artifacts-${{ github.run_id }}

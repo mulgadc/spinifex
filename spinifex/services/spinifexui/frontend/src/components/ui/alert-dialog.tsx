@@ -32,7 +32,7 @@ export function AlertDialogOverlay({
   return (
     <AlertDialogPrimitive.Backdrop
       className={cn(
-        "data-closed:fade-out-0 data-open:fade-in-0 data-closed:animate-out data-open:animate-in fixed inset-0 isolate z-50 bg-black/80 duration-100 supports-backdrop-filter:backdrop-blur-xs",
+        "fixed inset-0 isolate z-50 bg-black/80 supports-backdrop-filter:backdrop-blur-xs",
         className,
       )}
       data-slot="alert-dialog-overlay"
@@ -44,7 +44,7 @@ export function AlertDialogOverlay({
 // Width is separate from size: the header, title and media layouts key off
 // data-size=default, so a wider dialog keeps size="default".
 export const alertDialogContentVariants = cva(
-  "data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 group/alert-dialog-content data-closed:animate-out data-open:animate-in fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-3 rounded-xl bg-background p-4 ring-1 ring-foreground/10 duration-100 outline-none",
+  "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-3 rounded-xl bg-background p-4 ring-1 ring-foreground/10 outline-none",
   {
     variants: {
       width: {

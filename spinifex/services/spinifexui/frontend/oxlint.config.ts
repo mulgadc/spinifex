@@ -55,7 +55,6 @@ export default defineConfig({
     "react-you-might-not-need-an-effect/no-pass-data-to-parent": "error",
     "react-you-might-not-need-an-effect/no-pass-live-state-to-parent": "error",
     "shadcn/no-restyle": "off",
-    "shadcn/no-unknown-classes": "off",
     "typescript/no-floating-promises": [
       "error",
       {
@@ -108,6 +107,7 @@ export default defineConfig({
         "anti-slop/no-unknown-returns": "off",
         "eslint/require-await": "off",
         "import/first": "off",
+        "shadcn/no-unknown-classes": "off",
         "typescript/await-thenable": "off",
         "typescript/consistent-type-imports": "off",
         "typescript/no-non-null-assertion": "off",

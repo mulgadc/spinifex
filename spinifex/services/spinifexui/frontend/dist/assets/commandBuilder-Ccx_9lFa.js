@@ -1,1 +1,0 @@
-import{Ao as e,_a as t,bo as n}from"./awsClient-Cyob9OaP.js";var r=e(t,`AmazonBedrockFrontendService`,`BedrockRuntimeClient`,n),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

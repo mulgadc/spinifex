@@ -58,5 +58,5 @@ jobs:
       - name: Build Frontend
         run: pnpm build
 
-      - name: Check for generated route tree drift
-        run: git diff --exit-code -- src/routeTree.gen.ts
+      - name: Check for generated file drift
+        run: git diff --exit-code -- src/routeTree.gen.ts src/lib/cn-tables.gen.ts

@@ -1,15 +1,8 @@
-import { type ClassValue, clsx } from "clsx"
-import { extendTailwindMerge } from "tailwind-merge"
+import { createCn } from "cn/engine"
 
-// Custom font-size tokens from styles.css; unregistered, tailwind-merge reads
-// text-code-inline as a color and drops it beside text-muted-foreground.
-const twMerge = extendTailwindMerge({
-  extend: { theme: { text: ["2xs", "code-block", "code-inline"] } },
-})
+import tables from "./cn-tables.gen"
 
-export function cn(...inputs: ClassValue[]): string {
-  return twMerge(clsx(inputs))
-}
+export const cn = createCn(tables)
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   year: "numeric",

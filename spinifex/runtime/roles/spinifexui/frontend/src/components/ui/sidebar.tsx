@@ -348,13 +348,26 @@ export function SidebarInput({
   )
 }
 
+export const sidebarHeaderVariants = cva("flex flex-col gap-2 p-2", {
+  variants: {
+    variant: {
+      default: "",
+      brand: "flex-row items-center px-4 py-3",
+    },
+  },
+  defaultVariants: {
+    variant: "default",
+  },
+})
+
 export function SidebarHeader({
   className,
+  variant = "default",
   ...props
-}: React.ComponentProps<"div">) {
+}: React.ComponentProps<"div"> & VariantProps<typeof sidebarHeaderVariants>) {
   return (
     <div
-      className={cn("flex flex-col gap-2 p-2", className)}
+      className={cn(sidebarHeaderVariants({ variant, className }))}
       data-sidebar="header"
       data-slot="sidebar-header"
       {...props}
@@ -397,7 +410,7 @@ export function SidebarContent({
   return (
     <div
       className={cn(
-        "no-scrollbar flex min-h-0 flex-1 flex-col gap-0 overflow-x-hidden overflow-y-auto",
+        "flex min-h-0 flex-1 flex-col gap-0 overflow-x-hidden overflow-y-auto",
         // The collapsed rail is exactly one icon wide, so a scrollbar gutter
         // would squeeze the icons. Hide it but keep the scrolling.
         "group-data-[collapsible=icon]:[scrollbar-width:none] group-data-[collapsible=icon]:[&::-webkit-scrollbar]:hidden",

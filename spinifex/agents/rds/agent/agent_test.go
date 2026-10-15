@@ -35,6 +35,8 @@ type fakeControlPlane struct {
 
 	bootstrapOut  *handlers_rds.GetDBBootstrapConfigOutput
 	bootstrapErrs []error
+	// Returned once bootstrapErrs is drained, for a failure no retry heals.
+	bootstrapErr  error
 	bootstrapReqs []identity
 	// Scripted responses ahead of bootstrapOut, so a test can answer the first
 	// fetch differently from the ones the agent retries with.
@@ -104,6 +106,9 @@ func (f *fakeControlPlane) GetBootstrapConfig(_ context.Context, id identity) (*
 	f.bootstrapReqs = append(f.bootstrapReqs, id)
 	if err := nextErr(&f.bootstrapErrs); err != nil {
 		return nil, err
+	}
+	if f.bootstrapErr != nil {
+		return nil, f.bootstrapErr
 	}
 	if len(f.bootstrapQueue) > 0 {
 		out := f.bootstrapQueue[0]
@@ -639,7 +644,9 @@ func TestMountTableContains(t *testing.T) {
 
 func TestRun_HeartbeatIncludesBootstrapFailure(t *testing.T) {
 	cp := newFakeControlPlane()
-	cp.bootstrapErrs = []error{errors.New("403 AccessDenied: instance profile is not authorised")}
+	// Persistent, so every retry republishes the 403 rather than leaving it
+	// visible to a heartbeat for a single retry interval.
+	cp.bootstrapErr = errors.New("403 AccessDenied: instance profile is not authorised")
 	cp.registerOut.HeartbeatIntervalSeconds = 0
 
 	cfg := testConfig(t)

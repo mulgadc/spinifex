@@ -277,7 +277,7 @@ func TestS3ReaperRunsInTheStorageStage(t *testing.T) {
 // The engine sorts reapers by stage and the sort is stable, so a bucket reaper
 // registered after the EC2 storage reapers stays after them.
 func TestSortReapersKeepsBucketsAfterVolumes(t *testing.T) {
-	reapers := append(EC2Reapers(nil, 1), S3Reapers(newFakeBuckets())...)
+	reapers := append(EC2Reapers(nil, 1, []string{"node-1"}), S3Reapers(newFakeBuckets())...)
 	SortReapers(reapers)
 
 	storage := make([]string, 0, len(reapers))

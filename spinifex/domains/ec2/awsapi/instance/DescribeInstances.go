@@ -177,6 +177,34 @@ func DescribeInstancesForReconcile(ctx context.Context, input *ec2.DescribeInsta
 	return reservations, complete, err
 }
 
+// DescribeAccountInstancesComplete lists the account's instances, or returns a
+// retryable ServiceUnavailable unless every node in nodeIDs and both instance
+// buckets answered cleanly. An empty nodeIDs is an unknown set, so never complete.
+func DescribeAccountInstancesComplete(ctx context.Context, natsConn *nats.Conn, nodeIDs []string, accountID string, opts ...DescribeOption) (*ec2.DescribeInstancesOutput, error) {
+	if len(nodeIDs) == 0 {
+		slog.ErrorContext(ctx, "DescribeInstances: complete listing refused, configured node set unknown")
+		return nil, incompleteListingError()
+	}
+	reservations, complete, _, err := gatherInstances(ctx, &ec2.DescribeInstancesInput{}, natsConn, 0, nodeIDs, accountID, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if !complete {
+		slog.WarnContext(ctx, "DescribeInstances: complete listing refused, fan-out or bucket query incomplete",
+			"configured_nodes", len(nodeIDs))
+		return nil, incompleteListingError()
+	}
+	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+func incompleteListingError() error {
+	return errors.Join(
+		awserrors.Errorf(awserrors.ErrorServiceUnavailable,
+			"cannot list instances: not every node and instance store answered"),
+		awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+	)
+}
+
 // gatherInstances runs the running-instance fan-out plus the stopped/terminated
 // KV bucket queries and aggregates every reservation. client4xx carries
 // the first deterministic 4xx for the lenient caller to surface when nothing

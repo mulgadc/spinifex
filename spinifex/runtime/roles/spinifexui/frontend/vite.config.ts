@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite"
 import { tanstackRouter } from "@tanstack/router-plugin/vite"
 import basicSsl from "@vitejs/plugin-basic-ssl"
 import react from "@vitejs/plugin-react"
+import { cn as cnTables } from "cn/vite"
 import { createLogger, defineConfig } from "vite"
 
 // React Compiler emits a Todo diagnostic per function it cannot compile. Those
@@ -35,10 +36,17 @@ export default defineConfig(({ mode }) => ({
     }),
     react({ compiler: mode !== "test" }),
     tailwindcss(),
+    // Compiles merge tables for only the classes we use, into src/lib.
+    cnTables({
+      content: ["src/**/*.{ts,tsx}"],
+      out: "src/lib/cn-tables.gen.ts",
+    }),
   ],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("src", import.meta.url)),
+      // class-variance-authority imports clsx; cn exports a drop-in clsx.
+      clsx: "cn",
     },
   },
   test: {

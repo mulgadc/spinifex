@@ -50,7 +50,7 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import { clearCredentials } from "@/lib/auth"
 import { clearClients } from "@/lib/awsClient"
 import { isOchreEnabled } from "@/lib/cluster-config"
@@ -72,7 +72,7 @@ export function SidebarLayout() {
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className="flex flex-row items-center gap-2 px-4 py-3">
+      <SidebarHeader variant="brand">
         <img
           src="/mulga-logo.svg"
           alt="Mulga"

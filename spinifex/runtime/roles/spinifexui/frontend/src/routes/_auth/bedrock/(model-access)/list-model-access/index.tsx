@@ -1,24 +1,15 @@
-import { createFileRoute, redirect } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 
-import { useAdmin } from "@/contexts/admin-context"
+import { requireAdmin } from "@/lib/require-admin"
 
 import { ModelAccessPage } from "../-components/model-access-page"
 
 export const Route = createFileRoute(
   "/_auth/bedrock/(model-access)/list-model-access/",
 )({
+  beforeLoad: requireAdmin,
   head: () => ({
     meta: [{ title: "Model Access | Ochre | Mulga" }],
   }),
-  component: RouteComponent,
+  component: ModelAccessPage,
 })
-
-function RouteComponent() {
-  const { isAdmin } = useAdmin()
-
-  if (!isAdmin) {
-    throw redirect({ to: "/" })
-  }
-
-  return <ModelAccessPage />
-}

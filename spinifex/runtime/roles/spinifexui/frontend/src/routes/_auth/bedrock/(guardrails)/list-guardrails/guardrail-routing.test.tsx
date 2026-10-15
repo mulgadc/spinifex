@@ -55,7 +55,6 @@ vi.mock("@/lib/cluster-config", async (importOriginal) => {
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
-import { AdminProvider } from "@/contexts/admin-context"
 import { createTestQueryClient } from "@/test/elbv2-integration"
 
 import { routeTree } from "../../../../../routeTree.gen"
@@ -105,11 +104,9 @@ function renderAppAt(path: string) {
   render(
     <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
       <QueryClientProvider client={queryClient}>
-        <AdminProvider>
-          <SidebarProvider>
-            <RouterProvider router={router} />
-          </SidebarProvider>
-        </AdminProvider>
+        <SidebarProvider>
+          <RouterProvider router={router} />
+        </SidebarProvider>
       </QueryClientProvider>
     </ThemeProvider>,
   )

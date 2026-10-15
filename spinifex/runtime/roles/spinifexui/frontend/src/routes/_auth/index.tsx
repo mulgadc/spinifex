@@ -160,7 +160,7 @@ function DashboardCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
+        <CardTitle variant="icon">
           {icon}
           {title}
         </CardTitle>
@@ -188,7 +188,7 @@ function Overflow({ total }: { total: number }) {
     return null
   }
   return (
-    <p className="mt-1 text-[0.625rem] text-muted-foreground">
+    <p className="mt-1 text-2xs text-muted-foreground">
       +{total - MAX_ITEMS} more
     </p>
   )
@@ -222,7 +222,7 @@ function InstancesCard() {
         <p className="text-xs text-muted-foreground">No instances</p>
       ) : (
         <>
-          <div className="mb-2 flex gap-3 text-[0.625rem] text-muted-foreground">
+          <div className="mb-2 flex gap-3 text-2xs text-muted-foreground">
             <span>{running.length} running</span>
             <span>{stopped.length} stopped</span>
           </div>
@@ -260,7 +260,7 @@ function VolumesCard() {
         <p className="text-xs text-muted-foreground">No volumes</p>
       ) : (
         <>
-          <div className="mb-2 flex gap-3 text-[0.625rem] text-muted-foreground">
+          <div className="mb-2 flex gap-3 text-2xs text-muted-foreground">
             <span>{totalGiB} GiB total</span>
             <span>{inUse.length} in-use</span>
             <span>{available.length} available</span>

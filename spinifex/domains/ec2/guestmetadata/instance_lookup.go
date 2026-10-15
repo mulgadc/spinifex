@@ -143,6 +143,7 @@ func instanceFactsFromVM(v *vm.VM) *instanceFacts {
 	}
 	if inst.MetadataOptions != nil {
 		facts.httpTokens = aws.StringValue(inst.MetadataOptions.HttpTokens)
+		facts.putHopLimit = aws.Int64Value(inst.MetadataOptions.HttpPutResponseHopLimit)
 	}
 	return facts
 }

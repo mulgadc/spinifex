@@ -1,10 +1,8 @@
 import { useQuery } from "@tanstack/react-query"
-import { redirect } from "@tanstack/react-router"
 
 import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useAdmin } from "@/contexts/admin-context"
 import {
   adminStorageStatusQueryOptions,
   type BlobNode,
@@ -12,16 +10,10 @@ import {
 } from "@/queries/admin"
 
 export function ServiceMetricsPage() {
-  const { isAdmin } = useAdmin()
   const { data } = useQuery({
     ...adminStorageStatusQueryOptions,
-    enabled: isAdmin,
     refetchInterval: 5000,
   })
-
-  if (!isAdmin) {
-    throw redirect({ to: "/" })
-  }
 
   const encoding = data?.encoding
   const metaNodes = data?.meta_nodes ?? []
@@ -36,7 +28,7 @@ export function ServiceMetricsPage() {
         {/* Section 1: Storage Overview */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Predastore (S3) Overview</CardTitle>
+            <CardTitle>Predastore (S3) Overview</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4 text-xs md:grid-cols-4">
@@ -76,7 +68,7 @@ export function ServiceMetricsPage() {
               </div>
             </div>
             {encoding && (
-              <p className="mt-3 text-[0.625rem] text-muted-foreground">
+              <p className="mt-3 text-2xs text-muted-foreground">
                 Reed-Solomon erasure coding: {encoding.data_shards} data shards
                 + {encoding.parity_shards} parity{" "}
                 {encoding.parity_shards === 1 ? "shard" : "shards"}. Can
@@ -91,9 +83,7 @@ export function ServiceMetricsPage() {
         {/* Section 2: Meta Consensus Nodes */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">
-              Meta Consensus Nodes (Raft)
-            </CardTitle>
+            <CardTitle>Meta Consensus Nodes (Raft)</CardTitle>
           </CardHeader>
           <CardContent>
             {metaNodes.length === 0 ? (
@@ -107,7 +97,7 @@ export function ServiceMetricsPage() {
         {/* Section 3: Blob Nodes */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Object Storage Blob Nodes</CardTitle>
+            <CardTitle>Object Storage Blob Nodes</CardTitle>
           </CardHeader>
           <CardContent>
             {blobNodes.length === 0 ? (
@@ -173,10 +163,7 @@ function MetaNodesTable({ nodes }: { nodes: MetaNodeStatus[] }) {
               <td className="py-1.5 pr-4 font-mono">{node.host}</td>
               <td className="py-1.5 pr-4 font-mono">{node.port}</td>
               <td className="py-1.5 pr-4">
-                <Badge
-                  variant={node.healthy ? "default" : "destructive"}
-                  className="text-[0.625rem]"
-                >
+                <Badge variant={node.healthy ? "default" : "destructive"}>
                   {node.healthy ? "Healthy" : "Unreachable"}
                 </Badge>
               </td>
@@ -184,7 +171,6 @@ function MetaNodesTable({ nodes }: { nodes: MetaNodeStatus[] }) {
                 {node.state ? (
                   <Badge
                     variant={node.state === "Leader" ? "default" : "secondary"}
-                    className="text-[0.625rem]"
                   >
                     {node.state}
                   </Badge>

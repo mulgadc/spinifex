@@ -59,6 +59,14 @@ interface NodeInfo {
   predastore_role?: string
 }
 
+interface VersionInfo {
+  version: string
+  commit: string
+  os: string
+  arch: string
+  license: string
+}
+
 interface GetNodesOutput {
   nodes: NodeInfo[]
   cluster_mode: string
@@ -172,6 +180,7 @@ interface ListAccountsResponse {
 }
 
 export type {
+  VersionInfo,
   InstanceTypeCap,
   GPUSliceInfo,
   GPUInfo,
@@ -192,6 +201,21 @@ export type {
   AccountSummary,
   ListAccountsResponse,
 }
+
+export const adminVersionQueryOptions = queryOptions({
+  queryKey: ["admin", "version"],
+  queryFn: async () => {
+    const credentials = getCredentials()
+    if (!credentials) {
+      throw new Error("Not authenticated")
+    }
+    return await signedFetch<VersionInfo>({
+      action: "GetVersion",
+      credentials,
+    })
+  },
+  staleTime: "static",
+})
 
 export const adminNodesQueryOptions = queryOptions({
   queryKey: ["admin", "nodes"],

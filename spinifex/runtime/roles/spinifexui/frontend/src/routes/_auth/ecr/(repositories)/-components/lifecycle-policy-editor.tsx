@@ -127,7 +127,7 @@ export function LifecyclePolicyEditor({
           </div>
         </div>
         <JsonEditor
-          className="text-xs"
+          size="sm"
           error={invalidJson}
           onChange={setDraft}
           placeholder={SAMPLE_POLICY}

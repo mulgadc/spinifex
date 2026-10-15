@@ -956,3 +956,115 @@ func TestAcquireAbsenceProofSlot_DoesNotBlockWhenExhausted(t *testing.T) {
 		t.Fatal("acquireAbsenceProofSlot blocked; it must refuse immediately so the backlog cannot grow")
 	}
 }
+
+// --- Complete account-wide listing ---
+
+func assertIncompleteListing(t *testing.T, output *ec2.DescribeInstancesOutput, err error) {
+	t.Helper()
+	assert.Nil(t, output, "an incomplete listing must not return the partial reservations")
+	require.Error(t, err)
+	code, _, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered awserrors code")
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, code)
+	assert.False(t, awserrors.IsTerminal(err), "an incomplete listing is retryable")
+}
+
+func TestDescribeAccountInstancesComplete_MissingNodeRefuses(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", mustMarshalDescribeOutput(t, &ec2.DescribeInstancesOutput{
+		Reservations: []*ec2.Reservation{{ReservationId: aws.String("r-1"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-on-node-1")}}}},
+	}))
+	nc.Flush()
+
+	output, err := DescribeAccountInstancesComplete(context.Background(), nc, []string{"node-1", "node-2"}, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+
+	assertIncompleteListing(t, output, err)
+}
+
+func TestDescribeAccountInstancesComplete_AllNodesAnswer(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", mustMarshalDescribeOutput(t, &ec2.DescribeInstancesOutput{
+		Reservations: []*ec2.Reservation{{ReservationId: aws.String("r-1"), Instances: []*ec2.Instance{{InstanceId: aws.String("i-on-node-1")}}}},
+	}))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-2", []byte(`{}`))
+	nc.Flush()
+
+	output, err := DescribeAccountInstancesComplete(context.Background(), nc, []string{"node-1", "node-2"}, "123456789012",
+		WithFanoutTimeout(2*time.Second))
+
+	require.NoError(t, err)
+	require.Len(t, output.Reservations, 1)
+	assert.Equal(t, "i-on-node-1", *output.Reservations[0].Instances[0].InstanceId)
+}
+
+// Without the configured node set there is nothing to judge completeness
+// against, and counting whoever answered is the failure being prevented.
+func TestDescribeAccountInstancesComplete_UnknownNodeSetRefuses(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	nc.Flush()
+
+	output, err := DescribeAccountInstancesComplete(context.Background(), nc, nil, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+
+	assertIncompleteListing(t, output, err)
+}
+
+// A frame with no node ID cannot be attributed, so it might be standing in
+// for the node that went quiet.
+func TestDescribeAccountInstancesComplete_UnattributedFrameRefuses(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "", []byte(`{}`))
+	nc.Flush()
+
+	output, err := DescribeAccountInstancesComplete(context.Background(), nc, []string{"node-1", "node-2"}, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+
+	assertIncompleteListing(t, output, err)
+}
+
+func TestDescribeAccountInstancesComplete_TerminatedBucketFailureRefuses(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAsNode(t, nc, "ec2.DescribeStoppedInstances", "", []byte(`{}`))
+	subscribeAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	nc.Flush()
+
+	output, err := DescribeAccountInstancesComplete(context.Background(), nc, []string{"node-1"}, "123456789012",
+		WithFanoutTimeout(2*time.Second))
+
+	assertIncompleteListing(t, output, err)
+}
+
+// Pins the lenient by-ID shape: an instance on a silent node comes back as an
+// empty success, indistinguishable from absence. Anything that must prove an
+// instance gone has to use DescribeInstancesChecked with the node set instead.
+func TestDescribeInstances_ExplicitIDOnSilentNode_IsAnEmptySuccess(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeEmptyInstanceBuckets(t, nc)
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{"Reservations":[]}`))
+	nc.Flush()
+
+	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-on-the-silent-node")}}
+	output, err := DescribeInstances(context.Background(), input, nc, 2, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+
+	require.NoError(t, err)
+	assert.Empty(t, output.Reservations)
+
+	_, err = DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
+		WithFanoutTimeout(300*time.Millisecond))
+	assertIncompleteSweepUnavailable(t, err, "i-on-the-silent-node")
+}

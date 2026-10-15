@@ -79,6 +79,15 @@
   --tactical-red: hsl(0 65% 45%);
   --tactical-olive: hsl(80 35% 35%);
   --scanline-opacity: 0.015;
+
+  /* Status notices */
+  --success: oklch(69.6% 0.17 162.48);
+  --success-foreground: oklch(50.8% 0.118 165.612);
+  --warning: oklch(76.9% 0.188 70.08);
+  --warning-foreground: oklch(55.5% 0.163 48.998);
+  --info: oklch(62.3% 0.214 259.815);
+  --positive: oklch(62.7% 0.194 149.214);
+  --positive-foreground: oklch(62.7% 0.194 149.214);
 }
 
 /* MILITARY / TACTICAL DARK THEME */
@@ -148,6 +157,11 @@
   --tactical-red: hsl(0 70% 50%);
   --tactical-olive: hsl(80 40% 30%);
   --scanline-opacity: 0.03;
+
+  /* Status notices */
+  --success-foreground: oklch(76.5% 0.177 163.223);
+  --warning-foreground: oklch(82.8% 0.189 84.429);
+  --positive-foreground: oklch(79.2% 0.209 151.711);
 }
 
 @theme inline {
@@ -197,6 +211,23 @@
   --color-tactical-cyan-dim: var(--tactical-cyan-dim);
   --color-tactical-red: var(--tactical-red);
   --color-tactical-olive: var(--tactical-olive);
+
+  /* Status colors */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-positive: var(--positive);
+  --color-positive-foreground: var(--positive-foreground);
+
+  /* Sizes below text-xs, and code set relative to its surrounding text */
+  --text-2xs: 0.625rem;
+  --text-code-block: 0.6875rem;
+  --text-code-inline: 0.85em;
+
+  /* Plain system font for the bootstrap failure page */
+  --font-system: sans-serif;
 }
 
 @layer base {

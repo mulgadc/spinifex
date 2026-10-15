@@ -19,7 +19,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import { isSystemManagedImage } from "@/lib/system-managed"
 import { usePromoteImage } from "@/mutations/admin"
 import { useDeregisterImage } from "@/mutations/ec2"

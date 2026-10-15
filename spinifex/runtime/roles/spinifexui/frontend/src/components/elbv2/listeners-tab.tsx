@@ -387,10 +387,7 @@ function AddListenerDialog({
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent
-        className="grid-cols-[minmax(0,1fr)]"
-        style={{ maxWidth: "32rem", width: "calc(100vw - 2rem)" }}
-      >
+      <AlertDialogContent width="md">
         <AlertDialogHeader>
           <AlertDialogTitle>Add listener</AlertDialogTitle>
           <AlertDialogDescription>
@@ -464,10 +461,7 @@ function EditListenerDialog({
 
   return (
     <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent
-        className="grid-cols-[minmax(0,1fr)]"
-        style={{ maxWidth: "32rem", width: "calc(100vw - 2rem)" }}
-      >
+      <AlertDialogContent width="md">
         <AlertDialogHeader>
           <AlertDialogTitle>Edit listener</AlertDialogTitle>
           <AlertDialogDescription>

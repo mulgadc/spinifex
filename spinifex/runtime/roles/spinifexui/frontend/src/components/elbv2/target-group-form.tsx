@@ -159,12 +159,12 @@ export function TargetGroupForm({
 
       <Collapsible>
         <CollapsibleTrigger
-          className="text-left text-sm font-medium text-muted-foreground hover:text-foreground"
+          variant="subtle"
           render={<button aria-label="Health check settings" type="button" />}
         >
           Health check settings
         </CollapsibleTrigger>
-        <CollapsibleContent className="mt-3 space-y-4 border-l-2 border-muted pl-4">
+        <CollapsibleContent className="mt-3" variant="indented">
           {httpHealthCheck && (
             <Field>
               <FieldTitle>

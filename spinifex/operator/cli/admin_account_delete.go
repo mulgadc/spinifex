@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -90,7 +92,10 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 		node.Predastore.SecretKey,
 	)
 
-	engine, err := accountteardown.NewClusterEngine(ctx, nc, len(cfg.Nodes), svc, buckets)
+	// The configured node set, in the namespace daemons reply under, is what
+	// the instance inventory must hear from in full before it reads as empty.
+	nodeIDs := slices.Collect(maps.Keys(cfg.Nodes))
+	engine, err := accountteardown.NewClusterEngine(ctx, nc, len(cfg.Nodes), nodeIDs, svc, buckets)
 	if err != nil {
 		return err
 	}

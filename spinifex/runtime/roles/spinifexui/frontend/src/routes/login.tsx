@@ -203,8 +203,8 @@ function LoginPage() {
 
 function CertificateInstallBanner() {
   return (
-    <Card className="border-muted bg-muted/30">
-      <CardContent className="pt-4 pb-4">
+    <Card variant="muted">
+      <CardContent className="my-4">
         <div className="flex flex-col gap-3">
           <div>
             <p className="text-sm font-medium">
@@ -223,14 +223,14 @@ function CertificateInstallBanner() {
             Download CA Certificate
           </a>
           <Collapsible>
-            <CollapsibleTrigger className="cursor-pointer text-xs text-muted-foreground underline-offset-4 hover:underline">
+            <CollapsibleTrigger variant="link">
               Installation instructions
             </CollapsibleTrigger>
             <CollapsibleContent>
               <div className="mt-2 flex flex-col gap-2 text-xs text-muted-foreground">
                 <div>
                   <p className="font-medium text-foreground">macOS</p>
-                  <code className="mt-1 block rounded bg-muted p-2 text-[11px] break-all">
+                  <code className="mt-1 block rounded bg-muted p-2 text-code-block break-all">
                     sudo security add-trusted-cert -d -r trustRoot -k
                     /Library/Keychains/System.keychain spinifex-ca.pem
                   </code>
@@ -244,7 +244,7 @@ function CertificateInstallBanner() {
                 </div>
                 <div>
                   <p className="font-medium text-foreground">Linux</p>
-                  <code className="mt-1 block rounded bg-muted p-2 text-[11px] break-all">
+                  <code className="mt-1 block rounded bg-muted p-2 text-code-block break-all">
                     sudo cp spinifex-ca.pem
                     /usr/local/share/ca-certificates/spinifex-ca.crt && sudo
                     update-ca-certificates

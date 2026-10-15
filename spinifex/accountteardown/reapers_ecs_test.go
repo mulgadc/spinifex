@@ -178,7 +178,7 @@ func TestECSClusterNameFromARN(t *testing.T) {
 // stopped first, which is what puts ECS ahead of it in the compute stage.
 func TestECSReapersRunBeforeTheInstanceReaper(t *testing.T) {
 	reapers := ECSReapers(nil)
-	reapers = append(reapers, EC2Reapers(nil, 1)...)
+	reapers = append(reapers, EC2Reapers(nil, 1, []string{"node-1"})...)
 
 	ecsIndex := indexOfKind(reapers, "ecs-cluster")
 	instanceIndex := indexOfKind(reapers, "instance")
@@ -197,7 +197,7 @@ func TestECSReapersRunBeforeTheInstanceReaper(t *testing.T) {
 // the registration order above survives it.
 func TestSortReapersKeepsECSAheadOfInstances(t *testing.T) {
 	reapers := ECSReapers(nil)
-	reapers = append(reapers, EC2Reapers(nil, 1)...)
+	reapers = append(reapers, EC2Reapers(nil, 1, []string{"node-1"})...)
 	SortReapers(reapers)
 
 	assert.Less(t, indexOfKind(reapers, "ecs-cluster"), indexOfKind(reapers, "instance"))

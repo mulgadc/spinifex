@@ -21,7 +21,7 @@ function modalityBadges(entry: AdminCatalogEntry) {
     ...new Set([...entry.inputModalities, ...entry.outputModalities]),
   ]
   return modalities.map((modality) => (
-    <Badge className="text-[0.625rem]" key={modality} variant="outline">
+    <Badge key={modality} variant="outline">
       {modality}
     </Badge>
   ))
@@ -33,11 +33,7 @@ function formatMicroUsdPerMillion(microUsd: number): string {
 
 function PriceCell({ entry }: { entry: AdminCatalogEntry }) {
   if (isSelfHost(entry)) {
-    return (
-      <Badge className="text-[0.625rem]" variant="secondary">
-        Included
-      </Badge>
-    )
+    return <Badge variant="secondary">Included</Badge>
   }
   if (!entry.priceKnown) {
     return <span className="text-muted-foreground">Price unknown</span>
@@ -87,15 +83,10 @@ function AvailabilityCell({
   const hint = AVAILABILITY_HINT[availability]
   return (
     <div>
-      <Badge
-        className="text-[0.625rem]"
-        variant={availabilityVariant(availability)}
-      >
+      <Badge variant={availabilityVariant(availability)}>
         {AVAILABILITY_LABEL[availability]}
       </Badge>
-      {hint && (
-        <p className="mt-1 text-[0.625rem] text-muted-foreground">{hint}</p>
-      )}
+      {hint && <p className="mt-1 text-2xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }
@@ -135,9 +126,7 @@ function CatalogTable({ entries }: { entries: AdminCatalogEntry[] }) {
               </td>
               <td className="py-1.5 pr-4">
                 {entry.responseStreamingSupported ? (
-                  <Badge className="text-[0.625rem]" variant="outline">
-                    Streaming
-                  </Badge>
+                  <Badge variant="outline">Streaming</Badge>
                 ) : (
                   <span className="text-muted-foreground">-</span>
                 )}

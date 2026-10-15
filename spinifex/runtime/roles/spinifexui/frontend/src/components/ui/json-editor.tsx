@@ -2,7 +2,6 @@ import type * as React from "react"
 
 import { Textarea } from "@/components/ui/textarea"
 import { formatJson } from "@/lib/json"
-import { cn } from "@/lib/utils"
 
 interface JsonEditorProps extends Omit<
   React.ComponentProps<typeof Textarea>,
@@ -22,7 +21,6 @@ export function JsonEditor({
   onChange,
   error,
   onBlur,
-  className,
   ...props
 }: JsonEditorProps) {
   const handleBlur = (event: React.FocusEvent<HTMLTextAreaElement>) => {
@@ -36,12 +34,12 @@ export function JsonEditor({
   return (
     <Textarea
       aria-invalid={error}
-      className={cn("font-mono text-sm", className)}
       onBlur={handleBlur}
       onChange={(event) => {
         onChange(event.target.value)
       }}
       value={value}
+      variant="code"
       {...props}
     />
   )

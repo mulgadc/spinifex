@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +53,10 @@ func newFakeCluster(t *testing.T) *fakeCluster {
 	return cluster
 }
 
+// fakeClusterNode is the one node the fake cluster answers as. Replies carry
+// its ID because an inventory fan-out only counts attributable frames.
+const fakeClusterNode = "node-1"
+
 func (c *fakeCluster) serve(msg *nats.Msg) {
 	c.mu.Lock()
 	c.calls = append(c.calls, msg.Subject)
@@ -60,18 +65,24 @@ func (c *fakeCluster) serve(msg *nats.Msg) {
 	reply, hasReply := c.replies[msg.Subject]
 	c.mu.Unlock()
 
+	respond := func(data []byte) {
+		out := nats.NewMsg(msg.Reply)
+		out.Data = data
+		out.Header.Set(natsmsg.NodeIDHeader, fakeClusterNode)
+		_ = msg.RespondMsg(out)
+	}
 	switch {
 	case isError:
-		_ = msg.Respond(awserrors.GenerateErrorPayload(code))
+		respond(awserrors.GenerateErrorPayload(code))
 	case hasReply:
 		payload, err := json.Marshal(reply)
 		if err != nil {
-			_ = msg.Respond(awserrors.GenerateErrorPayload("InternalError"))
+			respond(awserrors.GenerateErrorPayload("InternalError"))
 			return
 		}
-		_ = msg.Respond(payload)
+		respond(payload)
 	default:
-		_ = msg.Respond([]byte(`{}`))
+		respond([]byte(`{}`))
 	}
 }
 
@@ -111,7 +122,7 @@ func testCtx(t *testing.T) context.Context {
 // The stage graph is what keeps teardown converging, so it is asserted rather
 // than left to the order the constructor happens to list.
 func TestEC2ReapersAreOrderedByDependency(t *testing.T) {
-	reapers := EC2Reapers(nil, 1)
+	reapers := EC2Reapers(nil, 1, []string{"node-1"})
 
 	var kinds []string
 	for _, reaper := range reapers {
@@ -156,7 +167,7 @@ func TestInstanceReaperSkipsTerminalStates(t *testing.T) {
 		}}},
 	})
 
-	reaper := &instanceReaper{nc: cluster.nc, expectedNodes: 1}
+	reaper := &instanceReaper{nc: cluster.nc, nodeIDs: []string{fakeClusterNode}}
 	found, err := reaper.List(testCtx(t), "000000000042")
 	require.NoError(t, err)
 
@@ -169,7 +180,7 @@ func TestInstanceReaperSkipsTerminalStates(t *testing.T) {
 // makes a stuck host the case --force exists for.
 func TestInstanceReaperTerminates(t *testing.T) {
 	cluster := newFakeCluster(t)
-	reaper := &instanceReaper{nc: cluster.nc, expectedNodes: 1}
+	reaper := &instanceReaper{nc: cluster.nc, nodeIDs: []string{fakeClusterNode}}
 
 	require.NoError(t, reaper.Delete(testCtx(t), "000000000042",
 		Resource{Kind: "instance", ID: "i-0abc0123456789def"}, false))
@@ -678,7 +689,7 @@ func TestNetworkInterfaceReaperTreatsAMissingInterfaceAsDeleted(t *testing.T) {
 // subnet delete is refused while an interface is still in it.
 func TestEC2ReapersRemoveInterfacesBeforeSubnets(t *testing.T) {
 	var eni, subnet = -1, -1
-	for i, reaper := range EC2Reapers(nil, 1) {
+	for i, reaper := range EC2Reapers(nil, 1, []string{"node-1"}) {
 		switch reaper.Kind() {
 		case "network-interface":
 			eni = i

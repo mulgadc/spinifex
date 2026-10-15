@@ -4,7 +4,7 @@ import { useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useAdmin } from "@/contexts/admin-context"
+import { useAdmin } from "@/hooks/use-admin"
 import {
   adminNodesQueryOptions,
   adminVMsQueryOptions,
@@ -60,96 +60,102 @@ export function AdminDashboardPanel() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {/* Version Info */}
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
+          <CardHeader className="mb-2">
+            <CardTitle variant="icon">
               <Monitor className="size-3.5" />
               Spinifex Info
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-1 text-xs">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Version</span>
-              <span className="font-mono">{version.version}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Commit</span>
-              <span className="font-mono">{version.commit}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Platform</span>
-              <span>
-                {version.os}/{version.arch}
-              </span>
-            </div>
-            {region && (
+          <CardContent>
+            <div className="space-y-1 text-xs">
               <div className="flex justify-between">
-                <span className="text-muted-foreground">Region</span>
-                <span>{region}</span>
+                <span className="text-muted-foreground">Version</span>
+                <span className="font-mono">{version.version}</span>
               </div>
-            )}
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Commit</span>
+                <span className="font-mono">{version.commit}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Platform</span>
+                <span>
+                  {version.os}/{version.arch}
+                </span>
+              </div>
+              {region && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Region</span>
+                  <span>{region}</span>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
         {/* License & Support */}
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">License &amp; Support</CardTitle>
+          <CardHeader className="mb-2">
+            <CardTitle>License &amp; Support</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">License</span>
-              <Badge variant={isOpenSource ? "secondary" : "default"}>
-                {isOpenSource ? "Open Source (AGPLv3)" : "Commercial"}
-              </Badge>
+          <CardContent>
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">License</span>
+                <Badge variant={isOpenSource ? "secondary" : "default"}>
+                  {isOpenSource ? "Open Source (AGPLv3)" : "Commercial"}
+                </Badge>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Support</span>
+                <span>{isOpenSource ? "Community" : "Standard"}</span>
+              </div>
+              {isOpenSource && (
+                <a
+                  href="https://mulgadc.com/purchase"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 block text-xs font-medium text-primary hover:underline"
+                >
+                  Upgrade to Commercial &rarr;
+                </a>
+              )}
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-muted-foreground">Support</span>
-              <span>{isOpenSource ? "Community" : "Standard"}</span>
-            </div>
-            {isOpenSource && (
-              <a
-                href="https://mulgadc.com/purchase"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 block text-xs font-medium text-primary hover:underline"
-              >
-                Upgrade to Commercial &rarr;
-              </a>
-            )}
           </CardContent>
         </Card>
 
         {/* Cluster Status */}
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
+          <CardHeader className="mb-2">
+            <CardTitle variant="icon">
               <Server className="size-3.5" />
               Cluster Status
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2 text-xs">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">{clusterMode}</Badge>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Nodes</span>
-              <span>{nodes.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Instances</span>
-              <span>{vms.length}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">vCPU</span>
-              <span>
-                {allocVCPU} / {totalVCPU}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Memory</span>
-              <span>
-                {allocMem.toFixed(1)} / {totalMem.toFixed(1)} GB
-              </span>
+          <CardContent>
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline">{clusterMode}</Badge>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Nodes</span>
+                <span>{nodes.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Instances</span>
+                <span>{vms.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">vCPU</span>
+                <span>
+                  {allocVCPU} / {totalVCPU}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Memory</span>
+                <span>
+                  {allocMem.toFixed(1)} / {totalMem.toFixed(1)} GB
+                </span>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -158,7 +164,7 @@ export function AdminDashboardPanel() {
       {/* Collapsible Nodes Table */}
       {nodes.length > 0 && (
         <Card>
-          <CardHeader className="pb-0">
+          <CardHeader>
             <button
               type="button"
               className="flex items-center gap-2 text-sm font-medium"
@@ -175,7 +181,7 @@ export function AdminDashboardPanel() {
             </button>
           </CardHeader>
           {nodesExpanded && (
-            <CardContent className="pt-2">
+            <CardContent className="mt-2">
               <NodesTable nodes={nodes} />
             </CardContent>
           )}
@@ -184,8 +190,8 @@ export function AdminDashboardPanel() {
 
       {/* Add-ons Matrix */}
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Commercial Add-ons</CardTitle>
+        <CardHeader className="mb-2">
+          <CardTitle>Commercial Add-ons</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
@@ -202,9 +208,7 @@ export function AdminDashboardPanel() {
                 {isOpenSource ? (
                   <Lock className="size-3 text-muted-foreground" />
                 ) : (
-                  <Badge variant="outline" className="text-[0.625rem]">
-                    Active
-                  </Badge>
+                  <Badge variant="outline">Active</Badge>
                 )}
               </div>
             ))}
@@ -249,7 +253,6 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
               <td className="py-1.5 pr-4">
                 <Badge
                   variant={node.status === "Ready" ? "default" : "secondary"}
-                  className="text-[0.625rem]"
                 >
                   {node.status}
                 </Badge>

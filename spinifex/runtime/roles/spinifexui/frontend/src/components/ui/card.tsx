@@ -1,18 +1,33 @@
+import { cva, type VariantProps } from "class-variance-authority"
 import type * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+export const cardVariants = cva(
+  "group/card flex flex-col gap-4 overflow-hidden rounded-lg bg-card py-4 text-xs/relaxed text-card-foreground ring-1 ring-foreground/10 has-[>img:first-child]:pt-0 data-[size=sm]:gap-3 data-[size=sm]:py-3 *:[img:first-child]:rounded-t-lg *:[img:last-child]:rounded-b-lg",
+  {
+    variants: {
+      variant: {
+        default: "",
+        muted: "bg-muted/30",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  },
+)
+
 export function Card({
   className,
   size = "default",
+  variant = "default",
   ...props
-}: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+}: React.ComponentProps<"div"> &
+  VariantProps<typeof cardVariants> & { size?: "default" | "sm" }) {
   return (
     <div
-      className={cn(
-        "group/card flex flex-col gap-4 overflow-hidden rounded-lg bg-card py-4 text-xs/relaxed text-card-foreground ring-1 ring-foreground/10 has-[>img:first-child]:pt-0 data-[size=sm]:gap-3 data-[size=sm]:py-3 *:[img:first-child]:rounded-t-lg *:[img:last-child]:rounded-b-lg",
-        className,
-      )}
+      className={cn(cardVariants({ variant, className }))}
       data-size={size}
       data-slot="card"
       {...props}
@@ -36,13 +51,26 @@ export function CardHeader({
   )
 }
 
+export const cardTitleVariants = cva("text-sm font-medium", {
+  variants: {
+    variant: {
+      default: "",
+      icon: "flex items-center gap-2",
+    },
+  },
+  defaultVariants: {
+    variant: "default",
+  },
+})
+
 export function CardTitle({
   className,
+  variant = "default",
   ...props
-}: React.ComponentProps<"div">) {
+}: React.ComponentProps<"div"> & VariantProps<typeof cardTitleVariants>) {
   return (
     <div
-      className={cn("text-sm font-medium", className)}
+      className={cn(cardTitleVariants({ variant, className }))}
       data-slot="card-title"
       {...props}
     />

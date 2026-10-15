@@ -23,13 +23,13 @@ func TestNewClusterEngineCoversEveryStage(t *testing.T) {
 	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, 1, svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
 	require.NoError(t, err)
 	require.NotNil(t, engine.Accounts)
 
 	// A teardown with no object store would report every stage drained and
 	// still delete the account record, leaving the tenant's objects behind.
-	_, err = NewClusterEngine(t.Context(), nc, 1, svc, nil)
+	_, err = NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, nil)
 	require.Error(t, err)
 
 	for _, stage := range Stages() {
@@ -51,7 +51,7 @@ func TestClusterEnginePrechecks(t *testing.T) {
 	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, 1, svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
 	require.NoError(t, err)
 
 	// Account ids are sequential and the first is the protected super admin.

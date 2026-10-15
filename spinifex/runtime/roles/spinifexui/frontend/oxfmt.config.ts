@@ -11,5 +11,9 @@ export default defineConfig({
     stylesheet: "./src/styles.css",
     functions: ["clsx", "cn", "cva"],
   },
-  ignorePatterns: ["dist/**", "src/routeTree.gen.ts"],
+  ignorePatterns: [
+    "dist/**",
+    "src/routeTree.gen.ts",
+    "src/lib/cn-tables.gen.ts",
+  ],
 })

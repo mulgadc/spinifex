@@ -99,6 +99,18 @@ func (s *IMDSServiceImpl) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AWS sends the token with IP TTL equal to HttpPutResponseHopLimit, so a
+	// workload more routed hops away than that never receives it. No token is
+	// issued unless the TTL is in place.
+	hopLimit := s.putResponseHopLimit(r.Context(), eni)
+	if err := setRequestConnTTL(r.Context(), hopLimit); err != nil {
+		slog.ErrorContext(r.Context(), "IMDS: setting token response TTL failed", "eni_id", eni.eniID, "hop_limit", hopLimit, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// Closing the connection keeps the restricted TTL scoped to this response.
+	w.Header().Set("Connection", "close")
+
 	token, err := s.tokens.issue(eni.eniID, ttl, s.now())
 	if err != nil {
 		slog.ErrorContext(r.Context(), "IMDS: token issuance failed", "eni_id", eni.eniID, "err", err)
@@ -803,9 +815,14 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // ctxKey is the unexported context-key type used to thread the per-tap ENI
-// identity into each request.
+// identity and the per-connection TTL setter into each request.
 type ctxKey int
 
-// ctxKeyENI carries a *eniFacts resolved once per per-tap responder — the
-// authoritative caller identity for every request it serves.
-const ctxKeyENI ctxKey = iota
+const (
+	// ctxKeyENI carries a *eniFacts resolved once per per-tap responder — the
+	// authoritative caller identity for every request it serves.
+	ctxKeyENI ctxKey = iota
+	// ctxKeyConnTTL carries the connTTLSetter for the request's accepted socket,
+	// threaded per connection by the per-tap responder's ConnContext.
+	ctxKeyConnTTL
+)

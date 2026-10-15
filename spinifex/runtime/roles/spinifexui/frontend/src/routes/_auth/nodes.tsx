@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
-import { createFileRoute, redirect } from "@tanstack/react-router"
+import { createFileRoute } from "@tanstack/react-router"
 
 import { GPUInventoryCard } from "@/components/gpu-inventory-card"
 import { PageHeading } from "@/components/page-heading"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { useAdmin } from "@/contexts/admin-context"
+import { requireAdmin } from "@/lib/require-admin"
 import { formatVRAMMiB } from "@/lib/utils"
 import {
   adminNodesQueryOptions,
@@ -16,6 +16,7 @@ import {
 } from "@/queries/admin"
 
 export const Route = createFileRoute("/_auth/nodes")({
+  beforeLoad: requireAdmin,
   head: () => ({
     meta: [{ title: "Nodes | Mulga" }],
   }),
@@ -57,21 +58,14 @@ function formatAge(launchTime: number): string {
 }
 
 function NodesPage() {
-  const { isAdmin } = useAdmin()
   const { data: nodesData } = useQuery({
     ...adminNodesQueryOptions,
-    enabled: isAdmin,
     refetchInterval: 5000,
   })
   const { data: vmsData } = useQuery({
     ...adminVMsQueryOptions,
-    enabled: isAdmin,
     refetchInterval: 5000,
   })
-
-  if (!isAdmin) {
-    throw redirect({ to: "/" })
-  }
 
   const nodes = nodesData?.nodes ?? []
   const vms = (vmsData?.vms ?? []).filter((vm) => !vm.managed_by)
@@ -106,7 +100,7 @@ function NodesPage() {
         {/* Section 1: Nodes (spx get nodes) */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Cluster Nodes</CardTitle>
+            <CardTitle>Cluster Nodes</CardTitle>
           </CardHeader>
           <CardContent>
             {nodes.length === 0 ? (
@@ -122,9 +116,7 @@ function NodesPage() {
         {/* Section 2: EC2 Instances */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">
-              Elastic Compute Cloud (EC2)
-            </CardTitle>
+            <CardTitle>Elastic Compute Cloud (EC2)</CardTitle>
           </CardHeader>
           <CardContent>
             {vms.length === 0 ? (
@@ -140,24 +132,26 @@ function NodesPage() {
         {/* Section 3: Resource Usage + Instance Types (spx top nodes) */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm">Resource Usage</CardTitle>
+            <CardTitle>Resource Usage</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {nodes.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No data</p>
-            ) : (
-              <>
-                <ResourceTable nodes={nodes} />
-                {instanceTypes.length > 0 && (
-                  <>
-                    <h4 className="mt-4 text-xs font-medium text-muted-foreground">
-                      Instance Type Capacity
-                    </h4>
-                    <InstanceTypesTable instanceTypes={instanceTypes} />
-                  </>
-                )}
-              </>
-            )}
+          <CardContent>
+            <div className="space-y-4">
+              {nodes.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No data</p>
+              ) : (
+                <>
+                  <ResourceTable nodes={nodes} />
+                  {instanceTypes.length > 0 && (
+                    <>
+                      <h4 className="mt-4 text-xs font-medium text-muted-foreground">
+                        Instance Type Capacity
+                      </h4>
+                      <InstanceTypesTable instanceTypes={instanceTypes} />
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -165,7 +159,7 @@ function NodesPage() {
         {nodes.some((n) => (n.gpus?.length ?? 0) > 0) && (
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">GPU Inventory</CardTitle>
+              <CardTitle>GPU Inventory</CardTitle>
             </CardHeader>
             <CardContent>
               <GPUInventoryCard nodes={nodes} />
@@ -213,7 +207,6 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
                 <td className="py-1.5 pr-4">
                   <Badge
                     variant={node.status === "Ready" ? "default" : "secondary"}
-                    className="text-[0.625rem]"
                   >
                     {node.status}
                   </Badge>
@@ -276,7 +269,6 @@ function VMsTable({ vms }: { vms: VMInfo[] }) {
               <td className="py-1.5 pr-4">
                 <Badge
                   variant={vm.status === "running" ? "default" : "secondary"}
-                  className="text-[0.625rem]"
                 >
                   {vm.status}
                 </Badge>

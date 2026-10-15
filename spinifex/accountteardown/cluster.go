@@ -21,6 +21,7 @@ func NewClusterEngine(
 	ctx context.Context,
 	nc *nats.Conn,
 	expectedNodes int,
+	nodeIDs []string,
 	svc handlers_iam.IAMService,
 	buckets BucketStore,
 ) (*Engine, error) {
@@ -64,7 +65,7 @@ func NewClusterEngine(
 	// live spot request launches a replacement for anything already terminated.
 	reapers = append(reapers, ELBv2Reapers(nc)...)
 	reapers = append(reapers, EC2ExtraReapers(nc)...)
-	reapers = append(reapers, EC2Reapers(nc, expectedNodes)...)
+	reapers = append(reapers, EC2Reapers(nc, expectedNodes, nodeIDs)...)
 
 	reapers = append(reapers, S3Reapers(buckets)...)
 	reapers = append(reapers, ACMReapers(nc)...)

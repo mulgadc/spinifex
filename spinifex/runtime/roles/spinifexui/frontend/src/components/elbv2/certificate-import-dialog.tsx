@@ -71,10 +71,7 @@ export function CertificateImportDialog({
 
   return (
     <AlertDialog onOpenChange={handleOpenChange} open={open}>
-      <AlertDialogContent
-        className="grid-cols-[minmax(0,1fr)]"
-        style={{ maxWidth: "36rem", width: "calc(100vw - 2rem)" }}
-      >
+      <AlertDialogContent width="lg">
         <AlertDialogHeader>
           <AlertDialogTitle>Import certificate</AlertDialogTitle>
           <AlertDialogDescription>
@@ -96,7 +93,8 @@ export function CertificateImportDialog({
               <label htmlFor="cert-body">Certificate body</label>
             </FieldTitle>
             <Textarea
-              className="font-mono text-xs"
+              size="sm"
+              variant="code"
               id="cert-body"
               onChange={(e) => {
                 setCertificate(e.target.value)
@@ -112,7 +110,8 @@ export function CertificateImportDialog({
               <label htmlFor="cert-key">Private key</label>
             </FieldTitle>
             <Textarea
-              className="font-mono text-xs"
+              size="sm"
+              variant="code"
               id="cert-key"
               onChange={(e) => {
                 setPrivateKey(e.target.value)
@@ -128,7 +127,8 @@ export function CertificateImportDialog({
               <label htmlFor="cert-chain">Certificate chain (optional)</label>
             </FieldTitle>
             <Textarea
-              className="font-mono text-xs"
+              size="sm"
+              variant="code"
               id="cert-chain"
               onChange={(e) => {
                 setCertificateChain(e.target.value)

@@ -44,7 +44,7 @@ const markdownComponents = {
     </a>
   ),
   code: (props: { children?: React.ReactNode }) => (
-    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
+    <code className="rounded bg-muted px-1 py-0.5 font-mono text-code-inline">
       {props.children}
     </code>
   ),
@@ -75,13 +75,11 @@ function TurnBubble({
         <span className="font-medium">{isUser ? "You" : "Assistant"}</span>
         {turn.status === "complete" && turn.usage && (
           <>
-            <Badge className="text-[0.625rem]" variant="outline">
+            <Badge variant="outline">
               {turn.usage.inputTokens ?? 0} in / {turn.usage.outputTokens ?? 0}{" "}
               out
             </Badge>
-            <Badge className="text-[0.625rem]" variant="secondary">
-              Included
-            </Badge>
+            <Badge variant="secondary">Included</Badge>
           </>
         )}
       </div>

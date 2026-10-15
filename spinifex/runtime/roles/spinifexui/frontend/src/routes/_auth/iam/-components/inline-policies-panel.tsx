@@ -286,7 +286,7 @@ function AddInlinePolicyForm({ name, put, onClose }: AddInlinePolicyFormProps) {
         )}
       </Field>
       <JsonEditor
-        className="text-xs"
+        size="sm"
         error={invalidJson}
         onChange={setDraft}
         rows={12}
@@ -365,7 +365,7 @@ function EditInlinePolicyForm({
         <ErrorBanner error={put.error} msg="Failed to update inline policy" />
       )}
       <JsonEditor
-        className="text-xs"
+        size="sm"
         error={invalidJson}
         onChange={setDraft}
         rows={12}

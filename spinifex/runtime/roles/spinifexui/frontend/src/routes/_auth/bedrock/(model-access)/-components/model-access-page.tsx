@@ -69,10 +69,7 @@ function ModelAccessRow({
         <div className="font-mono text-muted-foreground">{entry.modelId}</div>
       </td>
       <td className="py-1.5 pr-4">
-        <Badge
-          className="text-[0.625rem]"
-          variant={granted ? "default" : "secondary"}
-        >
+        <Badge variant={granted ? "default" : "secondary"}>
           {granted ? "Granted" : "Ungranted"}
         </Badge>
       </td>
@@ -173,9 +170,7 @@ function ModelAccessAccountPicker({
           ))}
         </SelectContent>
       </Select>
-      <p className="mt-1 text-[0.625rem] text-muted-foreground">
-        Select an account.
-      </p>
+      <p className="mt-1 text-2xs text-muted-foreground">Select an account.</p>
     </Field>
   )
 }
@@ -202,7 +197,7 @@ function ModelAccessAccountFallback({
         placeholder="123456789012"
         value={accountId}
       />
-      <p className="mt-1 text-[0.625rem] text-muted-foreground">
+      <p className="mt-1 text-2xs text-muted-foreground">
         {invalid
           ? "Enter a 12-digit numeric account ID."
           : "Enter a 12-digit account ID — account list unavailable."}

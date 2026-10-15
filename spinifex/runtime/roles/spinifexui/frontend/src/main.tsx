@@ -5,7 +5,6 @@ import ReactDOM from "react-dom/client"
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
-import { AdminProvider } from "@/contexts/admin-context"
 import { loadClusterConfig } from "@/lib/cluster-config"
 import {
   createQueryClient,
@@ -43,13 +42,7 @@ async function bootstrap(root: ReactDOM.Root) {
     await loadClusterConfig()
   } catch (error: unknown) {
     root.render(
-      <div
-        style={{
-          fontFamily: "sans-serif",
-          margin: "4rem auto",
-          maxWidth: "40rem",
-        }}
-      >
+      <div className="mx-auto my-16 max-w-160 font-system">
         <h1>Console unavailable</h1>
         <p>
           This cluster did not report its region, so the console cannot sign
@@ -66,11 +59,9 @@ async function bootstrap(root: ReactDOM.Root) {
     <StrictMode>
       <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
         <QueryClientProvider client={queryClient}>
-          <AdminProvider>
-            <SidebarProvider>
-              <RouterProvider router={router} />
-            </SidebarProvider>
-          </AdminProvider>
+          <SidebarProvider>
+            <RouterProvider router={router} />
+          </SidebarProvider>
         </QueryClientProvider>
       </ThemeProvider>
     </StrictMode>,

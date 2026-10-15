@@ -32,7 +32,7 @@ export function RawJsonPanel({ request, response }: RawJsonPanelProps) {
       {expanded && (
         <div className="space-y-3 border-t border-border p-3">
           <div>
-            <h4 className="mb-1 text-[0.625rem] font-medium text-muted-foreground">
+            <h4 className="mb-1 text-2xs font-medium text-muted-foreground">
               Request
             </h4>
             <pre className="max-h-80 overflow-auto rounded bg-muted p-2 font-mono text-xs break-words whitespace-pre-wrap">
@@ -40,7 +40,7 @@ export function RawJsonPanel({ request, response }: RawJsonPanelProps) {
             </pre>
           </div>
           <div>
-            <h4 className="mb-1 text-[0.625rem] font-medium text-muted-foreground">
+            <h4 className="mb-1 text-2xs font-medium text-muted-foreground">
               Response
             </h4>
             <pre className="max-h-80 overflow-auto rounded bg-muted p-2 font-mono text-xs break-words whitespace-pre-wrap">

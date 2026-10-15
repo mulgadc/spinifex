@@ -66,6 +66,9 @@ sudo update-ca-certificates
 sudo systemctl restart docker
 ```
 
+  This reaches dockerd and anything running directly on the host.
+  A tool that runs in its own container, or a buildx builder using the `docker-container` driver, has a separate trust store; see [Troubleshooting](#troubleshooting).
+
 - **The registry endpoint** — the Spinifex gateway `host:9999`. `aws ecr get-login-password` and `aws ecr describe-repositories` return the exact `host:port`; copy it from there rather than constructing it by hand.
 - **For EKS pulls:** worker nodes need the `AmazonEC2ContainerRegistryReadOnly` policy on their node IAM role (the EKS prerequisites already include this) and network egress to the registry endpoint.
 
@@ -178,6 +181,44 @@ Then authenticate Docker and push using the `repository_url` output, following s
 **`docker login` fails with an authorization error.** The token is account-scoped and short-lived. Re-run `aws ecr get-login-password` to mint a fresh token, and confirm the registry host in `docker login` matches your account's endpoint (`aws ecr describe-repositories` returns it).
 
 **`docker push` cannot reach the registry.** Use the exact host from `aws ecr describe-repositories` — the Spinifex gateway `host:9999`. Docker dials it directly, so the `:9999` port must be present (without it docker tries `:443` and fails). If you are using the AWS-parity `<account-id>.dkr.ecr…` hostname instead, that path needs DNS resolving it to the gateway — prefer the gateway host the API returns.
+
+**A containerised tool fails with `x509: certificate signed by unknown authority`, while `docker login` and `docker push` work from the host.**
+The registry token exchange (`POST /v2/token`) runs in the process that issued the build or push.
+When that process is itself a container, such as `ghcr.io/basecamp/kamal` or a containerised CI runner, it checks the registry certificate against the container's trust store, which does not hold the Spinifex CA.
+Bind-mount the host bundle, which already includes the CA after `update-ca-certificates`, over the container's bundle:
+
+```bash
+docker run --rm -it \
+  -v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD:/workdir" \
+  ghcr.io/basecamp/kamal:latest deploy
+```
+
+Mounting the whole bundle keeps the public roots, so pulls of public base images still verify.
+Pointing `SSL_CERT_FILE` at `ca.pem` alone replaces them and breaks those pulls.
+
+**`docker buildx build --push` fails with an x509 error, while `docker push` of the same image works.**
+The buildx driver decides whose trust store BuildKit uses.
+The `docker` driver runs the BuildKit built into dockerd, which uses the host trust store, so the host CA install above covers it.
+The `docker-container` driver, the default for a builder made with `docker buildx create`, runs BuildKit in its own container, and a CA installed on the host or mounted into the CLI container does not reach it.
+
+Use the `docker` driver when you can (`docker buildx use default`, or `builder: driver: docker` in Kamal's `config/deploy.yml`).
+The `docker-container` route is unavoidable for multi-platform builds and remote builders, which the `docker` driver cannot do.
+For those, give BuildKit the CA through its own config:
+
+```toml
+# buildkitd.toml
+[registry."<spinifex-gateway-host>:9999"]
+  ca = ["/etc/spinifex/ca.pem"]
+```
+
+```bash
+docker buildx create --name spinifex --driver docker-container \
+  --buildkitd-config buildkitd.toml --use
+```
+
+`docker buildx create` copies the referenced CA file into the builder container, so recreate the builder after a CA rotation.
 
 **EKS workers cannot pull an image.** Confirm the node IAM role has `AmazonEC2ContainerRegistryReadOnly` and that the workers have egress to the registry endpoint (an Internet Gateway or NAT Gateway route). See the [EKS prerequisites](/docs/eks).
 

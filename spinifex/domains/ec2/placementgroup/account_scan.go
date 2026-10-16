@@ -6,18 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// ScannedGroup is one readable placement group: its ID and the instance IDs
-// its member map still names, sorted.
+// ScannedGroup is one readable placement group: its ID and how many distinct
+// instances its member map still names.
 type ScannedGroup struct {
-	GroupID           string
-	MemberInstanceIDs []string
+	GroupID     string
+	MemberCount int
 }
 
 // AccountScan is a read-only classification of every record under one
@@ -61,22 +60,21 @@ func (s *PlacementGroupServiceImpl) ScanAccount(ctx context.Context, accountID s
 			scan.Unreadable++
 			continue
 		}
-		scan.Groups = append(scan.Groups, ScannedGroup{GroupID: record.GroupId, MemberInstanceIDs: memberInstanceIDs(record.NodeInstances)})
+		scan.Groups = append(scan.Groups, ScannedGroup{GroupID: record.GroupId, MemberCount: memberCount(record.NodeInstances)})
 	}
 	return scan, nil
 }
 
-// memberInstanceIDs flattens a member map, skipping the empty placeholders a
-// reservation leaves for a node, exactly as DeletePlacementGroup's in-use check does.
-func memberInstanceIDs(nodeInstances map[string][]string) []string {
-	var ids []string
+// memberCount counts distinct instances in a member map, skipping the empty
+// placeholders a reservation leaves for a node, as DeletePlacementGroup's in-use check does.
+func memberCount(nodeInstances map[string][]string) int {
+	ids := make(map[string]bool)
 	for _, onNode := range nodeInstances {
 		for _, id := range onNode {
-			if id != "" && !slices.Contains(ids, id) {
-				ids = append(ids, id)
+			if id != "" {
+				ids[id] = true
 			}
 		}
 	}
-	slices.Sort(ids)
-	return ids
+	return len(ids)
 }

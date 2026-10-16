@@ -34,7 +34,7 @@ func TestPlatformInventoryReplyJSONContract(t *testing.T) {
 			{Kind: PlatformKindTagIndex, Status: PlatformStatusRecordsFound, ScanStartedAt: start, ScanEndedAt: start},
 		},
 		Items: []PlatformItem{
-			{ResourceID: "pg-0held", Kind: PlatformKindPlacementGroup, Disposition: PlatformDispositionDependencyHeld, MemberInstanceIDs: []string{"i-0a"}},
+			{ResourceID: "pg-0held", Kind: PlatformKindPlacementGroup, Disposition: PlatformDispositionDependencyHeld},
 			{ResourceID: "lt-0gone", Kind: PlatformKindTagIndex, Disposition: PlatformDispositionResidue},
 		},
 		Counts: []PlatformRecordCount{
@@ -54,7 +54,7 @@ func TestPlatformInventoryReplyJSONContract(t *testing.T) {
 			{"kind": "tag-index", "status": "records-found", "scan_started_at": "2026-10-16T01:02:03Z", "scan_ended_at": "2026-10-16T01:02:03Z"}
 		],
 		"items": [
-			{"resource_id": "pg-0held", "kind": "placement-group", "disposition": "dependency-held", "member_instance_ids": ["i-0a"]},
+			{"resource_id": "pg-0held", "kind": "placement-group", "disposition": "dependency-held"},
 			{"resource_id": "lt-0gone", "kind": "tag-index", "disposition": "residue"}
 		],
 		"counts": [
@@ -94,6 +94,8 @@ func TestIncompletePlatformInventoryMarksEveryKindIncomplete(t *testing.T) {
 		require.Equal(t, kind, reply.Kinds[i].Kind)
 		require.Equal(t, PlatformStatusScanIncomplete, reply.Kinds[i].Status)
 		require.Equal(t, []string{PlatformReasonNoResponder}, reply.Kinds[i].IncompleteReasons)
+		require.True(t, reply.Kinds[i].ScanStartedAt.IsZero(), "no owner scan ran")
+		require.True(t, reply.Kinds[i].ScanEndedAt.IsZero(), "no owner scan ran")
 	}
 	require.Empty(t, reply.Items)
 	require.Empty(t, reply.Counts)

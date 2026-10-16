@@ -83,7 +83,9 @@ type PlatformInventoryReply struct {
 	Counts         []PlatformRecordCount `json:"counts,omitempty"`
 }
 
-// PlatformKindReport is one kind's scan status and when its scan ran.
+// PlatformKindReport is one kind's scan status and when its scan ran. The
+// timestamps are zero when no owner scan ran, as in a consumer-synthesised
+// scan-incomplete report for no responder, a timeout or a transport failure.
 type PlatformKindReport struct {
 	Kind              string    `json:"kind"`
 	Status            string    `json:"status"`
@@ -92,13 +94,12 @@ type PlatformKindReport struct {
 	ScanEndedAt       time.Time `json:"scan_ended_at"`
 }
 
-// PlatformItem is one resource by its AWS resource ID. MemberInstanceIDs is
-// set only for a dependency-held placement group.
+// PlatformItem is one resource by its AWS resource ID. A dependency-held
+// placement group does not name its member instances.
 type PlatformItem struct {
-	ResourceID        string   `json:"resource_id"`
-	Kind              string   `json:"kind"`
-	Disposition       string   `json:"disposition"`
-	MemberInstanceIDs []string `json:"member_instance_ids,omitempty"`
+	ResourceID  string `json:"resource_id"`
+	Kind        string `json:"kind"`
+	Disposition string `json:"disposition"`
 }
 
 // PlatformRecordCount is the number of records of one class in one kind.

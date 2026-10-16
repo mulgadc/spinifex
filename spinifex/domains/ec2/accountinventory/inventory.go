@@ -175,7 +175,7 @@ func (i *Inventory) scanKeyPairs(ctx context.Context, accountID string, reply *e
 	ids := make(map[string]bool)
 	for _, id := range scan.LiveKeyPairIDs {
 		ids[id] = true
-		addItem(reply, kind, id, ec2v1.PlatformDispositionLive, nil)
+		addItem(reply, kind, id, ec2v1.PlatformDispositionLive)
 	}
 	for _, id := range scan.UnreadableKeyPairIDs {
 		ids[id] = true
@@ -202,11 +202,11 @@ func (i *Inventory) scanPlacementGroups(ctx context.Context, accountID string, r
 	ids := make(map[string]bool)
 	for _, group := range scan.Groups {
 		ids[group.GroupID] = true
-		if len(group.MemberInstanceIDs) > 0 {
-			addItem(reply, kind, group.GroupID, ec2v1.PlatformDispositionDependencyHeld, group.MemberInstanceIDs)
+		if group.MemberCount > 0 {
+			addItem(reply, kind, group.GroupID, ec2v1.PlatformDispositionDependencyHeld)
 			continue
 		}
-		addItem(reply, kind, group.GroupID, ec2v1.PlatformDispositionLive, nil)
+		addItem(reply, kind, group.GroupID, ec2v1.PlatformDispositionLive)
 	}
 	addCount(reply, kind, ec2v1.PlatformDispositionUnreadable, ec2v1.PlatformClassUnreadableRecord, scan.Unreadable)
 	if scan.ReadFailures > 0 {
@@ -226,7 +226,7 @@ func (i *Inventory) scanLaunchTemplates(ctx context.Context, accountID string, r
 	ids := make(map[string]bool)
 	for _, id := range scan.LiveTemplateIDs {
 		ids[id] = true
-		addItem(reply, kind, id, ec2v1.PlatformDispositionLive, nil)
+		addItem(reply, kind, id, ec2v1.PlatformDispositionLive)
 	}
 	for _, id := range scan.UnreadableTemplateIDs {
 		ids[id] = true
@@ -241,10 +241,10 @@ func (i *Inventory) scanLaunchTemplates(ctx context.Context, accountID string, r
 	return i.finishKind(kind), owned{ids: ids, resolved: true}
 }
 
-func addItem(reply *ec2v1.PlatformInventoryReply, kind *kindScan, id, disposition string, members []string) {
+func addItem(reply *ec2v1.PlatformInventoryReply, kind *kindScan, id, disposition string) {
 	kind.found = true
 	reply.Items = append(reply.Items, ec2v1.PlatformItem{
-		ResourceID: id, Kind: kind.report.Kind, Disposition: disposition, MemberInstanceIDs: members,
+		ResourceID: id, Kind: kind.report.Kind, Disposition: disposition,
 	})
 }
 

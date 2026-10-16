@@ -47,8 +47,10 @@ The daemon ignores `X-Account-ID` for this subject.
 Neither field grants anything: the subject is read-only, writes to no store, and its reply is never authority to delete.
 
 The reply has one `kinds` entry per kind (`key-pair`, `placement-group`, `launch-template`, `tag-index`) with a status and scan start and end times.
+The times are zero when no owner scan ran: a consumer-synthesised `scan-incomplete` report for no responder, a timeout or a transport failure carries zero timestamps and must not be read as a scan.
 `observed-clean-at-scan-time` means every store for that kind was read completely and held nothing at scan time; writers are not fenced, so it is a snapshot and never evidence of absence.
-`items` carry only a resource ID, kind and disposition (`live`, `dependency-held` with member instance IDs, or tag-index `residue`), which are the identities the per-kind Describe subjects already return.
+`items` carry only a resource ID, kind and disposition (`live`, `dependency-held`, or tag-index `residue`), which are the identities the per-kind Describe subjects already return.
+A `dependency-held` placement group does not name its member instances, which may be stale and are not exposed by the existing subjects.
 Records no existing subject exposes (public-key objects without metadata, launch-template version bodies and name-index entries without a header, and every unreadable record) appear only as aggregate `counts` per kind, disposition and class.
 The reply never carries an object key, raw KV key, key or template name, tag key or value, public-key bytes, launch-template data, user data, record body or store error text; `incomplete_reasons` are fixed categories.
 

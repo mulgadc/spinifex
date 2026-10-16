@@ -125,7 +125,7 @@ func TestInventoryClassifiesEveryRecordClass(t *testing.T) {
 	}
 	f.groups.scan = &ec2placementgroup.AccountScan{Groups: []ec2placementgroup.ScannedGroup{
 		{GroupID: "pg-0live"},
-		{GroupID: "pg-0held", MemberInstanceIDs: []string{"i-0a", "i-0b"}},
+		{GroupID: "pg-0held", MemberCount: 2},
 	}}
 	f.templates.scan = &ec2launchtemplate.AccountScan{
 		LiveTemplateIDs: []string{"lt-0live"}, UnreadableTemplateIDs: []string{"lt-0broken"},
@@ -138,7 +138,7 @@ func TestInventoryClassifiesEveryRecordClass(t *testing.T) {
 	assert.ElementsMatch(t, []ec2v1.PlatformItem{
 		{ResourceID: "key-0live", Kind: ec2v1.PlatformKindKeyPair, Disposition: ec2v1.PlatformDispositionLive},
 		{ResourceID: "pg-0live", Kind: ec2v1.PlatformKindPlacementGroup, Disposition: ec2v1.PlatformDispositionLive},
-		{ResourceID: "pg-0held", Kind: ec2v1.PlatformKindPlacementGroup, Disposition: ec2v1.PlatformDispositionDependencyHeld, MemberInstanceIDs: []string{"i-0a", "i-0b"}},
+		{ResourceID: "pg-0held", Kind: ec2v1.PlatformKindPlacementGroup, Disposition: ec2v1.PlatformDispositionDependencyHeld},
 		{ResourceID: "lt-0live", Kind: ec2v1.PlatformKindLaunchTemplate, Disposition: ec2v1.PlatformDispositionLive},
 		{ResourceID: "key-0gone", Kind: ec2v1.PlatformKindTagIndex, Disposition: ec2v1.PlatformDispositionResidue},
 		{ResourceID: "lt-0gone", Kind: ec2v1.PlatformKindTagIndex, Disposition: ec2v1.PlatformDispositionResidue},

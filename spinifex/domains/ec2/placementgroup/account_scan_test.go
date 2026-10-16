@@ -56,7 +56,7 @@ func TestScanAccountClassifiesPlacementGroupRecords(t *testing.T) {
 	assert.ElementsMatch(t, []ScannedGroup{
 		{GroupID: *empty.GroupId},
 		{GroupID: *reserved.GroupId},
-		{GroupID: *held.GroupId, MemberInstanceIDs: []string{"i-0aaa", "i-0bbb"}},
+		{GroupID: *held.GroupId, MemberCount: 2},
 	}, scan.Groups)
 	assert.Equal(t, 3, scan.Unreadable)
 	assert.Equal(t, 1, scan.ReadFailures)

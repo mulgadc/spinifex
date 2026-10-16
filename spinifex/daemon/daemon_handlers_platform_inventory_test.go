@@ -147,6 +147,7 @@ func newInventoryCluster(t *testing.T) *inventoryCluster {
 	require.NoError(t, tags.PutResourceTags(ctx, inventoryAccount, brokenTemplateID, secretTags))
 
 	c.secrets = []string{
+		"i-0held0000000000",
 		"live-key-name", "live-group-name", "live-template-name", "held-group-name",
 		"orphan-secret-key-name", "broken-secret-key-name", "orphan-secret-template-name",
 		hex.EncodeToString([]byte("orphan-secret-template-name")), "broken-secret-template-name",
@@ -205,7 +206,7 @@ func TestPlatformInventorySubjectReportsTheAccountsOwnerStores(t *testing.T) {
 	assert.Equal(t, inventoryAccount, reply.AccountID)
 	assert.Equal(t, "req-1", reply.CorrelationRef)
 	want := []ec2v1.PlatformItem{
-		{ResourceID: c.heldIDs[0], Kind: ec2v1.PlatformKindPlacementGroup, Disposition: ec2v1.PlatformDispositionDependencyHeld, MemberInstanceIDs: []string{"i-0held0000000000"}},
+		{ResourceID: c.heldIDs[0], Kind: ec2v1.PlatformKindPlacementGroup, Disposition: ec2v1.PlatformDispositionDependencyHeld},
 		{ResourceID: deletedGroupID, Kind: ec2v1.PlatformKindTagIndex, Disposition: ec2v1.PlatformDispositionResidue},
 		{ResourceID: orphanTemplateID, Kind: ec2v1.PlatformKindTagIndex, Disposition: ec2v1.PlatformDispositionResidue},
 	}

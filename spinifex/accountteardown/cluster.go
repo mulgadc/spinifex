@@ -72,5 +72,7 @@ func NewClusterEngine(
 	reapers = append(reapers, IAMReapers(svc)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 
-	return NewEngine(NewIAMAccounts(svc), reapers...), nil
+	engine := NewEngine(NewIAMAccounts(svc), reapers...)
+	engine.ec2Inventory = newEC2PlatformInventoryClient(nc)
+	return engine, nil
 }

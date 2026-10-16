@@ -950,6 +950,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.ModifyLaunchTemplate", handleNATSRequest(d.node, d.launchTemplateService.ModifyLaunchTemplate), "spinifex-workers"},
 		{"ec2.DescribeLaunchTemplates", handleNATSRequest(d.node, d.launchTemplateService.DescribeLaunchTemplates), "spinifex-workers"},
 		{"ec2.DescribeLaunchTemplateVersions", handleNATSRequest(d.node, d.launchTemplateService.DescribeLaunchTemplateVersions), "spinifex-workers"},
+		{ec2v1.PlatformInventorySubject, handleNATSRequest(d.node, d.platformInventory), "spinifex-workers"},
 		{"ec2.PutSpotInstanceRequests", handleNATSRequest(d.node, d.spotInstanceService.PutSpotInstanceRequests), "spinifex-workers"},
 		{"ec2.DescribeSpotInstanceRequests", handleNATSRequest(d.node, d.spotInstanceService.DescribeSpotInstanceRequests), "spinifex-workers"},
 		{"ec2.CancelSpotInstanceRequests", handleNATSRequest(d.node, d.spotInstanceService.CancelSpotInstanceRequests), "spinifex-workers"},

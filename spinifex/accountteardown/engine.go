@@ -28,6 +28,10 @@ type Engine struct {
 	// teardown in the background can publish progress. A teardown takes minutes
 	// and this is the only view into it while it runs.
 	OnStage func(ctx context.Context, stage StageResult)
+
+	// ec2Inventory is EC2's read-only platform inventory. Bound by the cluster
+	// wiring but consulted by no teardown or inventory path yet.
+	ec2Inventory ec2PlatformInventory
 }
 
 // NewEngine builds an engine with the default timeouts.

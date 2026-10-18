@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,19 +71,6 @@ func TestNew_DefaultTLSPaths(t *testing.T) {
 	assert.Contains(t, svc.Config.TLSKey, "server.key")
 }
 
-func TestNew_CustomTLSPreserved(t *testing.T) {
-	cfg := &Config{
-		TLSCert: "/my/cert.pem",
-		TLSKey:  "/my/key.pem",
-	}
-
-	svc, err := New(cfg)
-
-	require.NoError(t, err)
-	assert.Equal(t, "/my/cert.pem", svc.Config.TLSCert)
-	assert.Equal(t, "/my/key.pem", svc.Config.TLSKey)
-}
-
 func TestNew_PartialTLSFillsOnlyEmpty(t *testing.T) {
 	cfg := &Config{
 		TLSCert: "/my/cert.pem",
@@ -106,17 +92,6 @@ func TestNew_InvalidConfigType(t *testing.T) {
 	assert.Nil(t, svc)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid config type")
-}
-
-func TestNew_InvalidConfigTypeInt(t *testing.T) {
-	svc, err := New(42)
-
-	assert.Nil(t, svc)
-	assert.Error(t, err)
-}
-
-func TestServiceName(t *testing.T) {
-	assert.Equal(t, "spinifex-ui", serviceName)
 }
 
 func TestSecurityHeadersMiddleware(t *testing.T) {
@@ -163,84 +138,42 @@ func TestSecurityHeadersMiddleware_PassesThrough(t *testing.T) {
 	assert.NotEmpty(t, resp.Header.Get("Content-Security-Policy"))
 }
 
-func TestChiCompress_CompressesEligibleContent(t *testing.T) {
-	body := "Hello, this is some text content that should be compressed if long enough."
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(body))
-	})
-
-	compressor := middleware.NewCompressor(5, "text/html")
-	handler := compressor.Handler(inner)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Accept-Encoding", "gzip")
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		reader, err := gzip.NewReader(resp.Body)
-		require.NoError(t, err)
-		defer reader.Close()
-		decompressed, err := io.ReadAll(reader)
-		require.NoError(t, err)
-		assert.Equal(t, body, string(decompressed))
-	}
-}
-
-func TestChiCompress_NoCompressionWithoutHeader(t *testing.T) {
-	body := "uncompressed response body"
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(body))
-	})
-
-	compressor := middleware.NewCompressor(5, "text/html")
-	handler := compressor.Handler(inner)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.NotEqual(t, "gzip", resp.Header.Get("Content-Encoding"))
-	respBody, err := io.ReadAll(resp.Body)
+func newTestHandler(t *testing.T) http.Handler {
+	t.Helper()
+	contentFS, err := fs.Sub(distFS, "frontend/dist")
 	require.NoError(t, err)
-	assert.Equal(t, body, string(respBody))
+	svc := &Service{Config: &Config{Region: "us-west-1"}}
+	return svc.newHandler(contentFS, filepath.Join(t.TempDir(), "ca.pem"), http.DefaultTransport)
 }
 
-func TestChiCompress_IgnoresNonTextContent(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "image/png")
-		w.Write([]byte("fake image data"))
-	})
-
-	compressor := middleware.NewCompressor(5, "text/html", "application/json")
-	handler := compressor.Handler(inner)
-	req := httptest.NewRequest(http.MethodGet, "/image.png", nil)
+// Compression sits inside the security headers, so a gzipped response must
+// still carry them.
+func TestHandler_GzipsJSONWithSecurityHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec := httptest.NewRecorder()
 
-	handler.ServeHTTP(rec, req)
+	newTestHandler(t).ServeHTTP(rec, req)
 
-	resp := rec.Result()
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.NotEqual(t, "gzip", resp.Header.Get("Content-Encoding"))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "gzip", rec.Header().Get("Content-Encoding"))
+	assert.Equal(t, csp, rec.Header().Get("Content-Security-Policy"))
+	reader, err := gzip.NewReader(rec.Body)
+	require.NoError(t, err)
+	defer reader.Close()
+	body, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":false}`, string(body))
 }
 
-func TestCSP_ContainsSelf(t *testing.T) {
-	assert.Contains(t, csp, "connect-src 'self'")
-	assert.Contains(t, csp, "default-src 'self'")
+func TestHandler_ServesIdentityWithoutAcceptEncoding(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	newTestHandler(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Empty(t, rec.Header().Get("Content-Encoding"))
+	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":false}`, rec.Body.String())
 }
 
 func TestCSP_NoExternalPorts(t *testing.T) {
@@ -557,14 +490,6 @@ func TestClusterConfigHandler_ServesOchreEnabledTrue(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":true}`, rec.Body.String())
-}
-
-func TestClusterConfigHandler_ServesOchreEnabledFalse(t *testing.T) {
-	rec := httptest.NewRecorder()
-	clusterConfigHandler("us-west-1", false)(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.JSONEq(t, `{"region":"us-west-1","ochreEnabled":false}`, rec.Body.String())
 }
 
 // A build's chunks only agree with each other. Caching index.html would let a

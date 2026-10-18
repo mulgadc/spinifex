@@ -17,7 +17,7 @@ export const awsCredentialsSchema = z.object({
 export type AwsCredentialsInput = z.infer<typeof awsCredentialsSchema>
 
 // Short-lived STS session credentials persisted in localStorage.
-export const sessionCredentialsSchema = z.object({
+const sessionCredentialsSchema = z.object({
   accessKeyId: z.string().min(1),
   secretAccessKey: z.string().min(1),
   sessionToken: z.string().min(1),

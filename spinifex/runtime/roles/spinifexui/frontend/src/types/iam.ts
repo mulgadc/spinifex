@@ -34,8 +34,6 @@ export const putInlinePolicySchema = z.object({
   policyDocument: jsonStringSchema({ label: "Policy document" }),
 })
 
-export type PutInlinePolicyFormData = z.infer<typeof putInlinePolicySchema>
-
 export const DEFAULT_ASSUME_ROLE_POLICY_DOCUMENT = JSON.stringify(
   {
     Version: "2012-10-17",

@@ -66,7 +66,6 @@ const tick = async () =>
 
 describe("startConsoleHandoff", () => {
   beforeEach(() => {
-    vi.clearAllMocks()
     vi.mocked(exchangeForSession).mockResolvedValue(SESSION)
     opener = makeOpener()
     Object.defineProperty(window, "opener", {

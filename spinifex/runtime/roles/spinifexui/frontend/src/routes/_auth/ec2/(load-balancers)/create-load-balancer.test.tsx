@@ -2,7 +2,7 @@ import type { SecurityGroup, Subnet, Vpc } from "@aws-sdk/client-ec2"
 import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   createTestQueryClient,
@@ -34,7 +34,6 @@ const { routerState, sdk } = vi.hoisted(() => {
   return {
     routerState: {
       navigate: vi.fn(),
-      params: {},
     },
     sdk: {
       send,
@@ -45,7 +44,6 @@ const { routerState, sdk } = vi.hoisted(() => {
       },
       reset: () => {
         handlers.clear()
-        send.mockClear()
       },
     },
   }
@@ -61,12 +59,6 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
   return {
     ...actual,
-    createFileRoute:
-      () =>
-      <TOptions,>(options: TOptions) => ({
-        ...options,
-        useParams: () => routerState.params,
-      }),
     useNavigate: () => routerState.navigate,
     Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
       <a href={to}>{children}</a>
@@ -133,7 +125,6 @@ async function selectSubnets(user: ReturnType<typeof userEvent.setup>) {
 describe("create-load-balancer route", () => {
   beforeEach(() => {
     sdk.reset()
-    routerState.navigate.mockClear()
     // Wizard's onSettled invalidates ["elbv2"] which triggers a refetch of
     // Describe queries — stub them so those SDK calls don't reject.
     sdk.setHandler("DescribeLoadBalancersCommand", () => ({
@@ -141,7 +132,6 @@ describe("create-load-balancer route", () => {
     }))
     sdk.setHandler("DescribeTargetGroupsCommand", () => ({ TargetGroups: [] }))
   })
-  afterEach(() => vi.clearAllMocks())
 
   it("wizard happy path with a new target group creates TG → LB → listener and navigates", async () => {
     const user = userEvent.setup()

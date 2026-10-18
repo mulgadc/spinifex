@@ -8,7 +8,7 @@ import { getRegion } from "./cluster-config"
 
 const GATEWAY_PORT = 9999
 
-export const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 export const JSON_CONTENT_TYPE = "application/x-amz-json-1.1"
 
 interface SignedProxyFetchOptions {
@@ -192,9 +192,9 @@ export async function signedFetch<T>({
 
 // ADMIN_JSON_CONTENT_TYPE is what the /admin surface expects, distinct from
 // JSON_CONTENT_TYPE (JSON-1.1, used by the Action= target callers).
-export const ADMIN_JSON_CONTENT_TYPE = "application/json"
+const ADMIN_JSON_CONTENT_TYPE = "application/json"
 
-export interface SignedAdminFetchOptions<TBody = Record<string, never>> {
+interface SignedAdminFetchOptions<TBody = Record<string, never>> {
   method: string
   credentials: SessionCredentials
   body?: TBody

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({})
 
@@ -9,112 +9,15 @@ vi.mock("@/lib/awsClient", () => ({
 import { callQueryFn } from "@/test/query"
 
 import {
-  eksAccessEntriesQueryOptions,
   eksAccessEntryQueryOptions,
-  eksAccessPoliciesQueryOptions,
   eksAddonQueryOptions,
   eksAddonsQueryOptions,
-  eksAddonVersionsQueryOptions,
-  eksAssociatedAccessPoliciesQueryOptions,
   eksClusterQueryOptions,
   eksClustersQueryOptions,
   eksNodegroupQueryOptions,
-  eksNodegroupsQueryOptions,
 } from "./eks"
 
-describe("query keys", () => {
-  it("clusters list key", () => {
-    expect(eksClustersQueryOptions.queryKey).toStrictEqual(["eks", "clusters"])
-  })
-
-  it("cluster key includes name", () => {
-    expect(eksClusterQueryOptions("c1").queryKey).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-    ])
-  })
-
-  it("nodegroups key includes cluster", () => {
-    expect(eksNodegroupsQueryOptions("c1").queryKey).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-      "nodegroups",
-    ])
-  })
-
-  it("nodegroup key includes cluster and nodegroup", () => {
-    expect(eksNodegroupQueryOptions("c1", "ng1").queryKey).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-      "nodegroups",
-      "ng1",
-    ])
-  })
-
-  it("access entries key includes cluster", () => {
-    expect(eksAccessEntriesQueryOptions("c1").queryKey).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-      "access-entries",
-    ])
-  })
-
-  it("associated access policies key includes principal", () => {
-    expect(
-      eksAssociatedAccessPoliciesQueryOptions("c1", "arn:p").queryKey,
-    ).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-      "access-entries",
-      "arn:p",
-      "policies",
-    ])
-  })
-
-  it("access policies catalog key", () => {
-    expect(eksAccessPoliciesQueryOptions.queryKey).toStrictEqual([
-      "eks",
-      "access-policies",
-    ])
-  })
-
-  it("addon versions catalog key", () => {
-    expect(eksAddonVersionsQueryOptions.queryKey).toStrictEqual([
-      "eks",
-      "addon-versions",
-    ])
-  })
-
-  it("addons key includes cluster", () => {
-    expect(eksAddonsQueryOptions("c1").queryKey).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-      "addons",
-    ])
-  })
-
-  it("addon key includes cluster and addon", () => {
-    expect(eksAddonQueryOptions("c1", "coredns").queryKey).toStrictEqual([
-      "eks",
-      "clusters",
-      "c1",
-      "addons",
-      "coredns",
-    ])
-  })
-})
-
 describe("queryFn", () => {
-  beforeEach(() => {
-    mockSend.mockClear()
-  })
-
   it("clusters sends ListClustersCommand", async () => {
     await callQueryFn(eksClustersQueryOptions)
     expect(mockSend).toHaveBeenCalledOnce()

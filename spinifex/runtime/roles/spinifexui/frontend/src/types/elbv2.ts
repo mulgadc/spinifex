@@ -35,8 +35,6 @@ export const tagSchema = z.object({
   value: z.string().max(256),
 })
 
-export type TagFormData = z.infer<typeof tagSchema>
-
 // ALB health-check config. NLB variant lands with slice 9.
 export const healthCheckSchema = z.object({
   protocol: z.enum(["HTTP", "TCP"]),
@@ -53,8 +51,6 @@ export const healthCheckSchema = z.object({
       "Matcher must be HTTP codes like 200 or 200-299 or 200,201",
     ),
 })
-
-export type HealthCheckFormData = z.infer<typeof healthCheckSchema>
 
 export const createTargetGroupSchema = z.object({
   name: tgNameField,
@@ -244,22 +240,3 @@ export const createLoadBalancerSchema = z.object({
 export type CreateLoadBalancerFormData = z.infer<
   typeof createLoadBalancerSchema
 >
-
-export const registerTargetsSchema = z.object({
-  targets: z
-    .array(
-      z.object({
-        instanceId: z.string().min(1, "Instance is required"),
-        port: portField.optional(),
-      }),
-    )
-    .min(1, "At least one target is required"),
-})
-
-export type RegisterTargetsFormData = z.infer<typeof registerTargetsSchema>
-
-// Attributes editor state — free-form key/value pairs. Slice 7 narrows keys to
-// DefaultLoadBalancerAttributes / DefaultTargetGroupAttributes.
-export const attributesSchema = z.record(z.string(), z.string())
-
-export type AttributesFormData = z.infer<typeof attributesSchema>

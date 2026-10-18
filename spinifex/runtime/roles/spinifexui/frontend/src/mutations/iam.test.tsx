@@ -9,6 +9,8 @@ vi.mock("@/lib/awsClient", () => ({
   getIamClient: () => ({ send: mockSend }),
 }))
 
+import { iamUsersQueryOptions } from "@/queries/iam"
+
 import {
   useAddRoleToInstanceProfile,
   useAddUserToGroup,
@@ -91,9 +93,12 @@ describe("useCreateUser", () => {
     })
   })
 
-  it("invalidates users query on success", async () => {
+  it("marks the cached user list stale on success", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(iamUsersQueryOptions.queryKey, {
+      Users: [],
+      $metadata: {},
+    })
     const { result } = renderHook(() => useCreateUser(), { wrapper })
 
     result.current.mutate({ userName: "admin" })
@@ -101,7 +106,9 @@ describe("useCreateUser", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["iam", "users"] })
+    expect(
+      queryClient.getQueryState(iamUsersQueryOptions.queryKey)?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

@@ -9,6 +9,13 @@ vi.mock("@/lib/awsClient", () => ({
   getRdsClient: () => ({ send: mockSend }),
 }))
 
+import {
+  rdsAutomatedBackupsQueryOptions,
+  rdsDBInstanceQueryOptions,
+  rdsDBInstancesQueryOptions,
+  rdsDBSnapshotsQueryOptions,
+  rdsInstanceDBSnapshotsQueryOptions,
+} from "@/queries/rds"
 import type {
   CreateDBInstanceFormData,
   RestoreDBInstanceFormData,
@@ -166,9 +173,25 @@ describe("useModifyDBInstance", () => {
     expect(input.MasterUserPassword).toBeUndefined()
   })
 
-  it("invalidates the automated backups and snapshots as well as the instance", async () => {
+  it("marks the cached instance, its automated backups and both snapshot views stale", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(rdsDBInstancesQueryOptions.queryKey, {
+      $metadata: {},
+    })
+    queryClient.setQueryData(rdsDBInstanceQueryOptions("orders-db").queryKey, {
+      $metadata: {},
+    })
+    queryClient.setQueryData(
+      rdsAutomatedBackupsQueryOptions("orders-db").queryKey,
+      { $metadata: {} },
+    )
+    queryClient.setQueryData(rdsDBSnapshotsQueryOptions.queryKey, {
+      $metadata: {},
+    })
+    queryClient.setQueryData(
+      rdsInstanceDBSnapshotsQueryOptions("orders-db").queryKey,
+      { $metadata: {} },
+    )
     const { result } = renderHook(() => useModifyDBInstance(), { wrapper })
 
     result.current.mutate({
@@ -189,11 +212,28 @@ describe("useModifyDBInstance", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbInstances"] })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["rds", "automatedBackups", "orders-db"],
-    })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["rds", "dbSnapshots"] })
+    expect(
+      queryClient.getQueryState(rdsDBInstancesQueryOptions.queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(rdsDBInstanceQueryOptions("orders-db").queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(
+        rdsAutomatedBackupsQueryOptions("orders-db").queryKey,
+      )?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(rdsDBSnapshotsQueryOptions.queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(
+        rdsInstanceDBSnapshotsQueryOptions("orders-db").queryKey,
+      )?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

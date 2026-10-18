@@ -39,8 +39,6 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 import { CreateKeyPairPage } from "./create-key-pair-page"
 
 function renderPage() {
-  send.mockClear()
-
   return renderWithClient(<CreateKeyPairPage />, createTestQueryClient())
 }
 

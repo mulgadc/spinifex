@@ -1,6 +1,6 @@
 import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   createTestQueryClient,
@@ -35,7 +35,6 @@ const { routerState, sdk } = vi.hoisted(() => {
         handlers.set(name, handler),
       reset: () => {
         handlers.clear()
-        send.mockClear()
       },
     },
   }
@@ -80,9 +79,7 @@ function setup() {
 describe("create-service route", () => {
   beforeEach(() => {
     sdk.reset()
-    routerState.navigate.mockClear()
   })
-  afterEach(() => vi.clearAllMocks())
 
   it("creates a REPLICA service without a load balancer and navigates back", async () => {
     const user = userEvent.setup()

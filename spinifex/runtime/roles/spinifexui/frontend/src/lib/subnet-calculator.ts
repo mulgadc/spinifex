@@ -8,7 +8,7 @@
  * a /16 VPC (adjusted proportionally for other prefix lengths).
  */
 
-export interface ParsedCidr {
+interface ParsedCidr {
   /** Network address as a 32-bit number. */
   network: number
   prefix: number
@@ -38,7 +38,7 @@ export function numberToIp(n: number): string {
 }
 
 /** Return the number of host addresses in a CIDR block. */
-export function cidrSize(prefix: number): number {
+function cidrSize(prefix: number): number {
   return 2 ** (32 - prefix)
 }
 
@@ -67,7 +67,7 @@ export interface SubnetCidr {
  * subnets the second half. A small VPC may not fit the plan; the wizard schema
  * rejects subnets that fall outside the VPC.
  */
-export interface SubnetCidrPlan {
+interface SubnetCidrPlan {
   publicSubnets: SubnetCidr[]
   privateSubnets: SubnetCidr[]
 }

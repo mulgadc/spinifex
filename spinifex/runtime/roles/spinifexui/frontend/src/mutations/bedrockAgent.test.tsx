@@ -9,6 +9,7 @@ vi.mock("@/lib/awsClient", () => ({
   getBedrockAgentClient: () => ({ send: mockSend }),
 }))
 
+import { dataSourcesQueryOptions } from "@/queries/bedrockAgent"
 import {
   EMPTY_DATA_SOURCE_FORM_DEFAULTS,
   EMPTY_KB_FORM_DEFAULTS,
@@ -138,9 +139,12 @@ describe("useCreateDataSource", () => {
     )
   })
 
-  it("invalidates the data sources for that knowledge base on success", async () => {
+  it("marks the cached data sources for that knowledge base stale on success", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(dataSourcesQueryOptions("kb-1").queryKey, {
+      dataSourceSummaries: [],
+      $metadata: {},
+    })
     const { result } = renderHook(() => useCreateDataSource(), { wrapper })
 
     result.current.mutate({ data: DATA_SOURCE_FORM, knowledgeBaseId: "kb-1" })
@@ -148,9 +152,10 @@ describe("useCreateDataSource", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["bedrock-agent", "knowledge-bases", "kb-1", "data-sources"],
-    })
+    expect(
+      queryClient.getQueryState(dataSourcesQueryOptions("kb-1").queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

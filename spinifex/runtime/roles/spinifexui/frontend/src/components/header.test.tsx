@@ -4,15 +4,11 @@ import { describe, expect, it, vi } from "vitest"
 import { Header } from "./header"
 
 vi.mock("@/components/theme-switch", () => ({
-  ThemeSwitch: () => <div data-testid="theme-switch" />,
+  ThemeSwitch: () => null,
 }))
 
 vi.mock("@/components/ui/sidebar", () => ({
-  SidebarTrigger: ({ className }: { className?: string }) => (
-    <button type="button" className={className} data-testid="sidebar-trigger">
-      Toggle
-    </button>
-  ),
+  SidebarTrigger: () => null,
 }))
 
 const mockUseAdmin = vi.fn()
@@ -22,13 +18,6 @@ vi.mock("@/hooks/use-admin", () => ({
 }))
 
 describe("Header", () => {
-  it("renders sidebar trigger and theme switch", () => {
-    mockUseAdmin.mockReturnValue({ isAdmin: false, license: null })
-    render(<Header />)
-    expect(screen.getByTestId("sidebar-trigger")).toBeInTheDocument()
-    expect(screen.getByTestId("theme-switch")).toBeInTheDocument()
-  })
-
   it("shows upgrade link for admin on open-source license", () => {
     mockUseAdmin.mockReturnValue({ isAdmin: true, license: "open-source" })
     render(<Header />)

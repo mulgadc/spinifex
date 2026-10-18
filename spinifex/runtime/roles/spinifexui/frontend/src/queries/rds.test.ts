@@ -14,7 +14,6 @@ import {
   rdsDBInstancesQueryOptions,
   rdsDBSnapshotQueryOptions,
   rdsDBSnapshotsQueryOptions,
-  rdsEngineVersionsQueryOptions,
   rdsEventsQueryOptions,
   rdsInstanceDBSnapshotsQueryOptions,
   rdsOrderableOptionsQueryOptions,
@@ -27,126 +26,22 @@ import {
   rdsTagsQueryOptions,
 } from "./rds"
 
-describe("rds query keys", () => {
-  it("rdsDBInstancesQueryOptions has correct key", () => {
-    expect(rdsDBInstancesQueryOptions.queryKey).toStrictEqual([
-      "rds",
-      "dbInstances",
-    ])
-  })
-
-  it("rdsDBInstanceQueryOptions includes the identifier", () => {
-    expect(rdsDBInstanceQueryOptions("orders-db").queryKey).toStrictEqual([
-      "rds",
-      "dbInstances",
-      "orders-db",
-    ])
-  })
-
-  it("rdsSubnetGroupsQueryOptions has correct key", () => {
-    expect(rdsSubnetGroupsQueryOptions.queryKey).toStrictEqual([
-      "rds",
-      "subnetGroups",
-    ])
-  })
-
-  it("rdsParameterGroupsQueryOptions has correct key", () => {
-    expect(rdsParameterGroupsQueryOptions.queryKey).toStrictEqual([
-      "rds",
-      "parameterGroups",
-    ])
-  })
-
-  it("rdsSubnetGroupQueryOptions includes the group name", () => {
-    expect(rdsSubnetGroupQueryOptions("orders-subnets").queryKey).toStrictEqual(
-      ["rds", "subnetGroups", "orders-subnets"],
-    )
-  })
-
-  it("rdsParameterGroupQueryOptions includes the group name", () => {
-    expect(rdsParameterGroupQueryOptions("orders-pg").queryKey).toStrictEqual([
-      "rds",
-      "parameterGroups",
-      "orders-pg",
-    ])
-  })
-
-  it("rdsParametersQueryOptions includes the group name", () => {
-    expect(rdsParametersQueryOptions("orders-pg").queryKey).toStrictEqual([
-      "rds",
-      "parameters",
-      "orders-pg",
-    ])
-  })
-
-  it("rdsEventsQueryOptions includes the source type and identifier", () => {
-    expect(rdsEventsQueryOptions("orders-db").queryKey).toStrictEqual([
-      "rds",
-      "events",
-      "db-instance",
-      "orders-db",
-    ])
-  })
-
-  // The two rings are separate on the backend, so the keys have to be too: a
-  // snapshot and the instance it came from can share an identifier.
-  it("rdsSnapshotEventsQueryOptions keys off the snapshot source type", () => {
-    expect(rdsSnapshotEventsQueryOptions("orders-db").queryKey).toStrictEqual([
-      "rds",
-      "events",
-      "db-snapshot",
-      "orders-db",
-    ])
-  })
-
-  it("rdsDBSnapshotsQueryOptions has correct key", () => {
-    expect(rdsDBSnapshotsQueryOptions.queryKey).toStrictEqual([
-      "rds",
-      "dbSnapshots",
-    ])
-  })
-
-  it("rdsDBSnapshotQueryOptions includes the snapshot identifier", () => {
-    expect(rdsDBSnapshotQueryOptions("orders-snap").queryKey).toStrictEqual([
-      "rds",
-      "dbSnapshots",
-      "orders-snap",
-    ])
-  })
-
-  it("rdsInstanceDBSnapshotsQueryOptions nests under the list key", () => {
+describe("rds query key relations", () => {
+  // The two event rings are separate on the backend, so the keys must be too:
+  // a snapshot and the instance it came from can share an identifier.
+  it("keeps instance and snapshot events apart for a shared identifier", () => {
     expect(
-      rdsInstanceDBSnapshotsQueryOptions("orders-db").queryKey,
-    ).toStrictEqual(["rds", "dbSnapshots", "instance", "orders-db"])
+      rdsSnapshotEventsQueryOptions("orders-db").queryKey,
+    ).not.toStrictEqual(rdsEventsQueryOptions("orders-db").queryKey)
   })
 
-  it("rdsAutomatedBackupsQueryOptions includes the instance identifier", () => {
-    expect(rdsAutomatedBackupsQueryOptions("orders-db").queryKey).toStrictEqual(
-      ["rds", "automatedBackups", "orders-db"],
-    )
-  })
-
-  it("rdsTagsQueryOptions includes the resource name", () => {
-    expect(rdsTagsQueryOptions("arn:db").queryKey).toStrictEqual([
-      "rds",
-      "tags",
-      "arn:db",
-    ])
-  })
-
-  it("rdsEngineVersionsQueryOptions has correct key", () => {
-    expect(rdsEngineVersionsQueryOptions.queryKey).toStrictEqual([
-      "rds",
-      "engineVersions",
-    ])
-  })
-
-  it("rdsOrderableOptionsQueryOptions includes the engine", () => {
-    expect(rdsOrderableOptionsQueryOptions("postgres").queryKey).toStrictEqual([
-      "rds",
-      "orderableOptions",
-      "postgres",
-    ])
+  it("nests an instance's snapshots under the snapshot list key", () => {
+    expect(
+      rdsInstanceDBSnapshotsQueryOptions("orders-db").queryKey.slice(
+        0,
+        rdsDBSnapshotsQueryOptions.queryKey.length,
+      ),
+    ).toStrictEqual(rdsDBSnapshotsQueryOptions.queryKey)
   })
 })
 

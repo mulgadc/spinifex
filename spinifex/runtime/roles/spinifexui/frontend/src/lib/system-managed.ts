@@ -11,7 +11,7 @@ export function isSystemManagedImage(image: Image): boolean {
 
 // Tag value identifying the EKS node system image (K3s server+agent),
 // applied by `spx admin images import --tag spinifex:managed-by=eks`.
-export const EKS_SYSTEM_IMAGE_TAG_VALUE = "eks"
+const EKS_SYSTEM_IMAGE_TAG_VALUE = "eks"
 
 export function isEksSystemImage(image: Image): boolean {
   return (
@@ -25,7 +25,7 @@ export function isEksSystemImage(image: Image): boolean {
 
 // Tag value identifying the ECS node system image (containerd + ecs-agent),
 // applied by `spx admin images import --tag spinifex:managed-by=ecs`.
-export const ECS_SYSTEM_IMAGE_TAG_VALUE = "ecs"
+const ECS_SYSTEM_IMAGE_TAG_VALUE = "ecs"
 
 export function isEcsSystemImage(image: Image): boolean {
   return (
@@ -39,13 +39,13 @@ export function isEcsSystemImage(image: Image): boolean {
 
 // Tag value identifying an RDS engine image, applied by
 // `spx admin images import --name spinifex-rds-<engine>`.
-export const RDS_SYSTEM_IMAGE_TAG_VALUE = "rds"
+const RDS_SYSTEM_IMAGE_TAG_VALUE = "rds"
 
 // RDS launch resolves images by these tags rather than by image name.
-export const RDS_ENGINE_TAG_KEY = "engine"
-export const RDS_ENGINE_VERSION_TAG_KEY = "engine-version"
-export const RDS_DATA_VOLUME_CONTRACT_TAG_KEY = "rds-data-volume-contract"
-export const RDS_DATA_VOLUME_CONTRACT_TAG_VALUE = "format-auth-v1"
+const RDS_ENGINE_TAG_KEY = "engine"
+const RDS_ENGINE_VERSION_TAG_KEY = "engine-version"
+const RDS_DATA_VOLUME_CONTRACT_TAG_KEY = "rds-data-volume-contract"
+const RDS_DATA_VOLUME_CONTRACT_TAG_VALUE = "format-auth-v1"
 
 export function isRdsSystemImage(
   image: Image,

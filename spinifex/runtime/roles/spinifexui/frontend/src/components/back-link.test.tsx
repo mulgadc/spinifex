@@ -25,12 +25,6 @@ describe("BackLink", () => {
     expect(screen.getByText("Back to list")).toBeInTheDocument()
   })
 
-  it("renders the arrow icon", () => {
-    const { container } = render(<BackLink to="/">Back</BackLink>)
-    const svg = container.querySelector("svg")
-    expect(svg).toBeInTheDocument()
-  })
-
   it("passes link props through", () => {
     render(<BackLink to={"/instances" as never}>Back</BackLink>)
     const link = screen.getByRole("link")

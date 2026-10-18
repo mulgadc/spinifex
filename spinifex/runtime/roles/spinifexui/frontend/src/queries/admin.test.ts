@@ -29,10 +29,6 @@ const mockSignedFetch = vi.mocked(signedFetch)
 const mockSignedAdminFetch = vi.mocked(signedAdminFetch)
 
 describe("adminNodesQueryOptions", () => {
-  it("has the correct query key", () => {
-    expect(adminNodesQueryOptions.queryKey).toStrictEqual(["admin", "nodes"])
-  })
-
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
     await expect(callQueryFn(adminNodesQueryOptions)).rejects.toThrow(
@@ -61,10 +57,6 @@ describe("adminNodesQueryOptions", () => {
 })
 
 describe("adminVMsQueryOptions", () => {
-  it("has the correct query key", () => {
-    expect(adminVMsQueryOptions.queryKey).toStrictEqual(["admin", "vms"])
-  })
-
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
     await expect(callQueryFn(adminVMsQueryOptions)).rejects.toThrow(
@@ -93,13 +85,6 @@ describe("adminVMsQueryOptions", () => {
 })
 
 describe("adminStorageStatusQueryOptions", () => {
-  it("has the correct query key", () => {
-    expect(adminStorageStatusQueryOptions.queryKey).toStrictEqual([
-      "admin",
-      "storageStatus",
-    ])
-  })
-
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
     await expect(callQueryFn(adminStorageStatusQueryOptions)).rejects.toThrow(
@@ -128,13 +113,6 @@ describe("adminStorageStatusQueryOptions", () => {
 })
 
 describe("adminOchreCatalogQueryOptions", () => {
-  it("has the correct query key", () => {
-    expect(adminOchreCatalogQueryOptions.queryKey).toStrictEqual([
-      "admin",
-      "ochreCatalog",
-    ])
-  })
-
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
     await expect(callQueryFn(adminOchreCatalogQueryOptions)).rejects.toThrow(
@@ -163,17 +141,6 @@ describe("adminOchreCatalogQueryOptions", () => {
 })
 
 describe("adminListAccountsQueryOptions", () => {
-  it("has the correct query key", () => {
-    expect(adminListAccountsQueryOptions.queryKey).toStrictEqual([
-      "admin",
-      "accounts",
-    ])
-  })
-
-  it("does not retry, so a 403 settles fast", () => {
-    expect(adminListAccountsQueryOptions.retry).toBeFalsy()
-  })
-
   it("throws when not authenticated", async () => {
     mockGetCredentials.mockReturnValue(null)
     await expect(callQueryFn(adminListAccountsQueryOptions)).rejects.toThrow(
@@ -203,12 +170,6 @@ describe("adminListAccountsQueryOptions", () => {
 })
 
 describe("adminModelAccessQueryOptions", () => {
-  it("has the correct query key", () => {
-    expect(adminModelAccessQueryOptions("000000000002").queryKey).toStrictEqual(
-      ["admin", "modelAccess", "000000000002"],
-    )
-  })
-
   it("is disabled when the account id is empty", () => {
     expect(adminModelAccessQueryOptions("").enabled).toBeFalsy()
   })

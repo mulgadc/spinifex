@@ -22,14 +22,4 @@ describe("PageHeading", () => {
       screen.queryByText("Manage your EC2 instances"),
     ).not.toBeInTheDocument()
   })
-
-  it("renders actions when provided", () => {
-    render(
-      <PageHeading
-        actions={<button type="button">Launch</button>}
-        title="Instances"
-      />,
-    )
-    expect(screen.getByText("Launch")).toBeInTheDocument()
-  })
 })

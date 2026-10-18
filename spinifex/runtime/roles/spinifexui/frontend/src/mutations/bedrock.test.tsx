@@ -9,6 +9,7 @@ vi.mock("@/lib/awsClient", () => ({
   getBedrockClient: () => ({ send: mockSend }),
 }))
 
+import { guardrailsQueryOptions } from "@/queries/bedrock"
 import {
   EMPTY_GUARDRAIL_FORM_DEFAULTS,
   type GuardrailFormData,
@@ -63,9 +64,12 @@ describe("useCreateGuardrail", () => {
     expect(input.blockedOutputsMessaging).toBe("Blocked output.")
   })
 
-  it("invalidates the guardrail list on success", async () => {
+  it("marks the cached guardrail list stale on success", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(guardrailsQueryOptions.queryKey, {
+      guardrails: [],
+      $metadata: {},
+    })
     const { result } = renderHook(() => useCreateGuardrail(), { wrapper })
 
     result.current.mutate(FORM)
@@ -73,7 +77,9 @@ describe("useCreateGuardrail", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["bedrock", "guardrails"] })
+    expect(
+      queryClient.getQueryState(guardrailsQueryOptions.queryKey)?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

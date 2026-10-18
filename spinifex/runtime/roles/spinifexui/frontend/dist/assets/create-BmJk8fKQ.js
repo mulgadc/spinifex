@@ -1,0 +1,1 @@
+import{N as e,P as t}from"./httpRequest-DMCevR5j.js";import{s as n}from"./bedrock-CHAys93q.js";import{t as r}from"./guardrail-form-page-tBj1z18t.js";var i=e(),a=t();function o(){let e=(0,i.c)(1),t;return e[0]===Symbol.for(`react.memo_cache_sentinel`)?(t=(0,a.jsx)(r,{defaultValues:n,mode:`create`}),e[0]=t):t=e[0],t}export{o as component};

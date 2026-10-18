@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({ retrievalResults: [] })
 
@@ -31,10 +31,6 @@ function createQueryClient() {
 }
 
 describe("useRetrieve", () => {
-  beforeEach(() => {
-    mockSend.mockClear()
-  })
-
   it("sends RetrieveCommand with the knowledge base id and query text", async () => {
     createQueryClient()
     const { result } = renderHook(() => useRetrieve(), { wrapper })

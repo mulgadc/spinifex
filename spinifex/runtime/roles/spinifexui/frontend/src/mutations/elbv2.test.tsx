@@ -9,6 +9,10 @@ vi.mock("@/lib/awsClient", () => ({
   getElbv2Client: () => ({ send: mockSend }),
 }))
 
+import {
+  elbv2LoadBalancerQueryOptions,
+  elbv2LoadBalancersQueryOptions,
+} from "@/queries/elbv2"
 import type { CreateTargetGroupFormData } from "@/types/elbv2"
 
 import {
@@ -110,6 +114,32 @@ describe("useDeleteLoadBalancer", () => {
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       LoadBalancerArn: "arn:aws:elasticloadbalancing:lb/app/foo/abc",
     })
+  })
+
+  it("marks the cached load balancer list and detail stale on success", async () => {
+    const arn = "arn:aws:elasticloadbalancing:lb/app/foo/abc"
+    createQueryClient()
+    queryClient.setQueryData(elbv2LoadBalancersQueryOptions.queryKey, {
+      $metadata: {},
+    })
+    queryClient.setQueryData(elbv2LoadBalancerQueryOptions(arn).queryKey, {
+      $metadata: {},
+    })
+    const { result } = renderHook(() => useDeleteLoadBalancer(), { wrapper })
+
+    result.current.mutate(arn)
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(
+      queryClient.getQueryState(elbv2LoadBalancersQueryOptions.queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(elbv2LoadBalancerQueryOptions(arn).queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

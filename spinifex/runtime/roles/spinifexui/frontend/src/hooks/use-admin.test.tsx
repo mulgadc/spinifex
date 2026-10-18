@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionCredentials } from "@/lib/auth"
 import type { SignedFetchOptions } from "@/lib/signed-fetch"
+import { callerIdentityQueryOptions } from "@/queries/sts"
 import { createTestQueryClient } from "@/test/elbv2-integration"
 
 const mockGetCredentials = vi.fn<() => SessionCredentials | null>()
@@ -55,7 +56,7 @@ function renderUseAdmin() {
     )
   }
 
-  return renderHook(() => useAdmin(), { wrapper })
+  return { queryClient, ...renderHook(() => useAdmin(), { wrapper }) }
 }
 
 describe("useAdmin", () => {
@@ -65,7 +66,7 @@ describe("useAdmin", () => {
     mockSignedFetch.mockReset()
   })
 
-  it("marks the admin account and derives the user name from the ARN", async () => {
+  it("marks the admin account and fetches the version", async () => {
     mockGetCredentials.mockReturnValue(sessionCreds)
     mockStsSend.mockResolvedValue({
       Account: "000000000001",
@@ -80,8 +81,6 @@ describe("useAdmin", () => {
     })
 
     expect(result.current.isAdmin).toBeTruthy()
-    expect(result.current.accountId).toBe("000000000001")
-    expect(result.current.userName).toBe("admin")
     expect(result.current.version).toStrictEqual(versionInfo)
     expect(result.current.license).toBe("open-source")
     expect(mockSignedFetch).toHaveBeenCalledWith({
@@ -97,33 +96,17 @@ describe("useAdmin", () => {
       Arn: "arn:aws:iam::000000000002:user/alice",
     })
 
-    const { result } = renderUseAdmin()
+    const { queryClient, result } = renderUseAdmin()
 
     await waitFor(() => {
-      expect(result.current.accountId).toBe("000000000002")
+      expect(
+        queryClient.getQueryState(callerIdentityQueryOptions.queryKey)?.status,
+      ).toBe("success")
     })
 
     expect(result.current.isAdmin).toBeFalsy()
-    expect(result.current.userName).toBe("alice")
     expect(result.current.version).toBeNull()
     expect(mockSignedFetch).not.toHaveBeenCalled()
-  })
-
-  it("yields a null user name when the ARN is not a user ARN", async () => {
-    mockGetCredentials.mockReturnValue(sessionCreds)
-    mockStsSend.mockResolvedValue({
-      Account: "000000000001",
-      Arn: "arn:aws:iam::000000000001:root",
-    })
-    mockSignedFetch.mockResolvedValue(versionInfo)
-
-    const { result } = renderUseAdmin()
-
-    await waitFor(() => {
-      expect(result.current.isAdmin).toBeTruthy()
-    })
-
-    expect(result.current.userName).toBeNull()
   })
 
   it("is non-admin when the identity lookup fails", async () => {
@@ -137,7 +120,6 @@ describe("useAdmin", () => {
     })
 
     expect(result.current.isAdmin).toBeFalsy()
-    expect(result.current.accountId).toBeNull()
     expect(mockSignedFetch).not.toHaveBeenCalled()
   })
 
@@ -147,7 +129,6 @@ describe("useAdmin", () => {
     const { result } = renderUseAdmin()
 
     expect(result.current.isAdmin).toBeFalsy()
-    expect(result.current.accountId).toBeNull()
     expect(mockStsSend).not.toHaveBeenCalled()
   })
 })

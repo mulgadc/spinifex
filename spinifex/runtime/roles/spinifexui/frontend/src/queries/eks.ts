@@ -5,7 +5,6 @@ import {
   DescribeClusterCommand,
   DescribeNodegroupCommand,
   ListAccessEntriesCommand,
-  ListAccessPoliciesCommand,
   ListAddonsCommand,
   ListAssociatedAccessPoliciesCommand,
   ListClustersCommand,
@@ -118,16 +117,6 @@ export const eksAssociatedAccessPoliciesQueryOptions = (
     },
     staleTime: CLUSTER_STALE_TIME,
   })
-
-export const eksAccessPoliciesQueryOptions = queryOptions({
-  queryKey: ["eks", "access-policies"],
-  queryFn: async () => {
-    const command = new ListAccessPoliciesCommand({})
-
-    return await getEksClient().send(command)
-  },
-  staleTime: STATIC_STALE_TIME,
-})
 
 export const eksAddonVersionsQueryOptions = queryOptions({
   queryKey: ["eks", "addon-versions"],

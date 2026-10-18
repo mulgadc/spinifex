@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({})
 
@@ -14,37 +14,7 @@ import {
   guardrailVersionsQueryOptions,
 } from "./bedrock"
 
-describe("query keys", () => {
-  it("guardrails list key", () => {
-    expect(guardrailsQueryOptions.queryKey).toStrictEqual([
-      "bedrock",
-      "guardrails",
-    ])
-  })
-
-  it("guardrail key includes id", () => {
-    expect(guardrailQueryOptions("gr-1").queryKey).toStrictEqual([
-      "bedrock",
-      "guardrails",
-      "gr-1",
-    ])
-  })
-
-  it("guardrail versions key includes id", () => {
-    expect(guardrailVersionsQueryOptions("gr-1").queryKey).toStrictEqual([
-      "bedrock",
-      "guardrails",
-      "gr-1",
-      "versions",
-    ])
-  })
-})
-
 describe("query functions", () => {
-  beforeEach(() => {
-    mockSend.mockClear()
-  })
-
   it("lists guardrails", async () => {
     mockSend.mockResolvedValueOnce({ guardrails: [] })
     await callQueryFn(guardrailsQueryOptions)

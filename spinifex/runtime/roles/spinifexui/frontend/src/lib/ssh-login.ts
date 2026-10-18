@@ -20,9 +20,9 @@ const DEFAULT_USERS = [
   ["rhel", "cloud-user"],
 ] as const
 
-export type KnownDistro = (typeof DEFAULT_USERS)[number][0]
+type KnownDistro = (typeof DEFAULT_USERS)[number][0]
 
-export interface SSHLogin {
+interface SSHLogin {
   user: string
   distro?: KnownDistro
 }
@@ -45,9 +45,9 @@ export function resolveSSHLogin(image: Image | undefined): SSHLogin {
   return match ? { user: match[1], distro: match[0] } : { user: "" }
 }
 
-export type SSHReachability = "public" | "private" | "none"
+type SSHReachability = "public" | "private" | "none"
 
-export interface SSHTarget {
+interface SSHTarget {
   address: string
   reachability: SSHReachability
 }

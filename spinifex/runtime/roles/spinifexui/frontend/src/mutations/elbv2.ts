@@ -1,7 +1,6 @@
 import {
   type Action,
   type RuleCondition,
-  type RulePriorityPair,
   type Tag,
   type TargetDescription,
   AddTagsCommand,
@@ -20,7 +19,6 @@ import {
   ModifyTargetGroupAttributesCommand,
   RegisterTargetsCommand,
   RemoveTagsCommand,
-  SetRulePrioritiesCommand,
   SetSecurityGroupsCommand,
   SetSubnetsCommand,
 } from "@aws-sdk/client-elastic-load-balancing-v2"
@@ -782,33 +780,6 @@ export function useDeleteRule() {
   return useMutation({
     mutationFn: async (params: DeleteRuleParams) => {
       const command = new DeleteRuleCommand({ RuleArn: params.ruleArn })
-
-      return await getElbv2Client().send(command)
-    },
-    onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["elbv2", "listeners", variables.listenerArn, "rules"],
-      })
-    },
-  })
-}
-
-export interface SetRulePrioritiesParams {
-  listenerArn: string
-  priorities: { ruleArn: string; priority: number }[]
-}
-
-export function useSetRulePriorities() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (params: SetRulePrioritiesParams) => {
-      const pairs: RulePriorityPair[] = params.priorities.map((p) => ({
-        RuleArn: p.ruleArn,
-        Priority: p.priority,
-      }))
-
-      const command = new SetRulePrioritiesCommand({ RulePriorities: pairs })
 
       return await getElbv2Client().send(command)
     },

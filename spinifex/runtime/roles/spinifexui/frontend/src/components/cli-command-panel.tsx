@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
 
 import { Button } from "./ui/button"
 
-export type CommandPartType = "bin" | "flag" | "value" | "comment" | "variable"
+type CommandPartType = "bin" | "flag" | "value" | "comment" | "variable"
 
 export interface CommandPart {
   type: CommandPartType

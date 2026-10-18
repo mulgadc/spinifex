@@ -248,7 +248,7 @@ function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
   )
 }
 
-export function formatVMGPUs(gpus: VMInfo["gpus"]): string {
+function formatVMGPUs(gpus: VMInfo["gpus"]): string {
   if (!gpus?.length) {
     return "-"
   }

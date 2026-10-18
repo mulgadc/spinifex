@@ -1,6 +1,6 @@
 import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import {
   createTestQueryClient,
@@ -66,10 +66,6 @@ async function renderPage() {
 }
 
 describe("internet gateway detail", () => {
-  beforeEach(() => {
-    sdk.send.mockClear()
-  })
-
   it("detaches only after it is confirmed", async () => {
     const user = userEvent.setup()
     await renderPage()

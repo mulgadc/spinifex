@@ -232,8 +232,6 @@ export const rdsTagSchema = z.object({
   value: z.string().max(256),
 })
 
-export type RdsTagFormData = z.infer<typeof rdsTagSchema>
-
 export const rdsTagsField = z
   .array(rdsTagSchema)
   .max(

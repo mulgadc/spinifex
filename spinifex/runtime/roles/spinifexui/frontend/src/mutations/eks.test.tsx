@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({})
 
 vi.mock("@/lib/awsClient", () => ({
   getEksClient: () => ({ send: mockSend }),
 }))
+
+import { eksNodegroupsQueryOptions } from "@/queries/eks"
 
 import {
   useAssociateAccessPolicy,
@@ -42,10 +44,6 @@ function createQueryClient() {
 }
 
 describe("eks mutations", () => {
-  beforeEach(() => {
-    mockSend.mockClear()
-  })
-
   describe("useCreateCluster", () => {
     it("maps form data to CreateClusterCommand with API auth mode", async () => {
       createQueryClient()
@@ -160,6 +158,36 @@ describe("eks mutations", () => {
         diskSize: 20,
         scalingConfig: { minSize: 1, maxSize: 3, desiredSize: 2 },
       })
+    })
+
+    it("marks the cluster's cached nodegroups stale on success", async () => {
+      createQueryClient()
+      queryClient.setQueryData(eksNodegroupsQueryOptions("c1").queryKey, {
+        $metadata: {},
+      })
+      const { result } = renderHook(() => useCreateNodegroup(), { wrapper })
+
+      result.current.mutate({
+        clusterName: "c1",
+        nodegroupName: "ng1",
+        nodeRole: "arn:noderole",
+        subnetIds: ["subnet-1"],
+        instanceTypes: ["t3.medium"],
+        amiType: "AL2_x86_64",
+        capacityType: "ON_DEMAND",
+        diskSize: 20,
+        minSize: 1,
+        desiredSize: 2,
+        maxSize: 3,
+      })
+
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBeTruthy()
+      })
+      expect(
+        queryClient.getQueryState(eksNodegroupsQueryOptions("c1").queryKey)
+          ?.isInvalidated,
+      ).toBeTruthy()
     })
   })
 

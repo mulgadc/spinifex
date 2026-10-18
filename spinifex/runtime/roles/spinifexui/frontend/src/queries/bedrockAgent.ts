@@ -1,6 +1,4 @@
 import {
-  GetDataSourceCommand,
-  GetIngestionJobCommand,
   GetKnowledgeBaseCommand,
   ListDataSourcesCommand,
   ListIngestionJobsCommand,
@@ -50,29 +48,6 @@ export const dataSourcesQueryOptions = (knowledgeBaseId: string) =>
     staleTime: KNOWLEDGE_BASE_STALE_TIME,
   })
 
-export const dataSourceQueryOptions = (
-  knowledgeBaseId: string,
-  dataSourceId: string,
-) =>
-  queryOptions({
-    queryKey: [
-      "bedrock-agent",
-      "knowledge-bases",
-      knowledgeBaseId,
-      "data-sources",
-      dataSourceId,
-    ],
-    queryFn: async () => {
-      const command = new GetDataSourceCommand({
-        knowledgeBaseId,
-        dataSourceId,
-      })
-
-      return await getBedrockAgentClient().send(command)
-    },
-    staleTime: KNOWLEDGE_BASE_STALE_TIME,
-  })
-
 export const ingestionJobsQueryOptions = (
   knowledgeBaseId: string,
   dataSourceId: string,
@@ -91,33 +66,6 @@ export const ingestionJobsQueryOptions = (
         knowledgeBaseId,
         dataSourceId,
         sortBy: { attribute: "STARTED_AT", order: "DESCENDING" },
-      })
-
-      return await getBedrockAgentClient().send(command)
-    },
-    staleTime: INGESTION_JOB_STALE_TIME,
-  })
-
-export const ingestionJobQueryOptions = (
-  knowledgeBaseId: string,
-  dataSourceId: string,
-  ingestionJobId: string,
-) =>
-  queryOptions({
-    queryKey: [
-      "bedrock-agent",
-      "knowledge-bases",
-      knowledgeBaseId,
-      "data-sources",
-      dataSourceId,
-      "ingestion-jobs",
-      ingestionJobId,
-    ],
-    queryFn: async () => {
-      const command = new GetIngestionJobCommand({
-        knowledgeBaseId,
-        dataSourceId,
-        ingestionJobId,
       })
 
       return await getBedrockAgentClient().send(command)

@@ -21,6 +21,11 @@ vi.mock("@aws-sdk/lib-storage", () => ({
   },
 }))
 
+import {
+  s3BucketObjectsQueryOptions,
+  s3BucketsQueryOptions,
+} from "@/queries/s3"
+
 import { useCreateBucket, useDeleteObject, useUploadObject } from "./s3"
 
 let queryClient: QueryClient
@@ -57,9 +62,9 @@ describe("useCreateBucket", () => {
     })
   })
 
-  it("invalidates buckets query on success", async () => {
+  it("marks the cached bucket list stale on success", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(s3BucketsQueryOptions.queryKey, { $metadata: {} })
     const { result } = renderHook(() => useCreateBucket(), { wrapper })
 
     result.current.mutate({ bucketName: "my-bucket" })
@@ -67,7 +72,9 @@ describe("useCreateBucket", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["s3", "buckets"] })
+    expect(
+      queryClient.getQueryState(s3BucketsQueryOptions.queryKey)?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 
@@ -87,9 +94,16 @@ describe("useDeleteObject", () => {
     })
   })
 
-  it("invalidates bucket objects query on success", async () => {
+  it("marks every cached listing of the bucket stale on success", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(
+      s3BucketObjectsQueryOptions("my-bucket").queryKey,
+      { $metadata: {} },
+    )
+    queryClient.setQueryData(
+      s3BucketObjectsQueryOptions("my-bucket", "photos/").queryKey,
+      { $metadata: {} },
+    )
     const { result } = renderHook(() => useDeleteObject(), { wrapper })
 
     result.current.mutate({ bucket: "my-bucket", key: "file.txt" })
@@ -97,9 +111,16 @@ describe("useDeleteObject", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["s3", "buckets", "my-bucket", "objects"],
-    })
+    expect(
+      queryClient.getQueryState(
+        s3BucketObjectsQueryOptions("my-bucket").queryKey,
+      )?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(
+        s3BucketObjectsQueryOptions("my-bucket", "photos/").queryKey,
+      )?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

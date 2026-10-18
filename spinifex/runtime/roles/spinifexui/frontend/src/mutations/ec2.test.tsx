@@ -10,6 +10,10 @@ vi.mock("@/lib/awsClient", () => ({
   getEc2Client: () => ({ send: mockSend }),
 }))
 
+import {
+  ec2InstanceQueryOptions,
+  ec2InstancesQueryOptions,
+} from "@/queries/ec2"
 import type { CreateVpcWizardFormData } from "@/types/ec2"
 
 import {
@@ -112,9 +116,14 @@ describe("useStartInstance", () => {
     expect(command.input).toStrictEqual({ InstanceIds: ["i-abc123"] })
   })
 
-  it("invalidates instances query on success", async () => {
+  it("marks the cached instance list and detail stale on success", async () => {
     createQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+    queryClient.setQueryData(ec2InstancesQueryOptions.queryKey, {
+      $metadata: {},
+    })
+    queryClient.setQueryData(ec2InstanceQueryOptions("i-abc123").queryKey, {
+      $metadata: {},
+    })
     const { result } = renderHook(() => useStartInstance(), { wrapper })
 
     result.current.mutate("i-abc123")
@@ -122,7 +131,14 @@ describe("useStartInstance", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["ec2", "instances"] })
+    expect(
+      queryClient.getQueryState(ec2InstancesQueryOptions.queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
+    expect(
+      queryClient.getQueryState(ec2InstanceQueryOptions("i-abc123").queryKey)
+        ?.isInvalidated,
+    ).toBeTruthy()
   })
 })
 

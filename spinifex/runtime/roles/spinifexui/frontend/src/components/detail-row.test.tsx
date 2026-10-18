@@ -19,9 +19,4 @@ describe("DetailRow", () => {
     render(<DetailRow label="Subnet" value="" />)
     expect(screen.getByText("—")).toBeInTheDocument()
   })
-
-  it("renders ReactNode as value", () => {
-    render(<DetailRow label="Status" value={<span>running</span>} />)
-    expect(screen.getByText("running")).toBeInTheDocument()
-  })
 })

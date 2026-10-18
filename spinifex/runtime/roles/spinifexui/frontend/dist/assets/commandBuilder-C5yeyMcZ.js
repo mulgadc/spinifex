@@ -1,1 +1,0 @@
-import{Ao as e,bo as t,zn as n}from"./awsClient-I-S7JTV9.js";var r=e(n,`ElasticLoadBalancing_v10`,`ElasticLoadBalancingV2Client`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

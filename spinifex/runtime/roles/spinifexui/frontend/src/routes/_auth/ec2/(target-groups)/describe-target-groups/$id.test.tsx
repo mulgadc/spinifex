@@ -1,5 +1,5 @@
 import { screen } from "@testing-library/react"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   createTestQueryClient,
@@ -39,7 +39,6 @@ const { routerState, sdk } = vi.hoisted(() => {
       },
       reset: () => {
         handlers.clear()
-        send.mockClear()
       },
     },
   }
@@ -55,10 +54,6 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
   return {
     ...actual,
-    createFileRoute:
-      () =>
-      <TOptions,>(options: TOptions): TOptions =>
-        options,
     useNavigate: () => routerState.navigate,
     Link: ({
       children,
@@ -128,7 +123,6 @@ describe("target-group detail route", () => {
   beforeEach(() => {
     sdk.reset()
   })
-  afterEach(() => vi.clearAllMocks())
 
   it("renders the overview card with TG fields", () => {
     renderWithClient(<TargetGroupDetailPage arn={TG_ARN} />, seed())

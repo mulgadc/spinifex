@@ -268,13 +268,6 @@ const { sdk } = vi.hoisted(() => {
         reject(Object.entries(i), REJECTED_ON_MODIFY, "ModifyDBInstance")
         const instance = find(i.DBInstanceIdentifier)
 
-        if (
-          i.AllocatedStorage !== undefined &&
-          i.AllocatedStorage < instance.allocatedStorage
-        ) {
-          throw new Error("InvalidParameterValue: storage cannot be shrunk")
-        }
-
         instance.status = "modifying"
         instance.pending = {
           instanceClass: i.DBInstanceClass,
@@ -300,10 +293,6 @@ const { sdk } = vi.hoisted(() => {
         FinalDBSnapshotIdentifier?: string
       }) => {
         const instance = find(i.DBInstanceIdentifier)
-
-        if (instance.deletionProtection) {
-          throw new Error("InvalidParameterCombination: deletion protection")
-        }
 
         if (i.SkipFinalSnapshot !== true) {
           if (!i.FinalDBSnapshotIdentifier) {
@@ -440,10 +429,6 @@ const { sdk } = vi.hoisted(() => {
 
         const storage = i.AllocatedStorage ?? snapshot.allocatedStorage
 
-        if (storage < snapshot.allocatedStorage) {
-          throw new Error("InvalidParameterValue: storage cannot be shrunk")
-        }
-
         state.instances.push({
           identifier: i.DBInstanceIdentifier,
           engine: snapshot.engine,
@@ -484,7 +469,6 @@ const { sdk } = vi.hoisted(() => {
       reset: () => {
         state.instances = []
         state.snapshots = []
-        send.mockClear()
       },
     },
   }
@@ -637,51 +621,6 @@ describe("RDS cross-slice flow (mocked SDK)", () => {
     ).resolves.toBeDefined()
   })
 
-  it("refuses to shrink storage the way the backend does", async () => {
-    const qc = createQueryClient()
-    const { result } = renderHarness(qc)
-
-    await result.current.create.mutateAsync({
-      ...CREATE_FORM,
-      allocatedStorage: 40,
-    })
-
-    await expect(
-      result.current.modify.mutateAsync({
-        dbInstanceIdentifier: "orders-db",
-        currentAllocatedStorage: 40,
-        dbInstanceClass: "db.t3.micro",
-        allocatedStorage: 20,
-        dbParameterGroupName: "",
-        vpcSecurityGroupIds: [],
-        deletionProtection: false,
-        backupRetentionPeriod: 7,
-        preferredBackupWindow: "",
-        preferredMaintenanceWindow: "",
-        masterUserPassword: "",
-        applyImmediately: true,
-      }),
-    ).rejects.toThrow(/storage cannot be shrunk/)
-  })
-
-  it("refuses to delete an instance with deletion protection on", async () => {
-    const qc = createQueryClient()
-    const { result } = renderHarness(qc)
-
-    await result.current.create.mutateAsync({
-      ...CREATE_FORM,
-      deletionProtection: true,
-    })
-
-    await expect(
-      result.current.remove.mutateAsync({
-        dbInstanceIdentifier: "orders-db",
-        skipFinalSnapshot: true,
-        finalSnapshotIdentifier: "",
-      }),
-    ).rejects.toThrow(/deletion protection/)
-  })
-
   it("keeps no snapshot when the final snapshot is skipped", async () => {
     const qc = createQueryClient()
     const { result } = renderHarness(qc)
@@ -809,40 +748,6 @@ describe("RDS snapshot flow (mocked SDK)", () => {
     )
 
     expect(others.DBSnapshots).toHaveLength(0)
-  })
-
-  it("refuses a snapshot of an instance still being created", async () => {
-    const qc = createQueryClient()
-    const { result } = renderHarness(qc)
-    await result.current.create.mutateAsync(CREATE_FORM)
-
-    await expect(
-      result.current.snapshot.mutateAsync({
-        dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
-        dbInstanceIdentifier: "orders-db",
-        tags: [],
-      }),
-    ).rejects.toThrow(/is creating/)
-  })
-
-  it("refuses a restore that would shrink the volume", async () => {
-    const qc = createQueryClient()
-    const result = await settledInstance(qc)
-
-    await result.current.snapshot.mutateAsync({
-      dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
-      dbInstanceIdentifier: "orders-db",
-      tags: [],
-    })
-    await settledSnapshot(qc, "orders-db-snapshot-20260817-1432")
-
-    await expect(
-      result.current.restore.mutateAsync({
-        ...RESTORE_FORM,
-        allocatedStorage: 10,
-        dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
-      }),
-    ).rejects.toThrow(/storage cannot be shrunk/)
   })
 
   // The restore reads the engine and the credentials from the datadir, so

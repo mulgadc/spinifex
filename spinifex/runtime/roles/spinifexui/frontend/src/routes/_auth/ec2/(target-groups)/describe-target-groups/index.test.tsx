@@ -1,6 +1,6 @@
 import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen, waitFor } from "@testing-library/react"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   createTestQueryClient,
@@ -40,7 +40,6 @@ const { routerState, sdk } = vi.hoisted(() => {
       },
       reset: () => {
         handlers.clear()
-        send.mockClear()
       },
     },
   }
@@ -56,10 +55,6 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
   return {
     ...actual,
-    createFileRoute:
-      () =>
-      <TOptions,>(options: TOptions): TOptions =>
-        options,
     useNavigate: () => routerState.navigate,
     Link: ({
       children,
@@ -102,7 +97,6 @@ describe("describe-target-groups list route", () => {
   beforeEach(() => {
     sdk.reset()
   })
-  afterEach(() => vi.clearAllMocks())
 
   it("renders target-group rows with health summaries from the mocked SDK", async () => {
     sdk.setHandler(

@@ -5,7 +5,6 @@ import {
   createLoadBalancerSchema,
   createTargetGroupSchema,
   healthCheckSchema,
-  registerTargetsSchema,
 } from "./elbv2"
 
 const defaultHealthCheck = {
@@ -198,21 +197,6 @@ describe("createListenerSchema", () => {
       defaultTargetGroupArn: "",
     })
 
-    expect(result.success).toBeFalsy()
-  })
-})
-
-describe("registerTargetsSchema", () => {
-  it("accepts one or more targets", () => {
-    const result = registerTargetsSchema.safeParse({
-      targets: [{ instanceId: "i-123" }, { instanceId: "i-456", port: 8080 }],
-    })
-
-    expect(result.success).toBeTruthy()
-  })
-
-  it("rejects empty target list", () => {
-    const result = registerTargetsSchema.safeParse({ targets: [] })
     expect(result.success).toBeFalsy()
   })
 })

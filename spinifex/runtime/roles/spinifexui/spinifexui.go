@@ -140,7 +140,6 @@ func (svc *Service) Start() (int, error) {
 	return os.Getpid(), nil
 }
 
-// launchService starts the HTTP server.
 // newSPAHandler serves the embedded build, falling back to index.html so the
 // router can resolve client-side paths.
 func newSPAHandler(contentFS fs.FS) http.HandlerFunc {
@@ -189,33 +188,9 @@ func assetCacheControl(path string) string {
 	return "no-cache"
 }
 
-func (svc *Service) launchService() error {
-	// Strip the "frontend/dist" prefix from embedded filesystem
-	contentFS, err := fs.Sub(distFS, "frontend/dist")
-	if err != nil {
-		slog.Error("Failed to create sub filesystem", "error", err)
-		return fmt.Errorf("failed to get embedded filesystem: %w", err)
-	}
-
-	// Check if certificates exist
-	if _, err := os.Stat(svc.Config.TLSCert); os.IsNotExist(err) {
-		slog.Error("Certificate file not found", "path", svc.Config.TLSCert)
-		return fmt.Errorf("certificate file not found: %s", svc.Config.TLSCert)
-	}
-	if _, err := os.Stat(svc.Config.TLSKey); os.IsNotExist(err) {
-		slog.Error("Key file not found", "path", svc.Config.TLSKey)
-		return fmt.Errorf("key file not found: %s", svc.Config.TLSKey)
-	}
-
-	// Derive CA cert path from server cert directory.
-	caCertPath := filepath.Join(filepath.Dir(svc.Config.TLSCert), "ca.pem")
-
-	// Build TLS transport for reverse proxies using the same CA the UI trusts.
-	proxyTransport, err := newProxyTransport(caCertPath)
-	if err != nil {
-		return fmt.Errorf("proxy transport: %w", err)
-	}
-
+// newHandler builds the full request chain: security headers, compression,
+// tracing, then the route mux.
+func (svc *Service) newHandler(contentFS fs.FS, caCertPath string, proxyTransport http.RoundTripper) http.Handler {
 	spaHandler := newSPAHandler(contentFS)
 
 	mux := http.NewServeMux()
@@ -253,7 +228,38 @@ func (svc *Service) launchService() error {
 		"application/javascript", "text/javascript", "application/json",
 		"image/svg+xml", "text/plain")
 	traced := otelsetup.HTTPMiddleware("spinifex-ui")(mux)
-	finalHandler := securityHeadersMiddleware(compressor.Handler(traced))
+	return securityHeadersMiddleware(compressor.Handler(traced))
+}
+
+// launchService starts the HTTP server.
+func (svc *Service) launchService() error {
+	// Strip the "frontend/dist" prefix from embedded filesystem
+	contentFS, err := fs.Sub(distFS, "frontend/dist")
+	if err != nil {
+		slog.Error("Failed to create sub filesystem", "error", err)
+		return fmt.Errorf("failed to get embedded filesystem: %w", err)
+	}
+
+	// Check if certificates exist
+	if _, err := os.Stat(svc.Config.TLSCert); os.IsNotExist(err) {
+		slog.Error("Certificate file not found", "path", svc.Config.TLSCert)
+		return fmt.Errorf("certificate file not found: %s", svc.Config.TLSCert)
+	}
+	if _, err := os.Stat(svc.Config.TLSKey); os.IsNotExist(err) {
+		slog.Error("Key file not found", "path", svc.Config.TLSKey)
+		return fmt.Errorf("key file not found: %s", svc.Config.TLSKey)
+	}
+
+	// Derive CA cert path from server cert directory.
+	caCertPath := filepath.Join(filepath.Dir(svc.Config.TLSCert), "ca.pem")
+
+	// Build TLS transport for reverse proxies using the same CA the UI trusts.
+	proxyTransport, err := newProxyTransport(caCertPath)
+	if err != nil {
+		return fmt.Errorf("proxy transport: %w", err)
+	}
+
+	finalHandler := svc.newHandler(contentFS, caCertPath, proxyTransport)
 
 	addr := fmt.Sprintf("%s:%d", svc.Config.Host, svc.Config.Port)
 

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.fn().mockResolvedValue({
   action: "NONE",
@@ -36,10 +36,6 @@ function createQueryClient() {
 }
 
 describe("useApplyGuardrail", () => {
-  beforeEach(() => {
-    mockSend.mockClear()
-  })
-
   it("sends ApplyGuardrailCommand with the guardrail id, version, source and content", async () => {
     createQueryClient()
     const { result } = renderHook(() => useApplyGuardrail(), { wrapper })

@@ -28,6 +28,37 @@ describe("StateBadge", () => {
     },
   )
 
+  // Every GuardrailStatus, KnowledgeBaseStatus, DataSourceStatus and
+  // IngestionJobStatus value except STOPPED, which stays neutral.
+  it.each(["ACTIVE", "AVAILABLE", "COMPLETE", "READY"])(
+    "renders green for Bedrock success status '%s'",
+    (state) => {
+      render(<StateBadge state={state} />)
+      expect(screen.getByText(state).className).toContain("bg-green-100")
+    },
+  )
+
+  it.each(["FAILED", "DELETE_UNSUCCESSFUL", "UPDATE_UNSUCCESSFUL"])(
+    "renders red for Bedrock error status '%s'",
+    (state) => {
+      render(<StateBadge state={state} />)
+      expect(screen.getByText(state).className).toContain("bg-red-100")
+    },
+  )
+
+  it.each([
+    "CREATING",
+    "DELETING",
+    "IN_PROGRESS",
+    "STARTING",
+    "STOPPING",
+    "UPDATING",
+    "VERSIONING",
+  ])("renders yellow for Bedrock in-progress status '%s'", (state) => {
+    render(<StateBadge state={state} />)
+    expect(screen.getByText(state).className).toContain("bg-yellow-100")
+  })
+
   it("renders gray for terminated state", () => {
     render(<StateBadge state="terminated" />)
     const badge = screen.getByText("terminated")

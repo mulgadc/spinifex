@@ -44,6 +44,37 @@ function certLabel(cert: CertificateSummary): string {
   return cert.DomainName ? `${cert.DomainName} · ${id}` : id
 }
 
+export interface ListenerProtocolFields {
+  port: number
+  certificateArn?: string
+  sslPolicy?: string
+}
+
+// The port and TLS fields a protocol switch implies. The port moves only off
+// the other protocol's default; an SSL policy is HTTPS-only, and an insecure
+// protocol drops cert + policy so the server doesn't reject them.
+export function listenerProtocolDefaults(
+  next: ListenerProtocolValue,
+  current: ListenerProtocolFields,
+): ListenerProtocolFields {
+  if (!isSecureProtocol(next)) {
+    return {
+      port: current.port === HTTPS_PORT ? HTTP_PORT : current.port,
+      certificateArn: undefined,
+      sslPolicy: undefined,
+    }
+  }
+
+  const sslPolicy =
+    next === "HTTPS" ? current.sslPolicy || DEFAULT_SSL_POLICY : undefined
+
+  return {
+    port: current.port === HTTP_PORT ? HTTPS_PORT : current.port,
+    certificateArn: current.certificateArn,
+    sslPolicy,
+  }
+}
+
 export function ListenerForm({
   form,
   protocols,
@@ -65,38 +96,15 @@ export function ListenerForm({
   const isHttps = protocol === "HTTPS"
   const isSecure = isSecureProtocol(protocol)
 
-  // Side-effects of a protocol switch, applied after the field's own onChange:
-  // bump the default port (only when still on the other protocol's default) and
-  // toggle the TLS fields. A secure protocol (HTTPS/TLS) keeps the certificate;
-  // an SSL policy is HTTPS-only. Moving to an insecure protocol clears cert +
-  // policy so the server doesn't reject them.
   const applyProtocolDefaults = (next: ListenerProtocolValue | null) => {
     if (!next) {
       return
     }
 
-    const current = getValues("port")
-
-    if (isSecureProtocol(next)) {
-      if (current === HTTP_PORT) {
-        setValue("port", HTTPS_PORT)
-      }
-
-      if (next === "HTTPS") {
-        if (!getValues("sslPolicy")) {
-          setValue("sslPolicy", DEFAULT_SSL_POLICY)
-        }
-      } else {
-        setValue("sslPolicy", undefined)
-      }
-    } else {
-      if (current === HTTPS_PORT) {
-        setValue("port", HTTP_PORT)
-      }
-
-      setValue("certificateArn", undefined)
-      setValue("sslPolicy", undefined)
-    }
+    const fields = listenerProtocolDefaults(next, getValues())
+    setValue("port", fields.port)
+    setValue("certificateArn", fields.certificateArn)
+    setValue("sslPolicy", fields.sslPolicy)
   }
 
   return (

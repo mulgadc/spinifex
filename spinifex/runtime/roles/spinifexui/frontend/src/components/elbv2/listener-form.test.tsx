@@ -15,9 +15,10 @@ import {
 import {
   ALL_LISTENER_PROTOCOLS,
   type CreateListenerFormData,
+  DEFAULT_SSL_POLICY,
 } from "@/types/elbv2"
 
-import { ListenerForm } from "./listener-form"
+import { ListenerForm, listenerProtocolDefaults } from "./listener-form"
 
 const TGS: TargetGroup[] = [
   {
@@ -153,5 +154,61 @@ describe("ListenerForm", () => {
       screen.findByLabelText("Certificate"),
     ).resolves.toBeInTheDocument()
     expect(screen.getByLabelText("Security policy")).toBeInTheDocument()
+  })
+})
+
+describe("listenerProtocolDefaults", () => {
+  it("moves HTTP's default port to 443 and seeds the SSL policy on HTTPS", () => {
+    expect(listenerProtocolDefaults("HTTPS", { port: 80 })).toStrictEqual({
+      port: 443,
+      certificateArn: undefined,
+      sslPolicy: DEFAULT_SSL_POLICY,
+    })
+  })
+
+  it("keeps a chosen SSL policy and certificate on HTTPS", () => {
+    expect(
+      listenerProtocolDefaults("HTTPS", {
+        port: 8443,
+        certificateArn: "arn:cert",
+        sslPolicy: "custom-policy",
+      }),
+    ).toStrictEqual({
+      port: 8443,
+      certificateArn: "arn:cert",
+      sslPolicy: "custom-policy",
+    })
+  })
+
+  it("keeps the certificate but clears the SSL policy on TLS", () => {
+    expect(
+      listenerProtocolDefaults("TLS", {
+        port: 443,
+        certificateArn: "arn:cert",
+        sslPolicy: DEFAULT_SSL_POLICY,
+      }),
+    ).toStrictEqual({
+      port: 443,
+      certificateArn: "arn:cert",
+      sslPolicy: undefined,
+    })
+  })
+
+  it("moves 443 back to 80 and drops TLS fields on an insecure protocol", () => {
+    expect(
+      listenerProtocolDefaults("HTTP", {
+        port: 443,
+        certificateArn: "arn:cert",
+        sslPolicy: DEFAULT_SSL_POLICY,
+      }),
+    ).toStrictEqual({
+      port: 80,
+      certificateArn: undefined,
+      sslPolicy: undefined,
+    })
+  })
+
+  it("leaves a custom port alone", () => {
+    expect(listenerProtocolDefaults("TCP", { port: 9000 }).port).toBe(9000)
   })
 })

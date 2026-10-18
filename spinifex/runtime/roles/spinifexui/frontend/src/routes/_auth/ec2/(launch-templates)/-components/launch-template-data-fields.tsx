@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { securityGroupLabel } from "@/lib/utils"
 import {
   ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
@@ -267,16 +268,14 @@ export function LaunchTemplateDataFields({
                     key={sg.GroupId}
                   >
                     <input
-                      aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
+                      aria-label={`Security group ${securityGroupLabel(sg)}`}
                       checked={selectedSet.has(sg.GroupId ?? "")}
                       onChange={() => {
                         toggle(sg.GroupId ?? "")
                       }}
                       type="checkbox"
                     />
-                    <span className="font-mono">
-                      {sg.GroupId} ({sg.GroupName})
-                    </span>
+                    <span className="font-mono">{securityGroupLabel(sg)}</span>
                   </label>
                 ))}
               </div>

@@ -2,6 +2,7 @@ import type { SecurityGroup } from "@aws-sdk/client-ec2"
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
+import { securityGroupLabel } from "@/lib/utils"
 
 interface SecurityGroupsEditorProps {
   // Security groups in the load balancer's VPC, selectable for attachment.
@@ -88,16 +89,14 @@ export function SecurityGroupsEditor({
                 key={sg.GroupId}
               >
                 <input
-                  aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
+                  aria-label={`Security group ${securityGroupLabel(sg)}`}
                   checked={selectedIds.has(sg.GroupId ?? "")}
                   onChange={() => {
                     toggle(sg.GroupId ?? "")
                   }}
                   type="checkbox"
                 />
-                <span className="font-mono">
-                  {sg.GroupId} ({sg.GroupName})
-                </span>
+                <span className="font-mono">{securityGroupLabel(sg)}</span>
               </label>
             ))
           )}

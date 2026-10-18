@@ -40,7 +40,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { isSystemManagedImage } from "@/lib/system-managed"
-import { formatVRAMMiB } from "@/lib/utils"
+import { formatVRAMMiB, securityGroupLabel } from "@/lib/utils"
 import { useCreateInstance } from "@/mutations/ec2"
 import {
   ec2ImagesQueryOptions,
@@ -734,7 +734,7 @@ export function RunInstancesPage({
                           key={sg.GroupId}
                         >
                           <input
-                            aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
+                            aria-label={`Security group ${securityGroupLabel(sg)}`}
                             checked={selectedSgIdSet.has(sg.GroupId ?? "")}
                             onChange={() => {
                               toggleSg(sg.GroupId ?? "")
@@ -742,7 +742,7 @@ export function RunInstancesPage({
                             type="checkbox"
                           />
                           <span className="font-mono">
-                            {sg.GroupId} ({sg.GroupName})
+                            {securityGroupLabel(sg)}
                           </span>
                         </label>
                       ))}

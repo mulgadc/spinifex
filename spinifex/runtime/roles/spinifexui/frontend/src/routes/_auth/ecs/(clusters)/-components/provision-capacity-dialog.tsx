@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { securityGroupLabel } from "@/lib/utils"
 import { useProvisionCapacity } from "@/mutations/ecs"
 import {
   ec2InstanceTypesQueryOptions,
@@ -163,7 +164,7 @@ export function ProvisionCapacityDialog({
               <option value="">Select a security group</option>
               {securityGroups.map((sg) => (
                 <option key={sg.GroupId} value={sg.GroupId ?? ""}>
-                  {sg.GroupId} ({sg.GroupName})
+                  {securityGroupLabel(sg)}
                 </option>
               ))}
             </select>

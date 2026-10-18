@@ -97,18 +97,23 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const { data: snapshotData } = useSuspenseQuery(
     rdsDBSnapshotQueryOptions(dbSnapshotIdentifier),
   )
+
   const { data: engineVersionsData } = useSuspenseQuery(
     rdsEngineVersionsQueryOptions,
   )
+
   const { data: subnetGroupsData } = useSuspenseQuery(
     rdsSubnetGroupsQueryOptions,
   )
+
   const { data: parameterGroupsData } = useSuspenseQuery(
     rdsParameterGroupsQueryOptions,
   )
+
   const { data: securityGroupsData } = useSuspenseQuery(
     ec2SecurityGroupsQueryOptions,
   )
+
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
 
   const snapshot = snapshotData.DBSnapshots?.[0]
@@ -150,6 +155,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
 
   const handleRecheck = async () => {
     setIsRechecking(true)
+
     try {
       await queryClient.invalidateQueries({
         queryKey: ec2ImagesQueryOptions.queryKey,
@@ -168,11 +174,13 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     const nextVpcId =
       subnetGroups.find((group) => group.DBSubnetGroupName === name)?.VpcId ??
       snapshot?.VpcId
+
     let nextSecurityGroups = securityGroupIdsForVpc(
       allSecurityGroups,
       nextVpcId,
       selectedSecurityGroups,
     )
+
     if (
       name !== "" &&
       nextVpcId !== snapshot?.VpcId &&
@@ -182,8 +190,10 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
         allSecurityGroups,
         nextVpcId,
       )
+
       nextSecurityGroups = defaultGroupId ? [defaultGroupId] : []
     }
+
     setValue("dbSubnetGroupName", name, { shouldValidate: true })
     setSecurityGroups(nextSecurityGroups)
   }
@@ -197,14 +207,17 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
       setError("vpcSecurityGroupIds", {
         message: "Select a security group in the new placement VPC",
       })
+
       return
     }
+
     try {
       await restoreInstance.mutateAsync({ ...data, dbSnapshotIdentifier })
     } catch {
       // The banner above carries the refusal; the form stays as it was typed.
       return
     }
+
     await navigate({
       to: "/rds/describe-db-instances/$id",
       params: { id: data.dbInstanceIdentifier },
@@ -236,6 +249,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   }
 
   const images = imagesData.Images ?? []
+
   // The engine is the snapshot's and cannot be changed, so a cluster without
   // that engine's image cannot run this restore at all.
   if (
@@ -259,11 +273,13 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   }
 
   const orderableOptions = orderableQuery.data?.OrderableDBInstanceOptions ?? []
+
   const instanceClasses = [
     ...new Set(
       orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
     ),
   ]
+
   const classNotice = pickerNotice(
     orderableQuery,
     instanceClasses.length === 0,
@@ -275,6 +291,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   )
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
+
   const parameterGroups = parameterGroupsForEngine(
     parameterGroupsData.DBParameterGroups ?? [],
     engineVersionsData.DBEngineVersions ?? [],
@@ -284,6 +301,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const subnetGroupVpc = subnetGroups.find(
     (group) => group.DBSubnetGroupName === selectedSubnetGroup,
   )?.VpcId
+
   const placementVpcId = subnetGroupVpc ?? snapshot.VpcId
   const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
   const securityGroups = securityGroupsForVpc(allSecurityGroups, placementVpcId)

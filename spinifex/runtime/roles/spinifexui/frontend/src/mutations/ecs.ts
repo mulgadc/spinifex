@@ -25,9 +25,11 @@ import type {
 
 export function useCreateCluster() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (clusterName: string) => {
       const command = new CreateClusterCommand({ clusterName })
+
       return await getEcsClient().send(command)
     },
     onSuccess: () => {
@@ -38,9 +40,11 @@ export function useCreateCluster() {
 
 export function useDeleteCluster() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (clusterName: string) => {
       const command = new DeleteClusterCommand({ cluster: clusterName })
+
       return await getEcsClient().send(command)
     },
     onSuccess: () => {
@@ -56,12 +60,14 @@ export interface StopTaskParams {
 
 export function useStopTask() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: StopTaskParams) => {
       const command = new StopTaskCommand({
         cluster: params.cluster,
         task: params.task,
       })
+
       return await getEcsClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -74,9 +80,11 @@ export function useStopTask() {
 
 export function useDeregisterTaskDefinition() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (taskDefinition: string) => {
       const command = new DeregisterTaskDefinitionCommand({ taskDefinition })
+
       return await getEcsClient().send(command)
     },
     onSuccess: () => {
@@ -97,6 +105,7 @@ export interface UpdateContainerInstanceStateParams {
 // DRAINING; DRAINING force-stops the service-owned tasks placed on it.
 export function useUpdateContainerInstanceState() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: UpdateContainerInstanceStateParams) => {
       const command = new UpdateContainerInstancesStateCommand({
@@ -104,6 +113,7 @@ export function useUpdateContainerInstanceState() {
         containerInstances: [params.containerInstance],
         status: params.status,
       })
+
       return await getEcsClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -123,6 +133,7 @@ export interface DeregisterContainerInstanceParams {
 // always set so a still-registered instance can be cleared from the console.
 export function useDeregisterContainerInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: DeregisterContainerInstanceParams) => {
       const command = new DeregisterContainerInstanceCommand({
@@ -130,6 +141,7 @@ export function useDeregisterContainerInstance() {
         containerInstance: params.containerInstance,
         force: true,
       })
+
       return await getEcsClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -145,6 +157,7 @@ export function useDeregisterContainerInstance() {
 // is omitted so the gateway applies its defaults.
 export function useRegisterTaskDefinition() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: RegisterTaskDefinitionFormData) => {
       const container: ContainerDefinition = {
@@ -168,6 +181,7 @@ export function useRegisterTaskDefinition() {
             ? [{ type: "GPU", value: String(params.containerGpuCount) }]
             : undefined,
       }
+
       const command = new RegisterTaskDefinitionCommand({
         family: params.family,
         networkMode: params.networkMode,
@@ -175,6 +189,7 @@ export function useRegisterTaskDefinition() {
         memory: params.memory || undefined,
         containerDefinitions: [container],
       })
+
       return await getEcsClient().send(command)
     },
     onSuccess: () => {
@@ -190,6 +205,7 @@ export function useRegisterTaskDefinition() {
 // container-instance list so it re-polls until they register.
 export function useProvisionCapacity() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (req: ProvisionCapacityRequest) =>
       await provisionCapacity(req),
@@ -216,6 +232,7 @@ export interface RunTaskParams {
 // it entirely.
 export function useRunTask() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: RunTaskParams) => {
       const command = new RunTaskCommand({
@@ -235,7 +252,9 @@ export function useRunTask() {
             }
           : undefined,
       })
+
       const output = await getEcsClient().send(command)
+
       // RunTask returns HTTP 200 with a failures array when no task is placed
       // (e.g. no instance has capacity); surface it as an error.
       if ((output.tasks?.length ?? 0) === 0 && output.failures?.length) {
@@ -246,6 +265,7 @@ export function useRunTask() {
           }`,
         )
       }
+
       return output
     },
     onSuccess: (_data, variables) => {
@@ -264,6 +284,7 @@ export interface CreateServiceParams extends CreateServiceFormData {
 // only when a target group is chosen; the awsvpc network config mirrors RunTask.
 export function useCreateService() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateServiceParams) => {
       const command = new CreateServiceCommand({
@@ -295,6 +316,7 @@ export function useCreateService() {
             ]
           : undefined,
       })
+
       return await getEcsClient().send(command)
     },
     onSuccess: (_data, variables) => {

@@ -59,10 +59,13 @@ export function startConsoleHandoff(opts?: {
   // instanceof is unreliable across realms and a duck check is the only one
   // that holds for the real sender.
   const openerRaw: unknown = globalThis.window?.opener ?? null
+
   /* oxlint-disable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion -- a cross-realm WindowProxy carries no narrower contract, so a duck check is the only reliable one */
   const canPost =
     typeof (openerRaw as { postMessage?: unknown })?.postMessage === "function"
+
   const opener = canPost ? (openerRaw as Window) : null
+
   /* oxlint-enable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion */
   if (!opener) {
     return undefined
@@ -74,9 +77,11 @@ export function startConsoleHandoff(opts?: {
     if (done) {
       return
     }
+
     if (!ALLOWED_OPENER_ORIGINS.includes(ev.origin)) {
       return
     }
+
     if (ev.source !== opener) {
       return
     }
@@ -84,17 +89,20 @@ export function startConsoleHandoff(opts?: {
     // Shape and type are both established here; a message that fails is simply
     // not ours, so it is dropped without touching STS.
     const parsed = handoffMessageSchema.safeParse(ev.data)
+
     if (!parsed.success) {
       return
     }
 
     done = true
     window.removeEventListener("message", onMessage)
+
     try {
       const session = await exchangeForSession({
         accessKeyId: parsed.data.accessKeyId,
         secretAccessKey: parsed.data.secretAccessKey,
       })
+
       setSessionCredentials(session)
       clearClients()
       opts?.onSuccess?.()
@@ -134,14 +142,19 @@ export function startConsoleHandoff(opts?: {
       }
     }
   }
+
   announce()
   let attempts = 0
+
   const timer = setInterval(() => {
     attempts += 1
+
     if (done || attempts > 20) {
       clearInterval(timer)
+
       return
     }
+
     announce()
   }, 500)
 

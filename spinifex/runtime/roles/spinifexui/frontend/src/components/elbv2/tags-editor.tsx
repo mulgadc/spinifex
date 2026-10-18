@@ -31,9 +31,11 @@ function buildInitialRows(tags: Tag[]): TagRow[] {
 }
 
 function normalize(rows: TagRow[]): { key: string; value: string }[] {
-  return rows
-    .map((r) => ({ key: r.key.trim(), value: r.value }))
-    .filter((r) => r.key.length > 0)
+  return rows.flatMap((r) => {
+    const key = r.key.trim()
+
+    return key.length > 0 ? [{ key, value: r.value }] : []
+  })
 }
 
 export function TagsEditor({
@@ -51,13 +53,16 @@ export function TagsEditor({
   const setRow = (id: number, patch: Partial<TagRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)))
   }
+
   const addRow = () => {
     setRows((prev) => [...prev, { id: nextId, key: "", value: "" }])
     setNextId((n) => n + 1)
   }
+
   const removeRow = (id: number) => {
     setRows((prev) => prev.filter((r) => r.id !== id))
   }
+
   const handleReset = () => {
     setRows(initialRows)
   }
@@ -66,6 +71,7 @@ export function TagsEditor({
   const hasBlankKey = rows.some(
     (r) => r.key.trim().length === 0 && r.value.length > 0,
   )
+
   const normalized = normalize(rows)
   const keys = normalized.map((r) => r.key)
   const hasDuplicate = new Set(keys).size !== keys.length
@@ -78,9 +84,11 @@ export function TagsEditor({
     <form
       onSubmit={(e) => {
         e.preventDefault()
+
         if (hasError || !dirty) {
           return
         }
+
         onSubmit(normalized)
       }}
     >

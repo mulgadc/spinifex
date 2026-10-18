@@ -352,9 +352,11 @@ describe("queryFn", () => {
     mockSend.mockResolvedValueOnce({
       PolicyDocument: encodeURIComponent('{"Version":"2012-10-17"}'),
     })
+
     const document = await callQueryFn(
       iamUserPolicyQueryOptions("admin", "s3-read"),
     )
+
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       UserName: "admin",
       PolicyName: "s3-read",
@@ -373,9 +375,11 @@ describe("queryFn", () => {
     mockSend.mockResolvedValueOnce({
       PolicyDocument: encodeURIComponent('{"Version":"2012-10-17"}'),
     })
+
     const document = await callQueryFn(
       iamRolePolicyQueryOptions("my-role", "s3-read"),
     )
+
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
       PolicyName: "s3-read",

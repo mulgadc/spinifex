@@ -14,6 +14,7 @@ export function GuardrailsPage() {
   const guardrails = (data.guardrails ?? []).toSorted((a, b) => {
     const nameA = a.name?.toLowerCase() ?? ""
     const nameB = b.name?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -37,6 +38,7 @@ export function GuardrailsPage() {
             if (!guardrail.id) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={guardrail.status} />}

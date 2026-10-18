@@ -55,12 +55,14 @@ import type {
 
 export function useCreateUser() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateUserFormData) => {
       const command = new CreateUserCommand({
         UserName: params.userName,
         Path: params.path || undefined,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -71,9 +73,11 @@ export function useCreateUser() {
 
 export function useDeleteUser() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (userName: string) => {
       const command = new DeleteUserCommand({ UserName: userName })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -84,9 +88,11 @@ export function useDeleteUser() {
 
 export function useCreateAccessKey() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (userName: string) => {
       const command = new CreateAccessKeyCommand({ UserName: userName })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -97,12 +103,14 @@ export function useCreateAccessKey() {
 
 export function useDeleteAccessKey() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ userName, accessKeyId }: DeleteAccessKeyParams) => {
       const command = new DeleteAccessKeyCommand({
         UserName: userName,
         AccessKeyId: accessKeyId,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -113,6 +121,7 @@ export function useDeleteAccessKey() {
 
 export function useUpdateAccessKey() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       userName,
@@ -124,6 +133,7 @@ export function useUpdateAccessKey() {
         AccessKeyId: accessKeyId,
         Status: status,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -134,6 +144,7 @@ export function useUpdateAccessKey() {
 
 export function useCreatePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreatePolicyFormData) => {
       const command = new CreatePolicyCommand({
@@ -141,6 +152,7 @@ export function useCreatePolicy() {
         Description: params.description || undefined,
         PolicyDocument: params.policyDocument,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -151,9 +163,11 @@ export function useCreatePolicy() {
 
 export function useDeletePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (policyArn: string) => {
       const command = new DeletePolicyCommand({ PolicyArn: policyArn })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -164,12 +178,14 @@ export function useDeletePolicy() {
 
 export function useAttachUserPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ userName, policyArn }: UserPolicyParams) => {
       const command = new AttachUserPolicyCommand({
         UserName: userName,
         PolicyArn: policyArn,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -182,12 +198,14 @@ export function useAttachUserPolicy() {
 
 export function useDetachUserPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ userName, policyArn }: UserPolicyParams) => {
       const command = new DetachUserPolicyCommand({
         UserName: userName,
         PolicyArn: policyArn,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -200,6 +218,7 @@ export function useDetachUserPolicy() {
 
 export function usePutUserPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       name,
@@ -211,6 +230,7 @@ export function usePutUserPolicy() {
         PolicyName: policyName,
         PolicyDocument: policyDocument,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -223,12 +243,14 @@ export function usePutUserPolicy() {
 
 export function useDeleteUserPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ name, policyName }: DeleteInlinePolicyParams) => {
       const command = new DeleteUserPolicyCommand({
         UserName: name,
         PolicyName: policyName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -241,6 +263,7 @@ export function useDeleteUserPolicy() {
 
 export function useCreateRole() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateRoleFormData) => {
       const command = new CreateRoleCommand({
@@ -249,6 +272,7 @@ export function useCreateRole() {
         Description: params.description || undefined,
         AssumeRolePolicyDocument: params.assumeRolePolicyDocument,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -259,9 +283,11 @@ export function useCreateRole() {
 
 export function useDeleteRole() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (roleName: string) => {
       const command = new DeleteRoleCommand({ RoleName: roleName })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -272,12 +298,14 @@ export function useDeleteRole() {
 
 export function useAttachRolePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ roleName, policyArn }: RolePolicyParams) => {
       const command = new AttachRolePolicyCommand({
         RoleName: roleName,
         PolicyArn: policyArn,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -290,12 +318,14 @@ export function useAttachRolePolicy() {
 
 export function useDetachRolePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ roleName, policyArn }: RolePolicyParams) => {
       const command = new DetachRolePolicyCommand({
         RoleName: roleName,
         PolicyArn: policyArn,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -308,6 +338,7 @@ export function useDetachRolePolicy() {
 
 export function usePutRolePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       name,
@@ -319,6 +350,7 @@ export function usePutRolePolicy() {
         PolicyName: policyName,
         PolicyDocument: policyDocument,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -331,12 +363,14 @@ export function usePutRolePolicy() {
 
 export function useDeleteRolePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ name, policyName }: DeleteInlinePolicyParams) => {
       const command = new DeleteRolePolicyCommand({
         RoleName: name,
         PolicyName: policyName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -349,12 +383,14 @@ export function useDeleteRolePolicy() {
 
 export function useCreateInstanceProfile() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateInstanceProfileFormData) => {
       const command = new CreateInstanceProfileCommand({
         InstanceProfileName: params.instanceProfileName,
         Path: params.path || undefined,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -375,11 +411,13 @@ function invalidateInstanceProfiles(queryClient: QueryClient) {
 
 export function useDeleteInstanceProfile() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (instanceProfileName: string) => {
       const command = new DeleteInstanceProfileCommand({
         InstanceProfileName: instanceProfileName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -390,6 +428,7 @@ export function useDeleteInstanceProfile() {
 
 export function useAddRoleToInstanceProfile() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       instanceProfileName,
@@ -399,6 +438,7 @@ export function useAddRoleToInstanceProfile() {
         InstanceProfileName: instanceProfileName,
         RoleName: roleName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -409,6 +449,7 @@ export function useAddRoleToInstanceProfile() {
 
 export function useRemoveRoleFromInstanceProfile() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       instanceProfileName,
@@ -418,6 +459,7 @@ export function useRemoveRoleFromInstanceProfile() {
         InstanceProfileName: instanceProfileName,
         RoleName: roleName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -428,12 +470,14 @@ export function useRemoveRoleFromInstanceProfile() {
 
 export function useCreateGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateGroupFormData) => {
       const command = new CreateGroupCommand({
         GroupName: params.groupName,
         Path: params.path || undefined,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -444,9 +488,11 @@ export function useCreateGroup() {
 
 export function useDeleteGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (groupName: string) => {
       const command = new DeleteGroupCommand({ GroupName: groupName })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -457,12 +503,14 @@ export function useDeleteGroup() {
 
 export function useAttachGroupPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ groupName, policyArn }: GroupPolicyParams) => {
       const command = new AttachGroupPolicyCommand({
         GroupName: groupName,
         PolicyArn: policyArn,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -475,12 +523,14 @@ export function useAttachGroupPolicy() {
 
 export function useDetachGroupPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ groupName, policyArn }: GroupPolicyParams) => {
       const command = new DetachGroupPolicyCommand({
         GroupName: groupName,
         PolicyArn: policyArn,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -493,6 +543,7 @@ export function useDetachGroupPolicy() {
 
 export function usePutGroupPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       name,
@@ -504,6 +555,7 @@ export function usePutGroupPolicy() {
         PolicyName: policyName,
         PolicyDocument: policyDocument,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -516,12 +568,14 @@ export function usePutGroupPolicy() {
 
 export function useDeleteGroupPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ name, policyName }: DeleteInlinePolicyParams) => {
       const command = new DeleteGroupPolicyCommand({
         GroupName: name,
         PolicyName: policyName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -534,12 +588,14 @@ export function useDeleteGroupPolicy() {
 
 export function useAddUserToGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ groupName, userName }: GroupMembershipParams) => {
       const command = new AddUserToGroupCommand({
         GroupName: groupName,
         UserName: userName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {
@@ -553,12 +609,14 @@ export function useAddUserToGroup() {
 
 export function useRemoveUserFromGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ groupName, userName }: GroupMembershipParams) => {
       const command = new RemoveUserFromGroupCommand({
         GroupName: groupName,
         UserName: userName,
       })
+
       return await getIamClient().send(command)
     },
     onSuccess: () => {

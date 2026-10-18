@@ -37,6 +37,7 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
@@ -296,6 +297,7 @@ describe("eks mutations", () => {
   describe("useAssociateAccessPolicy", () => {
     it("sends AssociateAccessPolicyCommand with cluster scope", async () => {
       createQueryClient()
+
       const { result } = renderHook(() => useAssociateAccessPolicy(), {
         wrapper,
       })

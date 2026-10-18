@@ -12,15 +12,21 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
+
   type SdkHandler = (input: never) => unknown
+
   const handlers = new Map<string, SdkHandler>()
+
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
+
     if (!handler) {
       throw new Error(`No handler for ${command.constructor.name}`)
     }
+
     return handler(command.input as never)
   })
+
   return {
     routerState: { navigate: vi.fn() },
     sdk: {
@@ -43,6 +49,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -66,6 +73,7 @@ function setup() {
   qc.setQueryData(["ecs", "task-definitions", "app:1"], {
     networkMode: "bridge",
   })
+
   return renderWithClient(<CreateServicePage cluster="web" />, qc)
 }
 
@@ -92,6 +100,7 @@ describe("create-service route", () => {
     await waitFor(() => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
+
     const input = sdk.send.mock.calls[0]?.[0].input as {
       cluster: string
       serviceName: string
@@ -100,6 +109,7 @@ describe("create-service route", () => {
       networkConfiguration?: unknown
       loadBalancers?: unknown
     }
+
     expect(input.cluster).toBe("web")
     expect(input.serviceName).toBe("api")
     expect(input.taskDefinition).toBe("app:1")

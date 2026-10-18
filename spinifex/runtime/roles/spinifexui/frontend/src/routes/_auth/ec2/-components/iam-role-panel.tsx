@@ -25,6 +25,7 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
   const { data: associationsData } = useQuery(
     ec2IamInstanceProfileAssociationsQueryOptions(instanceId),
   )
+
   const { data: profilesData } = useQuery(iamInstanceProfilesQueryOptions)
 
   const associateMutation = useAssociateIamInstanceProfile()
@@ -37,12 +38,14 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
   const association = associationsData?.IamInstanceProfileAssociations?.find(
     (a) => a.State === "associating" || a.State === "associated",
   )
+
   const profiles = profilesData?.InstanceProfiles ?? []
 
   const handleAssociate = async () => {
     if (!selectedProfile) {
       return
     }
+
     await associateMutation.mutateAsync({
       instanceId,
       instanceProfileName: selectedProfile,
@@ -54,6 +57,7 @@ export function IamRolePanel({ instanceId }: { instanceId: string }) {
     if (!association?.AssociationId) {
       return
     }
+
     await disassociateMutation.mutateAsync({
       associationId: association.AssociationId,
       instanceId,

@@ -23,6 +23,7 @@ describe("guardrailFormSchema", () => {
       blockedInputMessaging: "Blocked input.",
       blockedOutputsMessaging: "Blocked output.",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -33,6 +34,7 @@ describe("guardrailFormSchema", () => {
       blockedInputMessaging: "Blocked input.",
       blockedOutputsMessaging: "Blocked output.",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -90,6 +92,7 @@ describe("formToCreateInput", () => {
       blockedInputMessaging: "Blocked input.",
       blockedOutputsMessaging: "Blocked output.",
     })
+
     expect(input.description).toBeUndefined()
     expect(input.kmsKeyId).toBeUndefined()
     expect(input.topicPolicyConfig).toBeUndefined()

@@ -14,12 +14,15 @@ export function pickerNotice(
   if (query.isPending) {
     return { tone: "muted", text: messages.loading }
   }
+
   if (query.error) {
     return { tone: "error", text: `${messages.failed}: ${query.error.message}` }
   }
+
   if (isEmpty) {
     return { tone: "muted", text: messages.empty }
   }
+
   return undefined
 }
 

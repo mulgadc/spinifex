@@ -14,17 +14,23 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
+
   type SdkHandler = (input: never) => unknown
+
   const handlers = new Map<string, SdkHandler>()
+
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
+
     if (!handler) {
       throw new Error(
         `No handler registered for SDK command ${command.constructor.name}`,
       )
     }
+
     return handler(command.input as never)
   })
+
   return {
     routerState: {
       navigate: vi.fn(),
@@ -52,6 +58,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     createFileRoute:
@@ -71,6 +78,7 @@ import { CreateLoadBalancerPage } from "./-components/create-load-balancer-page"
 
 const VPC_ID = "vpc-aaa"
 const VPCS: Vpc[] = [{ VpcId: VPC_ID, CidrBlock: "10.0.0.0/16", Tags: [] }]
+
 const SUBNETS: Subnet[] = [
   {
     SubnetId: "subnet-a",
@@ -85,9 +93,11 @@ const SUBNETS: Subnet[] = [
     CidrBlock: "10.0.2.0/24",
   },
 ]
+
 const SGS: SecurityGroup[] = [
   { GroupId: "sg-1", GroupName: "web", VpcId: VPC_ID },
 ]
+
 const EXISTING_TG: TargetGroup = {
   TargetGroupArn: "arn:tg:existing",
   TargetGroupName: "existing-tg",
@@ -95,6 +105,7 @@ const EXISTING_TG: TargetGroup = {
   Port: 80,
   VpcId: VPC_ID,
 }
+
 function seedClient() {
   const qc = createTestQueryClient()
   qc.setQueryData(["ec2", "vpcs"], { Vpcs: VPCS })
@@ -103,15 +114,18 @@ function seedClient() {
   qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [EXISTING_TG] })
   qc.setQueryData(["acm", "certificates"], { CertificateSummaryList: [] })
   qc.setQueryData(["elbv2", "sslPolicies"], { SslPolicies: [] })
+
   return qc
 }
 
 async function selectSubnets(user: ReturnType<typeof userEvent.setup>) {
   const checkboxes = screen.getAllByRole("checkbox")
   const [first, second] = checkboxes
+
   if (!first || !second) {
     throw new Error("expected at least two subnet checkboxes to be rendered")
   }
+
   await user.click(first)
   await user.click(second)
 }
@@ -160,12 +174,14 @@ describe("create-load-balancer route", () => {
     await waitFor(() => {
       expect(routerState.navigate).toHaveBeenCalled()
     })
+
     const createCommands = sdk.send.mock.calls
       .map(
         (call) =>
           (call[0] as { constructor: { name: string } }).constructor.name,
       )
       .filter((name) => name.startsWith("Create"))
+
     expect(createCommands).toStrictEqual([
       "CreateTargetGroupCommand",
       "CreateLoadBalancerCommand",
@@ -211,21 +227,26 @@ describe("create-load-balancer route", () => {
     await waitFor(() => {
       expect(routerState.navigate).toHaveBeenCalled()
     })
+
     const createCalls = sdk.send.mock.calls.filter((call) =>
       (
         call[0] as { constructor: { name: string } }
       ).constructor.name.startsWith("Create"),
     )
+
     const createNames = createCalls.map(
       (call) => (call[0] as { constructor: { name: string } }).constructor.name,
     )
+
     expect(createNames).toStrictEqual([
       "CreateLoadBalancerCommand",
       "CreateListenerCommand",
     ])
+
     const listenerInput = createCalls[1]?.[0].input as {
       DefaultActions: { Type: string; TargetGroupArn: string }[]
     }
+
     expect(listenerInput.DefaultActions).toStrictEqual([
       { Type: "forward", TargetGroupArn: "arn:tg:existing" },
     ])
@@ -270,6 +291,7 @@ describe("create-load-balancer route", () => {
         call[0] as { constructor: { name: string } }
       ).constructor.name.startsWith("Create"),
     )
+
     const byName = (name: string) =>
       createCalls.find(
         (call) =>

@@ -25,6 +25,7 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
     if (!target) {
       return
     }
+
     deregister.mutate(target, {
       onSuccess: () => {
         setTarget(null)
@@ -68,6 +69,7 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
             <tbody>
               {arns.map((arn: string) => {
                 const id = familyRevision(arn)
+
                 return (
                   <tr className="border-b last:border-0" key={arn}>
                     <td className="px-4 py-2 font-mono text-xs">{id}</td>

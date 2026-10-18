@@ -48,7 +48,9 @@ function Subnets() {
             if (!subnet.SubnetId) {
               return null
             }
+
             const name = getNameTag(subnet.Tags)
+
             return (
               <ListCard
                 badge={<StateBadge state={subnet.State} />}

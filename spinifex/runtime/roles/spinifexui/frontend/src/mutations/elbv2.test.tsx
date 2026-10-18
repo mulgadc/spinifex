@@ -41,12 +41,14 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
 describe("useModifyLoadBalancerAttributes", () => {
   it("sends ModifyLoadBalancerAttributesCommand with arn + changed attributes", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useModifyLoadBalancerAttributes(), {
       wrapper,
     })
@@ -75,6 +77,7 @@ describe("useModifyLoadBalancerAttributes", () => {
 describe("useModifyTargetGroupAttributes", () => {
   it("sends ModifyTargetGroupAttributesCommand with arn + changed attributes", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useModifyTargetGroupAttributes(), {
       wrapper,
     })
@@ -333,6 +336,7 @@ describe("useCreateLoadBalancerWizard", () => {
         LoadBalancers: [{ LoadBalancerArn: "arn:lb:new" }],
       })
       .mockResolvedValueOnce({})
+
     const { result } = renderHook(() => useCreateLoadBalancerWizard(), {
       wrapper,
     })
@@ -364,6 +368,7 @@ describe("useCreateLoadBalancerWizard", () => {
         LoadBalancers: [{ LoadBalancerArn: "arn:lb:new" }],
       })
       .mockResolvedValueOnce({})
+
     const { result } = renderHook(() => useCreateLoadBalancerWizard(), {
       wrapper,
     })
@@ -393,6 +398,7 @@ describe("useCreateLoadBalancerWizard", () => {
         TargetGroups: [{ TargetGroupArn: "arn:tg:new" }],
       })
       .mockRejectedValueOnce(new Error("lb boom"))
+
     const { result } = renderHook(() => useCreateLoadBalancerWizard(), {
       wrapper,
     })

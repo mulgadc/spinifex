@@ -23,9 +23,11 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { guardrailId } = Route.useParams()
+
   const { data: guardrail } = useSuspenseQuery(
     guardrailQueryOptions(guardrailId),
   )
+
   return (
     <GuardrailFormPage
       defaultValues={guardrailToForm(guardrail)}

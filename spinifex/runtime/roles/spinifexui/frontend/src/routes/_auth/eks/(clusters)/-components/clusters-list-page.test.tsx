@@ -17,10 +17,12 @@ function renderSeeded(clusters: string[]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   queryClient.setQueryData(eksClustersQueryOptions.queryKey, {
     $metadata: {},
     clusters,
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <ClustersListPage />

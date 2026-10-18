@@ -49,6 +49,7 @@ function PlacementGroups() {
             if (!pg.GroupId) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={pg.State} />}

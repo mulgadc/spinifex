@@ -56,6 +56,7 @@ export function ListenerRulesTab({
   const { data: rulesData } = useSuspenseQuery(
     elbv2ListenerRulesQueryOptions(listenerArn),
   )
+
   const createMutation = useCreateRule()
   const modifyMutation = useModifyRule()
   const deleteMutation = useDeleteRule()
@@ -67,6 +68,7 @@ export function ListenerRulesTab({
   const rules = rulesData.Rules ?? []
 
   const tgNameByArn = new Map<string, string>()
+
   for (const tg of targetGroups) {
     if (tg.TargetGroupArn && tg.TargetGroupName) {
       tgNameByArn.set(tg.TargetGroupArn, tg.TargetGroupName)
@@ -91,6 +93,7 @@ export function ListenerRulesTab({
     if (!editTarget?.RuleArn) {
       return
     }
+
     try {
       await modifyMutation.mutateAsync({
         ruleArn: editTarget.RuleArn,
@@ -108,6 +111,7 @@ export function ListenerRulesTab({
     if (!deleteTarget?.RuleArn) {
       return
     }
+
     try {
       await deleteMutation.mutateAsync({
         ruleArn: deleteTarget.RuleArn,
@@ -258,12 +262,15 @@ function formatConditions(
   if (isDefault) {
     return "default"
   }
+
   if (!conditions || conditions.length === 0) {
     return "—"
   }
+
   return conditions
     .map((c) => {
       const values = collectConditionValues(c)
+
       return `${c.Field}: ${values.join(", ")}`
     })
     .join(" AND ")
@@ -273,29 +280,37 @@ function collectConditionValues(c: RuleCondition): string[] {
   if (c.Field === undefined) {
     return c.Values ?? []
   }
+
   switch (c.Field) {
     case "host-header": {
       return c.HostHeaderConfig?.Values ?? c.Values ?? []
     }
+
     case "path-pattern": {
       return c.PathPatternConfig?.Values ?? c.Values ?? []
     }
+
     case "http-header": {
       const name = c.HttpHeaderConfig?.HttpHeaderName ?? "?"
       const vals = c.HttpHeaderConfig?.Values ?? []
+
       return vals.map((v) => `${name}=${v}`)
     }
+
     case "http-request-method": {
       return c.HttpRequestMethodConfig?.Values ?? []
     }
+
     case "source-ip": {
       return c.SourceIpConfig?.Values ?? []
     }
+
     case "query-string": {
       return (c.QueryStringConfig?.Values ?? []).map((kv) =>
         kv.Key ? `${kv.Key}=${kv.Value ?? ""}` : (kv.Value ?? ""),
       )
     }
+
     default: {
       return c.Values ?? []
     }
@@ -304,12 +319,15 @@ function collectConditionValues(c: RuleCondition): string[] {
 
 function formatActions(rule: Rule, tgNameByArn: Map<string, string>): string {
   const action = rule.Actions?.[0]
+
   if (!action) {
     return "—"
   }
+
   if (action.Type === "forward" && action.TargetGroupArn) {
     return tgNameByArn.get(action.TargetGroupArn) ?? action.TargetGroupArn
   }
+
   return action.Type ?? "—"
 }
 
@@ -325,9 +343,11 @@ function toRuleCondInput(c: RuleConditionFormData): RuleCondInput {
       values: [],
       queryStringPairs: values.map((v) => {
         const eq = v.indexOf("=")
+
         if (eq === -1) {
           return { value: v }
         }
+
         return { key: v.slice(0, eq), value: v.slice(eq + 1) }
       }),
     }
@@ -342,6 +362,7 @@ function toRuleCondInput(c: RuleConditionFormData): RuleCondInput {
 
 // A new rule starts at the highest priority with a single empty path match.
 const DEFAULT_PRIORITY = 1
+
 const defaultConditions: RuleConditionFormData[] = [
   { field: "path-pattern", rawValues: "" },
 ]
@@ -350,8 +371,10 @@ const defaultConditions: RuleConditionFormData[] = [
 // for a non-numeric priority or a rule that carries no conditions.
 function ruleFormValues(rule: Rule): CreateRuleFormData {
   const priority = Number(rule.Priority ?? DEFAULT_PRIORITY)
+
   const conditions: RuleConditionFormData[] =
     rule.Conditions?.map((c) => fromSDKCondition(c)) ?? []
+
   return {
     priority: Number.isFinite(priority) ? priority : DEFAULT_PRIORITY,
     conditions: conditions.length > 0 ? conditions : defaultConditions,
@@ -389,6 +412,7 @@ function RuleDialog({
     // while closing so the fields do not visibly reset mid-animation.
     values: initialRule ? ruleFormValues(initialRule) : undefined,
   })
+
   const { fields, append, remove } = useFieldArray({
     control: form.control,
     name: "conditions",
@@ -608,21 +632,27 @@ function placeholderForField(field: string): string {
     case "path-pattern": {
       return "/api/*"
     }
+
     case "host-header": {
       return "*.example.com"
     }
+
     case "http-header": {
       return "acme"
     }
+
     case "http-request-method": {
       return "GET, POST"
     }
+
     case "source-ip": {
       return "10.0.0.0/8"
     }
+
     case "query-string": {
       return "key=value"
     }
+
     default: {
       return ""
     }
@@ -647,6 +677,7 @@ function isSupportedField(
 function fromSDKCondition(c: RuleCondition): RuleConditionFormData {
   const values = collectConditionValues(c)
   const field = isSupportedField(c.Field) ? c.Field : "path-pattern"
+
   return {
     field,
     httpHeaderName: c.HttpHeaderConfig?.HttpHeaderName,
@@ -658,5 +689,6 @@ function actionLabel(mode: "add" | "edit", isPending: boolean): string {
   if (isPending) {
     return mode === "add" ? "Adding…" : "Saving…"
   }
+
   return mode === "add" ? "Add rule" : "Save changes"
 }

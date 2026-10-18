@@ -62,12 +62,14 @@ function buildConverseCommands(request: ConverseCommandInput): CliCommand[] {
       { type: "value", value: ` '${JSON.stringify(request.system)}'` },
     )
   }
+
   if (request.inferenceConfig) {
     parts.push(
       { type: "flag", value: " \\\n  --inference-config" },
       { type: "value", value: ` '${JSON.stringify(request.inferenceConfig)}'` },
     )
   }
+
   if (request.guardrailConfig) {
     parts.push(
       { type: "flag", value: " \\\n  --guardrail-config" },
@@ -123,16 +125,21 @@ export function PlaygroundPage() {
         guardrailIdentifier: guardrailId,
         guardrailVersion: guardrailId === "" ? undefined : guardrailVersion,
       })
+
       setLastOutcome(outcome)
+
       if (outcome.result.status === "ok") {
         patchTurn(assistantTurnId, {
           text: extractText(outcome.result.message),
           status: "complete",
           usage: outcome.result.usage,
         })
+
         return true
       }
+
       patchTurn(assistantTurnId, { status: "warming-up" })
+
       return false
     } catch (error) {
       patchTurn(assistantTurnId, {
@@ -140,12 +147,14 @@ export function PlaygroundPage() {
         errorMessage:
           error instanceof Error ? error.message : "Converse request failed",
       })
+
       return false
     }
   }
 
   async function handleSend() {
     const text = inputText
+
     if (text.trim().length === 0 || converse.isPending) {
       return
     }
@@ -156,18 +165,21 @@ export function PlaygroundPage() {
       text,
       status: "complete",
     }
+
     const assistantTurn: Turn = {
       id: nextId(),
       role: "assistant",
       text: "",
       status: "pending",
     }
+
     const history = [...turns, userTurn]
     setTurns([...history, assistantTurn])
     setInputText("")
     scrollToBottom()
 
     const ok = await runConverse(history, assistantTurn.id)
+
     if (!ok) {
       // The turn stayed in the pane as a warming-up/error state with its own
       // Retry action, but the compose box gets the text back so nothing typed
@@ -178,15 +190,18 @@ export function PlaygroundPage() {
 
   async function handleRetry(turnId: string) {
     const index = turns.findIndex((turn) => turn.id === turnId)
+
     if (index === -1) {
       return
     }
+
     const history = turns.slice(0, index)
     patchTurn(turnId, { status: "pending", errorMessage: undefined })
     await runConverse(history, turnId)
   }
 
   const previewMessages = turns.filter((turn) => turn.status === "complete")
+
   const previewRequest = buildConverseInput({
     modelId,
     messages: previewMessages.map(toMessage),

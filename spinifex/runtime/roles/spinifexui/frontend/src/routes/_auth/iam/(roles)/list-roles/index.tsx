@@ -26,6 +26,7 @@ function Roles() {
   const roles = (data.Roles ?? []).toSorted((a, b) => {
     const nameA = a.RoleName?.toLowerCase() ?? ""
     const nameB = b.RoleName?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -46,6 +47,7 @@ function Roles() {
             if (!role.RoleName) {
               return null
             }
+
             return (
               <ListCard
                 key={role.RoleName}

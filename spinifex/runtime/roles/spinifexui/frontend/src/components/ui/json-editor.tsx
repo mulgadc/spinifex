@@ -25,9 +25,11 @@ export function JsonEditor({
 }: JsonEditorProps) {
   const handleBlur = (event: React.FocusEvent<HTMLTextAreaElement>) => {
     const formatted = formatJson(value)
+
     if (formatted !== null && formatted !== value) {
       onChange(formatted)
     }
+
     onBlur?.(event)
   }
 

@@ -23,9 +23,11 @@ function seed(policyNames: string[], document?: string) {
   qc.setQueryData(["iam", "user-inline-policies", USER], {
     PolicyNames: policyNames,
   })
+
   if (document !== undefined) {
     qc.setQueryData(["iam", "user-inline-policies", USER, POLICY], document)
   }
+
   return qc
 }
 
@@ -35,6 +37,7 @@ function jsonEditor(): HTMLTextAreaElement {
   const editor = screen
     .getAllByRole("textbox")
     .find((node) => node.tagName === "TEXTAREA")
+
   return editor as HTMLTextAreaElement
 }
 

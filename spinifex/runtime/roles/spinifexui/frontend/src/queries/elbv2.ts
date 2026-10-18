@@ -19,11 +19,13 @@ export const elbv2LoadBalancersQueryOptions = queryOptions({
   queryKey: ["elbv2", "loadBalancers"],
   queryFn: async () => {
     const command = new DescribeLoadBalancersCommand({})
+
     return await getElbv2Client().send(command)
   },
   refetchInterval: (query) => {
     const lbs = query.state.data?.LoadBalancers ?? []
     const anyProvisioning = lbs.some((lb) => lb.State?.Code === "provisioning")
+
     return anyProvisioning ? PROVISIONING_POLL_MS : false
   },
 })
@@ -35,10 +37,12 @@ export const elbv2LoadBalancerQueryOptions = (arn: string) =>
       const command = new DescribeLoadBalancersCommand({
         LoadBalancerArns: [arn],
       })
+
       return await getElbv2Client().send(command)
     },
     refetchInterval: (query) => {
       const lb = query.state.data?.LoadBalancers?.[0]
+
       return lb?.State?.Code === "provisioning" ? PROVISIONING_POLL_MS : false
     },
   })
@@ -50,6 +54,7 @@ export const elbv2LoadBalancerAttributesQueryOptions = (arn: string) =>
       const command = new DescribeLoadBalancerAttributesCommand({
         LoadBalancerArn: arn,
       })
+
       return await getElbv2Client().send(command)
     },
   })
@@ -58,6 +63,7 @@ export const elbv2TargetGroupsQueryOptions = queryOptions({
   queryKey: ["elbv2", "targetGroups"],
   queryFn: async () => {
     const command = new DescribeTargetGroupsCommand({})
+
     return await getElbv2Client().send(command)
   },
 })
@@ -69,6 +75,7 @@ export const elbv2TargetGroupQueryOptions = (arn: string) =>
       const command = new DescribeTargetGroupsCommand({
         TargetGroupArns: [arn],
       })
+
       return await getElbv2Client().send(command)
     },
   })
@@ -80,6 +87,7 @@ export const elbv2TargetGroupAttributesQueryOptions = (arn: string) =>
       const command = new DescribeTargetGroupAttributesCommand({
         TargetGroupArn: arn,
       })
+
       return await getElbv2Client().send(command)
     },
   })
@@ -91,6 +99,7 @@ export const elbv2ListenersQueryOptions = (loadBalancerArn: string) =>
       const command = new DescribeListenersCommand({
         LoadBalancerArn: loadBalancerArn,
       })
+
       return await getElbv2Client().send(command)
     },
   })
@@ -100,6 +109,7 @@ export const elbv2ListenerRulesQueryOptions = (listenerArn: string) =>
     queryKey: ["elbv2", "listeners", listenerArn, "rules"],
     queryFn: async () => {
       const command = new DescribeRulesCommand({ ListenerArn: listenerArn })
+
       return await getElbv2Client().send(command)
     },
   })
@@ -113,6 +123,7 @@ export const elbv2TargetHealthQueryOptions = (targetGroupArn: string) =>
       const command = new DescribeTargetHealthCommand({
         TargetGroupArn: targetGroupArn,
       })
+
       return await getElbv2Client().send(command)
     },
   })
@@ -123,6 +134,7 @@ export const elbv2SslPoliciesQueryOptions = queryOptions({
   queryKey: ["elbv2", "sslPolicies"],
   queryFn: async () => {
     const command = new DescribeSSLPoliciesCommand({})
+
     return await getElbv2Client().send(command)
   },
   staleTime: Infinity,
@@ -135,6 +147,7 @@ export const elbv2TagsQueryOptions = (resourceArns: string[]) =>
       const command = new DescribeTagsCommand({
         ResourceArns: resourceArns,
       })
+
       return await getElbv2Client().send(command)
     },
     enabled: resourceArns.length > 0,

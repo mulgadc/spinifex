@@ -125,6 +125,7 @@ function VpcDetail() {
               if (!subnet.SubnetId) {
                 return null
               }
+
               return (
                 <DetailCard.Content key={subnet.SubnetId}>
                   <DetailRow

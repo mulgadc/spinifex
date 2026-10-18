@@ -49,10 +49,13 @@ function Addresses() {
             if (!addr.AllocationId) {
               return null
             }
+
             const name = getNameTag(addr.Tags)
+
             const subtitle = addr.AssociationId
               ? `${addr.PublicIp} • associated`
               : `${addr.PublicIp} • available`
+
             return (
               <ListCard
                 key={addr.AllocationId}

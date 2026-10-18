@@ -29,6 +29,7 @@ describe("createTargetGroupSchema", () => {
       healthCheck: defaultHealthCheck,
       tags: [],
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -41,6 +42,7 @@ describe("createTargetGroupSchema", () => {
       healthCheck: defaultHealthCheck,
       tags: [],
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -53,6 +55,7 @@ describe("createTargetGroupSchema", () => {
       healthCheck: defaultHealthCheck,
       tags: [],
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -65,6 +68,7 @@ describe("createTargetGroupSchema", () => {
       healthCheck: defaultHealthCheck,
       tags: [],
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -88,6 +92,7 @@ describe("createLoadBalancerSchema", () => {
       tags: [],
       listener: baseListener,
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -102,6 +107,7 @@ describe("createLoadBalancerSchema", () => {
       tags: [],
       listener: baseListener,
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -116,6 +122,7 @@ describe("createLoadBalancerSchema", () => {
       tags: [],
       listener: baseListener,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -130,6 +137,7 @@ describe("createLoadBalancerSchema", () => {
       tags: [],
       listener: baseListener,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -148,6 +156,7 @@ describe("createLoadBalancerSchema", () => {
         targetGroupMode: "new",
       },
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -166,6 +175,7 @@ describe("createLoadBalancerSchema", () => {
         targetGroupMode: "existing",
       },
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -177,6 +187,7 @@ describe("createListenerSchema", () => {
       port: 80,
       defaultTargetGroupArn: "arn:tg:1",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -186,6 +197,7 @@ describe("createListenerSchema", () => {
       port: 80,
       defaultTargetGroupArn: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -195,6 +207,7 @@ describe("registerTargetsSchema", () => {
     const result = registerTargetsSchema.safeParse({
       targets: [{ instanceId: "i-123" }, { instanceId: "i-456", port: 8080 }],
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -216,6 +229,7 @@ describe("healthCheckSchema", () => {
       ...defaultHealthCheck,
       intervalSeconds: 1,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -224,6 +238,7 @@ describe("healthCheckSchema", () => {
       ...defaultHealthCheck,
       matcher: "OK",
     })
+
     expect(result.success).toBeFalsy()
   })
 })

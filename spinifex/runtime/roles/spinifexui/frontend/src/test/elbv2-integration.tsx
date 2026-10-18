@@ -26,5 +26,6 @@ export function renderWithClient(
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
   }
+
   return render(ui, { wrapper: Wrapper, ...options })
 }

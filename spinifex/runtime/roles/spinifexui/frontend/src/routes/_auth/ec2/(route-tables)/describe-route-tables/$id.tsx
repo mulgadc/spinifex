@@ -106,6 +106,7 @@ function RouteTableDetail() {
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [routeToDelete, setRouteToDelete] = useState<string | null>(null)
+
   const [associationToRemove, setAssociationToRemove] = useState<{
     associationId: string
     subnetId: string
@@ -121,6 +122,7 @@ function RouteTableDetail() {
       targetId: "",
     },
   })
+
   const targetType = useWatch({
     control: routeForm.control,
     name: "targetType",
@@ -151,10 +153,13 @@ function RouteTableDetail() {
   const attachedIgws = (igwData.InternetGateways ?? []).filter((igw) =>
     igw.Attachments?.some((att) => att.VpcId === rtb.VpcId),
   )
+
   const vpcNatGateways = (natData.NatGateways ?? []).filter(
     (nat) => nat.VpcId === rtb.VpcId && nat.State === "available",
   )
+
   const associatedSubnetIds = new Set(subnetAssociations.map((a) => a.SubnetId))
+
   const availableSubnets = (subnetData.Subnets ?? []).filter(
     (s) => s.VpcId === rtb.VpcId && !associatedSubnetIds.has(s.SubnetId),
   )
@@ -172,6 +177,7 @@ function RouteTableDetail() {
     if (!routeToDelete) {
       return
     }
+
     try {
       await deleteRoute.mutateAsync({
         routeTableId,
@@ -188,6 +194,7 @@ function RouteTableDetail() {
     if (!associationToRemove) {
       return
     }
+
     try {
       await disassociate.mutateAsync(associationToRemove.associationId)
     } catch {
@@ -299,8 +306,10 @@ function RouteTableDetail() {
                         route.DestinationCidrBlock ??
                         route.DestinationPrefixListId ??
                         "—"
+
                       const isLocal = route.GatewayId === "local"
                       const cidr = route.DestinationCidrBlock
+
                       return (
                         <tr className="border-t" key={destination}>
                           <td className="p-2 font-mono">{destination}</td>
@@ -451,6 +460,7 @@ function RouteTableDetail() {
               <ul className="space-y-2">
                 {subnetAssociations.map((assoc) => {
                   const associationId = assoc.RouteTableAssociationId
+
                   return (
                     <li
                       className="flex items-center justify-between rounded-md border p-2 text-sm"
@@ -526,6 +536,7 @@ function RouteTableDetail() {
                       <SelectContent>
                         {availableSubnets.map((subnet) => {
                           const subnetName = getNameTag(subnet.Tags)
+
                           return (
                             <SelectItem
                               key={subnet.SubnetId}

@@ -56,11 +56,13 @@ export const Route = createFileRoute(
         staleTime: "static",
       }),
     ])
+
     const imageId = instanceData.Reservations?.[0]?.Instances?.[0]?.ImageId
     await context.queryClient.query({
       ...ec2ImageQueryOptions(imageId),
       staleTime: "static",
     })
+
     return instanceData
   },
   head: ({ loaderData }) => ({
@@ -82,6 +84,7 @@ function InstanceDetail() {
   const { data: imageData } = useSuspenseQuery(
     ec2ImageQueryOptions(instance?.ImageId),
   )
+
   const image = imageData?.Images?.[0]
 
   const { data: instanceTypesData } = useSuspenseQuery(
@@ -93,6 +96,7 @@ function InstanceDetail() {
     enabled: isAdmin,
     refetchInterval: 5000,
   })
+
   const vmInfo = vmsData?.vms?.find((v) => v.instance_id === id)
 
   const modifyMutation = useModifyInstanceAttribute()

@@ -13,6 +13,7 @@ describe("isSystemManagedImage", () => {
       ImageId: "ami-1",
       Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: "elbv2" }],
     }
+
     expect(isSystemManagedImage(image)).toBeTruthy()
   })
 
@@ -21,6 +22,7 @@ describe("isSystemManagedImage", () => {
       ImageId: "ami-2",
       Tags: [{ Key: "Name", Value: "my-ami" }],
     }
+
     expect(isSystemManagedImage(image)).toBeFalsy()
   })
 
@@ -35,10 +37,12 @@ describe("isEcsSystemImage", () => {
       ImageId: "ami-ecs",
       Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: "ecs" }],
     }
+
     const eks: Image = {
       ImageId: "ami-eks",
       Tags: [{ Key: SYSTEM_MANAGED_TAG_KEY, Value: "eks" }],
     }
+
     expect(isEcsSystemImage(ecs)).toBeTruthy()
     expect(isEcsSystemImage(eks)).toBeFalsy()
     expect(isEcsSystemImage({ ImageId: "ami-bare" })).toBeFalsy()

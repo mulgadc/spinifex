@@ -35,6 +35,7 @@ export function DBInstancesListPage() {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
 
   const instances = data.DBInstances ?? []
+
   const lifecycleError =
     startInstance.error ?? stopInstance.error ?? rebootInstance.error
 
@@ -79,10 +80,13 @@ export function DBInstancesListPage() {
             <tbody>
               {instances.map((instance) => {
                 const id = instance.DBInstanceIdentifier
+
                 if (!id) {
                   return null
                 }
+
                 const status = instance.DBInstanceStatus
+
                 return (
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"

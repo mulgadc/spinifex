@@ -44,6 +44,7 @@ export function ContainerInstancesTab({
   const { data: instances } = useSuspenseQuery(
     ecsContainerInstancesQueryOptions(clusterName),
   )
+
   const updateState = useUpdateContainerInstanceState()
   const deregister = useDeregisterContainerInstance()
   const [pending, setPending] = useState<PendingAction | null>(null)
@@ -57,13 +58,16 @@ export function ContainerInstancesTab({
     if (!pending) {
       return
     }
+
     if (pending.action === "deregister") {
       deregister.mutate(
         { cluster: clusterName, containerInstance: pending.arn },
         { onSuccess },
       )
+
       return
     }
+
     updateState.mutate(
       {
         cluster: clusterName,
@@ -118,6 +122,7 @@ export function ContainerInstancesTab({
               {instances.map((instance: ContainerInstance) => {
                 const arn = instance.containerInstanceArn ?? ""
                 const draining = instance.status === "DRAINING"
+
                 return (
                   <tr className="border-b last:border-0" key={arn}>
                     <td className="px-4 py-2 font-mono text-xs">

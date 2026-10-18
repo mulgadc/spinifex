@@ -16,6 +16,7 @@ export interface ImportCertificateParams {
 // certificates query is invalidated so the listener form's selector picks it up.
 export function useImportCertificate() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ImportCertificateParams) => {
       const command = new ImportCertificateCommand({
@@ -26,6 +27,7 @@ export function useImportCertificate() {
             ? textEncoder.encode(params.certificateChain)
             : undefined,
       })
+
       return await getAcmClient().send(command)
     },
     onSuccess: () => {

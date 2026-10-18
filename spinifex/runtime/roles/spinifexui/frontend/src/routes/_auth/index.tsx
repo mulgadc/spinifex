@@ -187,6 +187,7 @@ function Overflow({ total }: { total: number }) {
   if (total <= MAX_ITEMS) {
     return null
   }
+
   return (
     <p className="mt-1 text-2xs text-muted-foreground">
       +{total - MAX_ITEMS} more
@@ -301,6 +302,7 @@ function VpcsCard() {
         <div className="space-y-0.5">
           {display.map((vpc) => {
             const name = getNameTag(vpc.Tags)
+
             return (
               <ItemRow key={vpc.VpcId}>
                 <span className="font-mono">

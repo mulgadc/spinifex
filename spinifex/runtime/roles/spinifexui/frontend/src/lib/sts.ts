@@ -24,6 +24,7 @@ function addProxyRewrite(client: STSClient): void {
         args.request.port = Number(window.location.port) || 443
         args.request.path = `/proxy/awsgw${args.request.path}`
       }
+
       return await next(args)
     },
     { step: "finalizeRequest", name: "proxyRewrite", override: true },
@@ -40,7 +41,9 @@ function buildStsClient(credentials: {
     region: getRegion(),
     credentials,
   })
+
   addProxyRewrite(client)
+
   return client
 }
 
@@ -48,9 +51,11 @@ function buildStsClient(credentials: {
 // authenticated calls such as GetCallerIdentity.
 export function getStsClient(): STSClient {
   const credentials = getCredentials()
+
   if (!credentials) {
     throw new Error("AWS credentials not configured")
   }
+
   return buildStsClient({
     accessKeyId: credentials.accessKeyId,
     secretAccessKey: credentials.secretAccessKey,
@@ -65,10 +70,13 @@ export async function exchangeForSession(
   input: AwsCredentialsInput,
 ): Promise<SessionCredentials> {
   const client = buildStsClient(input)
+
   const result = await client.send(
     new GetSessionTokenCommand({ DurationSeconds: SESSION_DURATION_SECONDS }),
   )
+
   const creds = result.Credentials
+
   if (
     !creds?.AccessKeyId ||
     !creds.SecretAccessKey ||
@@ -77,6 +85,7 @@ export async function exchangeForSession(
   ) {
     throw new Error("GetSessionToken returned incomplete credentials")
   }
+
   return {
     accessKeyId: creds.AccessKeyId,
     secretAccessKey: creds.SecretAccessKey,

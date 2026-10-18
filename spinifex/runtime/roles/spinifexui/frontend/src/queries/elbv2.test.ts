@@ -166,6 +166,7 @@ describe("elbv2 load balancer list poll cadence", () => {
     const result = callRefetchInterval(elbv2LoadBalancersQueryOptions, {
       LoadBalancers: [{ State: { Code: "provisioning" } }],
     })
+
     expect(result).toBe(5000)
   })
 
@@ -173,6 +174,7 @@ describe("elbv2 load balancer list poll cadence", () => {
     const result = callRefetchInterval(elbv2LoadBalancersQueryOptions, {
       LoadBalancers: [{ State: { Code: "active" } }],
     })
+
     expect(result).toBeFalsy()
   })
 })

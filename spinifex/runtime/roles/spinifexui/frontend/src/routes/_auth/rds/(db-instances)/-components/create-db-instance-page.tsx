@@ -103,38 +103,48 @@ export function CreateDBInstancePage() {
   const { data: engineVersionsData } = useSuspenseQuery(
     rdsEngineVersionsQueryOptions,
   )
+
   const { data: subnetGroupsData } = useSuspenseQuery(
     rdsSubnetGroupsQueryOptions,
   )
+
   const { data: parameterGroupsData } = useSuspenseQuery(
     rdsParameterGroupsQueryOptions,
   )
+
   const { data: securityGroupsData } = useSuspenseQuery(
     ec2SecurityGroupsQueryOptions,
   )
+
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
 
   const images = imagesData.Images ?? []
   const engineVersions = engineVersionsData.DBEngineVersions ?? []
+
   const engines = [
     ...new Set(engineVersions.map((v) => v.Engine ?? "").filter(Boolean)),
   ]
+
   const engineVersionHasImage = (engine: string, version: string) =>
     images.some((image) => isRdsSystemImage(image, engine, version))
+
   const firstBootableVersion = (engine: string) =>
     engineVersions.find(
       (version) =>
         version.Engine === engine &&
         engineVersionHasImage(engine, version.EngineVersion ?? ""),
     )?.EngineVersion ?? ""
+
   const engineHasImage = (engine: string) =>
     firstBootableVersion(engine).length > 0
+
   const bootableEngines = engines.filter(engineHasImage)
   const initialEngine = bootableEngines[0] ?? ""
 
   const handleRecheck = async () => {
     setIsRechecking(true)
+
     try {
       await queryClient.invalidateQueries({
         queryKey: ec2ImagesQueryOptions.queryKey,
@@ -186,15 +196,19 @@ export function CreateDBInstancePage() {
   const versionsForEngine = engineVersions.filter(
     (v) => v.Engine === selectedEngine,
   )
+
   const orderableOptions = orderableQuery.data?.OrderableDBInstanceOptions ?? []
+
   const instanceClasses = [
     ...new Set(
       orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
     ),
   ]
+
   const [storageBounds] = orderableOptions
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
+
   const groupsForEngine = parameterGroupsForEngine(
     parameterGroupsData.DBParameterGroups ?? [],
     engineVersions,
@@ -204,6 +218,7 @@ export function CreateDBInstancePage() {
   const subnetGroupVpc = subnetGroups.find(
     (group) => group.DBSubnetGroupName === selectedSubnetGroup,
   )?.VpcId
+
   const defaultVpcId = vpcsData.Vpcs?.find((vpc) => vpc.IsDefault)?.VpcId
   const placementVpcId = subnetGroupVpc ?? defaultVpcId
   const allSecurityGroups = securityGroupsData.SecurityGroups ?? []
@@ -224,6 +239,7 @@ export function CreateDBInstancePage() {
     const nextVpcId =
       subnetGroups.find((group) => group.DBSubnetGroupName === name)?.VpcId ??
       defaultVpcId
+
     setValue("dbSubnetGroupName", name, { shouldValidate: true })
     setSecurityGroups(
       securityGroupIdsForVpc(

@@ -51,9 +51,11 @@ export function LaunchTemplateDataFields({
   errors,
 }: LaunchTemplateDataFieldsProps) {
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
+
   const { data: instanceTypesData } = useSuspenseQuery(
     ec2InstanceTypesQueryOptions,
   )
+
   const { data: keyPairsData } = useSuspenseQuery(ec2KeyPairsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
@@ -62,6 +64,7 @@ export function LaunchTemplateDataFields({
   const keyPairs = keyPairsData.KeyPairs ?? []
   const subnets = subnetsData.Subnets ?? []
   const securityGroups = sgData.SecurityGroups ?? []
+
   const instanceTypes = [
     ...new Set(
       (instanceTypesData.InstanceTypes ?? [])
@@ -71,9 +74,11 @@ export function LaunchTemplateDataFields({
   ].toSorted()
 
   const selectedSubnetId = useWatch({ control, name: "subnetId" })
+
   const effectiveVpcId = subnets.find(
     (s) => s.SubnetId === selectedSubnetId,
   )?.VpcId
+
   const vpcSecurityGroups = effectiveVpcId
     ? securityGroups.filter((sg) => sg.VpcId === effectiveVpcId)
     : securityGroups
@@ -91,6 +96,7 @@ export function LaunchTemplateDataFields({
             const selectedImage = images.find(
               (img) => img.ImageId === field.value,
             )
+
             return (
               <Select
                 onValueChange={(value) => {
@@ -236,6 +242,7 @@ export function LaunchTemplateDataFields({
           render={({ field }) => {
             const selected = field.value ?? []
             const selectedSet = new Set(selected)
+
             const toggle = (sgId: string) => {
               field.onChange(
                 selected.includes(sgId)
@@ -243,6 +250,7 @@ export function LaunchTemplateDataFields({
                   : [...selected, sgId],
               )
             }
+
             if (vpcSecurityGroups.length === 0) {
               return (
                 <p className="text-xs text-muted-foreground">
@@ -250,6 +258,7 @@ export function LaunchTemplateDataFields({
                 </p>
               )
             }
+
             return (
               <div className="space-y-1">
                 {vpcSecurityGroups.map((sg) => (

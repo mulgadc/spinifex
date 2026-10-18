@@ -7,6 +7,7 @@ import { JsonEditor } from "./json-editor"
 
 function Harness({ initial }: { initial: string }) {
   const [value, setValue] = useState(initial)
+
   return (
     <>
       <JsonEditor aria-label="json" onChange={setValue} value={value} />

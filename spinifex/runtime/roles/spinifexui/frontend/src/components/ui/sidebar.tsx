@@ -48,6 +48,7 @@ const SidebarContext = React.createContext<SidebarContextProps | null>(null)
 
 export function useSidebar() {
   const context = React.useContext(SidebarContext)
+
   if (!context) {
     throw new Error("useSidebar must be used within a SidebarProvider.")
   }
@@ -75,10 +76,12 @@ export function SidebarProvider({
   // We use openProp and setOpenProp for control from outside the component.
   const [internalOpen, setInternalOpen] = React.useState(defaultOpen)
   const open = openProp ?? internalOpen
+
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
       // oxlint-disable-next-line anti-slop/no-runtime-typeof -- React's setState accepts a value or an updater
       const openState = typeof value === "function" ? value(open) : value
+
       if (setOpenProp) {
         setOpenProp(openState)
       } else {
@@ -114,6 +117,7 @@ export function SidebarProvider({
     }
 
     window.addEventListener("keydown", handleKeyDown)
+
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
     }
@@ -192,6 +196,7 @@ export function Sidebar({
     const mobileStyle: CSSVariables = {
       "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
     }
+
     return (
       <Sheet onOpenChange={setOpenMobile} open={openMobile} {...props}>
         <SheetContent
@@ -566,6 +571,7 @@ export function SidebarMenuButton({
     tooltip?: string | React.ComponentProps<typeof TooltipContent>
   } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const { isMobile, state } = useSidebar()
+
   const comp = useRender({
     defaultTagName: "button",
     props: mergeProps<"button">(

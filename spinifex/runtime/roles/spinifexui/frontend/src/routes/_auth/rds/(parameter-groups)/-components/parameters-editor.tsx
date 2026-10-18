@@ -38,13 +38,17 @@ interface ParametersEditorProps {
 // that cannot represent what is already there.
 function optionsFor(parameter: Parameter): string[] | null {
   const allowed = parameter.AllowedValues ?? ""
+
   if (parameter.DataType !== "boolean" && parameter.DataType !== "enum") {
     return null
   }
+
   const options = allowed.split(",").filter((v) => v.length > 0)
+
   if (options.length === 0) {
     return null
   }
+
   return options.includes(parameter.ParameterValue ?? "") ? options : null
 }
 
@@ -56,6 +60,7 @@ function defaultApplyMethod(parameter: Parameter): ApplyMethod {
   if (parameter.ApplyType === APPLY_TYPE_STATIC) {
     return APPLY_METHOD_PENDING_REBOOT
   }
+
   return parameter.ApplyMethod ?? APPLY_METHOD_PENDING_REBOOT
 }
 
@@ -78,9 +83,11 @@ function ParameterValueCell({
   onChange,
 }: ParameterValueCellProps) {
   const name = parameter.ParameterName ?? ""
+
   if (!editable) {
     return <span className="font-mono text-xs">{value}</span>
   }
+
   if (options) {
     return (
       <Select
@@ -102,6 +109,7 @@ function ParameterValueCell({
       </Select>
     )
   }
+
   return (
     <Input
       aria-label={`Value of ${name}`}
@@ -127,6 +135,7 @@ export function ParametersEditor({
 
   const editedNames = Object.keys(edits)
   const overLimit = editedNames.length > MAX_PARAMETERS_PER_MODIFY
+
   const hasBlankValue = editedNames.some(
     (name) => (edits[name]?.value ?? "").trim() === "",
   )
@@ -147,6 +156,7 @@ export function ParametersEditor({
   const clearEdit = (name: string) => {
     setEdits((current) => {
       const { [name]: _removed, ...rest } = current
+
       return rest
     })
   }
@@ -168,14 +178,18 @@ export function ParametersEditor({
   }
 
   const needle = filterText.trim().toLowerCase()
+
   const visible = parameters.filter((parameter) => {
     const source = parameter.Source ?? ""
+
     if (sourceFilter === "user" && source !== PARAMETER_SOURCE_USER) {
       return false
     }
+
     if (sourceFilter === "engine-default" && source === PARAMETER_SOURCE_USER) {
       return false
     }
+
     return (parameter.ParameterName ?? "").toLowerCase().includes(needle)
   })
 
@@ -277,8 +291,10 @@ export function ParametersEditor({
                 const options = optionsFor(parameter)
                 const editable = !readOnly && parameter.IsModifiable
                 const value = edit?.value ?? parameter.ParameterValue ?? ""
+
                 const applyMethod =
                   edit?.applyMethod ?? defaultApplyMethod(parameter)
+
                 const methods = applyMethodsFor(parameter.ApplyType)
 
                 return (

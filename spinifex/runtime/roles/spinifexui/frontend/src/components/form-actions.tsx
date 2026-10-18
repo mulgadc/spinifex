@@ -16,6 +16,7 @@ export function FormActions({
   pendingLabel,
 }: FormActionsProps) {
   const disabled = isSubmitting || isPending
+
   return (
     <div className="flex gap-2">
       <Button

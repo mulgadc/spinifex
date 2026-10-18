@@ -69,6 +69,7 @@ export function RdsSelectField<T extends FieldValues>({
         const selected: string =
           // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the generic path's value has no narrower type to branch on
           typeof field.value === "string" ? field.value : ""
+
         // Select reports an explicit null when cleared; every form below holds
         // an empty string for "unset".
         const handleChange = (next: string | null) => {
@@ -155,9 +156,10 @@ export function parameterGroupsForEngine<
   engine: string,
 ): G[] {
   const families = new Set(
-    versions
-      .filter((v) => v.Engine === engine)
-      .map((v) => v.DBParameterGroupFamily),
+    versions.flatMap((v) =>
+      v.Engine === engine ? [v.DBParameterGroupFamily] : [],
+    ),
   )
+
   return groups.filter((g) => families.has(g.DBParameterGroupFamily))
 }

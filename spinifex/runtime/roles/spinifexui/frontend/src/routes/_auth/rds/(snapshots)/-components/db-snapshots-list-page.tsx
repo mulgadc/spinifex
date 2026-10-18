@@ -84,10 +84,13 @@ export function DBSnapshotsListPage() {
             <tbody>
               {snapshots.map((snapshot) => {
                 const id = snapshot.DBSnapshotIdentifier
+
                 if (!id) {
                   return null
                 }
+
                 const sourceId = snapshot.DBInstanceIdentifier ?? ""
+
                 return (
                   <tr className="border-b last:border-0" key={id}>
                     <td className="px-4 py-2 font-medium">

@@ -12,6 +12,7 @@ const { send } = vi.hoisted(() => {
   interface Command {
     readonly input: { KeyName?: string; KeyType?: string }
   }
+
   return {
     send: vi.fn(async (_command: Command) => ({
       KeyMaterial: "-----BEGIN RSA PRIVATE KEY-----",
@@ -25,6 +26,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -38,6 +40,7 @@ import { CreateKeyPairPage } from "./create-key-pair-page"
 
 function renderPage() {
   send.mockClear()
+
   return renderWithClient(<CreateKeyPairPage />, createTestQueryClient())
 }
 

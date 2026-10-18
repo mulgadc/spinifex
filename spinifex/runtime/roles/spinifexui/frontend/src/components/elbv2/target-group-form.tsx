@@ -46,6 +46,7 @@ export function TargetGroupForm({
     setValue,
     formState: { errors },
   } = form
+
   const protocol = useWatch({ control, name: "protocol" })
   // Path + Matcher only apply to HTTP(S) health checks; L4 target groups (TCP/
   // UDP/TLS) use a TCP health check that has neither.
@@ -59,6 +60,7 @@ export function TargetGroupForm({
     if (!next) {
       return
     }
+
     setValue("protocol", next)
     const layer7 = next === "HTTP" || next === "HTTPS"
     setValue("healthCheck.protocol", layer7 ? "HTTP" : "TCP")
@@ -142,6 +144,7 @@ export function TargetGroupForm({
               <SelectContent>
                 {vpcs.map((vpc) => {
                   const name = getNameTag(vpc.Tags)
+
                   return (
                     <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
                       {name

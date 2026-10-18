@@ -6,6 +6,7 @@ import { isStaleCredentialsError } from "./auth-error"
 function sdkError(name: string): Error {
   const err = new Error(`${name} occurred`)
   err.name = name
+
   return err
 }
 

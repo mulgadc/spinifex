@@ -31,9 +31,11 @@ interface Props {
 
 export function DBSnapshotDetailPage({ dbSnapshotIdentifier }: Props) {
   const navigate = useNavigate()
+
   const { data: snapshotData } = useSuspenseQuery(
     rdsDBSnapshotQueryOptions(dbSnapshotIdentifier),
   )
+
   const snapshot = snapshotData.DBSnapshots?.[0]
   const arn = snapshot?.DBSnapshotArn ?? ""
 

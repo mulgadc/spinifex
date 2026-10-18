@@ -15,6 +15,7 @@ function renderTester() {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false } },
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <RetrieveTester knowledgeBaseId="kb-1" />

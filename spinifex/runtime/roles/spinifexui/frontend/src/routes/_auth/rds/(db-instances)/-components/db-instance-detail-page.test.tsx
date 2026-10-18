@@ -17,6 +17,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -116,6 +117,7 @@ function seed(options: SeedOptions = {}): QueryClient {
   qc.setQueryData(["rds", "orderableOptions", "postgres"], {
     OrderableDBInstanceOptions: [{ DBInstanceClass: "db.t3.micro" }],
   })
+
   return qc
 }
 
@@ -135,9 +137,11 @@ const AUTOMATED_SNAPSHOT = {
 
 function rowFor(identifier: string): HTMLElement {
   const row = screen.getByText(identifier).closest("tr")
+
   if (!row) {
     throw new Error(`no row for ${identifier}`)
   }
+
   return row
 }
 
@@ -289,9 +293,11 @@ describe("DBInstanceDetailPage", () => {
       seed({ events: [BACKUP_CREATED_EVENT, BACKUP_FAILURE_EVENT] }),
     )
     openTab("Events")
+
     const times = screen
       .getAllByText(/^August \d+, 2026/)
       .map((cell) => cell.textContent)
+
     expect(times[0]).toBe(formatDateTime(new Date("2026-08-16T03:05:00Z")))
   })
 
@@ -380,12 +386,14 @@ describe("DBInstanceDetailPage", () => {
         if (command.constructor.name === "DescribeDBInstancesCommand") {
           return { DBInstances: [{ ...INSTANCE, BackupRetentionPeriod: 0 }] }
         }
+
         if (
           command.constructor.name ===
           "DescribeDBInstanceAutomatedBackupsCommand"
         ) {
           return { DBInstanceAutomatedBackups: [] }
         }
+
         return {}
       },
     )

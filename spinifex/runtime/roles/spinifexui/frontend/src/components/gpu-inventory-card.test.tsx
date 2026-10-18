@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     Link: ({

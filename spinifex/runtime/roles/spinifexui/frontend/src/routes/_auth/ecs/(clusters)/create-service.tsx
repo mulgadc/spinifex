@@ -44,5 +44,6 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/create-service")({
 
 function RouteComponent() {
   const { cluster } = Route.useSearch()
+
   return <CreateServicePage cluster={cluster} />
 }

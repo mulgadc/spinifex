@@ -15,6 +15,7 @@ import { ContainerInstancesTab } from "./container-instances-tab"
 function seed(instances: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "clusters", "web", "container-instances"], instances)
+
   return qc
 }
 

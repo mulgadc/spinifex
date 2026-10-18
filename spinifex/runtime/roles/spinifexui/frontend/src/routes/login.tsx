@@ -83,6 +83,7 @@ function LoginPage() {
         : undefined,
     [handoff],
   )
+
   const {
     register,
     handleSubmit,
@@ -93,6 +94,7 @@ function LoginPage() {
 
   async function onSubmit(data: AwsCredentialsInput) {
     setAuthError(null)
+
     try {
       // Exchange the long-lived creds for short-lived session creds; this both
       // validates them and yields the session token. The long-lived secret is

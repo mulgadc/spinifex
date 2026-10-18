@@ -51,7 +51,9 @@ function CreateInternetGateway() {
     const result = await createMutation.mutateAsync({
       name: data.name?.trim() ?? undefined,
     })
+
     const internetGatewayId = result.InternetGateway?.InternetGatewayId
+
     if (internetGatewayId) {
       navigate({
         to: "/ec2/describe-internet-gateways/$id",

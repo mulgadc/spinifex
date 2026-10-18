@@ -27,6 +27,7 @@ export function UploadButton({
 
   async function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
     const { files } = event.target
+
     if (!files || files.length === 0) {
       return
     }
@@ -35,6 +36,7 @@ export function UploadButton({
       await Promise.all(
         [...files].map(async (file) => {
           const key = `${prefix}${file.name}`
+
           return await onUpload({ bucket, key, file })
         }),
       )

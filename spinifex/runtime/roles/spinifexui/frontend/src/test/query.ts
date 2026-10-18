@@ -34,11 +34,13 @@ export async function callQueryFn<TData, TQueryKey extends QueryKey>(
   client: QueryClient = createQueryClient(),
 ): Promise<TData> {
   const { queryFn, queryKey } = options
+
   if (queryFn === undefined || queryFn === skipToken) {
     throw new TypeError(
       `query options ${JSON.stringify(queryKey)} have no callable queryFn`,
     )
   }
+
   return await queryFn({
     client,
     meta: undefined,
@@ -55,10 +57,12 @@ export function callRefetchInterval<TData, TQueryKey extends QueryKey>(
   data: Partial<TData>,
 ): RefetchInterval {
   const { refetchInterval } = options
+
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the option holds either a fixed interval or a function of the query
   if (typeof refetchInterval !== "function") {
     throw new TypeError("query options have no refetchInterval function")
   }
+
   // SAFETY: the option only reads state.data, which is all this stub carries.
   return refetchInterval({ state: { data } } as Query<
     TData,

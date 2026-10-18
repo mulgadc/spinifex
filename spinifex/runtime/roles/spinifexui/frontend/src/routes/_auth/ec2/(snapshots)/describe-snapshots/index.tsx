@@ -49,6 +49,7 @@ function Snapshots() {
             if (!snapshot.SnapshotId) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={snapshot.State} />}

@@ -22,6 +22,7 @@ import { TaskDefinitionsList } from "./task-definitions-list"
 function seed(arns: string[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "task-definitions"], arns)
+
   return qc
 }
 

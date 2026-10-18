@@ -86,6 +86,7 @@ function AddAddonDialog({
     const firstVersion =
       catalog.find((a) => a.addonName === name)?.addonVersions?.[0]
         ?.addonVersion ?? ""
+
     setValue("addonName", name, { shouldValidate: true })
     setValue("addonVersion", firstVersion, { shouldValidate: true })
   }
@@ -243,8 +244,10 @@ function UpdateAddonDialog({
 
   // Seed the fields from the current add-on config each time the dialog opens.
   const [wasOpen, setWasOpen] = useState(open)
+
   if (open !== wasOpen) {
     setWasOpen(open)
+
     if (open) {
       setVersion(current.addonVersion ?? "")
       setRole(current.serviceAccountRoleArn ?? "")
@@ -255,12 +258,15 @@ function UpdateAddonDialog({
 
   const handleConfirm = () => {
     const result = addonConfigurationSchema.safeParse(config)
+
     if (!result.success) {
       setError(
         result.error.issues[0]?.message ?? "Configuration must be valid JSON",
       )
+
       return
     }
+
     setError(undefined)
     updateAddon.mutate(
       {
@@ -375,10 +381,12 @@ function AddonRow({
         ? STATUS_POLL_MS
         : false,
   })
+
   const [showUpdate, setShowUpdate] = useState(false)
 
   const addon = data?.addon
   const issue = addon?.health?.issues?.[0]?.message
+
   const versions =
     catalog
       .find((a) => a.addonName === addonName)
@@ -503,6 +511,7 @@ export function AddonsTab({ clusterName }: { clusterName: string }) {
           if (!pendingDelete) {
             return
           }
+
           deleteAddon.mutate(
             { clusterName, addonName: pendingDelete },
             {

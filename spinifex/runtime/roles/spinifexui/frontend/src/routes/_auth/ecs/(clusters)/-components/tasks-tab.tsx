@@ -23,6 +23,7 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
     if (!stopTarget) {
       return
     }
+
     stopTask.mutate(
       { cluster: clusterName, task: stopTarget },
       {
@@ -68,6 +69,7 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
               {tasks.map((task: Task) => {
                 const id = taskId(task.taskArn)
                 const stoppable = task.lastStatus !== "STOPPED"
+
                 return (
                   <tr className="border-b last:border-0" key={id}>
                     <td className="px-4 py-2 font-mono text-xs">

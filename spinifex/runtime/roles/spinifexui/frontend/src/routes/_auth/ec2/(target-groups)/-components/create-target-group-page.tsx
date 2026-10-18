@@ -58,6 +58,7 @@ export function CreateTargetGroupPage() {
     try {
       const result = await createMutation.mutateAsync(data)
       const arn = result.TargetGroups?.[0]?.TargetGroupArn
+
       if (arn) {
         navigate({
           to: "/ec2/describe-target-groups/$id",
@@ -135,23 +136,27 @@ function buildCreateTargetGroupCommands(
     { type: "flag", value: " \\\n  --target-type" },
     { type: "value", value: " instance" },
   ]
+
   if (vpcId) {
     parts.push(
       { type: "flag", value: " \\\n  --vpc-id" },
       { type: "value", value: ` ${vpcId}` },
     )
   }
+
   const httpHealthCheck = hcProtocol === "HTTP"
   parts.push(
     { type: "flag", value: " \\\n  --health-check-protocol" },
     { type: "value", value: ` ${hcProtocol}` },
   )
+
   if (httpHealthCheck) {
     parts.push(
       { type: "flag", value: " \\\n  --health-check-path" },
       { type: "value", value: ` ${hcPath}` },
     )
   }
+
   parts.push(
     { type: "flag", value: " \\\n  --health-check-port" },
     { type: "value", value: ` ${hcPort}` },
@@ -164,6 +169,7 @@ function buildCreateTargetGroupCommands(
     { type: "flag", value: " \\\n  --unhealthy-threshold-count" },
     { type: "value", value: ` ${hcUnhealthy ?? 2}` },
   )
+
   if (httpHealthCheck) {
     parts.push(
       { type: "flag", value: " \\\n  --matcher" },

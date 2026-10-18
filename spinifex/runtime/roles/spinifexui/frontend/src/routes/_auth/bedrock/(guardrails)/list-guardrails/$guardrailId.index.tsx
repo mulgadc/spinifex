@@ -30,5 +30,6 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { guardrailId } = Route.useParams()
+
   return <GuardrailDetailPage guardrailId={guardrailId} />
 }

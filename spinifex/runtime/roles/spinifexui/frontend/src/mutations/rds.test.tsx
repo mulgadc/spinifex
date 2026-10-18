@@ -47,6 +47,7 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
@@ -363,6 +364,7 @@ describe("useCreateDBSubnetGroup", () => {
 describe("useCreateDBParameterGroup", () => {
   it("sends the name, family and description", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useCreateDBParameterGroup(), {
       wrapper,
     })
@@ -387,6 +389,7 @@ describe("useCreateDBParameterGroup", () => {
 describe("useModifyDBParameterGroup", () => {
   it("sends every edit in one request", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useModifyDBParameterGroup(), {
       wrapper,
     })
@@ -482,6 +485,7 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
 
   it("sends the snapshot, the new identifier and the overrides", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
       wrapper,
     })
@@ -517,6 +521,7 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
   // snapshot's datadir, so sending one would fail the restore or lie about it.
   it("never sends the engine, the credentials or the database name", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
       wrapper,
     })
@@ -544,6 +549,7 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
   // request rather than a zero.
   it("omits a blank port", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
       wrapper,
     })
@@ -577,6 +583,7 @@ describe("rds group delete mutations", () => {
 
   it("deleting a parameter group sends its name", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useDeleteDBParameterGroup(), {
       wrapper,
     })

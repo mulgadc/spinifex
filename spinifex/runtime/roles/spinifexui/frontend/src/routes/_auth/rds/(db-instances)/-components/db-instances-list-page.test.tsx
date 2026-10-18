@@ -18,6 +18,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -43,6 +44,7 @@ const AVAILABLE_INSTANCE = {
 function seed(instances: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "dbInstances"], { DBInstances: instances })
+
   return qc
 }
 

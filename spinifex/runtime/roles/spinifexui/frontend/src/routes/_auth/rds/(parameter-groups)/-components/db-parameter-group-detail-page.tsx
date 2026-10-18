@@ -25,9 +25,11 @@ interface Props {
 
 export function DBParameterGroupDetailPage({ dbParameterGroupName }: Props) {
   const navigate = useNavigate()
+
   const { data: groupData } = useSuspenseQuery(
     rdsParameterGroupQueryOptions(dbParameterGroupName),
   )
+
   const group = groupData.DBParameterGroups?.[0]
   const isDefault = isDefaultParameterGroupName(dbParameterGroupName)
   // A default group has no stored record, so ListTagsForResource has nothing

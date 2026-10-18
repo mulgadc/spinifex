@@ -2,6 +2,7 @@ import { renderHook } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 const mockSetOpen = vi.fn()
+
 vi.mock("@/components/ui/sidebar", () => ({
   useSidebar: () => ({ setOpen: mockSetOpen }),
 }))
@@ -26,12 +27,14 @@ describe("useInitialSidebar", () => {
 
   it("does not call setOpen again on re-render", () => {
     mockSetOpen.mockClear()
+
     const { rerender } = renderHook(
       ({ isOpen }: { isOpen: boolean }) => {
         useInitialSidebar(isOpen)
       },
       { initialProps: { isOpen: true } },
     )
+
     expect(mockSetOpen).toHaveBeenCalledOnce()
 
     rerender({ isOpen: false })

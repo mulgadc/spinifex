@@ -35,6 +35,7 @@ function renderPage({ withEksImage = true }: { withEksImage?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   queryClient.setQueryData(ec2VpcsQueryOptions.queryKey, {
     $metadata: {},
     Vpcs: [{ VpcId: "vpc-1", CidrBlock: "10.0.0.0/16" }],
@@ -51,6 +52,7 @@ function renderPage({ withEksImage = true }: { withEksImage?: boolean } = {}) {
     $metadata: {},
     Images: withEksImage ? [EKS_IMAGE] : [],
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <CreateClusterPage />

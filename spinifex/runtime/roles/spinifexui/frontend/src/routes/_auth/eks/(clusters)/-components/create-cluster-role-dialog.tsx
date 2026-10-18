@@ -28,6 +28,7 @@ interface CreateClusterRoleDialogProps {
 
 function defaultRoleName(clusterName: string): string {
   const base = clusterName.trim() || "cluster"
+
   return `${base}-eks-cluster-role`
 }
 
@@ -44,8 +45,10 @@ export function CreateClusterRoleDialog({
 
   // Seed the role name from the cluster name each time the dialog opens.
   const [wasOpen, setWasOpen] = useState(open)
+
   if (open !== wasOpen) {
     setWasOpen(open)
+
     if (open) {
       setRoleName(defaultRoleName(clusterName))
       setFormError(null)
@@ -58,26 +61,32 @@ export function CreateClusterRoleDialog({
     if (!nextOpen) {
       setFormError(null)
     }
+
     onOpenChange(nextOpen)
   }
 
   async function handleCreate() {
     setFormError(null)
     const name = roleName.trim()
+
     try {
       const result = await createRole.mutateAsync({
         roleName: name,
         assumeRolePolicyDocument: EKS_CLUSTER_ASSUME_ROLE_POLICY_DOCUMENT,
       })
+
       await attachPolicy.mutateAsync({
         roleName: name,
         policyArn: AMAZON_EKS_CLUSTER_POLICY_ARN,
       })
       const arn = result.Role?.Arn
+
       if (!arn) {
         setFormError("Role was created but no ARN was returned.")
+
         return
       }
+
       onCreated(arn)
       onOpenChange(false)
     } catch (error) {

@@ -11,6 +11,7 @@ export async function requireAdmin({
   context: { queryClient: QueryClient }
 }): Promise<void> {
   const identity = await context.queryClient.query(callerIdentityQueryOptions)
+
   if (!isAdminAccount(identity.Account)) {
     throw redirect({ to: "/" })
   }

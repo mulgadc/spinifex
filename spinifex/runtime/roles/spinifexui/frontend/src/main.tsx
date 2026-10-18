@@ -16,6 +16,7 @@ import { routeTree } from "./routeTree.gen"
 import "./styles.css"
 
 const queryClient = createQueryClient()
+
 followSessionChangesInOtherTabs(queryClient)
 
 const router = createRouter({
@@ -52,6 +53,7 @@ async function bootstrap(root: ReactDOM.Root) {
         <pre>{error instanceof Error ? error.message : String(error)}</pre>
       </div>,
     )
+
     return
   }
 
@@ -69,6 +71,7 @@ async function bootstrap(root: ReactDOM.Root) {
 }
 
 const rootElement = document.querySelector("#app")
+
 if (rootElement && !rootElement.innerHTML) {
   await bootstrap(ReactDOM.createRoot(rootElement))
 }

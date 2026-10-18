@@ -20,6 +20,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -33,9 +34,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
       params?: Record<string, string>
     }) => {
       let href = to ?? ""
+
       for (const [key, value] of Object.entries(params ?? {})) {
         href = href.replace(`$${key}`, value)
       }
+
       return <a href={href}>{children}</a>
     },
   }
@@ -90,6 +93,7 @@ function seed(options: SeedOptions = {}): QueryClient {
     Events: options.events ?? [],
   })
   qc.setQueryData(["rds", "tags", ARN], { TagList: options.tags ?? [] })
+
   return qc
 }
 

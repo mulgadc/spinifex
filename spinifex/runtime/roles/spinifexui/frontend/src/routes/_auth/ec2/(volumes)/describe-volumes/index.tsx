@@ -47,6 +47,7 @@ function Volumes() {
             if (!volume.VolumeId) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={volume.State} />}

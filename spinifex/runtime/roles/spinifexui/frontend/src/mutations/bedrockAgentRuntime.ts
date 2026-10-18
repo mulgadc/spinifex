@@ -18,6 +18,7 @@ export function useRetrieve() {
         knowledgeBaseId,
         retrievalQuery: { text: query },
       })
+
       return await getBedrockAgentRuntimeClient().send(command)
     },
   })

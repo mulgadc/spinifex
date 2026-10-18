@@ -19,6 +19,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -48,6 +49,7 @@ function seed() {
       },
     ],
   })
+
   return qc
 }
 

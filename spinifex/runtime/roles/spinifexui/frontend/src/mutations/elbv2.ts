@@ -34,11 +34,13 @@ import type {
 
 export function useDeleteLoadBalancer() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (loadBalancerArn: string) => {
       const command = new DeleteLoadBalancerCommand({
         LoadBalancerArn: loadBalancerArn,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
@@ -56,6 +58,7 @@ export interface ModifyLoadBalancerAttributesParams {
 
 export function useModifyLoadBalancerAttributes() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ModifyLoadBalancerAttributesParams) => {
       const command = new ModifyLoadBalancerAttributesCommand({
@@ -65,6 +68,7 @@ export function useModifyLoadBalancerAttributes() {
           Value: a.value,
         })),
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -95,6 +99,7 @@ export interface UpdateTagsParams {
 // any dropped keys via RemoveTags. Either call is skipped when it has no work.
 export function useUpdateTags() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: UpdateTagsParams) => {
       const finalKeys = new Set(params.tags.map((t) => t.key))
@@ -109,6 +114,7 @@ export function useUpdateTags() {
           }),
         )
       }
+
       if (toRemove.length > 0) {
         await client.send(
           new RemoveTagsCommand({
@@ -134,12 +140,14 @@ export interface SetSecurityGroupsParams {
 // server-side; the LB query is invalidated so the detail page reflects it.
 export function useSetSecurityGroups() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: SetSecurityGroupsParams) => {
       const command = new SetSecurityGroupsCommand({
         LoadBalancerArn: params.loadBalancerArn,
         SecurityGroups: params.securityGroupIds,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -160,12 +168,14 @@ export interface SetSubnetsParams {
 // query is invalidated to reflect the new availability zones once it settles.
 export function useSetSubnets() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: SetSubnetsParams) => {
       const command = new SetSubnetsCommand({
         LoadBalancerArn: params.loadBalancerArn,
         Subnets: params.subnetIds,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -178,12 +188,15 @@ export function useSetSubnets() {
 
 export function useCreateTargetGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateTargetGroupFormData) => {
       const tags: Tag[] = params.tags
         .filter((t) => t.key.length > 0)
         .map((t) => ({ Key: t.key, Value: t.value }))
+
       const httpHealthCheck = params.healthCheck.protocol === "HTTP"
+
       const command = new CreateTargetGroupCommand({
         Name: params.name,
         Protocol: params.protocol,
@@ -202,6 +215,7 @@ export function useCreateTargetGroup() {
           : undefined,
         Tags: tags.length > 0 ? tags : undefined,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
@@ -214,11 +228,13 @@ export function useCreateTargetGroup() {
 
 export function useDeleteTargetGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (targetGroupArn: string) => {
       const command = new DeleteTargetGroupCommand({
         TargetGroupArn: targetGroupArn,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
@@ -236,6 +252,7 @@ export interface ModifyTargetGroupAttributesParams {
 
 export function useModifyTargetGroupAttributes() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ModifyTargetGroupAttributesParams) => {
       const command = new ModifyTargetGroupAttributesCommand({
@@ -245,6 +262,7 @@ export function useModifyTargetGroupAttributes() {
           Value: a.value,
         })),
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -283,9 +301,11 @@ function tlsListenerFields(
   sslPolicy?: string,
 ): TlsListenerFields {
   const secure = protocol === "HTTPS" || protocol === "TLS"
+
   if (!secure || !certificateArn) {
     return {}
   }
+
   return {
     Certificates: [{ CertificateArn: certificateArn }],
     SslPolicy: protocol === "HTTPS" ? sslPolicy : undefined,
@@ -303,6 +323,7 @@ export interface CreateListenerParams {
 
 export function useCreateListener() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateListenerParams) => {
       const defaultActions: Action[] = [
@@ -311,6 +332,7 @@ export function useCreateListener() {
           TargetGroupArn: params.defaultTargetGroupArn,
         },
       ]
+
       const command = new CreateListenerCommand({
         LoadBalancerArn: params.loadBalancerArn,
         Protocol: params.protocol,
@@ -322,6 +344,7 @@ export function useCreateListener() {
           params.sslPolicy,
         ),
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -334,9 +357,11 @@ export function useCreateListener() {
 
 export function useDeleteListener() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (listenerArn: string) => {
       const command = new DeleteListenerCommand({ ListenerArn: listenerArn })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: () => {
@@ -357,6 +382,7 @@ export interface ModifyListenerParams {
 
 export function useModifyListener() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ModifyListenerParams) => {
       const defaultActions: Action[] = [
@@ -365,6 +391,7 @@ export function useModifyListener() {
           TargetGroupArn: params.defaultTargetGroupArn,
         },
       ]
+
       const command = new ModifyListenerCommand({
         ListenerArn: params.listenerArn,
         Protocol: params.protocol,
@@ -376,6 +403,7 @@ export function useModifyListener() {
           params.sslPolicy,
         ),
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -413,6 +441,7 @@ export interface CreateLoadBalancerWizardParams {
 
 export function useCreateLoadBalancerWizard() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (
       params: CreateLoadBalancerWizardParams,
@@ -424,19 +453,25 @@ export function useCreateLoadBalancerWizard() {
       try {
         // Step 1: create new TG if requested
         let targetGroupArn = params.listener.existingTargetGroupArn
+
         if (params.listener.targetGroupMode === "new") {
           const tg = params.listener.newTargetGroup
+
           if (!tg) {
             throw new Error(
               "internal error: new target group requested but no data supplied",
             )
           }
+
           currentStep = "creating target group"
+
           const tgTags: Tag[] = tg.tags
             .filter((t) => t.key.length > 0)
             .map((t) => ({ Key: t.key, Value: t.value }))
+
           // Path + Matcher are HTTP-only; a TCP health check (NLB) rejects them.
           const httpHealthCheck = tg.healthCheck.protocol === "HTTP"
+
           const tgResult = await client.send(
             new CreateTargetGroupCommand({
               Name: tg.name,
@@ -459,12 +494,15 @@ export function useCreateLoadBalancerWizard() {
               Tags: tgTags.length > 0 ? tgTags : undefined,
             }),
           )
+
           targetGroupArn = tgResult.TargetGroups?.[0]?.TargetGroupArn
+
           if (!targetGroupArn) {
             throw new Error(
               "Target group was created but no ARN was returned by the API",
             )
           }
+
           created.push({ type: "Target Group", id: targetGroupArn })
         }
 
@@ -474,9 +512,11 @@ export function useCreateLoadBalancerWizard() {
 
         // Step 2: create LB
         currentStep = "creating load balancer"
+
         const lbTags: Tag[] = params.lb.tags
           .filter((t) => t.key.length > 0)
           .map((t) => ({ Key: t.key, Value: t.value }))
+
         const lbResult = await client.send(
           new CreateLoadBalancerCommand({
             Name: params.lb.name,
@@ -491,12 +531,15 @@ export function useCreateLoadBalancerWizard() {
             Tags: lbTags.length > 0 ? lbTags : undefined,
           }),
         )
+
         const loadBalancerArn = lbResult.LoadBalancers?.[0]?.LoadBalancerArn
+
         if (!loadBalancerArn) {
           throw new Error(
             "Load balancer was created but no ARN was returned by the API",
           )
         }
+
         created.push({ type: "Load Balancer", id: loadBalancerArn })
 
         // Step 3: create listener
@@ -553,12 +596,14 @@ function toTargetDescriptions(targets: TargetInput[]): TargetDescription[] {
 
 export function useRegisterTargets() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: RegisterTargetsParams) => {
       const command = new RegisterTargetsCommand({
         TargetGroupArn: params.targetGroupArn,
         Targets: toTargetDescriptions(params.targets),
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -571,12 +616,14 @@ export function useRegisterTargets() {
 
 export function useDeregisterTargets() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: RegisterTargetsParams) => {
       const command = new DeregisterTargetsCommand({
         TargetGroupArn: params.targetGroupArn,
         Targets: toTargetDescriptions(params.targets),
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -610,12 +657,14 @@ function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
           HostHeaderConfig: { Values: c.values },
         }
       }
+
       case "path-pattern": {
         return {
           Field: c.field,
           PathPatternConfig: { Values: c.values },
         }
       }
+
       case "http-header": {
         return {
           Field: c.field,
@@ -625,18 +674,21 @@ function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
           },
         }
       }
+
       case "http-request-method": {
         return {
           Field: c.field,
           HttpRequestMethodConfig: { Values: c.values },
         }
       }
+
       case "source-ip": {
         return {
           Field: c.field,
           SourceIpConfig: { Values: c.values },
         }
       }
+
       case "query-string": {
         return {
           Field: c.field,
@@ -648,6 +700,7 @@ function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
           },
         }
       }
+
       default: {
         return { Field: c.field, Values: c.values }
       }
@@ -657,17 +710,20 @@ function toSDKConditions(conds: RuleCondInput[]): RuleCondition[] {
 
 export function useCreateRule() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateRuleParams) => {
       const actions: Action[] = [
         { Type: "forward", TargetGroupArn: params.forwardTargetGroupArn },
       ]
+
       const command = new CreateRuleCommand({
         ListenerArn: params.listenerArn,
         Priority: params.priority,
         Conditions: toSDKConditions(params.conditions),
         Actions: actions,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -687,6 +743,7 @@ export interface ModifyRuleParams {
 
 export function useModifyRule() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ModifyRuleParams) => {
       const command = new ModifyRuleCommand({
@@ -703,6 +760,7 @@ export function useModifyRule() {
             ]
           : undefined,
       })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -720,9 +778,11 @@ export interface DeleteRuleParams {
 
 export function useDeleteRule() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: DeleteRuleParams) => {
       const command = new DeleteRuleCommand({ RuleArn: params.ruleArn })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -740,13 +800,16 @@ export interface SetRulePrioritiesParams {
 
 export function useSetRulePriorities() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: SetRulePrioritiesParams) => {
       const pairs: RulePriorityPair[] = params.priorities.map((p) => ({
         RuleArn: p.ruleArn,
         Priority: p.priority,
       }))
+
       const command = new SetRulePrioritiesCommand({ RulePriorities: pairs })
+
       return await getElbv2Client().send(command)
     },
     onSuccess: (_data, variables) => {

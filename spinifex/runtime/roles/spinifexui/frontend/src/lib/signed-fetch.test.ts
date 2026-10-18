@@ -19,6 +19,7 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
   } catch (error) {
     return error as Error
   }
+
   throw new Error("expected the request to reject")
 }
 
@@ -34,6 +35,7 @@ function findHeader(
   name: string,
 ): string | undefined {
   const lower = name.toLowerCase()
+
   return Object.entries(headers).find(
     ([key]) => key.toLowerCase() === lower,
   )?.[1]
@@ -48,6 +50,7 @@ describe("signedFetch", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response("{}", { status: 200 }))
+
     vi.stubGlobal("fetch", fetchMock)
 
     await signedFetch({ action: "GetVersion", credentials })
@@ -104,6 +107,7 @@ describe("signedAdminFetch", () => {
       .mockResolvedValue(
         new Response('{"accounts":[],"count":0}', { status: 200 }),
       )
+
     vi.stubGlobal("fetch", fetchMock)
 
     await signedAdminFetch({ method: "ListAccounts", credentials, body: {} })
@@ -120,6 +124,7 @@ describe("signedAdminFetch", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response("{}", { status: 200 }))
+
     vi.stubGlobal("fetch", fetchMock)
 
     await signedAdminFetch({ method: "ListAccounts", credentials })

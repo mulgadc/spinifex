@@ -39,6 +39,7 @@ function toDraft(policyText: string | null | undefined): string {
   if (!policyText) {
     return ""
   }
+
   return formatJson(policyText) ?? policyText
 }
 
@@ -48,6 +49,7 @@ export function LifecyclePolicyEditor({
   const { data: policyText } = useSuspenseQuery(
     ecrLifecyclePolicyQueryOptions(repositoryName),
   )
+
   const putPolicy = usePutLifecyclePolicy()
   const deletePolicy = useDeleteLifecyclePolicy()
   const preview = usePreviewLifecyclePolicy()
@@ -56,6 +58,7 @@ export function LifecyclePolicyEditor({
   // Re-seed the editor when the stored policy changes (save/delete invalidates
   // the query), so the textarea tracks the server document.
   const [seededPolicy, setSeededPolicy] = useState(policyText)
+
   if (policyText !== seededPolicy) {
     setSeededPolicy(policyText)
     setDraft(toDraft(policyText))

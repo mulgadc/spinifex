@@ -15,6 +15,7 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     const name = safeDecodeURIComponent(params.name)
+
     // The tags query keys off the ARN, which only the describe knows, so it is
     // warmed after the group rather than alongside it. A default group has no
     // stored record for tags to live on, so it is skipped entirely.
@@ -28,9 +29,11 @@ export const Route = createFileRoute(
         staleTime: "static",
       }),
     ])
+
     const arn = isDefaultParameterGroupName(name)
       ? ""
       : (group.DBParameterGroups?.[0]?.DBParameterGroupArn ?? "")
+
     if (arn !== "") {
       await context.queryClient.query({
         ...rdsTagsQueryOptions(arn),
@@ -50,6 +53,7 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { name } = Route.useParams()
+
   return (
     <DBParameterGroupDetailPage
       dbParameterGroupName={safeDecodeURIComponent(name)}

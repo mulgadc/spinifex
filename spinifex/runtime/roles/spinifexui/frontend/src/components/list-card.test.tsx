@@ -40,6 +40,7 @@ describe("ListCard", () => {
     const { container } = render(
       <ListCard title="my-vpc" to={"/vpcs/123" as never} />,
     )
+
     const paragraphs = container.querySelectorAll("p")
     expect(paragraphs).toHaveLength(0)
   })

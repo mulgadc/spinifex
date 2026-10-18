@@ -17,6 +17,7 @@ const RECENT_JOBS_SHOWN = 3
 
 function IngestionJobRow({ job }: { job: IngestionJobSummary }) {
   const stats = job.statistics
+
   return (
     <div className="rounded-md border p-2 text-xs" key={job.ingestionJobId}>
       <div className="mb-1 flex items-center justify-between gap-2">
@@ -49,9 +50,11 @@ export function DataSourceCard({
 }: DataSourceCardProps) {
   const dataSourceId = dataSource.dataSourceId ?? ""
   const [showDelete, setShowDelete] = useState(false)
+
   const { data, isLoading, isError, error } = useQuery(
     ingestionJobsQueryOptions(knowledgeBaseId, dataSourceId),
   )
+
   const deleteDataSource = useDeleteDataSource()
 
   const jobs = (data?.ingestionJobSummaries ?? []).slice(0, RECENT_JOBS_SHOWN)

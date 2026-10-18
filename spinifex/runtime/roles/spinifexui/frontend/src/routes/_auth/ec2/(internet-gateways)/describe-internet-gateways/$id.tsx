@@ -81,6 +81,7 @@ function InternetGatewayDetail() {
     if (!selectedVpcId) {
       return
     }
+
     await attachMutation.mutateAsync({
       internetGatewayId: id,
       vpcId: selectedVpcId,
@@ -91,6 +92,7 @@ function InternetGatewayDetail() {
     if (!vpcToDetach) {
       return
     }
+
     try {
       await detachMutation.mutateAsync({
         internetGatewayId: id,
@@ -209,6 +211,7 @@ function InternetGatewayDetail() {
                     <SelectContent>
                       {vpcs.map((vpc) => {
                         const vpcName = getNameTag(vpc.Tags)
+
                         return (
                           <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
                             {vpcName

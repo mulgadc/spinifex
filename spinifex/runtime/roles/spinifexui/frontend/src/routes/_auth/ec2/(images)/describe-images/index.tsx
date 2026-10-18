@@ -42,6 +42,7 @@ function Images() {
             if (!image.ImageId) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={image.State} />}

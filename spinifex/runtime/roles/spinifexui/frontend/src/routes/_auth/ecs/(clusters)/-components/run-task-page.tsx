@@ -62,15 +62,18 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
   })
 
   const selectedTaskDef = useWatch({ control, name: "taskDefinition" })
+
   const { data: describedTaskDef } = useQuery(
     ecsTaskDefinitionQueryOptions(selectedTaskDef),
   )
+
   const awsvpc = describedTaskDef?.networkMode === "awsvpc"
 
   const selectedSubnets = useWatch({ control, name: "subnets" })
   const selectedSgs = useWatch({ control, name: "securityGroups" })
   const selectedSubnetSet = new Set(selectedSubnets)
   const selectedSgSet = new Set(selectedSgs)
+
   const toggle = (name: "subnets" | "securityGroups", id: string) => {
     const current = getValues(name)
     setValue(
@@ -137,6 +140,7 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
                 <SelectContent>
                   {taskDefArns.map((arn) => {
                     const id = familyRevision(arn)
+
                     return (
                       <SelectItem key={arn} value={id}>
                         {id}

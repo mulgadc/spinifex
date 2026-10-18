@@ -53,12 +53,14 @@ export function CreateDBSnapshotDialog({
   onCreated,
 }: CreateDBSnapshotDialogProps) {
   const createSnapshot = useCreateDBSnapshot()
+
   // Only the picker needs the list, so a dialog opened from an instance does
   // not fetch it at all.
   const instancesQuery = useQuery({
     ...rdsDBInstancesQueryOptions,
     enabled: dbInstanceIdentifier === undefined,
   })
+
   const [selectedInstance, setSelectedInstance] = useState(
     dbInstanceIdentifier ?? "",
   )
@@ -68,6 +70,7 @@ export function CreateDBSnapshotDialog({
   const instances = (instancesQuery.data?.DBInstances ?? []).filter(
     (instance) => canSnapshot(instance.DBInstanceStatus),
   )
+
   const instanceNotice = pickerNotice(instancesQuery, instances.length === 0, {
     loading: "Loading the DB instances…",
     failed: "Could not read the DB instances",
@@ -95,6 +98,7 @@ export function CreateDBSnapshotDialog({
   // user would otherwise type by hand.
   function handleInstanceChange(identifier: string | null) {
     setSelectedInstance(identifier ?? "")
+
     if (identifier) {
       setValue(
         "dbSnapshotIdentifier",
@@ -114,6 +118,7 @@ export function CreateDBSnapshotDialog({
       // Left open so the refusal below stays readable.
       return
     }
+
     onOpenChange(false)
     onCreated?.()
   }

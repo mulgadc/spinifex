@@ -52,9 +52,11 @@ function AccessEntryRow({
   const { data: entryData } = useQuery(
     eksAccessEntryQueryOptions(clusterName, principalArn),
   )
+
   const { data: policyData } = useQuery(
     eksAssociatedAccessPoliciesQueryOptions(clusterName, principalArn),
   )
+
   const associate = useAssociateAccessPolicy()
   const disassociate = useDisassociateAccessPolicy()
   const [policyArn, setPolicyArn] = useState<string>(EKS_ACCESS_POLICIES[0].arn)
@@ -166,6 +168,7 @@ function AddAccessEntryDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const createEntry = useCreateAccessEntry()
+
   const {
     formState: { errors },
     handleSubmit,
@@ -288,6 +291,7 @@ export function AccessTab({ clusterName }: { clusterName: string }) {
           if (!pendingDelete) {
             return
           }
+
           deleteEntry.mutate(
             { clusterName, principalArn: pendingDelete },
             {

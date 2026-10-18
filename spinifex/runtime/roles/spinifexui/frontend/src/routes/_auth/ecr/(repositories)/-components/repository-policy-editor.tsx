@@ -20,6 +20,7 @@ export function RepositoryPolicyEditor({
   const { data: policyText } = useSuspenseQuery(
     ecrRepositoryPolicyQueryOptions(repositoryName),
   )
+
   const setPolicy = useSetRepositoryPolicy()
   const deletePolicy = useDeleteRepositoryPolicy()
   const [draft, setDraft] = useState(policyText ?? "")
@@ -27,6 +28,7 @@ export function RepositoryPolicyEditor({
   // Re-seed the editor when the stored policy changes (save/delete invalidates
   // the query), so the textarea tracks the server document.
   const [seededPolicy, setSeededPolicy] = useState(policyText)
+
   if (policyText !== seededPolicy) {
     setSeededPolicy(policyText)
     setDraft(policyText ?? "")

@@ -33,9 +33,11 @@ import {
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
+
   const parts = [subnet.CidrBlock, subnet.AvailabilityZone, name].filter(
     Boolean,
   )
+
   return `${subnet.SubnetId} (${parts.join(", ")})`
 }
 
@@ -81,6 +83,7 @@ export function CreateDBSubnetGroupPage() {
     const next = selectedSubnets.includes(subnetId)
       ? selectedSubnets.filter((id) => id !== subnetId)
       : [...selectedSubnets, subnetId]
+
     setValue("subnetIds", next, { shouldValidate: true })
   }
 
@@ -147,8 +150,10 @@ export function CreateDBSubnetGroupPage() {
                 const vpcName = getNameTag(
                   vpcs.find((v) => v.VpcId === vpcId)?.Tags,
                 )
+
                 const unreachable =
                   pinnedVpc !== undefined && pinnedVpc !== vpcId
+
                 return (
                   <div key={vpcId}>
                     <p className="mb-1 font-mono text-xs text-muted-foreground">

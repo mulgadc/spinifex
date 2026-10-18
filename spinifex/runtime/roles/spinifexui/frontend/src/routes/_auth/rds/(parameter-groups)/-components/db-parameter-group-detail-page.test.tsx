@@ -15,6 +15,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -56,6 +57,7 @@ function seed(name: string, group: DBParameterGroup | null) {
   })
   qc.setQueryData(["rds", "parameters", name], { Parameters: PARAMETERS })
   qc.setQueryData(["rds", "tags", `arn:${name}`], { TagList: [] })
+
   return qc
 }
 

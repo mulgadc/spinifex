@@ -50,10 +50,13 @@ function RouteTables() {
             if (!rtb.RouteTableId) {
               return null
             }
+
             const name = getNameTag(rtb.Tags)
             const isMain = rtb.Associations?.some((a) => a.Main) ?? false
+
             const subnetCount =
               rtb.Associations?.filter((a) => a.SubnetId).length ?? 0
+
             return (
               <ListCard
                 badge={isMain ? <Badge variant="secondary">Main</Badge> : null}

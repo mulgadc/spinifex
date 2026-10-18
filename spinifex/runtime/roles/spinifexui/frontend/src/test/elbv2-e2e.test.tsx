@@ -13,11 +13,13 @@ const { sdk } = vi.hoisted(() => {
     vpcId: string
     subnets: string[]
   }
+
   interface StoredTg {
     arn: string
     name: string
     vpcId: string
   }
+
   interface StoredListener {
     arn: string
     lbArn: string
@@ -25,11 +27,13 @@ const { sdk } = vi.hoisted(() => {
     protocol: string
     defaultTg: string
   }
+
   interface TargetRecord {
     id: string
     port?: number
     state: string
   }
+
   interface Command {
     readonly constructor: { name: string }
     readonly input: object
@@ -45,6 +49,7 @@ const { sdk } = vi.hoisted(() => {
 
   const nextSeq = () => {
     state.seq += 1
+
     return state.seq
   }
 
@@ -57,8 +62,10 @@ const { sdk } = vi.hoisted(() => {
           name: i.Name,
           vpcId: i.VpcId,
         }
+
         state.tgs.push(tg)
         state.targets.set(tg.arn, [])
+
         return { TargetGroups: [{ TargetGroupArn: tg.arn }] }
       },
     ],
@@ -71,7 +78,9 @@ const { sdk } = vi.hoisted(() => {
           vpcId: "vpc-aaa",
           subnets: i.Subnets,
         }
+
         state.lbs.push(lb)
+
         return { LoadBalancers: [{ LoadBalancerArn: lb.arn }] }
       },
     ],
@@ -84,9 +93,11 @@ const { sdk } = vi.hoisted(() => {
         DefaultActions: { TargetGroupArn: string }[]
       }) => {
         const [action] = i.DefaultActions
+
         if (!action) {
           throw new Error("CreateListenerCommand requires DefaultActions[0]")
         }
+
         const listener = {
           arn: `arn:listener:${nextSeq()}`,
           lbArn: i.LoadBalancerArn,
@@ -94,7 +105,9 @@ const { sdk } = vi.hoisted(() => {
           protocol: i.Protocol,
           defaultTg: action.TargetGroupArn,
         }
+
         state.listeners.push(listener)
+
         return { Listeners: [{ ListenerArn: listener.arn }] }
       },
     ],
@@ -105,6 +118,7 @@ const { sdk } = vi.hoisted(() => {
         Targets: { Id: string; Port?: number }[]
       }) => {
         const existing = state.targets.get(i.TargetGroupArn) ?? []
+
         const next = [
           ...existing,
           ...i.Targets.map((t) => ({
@@ -113,7 +127,9 @@ const { sdk } = vi.hoisted(() => {
             state: "healthy",
           })),
         ]
+
         state.targets.set(i.TargetGroupArn, next)
+
         return {}
       },
     ],
@@ -121,6 +137,7 @@ const { sdk } = vi.hoisted(() => {
       "DescribeTargetHealthCommand",
       (i: { TargetGroupArn: string }) => {
         const targets = state.targets.get(i.TargetGroupArn) ?? []
+
         return {
           TargetHealthDescriptions: targets.map((t) => ({
             Target: { Id: t.id, Port: t.port },
@@ -170,11 +187,13 @@ const { sdk } = vi.hoisted(() => {
 
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
+
     if (!handler) {
       throw new Error(
         `No E2E handler for SDK command ${command.constructor.name}`,
       )
     }
+
     return handler(command.input as never)
   })
 
@@ -222,6 +241,7 @@ function mustString(value: string | undefined, label: string): string {
   if (!value) {
     throw new Error(`expected ${label} to be defined`)
   }
+
   return value
 }
 
@@ -280,8 +300,10 @@ describe("ELBv2 cross-slice flow (mocked SDK)", () => {
         },
       },
     })
+
     expect(wizardResult.error).toBeUndefined()
     const lbArn = mustString(wizardResult.loadBalancerArn, "lbArn")
+
     const tgArn = mustString(
       wizardResult.created.find((c) => c.type === "Target Group")?.id,
       "tgArn",

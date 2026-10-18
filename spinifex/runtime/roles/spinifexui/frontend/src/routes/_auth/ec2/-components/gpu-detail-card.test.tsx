@@ -21,6 +21,7 @@ describe("GpuDetailCard", () => {
       profile: "1g.24gb",
       mdev_path: "/sys/bus/mdev/devices/abc-123",
     }
+
     render(<GpuDetailCard gpus={[gpu]} />)
 
     expect(screen.getByText("GPU")).toBeInTheDocument()
@@ -39,6 +40,7 @@ describe("GpuDetailCard", () => {
       vram_mib: 24_576,
       pci_address: "0000:01:00.0",
     }
+
     render(<GpuDetailCard gpus={[gpu]} />)
 
     expect(screen.getByText("PCIe passthrough")).toBeInTheDocument()
@@ -59,6 +61,7 @@ describe("GpuDetailCard", () => {
         pci_address: "0000:02:00.0",
       },
     ]
+
     render(<GpuDetailCard gpus={gpus} />)
 
     expect(screen.getByText("GPUs (2)")).toBeInTheDocument()

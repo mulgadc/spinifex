@@ -147,17 +147,21 @@ const { sdk } = vi.hoisted(() => {
 
   function find(identifier: string): StoredInstance {
     const instance = state.instances.find((i) => i.identifier === identifier)
+
     if (!instance) {
       throw new Error(`DBInstanceNotFound: ${identifier}`)
     }
+
     return instance
   }
 
   function findSnapshot(identifier: string): StoredSnapshot {
     const snapshot = state.snapshots.find((s) => s.identifier === identifier)
+
     if (!snapshot) {
       throw new Error(`DBSnapshotNotFound: ${identifier}`)
     }
+
     return snapshot
   }
 
@@ -196,11 +200,13 @@ const { sdk } = vi.hoisted(() => {
         BackupRetentionPeriod?: number
       }) => {
         reject(Object.entries(i), REJECTED_ON_CREATE, "CreateDBInstance")
+
         if (
           state.instances.some((s) => s.identifier === i.DBInstanceIdentifier)
         ) {
           throw new Error(`DBInstanceAlreadyExists: ${i.DBInstanceIdentifier}`)
         }
+
         state.instances.push({
           identifier: i.DBInstanceIdentifier,
           engine: i.Engine,
@@ -216,6 +222,7 @@ const { sdk } = vi.hoisted(() => {
           describesLeftAsCreating: DESCRIBES_WHILE_CREATING,
           pending: {},
         })
+
         return { DBInstance: project(find(i.DBInstanceIdentifier)) }
       },
     ],
@@ -225,11 +232,14 @@ const { sdk } = vi.hoisted(() => {
         const matching = i.DBInstanceIdentifier
           ? [find(i.DBInstanceIdentifier)]
           : state.instances
+
         const projected = matching.map(project)
+
         // Advance after projecting, so the first describe still reads `creating`.
         for (const instance of matching) {
           if (instance.status === "creating") {
             instance.describesLeftAsCreating -= 1
+
             if (instance.describesLeftAsCreating <= 0) {
               instance.status = "available"
             }
@@ -242,6 +252,7 @@ const { sdk } = vi.hoisted(() => {
             instance.pending = {}
           }
         }
+
         return { DBInstances: projected }
       },
     ],
@@ -256,23 +267,28 @@ const { sdk } = vi.hoisted(() => {
       }) => {
         reject(Object.entries(i), REJECTED_ON_MODIFY, "ModifyDBInstance")
         const instance = find(i.DBInstanceIdentifier)
+
         if (
           i.AllocatedStorage !== undefined &&
           i.AllocatedStorage < instance.allocatedStorage
         ) {
           throw new Error("InvalidParameterValue: storage cannot be shrunk")
         }
+
         instance.status = "modifying"
         instance.pending = {
           instanceClass: i.DBInstanceClass,
           allocatedStorage: i.AllocatedStorage,
         }
+
         if (i.DeletionProtection !== undefined) {
           instance.deletionProtection = i.DeletionProtection
         }
+
         if (i.BackupRetentionPeriod !== undefined) {
           instance.backupRetentionPeriod = i.BackupRetentionPeriod
         }
+
         return { DBInstance: project(instance) }
       },
     ],
@@ -284,23 +300,28 @@ const { sdk } = vi.hoisted(() => {
         FinalDBSnapshotIdentifier?: string
       }) => {
         const instance = find(i.DBInstanceIdentifier)
+
         if (instance.deletionProtection) {
           throw new Error("InvalidParameterCombination: deletion protection")
         }
+
         if (i.SkipFinalSnapshot !== true) {
           if (!i.FinalDBSnapshotIdentifier) {
             throw new Error(
               "InvalidParameterCombination: FinalDBSnapshotIdentifier required",
             )
           }
+
           state.snapshots.push(
             snapshotOf(instance, i.FinalDBSnapshotIdentifier, "manual"),
           )
         }
+
         instance.status = "deleting"
         state.instances = state.instances.filter(
           (s) => s.identifier !== instance.identifier,
         )
+
         return { DBInstance: project(instance) }
       },
     ],
@@ -310,14 +331,18 @@ const { sdk } = vi.hoisted(() => {
         if (i.DBSnapshotIdentifier.startsWith("rds:")) {
           throw new Error("InvalidParameterValue: rds: is reserved")
         }
+
         const instance = find(i.DBInstanceIdentifier)
+
         if (instance.status !== "available" && instance.status !== "stopped") {
           throw new Error(
             `InvalidDBInstanceState: ${instance.identifier} is ${instance.status}`,
           )
         }
+
         const snapshot = snapshotOf(instance, i.DBSnapshotIdentifier, "manual")
         state.snapshots.push(snapshot)
+
         return { DBSnapshot: projectSnapshot(snapshot) }
       },
     ],
@@ -325,6 +350,7 @@ const { sdk } = vi.hoisted(() => {
       "DescribeDBSnapshotsCommand",
       (i: { DBSnapshotIdentifier?: string; DBInstanceIdentifier?: string }) => {
         let matching = state.snapshots
+
         if (i.DBSnapshotIdentifier) {
           matching = [findSnapshot(i.DBSnapshotIdentifier)]
         } else if (i.DBInstanceIdentifier) {
@@ -332,17 +358,22 @@ const { sdk } = vi.hoisted(() => {
             (s) => s.sourceIdentifier === i.DBInstanceIdentifier,
           )
         }
+
         const projected = matching.map(projectSnapshot)
+
         // Advance after projecting, so the first describe still reads `creating`.
         for (const snapshot of matching) {
           if (snapshot.status !== "creating") {
             continue
           }
+
           snapshot.describesLeftAsCreating -= 1
+
           if (snapshot.describesLeftAsCreating <= 0) {
             snapshot.status = "available"
           }
         }
+
         return { DBSnapshots: projected }
       },
     ],
@@ -352,23 +383,29 @@ const { sdk } = vi.hoisted(() => {
         if (i.DBSnapshotIdentifier.startsWith("rds:")) {
           throw new Error("InvalidParameterValue: rds: is reserved")
         }
+
         const snapshot = findSnapshot(i.DBSnapshotIdentifier)
+
         if (snapshot.status !== "available") {
           throw new Error(
             `InvalidDBSnapshotState: ${snapshot.identifier} is ${snapshot.status}`,
           )
         }
+
         const reader = state.instances.find(
           (s) => s.restoredFrom === snapshot.identifier,
         )
+
         if (reader) {
           throw new Error(
             `InvalidDBSnapshotState: ${snapshot.identifier} is in use by ${reader.identifier}`,
           )
         }
+
         state.snapshots = state.snapshots.filter(
           (s) => s.identifier !== snapshot.identifier,
         )
+
         return { DBSnapshot: projectSnapshot(snapshot) }
       },
     ],
@@ -388,20 +425,25 @@ const { sdk } = vi.hoisted(() => {
           "RestoreDBInstanceFromDBSnapshot",
         )
         const snapshot = findSnapshot(i.DBSnapshotIdentifier)
+
         if (snapshot.status !== "available") {
           throw new Error(
             `InvalidDBSnapshotState: ${snapshot.identifier} is ${snapshot.status}`,
           )
         }
+
         if (
           state.instances.some((s) => s.identifier === i.DBInstanceIdentifier)
         ) {
           throw new Error(`DBInstanceAlreadyExists: ${i.DBInstanceIdentifier}`)
         }
+
         const storage = i.AllocatedStorage ?? snapshot.allocatedStorage
+
         if (storage < snapshot.allocatedStorage) {
           throw new Error("InvalidParameterValue: storage cannot be shrunk")
         }
+
         state.instances.push({
           identifier: i.DBInstanceIdentifier,
           engine: snapshot.engine,
@@ -417,6 +459,7 @@ const { sdk } = vi.hoisted(() => {
           restoredFrom: snapshot.identifier,
           pending: {},
         })
+
         return { DBInstance: project(find(i.DBInstanceIdentifier)) }
       },
     ],
@@ -424,11 +467,13 @@ const { sdk } = vi.hoisted(() => {
 
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
+
     if (!handler) {
       throw new Error(
         `No E2E handler for SDK command ${command.constructor.name}`,
       )
     }
+
     return handler(command.input as never)
   })
 
@@ -518,6 +563,7 @@ function renderHarness(qc: QueryClient) {
 
 async function statusOf(qc: QueryClient): Promise<string | undefined> {
   const data = await qc.query(rdsDBInstanceQueryOptions("orders-db"))
+
   return data.DBInstances?.[0]?.DBInstanceStatus
 }
 
@@ -669,6 +715,7 @@ const RESTORE_FORM = {
 async function settledSnapshot(qc: QueryClient, identifier: string) {
   await qc.query(rdsDBSnapshotQueryOptions(identifier))
   await qc.query(rdsDBSnapshotQueryOptions(identifier))
+
   return await qc.query(rdsDBSnapshotQueryOptions(identifier))
 }
 
@@ -677,6 +724,7 @@ async function settledInstance(qc: QueryClient) {
   await result.current.create.mutateAsync(CREATE_FORM)
   await statusOf(qc)
   await statusOf(qc)
+
   return result
 }
 
@@ -703,6 +751,7 @@ describe("RDS snapshot flow (mocked SDK)", () => {
       qc,
       "orders-db-snapshot-20260817-1432",
     )
+
     expect(settled.DBSnapshots?.[0]?.Status).toBe("available")
     expect(settled.DBSnapshots?.[0]?.AllocatedStorage).toBe(20)
 
@@ -714,6 +763,7 @@ describe("RDS snapshot flow (mocked SDK)", () => {
     const restored = await qc.query(
       rdsDBInstanceQueryOptions("orders-db-restored"),
     )
+
     // The engine, the master user and the port come from the snapshot; only
     // the class and the grown storage came from the form.
     expect(restored.DBInstances?.[0]?.Engine).toBe("postgres")
@@ -753,9 +803,11 @@ describe("RDS snapshot flow (mocked SDK)", () => {
 
     const mine = await qc.query(rdsInstanceDBSnapshotsQueryOptions("orders-db"))
     expect(mine.DBSnapshots).toHaveLength(1)
+
     const others = await qc.query(
       rdsInstanceDBSnapshotsQueryOptions("billing-db"),
     )
+
     expect(others.DBSnapshots).toHaveLength(0)
   })
 

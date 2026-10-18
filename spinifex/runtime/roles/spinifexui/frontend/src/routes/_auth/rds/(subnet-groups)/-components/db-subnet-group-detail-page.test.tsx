@@ -15,6 +15,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -28,9 +29,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
       params?: Record<string, string>
     }) => {
       let href = to ?? ""
+
       for (const [key, value] of Object.entries(params ?? {})) {
         href = href.replace(`$${key}`, value)
       }
+
       return <a href={href}>{children}</a>
     },
   }
@@ -64,6 +67,7 @@ function seed(group: DBSubnetGroup | null) {
     DBSubnetGroups: group ? [group] : [],
   })
   qc.setQueryData(["rds", "tags", "arn:orders-subnets"], { TagList: [] })
+
   return qc
 }
 

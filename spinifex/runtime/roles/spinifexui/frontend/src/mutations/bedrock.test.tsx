@@ -36,6 +36,7 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
@@ -143,6 +144,7 @@ describe("useDeleteGuardrail", () => {
 describe("useCreateGuardrailVersion", () => {
   it("sends CreateGuardrailVersionCommand with the identifier and description", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useCreateGuardrailVersion(), {
       wrapper,
     })
@@ -164,6 +166,7 @@ describe("useCreateGuardrailVersion", () => {
   it("invalidates the versions for that guardrail on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useCreateGuardrailVersion(), {
       wrapper,
     })

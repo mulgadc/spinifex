@@ -10,8 +10,10 @@ function gpuUsedTotal(gpu: GPUInfo): string {
   if (gpu.mig_enabled) {
     const slices = gpu.slices ?? []
     const used = slices.filter((s) => s.instance_id).length
+
     return `${used} / ${slices.length}`
   }
+
   return `${gpu.instance_id ? 1 : 0} / 1`
 }
 
@@ -21,11 +23,13 @@ export function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
   const toggle = (key: string) => {
     setExpanded((prev) => {
       const next = new Set(prev)
+
       if (next.has(key)) {
         next.delete(key)
       } else {
         next.add(key)
       }
+
       return next
     })
   }
@@ -56,6 +60,7 @@ export function GPUInventoryCard({ nodes }: { nodes: NodeInfo[] }) {
             const slices = gpu.slices ?? []
             const expandable = gpu.mig_enabled && slices.length > 0
             const isExpanded = expandable && expanded.has(key)
+
             return (
               <Fragment key={key}>
                 <tr className="border-b last:border-0">

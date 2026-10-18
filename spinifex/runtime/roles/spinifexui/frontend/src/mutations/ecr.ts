@@ -17,9 +17,11 @@ import { getEcrClient } from "@/lib/awsClient"
 
 export function useCreateRepository() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (repositoryName: string) => {
       const command = new CreateRepositoryCommand({ repositoryName })
+
       return await getEcrClient().send(command)
     },
     onSuccess: () => {
@@ -32,12 +34,14 @@ export function useCreateRepository() {
 // a non-empty repo without force, so force is always set from the console.
 export function useDeleteRepository() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (repositoryName: string) => {
       const command = new DeleteRepositoryCommand({
         repositoryName,
         force: true,
       })
+
       return await getEcrClient().send(command)
     },
     onSuccess: () => {
@@ -53,12 +57,14 @@ export interface BatchDeleteImageParams {
 
 export function useBatchDeleteImage() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: BatchDeleteImageParams) => {
       const command = new BatchDeleteImageCommand({
         repositoryName: params.repositoryName,
         imageIds: params.imageIds,
       })
+
       return await getEcrClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -76,12 +82,14 @@ export interface SetRepositoryPolicyParams {
 
 export function useSetRepositoryPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: SetRepositoryPolicyParams) => {
       const command = new SetRepositoryPolicyCommand({
         repositoryName: params.repositoryName,
         policyText: params.policyText,
       })
+
       return await getEcrClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -101,12 +109,14 @@ export interface PutImageTagMutabilityParams {
 // lives on the repository record, so the repositories list is invalidated.
 export function usePutImageTagMutability() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: PutImageTagMutabilityParams) => {
       const command = new PutImageTagMutabilityCommand({
         repositoryName: params.repositoryName,
         imageTagMutability: params.imageTagMutability,
       })
+
       return await getEcrClient().send(command)
     },
     onSuccess: () => {
@@ -117,9 +127,11 @@ export function usePutImageTagMutability() {
 
 export function useDeleteRepositoryPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (repositoryName: string) => {
       const command = new DeleteRepositoryPolicyCommand({ repositoryName })
+
       return await getEcrClient().send(command)
     },
     onSuccess: (_data, repositoryName) => {
@@ -137,12 +149,14 @@ export interface PutLifecyclePolicyParams {
 
 export function usePutLifecyclePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: PutLifecyclePolicyParams) => {
       const command = new PutLifecyclePolicyCommand({
         repositoryName: params.repositoryName,
         lifecyclePolicyText: params.lifecyclePolicyText,
       })
+
       return await getEcrClient().send(command)
     },
     onSuccess: (_data, variables) => {
@@ -160,9 +174,11 @@ export function usePutLifecyclePolicy() {
 
 export function useDeleteLifecyclePolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (repositoryName: string) => {
       const command = new DeleteLifecyclePolicyCommand({ repositoryName })
+
       return await getEcrClient().send(command)
     },
     onSuccess: (_data, repositoryName) => {
@@ -180,6 +196,7 @@ export function usePreviewLifecyclePolicy() {
   return useMutation({
     mutationFn: async (repositoryName: string) => {
       const command = new GetLifecyclePolicyPreviewCommand({ repositoryName })
+
       return await getEcrClient().send(command)
     },
   })

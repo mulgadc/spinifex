@@ -78,6 +78,7 @@ function CreateSecurityGroup() {
   const onSubmit = async (data: CreateSecurityGroupFormData) => {
     const result = await createMutation.mutateAsync(data)
     const groupId = result.GroupId
+
     if (groupId) {
       navigate({
         to: "/ec2/describe-security-groups/$id",
@@ -154,6 +155,7 @@ function CreateSecurityGroup() {
                 <SelectContent>
                   {vpcs.map((vpc) => {
                     const name = getNameTag(vpc.Tags)
+
                     return (
                       <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
                         {name

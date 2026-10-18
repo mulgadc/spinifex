@@ -59,6 +59,7 @@ export function SidebarLayout() {
   const pathname = useLocation({
     select: (location) => location.pathname,
   })
+
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { isAdmin } = useAdmin()

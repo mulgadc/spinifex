@@ -59,6 +59,7 @@ function seed(): QueryClient {
       { DBInstanceClass: "db.t3.small" },
     ],
   })
+
   return qc
 }
 
@@ -121,9 +122,11 @@ describe("ModifyDBInstanceDialog", () => {
 
   it("refuses a shrink rather than sending one", () => {
     render()
+
     const storage = screen.getByLabelText<HTMLInputElement>(
       "Allocated storage (GiB)",
     )
+
     fireEvent.change(storage, { target: { value: "20" } })
     fireEvent.click(screen.getByRole("button", { name: "Save Changes" }))
 

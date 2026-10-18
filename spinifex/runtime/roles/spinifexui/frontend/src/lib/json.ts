@@ -3,6 +3,7 @@ import { z } from "zod"
 export function isValidJson(value: string): boolean {
   try {
     JSON.parse(value)
+
     return true
   } catch {
     return false
@@ -23,11 +24,13 @@ export function formatJson(value: string): string | null {
 // documents URL-encoded; the result is pretty-printed when it parses.
 export function decodePolicyDocument(document: string): string {
   let text: string
+
   try {
     text = decodeURIComponent(document)
   } catch {
     text = document
   }
+
   return formatJson(text) ?? text
 }
 
@@ -39,9 +42,11 @@ export function jsonStringSchema(opts: {
   allowEmpty?: boolean
 }) {
   const { label, allowEmpty = false } = opts
+
   const base = allowEmpty
     ? z.string()
     : z.string().min(1, `${label} is required`)
+
   return base.refine(
     (value) => (allowEmpty && value.trim() === "" ? true : isValidJson(value)),
     { message: `${label} must be valid JSON` },

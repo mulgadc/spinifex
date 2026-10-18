@@ -88,6 +88,7 @@ function SelectOptionField({
         // The generic path's value has no narrower static type to branch on.
         // oxlint-disable-next-line anti-slop/no-runtime-typeof -- as above
         const selected = typeof field.value === "string" ? field.value : ""
+
         return (
           <Field>
             <FieldTitle>
@@ -127,6 +128,7 @@ function TopicsFieldArray({ control, register, errors }: SectionProps) {
     control,
     name: "topics",
   })
+
   return (
     <div className="space-y-3">
       {fields.map((field, index) => (
@@ -200,6 +202,7 @@ function ContentFiltersFieldArray({ control }: SectionProps) {
     control,
     name: "contentFilters",
   })
+
   return (
     <div className="space-y-3">
       {fields.map((field, index) => (
@@ -280,6 +283,7 @@ function ProfanityFilterField({ register }: SectionProps) {
 
 function WordsFieldArray({ control, register, errors }: SectionProps) {
   const { fields, append, remove } = useFieldArray({ control, name: "words" })
+
   return (
     <div className="space-y-2">
       {fields.map((field, index) => (
@@ -325,6 +329,7 @@ function PiiEntitiesFieldArray({ control }: SectionProps) {
     control,
     name: "piiEntities",
   })
+
   return (
     <div className="space-y-3">
       {fields.map((field, index) => (
@@ -381,6 +386,7 @@ function RegexesFieldArray({ control, register, errors }: SectionProps) {
     control,
     name: "regexes",
   })
+
   return (
     <div className="space-y-3">
       {fields.map((field, index) => (
@@ -465,6 +471,7 @@ function ContextualGroundingFiltersFieldArray({
     control,
     name: "contextualGroundingFilters",
   })
+
   return (
     <div className="space-y-3">
       {fields.map((field, index) => (
@@ -556,8 +563,10 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
         params: { guardrailId: result.guardrailId ?? "" },
         to: "/bedrock/list-guardrails/$guardrailId",
       })
+
       return
     }
+
     await updateGuardrail.mutateAsync({
       data,
       guardrailIdentifier: props.guardrailId,
@@ -574,8 +583,10 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
         params: { guardrailId: props.guardrailId },
         to: "/bedrock/list-guardrails/$guardrailId",
       })
+
       return
     }
+
     await navigate({ to: "/bedrock/list-guardrails" })
   }
 

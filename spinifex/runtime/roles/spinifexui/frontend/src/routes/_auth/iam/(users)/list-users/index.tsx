@@ -26,6 +26,7 @@ function Users() {
   const users = (data.Users ?? []).toSorted((a, b) => {
     const nameA = a.UserName?.toLowerCase() ?? ""
     const nameB = b.UserName?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -46,6 +47,7 @@ function Users() {
             if (!user.UserName) {
               return null
             }
+
             return (
               <ListCard
                 key={user.UserName}

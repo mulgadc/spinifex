@@ -55,9 +55,11 @@ export function optionalFlag(
   if (value === undefined || value === "" || value === false) {
     return []
   }
+
   if (value === true) {
     return [{ type: "flag", value: ` ${flag}` }]
   }
+
   return commandFlag(flag, value)
 }
 

@@ -56,6 +56,7 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
@@ -685,6 +686,7 @@ describe("useDeleteInstanceProfile", () => {
 describe("useAddRoleToInstanceProfile", () => {
   it("sends AddRoleToInstanceProfileCommand with name and role", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
       wrapper,
     })
@@ -706,6 +708,7 @@ describe("useAddRoleToInstanceProfile", () => {
   it("invalidates instance-profiles query on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
       wrapper,
     })
@@ -727,6 +730,7 @@ describe("useAddRoleToInstanceProfile", () => {
 describe("useRemoveRoleFromInstanceProfile", () => {
   it("sends RemoveRoleFromInstanceProfileCommand with name and role", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRemoveRoleFromInstanceProfile(), {
       wrapper,
     })
@@ -761,6 +765,7 @@ describe("instance profile membership changes", () => {
 
   it("refreshes the role page after adding a role", async () => {
     seedRoleProfiles()
+
     const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
       wrapper,
     })
@@ -775,6 +780,7 @@ describe("instance profile membership changes", () => {
 
   it("refreshes the role page after removing a role", async () => {
     seedRoleProfiles()
+
     const { result } = renderHook(() => useRemoveRoleFromInstanceProfile(), {
       wrapper,
     })
@@ -789,6 +795,7 @@ describe("instance profile membership changes", () => {
 
   it("refreshes the role page after deleting a profile", async () => {
     seedRoleProfiles()
+
     const { result } = renderHook(() => useDeleteInstanceProfile(), {
       wrapper,
     })

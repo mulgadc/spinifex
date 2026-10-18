@@ -57,6 +57,7 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { id } = Route.useParams()
+
   return (
     <RestoreDBSnapshotPage dbSnapshotIdentifier={safeDecodeURIComponent(id)} />
   )

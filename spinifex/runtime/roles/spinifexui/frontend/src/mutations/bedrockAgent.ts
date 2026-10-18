@@ -26,11 +26,13 @@ function dataSourcesKey(knowledgeBaseId: string) {
 
 export function useCreateKnowledgeBase() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (data: KnowledgeBaseFormData) => {
       const command = new CreateKnowledgeBaseCommand(
         formToCreateKnowledgeBaseInput(data),
       )
+
       return await getBedrockAgentClient().send(command)
     },
     onSuccess: () => {
@@ -41,9 +43,11 @@ export function useCreateKnowledgeBase() {
 
 export function useDeleteKnowledgeBase() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (knowledgeBaseId: string) => {
       const command = new DeleteKnowledgeBaseCommand({ knowledgeBaseId })
+
       return await getBedrockAgentClient().send(command)
     },
     onSuccess: (_data, knowledgeBaseId) => {
@@ -62,11 +66,13 @@ export interface CreateDataSourceParams {
 
 export function useCreateDataSource() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({ knowledgeBaseId, data }: CreateDataSourceParams) => {
       const command = new CreateDataSourceCommand(
         formToCreateDataSourceInput(knowledgeBaseId, data),
       )
+
       return await getBedrockAgentClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -84,6 +90,7 @@ export interface DeleteDataSourceParams {
 
 export function useDeleteDataSource() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       knowledgeBaseId,
@@ -93,6 +100,7 @@ export function useDeleteDataSource() {
         knowledgeBaseId,
         dataSourceId,
       })
+
       return await getBedrockAgentClient().send(command)
     },
     onSuccess: (_data, params) => {

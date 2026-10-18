@@ -47,6 +47,7 @@ function Buckets() {
             if (!bucket.Name) {
               return null
             }
+
             return (
               <ListCard
                 key={bucket.Name}

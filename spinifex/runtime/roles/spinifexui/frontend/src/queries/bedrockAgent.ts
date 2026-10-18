@@ -17,6 +17,7 @@ export const knowledgeBasesQueryOptions = queryOptions({
   queryKey: ["bedrock-agent", "knowledge-bases"],
   queryFn: async () => {
     const command = new ListKnowledgeBasesCommand({})
+
     return await getBedrockAgentClient().send(command)
   },
   staleTime: KNOWLEDGE_BASE_STALE_TIME,
@@ -27,6 +28,7 @@ export const knowledgeBaseQueryOptions = (knowledgeBaseId: string) =>
     queryKey: ["bedrock-agent", "knowledge-bases", knowledgeBaseId],
     queryFn: async () => {
       const command = new GetKnowledgeBaseCommand({ knowledgeBaseId })
+
       return await getBedrockAgentClient().send(command)
     },
     staleTime: KNOWLEDGE_BASE_STALE_TIME,
@@ -42,6 +44,7 @@ export const dataSourcesQueryOptions = (knowledgeBaseId: string) =>
     ],
     queryFn: async () => {
       const command = new ListDataSourcesCommand({ knowledgeBaseId })
+
       return await getBedrockAgentClient().send(command)
     },
     staleTime: KNOWLEDGE_BASE_STALE_TIME,
@@ -64,6 +67,7 @@ export const dataSourceQueryOptions = (
         knowledgeBaseId,
         dataSourceId,
       })
+
       return await getBedrockAgentClient().send(command)
     },
     staleTime: KNOWLEDGE_BASE_STALE_TIME,
@@ -88,6 +92,7 @@ export const ingestionJobsQueryOptions = (
         dataSourceId,
         sortBy: { attribute: "STARTED_AT", order: "DESCENDING" },
       })
+
       return await getBedrockAgentClient().send(command)
     },
     staleTime: INGESTION_JOB_STALE_TIME,
@@ -114,6 +119,7 @@ export const ingestionJobQueryOptions = (
         dataSourceId,
         ingestionJobId,
       })
+
       return await getBedrockAgentClient().send(command)
     },
     staleTime: INGESTION_JOB_STALE_TIME,

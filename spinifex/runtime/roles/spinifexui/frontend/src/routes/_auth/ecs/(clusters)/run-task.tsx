@@ -39,5 +39,6 @@ export const Route = createFileRoute("/_auth/ecs/(clusters)/run-task")({
 
 function RouteComponent() {
   const { cluster } = Route.useSearch()
+
   return <RunTaskPage cluster={cluster} />
 }

@@ -13,17 +13,23 @@ const { routerState, sdk } = vi.hoisted(() => {
     readonly constructor: { name: string }
     readonly input: unknown
   }
+
   type SdkHandler = (input: never) => unknown
+
   const handlers = new Map<string, SdkHandler>()
+
   const send = vi.fn(async (command: Command): Promise<unknown> => {
     const handler = handlers.get(command.constructor.name)
+
     if (!handler) {
       throw new Error(
         `No handler registered for SDK command ${command.constructor.name}`,
       )
     }
+
     return handler(command.input as never)
   })
+
   return {
     routerState: {
       navigate: vi.fn(),
@@ -51,6 +57,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     createFileRoute:
@@ -73,6 +80,7 @@ const VPCS: Vpc[] = [{ VpcId: "vpc-aaa", CidrBlock: "10.0.0.0/16", Tags: [] }]
 function setup() {
   const queryClient = createTestQueryClient()
   queryClient.setQueryData(["ec2", "vpcs"], { Vpcs: VPCS })
+
   return renderWithClient(<CreateTargetGroupPage />, queryClient)
 }
 
@@ -100,12 +108,14 @@ describe("create-target-group route", () => {
     await waitFor(() => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
+
     const input = sdk.send.mock.calls[0]?.[0].input as {
       Name: string
       Protocol: string
       VpcId: string
       TargetType: string
     }
+
     expect(input.Name).toBe("my-tg")
     expect(input.Protocol).toBe("HTTP")
     expect(input.VpcId).toBe("vpc-aaa")
@@ -137,12 +147,14 @@ describe("create-target-group route", () => {
     await waitFor(() => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
+
     const input = sdk.send.mock.calls[0]?.[0].input as {
       Protocol: string
       HealthCheckProtocol: string
       HealthCheckPath?: string
       Matcher?: unknown
     }
+
     expect(input.Protocol).toBe("TCP")
     expect(input.HealthCheckProtocol).toBe("TCP")
     expect(input.HealthCheckPath).toBeUndefined()

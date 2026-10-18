@@ -63,6 +63,7 @@ export function InputGroupAddon({
         if (e.target instanceof HTMLElement && e.target.closest("button")) {
           return
         }
+
         e.currentTarget.parentElement?.querySelector("input")?.focus()
       }}
       // A fieldset would change the prop type and bring min-content sizing.

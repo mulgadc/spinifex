@@ -41,6 +41,7 @@ function seedClient(opts: {
       mutations: { retry: false },
     },
   })
+
   queryClient.setQueryData(
     ["elbv2", "listeners", LB_ARN],
     opts.listeners ?? { Listeners: [] },
@@ -57,6 +58,7 @@ function seedClient(opts: {
     ["elbv2", "sslPolicies"],
     opts.sslPolicies ?? { SslPolicies: [] },
   )
+
   return queryClient
 }
 
@@ -107,6 +109,7 @@ describe("ListenersTab", () => {
         ],
       },
     })
+
     render(
       <ListenersTab
         lbType="application"
@@ -135,6 +138,7 @@ describe("ListenersTab", () => {
         ],
       },
     })
+
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
     render(
@@ -179,6 +183,7 @@ describe("ListenersTab", () => {
         ],
       },
     })
+
     const user = userEvent.setup()
     render(
       <ListenersTab
@@ -221,6 +226,7 @@ describe("ListenersTab", () => {
         ],
       },
     })
+
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
     render(
@@ -269,6 +275,7 @@ describe("ListenersTab", () => {
         ],
       },
     })
+
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
     render(
@@ -300,6 +307,7 @@ describe("ListenersTab", () => {
 
   it("edits an HTTPS listener, prefilling cert + policy, and ModifyListener carries TLS fields", async () => {
     const CERT_ARN = "arn:aws:acm:ap-southeast-2:1:certificate/abc-123"
+
     const queryClient = seedClient({
       listeners: {
         Listeners: [
@@ -332,6 +340,7 @@ describe("ListenersTab", () => {
       },
       sslPolicies: { SslPolicies: [{ Name: "ELBSecurityPolicy-2016-08" }] },
     })
+
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
     render(

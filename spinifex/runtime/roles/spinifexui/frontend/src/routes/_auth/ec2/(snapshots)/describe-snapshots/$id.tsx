@@ -73,6 +73,7 @@ function SnapshotDetail() {
   const [showRegisterDialog, setShowRegisterDialog] = useState(false)
   const [registerName, setRegisterName] = useState("")
   const [registerDescription, setRegisterDescription] = useState("")
+
   const [registeredImageId, setRegisteredImageId] = useState<string | null>(
     null,
   )
@@ -88,6 +89,7 @@ function SnapshotDetail() {
       setRegisterDescription("")
       setRegisteredImageId(null)
     }
+
     setShowRegisterDialog(nextOpen)
   }
 
@@ -98,6 +100,7 @@ function SnapshotDetail() {
         name: registerName,
         description: registerDescription || undefined,
       })
+
       setRegisteredImageId(result.ImageId ?? null)
       setRegisterName("")
       setRegisterDescription("")

@@ -7,9 +7,11 @@ import { TagsEditor } from "./tags-editor"
 
 function at<T>(arr: T[], i: number): T {
   const v = arr[i]
+
   if (v === undefined) {
     throw new Error(`expected an element at index ${i}`)
   }
+
   return v
 }
 

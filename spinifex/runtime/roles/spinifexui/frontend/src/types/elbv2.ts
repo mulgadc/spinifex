@@ -77,10 +77,12 @@ export const DEFAULT_SSL_POLICY = "ELBSecurityPolicy-2016-08"
 // server's validation (handlers/elbv2/service_impl.go): ALBs speak HTTP/HTTPS,
 // NLBs speak TCP/UDP/TLS/TCP_UDP.
 export const LB_TYPES = ["application", "network"] as const
+
 export type LbType = (typeof LB_TYPES)[number]
 
 export const ALB_PROTOCOLS = ["HTTP", "HTTPS"] as const
 export const NLB_PROTOCOLS = ["TCP", "UDP", "TLS", "TCP_UDP"] as const
+
 export const ALL_LISTENER_PROTOCOLS = [
   ...ALB_PROTOCOLS,
   ...NLB_PROTOCOLS,
@@ -151,18 +153,22 @@ export const ruleConditionSchema = z
         message: "Header name is required",
       })
     }
+
     const values = data.rawValues
       .split(/[\n,]/)
       .map((v) => v.trim())
       .filter((v) => v.length > 0)
+
     if (values.length === 0 || values.length > 5) {
       ctx.addIssue({
         code: "custom",
         path: ["rawValues"],
         message: "Enter 1 to 5 values, comma or newline separated",
       })
+
       return
     }
+
     for (const v of values) {
       if (!RULE_VALUE_REGEX.test(v)) {
         ctx.addIssue({
@@ -170,6 +176,7 @@ export const ruleConditionSchema = z
           path: ["rawValues"],
           message: `Value "${v}" contains whitespace or non-ASCII characters`,
         })
+
         return
       }
     }
@@ -223,6 +230,7 @@ export const createLoadBalancerSchema = z.object({
           message: "Target group is required",
         })
       }
+
       if (isSecureProtocol(value.protocol) && !value.certificateArn) {
         ctx.addIssue({
           code: "custom",

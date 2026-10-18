@@ -40,9 +40,11 @@ let bedrockRuntimeClient: BedrockRuntimeClient | null = null
 export function getEc2Client(): EC2Client {
   if (!ec2Client) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     ec2Client = new EC2Client({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -59,20 +61,24 @@ export function getEc2Client(): EC2Client {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return ec2Client
 }
 
 export function getEksClient(): EKSClient {
   if (!eksClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     eksClient = new EKSClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -89,20 +95,24 @@ export function getEksClient(): EKSClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return eksClient
 }
 
 export function getElbv2Client(): ElasticLoadBalancingV2Client {
   if (!elbv2Client) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     elbv2Client = new ElasticLoadBalancingV2Client({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -119,20 +129,24 @@ export function getElbv2Client(): ElasticLoadBalancingV2Client {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return elbv2Client
 }
 
 export function getAcmClient(): ACMClient {
   if (!acmClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     acmClient = new ACMClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -149,20 +163,24 @@ export function getAcmClient(): ACMClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return acmClient
 }
 
 export function getIamClient(): IAMClient {
   if (!iamClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     iamClient = new IAMClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -179,20 +197,24 @@ export function getIamClient(): IAMClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return iamClient
 }
 
 export function getEcrClient(): ECRClient {
   if (!ecrClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     ecrClient = new ECRClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -209,20 +231,24 @@ export function getEcrClient(): ECRClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return ecrClient
 }
 
 export function getEcsClient(): ECSClient {
   if (!ecsClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     ecsClient = new ECSClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -239,20 +265,24 @@ export function getEcsClient(): ECSClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return ecsClient
 }
 
 export function getRdsClient(): RDSClient {
   if (!rdsClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     rdsClient = new RDSClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -269,20 +299,24 @@ export function getRdsClient(): RDSClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return rdsClient
 }
 
 export function getS3Client(): S3Client {
   if (!s3Client) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     s3Client = new S3Client({
       endpoint: S3_SIGN_ENDPOINT,
       region: getRegion(),
@@ -305,6 +339,7 @@ export function getS3Client(): S3Client {
         ) {
           args.request.path = args.request.path.slice(0, -1)
         }
+
         return await next(args)
       },
       { step: "build", name: "removeTrailingSlash" },
@@ -316,20 +351,24 @@ export function getS3Client(): S3Client {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/s3${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return s3Client
 }
 
 export function getBedrockAgentClient(): BedrockAgentClient {
   if (!bedrockAgentClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     bedrockAgentClient = new BedrockAgentClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -346,20 +385,24 @@ export function getBedrockAgentClient(): BedrockAgentClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return bedrockAgentClient
 }
 
 export function getBedrockAgentRuntimeClient(): BedrockAgentRuntimeClient {
   if (!bedrockAgentRuntimeClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     bedrockAgentRuntimeClient = new BedrockAgentRuntimeClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -376,20 +419,24 @@ export function getBedrockAgentRuntimeClient(): BedrockAgentRuntimeClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return bedrockAgentRuntimeClient
 }
 
 export function getBedrockClient(): BedrockClient {
   if (!bedrockClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     bedrockClient = new BedrockClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -406,20 +453,24 @@ export function getBedrockClient(): BedrockClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return bedrockClient
 }
 
 export function getBedrockRuntimeClient(): BedrockRuntimeClient {
   if (!bedrockRuntimeClient) {
     const credentials = getCredentials()
+
     if (!credentials) {
       throw new Error("AWS credentials not configured")
     }
+
     bedrockRuntimeClient = new BedrockRuntimeClient({
       endpoint: AWSGW_SIGN_ENDPOINT,
       region: getRegion(),
@@ -436,11 +487,13 @@ export function getBedrockRuntimeClient(): BedrockRuntimeClient {
           args.request.port = Number(window.location.port) || 443
           args.request.path = `/proxy/awsgw${args.request.path}`
         }
+
         return await next(args)
       },
       { step: "finalizeRequest", name: "proxyRewrite", override: true },
     )
   }
+
   return bedrockRuntimeClient
 }
 

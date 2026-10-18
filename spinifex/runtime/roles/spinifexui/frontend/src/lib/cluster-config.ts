@@ -19,10 +19,13 @@ let config: ClusterConfig | null = null
 // synchronously.
 export async function loadClusterConfig(): Promise<void> {
   const response = await fetch("/api/config", { cache: "no-store" })
+
   if (!response.ok) {
     throw new Error(`could not load cluster config: HTTP ${response.status}`)
   }
+
   const parsed = clusterConfigSchema.safeParse(await response.json())
+
   if (!parsed.success) {
     // An issue at the root means the body was not an object at all; anything
     // deeper means the region itself is missing or empty.
@@ -33,6 +36,7 @@ export async function loadClusterConfig(): Promise<void> {
         : "cluster config did not include a region",
     )
   }
+
   config = parsed.data
 }
 
@@ -42,6 +46,7 @@ export function getRegion(): string {
   if (!config) {
     throw new Error("cluster config has not been loaded")
   }
+
   return config.region
 }
 
@@ -50,5 +55,6 @@ export function isOchreEnabled(): boolean {
   if (!config) {
     throw new Error("cluster config has not been loaded")
   }
+
   return config.ochreEnabled
 }

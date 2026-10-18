@@ -65,9 +65,11 @@ interface HeldResponse<T> {
 
 function heldResponse<T>(): HeldResponse<T> {
   let release!: (value: T) => void
+
   const promise = new Promise<T>((resolve) => {
     release = resolve
   })
+
   return { promise, release }
 }
 
@@ -90,6 +92,7 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
@@ -466,6 +469,7 @@ describe("buildLaunchTemplateData", () => {
       instanceType: "t2.micro",
       keyName: "my-key",
     })
+
     expect(data).toStrictEqual({
       ImageId: "ami-1",
       InstanceType: "t2.micro",
@@ -480,6 +484,7 @@ describe("buildLaunchTemplateData", () => {
       subnetId: "subnet-1",
       securityGroupIds: ["sg-1", "sg-2"],
     })
+
     expect(data.NetworkInterfaces).toStrictEqual([
       { DeviceIndex: 0, SubnetId: "subnet-1", Groups: ["sg-1", "sg-2"] },
     ])
@@ -492,6 +497,7 @@ describe("buildLaunchTemplateData", () => {
       instanceType: "t2.micro",
       securityGroupIds: ["sg-1"],
     })
+
     expect(data.SecurityGroupIds).toStrictEqual(["sg-1"])
     expect(data.NetworkInterfaces).toBeUndefined()
   })
@@ -503,6 +509,7 @@ describe("buildLaunchTemplateData", () => {
       rootVolumeSize: 30,
       rootVolumeType: "gp3",
     })
+
     expect(data.BlockDeviceMappings).toStrictEqual([
       { DeviceName: "/dev/sda1", Ebs: { VolumeSize: 30, VolumeType: "gp3" } },
     ])
@@ -514,6 +521,7 @@ describe("buildLaunchTemplateData", () => {
       instanceType: "t2.micro",
       userData: "#!/bin/bash\necho hi",
     })
+
     expect(data.UserData).toBe(btoa("#!/bin/bash\necho hi"))
   })
 })
@@ -565,6 +573,7 @@ describe("useCreateLaunchTemplate", () => {
 describe("useCreateLaunchTemplateVersion", () => {
   it("sends the command with source version and id", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useCreateLaunchTemplateVersion(), {
       wrapper,
     })
@@ -590,6 +599,7 @@ describe("useCreateLaunchTemplateVersion", () => {
   it("invalidates the list and the versions query", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useCreateLaunchTemplateVersion(), {
       wrapper,
     })
@@ -632,6 +642,7 @@ describe("useModifyLaunchTemplate", () => {
 describe("useDeleteLaunchTemplateVersions", () => {
   it("sends DeleteLaunchTemplateVersionsCommand with the versions", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useDeleteLaunchTemplateVersions(), {
       wrapper,
     })
@@ -661,6 +672,7 @@ describe("useDeleteLaunchTemplateVersions", () => {
         },
       ],
     })
+
     const { result } = renderHook(() => useDeleteLaunchTemplateVersions(), {
       wrapper,
     })
@@ -725,9 +737,11 @@ describe("useImportKeyPair", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
+
     const decoded = new TextDecoder().decode(
       mockSend.mock.calls[0]?.[0].input.PublicKeyMaterial,
     )
+
     expect(decoded).toBe("ssh-rsa AAAAB3Nza...")
   })
 
@@ -743,9 +757,11 @@ describe("useImportKeyPair", () => {
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
+
     const decoded = new TextDecoder().decode(
       mockSend.mock.calls[0]?.[0].input.PublicKeyMaterial,
     )
+
     expect(decoded).toBe("ssh-rsa AAAAB3Nza...")
   })
 })
@@ -994,6 +1010,7 @@ describe("useDetachVolume", () => {
 describe("useModifyInstanceAttribute", () => {
   it("sends ModifyInstanceAttributeCommand with instance type", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useModifyInstanceAttribute(), {
       wrapper,
     })
@@ -1323,6 +1340,7 @@ describe("useAuthorizeSecurityGroupIngress", () => {
 
   it("sends AuthorizeSecurityGroupIngressCommand with IpPermissions", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useAuthorizeSecurityGroupIngress(), {
       wrapper,
     })
@@ -1348,6 +1366,7 @@ describe("useAuthorizeSecurityGroupIngress", () => {
   it("invalidates securityGroups queries on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useAuthorizeSecurityGroupIngress(), {
       wrapper,
     })
@@ -1369,6 +1388,7 @@ describe("useAuthorizeSecurityGroupIngress", () => {
 describe("useAuthorizeSecurityGroupEgress", () => {
   it("sends AuthorizeSecurityGroupEgressCommand with IpPermissions", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useAuthorizeSecurityGroupEgress(), {
       wrapper,
     })
@@ -1401,6 +1421,7 @@ describe("useAuthorizeSecurityGroupEgress", () => {
 describe("useRevokeSecurityGroupIngress", () => {
   it("sends RevokeSecurityGroupIngressCommand with IpPermissions", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
       wrapper,
     })
@@ -1431,6 +1452,7 @@ describe("useRevokeSecurityGroupIngress", () => {
 
   it("uses UserIdGroupPairs when sourceGroupId is given", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
       wrapper,
     })
@@ -1462,6 +1484,7 @@ describe("useRevokeSecurityGroupIngress", () => {
   it("invalidates securityGroups queries on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
       wrapper,
     })
@@ -1489,6 +1512,7 @@ describe("useRevokeSecurityGroupIngress", () => {
 describe("useRevokeSecurityGroupEgress", () => {
   it("sends RevokeSecurityGroupEgressCommand with IpPermissions", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useRevokeSecurityGroupEgress(), {
       wrapper,
     })
@@ -1857,6 +1881,7 @@ describe("useCreateVpcWizard", () => {
 describe("useAssociateIamInstanceProfile", () => {
   it("sends AssociateIamInstanceProfileCommand with instance and profile", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
       wrapper,
     })
@@ -1878,6 +1903,7 @@ describe("useAssociateIamInstanceProfile", () => {
   it("invalidates associations and instances on success", async () => {
     createQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
+
     const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
       wrapper,
     })
@@ -1900,6 +1926,7 @@ describe("useAssociateIamInstanceProfile", () => {
 describe("useDisassociateIamInstanceProfile", () => {
   it("sends DisassociateIamInstanceProfileCommand with associationId", async () => {
     createQueryClient()
+
     const { result } = renderHook(() => useDisassociateIamInstanceProfile(), {
       wrapper,
     })

@@ -94,10 +94,13 @@ function CreateLaunchTemplate() {
   const onSubmit = async (data: LaunchTemplateFormData) => {
     const result = await createMutation.mutateAsync(data)
     const id = result.LaunchTemplate?.LaunchTemplateId
+
     if (!id) {
       navigate({ to: "/ec2/describe-launch-templates" })
+
       return
     }
+
     navigate({ to: "/ec2/describe-launch-templates/$id", params: { id } })
   }
 
@@ -186,15 +189,18 @@ function buildCreateLaunchTemplateCommands(
     { type: "flag", value: " \\\n  --launch-template-name" },
     { type: "value", value: ` ${name ? shellSingleQuote(name) : "<name>"}` },
   ]
+
   if (versionDescription) {
     parts.push(
       { type: "flag", value: " \\\n  --version-description" },
       { type: "value", value: ` ${shellSingleQuote(versionDescription)}` },
     )
   }
+
   parts.push(
     { type: "flag", value: " \\\n  --launch-template-data" },
     { type: "value", value: ` ${shellSingleQuote(JSON.stringify(data))}` },
   )
+
   return [{ label: "Create Launch Template", parts }]
 }

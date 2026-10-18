@@ -9,9 +9,11 @@ vi.mock("./auth", () => ({
   clearCredentials: clearCredentialsMock,
   onSessionChangedInOtherTab: (handler: () => void) => {
     otherTabHandlers.push(handler)
+
     return () => undefined
   },
 }))
+
 vi.mock("./awsClient", () => ({ clearClients: clearClientsMock }))
 
 let createQueryClient: typeof import("./query-client").createQueryClient
@@ -19,6 +21,7 @@ let createQueryClient: typeof import("./query-client").createQueryClient
 function awsError(name: string): Error {
   const err = new Error(`${name} occurred`)
   err.name = name
+
   return err
 }
 
@@ -105,6 +108,7 @@ describe("followSessionChangesInOtherTabs", () => {
   it("drops clients and cached data and goes to /login", async () => {
     const { createQueryClient: create, followSessionChangesInOtherTabs } =
       await import("./query-client")
+
     const client = create()
     client.setQueryData(["ec2", "instances"], { Reservations: [] })
     followSessionChangesInOtherTabs(client)

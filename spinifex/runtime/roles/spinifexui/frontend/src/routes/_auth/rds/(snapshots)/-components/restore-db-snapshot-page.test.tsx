@@ -22,6 +22,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -121,6 +122,7 @@ function seed(options: SeedOptions = {}): QueryClient {
       { Engine: "postgres", DBInstanceClass: "db.m5.large" },
     ],
   })
+
   return qc
 }
 
@@ -224,9 +226,11 @@ describe("RestoreDBSnapshotPage form", () => {
 
   it("suggests a new identifier rather than the source instance's", () => {
     render()
+
     const field: HTMLInputElement = screen.getByLabelText(
       "New DB instance identifier",
     )
+
     expect(field.value).toMatch(/^orders-db-restored-\d{8}-\d{4}$/)
   })
 

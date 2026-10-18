@@ -85,6 +85,7 @@ function CreateSubnet() {
   const onSubmit = async (data: CreateSubnetFormData) => {
     const result = await createMutation.mutateAsync(data)
     const subnetId = result.Subnet?.SubnetId
+
     if (subnetId) {
       navigate({
         to: "/ec2/describe-subnets/$id",
@@ -133,6 +134,7 @@ function CreateSubnet() {
                 <SelectContent>
                   {vpcs.map((vpc) => {
                     const name = getNameTag(vpc.Tags)
+
                     return (
                       <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
                         {name

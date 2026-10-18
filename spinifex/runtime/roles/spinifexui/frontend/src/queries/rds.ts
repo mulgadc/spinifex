@@ -52,13 +52,16 @@ export const rdsDBInstancesQueryOptions = queryOptions({
   queryKey: ["rds", "dbInstances"],
   queryFn: async () => {
     const command = new DescribeDBInstancesCommand({})
+
     return await getRdsClient().send(command)
   },
   refetchInterval: (query) => {
     const instances = query.state.data?.DBInstances ?? []
+
     const anyTransitional = instances.some((instance) =>
       isTransitionalStatus(instance.DBInstanceStatus),
     )
+
     return anyTransitional ? TRANSITIONAL_POLL_MS : false
   },
 })
@@ -70,10 +73,12 @@ export const rdsDBInstanceQueryOptions = (dbInstanceIdentifier: string) =>
       const command = new DescribeDBInstancesCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     refetchInterval: (query) => {
       const instance = query.state.data?.DBInstances?.[0]
+
       return isTransitionalStatus(instance?.DBInstanceStatus)
         ? TRANSITIONAL_POLL_MS
         : false
@@ -84,6 +89,7 @@ export const rdsSubnetGroupsQueryOptions = queryOptions({
   queryKey: ["rds", "subnetGroups"],
   queryFn: async () => {
     const command = new DescribeDBSubnetGroupsCommand({})
+
     return await getRdsClient().send(command)
   },
 })
@@ -95,6 +101,7 @@ export const rdsSubnetGroupQueryOptions = (dbSubnetGroupName: string) =>
       const command = new DescribeDBSubnetGroupsCommand({
         DBSubnetGroupName: dbSubnetGroupName,
       })
+
       return await getRdsClient().send(command)
     },
   })
@@ -103,6 +110,7 @@ export const rdsParameterGroupsQueryOptions = queryOptions({
   queryKey: ["rds", "parameterGroups"],
   queryFn: async () => {
     const command = new DescribeDBParameterGroupsCommand({})
+
     return await getRdsClient().send(command)
   },
 })
@@ -114,6 +122,7 @@ export const rdsParameterGroupQueryOptions = (dbParameterGroupName: string) =>
       const command = new DescribeDBParameterGroupsCommand({
         DBParameterGroupName: dbParameterGroupName,
       })
+
       return await getRdsClient().send(command)
     },
   })
@@ -127,6 +136,7 @@ export const rdsParametersQueryOptions = (dbParameterGroupName: string) =>
       const command = new DescribeDBParametersCommand({
         DBParameterGroupName: dbParameterGroupName,
       })
+
       return await getRdsClient().send(command)
     },
   })
@@ -143,6 +153,7 @@ export const rdsEventsQueryOptions = (
         SourceType: sourceType,
         Duration: EVENT_WINDOW_MINUTES,
       })
+
       return await getRdsClient().send(command)
     },
     refetchInterval: EVENT_POLL_MS,
@@ -155,6 +166,7 @@ export const rdsDBSnapshotsQueryOptions = queryOptions({
   queryKey: ["rds", "dbSnapshots"],
   queryFn: async () => {
     const command = new DescribeDBSnapshotsCommand({})
+
     return await getRdsClient().send(command)
   },
   refetchInterval: (query) =>
@@ -170,6 +182,7 @@ export const rdsDBSnapshotQueryOptions = (dbSnapshotIdentifier: string) =>
       const command = new DescribeDBSnapshotsCommand({
         DBSnapshotIdentifier: dbSnapshotIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     refetchInterval: (query) =>
@@ -189,6 +202,7 @@ export const rdsInstanceDBSnapshotsQueryOptions = (
       const command = new DescribeDBSnapshotsCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     refetchInterval: (query) =>
@@ -206,6 +220,7 @@ export const rdsAutomatedBackupsQueryOptions = (dbInstanceIdentifier: string) =>
       const command = new DescribeDBInstanceAutomatedBackupsCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
   })
@@ -220,6 +235,7 @@ export const rdsTagsQueryOptions = (resourceName: string) =>
       const command = new ListTagsForResourceCommand({
         ResourceName: resourceName,
       })
+
       return await getRdsClient().send(command)
     },
     enabled: resourceName.length > 0,
@@ -231,6 +247,7 @@ export const rdsEngineVersionsQueryOptions = queryOptions({
   queryKey: ["rds", "engineVersions"],
   queryFn: async () => {
     const command = new DescribeDBEngineVersionsCommand({})
+
     return await getRdsClient().send(command)
   },
   staleTime: CATALOG_STALE_TIME_MS,
@@ -246,6 +263,7 @@ export const rdsOrderableOptionsQueryOptions = (engine: string) =>
       const command = new DescribeOrderableDBInstanceOptionsCommand({
         Engine: engine,
       })
+
       return await getRdsClient().send(command)
     },
     staleTime: CATALOG_STALE_TIME_MS,

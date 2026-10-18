@@ -48,11 +48,13 @@ const versionInfo = {
 
 function renderUseAdmin() {
   const queryClient = createTestQueryClient()
+
   function wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     )
   }
+
   return renderHook(() => useAdmin(), { wrapper })
 }
 

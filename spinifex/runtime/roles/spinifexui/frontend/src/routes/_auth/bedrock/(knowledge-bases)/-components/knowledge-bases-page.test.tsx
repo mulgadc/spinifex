@@ -30,10 +30,12 @@ function renderSeeded(knowledgeBaseSummaries: KnowledgeBaseSummary[]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   queryClient.setQueryData(knowledgeBasesQueryOptions.queryKey, {
     $metadata: {},
     knowledgeBaseSummaries,
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <KnowledgeBasesPage />
@@ -54,12 +56,14 @@ describe("KnowledgeBasesPage", () => {
       { ...KB, knowledgeBaseId: "kb-2", name: "zebra" },
       { ...KB, knowledgeBaseId: "kb-1", name: "alpha" },
     ])
+
     const links = screen
       .getAllByRole("link")
       .filter(
         (l) =>
           l.getAttribute("href") !== "/bedrock/list-knowledge-bases/create",
       )
+
     expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
       "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-1",
       "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-2",

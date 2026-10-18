@@ -46,5 +46,6 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { id } = Route.useParams()
+
   return <TargetGroupDetailPage arn={safeDecodeURIComponent(id)} />
 }

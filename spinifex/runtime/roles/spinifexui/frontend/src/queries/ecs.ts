@@ -25,12 +25,15 @@ export const ecsClustersQueryOptions = queryOptions({
     const client = getEcsClient()
     const list = await client.send(new ListClustersCommand({}))
     const clusterArns = list.clusterArns ?? []
+
     if (clusterArns.length === 0) {
       return []
     }
+
     const described = await client.send(
       new DescribeClustersCommand({ clusters: clusterArns }),
     )
+
     return described.clusters ?? []
   },
   staleTime: CLUSTER_STALE_TIME,
@@ -43,6 +46,7 @@ export const ecsClusterQueryOptions = (clusterName: string) =>
       const described = await getEcsClient().send(
         new DescribeClustersCommand({ clusters: [clusterName] }),
       )
+
       return described.clusters?.[0] ?? null
     },
     staleTime: CLUSTER_STALE_TIME,
@@ -53,19 +57,24 @@ export const ecsServicesQueryOptions = (clusterName: string) =>
     queryKey: ["ecs", "clusters", clusterName, "services"],
     queryFn: async () => {
       const client = getEcsClient()
+
       const list = await client.send(
         new ListServicesCommand({ cluster: clusterName }),
       )
+
       const serviceArns = list.serviceArns ?? []
+
       if (serviceArns.length === 0) {
         return []
       }
+
       const described = await client.send(
         new DescribeServicesCommand({
           cluster: clusterName,
           services: serviceArns,
         }),
       )
+
       return described.services ?? []
     },
     staleTime: CLUSTER_STALE_TIME,
@@ -76,16 +85,21 @@ export const ecsTasksQueryOptions = (clusterName: string) =>
     queryKey: ["ecs", "clusters", clusterName, "tasks"],
     queryFn: async () => {
       const client = getEcsClient()
+
       const list = await client.send(
         new ListTasksCommand({ cluster: clusterName }),
       )
+
       const taskArns = list.taskArns ?? []
+
       if (taskArns.length === 0) {
         return []
       }
+
       const described = await client.send(
         new DescribeTasksCommand({ cluster: clusterName, tasks: taskArns }),
       )
+
       return described.tasks ?? []
     },
     staleTime: TASK_STALE_TIME,
@@ -96,19 +110,24 @@ export const ecsContainerInstancesQueryOptions = (clusterName: string) =>
     queryKey: ["ecs", "clusters", clusterName, "container-instances"],
     queryFn: async () => {
       const client = getEcsClient()
+
       const list = await client.send(
         new ListContainerInstancesCommand({ cluster: clusterName }),
       )
+
       const containerInstanceArns = list.containerInstanceArns ?? []
+
       if (containerInstanceArns.length === 0) {
         return []
       }
+
       const described = await client.send(
         new DescribeContainerInstancesCommand({
           cluster: clusterName,
           containerInstances: containerInstanceArns,
         }),
       )
+
       return described.containerInstances ?? []
     },
     staleTime: CLUSTER_STALE_TIME,
@@ -120,6 +139,7 @@ export const ecsTaskDefinitionsQueryOptions = queryOptions({
   queryKey: ["ecs", "task-definitions"],
   queryFn: async () => {
     const list = await getEcsClient().send(new ListTaskDefinitionsCommand({}))
+
     return list.taskDefinitionArns ?? []
   },
   staleTime: CLUSTER_STALE_TIME,
@@ -135,6 +155,7 @@ export const ecsTaskDefinitionQueryOptions = (taskDefinition: string) =>
       const out = await getEcsClient().send(
         new DescribeTaskDefinitionCommand({ taskDefinition }),
       )
+
       return out.taskDefinition
     },
     enabled: taskDefinition !== "",

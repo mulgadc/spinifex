@@ -122,6 +122,7 @@ export function KnowledgeBaseFormPage() {
                 onValueChange={(value) => {
                   field.onChange(value ?? "")
                   const known = dimensionsForModelArn(value ?? "")
+
                   if (known) {
                     setValue("dimensions", known)
                   }

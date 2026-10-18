@@ -20,6 +20,7 @@ const POLICY = `{"Version":"2012-10-17"}`
 function seed(policyText: string | null) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecr", "repositories", REPO, "policy"], policyText)
+
   return qc
 }
 

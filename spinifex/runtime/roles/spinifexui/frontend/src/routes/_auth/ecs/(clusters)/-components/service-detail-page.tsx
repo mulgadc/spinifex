@@ -24,6 +24,7 @@ function attachmentDetail(task: Task, name: string): string | undefined {
   const eni = (task.attachments ?? []).find(
     (a) => a.type === "ElasticNetworkInterface",
   )
+
   return eni?.details?.find((d) => d.name === name)?.value
 }
 
@@ -37,6 +38,7 @@ export function ServiceDetailPage({
   const { data: services } = useSuspenseQuery(
     ecsServicesQueryOptions(clusterName),
   )
+
   const { data: tasks } = useSuspenseQuery(ecsTasksQueryOptions(clusterName))
   const service = services.find((s) => s.serviceName === serviceName)
 
@@ -53,9 +55,11 @@ export function ServiceDetailPage({
   }
 
   const loadBalancers = service.loadBalancers ?? []
+
   const memberTasks = tasks.filter(
     (t: Task) => t.group === `service:${serviceName}`,
   )
+
   const deployments = service.deployments ?? []
   const events = service.events ?? []
 
@@ -153,6 +157,7 @@ export function ServiceDetailPage({
               <tbody>
                 {memberTasks.map((task: Task) => {
                   const id = shortArn(task.taskArn)
+
                   return (
                     <tr className="border-b last:border-0" key={id}>
                       <td className="px-4 py-2 font-mono text-xs">

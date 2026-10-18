@@ -148,6 +148,7 @@ function ModelAccessAccountPicker({
   const sorted = accounts.toSorted((a, b) =>
     a.accountName.localeCompare(b.accountName),
   )
+
   return (
     <Field>
       <FieldTitle>
@@ -183,6 +184,7 @@ function ModelAccessAccountFallback({
   onAccountIdChange: (accountId: string) => void
 }) {
   const invalid = accountId !== "" && !ACCOUNT_ID_RE.test(accountId)
+
   return (
     <Field>
       <FieldTitle>
@@ -222,9 +224,11 @@ function ModelAccessBody({
       </p>
     )
   }
+
   if (entries.length === 0) {
     return <p className="text-xs text-muted-foreground">No models found.</p>
   }
+
   return (
     <ModelAccessTable
       accountId={accountId}
@@ -238,17 +242,21 @@ export function ModelAccessPage() {
   const [accountId, setAccountId] = useState("")
 
   const accountsQuery = useQuery(adminListAccountsQueryOptions)
+
   const accounts = (accountsQuery.data?.accounts ?? []).filter(
     (account) => account.accountId !== GLOBAL_ACCOUNT_ID,
   )
+
   const pickerAvailable = accountsQuery.isSuccess && accounts.length > 0
 
   const validAccountId = pickerAvailable
     ? accountId !== ""
     : ACCOUNT_ID_RE.test(accountId)
+
   const effectiveAccountId = validAccountId ? accountId : ""
 
   const { data: catalogData } = useQuery(adminOchreCatalogQueryOptions)
+
   const { data: accessData } = useQuery(
     adminModelAccessQueryOptions(effectiveAccountId),
   )
@@ -256,6 +264,7 @@ export function ModelAccessPage() {
   const entries = (catalogData?.entries ?? []).toSorted((a, b) =>
     a.modelName.localeCompare(b.modelName),
   )
+
   const grantedModelIds = new Set(accessData?.ModelIds)
 
   return (

@@ -68,9 +68,11 @@ function latestEvent(
 // the serving side, so both forms ask for it rather than falling back silently.
 function buildConnectCommand(instance: DBInstance): CliCommand[] {
   const address = instance.Endpoint?.Address
+
   if (!address) {
     return []
   }
+
   const port = instance.Endpoint?.Port ?? instance.DbInstancePort
   const user = instance.MasterUsername ?? "<MasterUsername>"
   const database = instance.DBName ?? user
@@ -89,6 +91,7 @@ function buildConnectCommand(instance: DBInstance): CliCommand[] {
       },
     ]
   }
+
   return [
     {
       label: "Connect",
@@ -109,9 +112,11 @@ function buildConnectCommand(instance: DBInstance): CliCommand[] {
 
 export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const navigate = useNavigate()
+
   const { data: instanceData } = useSuspenseQuery(
     rdsDBInstanceQueryOptions(dbInstanceIdentifier),
   )
+
   const instance = instanceData.DBInstances?.[0]
   const arn = instance?.DBInstanceArn ?? ""
 
@@ -120,9 +125,11 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const { data: eventsData } = useSuspenseQuery(
     rdsEventsQueryOptions(dbInstanceIdentifier),
   )
+
   const { data: snapshotsData } = useSuspenseQuery(
     rdsInstanceDBSnapshotsQueryOptions(dbInstanceIdentifier),
   )
+
   const { data: automatedBackupsData } = useSuspenseQuery(
     rdsAutomatedBackupsQueryOptions(dbInstanceIdentifier),
   )
@@ -133,6 +140,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
   const [showDelete, setShowDelete] = useState(false)
   const [showModify, setShowModify] = useState(false)
   const [showSnapshot, setShowSnapshot] = useState(false)
+
   const [deleteSnapshotTarget, setDeleteSnapshotTarget] = useState<
     string | null
   >(null)
@@ -148,6 +156,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
 
   const status = instance.DBInstanceStatus
   const events = eventsData.Events ?? []
+
   const lifecycleError =
     startInstance.error ?? stopInstance.error ?? rebootInstance.error
 
@@ -157,6 +166,7 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
     events,
     (event) => hasCategory(event, "backup") && hasCategory(event, "failure"),
   )
+
   // A quiesce that could not be taken or released is recorded as a backup
   // notification. It is the only signal that a snapshot is crash consistent,
   // since the record's flag is never projected onto the snapshot.
@@ -165,7 +175,9 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
     (event) =>
       hasCategory(event, "backup") && hasCategory(event, "notification"),
   )
+
   const snapshots = snapshotsData.DBSnapshots ?? []
+
   // The success of an automated backup is only ever evented on the snapshot's
   // own ring, so the newest automated snapshot is the instance-side answer.
   const lastBackup = snapshots
@@ -176,8 +188,10 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
         (b.SnapshotCreateTime?.getTime() ?? 0),
     )
     .at(-1)
+
   const automatedBackup = automatedBackupsData.DBInstanceAutomatedBackups?.[0]
   const pending = instance.PendingModifiedValues
+
   const hasPending =
     pending?.AllocatedStorage !== undefined ||
     pending?.DBInstanceClass !== undefined
@@ -485,9 +499,11 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
                       <tbody>
                         {snapshots.map((snapshot) => {
                           const snapshotId = snapshot.DBSnapshotIdentifier
+
                           if (!snapshotId) {
                             return null
                           }
+
                           return (
                             <tr
                               className="border-b last:border-0"

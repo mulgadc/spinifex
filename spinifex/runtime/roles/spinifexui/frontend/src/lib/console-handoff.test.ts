@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("./sts", () => ({
   exchangeForSession: vi.fn(),
 }))
+
 vi.mock("./awsClient", () => ({
   clearClients: vi.fn(),
 }))
+
 vi.mock("./auth", async (orig) => ({
   ...(await orig<typeof import("./auth")>()),
   setSessionCredentials: vi.fn(),
@@ -22,6 +24,7 @@ const GOOD = {
   accessKeyId: "AKIAIOSFODNN7EXAMPLE",
   secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 }
+
 const SESSION = {
   accessKeyId: "ASIAIOSFODNN7EXAMPLE",
   secretAccessKey: "sessionsecret",
@@ -46,6 +49,7 @@ function postToConsole(opts: {
     data: opts.data,
     origin: opts.origin,
   })
+
   Object.defineProperty(ev, "source", {
     value: opts.source,
     configurable: true,

@@ -62,6 +62,7 @@ function seed(opts?: { nodegroupVersion?: string; gpuNodegroup?: boolean }) {
   qc.setQueryData(["ec2", "instances", "types"], {
     InstanceTypes: INSTANCE_TYPES,
   })
+
   return qc
 }
 

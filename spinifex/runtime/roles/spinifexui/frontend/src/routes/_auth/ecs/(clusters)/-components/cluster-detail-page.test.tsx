@@ -13,6 +13,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -23,7 +24,9 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 })
 
 vi.mock("./services-tab", () => ({ ServicesTab: () => null }))
+
 vi.mock("./tasks-tab", () => ({ TasksTab: () => null }))
+
 vi.mock("./container-instances-tab", () => ({
   ContainerInstancesTab: () => null,
 }))
@@ -42,6 +45,7 @@ function seedCluster(extra: Partial<Cluster> = {}) {
     registeredContainerInstancesCount: 1,
     ...extra,
   })
+
   return qc
 }
 
@@ -51,9 +55,11 @@ describe("ClusterDetailPage", () => {
 
     expect(screen.getByRole("heading", { name: "web" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Delete/ })).toBeInTheDocument()
+
     for (const label of ["Services", "Tasks", "Infrastructure", "Tags"]) {
       expect(screen.getByRole("tab", { name: label })).toBeInTheDocument()
     }
+
     expect(
       screen.queryByRole("tab", { name: "Configuration" }),
     ).not.toBeInTheDocument()

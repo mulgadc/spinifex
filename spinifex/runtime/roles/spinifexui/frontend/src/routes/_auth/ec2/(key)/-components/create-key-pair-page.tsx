@@ -38,6 +38,7 @@ import { PrivateKeyModal } from "../../-components/private-key-modal"
 export function CreateKeyPairPage() {
   const navigate = useNavigate()
   const createMutation = useCreateKeyPair()
+
   const [keyMaterial, setKeyMaterial] = useState<{
     keyName: string
     material: string

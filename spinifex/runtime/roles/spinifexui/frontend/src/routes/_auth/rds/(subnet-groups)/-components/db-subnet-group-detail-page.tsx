@@ -21,9 +21,11 @@ interface Props {
 
 export function DBSubnetGroupDetailPage({ dbSubnetGroupName }: Props) {
   const navigate = useNavigate()
+
   const { data } = useSuspenseQuery(
     rdsSubnetGroupQueryOptions(dbSubnetGroupName),
   )
+
   const group = data.DBSubnetGroups?.[0]
   const arn = group?.DBSubnetGroupArn ?? ""
 

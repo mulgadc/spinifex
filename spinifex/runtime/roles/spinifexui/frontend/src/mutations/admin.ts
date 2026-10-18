@@ -9,12 +9,15 @@ interface PromoteImageOutput {
 
 export function usePromoteImage() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (imageId: string) => {
       const credentials = getCredentials()
+
       if (!credentials) {
         throw new Error("Not authenticated")
       }
+
       return await signedFetch<PromoteImageOutput>({
         action: "PromoteImage",
         credentials,

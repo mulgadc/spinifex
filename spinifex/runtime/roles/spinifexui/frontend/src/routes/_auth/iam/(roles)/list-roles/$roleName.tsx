@@ -61,6 +61,7 @@ function RoleDetail() {
   const { roleName } = Route.useParams()
   const navigate = useNavigate()
   const { data: roleData } = useSuspenseQuery(iamRoleQueryOptions(roleName))
+
   const { data: profilesData } = useSuspenseQuery(
     iamInstanceProfilesForRoleQueryOptions(roleName),
   )

@@ -123,12 +123,15 @@ function CreateVersionForm({ guardrailId }: { guardrailId: string }) {
 export function GuardrailDetailPage({ guardrailId }: GuardrailDetailPageProps) {
   const navigate = useNavigate()
   const [showDelete, setShowDelete] = useState(false)
+
   const { data: guardrail } = useSuspenseQuery(
     guardrailQueryOptions(guardrailId),
   )
+
   const { data: versionsData } = useSuspenseQuery(
     guardrailVersionsQueryOptions(guardrailId),
   )
+
   const deleteGuardrail = useDeleteGuardrail()
 
   const versions = versionsData.guardrails ?? []

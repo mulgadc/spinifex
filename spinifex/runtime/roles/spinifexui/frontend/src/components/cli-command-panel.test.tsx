@@ -95,6 +95,7 @@ describe("CliCommandPanel", () => {
     const binPart = screen.getByText(
       "AWS_PROFILE=spinifex aws ec2 create-key-pair",
     )
+
     expect(binPart.className).toContain("text-tactical-cyan")
     expect(binPart.className).toContain("font-semibold")
 
@@ -107,6 +108,7 @@ describe("CliCommandPanel", () => {
 
   it("applies correct styles to variable and comment parts", async () => {
     const user = userEvent.setup()
+
     const commands: CliCommand[] = [
       {
         label: "Test",
@@ -117,6 +119,7 @@ describe("CliCommandPanel", () => {
         ],
       },
     ]
+
     render(<CliCommandPanel commands={commands} />)
     await user.click(screen.getByText("AWS CLI"))
 

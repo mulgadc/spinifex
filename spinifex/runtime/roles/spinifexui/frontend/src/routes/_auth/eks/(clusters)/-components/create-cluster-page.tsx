@@ -39,12 +39,14 @@ import { CreateClusterRoleDialog } from "./create-cluster-role-dialog"
 
 function vpcLabel(vpc: Vpc): string {
   const name = getNameTag(vpc.Tags)
+
   return name ? `${vpc.VpcId} (${name})` : `${vpc.VpcId} (${vpc.CidrBlock})`
 }
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
   const suffix = name ? `${subnet.SubnetId} (${name})` : subnet.SubnetId
+
   return `${suffix} · ${subnet.CidrBlock}`
 }
 
@@ -63,6 +65,7 @@ export function CreateClusterPage() {
 
   const handleRecheck = async () => {
     setIsRechecking(true)
+
     try {
       await queryClient.invalidateQueries({
         queryKey: ec2ImagesQueryOptions.queryKey,
@@ -114,6 +117,7 @@ export function CreateClusterPage() {
     const next = selectedSubnets.includes(subnetId)
       ? selectedSubnets.filter((id) => id !== subnetId)
       : [...selectedSubnets, subnetId]
+
     setValue("subnetIds", next, { shouldValidate: true })
   }
 

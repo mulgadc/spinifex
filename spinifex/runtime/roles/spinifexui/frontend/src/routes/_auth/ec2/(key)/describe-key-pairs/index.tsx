@@ -30,6 +30,7 @@ function KeyPairs() {
   const keyPairs = (data.KeyPairs ?? []).toSorted((a, b) => {
     const nameA = a.KeyName?.toLowerCase() ?? ""
     const nameB = b.KeyName?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -55,6 +56,7 @@ function KeyPairs() {
             if (!keyPair.KeyPairId) {
               return null
             }
+
             return (
               <ListCard
                 key={keyPair.KeyPairId}

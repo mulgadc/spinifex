@@ -118,6 +118,7 @@ function VolumeDetail() {
 
   const handleDetach = async () => {
     const instanceId = volume?.Attachments?.[0]?.InstanceId
+
     try {
       await detachMutation.mutateAsync({
         volumeId: id,
@@ -336,6 +337,7 @@ function VolumeDetail() {
               <SelectContent>
                 {runningInstances.map((instance) => {
                   const name = getNameTag(instance.Tags)
+
                   return (
                     <SelectItem
                       key={instance.InstanceId}

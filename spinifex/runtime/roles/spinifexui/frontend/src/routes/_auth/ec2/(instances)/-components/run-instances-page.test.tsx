@@ -11,6 +11,7 @@ import {
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -94,6 +95,7 @@ function setup(images: Image[] = [DEFAULT_IMAGE]) {
     $metadata: {},
     LaunchTemplates: [],
   })
+
   return renderWithClient(<RunInstancesPage />, queryClient)
 }
 

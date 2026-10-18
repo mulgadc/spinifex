@@ -10,13 +10,16 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     const name = safeDecodeURIComponent(params.name)
+
     // The tags query keys off the ARN, which only the describe knows, so it is
     // warmed after the group rather than alongside it.
     const group = await context.queryClient.query({
       ...rdsSubnetGroupQueryOptions(name),
       staleTime: "static",
     })
+
     const arn = group.DBSubnetGroups?.[0]?.DBSubnetGroupArn ?? ""
+
     if (arn !== "") {
       await context.queryClient.query({
         ...rdsTagsQueryOptions(arn),
@@ -36,6 +39,7 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { name } = Route.useParams()
+
   return (
     <DBSubnetGroupDetailPage dbSubnetGroupName={safeDecodeURIComponent(name)} />
   )

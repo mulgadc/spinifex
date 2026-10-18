@@ -74,9 +74,11 @@ function UserDetail() {
   const { userName } = Route.useParams()
   const navigate = useNavigate()
   const { data: userData } = useSuspenseQuery(iamUserQueryOptions(userName))
+
   const { data: accessKeysData } = useSuspenseQuery(
     iamAccessKeysQueryOptions(userName),
   )
+
   const { data: groupsData } = useSuspenseQuery(
     iamGroupsForUserQueryOptions(userName),
   )
@@ -88,11 +90,14 @@ function UserDetail() {
   const removeFromGroupMutation = useRemoveUserFromGroup()
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+
   const [newAccessKey, setNewAccessKey] = useState<{
     accessKeyId: string
     secretAccessKey: string
   } | null>(null)
+
   const [pendingKeyAction, setPendingKeyAction] = useState<string | null>(null)
+
   const [pendingGroupAction, setPendingGroupAction] = useState<string | null>(
     null,
   )
@@ -112,6 +117,7 @@ function UserDetail() {
 
   const handleCreateAccessKey = async () => {
     const response = await createAccessKeyMutation.mutateAsync(userName)
+
     if (response.AccessKey) {
       setNewAccessKey({
         accessKeyId: response.AccessKey.AccessKeyId ?? "",
@@ -124,7 +130,9 @@ function UserDetail() {
     if (!key.AccessKeyId) {
       return
     }
+
     setPendingKeyAction(key.AccessKeyId)
+
     try {
       await updateAccessKeyMutation.mutateAsync({
         userName,
@@ -138,6 +146,7 @@ function UserDetail() {
 
   const handleDeleteAccessKey = async (accessKeyId: string) => {
     setPendingKeyAction(accessKeyId)
+
     try {
       await deleteAccessKeyMutation.mutateAsync({ userName, accessKeyId })
     } finally {
@@ -147,6 +156,7 @@ function UserDetail() {
 
   const handleRemoveFromGroup = async (groupName: string) => {
     setPendingGroupAction(groupName)
+
     try {
       await removeFromGroupMutation.mutateAsync({ groupName, userName })
     } finally {

@@ -67,18 +67,22 @@ async function renderPage(nodes: MetaNodeStatus[]) {
 function clusterHealth(): string {
   const badge =
     screen.getByText("Cluster Health").parentElement?.lastElementChild
+
   if (!badge) {
     throw new Error("Cluster Health label has no badge beside it")
   }
+
   return badge.textContent ?? ""
 }
 
 // metaRow returns one body row of the meta nodes table; row 0 is the header.
 function metaRow(index: number): HTMLElement {
   const row = screen.getAllByRole("row")[index + 1]
+
   if (!row) {
     throw new Error(`no meta node row at index ${index}`)
   }
+
   return row
 }
 

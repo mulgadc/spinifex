@@ -48,7 +48,9 @@ function Vpcs() {
             if (!vpc.VpcId) {
               return null
             }
+
             const name = getNameTag(vpc.Tags)
+
             return (
               <ListCard
                 badge={<StateBadge state={vpc.State} />}

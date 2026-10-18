@@ -26,6 +26,7 @@ describe("CreateRepositoryDialog", () => {
     const createButton = screen.getByRole("button", {
       name: "Create Repository",
     })
+
     expect(createButton).toBeDisabled()
 
     fireEvent.change(screen.getByPlaceholderText("team/app"), {

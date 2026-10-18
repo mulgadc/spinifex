@@ -47,9 +47,11 @@ function Ec2() {
   ).toSorted((a, b) => {
     const pa = statePriority[a.State?.Name ?? ""] ?? 6
     const pb = statePriority[b.State?.Name ?? ""] ?? 6
+
     if (pa !== pb) {
       return pa - pb
     }
+
     return (a.InstanceId ?? "").localeCompare(b.InstanceId ?? "")
   })
 
@@ -70,6 +72,7 @@ function Ec2() {
             if (!instance.InstanceId) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={instance.State?.Name} />}

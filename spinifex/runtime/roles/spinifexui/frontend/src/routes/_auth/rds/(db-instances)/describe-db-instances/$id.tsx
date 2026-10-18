@@ -16,6 +16,7 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     const id = safeDecodeURIComponent(params.id)
+
     // The tags query keys off the ARN, which only the describe knows, so it is
     // warmed after the instance rather than alongside it.
     const [instance] = await Promise.all([
@@ -36,6 +37,7 @@ export const Route = createFileRoute(
         staleTime: "static",
       }),
     ])
+
     const arn = instance.DBInstances?.[0]?.DBInstanceArn ?? ""
     await context.queryClient.query({
       ...rdsTagsQueryOptions(arn),
@@ -54,6 +56,7 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { id } = Route.useParams()
+
   return (
     <DBInstanceDetailPage dbInstanceIdentifier={safeDecodeURIComponent(id)} />
   )

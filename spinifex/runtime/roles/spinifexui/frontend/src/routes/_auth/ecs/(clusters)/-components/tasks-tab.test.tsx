@@ -22,6 +22,7 @@ import { TasksTab } from "./tasks-tab"
 function seed(tasks: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "clusters", "web", "tasks"], tasks)
+
   return qc
 }
 

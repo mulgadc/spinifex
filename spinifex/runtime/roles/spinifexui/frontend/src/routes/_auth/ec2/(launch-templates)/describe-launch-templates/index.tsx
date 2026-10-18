@@ -49,6 +49,7 @@ function LaunchTemplates() {
             if (!lt.LaunchTemplateId) {
               return null
             }
+
             return (
               <ListCard
                 badge={

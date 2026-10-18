@@ -34,6 +34,7 @@ export function RepositoriesPage() {
     if (!deleteTarget) {
       return
     }
+
     try {
       await deleteRepository.mutateAsync(deleteTarget)
       setDeleteTarget(null)
@@ -76,7 +77,9 @@ export function RepositoriesPage() {
                 if (!repo.repositoryName) {
                   return null
                 }
+
                 const name = repo.repositoryName
+
                 return (
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"

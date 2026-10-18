@@ -7,6 +7,7 @@ export const s3BucketsQueryOptions = queryOptions({
   queryKey: ["s3", "buckets"],
   queryFn: async () => {
     const command = new ListBucketsCommand({})
+
     return await getS3Client().send(command)
   },
 })
@@ -23,6 +24,7 @@ export const s3BucketObjectsQueryOptions = (
         Prefix: prefix,
         Delimiter: "/",
       })
+
       return await getS3Client().send(command)
     },
   })

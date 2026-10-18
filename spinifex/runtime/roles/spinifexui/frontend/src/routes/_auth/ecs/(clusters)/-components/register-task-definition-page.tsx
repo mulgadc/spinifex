@@ -49,6 +49,7 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
       portMappings: [],
     },
   })
+
   const ports = useFieldArray({ control, name: "portMappings" })
 
   function done() {

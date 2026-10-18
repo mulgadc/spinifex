@@ -17,6 +17,7 @@ describe("createBucketSchema", () => {
     const result = createBucketSchema.safeParse({
       bucketName: "a".repeat(64),
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -54,6 +55,7 @@ describe("createBucketSchema", () => {
     const result = createBucketSchema.safeParse({
       bucketName: "my.test-bucket.v2",
     })
+
     expect(result.success).toBeTruthy()
   })
 

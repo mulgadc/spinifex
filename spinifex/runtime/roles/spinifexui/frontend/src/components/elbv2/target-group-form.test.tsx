@@ -39,7 +39,9 @@ function Harness({
       tags: [],
     },
   })
+
   onFormRef?.(form)
+
   return <TargetGroupForm form={form} vpcs={VPCS} />
 }
 

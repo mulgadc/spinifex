@@ -26,6 +26,7 @@ function Policies() {
   const policies = (data.Policies ?? []).toSorted((a, b) => {
     const nameA = a.PolicyName?.toLowerCase() ?? ""
     const nameB = b.PolicyName?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -46,6 +47,7 @@ function Policies() {
             if (!policy.Arn) {
               return null
             }
+
             return (
               <ListCard
                 key={policy.Arn}

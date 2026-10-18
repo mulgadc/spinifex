@@ -14,6 +14,7 @@ export const guardrailsQueryOptions = queryOptions({
   queryKey: ["bedrock", "guardrails"],
   queryFn: async () => {
     const command = new ListGuardrailsCommand({})
+
     return await getBedrockClient().send(command)
   },
   staleTime: GUARDRAIL_STALE_TIME,
@@ -24,6 +25,7 @@ export const guardrailQueryOptions = (guardrailIdentifier: string) =>
     queryKey: ["bedrock", "guardrails", guardrailIdentifier],
     queryFn: async () => {
       const command = new GetGuardrailCommand({ guardrailIdentifier })
+
       return await getBedrockClient().send(command)
     },
     staleTime: GUARDRAIL_STALE_TIME,
@@ -36,6 +38,7 @@ export const guardrailVersionsQueryOptions = (guardrailIdentifier: string) =>
     queryKey: ["bedrock", "guardrails", guardrailIdentifier, "versions"],
     queryFn: async () => {
       const command = new ListGuardrailsCommand({ guardrailIdentifier })
+
       return await getBedrockClient().send(command)
     },
     staleTime: GUARDRAIL_STALE_TIME,
@@ -48,6 +51,7 @@ export const foundationModelsQueryOptions = queryOptions({
   queryKey: ["bedrock", "foundationModels"],
   queryFn: async () => {
     const command = new ListFoundationModelsCommand({})
+
     return await getBedrockClient().send(command)
   },
   staleTime: FOUNDATION_MODELS_STALE_TIME,

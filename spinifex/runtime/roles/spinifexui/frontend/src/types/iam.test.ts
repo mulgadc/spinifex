@@ -37,6 +37,7 @@ describe("createUserSchema", () => {
       userName: "admin",
       path: "/engineering/",
     })
+
     expect(result.success).toBeTruthy()
   })
 })
@@ -47,6 +48,7 @@ describe("createPolicySchema", () => {
       policyName: "ReadOnly",
       policyDocument: '{"Version":"2012-10-17","Statement":[]}',
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -55,6 +57,7 @@ describe("createPolicySchema", () => {
       policyName: "",
       policyDocument: "{}",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -63,6 +66,7 @@ describe("createPolicySchema", () => {
       policyName: "a".repeat(129),
       policyDocument: "{}",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -71,6 +75,7 @@ describe("createPolicySchema", () => {
       policyName: "ReadOnly",
       policyDocument: "not json",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -79,6 +84,7 @@ describe("createPolicySchema", () => {
       policyName: "ReadOnly",
       policyDocument: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -88,6 +94,7 @@ describe("createPolicySchema", () => {
       description: "Read-only access",
       policyDocument: "{}",
     })
+
     expect(result.success).toBeTruthy()
   })
 })
@@ -98,6 +105,7 @@ describe("putInlinePolicySchema", () => {
       policyName: "s3-read",
       policyDocument: '{"Version":"2012-10-17","Statement":[]}',
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -106,6 +114,7 @@ describe("putInlinePolicySchema", () => {
       policyName: "",
       policyDocument: "{}",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -114,6 +123,7 @@ describe("putInlinePolicySchema", () => {
       policyName: "a".repeat(129),
       policyDocument: "{}",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -122,6 +132,7 @@ describe("putInlinePolicySchema", () => {
       policyName: "bad name!",
       policyDocument: "{}",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -130,6 +141,7 @@ describe("putInlinePolicySchema", () => {
       policyName: "s3-read",
       policyDocument: "not json",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -138,6 +150,7 @@ describe("putInlinePolicySchema", () => {
       policyName: "s3-read",
       policyDocument: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 })

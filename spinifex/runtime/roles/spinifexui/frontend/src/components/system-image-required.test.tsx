@@ -10,6 +10,7 @@ function renderCallout(
   overrides: Partial<Parameters<typeof SystemImageRequired>[0]> = {},
 ) {
   const onRecheck = vi.fn()
+
   const { container } = render(
     <SystemImageRequired
       description="Import it before creating a cluster."
@@ -20,6 +21,7 @@ function renderCallout(
       {...overrides}
     />,
   )
+
   return { container, onRecheck }
 }
 

@@ -24,6 +24,7 @@ export function RetrieveTester({ knowledgeBaseId }: RetrieveTesterProps) {
     if (query.trim().length === 0) {
       return
     }
+
     try {
       await retrieve.mutateAsync({ knowledgeBaseId, query })
     } catch {
@@ -81,6 +82,7 @@ export function RetrieveTester({ knowledgeBaseId }: RetrieveTesterProps) {
             results.map((result, index) => {
               const location = resultSourceLocation(result)
               const key = result.documentId ?? `${location ?? "chunk"}-${index}`
+
               return (
                 <div className="rounded-md border p-3 text-sm" key={key}>
                   <div className="mb-1 flex items-center justify-between gap-2">

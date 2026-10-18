@@ -31,17 +31,21 @@ let credentialsCache: SessionCredentials | null | undefined
 
 function isExpired(expiration: string): boolean {
   const expiresAt = Date.parse(expiration)
+
   return Number.isNaN(expiresAt) || expiresAt <= Date.now()
 }
 
 function readStoredCredentials(): SessionCredentials | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
+
     if (!stored) {
       return null
     }
+
     const parsed: unknown = JSON.parse(stored)
     const result = sessionCredentialsSchema.safeParse(parsed)
+
     return result.success ? result.data : null
   } catch {
     return null
@@ -52,11 +56,14 @@ export function getCredentials(): SessionCredentials | null {
   if (credentialsCache === undefined) {
     credentialsCache = readStoredCredentials()
   }
+
   // Treat expired sessions as logged out so route guards redirect to /login.
   if (credentialsCache && isExpired(credentialsCache.expiration)) {
     clearCredentials()
+
     return null
   }
+
   return credentialsCache
 }
 
@@ -76,6 +83,7 @@ export function clearCredentials(): void {
   } catch {
     // Ignore errors when clearing
   }
+
   credentialsCache = null
 }
 
@@ -87,10 +95,13 @@ export function onSessionChangedInOtherTab(handler: () => void): () => void {
     if (event.key !== STORAGE_KEY && event.key !== null) {
       return
     }
+
     credentialsCache = undefined
     handler()
   }
+
   window.addEventListener("storage", listener)
+
   return () => {
     window.removeEventListener("storage", listener)
   }

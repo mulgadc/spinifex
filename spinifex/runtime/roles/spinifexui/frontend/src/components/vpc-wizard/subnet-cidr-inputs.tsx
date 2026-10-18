@@ -21,8 +21,10 @@ export function SubnetCidrInputs({
   defaults,
 }: SubnetCidrInputsProps) {
   const [expanded, setExpanded] = useState(false)
+
   const fieldName =
     type === "public" ? "publicSubnetCidrs" : "privateSubnetCidrs"
+
   const fieldErrors = form.formState.errors[fieldName]
   // A subnet error must be visible, or Create appears to do nothing.
   const isOpen = expanded || fieldErrors !== undefined

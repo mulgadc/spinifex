@@ -11,6 +11,7 @@ const { sdk } = vi.hoisted(() => {
   interface SdkCommand {
     readonly input: object
   }
+
   return {
     sdk: {
       send: vi.fn<(command: SdkCommand) => Promise<unknown>>(async () => ({})),
@@ -24,6 +25,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     createFileRoute:
@@ -65,9 +67,11 @@ async function renderPage() {
   qc.setQueryData(["ec2", "subnets"], { Subnets: [] })
   qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: [] })
   const Detail = Route.options.component
+
   if (!Detail) {
     throw new Error("route has no component")
   }
+
   // The router plugin code-splits route components, so load it before render.
   await Detail.preload?.()
   renderWithClient(<Detail />, qc)

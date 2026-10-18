@@ -49,9 +49,11 @@ export function DBSubnetGroupsListPage() {
             <tbody>
               {groups.map((group) => {
                 const name = group.DBSubnetGroupName
+
                 if (!name) {
                   return null
                 }
+
                 return (
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"

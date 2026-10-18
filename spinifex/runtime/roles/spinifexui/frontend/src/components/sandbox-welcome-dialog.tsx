@@ -64,6 +64,7 @@ function wasDismissed(): boolean {
   } catch {
     // localStorage might be disabled
   }
+
   return false
 }
 
@@ -86,6 +87,7 @@ export function SandboxWelcomeDialog() {
     if (!next) {
       markDismissed()
     }
+
     setOpen(next)
   }
 

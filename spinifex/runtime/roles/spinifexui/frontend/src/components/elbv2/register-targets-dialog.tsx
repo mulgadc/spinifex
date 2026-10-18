@@ -31,13 +31,17 @@ interface RegisterTargetsDialogProps {
 
 function parsePort(raw: string): number | undefined {
   const trimmed = raw.trim()
+
   if (trimmed === "") {
     return undefined
   }
+
   const n = Number(trimmed)
+
   if (!Number.isInteger(n) || n < 1 || n > 65_535) {
     return undefined
   }
+
   return n
 }
 
@@ -52,12 +56,15 @@ export function RegisterTargetsDialog({
   const [selections, setSelections] = useState<Record<string, SelectionState>>(
     {},
   )
+
   const [error, setError] = useState<string | undefined>()
 
   // Clear the selection each time the dialog closes so it reopens fresh.
   const [wasOpen, setWasOpen] = useState(open)
+
   if (open !== wasOpen) {
     setWasOpen(open)
+
     if (!open) {
       setSelections({})
       setError(undefined)
@@ -67,9 +74,11 @@ export function RegisterTargetsDialog({
   const toggle = (id: string) => {
     setSelections((prev) => {
       const existing = prev[id]
+
       if (existing?.checked) {
         return { ...prev, [id]: { ...existing, checked: false } }
       }
+
       return {
         ...prev,
         [id]: { checked: true, port: existing?.port ?? "" },
@@ -88,23 +97,32 @@ export function RegisterTargetsDialog({
     const selected = Object.entries(selections).filter(
       ([, v]) => v.checked && v !== undefined,
     )
+
     if (selected.length === 0) {
       setError("Select at least one instance.")
+
       return
     }
+
     const targets: TargetInput[] = []
+
     for (const [id, v] of selected) {
       if (v.port.trim() === "") {
         targets.push({ id })
         continue
       }
+
       const parsed = parsePort(v.port)
+
       if (parsed === undefined) {
         setError(`Port for ${id} must be an integer between 1 and 65535.`)
+
         return
       }
+
       targets.push({ id, port: parsed })
     }
+
     setError(undefined)
     onConfirm(targets)
   }
@@ -131,6 +149,7 @@ export function RegisterTargetsDialog({
               const selection = selections[id]
               const checked = selection?.checked ?? false
               const name = getNameTag(inst.Tags)
+
               return (
                 <div
                   className="flex items-center gap-2 rounded px-1 py-1 text-xs hover:bg-accent"

@@ -53,6 +53,7 @@ export function isRdsSystemImage(
   engineVersion: string,
 ): boolean {
   const tags = image.Tags ?? []
+
   const hasTag = (key: string, value: string) =>
     tags.some((tag) => tag.Key === key && tag.Value === value)
 

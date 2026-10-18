@@ -46,9 +46,11 @@ interface Props {
 export function LoadBalancerDetailPage({ arn }: Props) {
   const navigate = useNavigate()
   const { data: lbData } = useSuspenseQuery(elbv2LoadBalancerQueryOptions(arn))
+
   const { data: attrsData } = useSuspenseQuery(
     elbv2LoadBalancerAttributesQueryOptions(arn),
   )
+
   const { data: tagsData } = useSuspenseQuery(elbv2TagsQueryOptions([arn]))
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
@@ -83,29 +85,39 @@ export function LoadBalancerDetailPage({ arn }: Props) {
   }
 
   const subnets = subnetsData.Subnets ?? []
+
   const subnetLabel = (subnetId: string): string => {
     const subnet = subnets.find((s: Subnet) => s.SubnetId === subnetId)
+
     if (!subnet) {
       return subnetId
     }
+
     const name = getNameTag(subnet.Tags)
     const cidr = subnet.CidrBlock ? ` (${subnet.CidrBlock})` : ""
+
     return name ? `${subnetId} — ${name}${cidr}` : `${subnetId}${cidr}`
   }
 
   const attributes = attrsData.Attributes ?? []
+
   const lbTags =
     tagsData?.TagDescriptions?.find((td) => td.ResourceArn === arn)?.Tags ?? []
+
   const currentSecurityGroups = (lb.SecurityGroups ?? []).filter(
     (id): id is string => id !== undefined,
   )
+
   const vpcSecurityGroups = (sgsData.SecurityGroups ?? []).filter(
     (sg) => sg.VpcId === lb.VpcId,
   )
+
   const vpcSubnets = subnets.filter((s) => s.VpcId === lb.VpcId)
+
   const currentSubnets = (lb.AvailabilityZones ?? [])
     .map((az) => az.SubnetId)
     .filter((id): id is string => id !== undefined)
+
   // NLBs carry no security groups, so the editor tab is hidden for them.
   const isNlb = lb.Type === "network"
 

@@ -56,5 +56,6 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { id } = Route.useParams()
+
   return <LoadBalancerDetailPage arn={safeDecodeURIComponent(id)} />
 }

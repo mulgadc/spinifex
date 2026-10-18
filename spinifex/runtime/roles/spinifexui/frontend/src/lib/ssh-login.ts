@@ -39,6 +39,7 @@ export function resolveSSHLogin(image: Image | undefined): SSHLogin {
       .split(/[^a-z0-9]+/)
       .filter(Boolean),
   )
+
   const match = DEFAULT_USERS.find(([name]) => tokens.has(name))
 
   return match ? { user: match[1], distro: match[0] } : { user: "" }
@@ -59,9 +60,11 @@ export function resolveSSHTarget(instance: Instance | undefined): SSHTarget {
   if (instance?.PublicIpAddress) {
     return { address: instance.PublicIpAddress, reachability: "public" }
   }
+
   if (instance?.PrivateIpAddress) {
     return { address: instance.PrivateIpAddress, reachability: "private" }
   }
+
   return { address: "", reachability: "none" }
 }
 
@@ -80,6 +83,8 @@ export function buildSSHCommand(options: {
   const keyPath = options.keyName
     ? `path/to/${options.keyName}.pem`
     : SSH_KEY_PLACEHOLDER
+
   const user = options.user || SSH_USER_PLACEHOLDER
+
   return `ssh -i ${keyPath} ${user}@${options.address}`
 }

@@ -67,10 +67,13 @@ function formatProtocol(protocol: string | undefined): string {
   if (!protocol || protocol === "-1") {
     return "All traffic"
   }
+
   const upper = protocol.toUpperCase()
+
   if (upper === "TCP" || upper === "UDP" || upper === "ICMP") {
     return upper
   }
+
   return protocol
 }
 
@@ -82,15 +85,19 @@ function formatPortRange(
   if (!protocol || protocol === "-1") {
     return "All"
   }
+
   if (fromPort === undefined || toPort === undefined) {
     return "All"
   }
+
   if (fromPort === -1 && toPort === -1) {
     return "All"
   }
+
   if (fromPort === toPort) {
     return fromPort.toString()
   }
+
   return `${fromPort}-${toPort}`
 }
 
@@ -138,6 +145,7 @@ function AddRuleDialog({
       toPort: portsDisabled ? -1 : data.toPort,
       cidrIp: data.cidrIp,
     }
+
     await mutation.mutateAsync(params)
     reset()
     onOpenChange(false)

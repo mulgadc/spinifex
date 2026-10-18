@@ -31,6 +31,7 @@ export function CreateClusterDialog({
       setName("")
       createCluster.reset()
     }
+
     onOpenChange(nextOpen)
   }
 

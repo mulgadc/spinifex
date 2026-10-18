@@ -65,11 +65,13 @@ function buildInitial(
   attributes: AttributesEditorAttribute[],
 ): AttributeValues {
   const byKey = new Map<string, string>()
+
   for (const attr of attributes) {
     if (attr.Key !== undefined) {
       byKey.set(attr.Key, attr.Value ?? "")
     }
   }
+
   return Object.fromEntries(
     specs.map((spec) => [spec.key, byKey.get(spec.key) ?? ""]),
   )
@@ -80,17 +82,22 @@ function validate(spec: AttributeSpec, value: string): string | undefined {
     if (value.trim() === "") {
       return "Value is required"
     }
+
     if (!/^-?\d+$/.test(value)) {
       return "Must be a whole number"
     }
+
     const n = Number(value)
+
     if (spec.min !== undefined && n < spec.min) {
       return `Must be at least ${spec.min}`
     }
+
     if (spec.max !== undefined && n > spec.max) {
       return `Must be at most ${spec.max}`
     }
   }
+
   return undefined
 }
 
@@ -110,9 +117,11 @@ export function AttributesEditor({
   }
 
   const errors: Record<string, string | undefined> = {}
+
   for (const spec of specs) {
     errors[spec.key] = validate(spec, values[spec.key] ?? "")
   }
+
   const hasError = Object.values(errors).some(Boolean)
 
   const changed = specs
@@ -127,9 +136,11 @@ export function AttributesEditor({
     <form
       onSubmit={(e) => {
         e.preventDefault()
+
         if (hasError || changed.length === 0) {
           return
         }
+
         onSubmit(changed)
       }}
     >
@@ -152,6 +163,7 @@ export function AttributesEditor({
             const id = `attr-${spec.key}`
             const value = values[spec.key] ?? ""
             const fieldError = errors[spec.key]
+
             return (
               <Field key={spec.key}>
                 <FieldTitle>

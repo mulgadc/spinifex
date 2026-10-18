@@ -30,5 +30,6 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { knowledgeBaseId } = Route.useParams()
+
   return <KnowledgeBaseDetailPage knowledgeBaseId={knowledgeBaseId} />
 }

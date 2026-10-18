@@ -34,6 +34,7 @@ function seed() {
       ],
     },
   )
+
   return qc
 }
 

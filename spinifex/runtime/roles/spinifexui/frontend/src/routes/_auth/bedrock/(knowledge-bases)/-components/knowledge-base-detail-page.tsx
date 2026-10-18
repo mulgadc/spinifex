@@ -198,12 +198,15 @@ export function KnowledgeBaseDetailPage({
 }: KnowledgeBaseDetailPageProps) {
   const navigate = useNavigate()
   const [showDelete, setShowDelete] = useState(false)
+
   const { data: kbData } = useSuspenseQuery(
     knowledgeBaseQueryOptions(knowledgeBaseId),
   )
+
   const { data: dataSourcesData } = useSuspenseQuery(
     dataSourcesQueryOptions(knowledgeBaseId),
   )
+
   const deleteKnowledgeBase = useDeleteKnowledgeBase()
 
   const { knowledgeBase } = kbData

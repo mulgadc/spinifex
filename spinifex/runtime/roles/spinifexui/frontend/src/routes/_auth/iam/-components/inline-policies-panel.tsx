@@ -99,6 +99,7 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
       remove: deleteGroup,
     },
   } satisfies Record<InlinePolicyKind, KindConfig>
+
   const { listQuery, policyQuery, put, remove } = config[kind]
 
   const { data: listData } = useSuspenseQuery(listQuery(name))
@@ -112,9 +113,12 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
     if (!confirmDelete) {
       return
     }
+
     const policyName = confirmDelete
+
     try {
       await remove.mutateAsync({ name, policyName })
+
       if (editing === policyName) {
         setEditing(null)
       }
@@ -248,9 +252,11 @@ function AddInlinePolicyForm({ name, put, onClose }: AddInlinePolicyFormProps) {
     policyName,
     policyDocument: draft,
   })
+
   const nameIssue = parsed.success
     ? undefined
     : parsed.error.issues.find((issue) => issue.path[0] === "policyName")
+
   const showNameError = policyName.trim().length > 0 && !!nameIssue
   const invalidJson = draft.trim().length > 0 && !isValidJson(draft)
 
@@ -334,6 +340,7 @@ function EditInlinePolicyForm({
   // Re-seed from the stored document (save invalidates the query) so the
   // textarea tracks the server copy, mirroring the ECR policy editor.
   const [seededDocument, setSeededDocument] = useState(savedDocument)
+
   if (savedDocument !== seededDocument) {
     setSeededDocument(savedDocument)
     setDraft(savedDocument ?? "")

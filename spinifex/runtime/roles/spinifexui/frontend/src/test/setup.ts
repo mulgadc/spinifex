@@ -13,6 +13,7 @@ afterEach(() => {
 // tests settle without touching the DOM, so each one pays a full tick.
 vi.mock("@testing-library/react", async (importOriginal) => {
   const actual = await importOriginal<typeof TestingLibraryReact>()
+
   return {
     ...actual,
     waitFor: async (
@@ -32,5 +33,7 @@ vi.stubGlobal(
     json: vi.fn().mockResolvedValue({ region: "ap-southeast-2" }),
   }),
 )
+
 await loadClusterConfig()
+
 vi.unstubAllGlobals()

@@ -121,7 +121,9 @@ const portField = z.string().refine((v) => {
   if (v === "") {
     return true
   }
+
   const port = Number(v)
+
   return (
     /^\d+$/.test(v) &&
     Number.isInteger(port) &&
@@ -141,6 +143,7 @@ const backupRetentionField = z
 
 const DAILY_WINDOW_REGEX =
   /^(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d$/
+
 const WEEKLY_WINDOW_REGEX =
   /^(?:sun|mon|tue|wed|thu|fri|sat):(?:[01]\d|2[0-3]):[0-5]\d-(?:sun|mon|tue|wed|thu|fri|sat):(?:[01]\d|2[0-3]):[0-5]\d$/
 
@@ -148,12 +151,14 @@ const WEEKDAYS: string[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 
 function clockMinutes(value: string): number {
   const [hours, minutes] = value.split(":")
+
   return Number(hours ?? 0) * 60 + Number(minutes ?? 0)
 }
 
 function weekdayClockMinutes(value: string): number {
   const [day, hours, minutes] = value.split(":")
   const index = WEEKDAYS.indexOf(day ?? "")
+
   return (
     index * MINUTES_PER_DAY + Number(hours ?? 0) * 60 + Number(minutes ?? 0)
   )
@@ -167,6 +172,7 @@ function windowLength(start: number, end: number, period: number): number {
 
 export function dailyWindowLength(value: string): number {
   const [from, to] = value.split("-")
+
   return windowLength(
     clockMinutes(from ?? ""),
     clockMinutes(to ?? ""),
@@ -176,6 +182,7 @@ export function dailyWindowLength(value: string): number {
 
 export function weeklyWindowLength(value: string): number {
   const [from, to] = value.split("-")
+
   return windowLength(
     weekdayClockMinutes(from ?? ""),
     weekdayClockMinutes(to ?? ""),
@@ -250,12 +257,16 @@ function checkEngineIdentifier(
 
   if (value.length > maxLen) {
     issue(`${field} must be at most ${maxLen} characters`)
+
     return
   }
+
   if (!/^[a-zA-Z]/.test(value)) {
     issue(`${field} must begin with a letter`)
+
     return
   }
+
   if (!/^\w*$/.test(value)) {
     issue(`${field} may contain only letters, digits and underscores`)
   }
@@ -276,15 +287,19 @@ function checkMasterUsername(
   )
 
   const lower = username.trim().toLowerCase()
+
   if (rules.reservedUsernames.includes(lower)) {
     ctx.addIssue({
       code: "custom",
       path: ["masterUsername"],
       message: `"${username}" is reserved by ${engine}`,
     })
+
     return
   }
+
   const prefix = rules.reservedUsernamePrefixes.find((p) => lower.startsWith(p))
+
   if (prefix) {
     ctx.addIssue({
       code: "custom",
@@ -327,6 +342,7 @@ export const createDBInstanceSchema = z
         engineRules(data.engine).maxDBNameLen,
       )
     }
+
     if (data.confirmPassword !== data.masterUserPassword) {
       ctx.addIssue({
         code: "custom",
@@ -362,10 +378,12 @@ export const modifyDBInstanceSchema = z
         message: `Storage can only grow; it is currently ${data.currentAllocatedStorage} GiB`,
       })
     }
+
     // Empty means "leave the password alone", so the character rules only
     // apply once the field carries something.
     if (data.masterUserPassword !== "") {
       const result = masterPasswordField.safeParse(data.masterUserPassword)
+
       if (!result.success) {
         ctx.addIssue({
           code: "custom",
@@ -445,6 +463,7 @@ export function suggestedIdentifier(
   const suffix = `-${purpose}-${timestampSuffix(now)}`
   const room = MAX_IDENTIFIER_LEN - suffix.length
   const stem = dbInstanceIdentifier.slice(0, room).replace(/-+$/, "")
+
   return `${stem}${suffix}`
 }
 
@@ -558,6 +577,7 @@ export type CreateDBParameterGroupFormData = z.infer<
 // dynamic one by a reload.
 export const APPLY_TYPE_STATIC = "static"
 export const APPLY_METHOD_IMMEDIATE = "immediate" satisfies ApplyMethod
+
 export const APPLY_METHOD_PENDING_REBOOT =
   "pending-reboot" satisfies ApplyMethod
 

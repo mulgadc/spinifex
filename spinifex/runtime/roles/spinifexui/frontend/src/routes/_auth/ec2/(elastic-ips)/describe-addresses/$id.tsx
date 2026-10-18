@@ -63,6 +63,7 @@ function AddressDetail() {
   const [selectedInstanceId, setSelectedInstanceId] = useState("")
 
   const address = data.Addresses?.[0]
+
   const instances =
     instancesData.Reservations?.flatMap((r) => r.Instances ?? []).filter(
       (i) => i.State?.Name === "running" || i.State?.Name === "stopped",
@@ -81,6 +82,7 @@ function AddressDetail() {
     if (!selectedInstanceId) {
       return
     }
+
     await associateMutation.mutateAsync({
       allocationId: id,
       instanceId: selectedInstanceId,
@@ -91,6 +93,7 @@ function AddressDetail() {
     if (!address?.AssociationId) {
       return
     }
+
     try {
       await disassociateMutation.mutateAsync(address.AssociationId)
     } catch {
@@ -198,6 +201,7 @@ function AddressDetail() {
                     <SelectContent>
                       {instances.map((instance) => {
                         const instanceName = getNameTag(instance.Tags)
+
                         return (
                           <SelectItem
                             key={instance.InstanceId}

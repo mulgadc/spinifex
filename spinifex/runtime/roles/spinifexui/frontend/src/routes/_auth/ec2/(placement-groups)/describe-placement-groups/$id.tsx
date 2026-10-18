@@ -61,6 +61,7 @@ function PlacementGroupDetail() {
     if (!pg?.GroupName) {
       return
     }
+
     try {
       await deleteMutation.mutateAsync(pg.GroupName)
       navigate({ to: "/ec2/describe-placement-groups" })

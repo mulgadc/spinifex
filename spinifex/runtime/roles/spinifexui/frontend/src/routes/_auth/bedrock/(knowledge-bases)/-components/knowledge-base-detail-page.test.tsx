@@ -56,6 +56,7 @@ function renderSeeded(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   queryClient.setQueryData(knowledgeBaseQueryOptions(KB_ID).queryKey, {
     $metadata: {},
     knowledgeBase,
@@ -64,6 +65,7 @@ function renderSeeded(
     $metadata: {},
     dataSourceSummaries,
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <KnowledgeBaseDetailPage knowledgeBaseId={KB_ID} />
@@ -128,9 +130,11 @@ describe("KnowledgeBaseDetailPage", () => {
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalled()
     })
+
     const input = mockSend.mock.calls[0]?.[0].input as {
       knowledgeBaseId: string
     }
+
     expect(input.knowledgeBaseId).toBe(KB_ID)
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith({
@@ -155,10 +159,12 @@ describe("KnowledgeBaseDetailPage", () => {
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalled()
     })
+
     const input = mockSend.mock.calls[0]?.[0].input as {
       knowledgeBaseId: string
       name: string
     }
+
     expect(input.knowledgeBaseId).toBe(KB_ID)
     expect(input.name).toBe("s3-docs")
   })

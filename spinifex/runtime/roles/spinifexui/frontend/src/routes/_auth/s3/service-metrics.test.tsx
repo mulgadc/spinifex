@@ -26,6 +26,7 @@ vi.mock("@/lib/sts", () => ({
 
 vi.mock("@/lib/awsClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/awsClient")>()
+
   return Object.fromEntries(
     Object.entries(actual).map(([name, value]) => [
       name,
@@ -41,6 +42,7 @@ vi.mock("@/lib/signed-fetch", () => ({
 
 vi.mock("@/lib/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/auth")>()
+
   return {
     ...actual,
     getCredentials: () => ({
@@ -61,10 +63,13 @@ import { routeTree } from "../../../routeTree.gen"
 /* oxlint-disable promise/avoid-new -- holding GetCallerIdentity open is the only way to load the route before the identity is known */
 function holdIdentity(): (account: string) => void {
   let release!: (identity: { Account: string }) => void
+
   const identity = new Promise((resolve) => {
     release = resolve
   })
+
   mockStsSend.mockReturnValue(identity)
+
   return (account) => {
     release({ Account: account })
   }
@@ -73,11 +78,13 @@ function holdIdentity(): (account: string) => void {
 
 function renderAppAt(path: string) {
   const queryClient = createTestQueryClient()
+
   const router = createRouter({
     routeTree,
     context: { queryClient },
     history: createMemoryHistory({ initialEntries: [path] }),
   })
+
   render(
     <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
       <QueryClientProvider client={queryClient}>
@@ -87,6 +94,7 @@ function renderAppAt(path: string) {
       </QueryClientProvider>
     </ThemeProvider>,
   )
+
   return { router }
 }
 

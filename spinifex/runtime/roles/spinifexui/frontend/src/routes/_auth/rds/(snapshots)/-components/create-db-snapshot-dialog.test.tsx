@@ -25,6 +25,7 @@ const INSTANCES = [
 function seed(instances: unknown[] = INSTANCES): QueryClient {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "dbInstances"], { DBInstances: instances })
+
   return qc
 }
 

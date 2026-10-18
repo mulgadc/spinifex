@@ -31,6 +31,7 @@ export function CreateRepositoryDialog({
       setName("")
       createRepository.reset()
     }
+
     onOpenChange(nextOpen)
   }
 

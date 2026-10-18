@@ -4,6 +4,7 @@ interface PolicyDocumentViewerProps {
 
 export function PolicyDocumentViewer({ document }: PolicyDocumentViewerProps) {
   let formatted: string
+
   try {
     formatted = JSON.stringify(JSON.parse(document), null, 2)
   } catch {

@@ -43,6 +43,7 @@ export function CertificateImportDialog({
     if (!next) {
       reset()
     }
+
     onOpenChange(next)
   }
 
@@ -53,15 +54,18 @@ export function CertificateImportDialog({
     if (!canSubmit) {
       return
     }
+
     try {
       const result = await importMutation.mutateAsync({
         certificate,
         privateKey,
         certificateChain,
       })
+
       if (result.CertificateArn) {
         onImported(result.CertificateArn)
       }
+
       reset()
       onOpenChange(false)
     } catch {

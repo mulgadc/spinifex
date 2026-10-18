@@ -28,6 +28,7 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 1,
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -38,6 +39,7 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 0,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -48,6 +50,7 @@ describe("createInstanceSchema", () => {
       keyName: "my-key",
       count: 1.5,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -59,6 +62,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       subnetId: "subnet-abc",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -70,6 +74,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       placementGroupName: "my-group",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -78,15 +83,18 @@ describe("createInstanceSchema", () => {
       message: "Cannot exceed available capacity",
       path: ["count"],
     })
+
     const result = refined.safeParse({
       imageId: "ami-123",
       instanceType: "t2.micro",
       keyName: "my-key",
       count: 5,
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     expect(result.error.issues[0]?.message).toBe(
       "Cannot exceed available capacity",
     )
@@ -103,6 +111,7 @@ describe("createInstanceSchema", () => {
       rootVolumeType: "gp3",
       rootDeleteOnTermination: true,
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -114,6 +123,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeSize: 0,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -125,6 +135,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeSize: 16_385,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -136,6 +147,7 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeSize: 50.5,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -147,14 +159,17 @@ describe("createInstanceSchema", () => {
       count: 1,
       rootVolumeType: "io2",
     })
+
     expect(result.success).toBeFalsy()
   })
 
   it("requires image, type and key for a direct launch", () => {
     const result = createInstanceSchema.safeParse({ count: 1 })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     const paths = result.error.issues.map((issue) => issue.path[0])
     expect(paths).toContain("imageId")
     expect(paths).toContain("instanceType")
@@ -167,6 +182,7 @@ describe("createInstanceSchema", () => {
       launchTemplateVersion: "$Default",
       count: 1,
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -188,6 +204,7 @@ describe("createInstanceSchema", () => {
         ...customSource,
         customCidr,
       })
+
       expect(result.success).toBeTruthy()
     },
   )
@@ -199,6 +216,7 @@ describe("createInstanceSchema", () => {
         ...customSource,
         customCidr,
       })
+
       expect(result.success).toBeFalsy()
     },
   )
@@ -210,6 +228,7 @@ describe("launchTemplateFormSchema", () => {
       imageId: "ami-1",
       instanceType: "t2.micro",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -218,6 +237,7 @@ describe("launchTemplateFormSchema", () => {
       imageId: "",
       instanceType: "t2.micro",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -226,6 +246,7 @@ describe("launchTemplateFormSchema", () => {
       imageId: "ami-1",
       instanceType: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -237,6 +258,7 @@ describe("createLaunchTemplateSchema", () => {
       imageId: "ami-1",
       instanceType: "t2.micro",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -246,9 +268,11 @@ describe("createLaunchTemplateSchema", () => {
       imageId: "ami-1",
       instanceType: "t2.micro",
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     expect(result.error.issues[0]?.path[0]).toBe("launchTemplateName")
   })
 
@@ -258,6 +282,7 @@ describe("createLaunchTemplateSchema", () => {
       imageId: "ami-1",
       instanceType: "t2.micro",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -267,9 +292,11 @@ describe("createLaunchTemplateSchema", () => {
       imageId: "ami-1",
       instanceType: "t2.micro",
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     expect(result.error.issues[0]?.message).toContain("letters, digits")
   })
 
@@ -277,6 +304,7 @@ describe("createLaunchTemplateSchema", () => {
     const result = createLaunchTemplateSchema.safeParse({
       launchTemplateName: "web-server",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -287,6 +315,7 @@ describe("createKeyPairSchema", () => {
       keyName: "my-key",
       keyType: "rsa",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -295,6 +324,7 @@ describe("createKeyPairSchema", () => {
       keyName: "my-key",
       keyType: "ed25519",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -303,6 +333,7 @@ describe("createKeyPairSchema", () => {
       keyName: "my-key",
       keyType: "dsa",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -311,6 +342,7 @@ describe("createKeyPairSchema", () => {
       keyName: "",
       keyType: "rsa",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -319,6 +351,7 @@ describe("createKeyPairSchema", () => {
       keyName: "a".repeat(256),
       keyType: "rsa",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -329,6 +362,7 @@ describe("importKeyPairSchema", () => {
       keyName: "my-key",
       publicKeyMaterial: "ssh-rsa AAAAB3Nza...",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -337,6 +371,7 @@ describe("importKeyPairSchema", () => {
       keyName: "my-key",
       publicKeyMaterial: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -345,6 +380,7 @@ describe("importKeyPairSchema", () => {
       keyName: "my-key",
       publicKeyMaterial: "   ",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -355,6 +391,7 @@ describe("createVolumeSchema", () => {
       size: 10,
       availabilityZone: "us-east-1a",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -363,6 +400,7 @@ describe("createVolumeSchema", () => {
       size: 0,
       availabilityZone: "us-east-1a",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -371,6 +409,7 @@ describe("createVolumeSchema", () => {
       size: 16_385,
       availabilityZone: "us-east-1a",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -379,6 +418,7 @@ describe("createVolumeSchema", () => {
       size: 10.5,
       availabilityZone: "us-east-1a",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -406,6 +446,7 @@ describe("createVpcSchema", () => {
       cidrBlock: "10.0.0.0/16",
       name: "my-vpc",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -426,6 +467,7 @@ describe("createSubnetSchema", () => {
       vpcId: "vpc-123",
       cidrBlock: "10.0.1.0/24",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -434,6 +476,7 @@ describe("createSubnetSchema", () => {
       vpcId: "vpc-123",
       cidrBlock: "invalid",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -443,6 +486,7 @@ describe("createSubnetSchema", () => {
       cidrBlock: "10.0.1.0/24",
       availabilityZone: "us-east-1a",
     })
+
     expect(result.success).toBeTruthy()
   })
 })
@@ -465,6 +509,7 @@ describe("copySnapshotSchema", () => {
       sourceSnapshotId: "snap-123",
       sourceRegion: "us-east-1",
     })
+
     expect(result.success).toBeTruthy()
   })
 })
@@ -475,6 +520,7 @@ describe("attachVolumeSchema", () => {
       volumeId: "vol-123",
       instanceId: "i-123",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -483,6 +529,7 @@ describe("attachVolumeSchema", () => {
       volumeId: "vol-123",
       instanceId: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -493,6 +540,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "my-group",
       strategy: "spread",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -501,6 +549,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "",
       strategy: "spread",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -509,6 +558,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "a".repeat(256),
       strategy: "cluster",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -517,6 +567,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "a".repeat(255),
       strategy: "spread",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -525,6 +576,7 @@ describe("createPlacementGroupSchema", () => {
       groupName: "my-group",
       strategy: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -532,6 +584,7 @@ describe("createPlacementGroupSchema", () => {
     const result = createPlacementGroupSchema.safeParse({
       groupName: "my-group",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -539,6 +592,7 @@ describe("createPlacementGroupSchema", () => {
     const result = createPlacementGroupSchema.safeParse({
       strategy: "spread",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -567,6 +621,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -576,6 +631,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -585,6 +641,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -594,6 +651,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "vpc-123",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -603,6 +661,7 @@ describe("createSecurityGroupSchema", () => {
       description: "",
       vpcId: "vpc-123",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -612,6 +671,7 @@ describe("createSecurityGroupSchema", () => {
       description: "a".repeat(256),
       vpcId: "vpc-123",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -621,6 +681,7 @@ describe("createSecurityGroupSchema", () => {
       description: "Allow web traffic",
       vpcId: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -633,6 +694,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -643,6 +705,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: -1,
       cidrIp: "10.0.0.0/16",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -653,6 +716,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 65_535,
       cidrIp: "0.0.0.0/0",
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -663,6 +727,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -673,6 +738,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -683,6 +749,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 443,
       cidrIp: "0.0.0.0/0",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -693,6 +760,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 22,
       cidrIp: "not-a-cidr",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -703,6 +771,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 22,
       cidrIp: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -713,6 +782,7 @@ describe("securityGroupRuleSchema", () => {
       toPort: 22,
       cidrIp: "0.0.0.0/0",
     })
+
     expect(result.success).toBeFalsy()
   })
 })
@@ -743,6 +813,7 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       privateSubnetCount: 1,
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -751,6 +822,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       mode: "invalid",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -759,6 +831,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -767,6 +840,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "not-a-cidr",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -775,6 +849,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "999.0.0.0/16",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -783,6 +858,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       cidrBlock: "10.0.0.0/8",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -791,6 +867,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       tenancy: "shared",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -799,6 +876,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       publicSubnetCount: 5,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -807,6 +885,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       privateSubnetCount: -1,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -815,6 +894,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       publicSubnetCount: 1.5,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -825,6 +905,7 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       publicSubnetCidrs: ["not-a-cidr"],
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -835,12 +916,15 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       publicSubnetCidrs: ["192.168.0.0/20"],
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     const issue = result.error.issues.find(
       (i) => i.path[0] === "publicSubnetCidrs",
     )
+
     expect(issue?.message).toContain("within the VPC CIDR")
   })
 
@@ -853,9 +937,11 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCidrs: ["10.0.0.0/20"],
       privateSubnetCidrs: ["10.0.0.0/20"],
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     const issue = result.error.issues.find((i) => i.message.includes("overlap"))
     expect(issue).toBeDefined()
   })
@@ -869,6 +955,7 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCidrs: ["10.0.0.0/20"],
       privateSubnetCidrs: ["10.0.128.0/20"],
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -880,9 +967,11 @@ describe("createVpcWizardSchema", () => {
       publicSubnetCount: 1,
       privateSubnetCount: 2,
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     expect(result.error.issues.map((i) => i.path)).toContainEqual([
       "privateSubnetCidrs",
       1,
@@ -897,9 +986,11 @@ describe("createVpcWizardSchema", () => {
       privateSubnetCount: 1,
       privateSubnetCidrs: ["10.0.0.0/20"],
     })
+
     if (result.success) {
       throw new Error("expected validation to fail")
     }
+
     const issue = result.error.issues.find((i) => i.message.includes("overlap"))
     expect(issue?.path).toStrictEqual(["privateSubnetCidrs", 0])
   })
@@ -912,6 +1003,7 @@ describe("createVpcWizardSchema", () => {
       privateSubnetCount: 2,
       privateSubnetCidrs: ["10.0.200.0/24"],
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -921,6 +1013,7 @@ describe("createVpcWizardSchema", () => {
       mode: "vpc-only",
       publicSubnetCidrs: ["not-a-cidr"],
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -929,6 +1022,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       tags: [{ key: "Env", value: "prod" }],
     })
+
     expect(result.success).toBeTruthy()
   })
 
@@ -937,6 +1031,7 @@ describe("createVpcWizardSchema", () => {
       ...validBase,
       tags: [{ key: "", value: "prod" }],
     })
+
     expect(result.success).toBeFalsy()
   })
 })

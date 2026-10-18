@@ -28,11 +28,13 @@ export function ObjectListItem({
 
   async function downloadObject() {
     setDownloadError(null)
+
     try {
       const command = new GetObjectCommand({
         Bucket: bucketName,
         Key: fullKey,
       })
+
       const response = await getS3Client().send(command)
 
       if (response.Body) {

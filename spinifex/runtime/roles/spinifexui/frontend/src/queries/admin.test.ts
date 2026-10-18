@@ -47,6 +47,7 @@ describe("adminNodesQueryOptions", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ nodes: [], cluster_mode: "single" })
 
@@ -78,6 +79,7 @@ describe("adminVMsQueryOptions", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ vms: [] })
 
@@ -112,6 +114,7 @@ describe("adminStorageStatusQueryOptions", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({})
 
@@ -146,6 +149,7 @@ describe("adminOchreCatalogQueryOptions", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({ entries: [] })
 
@@ -184,6 +188,7 @@ describe("adminListAccountsQueryOptions", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedAdminFetch.mockResolvedValue({ accounts: [], count: 0 })
 
@@ -226,6 +231,7 @@ describe("adminModelAccessQueryOptions", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({
       AccountId: "000000000002",
@@ -257,6 +263,7 @@ describe("grantModelAccess", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({
       AccountId: "000000000002",
@@ -288,6 +295,7 @@ describe("revokeModelAccess", () => {
       sessionToken: "token",
       expiration: new Date(Date.now() + 60_000).toISOString(),
     }
+
     mockGetCredentials.mockReturnValue(creds)
     mockSignedFetch.mockResolvedValue({
       AccountId: "000000000002",

@@ -38,13 +38,17 @@ function dedupeInstanceTypes(
   instanceTypes: InstanceTypeInfo[],
 ): InstanceTypeEntry[] {
   const byName = new Map<string, InstanceTypeEntry>()
+
   for (const type of instanceTypes) {
     const name = type.InstanceType
+
     if (!name || byName.has(name)) {
       continue
     }
+
     byName.set(name, { name, gpu: type.GpuInfo?.Gpus?.[0] })
   }
+
   return [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -56,6 +60,7 @@ function InstanceTypeItemLabel({
   availability?: number
 }) {
   const vramMiB = entry.gpu?.MemoryInfo?.SizeInMiB
+
   return (
     <>
       {entry.name}
@@ -79,6 +84,7 @@ export function GpuInstanceTypeSelect({
   // the scope to every prop and redoes the work on each selection change.
   const { standardEntries, gpuEntries } = useMemo(() => {
     const entries = dedupeInstanceTypes(instanceTypes)
+
     return {
       standardEntries: entries.filter((e) => !e.gpu),
       gpuEntries: entries.filter((e) => e.gpu),

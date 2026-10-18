@@ -37,6 +37,7 @@ export function CreateImageDialog({
       setImageDescription("")
       setCreatedImageId(null)
     }
+
     onOpenChange(nextOpen)
   }
 
@@ -47,6 +48,7 @@ export function CreateImageDialog({
         name: imageName,
         description: imageDescription || undefined,
       })
+
       setCreatedImageId(result.ImageId ?? null)
       setImageName("")
       setImageDescription("")

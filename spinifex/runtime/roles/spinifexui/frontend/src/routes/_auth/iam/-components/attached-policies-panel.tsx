@@ -109,6 +109,7 @@ export function AttachedPoliciesPanel({
       })),
     },
   } satisfies Record<InlinePolicyKind, KindConfig>
+
   const { listQuery, attach, detach } = config[kind]
 
   const { data: attachedData } = useSuspenseQuery(listQuery(name))
@@ -121,12 +122,14 @@ export function AttachedPoliciesPanel({
   const allPolicies = allPoliciesData.Policies ?? []
 
   const attachedArns = new Set(attachedPolicies.map((p) => p.PolicyArn))
+
   const availablePolicies = allPolicies.filter(
     (p) => p.Arn && !attachedArns.has(p.Arn),
   )
 
   const handleAttachPolicy = async (policyArn: string) => {
     setPendingArn(policyArn)
+
     try {
       await attach.run(policyArn)
       // Only collapse the select once the attach lands, so a failure leaves the
@@ -141,6 +144,7 @@ export function AttachedPoliciesPanel({
 
   const handleDetachPolicy = async (policyArn: string) => {
     setPendingArn(policyArn)
+
     try {
       await detach.run(policyArn)
     } catch {

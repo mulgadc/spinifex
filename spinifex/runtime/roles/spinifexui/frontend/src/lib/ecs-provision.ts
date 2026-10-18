@@ -23,6 +23,7 @@ export async function provisionCapacity(
   req: ProvisionCapacityRequest,
 ): Promise<ProvisionCapacityResponse> {
   const credentials = getCredentials()
+
   if (!credentials) {
     throw new Error("Not authenticated")
   }

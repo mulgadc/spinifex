@@ -1,5 +1,6 @@
 export function ErrorBanner({ msg, error }: { msg?: string; error?: Error }) {
   let errorText: string | undefined
+
   if (error) {
     // A modelled AWS fault carries the reason in the message and only the code
     // in the name, so dropping either leaves the user without the half that

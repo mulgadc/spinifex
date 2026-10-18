@@ -28,6 +28,7 @@ function InstanceProfiles() {
   const profiles = (data.InstanceProfiles ?? []).toSorted((a, b) => {
     const nameA = a.InstanceProfileName?.toLowerCase() ?? ""
     const nameB = b.InstanceProfileName?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -48,6 +49,7 @@ function InstanceProfiles() {
             if (!profile.InstanceProfileName) {
               return null
             }
+
             return (
               <ListCard
                 key={profile.InstanceProfileName}

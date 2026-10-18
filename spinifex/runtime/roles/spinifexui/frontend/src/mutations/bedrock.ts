@@ -25,9 +25,11 @@ function guardrailVersionsKey(guardrailIdentifier: string) {
 
 export function useCreateGuardrail() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (data: GuardrailFormData) => {
       const command = new CreateGuardrailCommand(formToCreateInput(data))
+
       return await getBedrockClient().send(command)
     },
     onSuccess: () => {
@@ -43,6 +45,7 @@ export interface UpdateGuardrailParams {
 
 export function useUpdateGuardrail() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       guardrailIdentifier,
@@ -51,6 +54,7 @@ export function useUpdateGuardrail() {
       const command = new UpdateGuardrailCommand(
         formToUpdateInput(guardrailIdentifier, data),
       )
+
       return await getBedrockClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -64,9 +68,11 @@ export function useUpdateGuardrail() {
 
 export function useDeleteGuardrail() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (guardrailIdentifier: string) => {
       const command = new DeleteGuardrailCommand({ guardrailIdentifier })
+
       return await getBedrockClient().send(command)
     },
     onSuccess: (_data, guardrailIdentifier) => {
@@ -85,6 +91,7 @@ export interface CreateGuardrailVersionParams {
 
 export function useCreateGuardrailVersion() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async ({
       guardrailIdentifier,
@@ -94,6 +101,7 @@ export function useCreateGuardrailVersion() {
         guardrailIdentifier,
         description,
       })
+
       return await getBedrockClient().send(command)
     },
     onSuccess: (_data, params) => {

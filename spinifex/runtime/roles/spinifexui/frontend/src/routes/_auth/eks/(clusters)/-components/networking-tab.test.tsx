@@ -81,6 +81,7 @@ describe("NetworkingTab", () => {
         publicAccessCidrs: ["203.0.113.0/24", "198.51.100.0/24"],
       },
     }
+
     render(<NetworkingTab cluster={restricted} />)
     expect(screen.getByText("203.0.113.0/24")).toBeInTheDocument()
     expect(screen.getByText("198.51.100.0/24")).toBeInTheDocument()
@@ -100,6 +101,7 @@ describe("NetworkingTab", () => {
         endpointPrivateAccess: true,
       },
     }
+
     render(<NetworkingTab cluster={privateOnly} />)
     expect(screen.queryByText("Public access CIDRs")).not.toBeInTheDocument()
   })

@@ -51,7 +51,9 @@ function AllocateAddress() {
     const result = await allocateMutation.mutateAsync({
       name: data.name?.trim() ?? undefined,
     })
+
     const allocationId = result.AllocationId
+
     if (allocationId) {
       navigate({
         to: "/ec2/describe-addresses/$id",

@@ -76,12 +76,14 @@ export function ModifyDBInstanceDialog({
   const parameterGroupsQuery = useQuery(rdsParameterGroupsQueryOptions)
   const securityGroupsQuery = useQuery(ec2SecurityGroupsQueryOptions)
   const engineVersionsQuery = useQuery(rdsEngineVersionsQueryOptions)
+
   const orderableQuery = useQuery(
     rdsOrderableOptionsQueryOptions(instance.Engine ?? ""),
   )
 
   const identifier = instance.DBInstanceIdentifier ?? ""
   const currentStorage = instance.AllocatedStorage ?? 0
+
   const currentGroups =
     instance.VpcSecurityGroups?.map((g) => g.VpcSecurityGroupId ?? "").filter(
       Boolean,
@@ -123,14 +125,17 @@ export function ModifyDBInstanceDialog({
         .filter(Boolean),
     ),
   ]
+
   const parameterGroups = parameterGroupsForEngine(
     parameterGroupsQuery.data?.DBParameterGroups ?? [],
     engineVersionsQuery.data?.DBEngineVersions ?? [],
     instance.Engine ?? "",
   )
+
   // The instance's ENI is already placed, so a group from another VPC cannot be
   // attached to it.
   const instanceVpc = instance.DBSubnetGroup?.VpcId
+
   const securityGroups = (
     securityGroupsQuery.data?.SecurityGroups ?? []
   ).filter((g) => instanceVpc === undefined || g.VpcId === instanceVpc)
@@ -147,6 +152,7 @@ export function ModifyDBInstanceDialog({
       empty: `No instance class this cluster's nodes can run is available for ${instance.Engine}.`,
     },
   )
+
   const parameterGroupNotice = pickerNotice(
     parameterGroupsQuery,
     parameterGroups.length === 0,
@@ -156,6 +162,7 @@ export function ModifyDBInstanceDialog({
       empty: "No parameter group of this instance's engine family exists.",
     },
   )
+
   const securityGroupNotice = pickerNotice(
     securityGroupsQuery,
     securityGroups.length === 0,

@@ -21,5 +21,6 @@ export const Route = createFileRoute(
 
 function TaskDetail() {
   const { clusterName, taskId } = Route.useParams()
+
   return <TaskDetailPage clusterName={clusterName} taskId={taskId} />
 }

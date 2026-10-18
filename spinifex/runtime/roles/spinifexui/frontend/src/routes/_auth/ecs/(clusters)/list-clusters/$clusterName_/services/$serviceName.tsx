@@ -27,6 +27,7 @@ export const Route = createFileRoute(
 
 function ServiceDetail() {
   const { clusterName, serviceName } = Route.useParams()
+
   return (
     <ServiceDetailPage clusterName={clusterName} serviceName={serviceName} />
   )

@@ -49,6 +49,7 @@ function seed(opts?: { status?: string; issue?: string }): QueryClient {
     },
   })
   seedCatalog(qc)
+
   return qc
 }
 

@@ -11,6 +11,7 @@ const { mockGrantModelAccess, mockRevokeModelAccess } = vi.hoisted(() => ({
 
 vi.mock("@/queries/admin", async () => {
   const actual = await vi.importActual<AdminQueries>("@/queries/admin")
+
   return {
     ...actual,
     grantModelAccess: mockGrantModelAccess,
@@ -79,12 +80,14 @@ function seed({
     AccountId: ACCOUNT_ID,
     ModelIds: grantedModelIds,
   })
+
   if (accounts !== undefined) {
     qc.setQueryData(adminListAccountsQueryOptions.queryKey, {
       accounts,
       count: accounts.length,
     })
   }
+
   return qc
 }
 

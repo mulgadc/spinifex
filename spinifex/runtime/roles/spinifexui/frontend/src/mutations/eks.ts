@@ -30,6 +30,7 @@ import type {
 
 export function useCreateCluster() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateClusterFormData) => {
       const command = new CreateClusterCommand({
@@ -50,6 +51,7 @@ export function useCreateCluster() {
             params.bootstrapClusterCreatorAdminPermissions,
         },
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: () => {
@@ -60,9 +62,11 @@ export function useCreateCluster() {
 
 export function useDeleteCluster() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (clusterName: string) => {
       const command = new DeleteClusterCommand({ name: clusterName })
+
       return await getEksClient().send(command)
     },
     onSuccess: () => {
@@ -73,6 +77,7 @@ export function useDeleteCluster() {
 
 export function useCreateNodegroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateNodegroupFormData) => {
       const command = new CreateNodegroupCommand({
@@ -90,6 +95,7 @@ export function useCreateNodegroup() {
           desiredSize: params.desiredSize,
         },
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -102,6 +108,7 @@ export function useCreateNodegroup() {
 
 export function useScaleNodegroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ScaleNodegroupParams) => {
       const command = new UpdateNodegroupConfigCommand({
@@ -113,6 +120,7 @@ export function useScaleNodegroup() {
           desiredSize: params.desiredSize,
         },
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -125,6 +133,7 @@ export function useScaleNodegroup() {
 
 export function useDeleteNodegroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: {
       clusterName: string
@@ -134,6 +143,7 @@ export function useDeleteNodegroup() {
         clusterName: params.clusterName,
         nodegroupName: params.nodegroupName,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -146,6 +156,7 @@ export function useDeleteNodegroup() {
 
 export function useCreateAddon() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateAddonParams) => {
       const command = new CreateAddonCommand({
@@ -155,6 +166,7 @@ export function useCreateAddon() {
         serviceAccountRoleArn: params.serviceAccountRoleArn,
         configurationValues: params.configurationValues,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -167,6 +179,7 @@ export function useCreateAddon() {
 
 export function useUpdateAddon() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: UpdateAddonParams) => {
       const command = new UpdateAddonCommand({
@@ -176,6 +189,7 @@ export function useUpdateAddon() {
         serviceAccountRoleArn: params.serviceAccountRoleArn,
         configurationValues: params.configurationValues,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -188,12 +202,14 @@ export function useUpdateAddon() {
 
 export function useDeleteAddon() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: DeleteAddonParams) => {
       const command = new DeleteAddonCommand({
         clusterName: params.clusterName,
         addonName: params.addonName,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -206,6 +222,7 @@ export function useDeleteAddon() {
 
 export function useCreateAccessEntry() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateAccessEntryFormData) => {
       const command = new CreateAccessEntryCommand({
@@ -214,6 +231,7 @@ export function useCreateAccessEntry() {
         kubernetesGroups: params.kubernetesGroups,
         type: params.type,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -226,12 +244,14 @@ export function useCreateAccessEntry() {
 
 export function useDeleteAccessEntry() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: AccessEntryParams) => {
       const command = new DeleteAccessEntryCommand({
         clusterName: params.clusterName,
         principalArn: params.principalArn,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -244,6 +264,7 @@ export function useDeleteAccessEntry() {
 
 export function useAssociateAccessPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: AssociateAccessPolicyParams) => {
       const command = new AssociateAccessPolicyCommand({
@@ -255,6 +276,7 @@ export function useAssociateAccessPolicy() {
           namespaces: params.namespaces,
         },
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -274,6 +296,7 @@ export function useAssociateAccessPolicy() {
 
 export function useDisassociateAccessPolicy() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: DisassociateAccessPolicyParams) => {
       const command = new DisassociateAccessPolicyCommand({
@@ -281,6 +304,7 @@ export function useDisassociateAccessPolicy() {
         principalArn: params.principalArn,
         policyArn: params.policyArn,
       })
+
       return await getEksClient().send(command)
     },
     onSuccess: (_data, params) => {

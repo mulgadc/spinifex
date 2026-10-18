@@ -19,6 +19,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -32,9 +33,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
       params?: Record<string, string>
     }) => {
       let href = to ?? ""
+
       for (const [key, value] of Object.entries(params ?? {})) {
         href = href.replace(`$${key}`, value)
       }
+
       return <a href={href}>{children}</a>
     },
   }
@@ -74,15 +77,18 @@ function seed(snapshots: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "dbSnapshots"], { DBSnapshots: snapshots })
   qc.setQueryData(["rds", "dbInstances"], { DBInstances: [] })
+
   return qc
 }
 
 function rowFor(identifier: string): HTMLElement {
   const cell = screen.getByRole("link", { name: identifier })
   const row = cell.closest("tr")
+
   if (!row) {
     throw new Error(`no row for ${identifier}`)
   }
+
   return row
 }
 

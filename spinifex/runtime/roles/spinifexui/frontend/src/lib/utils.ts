@@ -31,7 +31,9 @@ export function formatSize(bytes: number): string {
   if (bytes === 0) {
     return "0 B"
   }
+
   const i = Math.floor(Math.log(bytes) / Math.log(1024))
+
   return `${(bytes / 1024 ** i).toFixed(2)} ${SIZE_UNITS[i]}`
 }
 
@@ -48,6 +50,7 @@ export function securityGroupLabel(group: {
   GroupName?: string
 }): string {
   const id = group.GroupId ?? ""
+
   return group.GroupName ? `${id} (${group.GroupName})` : id
 }
 
@@ -72,6 +75,7 @@ export function ensureTrailingSlash(path: string): string {
   if (!path) {
     return path
   }
+
   return path.endsWith("/") ? path : `${path}/`
 }
 
@@ -83,6 +87,7 @@ export function buildFullS3Key(key: string, currentPrefix: string): string {
   if (key.startsWith(currentPrefix)) {
     return key
   }
+
   return `${currentPrefix}${key}`
 }
 
@@ -94,5 +99,6 @@ export function extractDisplayName(key: string, currentPrefix: string): string {
   if (key.startsWith(currentPrefix)) {
     return key.slice(currentPrefix.length)
   }
+
   return key
 }

@@ -133,12 +133,14 @@ export function addonStatusVariant(
     case "ACTIVE": {
       return "default"
     }
+
     case "CREATE_FAILED":
     case "DELETE_FAILED":
     case "UPDATE_FAILED":
     case "DEGRADED": {
       return "destructive"
     }
+
     default: {
       return "secondary"
     }

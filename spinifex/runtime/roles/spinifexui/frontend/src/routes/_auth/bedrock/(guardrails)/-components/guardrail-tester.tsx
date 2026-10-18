@@ -25,9 +25,12 @@ function blockedTopics(assessment: GuardrailAssessment): string[] {
 function blockedWords(assessment: GuardrailAssessment): string[] {
   const custom = assessment.wordPolicy?.customWords ?? []
   const managed = assessment.wordPolicy?.managedWordLists ?? []
-  return [...custom, ...managed]
-    .filter((word) => word.detected === true || word.action === "BLOCKED")
-    .map((word) => word.match ?? "unknown word")
+
+  return [...custom, ...managed].flatMap((word) =>
+    word.detected === true || word.action === "BLOCKED"
+      ? [word.match ?? "unknown word"]
+      : [],
+  )
 }
 
 function AssessmentCard({ assessment }: { assessment: GuardrailAssessment }) {
@@ -68,6 +71,7 @@ export function GuardrailTester({
     if (text.trim().length === 0) {
       return
     }
+
     try {
       await applyGuardrail.mutateAsync({
         guardrailIdentifier: guardrailId,

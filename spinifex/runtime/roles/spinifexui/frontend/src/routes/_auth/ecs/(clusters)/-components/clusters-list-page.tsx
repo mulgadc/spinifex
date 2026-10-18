@@ -31,6 +31,7 @@ export function ClustersListPage() {
 
   async function handleRecheck() {
     setIsRechecking(true)
+
     try {
       await queryClient.invalidateQueries({
         queryKey: ec2ImagesQueryOptions.queryKey,
@@ -44,6 +45,7 @@ export function ClustersListPage() {
     if (!deleteTarget) {
       return
     }
+
     deleteCluster.mutate(deleteTarget, {
       onSuccess: () => {
         setDeleteTarget(null)
@@ -111,7 +113,9 @@ export function ClustersListPage() {
                 if (!cluster.clusterName) {
                   return null
                 }
+
                 const name = cluster.clusterName
+
                 return (
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"

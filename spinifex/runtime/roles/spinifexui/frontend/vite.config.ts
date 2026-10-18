@@ -13,10 +13,12 @@ import { createLogger, defineConfig } from "vite"
 // output. Other compiler diagnostics still surface.
 const logger = createLogger()
 const warn = logger.warn.bind(logger)
+
 logger.warn = (msg, options) => {
   if (msg.includes("react-compiler(Todo)")) {
     return
   }
+
   warn(msg, options)
 }
 

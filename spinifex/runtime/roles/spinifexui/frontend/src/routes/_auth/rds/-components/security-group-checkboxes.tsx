@@ -24,6 +24,7 @@ export function securityGroupIdsForVpc(
   const available = new Set(
     securityGroupsForVpc(groups, vpcId).map((group) => group.GroupId),
   )
+
   return selected.filter((id) => available.has(id))
 }
 

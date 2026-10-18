@@ -28,10 +28,12 @@ function renderSeeded(guardrails: GuardrailSummary[]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   queryClient.setQueryData(guardrailsQueryOptions.queryKey, {
     $metadata: {},
     guardrails,
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <GuardrailsPage />
@@ -62,11 +64,13 @@ describe("GuardrailsPage", () => {
       { ...GUARDRAIL, id: "gr-2", name: "zebra" },
       { ...GUARDRAIL, id: "gr-1", name: "alpha" },
     ])
+
     const links = screen
       .getAllByRole("link")
       .filter(
         (l) => l.getAttribute("href") !== "/bedrock/list-guardrails/create",
       )
+
     expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
       "/bedrock/list-guardrails/$guardrailId/gr-1",
       "/bedrock/list-guardrails/$guardrailId/gr-2",

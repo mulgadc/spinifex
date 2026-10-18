@@ -23,7 +23,9 @@ let onSessionChangedInOtherTab: typeof import("./auth").onSessionChangedInOtherT
 
 async function loadAuth() {
   vi.resetModules()
+
   const auth = await import("./auth")
+
   ;({
     getCredentials,
     setSessionCredentials,
@@ -99,6 +101,7 @@ describe("getCredentials", () => {
     const expired = sessionCreds({
       expiration: new Date(Date.now() - 1000).toISOString(),
     })
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify(expired))
     expect(getCredentials()).toBeNull()
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull()

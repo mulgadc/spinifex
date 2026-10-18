@@ -15,6 +15,7 @@ export function KnowledgeBasesPage() {
     (a, b) => {
       const nameA = a.name?.toLowerCase() ?? ""
       const nameB = b.name?.toLowerCase() ?? ""
+
       return nameA.localeCompare(nameB)
     },
   )
@@ -39,6 +40,7 @@ export function KnowledgeBasesPage() {
             if (!kb.knowledgeBaseId) {
               return null
             }
+
             return (
               <ListCard
                 badge={<StateBadge state={kb.status} />}

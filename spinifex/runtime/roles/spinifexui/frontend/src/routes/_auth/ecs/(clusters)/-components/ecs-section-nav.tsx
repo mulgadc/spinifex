@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router"
 
 const BASE = "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors"
 const ACTIVE = { className: "border-primary text-foreground" }
+
 const INACTIVE = {
   className: "border-transparent text-muted-foreground hover:text-foreground",
 }

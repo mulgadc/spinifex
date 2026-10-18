@@ -109,6 +109,7 @@ describe("resolveSubnetCidrs", () => {
       publicCidrs: [" "],
       privateCidrs: ["10.0.200.0/24"],
     })
+
     expect(result.publicSubnets.map((s) => s.cidr)).toStrictEqual([
       "10.0.0.0/20",
     ])
@@ -123,6 +124,7 @@ describe("resolveSubnetCidrs", () => {
       publicCidrs: ["10.0.1.0/24", "10.0.2.0/24"],
       privateCidrs: ["10.0.200.0/24"],
     })
+
     expect(result.publicSubnets.map((s) => s.cidr)).toStrictEqual([
       "10.0.1.0/24",
     ])

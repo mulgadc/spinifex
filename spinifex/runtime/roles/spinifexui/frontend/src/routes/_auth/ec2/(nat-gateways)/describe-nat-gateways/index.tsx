@@ -50,7 +50,9 @@ function NatGateways() {
             if (!nat.NatGatewayId) {
               return null
             }
+
             const name = getNameTag(nat.Tags)
+
             return (
               <ListCard
                 badge={<StateBadge state={nat.State} />}

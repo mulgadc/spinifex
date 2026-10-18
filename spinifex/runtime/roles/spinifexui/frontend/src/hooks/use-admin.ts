@@ -17,9 +17,11 @@ interface AdminState {
 function userNameFromArn(arn: string | undefined): string | null {
   const marker = ":user/"
   const index = arn?.indexOf(marker) ?? -1
+
   if (index === -1 || arn === undefined) {
     return null
   }
+
   return arn.slice(index + marker.length) || null
 }
 
@@ -30,7 +32,9 @@ export function useAdmin(): AdminState {
     ...callerIdentityQueryOptions,
     enabled: getCredentials() !== null,
   })
+
   const isAdmin = isAdminAccount(identity?.Account)
+
   const { data: version } = useQuery({
     ...adminVersionQueryOptions,
     enabled: isAdmin,

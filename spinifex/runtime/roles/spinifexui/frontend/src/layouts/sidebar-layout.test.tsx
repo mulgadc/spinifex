@@ -18,13 +18,16 @@ vi.mock("@tanstack/react-query", () => ({
 }))
 
 const mockUseAdmin = vi.fn()
+
 vi.mock("@/hooks/use-admin", () => ({
   useAdmin: (): unknown => mockUseAdmin(),
 }))
 
 const mockIsOchreEnabled = vi.fn()
+
 vi.mock("@/lib/cluster-config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cluster-config")>()
+
   return {
     ...actual,
     isOchreEnabled: (): unknown => mockIsOchreEnabled(),

@@ -16,6 +16,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -38,6 +39,7 @@ function seed(clusters: unknown[], images: unknown[] = [ECS_NODE_IMAGE]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecs", "clusters"], clusters)
   qc.setQueryData(["ec2", "images"], { Images: images })
+
   return qc
 }
 

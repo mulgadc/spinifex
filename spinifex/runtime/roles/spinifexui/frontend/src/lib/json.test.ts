@@ -11,6 +11,7 @@ type JsonSchema = ReturnType<typeof jsonStringSchema>
 
 function issueMessages(schema: JsonSchema, value: string): string[] {
   const result = schema.safeParse(value)
+
   return result.success ? [] : result.error.issues.map((issue) => issue.message)
 }
 
@@ -61,6 +62,7 @@ describe("decodePolicyDocument", () => {
 
 describe("jsonStringSchema", () => {
   const required = jsonStringSchema({ label: "Policy document" })
+
   const optional = jsonStringSchema({
     label: "Configuration",
     allowEmpty: true,

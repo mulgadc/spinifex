@@ -55,6 +55,7 @@ describe("DeleteConfirmationDialog", () => {
         pendingLabel="Terminating…"
       />,
     )
+
     expect(screen.getByText("Terminate")).toBeInTheDocument()
     expect(screen.queryByText("Delete")).not.toBeInTheDocument()
     rerender(

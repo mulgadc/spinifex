@@ -14,6 +14,7 @@ const mockRuntimeSend = vi.fn().mockResolvedValue({
   outputs: [],
   usage: {},
 })
+
 const mockBedrockSend = vi.fn().mockResolvedValue({})
 const mockNavigate = vi.fn()
 
@@ -79,6 +80,7 @@ function renderSeeded(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   queryClient.setQueryData(
     guardrailQueryOptions(GUARDRAIL_ID).queryKey,
     guardrail,
@@ -90,6 +92,7 @@ function renderSeeded(
       guardrails: versions,
     },
   )
+
   return render(
     <QueryClientProvider client={queryClient}>
       <GuardrailDetailPage guardrailId={GUARDRAIL_ID} />
@@ -186,9 +189,11 @@ describe("GuardrailDetailPage", () => {
     await waitFor(() => {
       expect(mockBedrockSend).toHaveBeenCalled()
     })
+
     const input = mockBedrockSend.mock.calls[0]?.[0].input as {
       guardrailIdentifier: string
     }
+
     expect(input.guardrailIdentifier).toBe(GUARDRAIL_ID)
     await waitFor(() => {
       expect(mockNavigate).toHaveBeenCalledWith({
@@ -207,9 +212,11 @@ describe("GuardrailDetailPage", () => {
     await waitFor(() => {
       expect(mockBedrockSend).toHaveBeenCalled()
     })
+
     const input = mockBedrockSend.mock.calls[0]?.[0].input as {
       guardrailIdentifier: string
     }
+
     expect(input.guardrailIdentifier).toBe(GUARDRAIL_ID)
     await expect(
       screen.findByText("Version 2 created."),

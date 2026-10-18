@@ -199,6 +199,7 @@ function toTopicPolicyConfig(
   if (topics.length === 0) {
     return undefined
   }
+
   return {
     topicsConfig: topics.map((topic) => ({
       name: topic.name,
@@ -215,6 +216,7 @@ function toContentPolicyConfig(
   if (filters.length === 0) {
     return undefined
   }
+
   return { filtersConfig: filters }
 }
 
@@ -225,6 +227,7 @@ function toWordPolicyConfig(
   if (words.length === 0 && !profanityFilter) {
     return undefined
   }
+
   return {
     wordsConfig: words.length > 0 ? words : undefined,
     managedWordListsConfig: profanityFilter
@@ -240,6 +243,7 @@ function toSensitiveInformationPolicyConfig(
   if (piiEntities.length === 0 && regexes.length === 0) {
     return undefined
   }
+
   return {
     piiEntitiesConfig: piiEntities.length > 0 ? piiEntities : undefined,
     regexesConfig:
@@ -260,6 +264,7 @@ function toContextualGroundingPolicyConfig(
   if (filters.length === 0) {
     return undefined
   }
+
   return { filtersConfig: filters }
 }
 
@@ -269,6 +274,7 @@ function toGuardrailTags(
   const set = tags
     .filter((tag) => tag.key.length > 0)
     .map((tag) => ({ key: tag.key, value: tag.value }))
+
   return set.length > 0 ? set : undefined
 }
 
@@ -333,6 +339,7 @@ export function guardrailToForm(
   const managedWordLists = guardrail.wordPolicy?.managedWordLists ?? []
   const piiEntities = guardrail.sensitiveInformationPolicy?.piiEntities ?? []
   const regexes = guardrail.sensitiveInformationPolicy?.regexes ?? []
+
   const contextualGroundingFilters =
     guardrail.contextualGroundingPolicy?.filters ?? []
 

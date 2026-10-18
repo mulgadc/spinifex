@@ -68,7 +68,9 @@ function CreateRouteTable() {
       vpcId: data.vpcId,
       name: data.name?.trim() ? data.name.trim() : undefined,
     })
+
     const routeTableId = result.RouteTable?.RouteTableId
+
     if (routeTableId) {
       navigate({
         to: "/ec2/describe-route-tables/$id",
@@ -124,6 +126,7 @@ function CreateRouteTable() {
                 <SelectContent>
                   {vpcs.map((vpc) => {
                     const name = getNameTag(vpc.Tags)
+
                     return (
                       <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
                         {name

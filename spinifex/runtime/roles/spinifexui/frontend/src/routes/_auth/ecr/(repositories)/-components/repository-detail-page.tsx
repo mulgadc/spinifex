@@ -36,21 +36,25 @@ export function RepositoryDetailPage({
   repositoryName,
 }: RepositoryDetailPageProps) {
   const { data: reposData } = useSuspenseQuery(ecrRepositoriesQueryOptions)
+
   const { data: imagesData } = useSuspenseQuery(
     ecrRepositoryImagesQueryOptions(repositoryName),
   )
+
   const deleteImage = useBatchDeleteImage()
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const repository = (reposData.repositories ?? []).find(
     (r) => r.repositoryName === repositoryName,
   )
+
   const images = imagesData.imageDetails ?? []
 
   async function handleDeleteImage() {
     if (!deleteTarget) {
       return
     }
+
     try {
       await deleteImage.mutateAsync({
         repositoryName,
@@ -115,7 +119,9 @@ export function RepositoryDetailPage({
                     if (!image.imageDigest) {
                       return null
                     }
+
                     const digest = image.imageDigest
+
                     return (
                       <tr className="border-b last:border-0" key={digest}>
                         <td className="px-4 py-2">

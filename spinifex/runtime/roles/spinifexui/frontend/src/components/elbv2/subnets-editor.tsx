@@ -19,7 +19,9 @@ function sameSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) {
     return false
   }
+
   const setB = new Set(b)
+
   return a.every((id) => setB.has(id))
 }
 
@@ -27,6 +29,7 @@ function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
   const az = subnet.AvailabilityZone ? ` · ${subnet.AvailabilityZone}` : ""
   const cidr = subnet.CidrBlock ? ` (${subnet.CidrBlock})` : ""
+
   return `${subnet.SubnetId}${name ? ` — ${name}` : ""}${cidr}${az}`
 }
 
@@ -46,6 +49,7 @@ export function SubnetsEditor({
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     )
   }
+
   const handleReset = () => {
     setSelected(initial)
   }
@@ -59,9 +63,11 @@ export function SubnetsEditor({
     <form
       onSubmit={(e) => {
         e.preventDefault()
+
         if (!dirty || isEmpty) {
           return
         }
+
         onSubmit(selected)
       }}
     >

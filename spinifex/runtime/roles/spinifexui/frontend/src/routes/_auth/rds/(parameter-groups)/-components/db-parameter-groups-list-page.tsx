@@ -48,10 +48,13 @@ export function DBParameterGroupsListPage() {
             <tbody>
               {groups.map((group) => {
                 const name = group.DBParameterGroupName
+
                 if (!name) {
                   return null
                 }
+
                 const isDefault = isDefaultParameterGroupName(name)
+
                 return (
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"

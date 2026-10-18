@@ -64,7 +64,9 @@ function listenerFormValues(
 ): CreateListenerFormData {
   const protocol: ListenerProtocolValue =
     protocols.find((p) => p === listener.Protocol) ?? protocols[0] ?? "HTTP"
+
   const secure = isSecureProtocol(protocol)
+
   return {
     protocol,
     port: listener.Port ?? 80,
@@ -80,11 +82,14 @@ function formatTls(listener: Listener): string {
   if (listener.Protocol !== "HTTPS") {
     return "—"
   }
+
   const certId = listener.Certificates?.[0]?.CertificateArn?.split("/").pop()
   const policy = listener.SslPolicy
+
   if (certId && policy) {
     return `${policy} · ${certId}`
   }
+
   return policy ?? certId ?? "—"
 }
 
@@ -94,11 +99,14 @@ export function ListenersTab({
   lbType,
 }: ListenersTabProps) {
   const protocols = protocolsForType(lbType)
+
   const { data: listenersData } = useSuspenseQuery(
     elbv2ListenersQueryOptions(loadBalancerArn),
   )
+
   const { data: tgsData } = useSuspenseQuery(elbv2TargetGroupsQueryOptions)
   const { data: certsData } = useSuspenseQuery(acmCertificatesQueryOptions)
+
   const { data: sslPoliciesData } = useSuspenseQuery(
     elbv2SslPoliciesQueryOptions,
   )
@@ -119,6 +127,7 @@ export function ListenersTab({
   const sslPolicies = sslPoliciesData.SslPolicies ?? []
 
   const tgNameByArn = new Map<string, string>()
+
   for (const tg of allTgs) {
     if (tg.TargetGroupArn && tg.TargetGroupName) {
       tgNameByArn.set(tg.TargetGroupArn, tg.TargetGroupName)
@@ -127,13 +136,17 @@ export function ListenersTab({
 
   const formatDefaultAction = (listener: Listener): string => {
     const action = listener.DefaultActions?.[0]
+
     if (!action) {
       return "—"
     }
+
     if (action.Type === "forward" && action.TargetGroupArn) {
       const name = tgNameByArn.get(action.TargetGroupArn)
+
       return name ? `forward → ${name}` : `forward → ${action.TargetGroupArn}`
     }
+
     return action.Type ?? "—"
   }
 
@@ -157,6 +170,7 @@ export function ListenersTab({
     if (!editTarget?.ListenerArn) {
       return
     }
+
     try {
       await modifyMutation.mutateAsync({
         listenerArn: editTarget.ListenerArn,
@@ -177,6 +191,7 @@ export function ListenersTab({
     if (!deleteTarget?.ListenerArn) {
       return
     }
+
     try {
       await deleteMutation.mutateAsync(deleteTarget.ListenerArn)
     } finally {
@@ -240,6 +255,7 @@ export function ListenersTab({
               {listeners.map((listener) => {
                 const arn = listener.ListenerArn ?? ""
                 const rulesOpen = rulesOpenArn === arn
+
                 return (
                   <Fragment key={arn}>
                     <tr className="border-b last:border-0">

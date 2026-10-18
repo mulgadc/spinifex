@@ -35,9 +35,11 @@ interface Props {
 export function TargetGroupDetailPage({ arn }: Props) {
   const navigate = useNavigate()
   const { data: tgData } = useSuspenseQuery(elbv2TargetGroupQueryOptions(arn))
+
   const { data: attrsData } = useSuspenseQuery(
     elbv2TargetGroupAttributesQueryOptions(arn),
   )
+
   const { data: tagsData } = useSuspenseQuery(elbv2TagsQueryOptions([arn]))
 
   const deleteMutation = useDeleteTargetGroup()
@@ -69,6 +71,7 @@ export function TargetGroupDetailPage({ arn }: Props) {
   }
 
   const attributes = attrsData.Attributes ?? []
+
   const tgTags =
     tagsData?.TagDescriptions?.find((td) => td.ResourceArn === arn)?.Tags ?? []
 

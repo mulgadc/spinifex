@@ -7,6 +7,7 @@ import { ThemeSwitch } from "./theme-switch"
 
 function ThemeDisplay() {
   const { theme } = useTheme()
+
   return <span data-testid="theme">{theme}</span>
 }
 

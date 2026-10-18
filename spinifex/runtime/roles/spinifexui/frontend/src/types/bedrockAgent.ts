@@ -34,11 +34,14 @@ export function dimensionsForModelArn(
   embeddingModelArn: string,
 ): number | undefined {
   const [, modelId] = embeddingModelArn.split("foundation-model/")
+
   if (!modelId || !(modelId in KNOWN_EMBEDDING_DIMENSIONS)) {
     return undefined
   }
+
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- narrowed by the `in` check above
   const key = modelId as keyof typeof KNOWN_EMBEDDING_DIMENSIONS
+
   return KNOWN_EMBEDDING_DIMENSIONS[key]
 }
 

@@ -5,12 +5,14 @@ import { describe, expect, it, vi } from "vitest"
 import { renderWithProviders } from "@/test/utils"
 
 const mockUseAdmin = vi.fn()
+
 vi.mock("@/hooks/use-admin", () => ({
   useAdmin: (): unknown => mockUseAdmin(),
 }))
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>()
+
   return {
     ...actual,
     useQuery: vi.fn(),
@@ -74,6 +76,7 @@ function setupMocks({
         data: { nodes, cluster_mode: clusterMode },
       } as ReturnType<typeof useQuery>
     }
+
     return { data: { vms } } as ReturnType<typeof useQuery>
   }) as typeof useQuery)
 }
@@ -117,9 +120,11 @@ describe("AdminDashboardPanel", () => {
     setupMocks({ license: "open-source" })
     renderWithProviders(<AdminDashboardPanel />)
     const links = screen.getAllByRole("link")
+
     const upgradeLink = links.find((l) =>
       l.textContent?.includes("Upgrade to Commercial"),
     )
+
     expect(upgradeLink).toBeInTheDocument()
   })
 

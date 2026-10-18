@@ -48,6 +48,7 @@ function SecurityGroups() {
             if (!sg.GroupId) {
               return null
             }
+
             return (
               <ListCard
                 key={sg.GroupId}

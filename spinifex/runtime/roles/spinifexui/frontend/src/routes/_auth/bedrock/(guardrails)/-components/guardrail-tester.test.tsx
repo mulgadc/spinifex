@@ -24,6 +24,7 @@ function renderTester() {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false } },
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <GuardrailTester guardrailId="gr-1" guardrailVersion="DRAFT" />

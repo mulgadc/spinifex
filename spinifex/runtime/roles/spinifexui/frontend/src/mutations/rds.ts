@@ -43,14 +43,16 @@ function optional(value: string): string | undefined {
 }
 
 function toTags(tags: { key: string; value: string }[]): Tag[] | undefined {
-  const set = tags
-    .filter((t) => t.key.length > 0)
-    .map((t) => ({ Key: t.key, Value: t.value }))
+  const set = tags.flatMap((t) =>
+    t.key.length > 0 ? [{ Key: t.key, Value: t.value }] : [],
+  )
+
   return set.length > 0 ? set : undefined
 }
 
 export function useCreateDBInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateDBInstanceFormData) => {
       const command = new CreateDBInstanceCommand({
@@ -75,6 +77,7 @@ export function useCreateDBInstance() {
         PreferredMaintenanceWindow: optional(params.preferredMaintenanceWindow),
         Tags: toTags(params.tags),
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -89,6 +92,7 @@ export interface ModifyDBInstanceParams extends ModifyDBInstanceFormData {
 
 export function useModifyDBInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ModifyDBInstanceParams) => {
       const command = new ModifyDBInstanceCommand({
@@ -104,6 +108,7 @@ export function useModifyDBInstance() {
         MasterUserPassword: optional(params.masterUserPassword),
         ApplyImmediately: params.applyImmediately,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -126,6 +131,7 @@ export interface DeleteDBInstanceParams {
 
 export function useDeleteDBInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: DeleteDBInstanceParams) => {
       const command = new DeleteDBInstanceCommand({
@@ -135,6 +141,7 @@ export function useDeleteDBInstance() {
           ? undefined
           : params.finalSnapshotIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -151,11 +158,13 @@ export function useDeleteDBInstance() {
 
 export function useStartDBInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (dbInstanceIdentifier: string) => {
       const command = new StartDBInstanceCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -166,11 +175,13 @@ export function useStartDBInstance() {
 
 export function useStopDBInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (dbInstanceIdentifier: string) => {
       const command = new StopDBInstanceCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -181,11 +192,13 @@ export function useStopDBInstance() {
 
 export function useRebootDBInstance() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (dbInstanceIdentifier: string) => {
       const command = new RebootDBInstanceCommand({
         DBInstanceIdentifier: dbInstanceIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -200,6 +213,7 @@ export interface CreateDBSnapshotParams extends CreateDBSnapshotFormData {
 
 export function useCreateDBSnapshot() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateDBSnapshotParams) => {
       const command = new CreateDBSnapshotCommand({
@@ -207,6 +221,7 @@ export function useCreateDBSnapshot() {
         DBInstanceIdentifier: params.dbInstanceIdentifier,
         Tags: toTags(params.tags),
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -220,11 +235,13 @@ export function useCreateDBSnapshot() {
 
 export function useDeleteDBSnapshot() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (dbSnapshotIdentifier: string) => {
       const command = new DeleteDBSnapshotCommand({
         DBSnapshotIdentifier: dbSnapshotIdentifier,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -241,6 +258,7 @@ export interface RestoreDBInstanceParams extends RestoreDBInstanceFormData {
 // are never sent: the restore starts on its datadir, which already holds them.
 export function useRestoreDBInstanceFromDBSnapshot() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: RestoreDBInstanceParams) => {
       const command = new RestoreDBInstanceFromDBSnapshotCommand({
@@ -258,6 +276,7 @@ export function useRestoreDBInstanceFromDBSnapshot() {
         DeletionProtection: params.deletionProtection,
         Tags: toTags(params.tags),
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -268,6 +287,7 @@ export function useRestoreDBInstanceFromDBSnapshot() {
 
 export function useCreateDBSubnetGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateDBSubnetGroupFormData) => {
       const command = new CreateDBSubnetGroupCommand({
@@ -276,6 +296,7 @@ export function useCreateDBSubnetGroup() {
         SubnetIds: params.subnetIds,
         Tags: toTags(params.tags),
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -286,11 +307,13 @@ export function useCreateDBSubnetGroup() {
 
 export function useDeleteDBSubnetGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (dbSubnetGroupName: string) => {
       const command = new DeleteDBSubnetGroupCommand({
         DBSubnetGroupName: dbSubnetGroupName,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -301,6 +324,7 @@ export function useDeleteDBSubnetGroup() {
 
 export function useCreateDBParameterGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: CreateDBParameterGroupFormData) => {
       const command = new CreateDBParameterGroupCommand({
@@ -309,6 +333,7 @@ export function useCreateDBParameterGroup() {
         Description: params.description,
         Tags: toTags(params.tags),
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -327,6 +352,7 @@ export interface ModifyDBParameterGroupParams {
 // half the edit with nothing in the API saying so. The form enforces the cap.
 export function useModifyDBParameterGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: ModifyDBParameterGroupParams) => {
       const command = new ModifyDBParameterGroupCommand({
@@ -337,6 +363,7 @@ export function useModifyDBParameterGroup() {
           ApplyMethod: p.applyMethod,
         })),
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: (_data, params) => {
@@ -352,11 +379,13 @@ export function useModifyDBParameterGroup() {
 
 export function useDeleteDBParameterGroup() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (dbParameterGroupName: string) => {
       const command = new DeleteDBParameterGroupCommand({
         DBParameterGroupName: dbParameterGroupName,
       })
+
       return await getRdsClient().send(command)
     },
     onSuccess: () => {
@@ -376,6 +405,7 @@ export interface UpdateRdsTagsParams {
 // away. Either call is skipped when it has no work.
 export function useUpdateRdsTags() {
   const queryClient = useQueryClient()
+
   return useMutation({
     mutationFn: async (params: UpdateRdsTagsParams) => {
       const finalKeys = new Set(params.tags.map((t) => t.key))
@@ -390,6 +420,7 @@ export function useUpdateRdsTags() {
           }),
         )
       }
+
       if (toRemove.length > 0) {
         await client.send(
           new RemoveTagsFromResourceCommand({

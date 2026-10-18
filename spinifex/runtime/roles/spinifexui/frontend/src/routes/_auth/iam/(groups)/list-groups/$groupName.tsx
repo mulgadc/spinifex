@@ -73,6 +73,7 @@ function GroupDetail() {
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showAddUserSelect, setShowAddUserSelect] = useState(false)
+
   const [pendingMemberAction, setPendingMemberAction] = useState<string | null>(
     null,
   )
@@ -82,6 +83,7 @@ function GroupDetail() {
   const allUsers = allUsersData.Users ?? []
 
   const memberNames = new Set(members.map((u) => u.UserName))
+
   const availableUsers = allUsers.filter(
     (u) => u.UserName && !memberNames.has(u.UserName),
   )
@@ -102,6 +104,7 @@ function GroupDetail() {
 
   const handleRemoveUser = async (userName: string) => {
     setPendingMemberAction(userName)
+
     try {
       await removeUserMutation.mutateAsync({ groupName, userName })
     } finally {

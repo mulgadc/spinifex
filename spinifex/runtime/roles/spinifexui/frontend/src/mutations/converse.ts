@@ -53,12 +53,15 @@ export function buildConverseInput(
     modelId: params.modelId,
     messages: params.messages,
   }
+
   if (params.system !== undefined && params.system.trim().length > 0) {
     input.system = [{ text: params.system }]
   }
+
   if (params.inferenceConfig) {
     input.inferenceConfig = params.inferenceConfig
   }
+
   if (
     params.guardrailIdentifier !== undefined &&
     params.guardrailIdentifier.length > 0 &&
@@ -70,6 +73,7 @@ export function buildConverseInput(
       guardrailVersion: params.guardrailVersion,
     }
   }
+
   return input
 }
 
@@ -80,14 +84,18 @@ export async function sendConverse(
   params: ConverseParams,
 ): Promise<ConverseOutcome> {
   const request = buildConverseInput(params)
+
   try {
     const response = await getBedrockRuntimeClient().send(
       new ConverseCommand(request),
     )
+
     const message = response.output?.message
+
     if (!message) {
       throw new Error("Converse response had no output message")
     }
+
     return {
       request,
       result: {
@@ -104,6 +112,7 @@ export async function sendConverse(
     if (isWarmingUpError(error)) {
       return { request, result: { status: "warming-up" } }
     }
+
     throw error
   }
 }

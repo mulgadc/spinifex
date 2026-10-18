@@ -8,12 +8,15 @@ const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/
 
 export function isDirectHostAccess(hostname: string): boolean {
   const host = hostname.toLowerCase().replaceAll(/^\[|]$/g, "")
+
   if (LOOPBACK_NAMES.has(host)) {
     return true
   }
+
   if (IPV4.test(host)) {
     return true
   }
+
   // Any IPv6 literal: a hostname cannot contain a colon.
   return host.includes(":")
 }

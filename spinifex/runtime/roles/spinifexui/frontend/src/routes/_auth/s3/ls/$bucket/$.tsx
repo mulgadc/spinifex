@@ -26,6 +26,7 @@ export const Route = createFileRoute("/_auth/s3/ls/$bucket/$")({
   },
   head: ({ params }) => {
     const path = buildFullS3Key(params._splat ?? "", `${params.bucket}/`)
+
     return {
       meta: [
         {
@@ -50,10 +51,12 @@ function BucketObjectsWithPrefix() {
 
   // Build breadcrumb navigation
   const pathParts = prefix.split("/").filter(Boolean)
+
   const breadcrumbs = [
     { name: bucket, path: `/s3/ls/${bucket}` },
     ...pathParts.map((part, index) => {
       const path = `${pathParts.slice(0, index + 1).join("/")}/`
+
       return {
         name: part,
         path: `/s3/ls/${bucket}/${path}`,
@@ -120,6 +123,7 @@ function BucketObjectsWithPrefix() {
               const folderName = removeTrailingSlash(
                 extractDisplayName(prefixObj.Prefix, prefix),
               )
+
               const fullPrefix = buildFullS3Key(prefixObj.Prefix, prefix)
 
               return (

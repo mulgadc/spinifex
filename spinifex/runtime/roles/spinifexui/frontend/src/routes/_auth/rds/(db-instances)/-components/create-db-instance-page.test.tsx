@@ -17,6 +17,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => vi.fn(),
@@ -99,6 +100,7 @@ function seed(images: unknown[]): QueryClient {
     ],
   })
   qc.setQueryData(["ec2", "images"], { Images: images })
+
   for (const engine of ["postgres", "mariadb"]) {
     qc.setQueryData(["rds", "orderableOptions", engine], {
       OrderableDBInstanceOptions: [
@@ -112,6 +114,7 @@ function seed(images: unknown[]): QueryClient {
       ],
     })
   }
+
   return qc
 }
 
@@ -144,9 +147,11 @@ describe("CreateDBInstancePage system image gating", () => {
     await user.click(screen.getByLabelText("Engine"))
 
     expect(screen.getByRole("option", { name: "postgres" })).toBeEnabled()
+
     const missing = screen.getByRole("option", {
       name: "mariadb — image not imported",
     })
+
     expect(missing).toHaveAttribute("aria-disabled", "true")
   })
 
@@ -264,9 +269,11 @@ describe("CreateDBInstancePage fields", () => {
 
   it("leaves deletion protection and security groups as the only live checkboxes", () => {
     renderForm()
+
     const enabled = screen
       .getAllByRole("checkbox")
       .filter((box) => !(box as HTMLInputElement).disabled)
+
     expect(enabled).toHaveLength(2)
   })
 

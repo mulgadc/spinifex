@@ -28,9 +28,11 @@ function statusVariant(status: string | undefined) {
     case "ACTIVE": {
       return "default" as const
     }
+
     case "FAILED": {
       return "destructive" as const
     }
+
     default: {
       return "secondary" as const
     }

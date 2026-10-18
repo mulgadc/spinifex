@@ -38,6 +38,7 @@ export function RdsDeleteDialog({
     if (!nextOpen) {
       mutation.reset()
     }
+
     onOpenChange(nextOpen)
   }
 

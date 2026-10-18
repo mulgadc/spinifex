@@ -16,6 +16,7 @@ import { LifecyclePolicyEditor } from "./lifecycle-policy-editor"
 
 const REPO = "team/app"
 const POLICY = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":14},"action":{"type":"expire"}}]}`
+
 const POLICY_PRETTY = `{
   "rules": [
     {
@@ -36,6 +37,7 @@ const POLICY_PRETTY = `{
 function seed(policyText: string | null) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecr", "repositories", REPO, "lifecycle"], policyText)
+
   return qc
 }
 

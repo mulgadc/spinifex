@@ -26,6 +26,7 @@ describe("kbFormSchema", () => {
         "arn:aws:bedrock:local::foundation-model/nomic-embed-text-v1.5",
       dimensions: 0,
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -37,6 +38,7 @@ describe("kbFormSchema", () => {
         "arn:aws:bedrock:local::foundation-model/nomic-embed-text-v1.5",
       dimensions: 768,
     })
+
     expect(result.success).toBeTruthy()
   })
 })
@@ -78,8 +80,10 @@ describe("formToCreateKnowledgeBaseInput", () => {
   it("builds a VECTOR knowledgeBaseConfiguration with the embedding model and dimensions", () => {
     const input = formToCreateKnowledgeBaseInput(FULL_KB_FORM)
     expect(input.knowledgeBaseConfiguration?.type).toBe("VECTOR")
+
     const vectorConfig =
       input.knowledgeBaseConfiguration?.vectorKnowledgeBaseConfiguration
+
     expect(vectorConfig?.embeddingModelArn).toBe(FULL_KB_FORM.embeddingModelArn)
     expect(
       vectorConfig?.embeddingModelConfiguration
@@ -98,6 +102,7 @@ describe("formToCreateKnowledgeBaseInput", () => {
       ...FULL_KB_FORM,
       roleArn: "arn:aws:iam::local:role/custom",
     })
+
     expect(input.roleArn).toBe("arn:aws:iam::local:role/custom")
   })
 
@@ -106,6 +111,7 @@ describe("formToCreateKnowledgeBaseInput", () => {
       ...FULL_KB_FORM,
       description: "",
     })
+
     expect(input.description).toBeUndefined()
   })
 })
@@ -115,6 +121,7 @@ describe("dataSourceFormSchema", () => {
     const result = dataSourceFormSchema.safeParse(
       EMPTY_DATA_SOURCE_FORM_DEFAULTS,
     )
+
     expect(result.success).toBeFalsy()
   })
 
@@ -124,6 +131,7 @@ describe("dataSourceFormSchema", () => {
       name: "s3-docs",
       bucketArn: "not-an-arn",
     })
+
     expect(result.success).toBeFalsy()
   })
 
@@ -133,6 +141,7 @@ describe("dataSourceFormSchema", () => {
       name: "s3-docs",
       bucketArn: "arn:aws:s3:::docs-bucket",
     })
+
     expect(result.success).toBeTruthy()
   })
 })
@@ -165,6 +174,7 @@ describe("formToCreateDataSourceInput", () => {
       ...FULL_DATA_SOURCE_FORM,
       inclusionPrefix: "docs/",
     })
+
     expect(
       input.dataSourceConfiguration?.s3Configuration?.inclusionPrefixes,
     ).toStrictEqual(["docs/"])
@@ -182,6 +192,7 @@ describe("formToCreateDataSourceInput", () => {
       maxTokens: 400,
       overlapPercentage: 15,
     })
+
     const chunking = input.vectorIngestionConfiguration?.chunkingConfiguration
     expect(chunking?.chunkingStrategy).toBe("FIXED_SIZE")
     expect(chunking?.fixedSizeChunkingConfiguration).toStrictEqual({

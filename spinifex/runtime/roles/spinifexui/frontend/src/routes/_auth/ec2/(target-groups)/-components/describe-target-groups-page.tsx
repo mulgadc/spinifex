@@ -45,7 +45,9 @@ export function DescribeTargetGroupsPage() {
                 if (!tg.TargetGroupArn) {
                   return null
                 }
+
                 const arn = tg.TargetGroupArn
+
                 return (
                   <tr
                     className="cursor-pointer border-b transition-colors last:border-0 hover:bg-accent"
@@ -91,6 +93,7 @@ export function DescribeTargetGroupsPage() {
 
 function TargetHealthSummaryCells({ arn }: { arn: string }) {
   const { data, isLoading } = useQuery(elbv2TargetHealthQueryOptions(arn))
+
   if (isLoading) {
     return (
       <>
@@ -99,16 +102,20 @@ function TargetHealthSummaryCells({ arn }: { arn: string }) {
       </>
     )
   }
+
   const descriptions = data?.TargetHealthDescriptions ?? []
   const counts: Record<string, number> = {}
+
   for (const desc of descriptions) {
     const state = desc.TargetHealth?.State ?? "unknown"
     counts[state] = (counts[state] ?? 0) + 1
   }
+
   const summary =
     Object.entries(counts)
       .map(([state, count]) => `${count} ${state}`)
       .join(", ") || "—"
+
   return (
     <>
       <td className="px-4 py-2">{descriptions.length}</td>

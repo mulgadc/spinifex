@@ -95,12 +95,15 @@ function decodeUserData(encoded: string | undefined): string {
   if (!encoded) {
     return ""
   }
+
   try {
     const binary = atob(encoded)
     const bytes = new Uint8Array(binary.length)
+
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.codePointAt(i) ?? 0
     }
+
     return new TextDecoder().decode(bytes)
   } catch {
     return ""
@@ -115,8 +118,10 @@ function versionToFormData(
   if (!data) {
     return {}
   }
+
   const primaryNic = data.NetworkInterfaces?.[0]
   const rootEbs = data.BlockDeviceMappings?.[0]?.Ebs
+
   return {
     imageId: data.ImageId ?? "",
     instanceType: data.InstanceType ?? "",
@@ -144,6 +149,7 @@ function LaunchTemplateDetail() {
   const { id } = Route.useParams()
   const navigate = useNavigate()
   const { data: listData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
+
   const { data: versionsData } = useSuspenseQuery(
     ec2LaunchTemplateVersionsQueryOptions(id),
   )
@@ -157,6 +163,7 @@ function LaunchTemplateDetail() {
   const [versionToDelete, setVersionToDelete] = useState<number | null>(null)
 
   const lt = listData.LaunchTemplates?.find((t) => t.LaunchTemplateId === id)
+
   const versions = (versionsData.LaunchTemplateVersions ?? []).toSorted(
     (a, b) => (b.VersionNumber ?? 0) - (a.VersionNumber ?? 0),
   )
@@ -168,6 +175,7 @@ function LaunchTemplateDetail() {
       ...BLANK_DATA_FIELDS,
     },
   })
+
   const {
     control,
     handleSubmit,
@@ -197,8 +205,10 @@ function LaunchTemplateDetail() {
         sourceVersion: undefined,
         ...BLANK_DATA_FIELDS,
       })
+
       return
     }
+
     const src = versions.find((v) => String(v.VersionNumber) === value)
     reset({
       ...getValues(),
@@ -218,6 +228,7 @@ function LaunchTemplateDetail() {
     if (versionToDelete === null) {
       return
     }
+
     try {
       await deleteVersions.mutateAsync({
         launchTemplateId: id,
@@ -325,6 +336,7 @@ function LaunchTemplateDetail() {
                   {versions.map((version) => {
                     const versionNumber = version.VersionNumber
                     const isDefault = versionNumber === defaultVersion
+
                     return (
                       <tr className="border-t" key={versionNumber}>
                         <td className="p-2 font-mono">{versionNumber}</td>

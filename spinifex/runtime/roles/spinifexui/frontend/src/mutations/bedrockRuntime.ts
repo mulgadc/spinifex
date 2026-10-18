@@ -30,6 +30,7 @@ export function useApplyGuardrail() {
         source,
         content: [{ text: { text } }],
       })
+
       return await getBedrockRuntimeClient().send(command)
     },
   })

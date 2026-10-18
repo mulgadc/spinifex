@@ -71,6 +71,7 @@ export const Route = createFileRoute("/_auth/ec2/(instances)/run-instances")({
 
 function RouteComponent() {
   const { launchTemplateId, launchTemplateVersion } = Route.useSearch()
+
   return (
     <RunInstancesPage
       launchTemplateId={launchTemplateId}

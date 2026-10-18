@@ -67,6 +67,7 @@ function isGpuNodegroup(
   instanceTypes: InstanceTypeInfo[],
 ): boolean {
   const info = instanceTypes.find((t) => t.InstanceType === primaryInstanceType)
+
   return !!info && isGpuInstanceType(info)
 }
 
@@ -91,8 +92,10 @@ function ScaleNodegroupDialog({
 
   // Seed the sizes from the current nodegroup each time the dialog opens.
   const [wasOpen, setWasOpen] = useState(open)
+
   if (open !== wasOpen) {
     setWasOpen(open)
+
     if (open) {
       setMinSize(current.minSize ?? 0)
       setDesiredSize(current.desiredSize ?? 0)
@@ -104,8 +107,10 @@ function ScaleNodegroupDialog({
   const handleConfirm = () => {
     if (!(minSize <= desiredSize && desiredSize <= maxSize)) {
       setError("Sizes must satisfy min ≤ desired ≤ max")
+
       return
     }
+
     scaleNodegroup.mutate(
       { clusterName, nodegroupName, minSize, desiredSize, maxSize },
       {
@@ -197,12 +202,14 @@ function NodegroupRow({
   const { data } = useQuery(
     eksNodegroupQueryOptions(clusterName, nodegroupName),
   )
+
   const ng = data?.nodegroup
   const scaling = ng?.scalingConfig
   const [showScale, setShowScale] = useState(false)
 
   const updateAvailable =
     !!clusterVersion && !!ng?.version && ng.version !== clusterVersion
+
   const isGpu = isGpuAmiType(ng?.amiType)
 
   return (
@@ -326,6 +333,7 @@ function AddNodegroupDialog({
     const next = selectedSubnets.includes(subnetId)
       ? selectedSubnets.filter((id) => id !== subnetId)
       : [...selectedSubnets, subnetId]
+
     setValue("subnetIds", next, { shouldValidate: true })
   }
 
@@ -606,6 +614,7 @@ export function NodegroupsTab({
           if (!pendingDelete) {
             return
           }
+
           deleteNodegroup.mutate(
             { clusterName, nodegroupName: pendingDelete },
             {

@@ -20,6 +20,7 @@ function modalityBadges(entry: AdminCatalogEntry) {
   const modalities = [
     ...new Set([...entry.inputModalities, ...entry.outputModalities]),
   ]
+
   return modalities.map((modality) => (
     <Badge key={modality} variant="outline">
       {modality}
@@ -35,9 +36,11 @@ function PriceCell({ entry }: { entry: AdminCatalogEntry }) {
   if (isSelfHost(entry)) {
     return <Badge variant="secondary">Included</Badge>
   }
+
   if (!entry.priceKnown) {
     return <span className="text-muted-foreground">Price unknown</span>
   }
+
   return (
     <span className="font-mono">
       {formatMicroUsdPerMillion(entry.inputPriceMicroUsdPerMillion)} in /{" "}
@@ -69,9 +72,11 @@ function availabilityVariant(
   if (availability === "available") {
     return "default"
   }
+
   if (availability === "ungranted") {
     return "secondary"
   }
+
   return "destructive"
 }
 
@@ -81,6 +86,7 @@ function AvailabilityCell({
   availability: CatalogAvailability
 }) {
   const hint = AVAILABILITY_HINT[availability]
+
   return (
     <div>
       <Badge variant={availabilityVariant(availability)}>

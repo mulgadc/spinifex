@@ -33,12 +33,15 @@ function healthChipClass(state: string | undefined): string {
   if (state && HEALTHY_STATES.has(state)) {
     return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
   }
+
   if (state && UNHEALTHY_STATES.has(state)) {
     return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
   }
+
   if (state && NEUTRAL_STATES.has(state)) {
     return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100"
   }
+
   return "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100"
 }
 
@@ -53,6 +56,7 @@ export function TargetsTab({
   isActive,
 }: TargetsTabProps) {
   const { data: instancesData } = useSuspenseQuery(ec2InstancesQueryOptions)
+
   const {
     data: healthData,
     isLoading,
@@ -67,6 +71,7 @@ export function TargetsTab({
   const deregisterMutation = useDeregisterTargets()
 
   const [registerOpen, setRegisterOpen] = useState(false)
+
   const [deregisterTarget, setDeregisterTarget] = useState<
     TargetDescription | undefined
   >()
@@ -91,6 +96,7 @@ export function TargetsTab({
     if (!deregisterTarget?.Id) {
       return
     }
+
     try {
       await deregisterMutation.mutateAsync({
         targetGroupArn,
@@ -164,6 +170,7 @@ export function TargetsTab({
               {descriptions.map((desc) => {
                 const target: TargetDescription = desc.Target ?? { Id: "" }
                 const state = desc.TargetHealth?.State
+
                 return (
                   <tr
                     className="border-b last:border-0"

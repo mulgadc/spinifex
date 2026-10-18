@@ -18,6 +18,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -40,6 +41,7 @@ const GROUP = {
 function seed(groups: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["rds", "subnetGroups"], { DBSubnetGroups: groups })
+
   return qc
 }
 

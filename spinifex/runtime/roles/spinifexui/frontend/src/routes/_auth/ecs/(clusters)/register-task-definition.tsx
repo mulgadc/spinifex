@@ -19,5 +19,6 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { cluster } = Route.useSearch()
+
   return <RegisterTaskDefinitionPage cluster={cluster} />
 }

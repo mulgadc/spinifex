@@ -39,6 +39,7 @@ export interface PlaygroundControlsProps {
 // is kept rather than sending NaN into inferenceConfig.
 function parseNumber(raw: string, fallback: number): number {
   const parsed = Number(raw)
+
   return Number.isNaN(parsed) ? fallback : parsed
 }
 

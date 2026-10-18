@@ -16,6 +16,7 @@ vi.mock("@/components/ui/sidebar", () => ({
 }))
 
 const mockUseAdmin = vi.fn()
+
 vi.mock("@/hooks/use-admin", () => ({
   useAdmin: (): unknown => mockUseAdmin(),
 }))

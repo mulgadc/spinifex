@@ -100,11 +100,13 @@ function CreateVpc() {
   const vpcCidr = cidrBlock || "10.0.0.0/16"
   const shownPublicCount = mode === "vpc-and-more" ? publicSubnetCount : 0
   const shownPrivateCount = mode === "vpc-and-more" ? privateSubnetCount : 0
+
   const defaultCidrs = calculateSubnetCidrs(
     vpcCidr,
     shownPublicCount,
     shownPrivateCount,
   )
+
   const subnetCidrs = resolveSubnetCidrs(
     vpcCidr,
     shownPublicCount,
@@ -122,16 +124,20 @@ function CreateVpc() {
         data.autoGenerateNames && data.namePrefix
           ? `${data.namePrefix}-vpc`
           : data.namePrefix
+
       const result = await createVpcMutation.mutateAsync({
         cidrBlock: data.cidrBlock,
         name: name || undefined,
       })
+
       const vpcId = result.Vpc?.VpcId
+
       if (vpcId) {
         navigate({ to: "/ec2/describe-vpcs/$id", params: { id: vpcId } })
       } else {
         navigate({ to: "/ec2/describe-vpcs" })
       }
+
       return
     }
 
@@ -146,6 +152,7 @@ function CreateVpc() {
         params: { id: result.vpcId },
       })
     }
+
     setProgressMessage("")
   }
 
@@ -448,17 +455,20 @@ function buildCreateVpcCommands(
       { type: "flag", value: " \\\n  --cidr-block" },
       { type: "value", value: ` ${cidr || "10.0.0.0/16"}` },
     ]
+
     if (tenancy && tenancy !== "default") {
       parts.push(
         { type: "flag", value: " \\\n  --instance-tenancy" },
         { type: "value", value: ` ${tenancy}` },
       )
     }
+
     return [{ label: "Create VPC", parts }]
   }
 
   // VPC-and-more: pasteable bash script
   const commands: CliCommand[] = []
+
   const allSubnets = [
     ...subnetCidrs.publicSubnets.map((s, i) => ({
       ...s,

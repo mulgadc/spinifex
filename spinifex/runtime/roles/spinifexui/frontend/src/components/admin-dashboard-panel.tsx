@@ -20,10 +20,13 @@ const ADDONS = [
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86_400)
   const hours = Math.floor((seconds % 86_400) / 3600)
+
   if (days > 0) {
     return `${days}d ${hours}h`
   }
+
   const minutes = Math.floor((seconds % 3600) / 60)
+
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
 }
 
@@ -35,6 +38,7 @@ export function AdminDashboardPanel() {
     ...adminNodesQueryOptions,
     enabled: isAdmin,
   })
+
   const { data: vmsData } = useQuery({
     ...adminVMsQueryOptions,
     enabled: isAdmin,

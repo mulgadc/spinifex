@@ -35,5 +35,6 @@ export const Route = createFileRoute(
 
 function ClusterDetail() {
   const { clusterName } = Route.useParams()
+
   return <ClusterDetailPage clusterName={clusterName} />
 }

@@ -45,9 +45,11 @@ export const Route = createFileRoute(
 function InstanceProfileDetail() {
   const { instanceProfileName } = Route.useParams()
   const navigate = useNavigate()
+
   const { data: profileData } = useSuspenseQuery(
     iamInstanceProfileQueryOptions(instanceProfileName),
   )
+
   const { data: rolesData } = useSuspenseQuery(iamRolesQueryOptions)
 
   const deleteMutation = useDeleteInstanceProfile()
@@ -56,6 +58,7 @@ function InstanceProfileDetail() {
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showAddSelect, setShowAddSelect] = useState(false)
+
   const [pendingRoleAction, setPendingRoleAction] = useState<string | null>(
     null,
   )
@@ -65,6 +68,7 @@ function InstanceProfileDetail() {
   const allRoles = rolesData.Roles ?? []
 
   const attachedRoleNames = new Set(profileRoles.map((r) => r.RoleName))
+
   const availableRoles = allRoles.filter(
     (r) => r.RoleName && !attachedRoleNames.has(r.RoleName),
   )
@@ -85,6 +89,7 @@ function InstanceProfileDetail() {
 
   const handleRemoveRole = async (roleName: string) => {
     setPendingRoleAction(roleName)
+
     try {
       await removeRoleMutation.mutateAsync({ instanceProfileName, roleName })
     } finally {

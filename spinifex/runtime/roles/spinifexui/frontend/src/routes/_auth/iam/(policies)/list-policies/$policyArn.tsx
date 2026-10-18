@@ -24,17 +24,21 @@ export const Route = createFileRoute(
 )({
   loader: async ({ context, params }) => {
     const policyArn = safeDecodeURIComponent(params.policyArn)
+
     const policyData = await context.queryClient.query({
       ...iamPolicyQueryOptions(policyArn),
       staleTime: "static",
     })
+
     const versionId = policyData.Policy?.DefaultVersionId
+
     if (versionId) {
       await context.queryClient.query({
         ...iamPolicyVersionQueryOptions(policyArn, versionId),
         staleTime: "static",
       })
     }
+
     return policyData
   },
   head: ({ loaderData }) => ({
@@ -51,14 +55,17 @@ function PolicyDetail() {
   const { policyArn: encodedArn } = Route.useParams()
   const policyArn = safeDecodeURIComponent(encodedArn)
   const navigate = useNavigate()
+
   const { data: policyData } = useSuspenseQuery(
     iamPolicyQueryOptions(policyArn),
   )
+
   const policy = policyData.Policy
   const deleteMutation = useDeletePolicy()
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   const versionId = policy?.DefaultVersionId ?? "v1"
+
   const { data: versionData } = useSuspenseQuery(
     iamPolicyVersionQueryOptions(policyArn, versionId),
   )

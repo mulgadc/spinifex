@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest"
 const mockSend = vi.fn().mockResolvedValue({
   knowledgeBase: { knowledgeBaseId: "kb-new" },
 })
+
 const mockNavigate = vi.fn()
 
 vi.mock("@/lib/awsClient", () => ({
@@ -16,6 +17,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => mockNavigate,
@@ -54,6 +56,7 @@ const MODELS: ListFoundationModelsCommandOutput = {
 function renderCreate() {
   const queryClient = createTestQueryClient()
   queryClient.setQueryData(foundationModelsQueryOptions.queryKey, MODELS)
+
   return renderWithClient(<KnowledgeBaseFormPage />, queryClient)
 }
 

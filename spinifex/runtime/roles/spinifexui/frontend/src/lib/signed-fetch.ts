@@ -46,13 +46,17 @@ function parseXmlTag(body: string, tag: string): string | null {
   const open = `<${tag}>`
   const close = `</${tag}>`
   const start = body.indexOf(open)
+
   if (start === -1) {
     return null
   }
+
   const end = body.indexOf(close, start + open.length)
+
   if (end === -1) {
     return null
   }
+
   return body.slice(start + open.length, end)
 }
 
@@ -68,12 +72,14 @@ const jsonErrorSchema = z.object({
 function jsonErrorMessage(body: string): string | null {
   try {
     const parsed = jsonErrorSchema.safeParse(JSON.parse(body))
+
     if (parsed.success) {
       return parsed.data.message ?? parsed.data.Message ?? null
     }
   } catch {
     // Non-JSON body.
   }
+
   return null
 }
 
@@ -83,8 +89,10 @@ function errorFromBody(
   detail: string,
 ): SignedFetchError {
   const code = parseXmlTag(detail, "Code")
+
   const summary =
     parseXmlTag(detail, "Message") ?? jsonErrorMessage(detail) ?? detail
+
   return new SignedFetchError(
     `${label} failed: ${status}${summary ? ` - ${summary}` : ""}`,
     code ?? "SignedFetchError",
@@ -112,6 +120,7 @@ export async function signedProxyFetch<T>({
     host: `localhost:${GATEWAY_PORT}`,
     "content-type": contentType,
   }
+
   const requestHeaders = target
     ? { ...baseHeaders, "x-amz-target": target }
     : baseHeaders
@@ -146,6 +155,7 @@ export async function signedProxyFetch<T>({
   // Send the request through the same-origin reverse proxy instead of
   // directly to the gateway, eliminating cross-origin requests.
   const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw/`
+
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers,
@@ -170,6 +180,7 @@ export async function signedFetch<T>({
   params,
 }: SignedFetchOptions): Promise<T> {
   const extraParams = params ? `&${new URLSearchParams(params).toString()}` : ""
+
   return await signedProxyFetch<T>({
     label: action,
     credentials,
@@ -206,8 +217,10 @@ function adminErrorFromBody(
 ): SignedFetchError {
   let code: string | undefined
   let message: string | undefined
+
   try {
     const parsed = adminErrorSchema.safeParse(JSON.parse(detail))
+
     if (parsed.success) {
       code = parsed.data.error?.code
       message = parsed.data.error?.message
@@ -215,6 +228,7 @@ function adminErrorFromBody(
   } catch {
     // Non-JSON body.
   }
+
   return new SignedFetchError(
     `${label} failed: ${status}${message ? ` - ${message}` : ""}`,
     code ?? "SignedFetchError",
@@ -264,6 +278,7 @@ export async function signedAdminFetch<T, TBody = Record<string, never>>({
   const signedHeaders = { ...signed.headers }
 
   const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw${path}`
+
   const response = await fetch(proxyUrl, {
     method: "POST",
     headers: signedHeaders,

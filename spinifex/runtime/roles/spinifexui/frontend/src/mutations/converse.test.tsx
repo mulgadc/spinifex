@@ -33,6 +33,7 @@ function createQueryClient() {
       mutations: { retry: false },
     },
   })
+
   return queryClient
 }
 
@@ -44,6 +45,7 @@ describe("buildConverseInput", () => {
       system: "Be terse.",
       inferenceConfig: { temperature: 0.5, topP: 0.9, maxTokens: 256 },
     })
+
     expect(input).toStrictEqual({
       modelId: "meta.llama3-2-1b-instruct-v1:0",
       messages: [{ role: "user", content: [{ text: "hello" }] }],
@@ -58,6 +60,7 @@ describe("buildConverseInput", () => {
       messages: [{ role: "user", content: [{ text: "hi" }] }],
       system: "   ",
     })
+
     expect(input.system).toBeUndefined()
     expect(input.inferenceConfig).toBeUndefined()
   })
@@ -69,6 +72,7 @@ describe("buildConverseInput", () => {
       guardrailIdentifier: "gr-1",
       guardrailVersion: "DRAFT",
     })
+
     expect(withGuardrail.guardrailConfig).toStrictEqual({
       guardrailIdentifier: "gr-1",
       guardrailVersion: "DRAFT",
@@ -79,6 +83,7 @@ describe("buildConverseInput", () => {
       messages: [],
       guardrailIdentifier: "gr-1",
     })
+
     expect(withoutVersion.guardrailConfig).toBeUndefined()
   })
 })
@@ -93,6 +98,7 @@ describe("sendConverse", () => {
       role: "assistant",
       content: [{ text: "hi there" }],
     }
+
     mockSend.mockResolvedValue({
       output: { message: assistantMessage },
       usage: USAGE,

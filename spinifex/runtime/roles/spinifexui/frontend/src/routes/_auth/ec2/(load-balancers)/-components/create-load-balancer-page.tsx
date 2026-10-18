@@ -63,15 +63,18 @@ import {
 
 function vpcLabel(vpc: Vpc): string {
   const name = getNameTag(vpc.Tags)
+
   if (name) {
     return `${vpc.VpcId} (${name})`
   }
+
   return `${vpc.VpcId} (${vpc.CidrBlock})`
 }
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
   const suffix = name ? `${subnet.SubnetId} (${name})` : subnet.SubnetId
+
   return `${suffix} · ${subnet.CidrBlock}`
 }
 
@@ -89,23 +92,28 @@ function targetGroupProtocolFor(
   if (protocol === "TLS" || protocol === "TCP") {
     return "TCP"
   }
+
   if (protocol === "UDP") {
     return "UDP"
   }
+
   if (protocol === "TCP_UDP") {
     return "TCP_UDP"
   }
+
   return "HTTP"
 }
 
 function groupSubnetsByAz(subnets: Subnet[]): GroupedSubnets[] {
   const byAz = new Map<string, Subnet[]>()
+
   for (const subnet of subnets) {
     const az = subnet.AvailabilityZone ?? "unknown"
     const list = byAz.get(az) ?? []
     list.push(subnet)
     byAz.set(az, list)
   }
+
   return [...byAz.entries()]
     .toSorted((a, b) => a[0].localeCompare(b[0]))
     .map(([az, list]) => ({ az, subnets: list }))
@@ -118,9 +126,11 @@ export function CreateLoadBalancerPage() {
   const { data: sgsData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: tgsData } = useSuspenseQuery(elbv2TargetGroupsQueryOptions)
   const { data: certsData } = useSuspenseQuery(acmCertificatesQueryOptions)
+
   const { data: sslPoliciesData } = useSuspenseQuery(
     elbv2SslPoliciesQueryOptions,
   )
+
   const wizardMutation = useCreateLoadBalancerWizard()
 
   const [wizardResult, setWizardResult] = useState<LbWizardResult | null>(null)
@@ -197,6 +207,7 @@ export function CreateLoadBalancerPage() {
   const isNlb = lbType === "network"
   const isSecure = isSecureProtocol(listenerProtocol)
   const listenerProtocols = protocolsForType(lbType)
+
   // The default target group's protocol must match the listener's L4/L7 family;
   // HTTPS terminates at an HTTP target group, secure NLB (TLS) at a TCP one.
   const targetGroupProtocols = isNlb
@@ -222,9 +233,11 @@ export function CreateLoadBalancerPage() {
     setValue("listener.port", 80)
     setValue("listener.certificateArn", undefined)
     setValue("listener.sslPolicy", undefined)
+
     if (next === "network") {
       setValue("securityGroupIds", [])
     }
+
     syncTargetGroupProtocol(proto)
   }
 
@@ -232,13 +245,16 @@ export function CreateLoadBalancerPage() {
   // standalone listener form: secure protocols default to 443 and seed the SSL
   // policy; non-secure ones drop cert + policy so the server doesn't reject.
   const SECURE_PORT = 443
+
   const handleProtocolChange = (next: ListenerProtocolValue) => {
     setValue("listener.protocol", next)
     const current = getValues("listener.port")
+
     if (isSecureProtocol(next)) {
       if (current === 80) {
         setValue("listener.port", SECURE_PORT)
       }
+
       if (next === "HTTPS" && !getValues("listener.sslPolicy")) {
         setValue("listener.sslPolicy", DEFAULT_SSL_POLICY)
       }
@@ -246,9 +262,11 @@ export function CreateLoadBalancerPage() {
       if (current === SECURE_PORT) {
         setValue("listener.port", 80)
       }
+
       setValue("listener.certificateArn", undefined)
       setValue("listener.sslPolicy", undefined)
     }
+
     syncTargetGroupProtocol(next)
   }
 
@@ -265,17 +283,21 @@ export function CreateLoadBalancerPage() {
 
   const toggleSubnet = (subnetId: string) => {
     const current = getValues("subnetIds")
+
     const next = current.includes(subnetId)
       ? current.filter((id) => id !== subnetId)
       : [...current, subnetId]
+
     setValue("subnetIds", next, { shouldValidate: true })
   }
 
   const toggleSg = (sgId: string) => {
     const current = getValues("securityGroupIds")
+
     const next = current.includes(sgId)
       ? current.filter((id) => id !== sgId)
       : [...current, sgId]
+
     setValue("securityGroupIds", next)
   }
 
@@ -283,11 +305,14 @@ export function CreateLoadBalancerPage() {
     setWizardResult(null)
 
     let newTargetGroup: CreateTargetGroupFormData | undefined
+
     if (data.listener.targetGroupMode === "new") {
       const tgValid = await tgForm.trigger()
+
       if (!tgValid) {
         return
       }
+
       newTargetGroup = tgForm.getValues()
     }
 
@@ -311,6 +336,7 @@ export function CreateLoadBalancerPage() {
         newTargetGroup,
       },
     })
+
     setWizardResult(result)
 
     if (!result.error && result.loadBalancerArn) {
@@ -832,6 +858,7 @@ function buildCreateLbCommands(
   const existingTgArn = watch("listener.existingTargetGroupArn")
 
   const commands: CliCommand[] = []
+
   const comment: CommandPart = {
     type: "comment",
     value:
@@ -894,18 +921,21 @@ function buildCreateLbCommands(
     { type: "flag", value: " \\\n  --type" },
     { type: "value", value: ` ${lbTypeValue}` },
   ]
+
   if (subnets.length > 0) {
     lbParts.push(
       { type: "flag", value: " \\\n  --subnets" },
       { type: "value", value: ` ${subnets.join(" ")}` },
     )
   }
+
   if (sgs.length > 0) {
     lbParts.push(
       { type: "flag", value: " \\\n  --security-groups" },
       { type: "value", value: ` ${sgs.join(" ")}` },
     )
   }
+
   lbParts.push(
     { type: "flag", value: " \\\n  --query" },
     { type: "value", value: " 'LoadBalancers[0].LoadBalancerArn'" },
@@ -924,13 +954,16 @@ function buildCreateLbCommands(
     { type: "flag", value: " \\\n  --port" },
     { type: "value", value: ` ${listenerPort}` },
   ]
+
   const secureListener =
     listenerProtocol === "HTTPS" || listenerProtocol === "TLS"
+
   if (secureListener && certificateArn) {
     listenerParts.push(
       { type: "flag", value: " \\\n  --certificates" },
       { type: "value", value: ` CertificateArn=${certificateArn}` },
     )
+
     if (listenerProtocol === "HTTPS" && sslPolicy) {
       listenerParts.push(
         { type: "flag", value: " \\\n  --ssl-policy" },
@@ -938,6 +971,7 @@ function buildCreateLbCommands(
       )
     }
   }
+
   listenerParts.push(
     { type: "flag", value: " \\\n  --default-actions" },
     { type: "value", value: ' Type=forward,TargetGroupArn="$TG_ARN"' },

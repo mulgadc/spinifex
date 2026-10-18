@@ -37,6 +37,7 @@ function seedClient(opts: {
       mutations: { retry: false },
     },
   })
+
   queryClient.setQueryData(
     ["ec2", "instances"],
     opts.instances ?? { Reservations: [] },
@@ -45,6 +46,7 @@ function seedClient(opts: {
     ["elbv2", "targetGroups", TG_ARN, "health"],
     opts.health ?? { TargetHealthDescriptions: [] },
   )
+
   return queryClient
 }
 
@@ -85,6 +87,7 @@ describe("TargetsTab", () => {
         ],
       },
     })
+
     render(
       <TargetsTab
         defaultPort={80}
@@ -110,6 +113,7 @@ describe("TargetsTab", () => {
         ],
       },
     })
+
     mockSend.mockResolvedValue({})
     const user = userEvent.setup()
     render(
@@ -153,6 +157,7 @@ describe("TargetsTab", () => {
         ],
       },
     })
+
     const user = userEvent.setup()
     render(
       <TargetsTab

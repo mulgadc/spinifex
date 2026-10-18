@@ -19,10 +19,12 @@ function recoverFromStaleCredentials(
   if (recovering || !isStaleCredentialsError(error)) {
     return
   }
+
   recovering = true
   clearCredentials()
   clearClients()
   queryClient.clear()
+
   if (window.location.pathname !== "/login") {
     window.location.href = "/login?reason=expired"
   }
@@ -60,5 +62,6 @@ export function createQueryClient(): QueryClient {
       },
     },
   })
+
   return queryClient
 }

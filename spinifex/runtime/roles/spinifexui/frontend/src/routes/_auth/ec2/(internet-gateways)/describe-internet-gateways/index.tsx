@@ -49,8 +49,10 @@ function InternetGateways() {
             if (!igw.InternetGatewayId) {
               return null
             }
+
             const name = getNameTag(igw.Tags)
             const attachedVpc = igw.Attachments?.[0]?.VpcId
+
             return (
               <ListCard
                 key={igw.InternetGatewayId}

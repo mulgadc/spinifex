@@ -12,6 +12,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
@@ -38,6 +39,7 @@ function seed(imageDetails: unknown[]) {
   })
   qc.setQueryData(["ecr", "repositories", REPO, "images"], { imageDetails })
   qc.setQueryData(["ecr", "repositories", REPO, "policy"], null)
+
   return qc
 }
 

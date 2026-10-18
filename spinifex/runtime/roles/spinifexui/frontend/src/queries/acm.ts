@@ -7,6 +7,7 @@ export const acmCertificatesQueryOptions = queryOptions({
   queryKey: ["acm", "certificates"],
   queryFn: async () => {
     const command = new ListCertificatesCommand({})
+
     return await getAcmClient().send(command)
   },
 })

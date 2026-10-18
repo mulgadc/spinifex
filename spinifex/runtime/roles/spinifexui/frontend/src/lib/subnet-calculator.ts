@@ -28,6 +28,7 @@ export function parseCidr(cidr: string): ParsedCidr {
   const network = ((o0 << 24) | (o1 << 16) | (o2 << 8) | o3) >>> 0
   // Mask to the prefix length to normalise
   const mask = prefix === 0 ? 0 : (0xff_ff_ff_ff << (32 - prefix)) >>> 0
+
   return { network: (network & mask) >>> 0, prefix }
 }
 
@@ -50,6 +51,7 @@ export function cidrSize(prefix: number): number {
 export function subnetPrefix(vpcPrefix: number): number {
   // Each subnet gets a /20 in a /16 VPC -> offset of 4 bits from VPC prefix
   const sub = vpcPrefix + 4
+
   return Math.min(sub, 28)
 }
 
@@ -79,13 +81,16 @@ export function calculateSubnetCidrs(
   const subPrefix = subnetPrefix(vpcPrefix)
   const subSize = cidrSize(subPrefix)
   const halfOffset = cidrSize(vpcPrefix) / 2
+
   const midpointFits =
     halfOffset % subSize === 0 &&
     halfOffset >= publicCount * subSize &&
     halfOffset + privateCount * subSize <= cidrSize(vpcPrefix)
+
   const privateOffset = midpointFits ? halfOffset : publicCount * subSize
 
   const publicSubnets: SubnetCidr[] = []
+
   for (let i = 0; i < publicCount; i++) {
     const addr = (network + i * subSize) >>> 0
     publicSubnets.push({
@@ -95,6 +100,7 @@ export function calculateSubnetCidrs(
   }
 
   const privateSubnets: SubnetCidr[] = []
+
   for (let i = 0; i < privateCount; i++) {
     const addr = (network + privateOffset + i * subSize) >>> 0
     privateSubnets.push({
@@ -109,6 +115,7 @@ export function calculateSubnetCidrs(
 function withCustom(subnets: SubnetCidr[], overrides: string[]): SubnetCidr[] {
   return subnets.map((subnet, i) => {
     const override = overrides[i]?.trim()
+
     return override ? { ...subnet, cidr: override } : subnet
   })
 }
@@ -124,6 +131,7 @@ export function resolveSubnetCidrs(
   custom: { publicCidrs: string[]; privateCidrs: string[] },
 ): SubnetCidrPlan {
   const defaults = calculateSubnetCidrs(vpcCidr, publicCount, privateCount)
+
   return {
     publicSubnets: withCustom(defaults.publicSubnets, custom.publicCidrs),
     privateSubnets: withCustom(defaults.privateSubnets, custom.privateCidrs),
@@ -136,6 +144,7 @@ export function cidrsOverlap(a: string, b: string): boolean {
   const cidrB = parseCidr(b)
   const endA = (cidrA.network + cidrSize(cidrA.prefix) - 1) >>> 0
   const endB = (cidrB.network + cidrSize(cidrB.prefix) - 1) >>> 0
+
   return cidrA.network <= endB && cidrB.network <= endA
 }
 
@@ -145,6 +154,7 @@ export function cidrContains(vpcCidr: string, subnetCidr: string): boolean {
   const sub = parseCidr(subnetCidr)
   const vpcEnd = (vpc.network + cidrSize(vpc.prefix) - 1) >>> 0
   const subEnd = (sub.network + cidrSize(sub.prefix) - 1) >>> 0
+
   return sub.network >= vpc.network && subEnd <= vpcEnd
 }
 
@@ -158,19 +168,25 @@ export function isValidCidr(
     /^(?<octet1>\d{1,3})\.(?<octet2>\d{1,3})\.(?<octet3>\d{1,3})\.(?<octet4>\d{1,3})\/(?<prefix>\d{1,2})$/.exec(
       cidr,
     )
+
   if (!match?.groups) {
     return false
   }
+
   const { octet1, octet2, octet3, octet4, prefix } = match.groups
+
   const octets = [
     Math.trunc(Number(octet1 ?? "0")),
     Math.trunc(Number(octet2 ?? "0")),
     Math.trunc(Number(octet3 ?? "0")),
     Math.trunc(Number(octet4 ?? "0")),
   ]
+
   if (octets.some((o) => o > 255)) {
     return false
   }
+
   const prefixBits = Math.trunc(Number(prefix ?? "0"))
+
   return prefixBits >= minPrefix && prefixBits <= maxPrefix
 }

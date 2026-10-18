@@ -42,6 +42,7 @@ const EMBED_ENTRY = {
 function seed(entries: AdminCatalogEntry[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(adminOchreCatalogQueryOptions.queryKey, { entries })
+
   return qc
 }
 

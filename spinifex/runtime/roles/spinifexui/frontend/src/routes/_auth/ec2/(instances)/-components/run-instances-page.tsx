@@ -65,6 +65,7 @@ const DEFAULT_ROOT_DEVICE_NAME = "/dev/sda1"
 const DEFAULT_VOLUME_TYPE = "gp3"
 const MIN_VOLUME_SIZE_GIB = 1
 const MAX_VOLUME_SIZE_GIB = 16_384
+
 interface RunInstancesPageProps {
   launchTemplateId?: string
   launchTemplateVersion?: string
@@ -77,18 +78,22 @@ export function RunInstancesPage({
   const navigate = useNavigate()
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const { data: keyPairsData } = useSuspenseQuery(ec2KeyPairsQueryOptions)
+
   const { data: instanceTypesData } = useSuspenseQuery(
     ec2InstanceTypesQueryOptions,
   )
+
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
   const { data: ltData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
   const createMutation = useCreateInstance()
+
   const images = (imagesData.Images ?? []).filter(
     (image) => !isSystemManagedImage(image),
   )
+
   const keyPairs = keyPairsData.KeyPairs ?? []
   const subnets = subnetsData.Subnets ?? []
   const placementGroups = pgData.PlacementGroups ?? []
@@ -96,15 +101,20 @@ export function RunInstancesPage({
   const securityGroups = sgData.SecurityGroups ?? []
   const launchTemplates = ltData.LaunchTemplates ?? []
   const defaultVpcId = (vpcs.find((v) => v.IsDefault) ?? vpcs[0])?.VpcId
+
   const defaultSgName = nextLaunchWizardName(
     securityGroups.map((sg) => sg.GroupName ?? ""),
   )
+
   const instanceTypeCounts: Record<string, number> = {}
+
   for (const type of instanceTypesData.InstanceTypes ?? []) {
     const typeName = type.InstanceType
+
     if (!typeName) {
       continue
     }
+
     instanceTypeCounts[typeName] = (instanceTypeCounts[typeName] ?? 0) + 1
   }
 
@@ -113,9 +123,11 @@ export function RunInstancesPage({
   // Compute default values from loaded data
   const defaultImageId = images[0]?.ImageId
   const defaultKeyName = keyPairs[0]?.KeyName
+
   const defaultInstanceType =
     uniqueInstanceTypes.find((type) => type.endsWith(".nano")) ??
     uniqueInstanceTypes[0]
+
   const defaultRoot = getRootMapping(
     images.find((img) => img.ImageId === defaultImageId),
   )
@@ -144,6 +156,7 @@ export function RunInstancesPage({
           const minSize = getRootMapping(
             images.find((img) => img.ImageId === data.imageId),
           ).snapshotSize
+
           if (
             data.rootVolumeSize !== undefined &&
             minSize !== undefined &&
@@ -178,17 +191,23 @@ export function RunInstancesPage({
   })
 
   const selectedInstanceType = useWatch({ control, name: "instanceType" })
+
   const maxCount = selectedInstanceType
     ? (instanceTypeCounts[selectedInstanceType] ?? 1)
     : 1
+
   const selectedTypeInfo = instanceTypesData.InstanceTypes?.find(
     (t) => t.InstanceType === selectedInstanceType,
   )
+
   const selectedGpuDevice = selectedTypeInfo?.GpuInfo?.Gpus?.[0]
+
   const selectedGpuMigProfile = selectedGpuDevice?.Name?.startsWith("MIG ")
     ? selectedGpuDevice.Name.slice("MIG ".length)
     : undefined
+
   const selectedImageId = useWatch({ control, name: "imageId" })
+
   const selectedRoot = getRootMapping(
     images.find((img) => img.ImageId === selectedImageId),
   )
@@ -202,31 +221,39 @@ export function RunInstancesPage({
   // Launch template: when one is selected the instance is launched from it and
   // the direct-config fields below are hidden — the template supplies them.
   const selectedTemplateId = useWatch({ control, name: "launchTemplateId" })
+
   const selectedTemplateVersion = useWatch({
     control,
     name: "launchTemplateVersion",
   })
+
   const templateVersionsQuery = useQuery({
     ...ec2LaunchTemplateVersionsQueryOptions(selectedTemplateId ?? ""),
     enabled: !!selectedTemplateId,
   })
+
   const templateVersions =
     templateVersionsQuery.data?.LaunchTemplateVersions ?? []
+
   const resolvedTemplateData = resolveTemplateVersion(
     templateVersions,
     selectedTemplateVersion,
   )?.LaunchTemplateData
+
   const effectiveVpcId =
     subnets.find((s) => s.SubnetId === selectedSubnetId)?.VpcId ?? defaultVpcId
+
   const vpcSecurityGroups = effectiveVpcId
     ? securityGroups.filter((sg) => sg.VpcId === effectiveVpcId)
     : securityGroups
 
   const toggleSg = (sgId: string) => {
     const current = getValues("securityGroupIds") ?? []
+
     const next = current.includes(sgId)
       ? current.filter((id) => id !== sgId)
       : [...current, sgId]
+
     setValue("securityGroupIds", next, { shouldValidate: true })
   }
 
@@ -249,6 +276,7 @@ export function RunInstancesPage({
           resolvedVpcId: effectiveVpcId,
         }
       : { ...data, resolvedVpcId: effectiveVpcId }
+
     await createMutation.mutateAsync(params)
     navigate({ to: "/ec2/describe-instances" })
   }
@@ -381,6 +409,7 @@ export function RunInstancesPage({
                   const selectedImage = images.find(
                     (img) => img.ImageId === field.value,
                   )
+
                   return (
                     <Select
                       onValueChange={(value) => {
@@ -943,6 +972,7 @@ function getRootMapping(image: ImageLike | undefined): RootMappingDefaults {
   const deviceName = image?.RootDeviceName ?? DEFAULT_ROOT_DEVICE_NAME
   const mappings = image?.BlockDeviceMappings ?? []
   const root = mappings.find((m) => m.DeviceName === deviceName) ?? mappings[0]
+
   return {
     deviceName,
     snapshotSize: root?.Ebs?.VolumeSize,
@@ -958,15 +988,19 @@ function resolveTemplateVersion(
   if (versions.length === 0) {
     return undefined
   }
+
   if (!selected || selected === "$Default") {
     return versions.find((v) => v.DefaultVersion) ?? versions[0]
   }
+
   if (selected === "$Latest") {
     return versions.toSorted(
       (a, b) => (b.VersionNumber ?? 0) - (a.VersionNumber ?? 0),
     )[0]
   }
+
   const num = Number(selected)
+
   return versions.find((v) => v.VersionNumber === num)
 }
 
@@ -975,9 +1009,11 @@ function buildRunInstancesCommands(
   vpcId: string | undefined,
 ): CliCommand[] {
   const launchTemplateId = watch("launchTemplateId") ?? ""
+
   if (launchTemplateId) {
     const templateVersion = watch("launchTemplateVersion") || "$Default"
     const templateCount = watch("count") ?? 0
+
     return [
       {
         label: "Run Instances",
@@ -1049,6 +1085,7 @@ function buildRunInstancesCommands(
   const ruleSource = watch("ruleSource") || "anywhere"
   const customCidr = watch("customCidr") ?? ""
   const sgCommands: CliCommand[] = []
+
   if (sgMode === "create") {
     sgCommands.push({
       label: "Create security group",
@@ -1073,11 +1110,13 @@ function buildRunInstancesCommands(
 
     const cidr =
       ruleSource === "custom" && customCidr ? customCidr : "0.0.0.0/0"
+
     const ports = [
       ...(watch("allowSsh") === true ? [22] : []),
       ...(watch("allowHttp") === true ? [80] : []),
       ...(watch("allowHttps") === true ? [443] : []),
     ]
+
     if (ports.length > 0) {
       const ipPerms = JSON.stringify(
         ports.map((port) => ({
@@ -1087,6 +1126,7 @@ function buildRunInstancesCommands(
           IpRanges: [{ CidrIp: cidr }],
         })),
       )
+
       sgCommands.push({
         label: "Authorize inbound rules",
         parts: [
@@ -1102,12 +1142,14 @@ function buildRunInstancesCommands(
         ],
       })
     }
+
     parts.push(
       { type: "flag" as const, value: " \\\n  --security-group-ids" },
       { type: "value" as const, value: " $SG_ID" },
     )
   } else {
     const sgIds = watch("securityGroupIds") ?? []
+
     if (sgIds.length > 0) {
       parts.push(
         { type: "flag" as const, value: " \\\n  --security-group-ids" },
@@ -1120,6 +1162,7 @@ function buildRunInstancesCommands(
     rootVolumeSize !== undefined ||
     rootVolumeType !== undefined ||
     rootDeleteOnTermination !== undefined
+
   if (hasStorageOverride) {
     // A field the form left unset stays undefined, which JSON.stringify omits,
     // so the CLI preview shows only the overrides the user actually set.
@@ -1128,12 +1171,14 @@ function buildRunInstancesCommands(
       VolumeType: rootVolumeType || undefined,
       DeleteOnTermination: rootDeleteOnTermination,
     }
+
     const bdm = JSON.stringify([
       {
         DeviceName: rootDeviceName || DEFAULT_ROOT_DEVICE_NAME,
         Ebs: ebs,
       },
     ])
+
     parts.push(
       { type: "flag" as const, value: " \\\n  --block-device-mappings" },
       { type: "value" as const, value: ` '${bdm}'` },

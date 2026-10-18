@@ -92,6 +92,7 @@ describe("getNameTag", () => {
       { Key: "Env", Value: "prod" },
       { Key: "Name", Value: "my-instance" },
     ]
+
     expect(getNameTag(tags)).toBe("my-instance")
   })
 

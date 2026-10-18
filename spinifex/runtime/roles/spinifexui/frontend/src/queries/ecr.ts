@@ -14,6 +14,7 @@ export const ecrRepositoriesQueryOptions = queryOptions({
   queryKey: ["ecr", "repositories"],
   queryFn: async () => {
     const command = new DescribeRepositoriesCommand({})
+
     return await getEcrClient().send(command)
   },
 })
@@ -23,6 +24,7 @@ export const ecrRepositoryImagesQueryOptions = (repositoryName: string) =>
     queryKey: ["ecr", "repositories", repositoryName, "images"],
     queryFn: async () => {
       const command = new DescribeImagesCommand({ repositoryName })
+
       return await getEcrClient().send(command)
     },
   })
@@ -37,11 +39,13 @@ export const ecrRepositoryPolicyQueryOptions = (repositoryName: string) =>
       try {
         const command = new GetRepositoryPolicyCommand({ repositoryName })
         const result = await getEcrClient().send(command)
+
         return result.policyText ?? null
       } catch (error) {
         if (error instanceof RepositoryPolicyNotFoundException) {
           return null
         }
+
         throw error
       }
     },
@@ -57,11 +61,13 @@ export const ecrLifecyclePolicyQueryOptions = (repositoryName: string) =>
       try {
         const command = new GetLifecyclePolicyCommand({ repositoryName })
         const result = await getEcrClient().send(command)
+
         return result.lifecyclePolicyText ?? null
       } catch (error) {
         if (error instanceof LifecyclePolicyNotFoundException) {
           return null
         }
+
         throw error
       }
     },

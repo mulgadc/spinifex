@@ -73,6 +73,7 @@ export const createInstanceSchema = z
           path: ["imageId"],
         })
       }
+
       if (!data.instanceType) {
         ctx.addIssue({
           code: "custom",
@@ -80,6 +81,7 @@ export const createInstanceSchema = z
           path: ["instanceType"],
         })
       }
+
       if (!data.keyName) {
         ctx.addIssue({
           code: "custom",
@@ -88,9 +90,11 @@ export const createInstanceSchema = z
         })
       }
     }
+
     if (!data.securityGroupMode) {
       return
     }
+
     if (data.securityGroupMode === "existing") {
       if ((data.securityGroupIds ?? []).length === 0) {
         ctx.addIssue({
@@ -99,8 +103,10 @@ export const createInstanceSchema = z
           path: ["securityGroupIds"],
         })
       }
+
       return
     }
+
     if (!data.newSgName || data.newSgName.trim().length === 0) {
       ctx.addIssue({
         code: "custom",
@@ -108,6 +114,7 @@ export const createInstanceSchema = z
         path: ["newSgName"],
       })
     }
+
     if (
       data.ruleSource === "custom" &&
       (!data.customCidr || !isValidCidr(data.customCidr, 0, 32))
@@ -134,15 +141,19 @@ export type CreateInstanceParams = CreateInstanceFormData & {
 export function nextLaunchWizardName(existingNames: string[]): string {
   let max = 0
   const re = new RegExp(`^${LAUNCH_WIZARD_SG_PREFIX}(\\d+)$`)
+
   for (const name of existingNames) {
     const m = re.exec(name)
+
     if (m) {
       const n = Number(m[1])
+
       if (n > max) {
         max = n
       }
     }
   }
+
   return `${LAUNCH_WIZARD_SG_PREFIX}${max + 1}`
 }
 
@@ -354,6 +365,7 @@ export const createVpcWizardSchema = z
         privateCidrs: data.privateSubnetCidrs,
       },
     )
+
     const subnets = [
       ...plan.publicSubnets.map(({ cidr }, index) => ({
         cidr,
@@ -366,6 +378,7 @@ export const createVpcWizardSchema = z
     ]
 
     const inRange: typeof subnets = []
+
     for (const subnet of subnets) {
       if (!isValidCidr(subnet.cidr, 16, 28)) {
         ctx.addIssue({
@@ -477,6 +490,7 @@ export type LaunchTemplateFormData = z.infer<typeof launchTemplateFormSchema>
 export const createLaunchTemplateSchema = launchTemplateFormSchema.superRefine(
   (data, ctx) => {
     const name = data.launchTemplateName ?? ""
+
     if (
       name.length < LAUNCH_TEMPLATE_NAME_MIN ||
       name.length > LAUNCH_TEMPLATE_NAME_MAX
@@ -486,8 +500,10 @@ export const createLaunchTemplateSchema = launchTemplateFormSchema.superRefine(
         message: `Name must be ${LAUNCH_TEMPLATE_NAME_MIN}–${LAUNCH_TEMPLATE_NAME_MAX} characters`,
         path: ["launchTemplateName"],
       })
+
       return
     }
+
     if (!LAUNCH_TEMPLATE_NAME_REGEX.test(name)) {
       ctx.addIssue({
         code: "custom",

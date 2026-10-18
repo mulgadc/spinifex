@@ -69,6 +69,7 @@ function CreateNatGateway() {
   // IP). Fall back to all subnets if none are flagged public.
   const publicSubnets = subnets.filter((s) => s.MapPublicIpOnLaunch)
   const subnetOptions = publicSubnets.length > 0 ? publicSubnets : subnets
+
   // Only Elastic IPs that are not already associated can back a NAT gateway.
   const availableAddresses = (addressesData.Addresses ?? []).filter(
     (a) => !a.AssociationId,
@@ -96,7 +97,9 @@ function CreateNatGateway() {
       allocationId: data.allocationId,
       name: data.name?.trim() ?? undefined,
     })
+
     const natGatewayId = result.NatGateway?.NatGatewayId
+
     if (natGatewayId) {
       navigate({
         to: "/ec2/describe-nat-gateways/$id",
@@ -152,6 +155,7 @@ function CreateNatGateway() {
                 <SelectContent>
                   {subnetOptions.map((subnet) => {
                     const name = getNameTag(subnet.Tags)
+
                     return (
                       <SelectItem
                         key={subnet.SubnetId}

@@ -16,6 +16,7 @@ vi.mock("@/lib/awsClient", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+
   return {
     ...actual,
     useNavigate: () => routerState.navigate,
@@ -30,6 +31,7 @@ import { RepositoriesPage } from "./repositories-page"
 function seed(repositories: unknown[]) {
   const qc = createTestQueryClient()
   qc.setQueryData(["ecr", "repositories"], { $metadata: {}, repositories })
+
   return qc
 }
 

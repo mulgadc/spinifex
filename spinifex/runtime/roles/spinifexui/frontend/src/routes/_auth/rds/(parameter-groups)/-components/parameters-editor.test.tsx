@@ -181,6 +181,7 @@ describe("ParametersEditor", () => {
       ...DYNAMIC_PARAM,
       ParameterName: `param_${i}`,
     }))
+
     render(many)
 
     for (let i = 0; i < 21; i++) {

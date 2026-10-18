@@ -20,12 +20,14 @@ const ThemeProviderContext = createContext<ThemeProviderState | undefined>(
 function getStoredTheme(storageKey: string, defaultTheme: Theme): Theme {
   try {
     const stored = localStorage.getItem(storageKey)
+
     if (stored === "light" || stored === "dark" || stored === "system") {
       return stored
     }
   } catch {
     // localStorage might be disabled
   }
+
   return defaultTheme
 }
 
@@ -53,6 +55,7 @@ export function ThemeProvider({
         : "light"
 
       root.classList.add(systemTheme)
+
       return
     }
 
@@ -69,6 +72,7 @@ export function ThemeProvider({
         } catch {
           // localStorage might be disabled - still update state
         }
+
         setTheme(newTheme)
       },
     }),

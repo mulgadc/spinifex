@@ -26,6 +26,7 @@ function Groups() {
   const groups = (data.Groups ?? []).toSorted((a, b) => {
     const nameA = a.GroupName?.toLowerCase() ?? ""
     const nameB = b.GroupName?.toLowerCase() ?? ""
+
     return nameA.localeCompare(nameB)
   })
 
@@ -46,6 +47,7 @@ function Groups() {
             if (!group.GroupName) {
               return null
             }
+
             return (
               <ListCard
                 key={group.GroupName}

@@ -2,8 +2,10 @@ import { isNotFound } from "@tanstack/react-router"
 import { describe, expect, it, vi } from "vitest"
 
 const mockIsOchreEnabled = vi.fn()
+
 vi.mock("@/lib/cluster-config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cluster-config")>()
+
   return {
     ...actual,
     isOchreEnabled: (): unknown => mockIsOchreEnabled(),
@@ -17,6 +19,7 @@ describe("bedrock route guard", () => {
     mockIsOchreEnabled.mockReturnValue(false)
 
     let caught: unknown
+
     try {
       // @ts-expect-error -- beforeLoad's real arg shape is not needed here.
       Route.options.beforeLoad?.({})

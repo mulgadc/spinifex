@@ -10,6 +10,7 @@ import { rdsTagSchema } from "@/types/rds"
 import { TagsFieldArray } from "./tags-field-array"
 
 const schema = z.object({ tags: z.array(rdsTagSchema) })
+
 type FormData = z.infer<typeof schema>
 
 function TagsForm({ onSubmit }: { onSubmit: (data: FormData) => void }) {

@@ -119,7 +119,9 @@ function hasQuorum(nodes: MetaNodeStatus[]) {
   if (nodes.length === 0 || !nodes.every((n) => n.healthy)) {
     return false
   }
-  const leaders = new Set(nodes.filter((n) => n.state).map((n) => n.leader))
+
+  const leaders = new Set(nodes.flatMap((n) => (n.state ? [n.leader] : [])))
+
   return leaders.size <= 1 && !leaders.has("") && !leaders.has(undefined)
 }
 
@@ -133,9 +135,11 @@ function ClusterHealthBadge({
   if (nodeCount === 0) {
     return <Badge variant="secondary">Unknown</Badge>
   }
+
   if (quorumHealthy) {
     return <Badge variant="default">Healthy</Badge>
   }
+
   return <Badge variant="destructive">Degraded</Badge>
 }
 

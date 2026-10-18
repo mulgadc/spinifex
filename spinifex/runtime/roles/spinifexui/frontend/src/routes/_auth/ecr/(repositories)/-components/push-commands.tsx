@@ -9,7 +9,9 @@ function registryHostFrom(repositoryUri: string | undefined): string {
   if (!repositoryUri) {
     return ""
   }
+
   const slash = repositoryUri.indexOf("/")
+
   return slash === -1 ? repositoryUri : repositoryUri.slice(0, slash)
 }
 

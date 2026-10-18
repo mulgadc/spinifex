@@ -40,6 +40,7 @@ const EMPTY_SSL_POLICIES: SslPolicy[] = []
 
 function certLabel(cert: CertificateSummary): string {
   const id = cert.CertificateArn?.split("/").pop() ?? cert.CertificateArn ?? ""
+
   return cert.DomainName ? `${cert.DomainName} · ${id}` : id
 }
 
@@ -73,11 +74,14 @@ export function ListenerForm({
     if (!next) {
       return
     }
+
     const current = getValues("port")
+
     if (isSecureProtocol(next)) {
       if (current === HTTP_PORT) {
         setValue("port", HTTPS_PORT)
       }
+
       if (next === "HTTPS") {
         if (!getValues("sslPolicy")) {
           setValue("sslPolicy", DEFAULT_SSL_POLICY)
@@ -89,6 +93,7 @@ export function ListenerForm({
       if (current === HTTPS_PORT) {
         setValue("port", HTTP_PORT)
       }
+
       setValue("certificateArn", undefined)
       setValue("sslPolicy", undefined)
     }

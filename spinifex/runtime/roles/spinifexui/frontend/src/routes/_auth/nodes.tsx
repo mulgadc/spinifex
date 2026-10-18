@@ -26,10 +26,13 @@ export const Route = createFileRoute("/_auth/nodes")({
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86_400)
   const hours = Math.floor((seconds % 86_400) / 3600)
+
   if (days > 0) {
     return `${days}d ${hours}h`
   }
+
   const minutes = Math.floor((seconds % 3600) / 60)
+
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
 }
 
@@ -37,23 +40,31 @@ function formatMemory(gb: number): string {
   if (gb >= 1) {
     return `${gb.toFixed(1)}Gi`
   }
+
   return `${Math.round(gb * 1024)}Mi`
 }
 
 function formatAge(launchTime: number): string {
   const seconds = Math.floor(Date.now() / 1000 - launchTime)
+
   if (seconds < 60) {
     return `${seconds}s`
   }
+
   const minutes = Math.floor(seconds / 60)
+
   if (minutes < 60) {
     return `${minutes}m`
   }
+
   const hours = Math.floor(minutes / 60)
+
   if (hours < 24) {
     return `${hours}h ${minutes % 60}m`
   }
+
   const days = Math.floor(hours / 24)
+
   return `${days}d ${hours % 24}h`
 }
 
@@ -62,6 +73,7 @@ function NodesPage() {
     ...adminNodesQueryOptions,
     refetchInterval: 5000,
   })
+
   const { data: vmsData } = useQuery({
     ...adminVMsQueryOptions,
     refetchInterval: 5000,
@@ -75,9 +87,11 @@ function NodesPage() {
     string,
     { vcpu: number; memory_gb: number; available: number }
   >()
+
   for (const node of nodes) {
     for (const it of node.instance_types ?? []) {
       const existing = typeMap.get(it.name)
+
       if (existing) {
         existing.available += it.available
       } else {
@@ -89,6 +103,7 @@ function NodesPage() {
       }
     }
   }
+
   const instanceTypes = [...typeMap.entries()]
     .map(([name, data]) => ({ name, ...data }))
     .toSorted((a, b) => a.name.localeCompare(b.name))
@@ -237,6 +252,7 @@ export function formatVMGPUs(gpus: VMInfo["gpus"]): string {
   if (!gpus?.length) {
     return "-"
   }
+
   return gpus
     .map((gpu) =>
       gpu.profile
@@ -308,6 +324,7 @@ function ResourceTable({ nodes }: { nodes: NodeInfo[] }) {
             // capacity a tenant deployment can actually consume.
             const schedVcpu = node.total_vcpu - (node.reserved_vcpu ?? 0)
             const schedMemGb = node.total_mem_gb - (node.reserved_mem_gb ?? 0)
+
             return (
               <tr key={node.node} className="border-b last:border-0">
                 <td className="py-1.5 pr-4 font-mono font-medium">

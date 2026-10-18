@@ -24,6 +24,7 @@ function renderWithClient() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
+
   return render(
     <QueryClientProvider client={queryClient}>
       <DataSourceCard dataSource={DATA_SOURCE} knowledgeBaseId="kb-1" />
@@ -106,6 +107,7 @@ describe("DataSourceCard", () => {
         (call) =>
           call[0]?.input?.dataSourceId === "ds-1" && !call[0].input.sortBy,
       )
+
       expect(deleteCall?.[0].input).toStrictEqual({
         dataSourceId: "ds-1",
         knowledgeBaseId: "kb-1",

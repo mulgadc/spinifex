@@ -50,6 +50,7 @@ export function TaskDetailPage({
   const eni = (task.attachments ?? []).find(
     (a) => a.type === "ElasticNetworkInterface",
   )
+
   const containers = task.containers ?? []
   const hasGpuIds = containers.some((c) => (c.gpuIds?.length ?? 0) > 0)
 

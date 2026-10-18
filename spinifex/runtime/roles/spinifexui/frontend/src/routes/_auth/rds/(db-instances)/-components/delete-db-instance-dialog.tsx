@@ -45,9 +45,11 @@ export function DeleteDBInstanceDialog({
 }: DeleteDBInstanceDialogProps) {
   const deleteInstance = useDeleteDBInstance()
   const [skipFinalSnapshot, setSkipFinalSnapshot] = useState(false)
+
   const [snapshotIdentifier, setSnapshotIdentifier] = useState(() =>
     defaultFinalSnapshotIdentifier(dbInstanceIdentifier),
   )
+
   const [typedIdentifier, setTypedIdentifier] = useState("")
 
   function handleOpenChange(nextOpen: boolean) {
@@ -59,6 +61,7 @@ export function DeleteDBInstanceDialog({
       setTypedIdentifier("")
       deleteInstance.reset()
     }
+
     onOpenChange(nextOpen)
   }
 
@@ -69,6 +72,7 @@ export function DeleteDBInstanceDialog({
 
   const confirmationMissing =
     skipFinalSnapshot && typedIdentifier !== dbInstanceIdentifier
+
   const canDelete = !confirmationMissing && !snapshotNameError
 
   async function handleDelete() {

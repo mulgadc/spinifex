@@ -16,6 +16,7 @@ import { act } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 const mockBedrockSend = vi.fn()
+
 const mockStsSend = vi.fn().mockResolvedValue({
   Account: "000000000002",
   Arn: "arn:aws:iam::000000000002:user/test",
@@ -32,6 +33,7 @@ vi.mock("@/lib/sts", () => ({
 
 vi.mock("@/lib/auth", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/auth")>()
+
   return {
     ...actual,
     getCredentials: () => ({
@@ -47,6 +49,7 @@ vi.mock("@/lib/auth", async (importOriginal) => {
 // flag is on -- the flag itself is covered by dedicated tests elsewhere.
 vi.mock("@/lib/cluster-config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/cluster-config")>()
+
   return {
     ...actual,
     isOchreEnabled: () => true,
@@ -82,9 +85,11 @@ function seedSend() {
         case "GetGuardrailCommand": {
           return GUARDRAIL
         }
+
         case "ListGuardrailsCommand": {
           return { guardrails: [] }
         }
+
         default: {
           return {}
         }
@@ -96,11 +101,13 @@ function seedSend() {
 function renderAppAt(path: string) {
   const queryClient = createTestQueryClient()
   const history = createMemoryHistory({ initialEntries: [path] })
+
   const router = createRouter({
     routeTree,
     context: { queryClient },
     history,
   })
+
   render(
     <ThemeProvider defaultTheme="dark" storageKey="spinifex-ui-theme">
       <QueryClientProvider client={queryClient}>
@@ -110,6 +117,7 @@ function renderAppAt(path: string) {
       </QueryClientProvider>
     </ThemeProvider>,
   )
+
   return { router }
 }
 

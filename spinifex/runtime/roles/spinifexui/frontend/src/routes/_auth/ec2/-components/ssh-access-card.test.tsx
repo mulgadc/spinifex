@@ -54,6 +54,7 @@ describe("SSHAccessCard", () => {
     const { container } = render(
       <SSHAccessCard image={oracleImage} instance={{}} />,
     )
+
     expect(container).toBeEmptyDOMElement()
   })
 })

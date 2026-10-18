@@ -100,6 +100,9 @@ func SetAccountDeletePollInterval(d time.Duration) func() {
 // PrintTeardownPlan exposes printTeardownPlan for testing.
 var PrintTeardownPlan = printTeardownPlan
 
+// RunAccountDryRun exposes runAccountDryRun for testing.
+var RunAccountDryRun = runAccountDryRun
+
 // PrintTeardownResult exposes printTeardownResult for testing.
 var PrintTeardownResult = printTeardownResult
 

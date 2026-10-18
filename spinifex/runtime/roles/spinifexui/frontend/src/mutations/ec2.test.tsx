@@ -1089,6 +1089,30 @@ describe("useCreateVpc", () => {
     })
   })
 
+  it("sends user tags after the Name tag", async () => {
+    createQueryClient()
+    const { result } = renderHook(() => useCreateVpc(), { wrapper })
+
+    result.current.mutate({
+      cidrBlock: "10.0.0.0/16",
+      name: "my-vpc",
+      tags: [{ key: "Env", value: "prod" }],
+    })
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBeTruthy()
+    })
+    expect(mockSend.mock.calls[0]?.[0].input.TagSpecifications).toStrictEqual([
+      {
+        ResourceType: "vpc",
+        Tags: [
+          { Key: "Name", Value: "my-vpc" },
+          { Key: "Env", Value: "prod" },
+        ],
+      },
+    ])
+  })
+
   it("omits TagSpecifications when name is empty", async () => {
     createQueryClient()
     const { result } = renderHook(() => useCreateVpc(), { wrapper })

@@ -17,6 +17,7 @@ import {
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
@@ -128,6 +129,7 @@ function CreateVpc() {
       const result = await createVpcMutation.mutateAsync({
         cidrBlock: data.cidrBlock,
         name: name || undefined,
+        tags: data.tags,
       })
 
       const vpcId = result.Vpc?.VpcId
@@ -308,6 +310,8 @@ function CreateVpc() {
               )}
             />
           </Field>
+
+          <TagsFieldArray control={control} name="tags" />
 
           {/* VPC and more sections */}
           {mode === "vpc-and-more" && (

@@ -13,7 +13,6 @@ import {
   createVolumeSchema,
   createVpcSchema,
   createVpcWizardSchema,
-  formTagSchema,
   importKeyPairSchema,
   launchTemplateFormSchema,
   modifyVolumeSchema,
@@ -597,23 +596,6 @@ describe("createPlacementGroupSchema", () => {
   })
 })
 
-describe("formTagSchema", () => {
-  it("accepts valid tag with key and value", () => {
-    const result = formTagSchema.safeParse({ key: "Env", value: "prod" })
-    expect(result.success).toBeTruthy()
-  })
-
-  it("accepts tag with empty value", () => {
-    const result = formTagSchema.safeParse({ key: "Env", value: "" })
-    expect(result.success).toBeTruthy()
-  })
-
-  it("rejects tag with empty key", () => {
-    const result = formTagSchema.safeParse({ key: "", value: "prod" })
-    expect(result.success).toBeFalsy()
-  })
-})
-
 describe("createSecurityGroupSchema", () => {
   it("accepts valid security group params", () => {
     const result = createSecurityGroupSchema.safeParse({
@@ -815,6 +797,21 @@ describe("createVpcWizardSchema", () => {
     })
 
     expect(result.success).toBeTruthy()
+  })
+
+  // AWS caps tag keys at 128 characters and values at 256.
+  it.each([
+    { key: "k".repeat(128), value: "v".repeat(256), ok: true },
+    { key: "k".repeat(129), value: "v", ok: false },
+    { key: "k", value: "v".repeat(257), ok: false },
+    { key: "", value: "v", ok: false },
+  ])("validates tag lengths (%#)", ({ key, value, ok }) => {
+    const result = createVpcWizardSchema.safeParse({
+      ...validBase,
+      tags: [{ key, value }],
+    })
+
+    expect(result.success).toBe(ok)
   })
 
   it("rejects invalid mode", () => {

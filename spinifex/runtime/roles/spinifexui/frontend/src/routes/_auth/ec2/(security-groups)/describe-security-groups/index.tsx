@@ -5,6 +5,7 @@ import { createFileRoute, Link } from "@tanstack/react-router"
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
+import { securityGroupLabel } from "@/lib/utils"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 
 export const Route = createFileRoute(
@@ -54,9 +55,7 @@ function SecurityGroups() {
                 key={sg.GroupId}
                 params={{ id: sg.GroupId }}
                 subtitle={sg.VpcId ?? ""}
-                title={
-                  sg.GroupName ? `${sg.GroupId} (${sg.GroupName})` : sg.GroupId
-                }
+                title={securityGroupLabel(sg)}
                 to="/ec2/describe-security-groups/$id"
               />
             )

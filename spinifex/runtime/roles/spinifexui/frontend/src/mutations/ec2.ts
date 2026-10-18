@@ -851,14 +851,11 @@ export function useCreateVpc() {
     mutationFn: async (params: CreateVpcFormData) => {
       const command = new CreateVpcCommand({
         CidrBlock: params.cidrBlock,
-        TagSpecifications: params.name
-          ? [
-              {
-                ResourceType: "vpc",
-                Tags: [{ Key: "Name", Value: params.name }],
-              },
-            ]
-          : undefined,
+        TagSpecifications: buildTagSpec(
+          ResourceType.vpc,
+          params.name,
+          toSdkTags(params.tags ?? []),
+        ),
       })
 
       return await getEc2Client().send(command)
@@ -1533,6 +1530,10 @@ export function useDisassociateRouteTable() {
   })
 }
 
+function toSdkTags(tags: { key: string; value: string }[]): Tag[] {
+  return tags.map((t) => ({ Key: t.key, Value: t.value }))
+}
+
 function buildTags(name: string | undefined, extraTags: Tag[]): Tag[] {
   const tags: Tag[] = []
 
@@ -1599,10 +1600,7 @@ export function useCreateVpcWizard() {
       const created: WizardCreatedResource[] = []
       const prefix = params.autoGenerateNames ? params.namePrefix : undefined
 
-      const extraTags: Tag[] = params.tags.map((t) => ({
-        Key: t.key,
-        Value: t.value,
-      }))
+      const extraTags = toSdkTags(params.tags)
 
       let currentStep = "creating VPC"
 

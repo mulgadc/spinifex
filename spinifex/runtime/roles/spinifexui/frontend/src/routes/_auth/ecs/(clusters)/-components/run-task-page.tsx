@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { securityGroupLabel } from "@/lib/utils"
 import { useRunTask } from "@/mutations/ecs"
 import {
   ec2SecurityGroupsQueryOptions,
@@ -209,9 +210,7 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
                       }}
                       type="checkbox"
                     />
-                    <span className="font-mono">
-                      {sg.GroupId} ({sg.GroupName})
-                    </span>
+                    <span className="font-mono">{securityGroupLabel(sg)}</span>
                   </label>
                 ))}
               </div>

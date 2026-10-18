@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { securityGroupLabel } from "@/lib/utils"
 import {
   useAuthorizeSecurityGroupEgress,
   useAuthorizeSecurityGroupIngress,
@@ -435,7 +436,7 @@ function SecurityGroupDetail() {
             </div>
           }
           subtitle="Security Group Details"
-          title={sg.GroupName ? `${sg.GroupId} (${sg.GroupName})` : sg.GroupId}
+          title={securityGroupLabel(sg)}
         />
 
         <DetailCard>

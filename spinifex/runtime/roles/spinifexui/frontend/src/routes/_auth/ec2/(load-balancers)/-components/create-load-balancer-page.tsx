@@ -17,6 +17,7 @@ import {
   type CommandPart,
 } from "@/components/cli-command-panel"
 import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
+import { listenerProtocolDefaults } from "@/components/elbv2/listener-form"
 import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -32,7 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { getNameTag } from "@/lib/utils"
+import { getNameTag, securityGroupLabel } from "@/lib/utils"
 import {
   type LbWizardResult,
   useCreateLoadBalancerWizard,
@@ -54,8 +55,8 @@ import {
   type ListenerProtocolValue,
   type TargetGroupProtocol,
   createLoadBalancerSchema,
-  createTargetGroupSchema,
   DEFAULT_SSL_POLICY,
+  createTargetGroupSchema,
   defaultProtocolForType,
   isSecureProtocol,
   protocolsForType,
@@ -241,32 +242,12 @@ export function CreateLoadBalancerPage() {
     syncTargetGroupProtocol(proto)
   }
 
-  // Adjust port + secure fields on a listener-protocol switch, mirroring the
-  // standalone listener form: secure protocols default to 443 and seed the SSL
-  // policy; non-secure ones drop cert + policy so the server doesn't reject.
-  const SECURE_PORT = 443
-
   const handleProtocolChange = (next: ListenerProtocolValue) => {
     setValue("listener.protocol", next)
-    const current = getValues("listener.port")
-
-    if (isSecureProtocol(next)) {
-      if (current === 80) {
-        setValue("listener.port", SECURE_PORT)
-      }
-
-      if (next === "HTTPS" && !getValues("listener.sslPolicy")) {
-        setValue("listener.sslPolicy", DEFAULT_SSL_POLICY)
-      }
-    } else {
-      if (current === SECURE_PORT) {
-        setValue("listener.port", 80)
-      }
-
-      setValue("listener.certificateArn", undefined)
-      setValue("listener.sslPolicy", undefined)
-    }
-
+    const fields = listenerProtocolDefaults(next, getValues("listener"))
+    setValue("listener.port", fields.port)
+    setValue("listener.certificateArn", fields.certificateArn)
+    setValue("listener.sslPolicy", fields.sslPolicy)
     syncTargetGroupProtocol(next)
   }
 
@@ -563,16 +544,14 @@ export function CreateLoadBalancerPage() {
                     key={sg.GroupId}
                   >
                     <input
-                      aria-label={`Security group ${sg.GroupId} (${sg.GroupName})`}
+                      aria-label={`Security group ${securityGroupLabel(sg)}`}
                       checked={selectedSgSet.has(sg.GroupId ?? "")}
                       onChange={() => {
                         toggleSg(sg.GroupId ?? "")
                       }}
                       type="checkbox"
                     />
-                    <span className="font-mono">
-                      {sg.GroupId} ({sg.GroupName})
-                    </span>
+                    <span className="font-mono">{securityGroupLabel(sg)}</span>
                   </label>
                 ))}
               </div>

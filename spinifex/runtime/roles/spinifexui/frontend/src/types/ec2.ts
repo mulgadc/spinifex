@@ -6,6 +6,7 @@ import {
   isValidCidr,
   resolveSubnetCidrs,
 } from "@/lib/subnet-calculator"
+import { tagSchema } from "@/types/elbv2"
 
 const CIDR_REGEX = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/
 
@@ -314,16 +315,10 @@ export const createVpcSchema = z.object({
     .min(1, "CIDR block is required")
     .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 10.0.0.0/16)"),
   name: z.string().optional(),
+  tags: z.array(tagSchema).optional(),
 })
 
 export type CreateVpcFormData = z.infer<typeof createVpcSchema>
-
-export const formTagSchema = z.object({
-  key: z.string().min(1, "Key is required"),
-  value: z.string(),
-})
-
-export type FormTag = z.infer<typeof formTagSchema>
 
 export const createVpcWizardSchema = z
   .object({
@@ -347,7 +342,7 @@ export const createVpcWizardSchema = z
     privateSubnetCount: z.number().int().min(0).max(2),
     publicSubnetCidrs: z.array(z.string()),
     privateSubnetCidrs: z.array(z.string()),
-    tags: z.array(formTagSchema),
+    tags: z.array(tagSchema),
   })
   .superRefine((data, ctx) => {
     if (data.mode !== "vpc-and-more" || !isValidCidr(data.cidrBlock)) {

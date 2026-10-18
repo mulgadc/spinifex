@@ -8,12 +8,24 @@ const SUCCESS_STATES = new Set([
   "completed",
   "Complete",
   "Active",
+  // Bedrock guardrails, knowledge bases, data sources and ingestion jobs.
+  "ACTIVE",
+  "AVAILABLE",
+  "COMPLETE",
+  "READY",
 ])
 
 // "stopped" stays an error state because EC2 reads it that way. RDS treats a
 // stopped instance as a normal resting state, so its badge is redder than the
 // state warrants; splitting the map by service is its own change.
-const ERROR_STATES = new Set(["stopped", "error", "failed"])
+const ERROR_STATES = new Set([
+  "stopped",
+  "error",
+  "failed",
+  "FAILED",
+  "DELETE_UNSUCCESSFUL",
+  "UPDATE_UNSUCCESSFUL",
+])
 
 const WARNING_STATES = new Set([
   "pending",
@@ -26,6 +38,13 @@ const WARNING_STATES = new Set([
   "starting",
   "recovering",
   "deleting",
+  "CREATING",
+  "DELETING",
+  "IN_PROGRESS",
+  "STARTING",
+  "STOPPING",
+  "UPDATING",
+  "VERSIONING",
 ])
 
 function getStateClass(state: string | undefined): string {

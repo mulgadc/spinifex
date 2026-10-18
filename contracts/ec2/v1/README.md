@@ -40,7 +40,7 @@ The request (`account_id`) and reply (`vpc_id`, `error`) bodies are still declar
 ## Platform inventory
 
 `PlatformInventorySubject` (`ec2.v1.PlatformInventory`) is a request/reply route on which a daemon in the `spinifex-workers` queue group reports one account's key pairs, placement groups, launch templates and their `ec2-tags` entries from the EC2 owner stores.
-EC2 owns it: `domains/ec2/accountinventory` produces the reply and the daemon serves it; the only consumer today is `accountteardown`, which binds an adapter but does not call it.
+EC2 owns it: `domains/ec2/accountinventory` produces the reply and the daemon serves it; the only consumer today is `accountteardown`, which calls it only on an explicit operator dry run (`spx admin account delete --dry-run` or the admin API `DryRun`) and only logs a comparison with its legacy listings; no teardown calls it.
 
 The request names the account in its body (`account_id`, a 12-digit ID) and may carry an opaque `correlation_ref` that is echoed for logs.
 The daemon ignores `X-Account-ID` for this subject.

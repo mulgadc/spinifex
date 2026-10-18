@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -54,6 +55,15 @@ func adminPathMethod(path string) (string, bool) {
 	return rest, true
 }
 
+// ctxAdminRequestID carries the /admin request ID to handlers that log under it.
+// It correlates log records only and authorises nothing.
+const ctxAdminRequestID contextKey = "admin.requestID"
+
+func adminRequestIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(ctxAdminRequestID).(string)
+	return id
+}
+
 // adminMaxBodyBytes caps the JSON request body. The largest legitimate request
 // is a few hundred bytes; the cap exists so an unauthenticated-shaped mistake
 // cannot make the gateway buffer megabytes.
@@ -81,7 +91,7 @@ func (gw *GatewayConfig) Admin_Request(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Amzn-Requestid", requestID)
 
 	method := chi.URLParam(r, "method")
-	ctx := r.Context()
+	ctx := context.WithValue(r.Context(), ctxAdminRequestID, requestID)
 
 	// One handler for every verb rather than a POST route plus a catch-all:
 	// chi resolves the two to the same pattern, and the catch-all wins.

@@ -121,7 +121,7 @@ func (gw *GatewayConfig) adminDeleteAccount(ctx context.Context, body []byte) (a
 		inventoryCtx, cancel := context.WithTimeout(ctx, accountDeletionInventoryTimeout)
 		defer cancel()
 
-		inventory, err := engine.Inventory(inventoryCtx, req.AccountID)
+		inventory, err := engine.DryRun(inventoryCtx, req.AccountID, adminRequestIDFrom(ctx))
 		if err != nil {
 			return nil, teardownError("DeleteAccount", req.AccountID, err)
 		}

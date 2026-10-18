@@ -6,6 +6,7 @@ package accountteardown
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,19 +154,10 @@ func TestEC2PlatformInventoryClientDistrustsAMalformedReply(t *testing.T) {
 	}, reply.Kinds)
 }
 
-// failingInventory fails the test if anything consults it.
-type failingInventory struct {
-	t *testing.T
-}
-
-func (f failingInventory) PlatformInventory(context.Context, string, string) ec2v1.PlatformInventoryReply {
-	f.t.Error("an engine path called the EC2 platform inventory")
-	return ec2v1.PlatformInventoryReply{}
-}
-
-// The cluster wiring binds the NATS adapter, and no engine path consults it:
-// precheck, inventory, dry run and a full teardown all leave it uncalled.
-func TestNoEnginePathCallsTheEC2PlatformInventory(t *testing.T) {
+// The cluster wiring binds the NATS adapter, and only the explicit dry run
+// consults it: precheck, the inventory the CLI prints before a real teardown,
+// a Teardown request marked dry run and a full teardown all leave it uncalled.
+func TestOnlyTheExplicitDryRunCallsTheEC2PlatformInventory(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := handlers_iam.GenerateMasterKey()
 	require.NoError(t, err)
@@ -175,9 +167,10 @@ func TestNoEnginePathCallsTheEC2PlatformInventory(t *testing.T) {
 	require.NoError(t, err)
 	assert.IsType(t, &ec2PlatformInventoryClient{}, cluster.ec2Inventory)
 
+	inventory := &fakeInventory{reply: ec2v1.IncompletePlatformInventory(testAccountID, "req-1", ec2v1.PlatformReasonNoResponder)}
 	reaper := &fakeReaper{kind: "key-pair", stage: StagePlatform, resources: []Resource{{Kind: "key-pair", ID: "deploy"}}}
 	engine := quietEngine(newFakeAccounts(), reaper)
-	engine.ec2Inventory = failingInventory{t: t}
+	engine.ec2Inventory = inventory
 
 	require.NoError(t, engine.Precheck(testAccountID, testAccountName))
 	_, err = engine.Inventory(testCtx(t), testAccountID)
@@ -186,7 +179,49 @@ func TestNoEnginePathCallsTheEC2PlatformInventory(t *testing.T) {
 	dryRun.DryRun = true
 	_, err = engine.Teardown(testCtx(t), dryRun)
 	require.NoError(t, err)
+	assert.Empty(t, inventory.calls())
+
+	_, err = engine.DryRun(testCtx(t), testAccountID, "req-1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"req-1"}, inventory.calls())
+
 	result, err := engine.Teardown(testCtx(t), request())
 	require.NoError(t, err)
 	assert.True(t, result.AccountDeleted)
+	assert.Equal(t, []string{"req-1"}, inventory.calls(), "a real teardown never consults the inventory")
+}
+
+// The shadow matches legacy listings to inventory kinds by the reapers' kind
+// names, so the registered platform reapers must use the contract's names.
+func TestPlatformReaperKindsAreTheInventoryKinds(t *testing.T) {
+	var kinds []string
+	for _, reaper := range EC2Reapers(nil, 1, nil) {
+		if reaper.Stage() == StagePlatform {
+			kinds = append(kinds, reaper.Kind())
+		}
+	}
+	for _, kind := range ec2ShadowKinds {
+		assert.Contains(t, kinds, kind.kind)
+	}
+}
+
+// A caller deadline shorter than the adapter's own timeout ends the request
+// at that deadline, and a context already done sends nothing.
+func TestEC2PlatformInventoryClientHonoursTheCallersDeadline(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	var requests atomic.Int32
+	serveInventory(t, nc, func() []byte { requests.Add(1); return nil })
+	client := newEC2PlatformInventoryClient(nc)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	assertAllIncomplete(t, client.PlatformInventory(ctx, testAccountID, ""), ec2v1.PlatformReasonTimeout)
+	assert.Less(t, time.Since(started), 5*time.Second)
+	assert.Equal(t, int32(1), requests.Load())
+
+	done, cancelDone := context.WithCancel(t.Context())
+	cancelDone()
+	assertAllIncomplete(t, client.PlatformInventory(done, testAccountID, ""), ec2v1.PlatformReasonTimeout)
+	assert.Equal(t, int32(1), requests.Load())
 }

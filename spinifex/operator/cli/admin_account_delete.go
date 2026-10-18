@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -101,13 +102,7 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	if dryRun {
-		result, err := engine.Inventory(ctx, accountID)
-		if err != nil {
-			return err
-		}
-		printTeardownPlan(result)
-		fmt.Printf("\nDry run: nothing was deleted. %d resources would be removed.\n", result.DeletedCount())
-		return nil
+		return runAccountDryRun(ctx, engine, accountID)
 	}
 
 	// Always show the inventory before destroying it. An operator who has not
@@ -146,6 +141,25 @@ func runAccountDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\nAccount %s deleted. %d resources removed.\n", accountID, result.DeletedCount())
+	return nil
+}
+
+// accountDryRunner is the engine's explicit dry run.
+type accountDryRunner interface {
+	DryRun(ctx context.Context, accountID, correlationRef string) (*accountteardown.Result, error)
+}
+
+var _ accountDryRunner = (*accountteardown.Engine)(nil)
+
+// runAccountDryRun prints what a teardown would remove. Each run gets a fresh
+// correlation reference, which only ties it to its log records.
+func runAccountDryRun(ctx context.Context, engine accountDryRunner, accountID string) error {
+	result, err := engine.DryRun(ctx, accountID, uuid.NewV4().String())
+	if err != nil {
+		return err
+	}
+	printTeardownPlan(result)
+	fmt.Printf("\nDry run: nothing was deleted. %d resources would be removed.\n", result.DeletedCount())
 	return nil
 }
 

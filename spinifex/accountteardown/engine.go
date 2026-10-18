@@ -29,9 +29,12 @@ type Engine struct {
 	// and this is the only view into it while it runs.
 	OnStage func(ctx context.Context, stage StageResult)
 
-	// ec2Inventory is EC2's read-only platform inventory. Bound by the cluster
-	// wiring but consulted by no teardown or inventory path yet.
+	// ec2Inventory is EC2's read-only platform inventory. Only DryRun consults
+	// it, and only to log a comparison; no teardown or Inventory call does.
 	ec2Inventory ec2PlatformInventory
+
+	// ec2PlatformShadowBudget overrides ec2PlatformShadowBudget when positive.
+	ec2PlatformShadowBudget time.Duration
 }
 
 // NewEngine builds an engine with the default timeouts.
@@ -83,6 +86,20 @@ func (e *Engine) Inventory(ctx context.Context, accountID string) (*Result, erro
 			stageResult.Deleted = append(stageResult.Deleted, found...)
 		}
 		result.Stages = append(result.Stages, stageResult)
+	}
+	return result, nil
+}
+
+// DryRun is the explicit operator dry run. It returns exactly what Inventory
+// returns; beside it, EC2's platform inventory is compared with the legacy
+// listings and only logged, under correlationRef, which authorises nothing.
+func (e *Engine) DryRun(ctx context.Context, accountID, correlationRef string) (*Result, error) {
+	result, err := e.Inventory(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if e.ec2Inventory != nil {
+		e.shadowEC2Platform(ctx, result, correlationRef)
 	}
 	return result, nil
 }

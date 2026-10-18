@@ -12,8 +12,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ec2PlatformInventoryTimeout bounds one inventory request. The scan reads
-// four stores for one account; a reply later than this is scan-incomplete.
+// ec2PlatformInventoryTimeout bounds one inventory request; an earlier caller
+// deadline wins. A reply later than either is scan-incomplete.
 const ec2PlatformInventoryTimeout = 30 * time.Second
 
 // ec2PlatformInventory is EC2's read-only report of an account's key pairs,
@@ -39,8 +39,17 @@ func newEC2PlatformInventoryClient(nc *nats.Conn) *ec2PlatformInventoryClient {
 // responder, which is also how a daemon predating the subject answers, a
 // timeout, an error reply or a malformed reply each make every kind incomplete.
 func (c *ec2PlatformInventoryClient) PlatformInventory(ctx context.Context, accountID, correlationRef string) ec2v1.PlatformInventoryReply {
+	// The NATS request takes a timeout, not a context, so the caller's deadline
+	// shortens it here; a context already done is a timeout without a request.
+	timeout := c.timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = min(timeout, time.Until(deadline))
+	}
+	if ctx.Err() != nil || timeout <= 0 {
+		return ec2v1.IncompletePlatformInventory(accountID, correlationRef, ec2v1.PlatformReasonTimeout)
+	}
 	reply, err := natsmsg.NATSRequest[ec2v1.PlatformInventoryReply](ctx, c.nc, ec2v1.PlatformInventorySubject,
-		&ec2v1.PlatformInventoryRequest{AccountID: accountID, CorrelationRef: correlationRef}, c.timeout, accountID)
+		&ec2v1.PlatformInventoryRequest{AccountID: accountID, CorrelationRef: correlationRef}, timeout, accountID)
 	if err != nil {
 		return ec2v1.IncompletePlatformInventory(accountID, correlationRef, inventoryFailureReason(err))
 	}

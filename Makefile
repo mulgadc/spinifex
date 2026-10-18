@@ -412,7 +412,7 @@ fix:
 
 govulncheck:
 	@echo "Running govulncheck..."
-	$(_Q)scripts/run-gate.sh govulncheck scripts/govulncheck-gate.sh
+	$(_Q)scripts/run-gate.sh govulncheck go tool govulncheck ./...
 	@echo "  govulncheck ok"
 
 # NilAway — advisory nil-panic analysis. Not in preflight due to false positives

@@ -73,7 +73,7 @@ workflows:
     '.github/workflows/ui.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@v7.1.0'
-        - 'pnpm/action-setup@v6.0.10'
+        - 'pnpm/action-setup@v6.1.0'
 dependencies:
     'actions/cache@v6.1.0':
         ref: 'v6.1.0'
@@ -125,9 +125,9 @@ dependencies:
         commit: 'sha1-dfe3c3f87815947d99a8997f908cb6525fc44e9e'
         owner_id: 761456
         repo_id: 258271226
-    'pnpm/action-setup@v6.0.10':
-        ref: 'v6.0.10'
-        commit: 'sha1-0977fd99725f1db4007ccb2928dbb4e90d06cc86'
+    'pnpm/action-setup@v6.1.0':
+        ref: 'v6.1.0'
+        commit: 'sha1-ea17c68df8912ef543352723c149a84f56e3d413'
         owner_id: 21320719
         repo_id: 262289747
     'softprops/action-gh-release@v3.0.3':

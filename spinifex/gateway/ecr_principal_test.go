@@ -285,6 +285,18 @@ func TestResolveECRPrincipal_LongLivedUser_Rejections(t *testing.T) {
 		assert.False(t, isECRDependencyFailure(err))
 	})
 
+	// CURRENT: a registry token is rehydrated against the account record, so a
+	// terminating account's already-issued token is rejected as invalid.
+	t.Run("terminating account", func(t *testing.T) {
+		iamSvc := newECRMockIAMService()
+		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)
+		iamSvc.accounts[ecrPrincipalTestAccount].Status = handlers_iam.AccountStatusTerminating
+		gw := &GatewayConfig{IAMService: iamSvc}
+		_, err := gw.resolveECRPrincipal(validClaims())
+		require.Error(t, err)
+		assert.False(t, isECRDependencyFailure(err))
+	})
+
 	t.Run("principalType claim mismatch", func(t *testing.T) {
 		iamSvc := newECRMockIAMService()
 		seedECRTestUser(iamSvc, ecrPrincipalTestAccount, "dev", ecrPrincipalTestAKID)

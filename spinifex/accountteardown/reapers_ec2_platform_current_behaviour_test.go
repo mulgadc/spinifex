@@ -34,27 +34,11 @@ import (
 
 const platformBucket = "test-bucket"
 
-// deleteFailingStore fails object deletes its predicate selects.
-type deleteFailingStore struct {
-	*objectstore.MemoryObjectStore
-
-	failDelete func(key string) bool
-}
-
-var _ objectstore.ObjectStore = (*deleteFailingStore)(nil)
-
-func (s *deleteFailingStore) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
-	if s.failDelete != nil && s.failDelete(aws.StringValue(in.Key)) {
-		return nil, errors.New("injected store failure")
-	}
-	return s.MemoryObjectStore.DeleteObject(ctx, in)
-}
-
 // platformOwners runs the real key, placement-group, launch-template and tag
 // services behind the subjects the platform reapers call.
 type platformOwners struct {
 	nc        *nats.Conn
-	store     *deleteFailingStore
+	store     *objectstore.MemoryObjectStore
 	keys      *ec2key.KeyServiceImpl
 	groups    *ec2placementgroup.PlacementGroupServiceImpl
 	templates *ec2launchtemplate.LaunchTemplateServiceImpl
@@ -81,7 +65,7 @@ func newPlatformOwners(t *testing.T) *platformOwners {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
-	o := &platformOwners{nc: nc, store: &deleteFailingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}}
+	o := &platformOwners{nc: nc, store: objectstore.NewMemoryObjectStore()}
 
 	var err error
 	o.tagsKV, err = ec2tags.GetOrCreateTagsBucket(ctx, js)
@@ -92,8 +76,10 @@ func newPlatformOwners(t *testing.T) *platformOwners {
 	o.keys.SetCentralTagStore(o.tags)
 	o.groups, err = ec2placementgroup.NewPlacementGroupServiceImplWithNATS(ctx, nil, nc)
 	require.NoError(t, err)
+	o.groups.SetCentralTagStore(o.tags)
 	o.templates, err = ec2launchtemplate.NewLaunchTemplateServiceImplWithNATS(ctx, nil, nc)
 	require.NoError(t, err)
+	o.templates.SetCentralTagStore(o.tags)
 	o.pgKV, err = js.KeyValue(ctx, ec2placementgroup.KVBucketPlacementGroups)
 	require.NoError(t, err)
 	o.ltKV, err = js.KeyValue(ctx, ec2launchtemplate.KVBucketLaunchTemplates)
@@ -172,9 +158,18 @@ func TestCurrentBehaviour_AccountTermination_PlatformReapersReportDrainedOverHid
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// Residue each owner's Describe skips.
-	publicKey := "keys/" + testAccountID + "/deploy"
-	o.store.failDelete = func(key string) bool { return key == publicKey }
+	// Residue each owner's Describe skips, as left by older releases or a
+	// crash between writes.
+	publicKey := "keys/" + testAccountID + "/old-deploy"
+	_, err = o.store.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(platformBucket), Key: aws.String(publicKey), Body: strings.NewReader("ssh-ed25519 AAAA"),
+	})
+	require.NoError(t, err)
+	staleTagged := "pg-0stale000000000"
+	_, err = o.tags.CreateTags(ctx, &ec2.CreateTagsInput{
+		Resources: []*string{aws.String(staleTagged)}, Tags: []*ec2.Tag{{Key: aws.String("team"), Value: aws.String("blue")}},
+	}, testAccountID)
+	require.NoError(t, err)
 	_, err = o.store.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(platformBucket), Key: aws.String("keys/" + testAccountID + "/key-0badbadbadbadbad0.json"),
 		Body: strings.NewReader("{not json"),
@@ -210,10 +205,6 @@ func TestCurrentBehaviour_AccountTermination_PlatformReapersReportDrainedOverHid
 	assert.ElementsMatch(t, []string{publicKey, "keys/" + testAccountID + "/key-0badbadbadbadbad0.json"}, o.objectKeys(t))
 	assert.Equal(t, []string{testAccountID + ".broken"}, accountKVKeys(t, o.pgKV))
 	assert.Equal(t, []string{orphanBody}, accountKVKeys(t, o.ltKV))
-	assert.Equal(t, sortedStrings(testAccountID+"."+pgID, testAccountID+"."+ltID), accountKVKeys(t, o.tagsKV))
-}
-
-func sortedStrings(s ...string) []string {
-	slices.Sort(s)
-	return s
+	// The owner deletes clear their own tags; only the stale entry remains.
+	assert.Equal(t, []string{testAccountID + "." + staleTagged}, accountKVKeys(t, o.tagsKV))
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/s3"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountinventory"
@@ -455,8 +456,12 @@ func TestDryRunShadowOverTheOwnerStores(t *testing.T) {
 		_, err = o.keys.ImportKeyPair(ctx, &ec2.ImportKeyPairInput{KeyName: aws.String(name), PublicKeyMaterial: material}, testAccountID)
 		require.NoError(t, err)
 	}
-	o.store.failDelete = func(key string) bool { return key == "keys/"+testAccountID+"/secret-orphan-key" }
 	_, err = o.keys.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{KeyName: aws.String("secret-orphan-key")}, testAccountID)
+	require.NoError(t, err)
+	// Residue an older release's failed deletes left behind.
+	_, err = o.store.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(platformBucket), Key: aws.String("keys/" + testAccountID + "/secret-orphan-key"), Body: bytes.NewReader(material),
+	})
 	require.NoError(t, err)
 
 	_, err = o.groups.CreatePlacementGroup(ctx, &ec2.CreatePlacementGroupInput{
@@ -479,6 +484,11 @@ func TestDryRunShadowOverTheOwnerStores(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	_, err = o.groups.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{GroupName: aws.String("secret-doomed-group")}, testAccountID)
+	require.NoError(t, err)
+	_, err = o.tags.CreateTags(ctx, &ec2.CreateTagsInput{
+		Resources: []*string{aws.String(doomedID)},
+		Tags:      []*ec2.Tag{{Key: aws.String("secret-tag-key"), Value: aws.String("secret-tag-value")}},
+	}, testAccountID)
 	require.NoError(t, err)
 
 	engine, logs := shadowEngine(newEC2PlatformInventoryClient(o.nc), platformReapers(o.nc)...)

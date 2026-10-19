@@ -52,6 +52,32 @@ type PlacementGroupServiceImpl struct {
 	natsConn *nats.Conn
 	kv       jetstream.KeyValue
 	region   string
+
+	// Optional: nil leaves the central tag index untouched by delete.
+	centralTags CentralTagStore
+}
+
+// CentralTagStore clears a deleted group's entry from the central EC2 tag
+// index. Implemented by domains/ec2/tags.TagsServiceImpl.
+type CentralTagStore interface {
+	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
+}
+
+// SetCentralTagStore injects the central tag index that delete clears.
+func (s *PlacementGroupServiceImpl) SetCentralTagStore(st CentralTagStore) {
+	s.centralTags = st
+}
+
+// clearRecordTags drops a deleted group's tag-index entry. It runs only after
+// the record delete committed; a failure is logged, as the group is gone and a
+// retried delete would find nothing, and the entry is left as tag residue.
+func (s *PlacementGroupServiceImpl) clearRecordTags(ctx context.Context, accountID, groupID string) {
+	if s.centralTags == nil || groupID == "" {
+		return
+	}
+	if err := s.centralTags.DeleteAllTags(ctx, accountID, groupID); err != nil {
+		slog.ErrorContext(ctx, "central tag store clear failed", "groupId", groupID, "err", err)
+	}
 }
 
 // NewPlacementGroupServiceImplWithNATS creates a placement group service with NATS JetStream.
@@ -142,42 +168,44 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 	}, nil
 }
 
-// DeletePlacementGroup deletes a placement group.
+// DeletePlacementGroup deletes a placement group that holds no instances.
 func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, input *ec2.DeletePlacementGroupInput, accountID string) (*ec2.DeletePlacementGroupOutput, error) {
 	if input.GroupName == nil || *input.GroupName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	groupName := *input.GroupName
-	key := kvutil.AccountKey(accountID, groupName)
-
-	entry, err := s.kv.Get(ctx, key)
-	if err != nil {
-		// Lower case, unlike DescribePlacementGroups' message for the same code.
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The placement group '%s' is unknown.", groupName)
-	}
-
-	var record PlacementGroupRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Check for running instances
-	instanceCount := 0
-	for _, ids := range record.NodeInstances {
-		instanceCount += len(ids)
-	}
-	if instanceCount > 0 {
-		return nil, errors.New(awserrors.ErrorInvalidPlacementGroupInUse)
-	}
-
-	if err := s.kv.Delete(ctx, key); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	if _, err := s.deleteGroup(ctx, accountID, kvutil.AccountKey(accountID, groupName)); err != nil {
+		if errors.Is(err, errPGAbsent) {
+			// Lower case, unlike DescribePlacementGroups' message for the same code.
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The placement group '%s' is unknown.", groupName)
+		}
+		return nil, mapCASError(ctx, "DeletePlacementGroup", groupName, accountID, err)
 	}
 
 	slog.InfoContext(ctx, "DeletePlacementGroup completed", "groupName", groupName, "accountID", accountID)
 
 	return &ec2.DeletePlacementGroupOutput{}, nil
+}
+
+// deleteGroup removes the record at key only while it names no instance, at
+// the revision that check read, so a reservation committed in between sends
+// the delete back to re-check. Its tag-index entry is cleared afterwards.
+// The returned count is the members seen by the last check.
+func (s *PlacementGroupServiceImpl) deleteGroup(ctx context.Context, accountID, key string) (int, error) {
+	members := 0
+	record, err := kvutil.DeleteIf(ctx, s.kv, key, casConfig(), func(record *PlacementGroupRecord) error {
+		members = memberCount(record.NodeInstances)
+		if members > 0 {
+			return errPGInUse
+		}
+		return nil
+	})
+	if err != nil {
+		return members, err
+	}
+	s.clearRecordTags(ctx, accountID, record.GroupId)
+	return 0, nil
 }
 
 var describePlacementGroupsValidFilters = map[string]bool{
@@ -324,11 +352,12 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 const maxCASRetries = 5
 
 // errPGAbsent and errPGContended mark the two kvutil outcomes that map to
-// specific AWS errors rather than a generic internal failure. Neither
-// escapes this file.
+// specific AWS errors rather than a generic internal failure, and neither
+// escapes this file. errPGInUse is the AWS error itself.
 var (
 	errPGAbsent    = errors.New("placementgroup: record absent")
 	errPGContended = errors.New("placementgroup: CAS retries exhausted")
+	errPGInUse     = errors.New(awserrors.ErrorInvalidPlacementGroupInUse)
 )
 
 // mapCASError turns a kvutil failure into the AWS error the caller returns.

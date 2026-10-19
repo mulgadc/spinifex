@@ -33,15 +33,12 @@ func TestScanAccountClassifiesEveryObjectUnderTheAccountPrefix(t *testing.T) {
 	live := importKey(t, svc, ctAccount, "live")
 	dotted := importKey(t, svc, ctAccount, "web.json")
 
-	importKey(t, svc, ctAccount, "deleted")
-	store.failDelete = func(key string) bool { return key == prefix+"deleted" }
-	_, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deleted")}, ctAccount)
-	require.NoError(t, err)
-	store.failDelete = nil
+	// A public key whose metadata is gone, as an interrupted delete leaves it.
+	putObject(t, store, prefix+"deleted", ctPubKey+"\n")
 
 	store.failPut = func(key string) bool { return strings.HasSuffix(key, ".json") }
 	store.failDelete = func(string) bool { return true }
-	_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{KeyName: aws.String("half")}, ctAccount)
+	_, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{KeyName: aws.String("half")}, ctAccount)
 	require.Error(t, err)
 	store.failPut, store.failDelete = nil, nil
 
@@ -50,7 +47,7 @@ func TestScanAccountClassifiesEveryObjectUnderTheAccountPrefix(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.ElementsMatch(t, []string{aws.StringValue(live.KeyPairId), aws.StringValue(dotted.KeyPairId)}, scan.LiveKeyPairIDs)
-	assert.Equal(t, 2, scan.OrphanPublicKeys, "the failed-delete and failed-create public keys")
+	assert.Equal(t, 2, scan.OrphanPublicKeys, "the interrupted-delete and failed-create public keys")
 	assert.Empty(t, scan.UnreadableKeyPairIDs)
 	assert.Zero(t, scan.UnresolvedPublicKeys)
 	assert.Zero(t, scan.ReadFailures)

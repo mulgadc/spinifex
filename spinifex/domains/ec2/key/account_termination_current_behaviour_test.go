@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -19,8 +20,8 @@ import (
 )
 
 // The TestCurrentBehaviour_AccountTermination_ tests pin how key pairs are
-// stored and what a delete or Describe leaves behind today. They describe
-// current behaviour, not the target design; a failure means it changed.
+// stored and what Describe leaves behind today; a failure means it changed.
+// The TestAccountTermination_ tests pin the corrected owner delete.
 
 const (
 	ctBucket  = "test-bucket"
@@ -152,35 +153,97 @@ func TestCurrentBehaviour_AccountTermination_KeyPairStorageLayout(t *testing.T) 
 	}
 }
 
-// Pins current behaviour that differs from AWS: a failed public-key delete is
-// logged, the metadata delete proceeds and the call reports success. The
-// leftover object still blocks the name and passes launch validation.
-func TestCurrentBehaviour_AccountTermination_DeleteKeyPairLeavesPublicKeyWhenItsDeleteFails(t *testing.T) {
+// A key pair is deleted public key first and metadata last, so a failed step
+// returns an error and leaves the key pair described and found by name; a
+// retried delete then removes both objects and frees the name.
+func TestAccountTermination_DeleteKeyPairKeepsTheKeyPairWhenAStepFails(t *testing.T) {
+	prefix := "keys/" + ctAccount + "/"
+	tests := []struct {
+		name   string
+		failOn func(keyPairID string) string
+		left   func(keyPairID string) []string
+	}{
+		{"public key delete fails", func(string) string { return prefix + "deploy" },
+			func(id string) []string { return sortedStrings(prefix+"deploy", prefix+id+".json") }},
+		{"metadata delete fails", func(id string) string { return prefix + id + ".json" },
+			func(id string) []string { return []string{prefix + id + ".json"} }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFaultyStore()
+			svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+			id := aws.StringValue(importKey(t, svc, ctAccount, "deploy").KeyPairId)
+			failing := tc.failOn(id)
+			store.failDelete = func(key string) bool { return key == failing }
+
+			_, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+			assert.Equal(t, tc.left(id), accountObjects(t, store, ctAccount))
+			assert.Equal(t, []string{"deploy"}, describedKeyNames(t, svc, ctAccount))
+
+			store.failDelete = nil
+			out, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+			require.NoError(t, err)
+			assert.Equal(t, id, aws.StringValue(out.KeyPairId))
+			assert.Empty(t, accountObjects(t, store, ctAccount))
+			assert.ErrorContains(t, svc.ValidateKeyPairExists(context.Background(), ctAccount, "deploy"), awserrors.ErrorInvalidKeyPairNotFound)
+
+			_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+			assert.NoError(t, err, "the name is free again")
+		})
+	}
+}
+
+// A public key left with no metadata is that name's key: a delete by name
+// removes it and reports success without a key pair ID, freeing the name.
+func TestAccountTermination_DeleteKeyPairByNameRemovesALeftoverPublicKey(t *testing.T) {
 	store := newFaultyStore()
 	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
-	imported := importKey(t, svc, ctAccount, "deploy")
-	pubKeyPath := "keys/" + ctAccount + "/deploy"
-	store.failDelete = func(key string) bool { return key == pubKeyPath }
+	putObject(t, store, "keys/"+ctAccount+"/orphan", ctPubKey+"\n")
 
-	out, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+	out, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("orphan")}, ctAccount)
 	require.NoError(t, err)
 	assert.True(t, aws.BoolValue(out.Return))
-	assert.Equal(t, aws.StringValue(imported.KeyPairId), aws.StringValue(out.KeyPairId))
+	assert.Nil(t, out.KeyPairId)
+	assert.Empty(t, accountObjects(t, store, ctAccount))
+	_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{KeyName: aws.String("orphan")}, ctAccount)
+	assert.NoError(t, err)
+}
 
-	assert.Equal(t, []string{pubKeyPath}, accountObjects(t, store, ctAccount), "only the public key object remains")
-	assert.Empty(t, describedKeyNames(t, svc, ctAccount))
-	assert.NoError(t, svc.ValidateKeyPairExists(context.Background(), ctAccount, "deploy"))
+// A by-name delete that cannot read some metadata cannot prove the name is
+// absent, so it fails rather than reporting an idempotent success.
+func TestAccountTermination_DeleteKeyPairByNameFailsWhenMetadataIsUnreadable(t *testing.T) {
+	store := newFaultyStore()
+	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+	id := aws.StringValue(importKey(t, svc, ctAccount, "deploy").KeyPairId)
+	store.failGet = func(key string) bool { return strings.HasSuffix(key, id+".json") }
 
-	// A retried delete finds no metadata, reports success and removes nothing.
-	store.failDelete = nil
-	_, err = svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
-	require.NoError(t, err)
-	assert.Equal(t, []string{pubKeyPath}, accountObjects(t, store, ctAccount))
-
-	_, err = svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+	_, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
 	require.Error(t, err)
-	code, _ := awserrors.ResolveErrorCode(err)
-	assert.Equal(t, awserrors.ErrorInvalidKeyPairDuplicate, code)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Len(t, accountObjects(t, store, ctAccount), 2, "nothing was deleted")
+}
+
+// Undecodable metadata may be the named key pair, so a by-name delete fails
+// and leaves both the metadata and the same-name public key in place.
+func TestAccountTermination_DeleteKeyPairByNameFailsOnUndecodableMetadata(t *testing.T) {
+	store := newFaultyStore()
+	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+	broken := "keys/" + ctAccount + "/key-0badbadbadbadbad0.json"
+	pub := "keys/" + ctAccount + "/deploy"
+	putObject(t, store, broken, "{not json")
+	putObject(t, store, pub, ctPubKey+"\n")
+
+	_, err := svc.DeleteKeyPair(context.Background(), &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, ctAccount)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, sortedStrings(broken, pub), accountObjects(t, store, ctAccount))
+}
+
+func sortedStrings(s ...string) []string {
+	slices.Sort(s)
+	return s
 }
 
 // A create whose metadata write fails and whose cleanup delete also fails
@@ -230,4 +293,80 @@ func TestCurrentBehaviour_AccountTermination_DescribeKeyPairsHidesUnreadableReco
 			assert.Equal(t, []string{"live"}, describedKeyNames(t, svc, ctAccount))
 		})
 	}
+}
+
+// Account cleanup deletes each readable key pair through the owner delete and
+// removes a settled public key no metadata names. A younger orphan may be a
+// create in flight and is left; unreadable metadata is never deleted.
+func TestAccountCleanup_DeletesKeyPairsAndSettledOrphans(t *testing.T) {
+	store := newFaultyStore()
+	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+	importKey(t, svc, ctAccount, "deploy")
+	importKey(t, svc, "999988887777", "theirs")
+	putObject(t, store, "keys/"+ctAccount+"/old-orphan", ctPubKey)
+	broken := "keys/" + ctAccount + "/key-0badbadbadbadbad0.json"
+	putObject(t, store, broken, "{not json")
+
+	out, err := svc.CleanupAccount(context.Background(), ctAccount, time.Now().Add(-time.Hour), nil)
+	require.NoError(t, err)
+	assert.Len(t, out.DeletedKeyPairIDs, 1)
+	assert.Zero(t, out.OrphansRemoved, "orphans are left while a public key may belong to unreadable metadata")
+
+	store.Clear()
+	importKey(t, svc, ctAccount, "deploy")
+	putObject(t, store, "keys/"+ctAccount+"/old-orphan", ctPubKey)
+	out, err = svc.CleanupAccount(context.Background(), ctAccount, time.Now().Add(-time.Hour), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, out.OrphansUnsettled, "an orphan written inside the settle window is kept")
+	assert.Equal(t, []string{"keys/" + ctAccount + "/old-orphan"}, accountObjects(t, store, ctAccount))
+
+	out, err = svc.CleanupAccount(context.Background(), ctAccount, time.Now().Add(time.Second), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, out.OrphansRemoved)
+	assert.Empty(t, accountObjects(t, store, ctAccount))
+}
+
+// A key pair, and an orphan public key, whose name the reference check names
+// are kept with the given reason: IMDS serves the public key by name.
+func TestAccountCleanup_KeepsReferencedKeyPairsAndPublicKeys(t *testing.T) {
+	store := newFaultyStore()
+	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+	kp := importKey(t, svc, ctAccount, "in-use")
+	importKey(t, svc, ctAccount, "free")
+	putObject(t, store, "keys/"+ctAccount+"/served-orphan", ctPubKey)
+	referenced := func(name string) string {
+		if name == "in-use" || name == "served-orphan" {
+			return "instance-reference"
+		}
+		return ""
+	}
+
+	out, err := svc.CleanupAccount(context.Background(), ctAccount, time.Now().Add(time.Second), referenced)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{aws.StringValue(kp.KeyPairId): "instance-reference"}, out.Referenced)
+	assert.Len(t, out.DeletedKeyPairIDs, 1)
+	assert.Equal(t, map[string]int{"instance-reference": 1}, out.OrphansReferenced)
+	assert.Zero(t, out.OrphansRemoved)
+	assert.Equal(t, []string{"in-use"}, describedKeyNames(t, svc, ctAccount))
+	assert.Contains(t, accountObjects(t, store, ctAccount), "keys/"+ctAccount+"/served-orphan")
+}
+
+// A key pair whose delete fails part way is reported failed with its metadata
+// kept; the next run completes it.
+func TestAccountCleanup_InterruptedKeyPairDeleteCompletesOnRerun(t *testing.T) {
+	store := newFaultyStore()
+	svc := ec2key.NewKeyServiceImplWithStore(store, ctBucket)
+	kp := importKey(t, svc, ctAccount, "deploy")
+	store.failDelete = func(key string) bool { return strings.HasSuffix(key, ".json") }
+
+	out, err := svc.CleanupAccount(context.Background(), ctAccount, time.Now(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{aws.StringValue(kp.KeyPairId)}, out.FailedKeyPairIDs)
+	assert.Equal(t, []string{"deploy"}, describedKeyNames(t, svc, ctAccount))
+
+	store.failDelete = nil
+	out, err = svc.CleanupAccount(context.Background(), ctAccount, time.Now(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{aws.StringValue(kp.KeyPairId)}, out.DeletedKeyPairIDs)
+	assert.Empty(t, accountObjects(t, store, ctAccount))
 }

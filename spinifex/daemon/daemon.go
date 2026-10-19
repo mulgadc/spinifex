@@ -1825,9 +1825,6 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to get tags KV bucket: %w", err)
 	}
 	d.tagsService = ec2tags.NewTagsServiceImpl(d.config, tagsKV)
-	// Key pairs keep their creation tags in their own metadata; project them so
-	// describe-tags sees them, and clear them when the key pair is deleted.
-	d.keyService.SetCentralTagStore(d.tagsService)
 
 	d.eigwService, err = initServiceWithRetry("EIGW service", func() (*ec2eigw.EgressOnlyIGWServiceImpl, error) {
 		return ec2eigw.NewEgressOnlyIGWServiceImplWithNATS(d.ctx, d.config, d.natsConn)
@@ -1856,6 +1853,7 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize launch template service: %w", err)
 	}
+	d.wirePlatformTagIndex()
 
 	d.spotInstanceService, err = initServiceWithRetry("spot instance service", func() (*ec2spotinstance.SpotInstanceServiceImpl, error) {
 		return ec2spotinstance.NewSpotInstanceServiceImplWithNATS(d.ctx, d.config, d.natsConn)
@@ -3627,4 +3625,13 @@ func probeGPU() gpuProbeResult {
 	})
 	r.Capable = len(r.Devices) > 0 && ((r.IOMMUActive && r.VFIOPresent) || hasMIG)
 	return r
+}
+
+// wirePlatformTagIndex gives the key-pair, placement-group and launch-template
+// owners the tag index their deletes clear; key pairs also project their
+// metadata-held creation tags into it so describe-tags sees them.
+func (d *Daemon) wirePlatformTagIndex() {
+	d.keyService.SetCentralTagStore(d.tagsService)
+	d.placementGroupService.SetCentralTagStore(d.tagsService)
+	d.launchTemplateService.SetCentralTagStore(d.tagsService)
 }

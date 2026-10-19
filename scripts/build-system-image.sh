@@ -287,6 +287,9 @@ if [[ "$DISTRO" == "alpine" ]] && [[ -n "${APK_PACKAGES:-}" ]]; then
     # The base cloud image's kernel is only as fresh as its release; upgrade so
     # the AMI ships the branch's current linux-virt and security fixes.
     CUST+=(--run-command 'apk upgrade')
+    # apk's mkinitfs trigger does not always fire in the appliance; a new kernel
+    # with the old initramfs cannot load virtio_blk and never mounts root.
+    CUST+=(--run-command 'k=$(ls /lib/modules | sort -V | tail -1) && mkinitfs "$k" && zcat /boot/initramfs-virt | cpio -t | grep -qE "^(usr/)?lib/modules/$k/.*/virtio_blk\.ko"')
     CUST+=(--run-command "apk add ${APK_PACKAGES}")
 elif [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${APT_PACKAGES:-}" ]]; then
     echo "Will install packages: ${APT_PACKAGES}"

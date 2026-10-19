@@ -73,7 +73,9 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 	sr := withRecordedSpans(t)
 	daemon := createTestDaemon(t, sharedNATSURL)
 
+	consumerEnded := make(chan struct{})
 	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
+		defer close(consumerEnded)
 		// Mirrors viperblockd's ebs.unmount handler: open a consumer span
 		// joining whatever trace context the producer injected.
 		_, span := natsmsg.StartConsumerSpan(msg)
@@ -89,6 +91,9 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 	require.NoError(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-linked"}))
+	// The handler replies before its deferred span.End runs, so the consumer
+	// span may not be recorded yet when UnmountOne returns.
+	<-consumerEnded
 
 	spans := sr.Ended()
 	require.Len(t, spans, 2, "expected one producer span and one consumer span")

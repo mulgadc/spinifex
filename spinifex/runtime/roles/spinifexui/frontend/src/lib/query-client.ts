@@ -8,6 +8,14 @@ import { clearClients } from "./awsClient"
 // recovery rather than racing redirects.
 let recovering = false
 
+// Ending a session clears all three: stored credentials, cached SDK clients
+// and every cached query.
+export function signOut(queryClient: QueryClient): void {
+  clearCredentials()
+  clearClients()
+  queryClient.clear()
+}
+
 // On the first request that fails because the stored credentials no longer
 // resolve, wipe them and bounce to the login page with an explanatory banner.
 // Authorization denials (AccessDenied / UnauthorizedOperation) and other errors
@@ -21,9 +29,7 @@ function recoverFromStaleCredentials(
   }
 
   recovering = true
-  clearCredentials()
-  clearClients()
-  queryClient.clear()
+  signOut(queryClient)
 
   if (window.location.pathname !== "/login") {
     window.location.href = "/login?reason=expired"

@@ -201,11 +201,7 @@ function RouteTableDetail() {
       gatewayId: values.targetType === "igw" ? values.targetId : undefined,
       natGatewayId: values.targetType === "nat" ? values.targetId : undefined,
     })
-    routeForm.reset({
-      destinationCidrBlock: "0.0.0.0/0",
-      targetType: "igw",
-      targetId: "",
-    })
+    routeForm.reset()
   }
 
   const onAssociate = async (values: AssociateRouteTableFormData) => {
@@ -213,7 +209,7 @@ function RouteTableDetail() {
       routeTableId,
       subnetId: values.subnetId,
     })
-    associateForm.reset({ subnetId: "" })
+    associateForm.reset()
   }
 
   return (
@@ -389,9 +385,7 @@ function RouteTableDetail() {
                   name="targetId"
                   render={({ field }) => (
                     <Select
-                      onValueChange={(value) => {
-                        field.onChange(value)
-                      }}
+                      onValueChange={field.onChange}
                       value={field.value ?? ""}
                     >
                       <SelectTrigger
@@ -501,9 +495,7 @@ function RouteTableDetail() {
                   name="subnetId"
                   render={({ field }) => (
                     <Select
-                      onValueChange={(value) => {
-                        field.onChange(value)
-                      }}
+                      onValueChange={field.onChange}
                       value={field.value ?? ""}
                     >
                       <SelectTrigger

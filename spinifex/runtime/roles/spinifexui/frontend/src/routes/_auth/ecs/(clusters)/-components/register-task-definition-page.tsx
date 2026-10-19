@@ -78,7 +78,7 @@ export function RegisterTaskDefinitionPage({ cluster }: { cluster: string }) {
 
       {register.isError && (
         <ErrorBanner
-          error={register.error instanceof Error ? register.error : undefined}
+          error={register.error}
           msg="Failed to register task definition."
         />
       )}

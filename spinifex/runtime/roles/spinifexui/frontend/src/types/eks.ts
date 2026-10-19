@@ -1,4 +1,8 @@
-import type { AMITypes, CapacityTypes } from "@aws-sdk/client-eks"
+import type {
+  AccessScopeType,
+  AMITypes,
+  CapacityTypes,
+} from "@aws-sdk/client-eks"
 import { z } from "zod"
 
 import { jsonStringSchema } from "@/lib/json"
@@ -215,7 +219,7 @@ export interface AssociateAccessPolicyParams {
   clusterName: string
   principalArn: string
   policyArn: string
-  accessScopeType: "cluster" | "namespace"
+  accessScopeType: AccessScopeType
   namespaces?: string[]
 }
 

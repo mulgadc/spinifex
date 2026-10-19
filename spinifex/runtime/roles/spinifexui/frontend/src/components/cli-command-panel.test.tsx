@@ -3,10 +3,14 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it } from "vitest"
 
 import {
+  captureId,
   CliCommandPanel,
+  commandFlag,
   partsToText,
   shellSingleQuote,
+  variableFlag,
   type CliCommand,
+  type CommandPart,
 } from "./cli-command-panel"
 
 const singleCommand: CliCommand[] = [
@@ -204,5 +208,34 @@ describe("shellSingleQuote", () => {
 
   it("leaves shell metacharacters literal inside the quotes", () => {
     expect(shellSingleQuote('{"a":"$HOME"}')).toBe(`'{"a":"$HOME"}'`)
+  })
+})
+
+describe("variableFlag", () => {
+  it("double-quotes the variable so the shell does not word-split it", () => {
+    const parts: CommandPart[] = [
+      { type: "bin", value: "aws ec2 create-subnet" },
+      ...variableFlag("--vpc-id", "VPC_ID"),
+    ]
+
+    expect(partsToText([{ label: "Create subnet", parts }])).toBe(
+      'aws ec2 create-subnet --vpc-id "$VPC_ID"',
+    )
+  })
+})
+
+describe("captureId", () => {
+  it("assigns the queried ID of the command's output to the variable", () => {
+    const parts = captureId(
+      "VPC_ID",
+      "aws ec2 create-vpc",
+      commandFlag("\\\n  --cidr-block", "10.0.0.0/16"),
+      "Vpc.VpcId",
+    )
+
+    expect(partsToText([{ label: "Create VPC", parts }])).toBe(
+      "VPC_ID=$(aws ec2 create-vpc \\\n  --cidr-block 10.0.0.0/16 \\\n  --query 'Vpc.VpcId' --output text)",
+    )
+    expect(parts[0]).toStrictEqual({ type: "variable", value: "VPC_ID=" })
   })
 })

@@ -21,7 +21,6 @@ interface SelectionState {
 }
 
 interface RegisterTargetsDialogProps {
-  open: boolean
   onOpenChange: (open: boolean) => void
   instances: Instance[]
   defaultPort: number
@@ -46,7 +45,6 @@ function parsePort(raw: string): number | undefined {
 }
 
 export function RegisterTargetsDialog({
-  open,
   onOpenChange,
   instances,
   defaultPort,
@@ -58,18 +56,6 @@ export function RegisterTargetsDialog({
   )
 
   const [error, setError] = useState<string | undefined>()
-
-  // Clear the selection each time the dialog closes so it reopens fresh.
-  const [wasOpen, setWasOpen] = useState(open)
-
-  if (open !== wasOpen) {
-    setWasOpen(open)
-
-    if (!open) {
-      setSelections({})
-      setError(undefined)
-    }
-  }
 
   const toggle = (id: string) => {
     setSelections((prev) => {
@@ -128,7 +114,7 @@ export function RegisterTargetsDialog({
   }
 
   return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
+    <AlertDialog onOpenChange={onOpenChange} open>
       <AlertDialogContent className="sm:max-w-lg">
         <AlertDialogHeader>
           <AlertDialogTitle>Register targets</AlertDialogTitle>

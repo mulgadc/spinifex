@@ -1,6 +1,7 @@
 import {
   ConverseCommand,
   type ConverseCommandInput,
+  type InferenceConfiguration,
   type Message,
   type TokenUsage,
 } from "@aws-sdk/client-bedrock-runtime"
@@ -8,17 +9,11 @@ import { useMutation } from "@tanstack/react-query"
 
 import { getBedrockRuntimeClient } from "@/lib/awsClient"
 
-export interface ConverseInferenceConfig {
-  temperature?: number
-  topP?: number
-  maxTokens?: number
-}
-
 export interface ConverseParams {
   modelId: string
   messages: Message[]
   system?: string
-  inferenceConfig?: ConverseInferenceConfig
+  inferenceConfig?: InferenceConfiguration
   guardrailIdentifier?: string
   guardrailVersion?: string
 }

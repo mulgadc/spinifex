@@ -19,8 +19,8 @@ describe("queryFn", () => {
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({})
   })
 
-  it("s3BucketObjectsQueryOptions sends ListObjectsV2Command with bucket and delimiter", async () => {
-    await callQueryFn(s3BucketObjectsQueryOptions("my-bucket"))
+  it("s3BucketObjectsQueryOptions omits an empty prefix", async () => {
+    await callQueryFn(s3BucketObjectsQueryOptions("my-bucket", ""))
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       Bucket: "my-bucket",
       Prefix: undefined,

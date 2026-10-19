@@ -1,6 +1,5 @@
-import { useState } from "react"
-
 import { Button } from "@/components/ui/button"
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import { getRegion } from "@/lib/cluster-config"
 
 // registryHostFrom strips the trailing "/{repo}" path from a repositoryUri to
@@ -24,7 +23,7 @@ export function PushCommands({
   repositoryName,
   repositoryUri,
 }: PushCommandsProps) {
-  const [copied, setCopied] = useState(false)
+  const { copied, copy } = useCopyToClipboard()
   const host = registryHostFrom(repositoryUri)
   const uri = repositoryUri ?? `${host}/${repositoryName}`
 
@@ -35,19 +34,17 @@ export function PushCommands({
     `docker push ${uri}:latest`,
   ]
 
-  async function handleCopy() {
-    await navigator.clipboard.writeText(commands.join("\n"))
-    setCopied(true)
-    setTimeout(() => {
-      setCopied(false)
-    }, 2000)
-  }
-
   return (
     <div className="rounded-lg border bg-card p-4">
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-sm font-medium">Push commands</h2>
-        <Button onClick={handleCopy} size="sm" variant="outline">
+        <Button
+          onClick={() => {
+            void copy(commands.join("\n"))
+          }}
+          size="sm"
+          variant="outline"
+        >
           {copied ? "Copied" : "Copy"}
         </Button>
       </div>

@@ -20,7 +20,6 @@ const INSTANCES: Instance[] = [
 
 function defaultProps() {
   return {
-    open: true,
     onOpenChange: vi.fn(),
     instances: INSTANCES,
     defaultPort: 80,

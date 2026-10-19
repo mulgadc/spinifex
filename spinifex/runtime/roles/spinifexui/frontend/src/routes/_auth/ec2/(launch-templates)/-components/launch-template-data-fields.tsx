@@ -3,6 +3,7 @@ import { ChevronDown } from "lucide-react"
 import type { Control, FieldErrors, UseFormRegister } from "react-hook-form"
 import { Controller, useWatch } from "react-hook-form"
 
+import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import {
   Collapsible,
   CollapsibleContent,
@@ -23,7 +24,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { securityGroupLabel } from "@/lib/utils"
 import {
   ec2ImagesQueryOptions,
   ec2InstanceTypesQueryOptions,
@@ -99,12 +99,7 @@ export function LaunchTemplateDataFields({
             )
 
             return (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
+              <Select onValueChange={field.onChange} value={field.value ?? ""}>
                 <SelectTrigger
                   aria-invalid={!!errors.imageId}
                   className="w-full"
@@ -138,12 +133,7 @@ export function LaunchTemplateDataFields({
           control={control}
           name="instanceType"
           render={({ field }) => (
-            <Select
-              onValueChange={(value) => {
-                field.onChange(value)
-              }}
-              value={field.value || ""}
-            >
+            <Select onValueChange={field.onChange} value={field.value || ""}>
               <SelectTrigger
                 aria-invalid={!!errors.instanceType}
                 className="w-full"
@@ -240,47 +230,14 @@ export function LaunchTemplateDataFields({
         <Controller
           control={control}
           name="securityGroupIds"
-          render={({ field }) => {
-            const selected = field.value ?? []
-            const selectedSet = new Set(selected)
-
-            const toggle = (sgId: string) => {
-              field.onChange(
-                selected.includes(sgId)
-                  ? selected.filter((id) => id !== sgId)
-                  : [...selected, sgId],
-              )
-            }
-
-            if (vpcSecurityGroups.length === 0) {
-              return (
-                <p className="text-xs text-muted-foreground">
-                  No security groups available.
-                </p>
-              )
-            }
-
-            return (
-              <div className="space-y-1">
-                {vpcSecurityGroups.map((sg) => (
-                  <label
-                    className="flex items-center gap-2 text-xs"
-                    key={sg.GroupId}
-                  >
-                    <input
-                      aria-label={`Security group ${securityGroupLabel(sg)}`}
-                      checked={selectedSet.has(sg.GroupId ?? "")}
-                      onChange={() => {
-                        toggle(sg.GroupId ?? "")
-                      }}
-                      type="checkbox"
-                    />
-                    <span className="font-mono">{securityGroupLabel(sg)}</span>
-                  </label>
-                ))}
-              </div>
-            )
-          }}
+          render={({ field }) => (
+            <SecurityGroupCheckboxes
+              emptyText="No security groups available."
+              groups={vpcSecurityGroups}
+              onChange={field.onChange}
+              selected={field.value ?? []}
+            />
+          )}
         />
       </Field>
 
@@ -345,9 +302,7 @@ export function LaunchTemplateDataFields({
               name="rootVolumeType"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => {
-                    field.onChange(value)
-                  }}
+                  onValueChange={field.onChange}
                   value={field.value ?? DEFAULT_VOLUME_TYPE}
                 >
                   <SelectTrigger

@@ -13,6 +13,9 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -105,12 +108,7 @@ function CreateSnapshot() {
             control={control}
             name="volumeId"
             render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
+              <Select onValueChange={field.onChange} value={field.value ?? ""}>
                 <SelectTrigger
                   aria-invalid={!!errors.volumeId}
                   className="w-full"
@@ -164,24 +162,22 @@ function CreateSnapshot() {
 function buildCreateSnapshotCommands(
   values: DeepPartialSkipArrayKey<CreateSnapshotFormData>,
 ): CliCommand[] {
-  const volumeId = values.volumeId ?? ""
   const description = values.description ?? ""
 
-  const parts = [
+  return [
     {
-      type: "bin" as const,
-      value: "AWS_PROFILE=spinifex aws ec2 create-snapshot",
+      label: "Create Snapshot",
+      parts: [
+        { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-snapshot" },
+        ...commandFlag(
+          "\\\n  --volume-id",
+          cliPlaceholder(values.volumeId ?? "", "VolumeId"),
+        ),
+        ...optionalFlag(
+          "\\\n  --description",
+          description && `"${description}"`,
+        ),
+      ],
     },
-    { type: "flag" as const, value: " \\\n  --volume-id" },
-    { type: "value" as const, value: ` ${volumeId || "<VolumeId>"}` },
   ]
-
-  if (description) {
-    parts.push(
-      { type: "flag" as const, value: " \\\n  --description" },
-      { type: "value" as const, value: ` "${description}"` },
-    )
-  }
-
-  return [{ label: "Create Snapshot", parts }]
 }

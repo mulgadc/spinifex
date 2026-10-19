@@ -128,12 +128,7 @@ export function TargetGroupForm({
           control={control}
           name="vpcId"
           render={({ field }) => (
-            <Select
-              onValueChange={(value) => {
-                field.onChange(value)
-              }}
-              value={field.value ?? ""}
-            >
+            <Select onValueChange={field.onChange} value={field.value ?? ""}>
               <SelectTrigger
                 aria-invalid={!!errors.vpcId}
                 className="w-full"

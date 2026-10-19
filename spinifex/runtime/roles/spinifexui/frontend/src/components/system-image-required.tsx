@@ -1,15 +1,15 @@
+import { useQuery } from "@tanstack/react-query"
 import { Check, Copy, RotateCw, TriangleAlert } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import { cn } from "@/lib/utils"
+import { ec2ImagesQueryOptions } from "@/queries/ec2"
 
 interface SystemImageRequiredProps {
   title: string
   description: string
   importCommand: string
-  isRechecking: boolean
-  onRecheck: () => void
   // Spacing is left to the call site, whose surrounding layout decides it.
   className?: string
 }
@@ -20,11 +20,10 @@ export function SystemImageRequired({
   title,
   description,
   importCommand,
-  isRechecking,
-  onRecheck,
   className,
 }: SystemImageRequiredProps) {
   const { copied, copy } = useCopyToClipboard()
+  const images = useQuery(ec2ImagesQueryOptions)
 
   return (
     <div
@@ -66,13 +65,15 @@ export function SystemImageRequired({
           </p>
 
           <Button
-            disabled={isRechecking}
-            onClick={onRecheck}
+            disabled={images.isRefetching}
+            onClick={() => {
+              void images.refetch()
+            }}
             size="sm"
             variant="outline"
           >
             <RotateCw
-              className={isRechecking ? "size-4 animate-spin" : "size-4"}
+              className={images.isRefetching ? "size-4 animate-spin" : "size-4"}
             />
             Recheck
           </Button>

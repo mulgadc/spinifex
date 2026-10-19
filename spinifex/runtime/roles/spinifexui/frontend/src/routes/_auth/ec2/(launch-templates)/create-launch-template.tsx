@@ -7,6 +7,8 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  commandFlag,
+  optionalFlag,
   shellSingleQuote,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -178,26 +180,27 @@ function buildCreateLaunchTemplateCommands(
   versionDescription: string,
   data: RequestLaunchTemplateData,
 ): CliCommand[] {
-  const parts: CliCommand["parts"] = [
+  return [
     {
-      type: "bin",
-      value: "AWS_PROFILE=spinifex aws ec2 create-launch-template",
+      label: "Create Launch Template",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws ec2 create-launch-template",
+        },
+        ...commandFlag(
+          "\\\n  --launch-template-name",
+          name ? shellSingleQuote(name) : "<name>",
+        ),
+        ...optionalFlag(
+          "\\\n  --version-description",
+          versionDescription && shellSingleQuote(versionDescription),
+        ),
+        ...commandFlag(
+          "\\\n  --launch-template-data",
+          shellSingleQuote(JSON.stringify(data)),
+        ),
+      ],
     },
-    { type: "flag", value: " \\\n  --launch-template-name" },
-    { type: "value", value: ` ${name ? shellSingleQuote(name) : "<name>"}` },
   ]
-
-  if (versionDescription) {
-    parts.push(
-      { type: "flag", value: " \\\n  --version-description" },
-      { type: "value", value: ` ${shellSingleQuote(versionDescription)}` },
-    )
-  }
-
-  parts.push(
-    { type: "flag", value: " \\\n  --launch-template-data" },
-    { type: "value", value: ` ${shellSingleQuote(JSON.stringify(data))}` },
-  )
-
-  return [{ label: "Create Launch Template", parts }]
 }

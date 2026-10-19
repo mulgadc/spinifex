@@ -9,14 +9,7 @@ import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { JsonEditor } from "@/components/ui/json-editor"
 import { isValidJson } from "@/lib/json"
-import {
-  useDeleteGroupPolicy,
-  useDeleteRolePolicy,
-  useDeleteUserPolicy,
-  usePutGroupPolicy,
-  usePutRolePolicy,
-  usePutUserPolicy,
-} from "@/mutations/iam"
+import { useDeleteInlinePolicy, usePutInlinePolicy } from "@/mutations/iam"
 import {
   iamGroupPoliciesQueryOptions,
   iamGroupPolicyQueryOptions,
@@ -25,11 +18,7 @@ import {
   iamUserPoliciesQueryOptions,
   iamUserPolicyQueryOptions,
 } from "@/queries/iam"
-import {
-  type DeleteInlinePolicyParams,
-  type PutInlinePolicyParams,
-  putInlinePolicySchema,
-} from "@/types/iam"
+import { type IamPrincipalKind, putInlinePolicySchema } from "@/types/iam"
 
 const DEFAULT_INLINE_POLICY_DOCUMENT = JSON.stringify(
   {
@@ -46,61 +35,39 @@ const DEFAULT_INLINE_POLICY_DOCUMENT = JSON.stringify(
   2,
 )
 
-export type InlinePolicyKind = "user" | "role" | "group"
-
 type InlinePolicyQueryOptions = ReturnType<typeof iamUserPolicyQueryOptions>
 
-// Structural subset of a mutation result so one form works with the user, role
-// and group hooks regardless of their differing command output types.
-interface InlineMutation<TParams> {
-  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the panel awaits the put or delete and never reads its payload
-  mutateAsync: (params: TParams) => Promise<unknown>
-  isPending: boolean
-  error: Error | null
-}
-
-interface KindConfig {
+interface KindQueries {
   listQuery: (name: string) => ReturnType<typeof iamUserPoliciesQueryOptions>
   policyQuery: (name: string, policyName: string) => InlinePolicyQueryOptions
-  put: InlineMutation<PutInlinePolicyParams>
-  remove: InlineMutation<DeleteInlinePolicyParams>
 }
 
+const kindQueries: Record<IamPrincipalKind, KindQueries> = {
+  user: {
+    listQuery: iamUserPoliciesQueryOptions,
+    policyQuery: iamUserPolicyQueryOptions,
+  },
+  role: {
+    listQuery: iamRolePoliciesQueryOptions,
+    policyQuery: iamRolePolicyQueryOptions,
+  },
+  group: {
+    listQuery: iamGroupPoliciesQueryOptions,
+    policyQuery: iamGroupPolicyQueryOptions,
+  },
+}
+
+type PutInlinePolicyMutation = ReturnType<typeof usePutInlinePolicy>
+
 interface InlinePoliciesPanelProps {
-  kind: InlinePolicyKind
+  kind: IamPrincipalKind
   name: string
 }
 
 export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
-  const putUser = usePutUserPolicy()
-  const putRole = usePutRolePolicy()
-  const putGroup = usePutGroupPolicy()
-  const deleteUser = useDeleteUserPolicy()
-  const deleteRole = useDeleteRolePolicy()
-  const deleteGroup = useDeleteGroupPolicy()
-
-  const config = {
-    user: {
-      listQuery: iamUserPoliciesQueryOptions,
-      policyQuery: iamUserPolicyQueryOptions,
-      put: putUser,
-      remove: deleteUser,
-    },
-    role: {
-      listQuery: iamRolePoliciesQueryOptions,
-      policyQuery: iamRolePolicyQueryOptions,
-      put: putRole,
-      remove: deleteRole,
-    },
-    group: {
-      listQuery: iamGroupPoliciesQueryOptions,
-      policyQuery: iamGroupPolicyQueryOptions,
-      put: putGroup,
-      remove: deleteGroup,
-    },
-  } satisfies Record<InlinePolicyKind, KindConfig>
-
-  const { listQuery, policyQuery, put, remove } = config[kind]
+  const put = usePutInlinePolicy(kind)
+  const remove = useDeleteInlinePolicy(kind)
+  const { listQuery, policyQuery } = kindQueries[kind]
 
   const { data: listData } = useSuspenseQuery(listQuery(name))
   const policyNames = listData.PolicyNames ?? []
@@ -240,7 +207,7 @@ export function InlinePoliciesPanel({ kind, name }: InlinePoliciesPanelProps) {
 
 interface AddInlinePolicyFormProps {
   name: string
-  put: InlineMutation<PutInlinePolicyParams>
+  put: PutInlinePolicyMutation
   onClose: () => void
 }
 
@@ -323,7 +290,7 @@ interface EditInlinePolicyFormProps {
   name: string
   policyName: string
   queryOptions: InlinePolicyQueryOptions
-  put: InlineMutation<PutInlinePolicyParams>
+  put: PutInlinePolicyMutation
   onClose: () => void
 }
 

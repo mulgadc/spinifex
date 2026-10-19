@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { Link, useLocation, useNavigate } from "@tanstack/react-router"
+import type { LinkProps } from "@tanstack/react-router"
 import {
   Activity,
   BookOpen,
@@ -36,6 +37,7 @@ import {
   UsersRound,
   Waypoints,
 } from "lucide-react"
+import type { LucideIcon } from "lucide-react"
 
 import {
   Sidebar,
@@ -51,9 +53,287 @@ import {
   SidebarSeparator,
 } from "@/components/ui/sidebar"
 import { useAdmin } from "@/hooks/use-admin"
-import { clearCredentials } from "@/lib/auth"
-import { clearClients } from "@/lib/awsClient"
 import { isOchreEnabled } from "@/lib/cluster-config"
+import { signOut } from "@/lib/query-client"
+
+interface NavItem {
+  admin?: boolean
+  // Highlighted when the path equals `to`, rather than starting with a prefix.
+  exact?: boolean
+  icon: LucideIcon
+  label: string
+  // Path prefixes that highlight the item; defaults to `to`.
+  match?: readonly string[]
+  to: LinkProps["to"] & string
+  tooltip?: string
+}
+
+interface NavGroup {
+  items: readonly NavItem[]
+  label: string
+  ochre?: boolean
+}
+
+const NAV: readonly NavGroup[] = [
+  {
+    label: "General",
+    items: [
+      { label: "Dashboard", icon: Home, to: "/", exact: true },
+      { label: "Nodes", icon: Server, to: "/nodes", admin: true },
+    ],
+  },
+  {
+    label: "EC2",
+    items: [
+      {
+        label: "Instances",
+        icon: Server,
+        to: "/ec2/describe-instances",
+        match: ["/ec2/describe-instances", "/ec2/run-instances"],
+      },
+      {
+        label: "Launch Templates",
+        icon: FileStack,
+        to: "/ec2/describe-launch-templates",
+        match: [
+          "/ec2/describe-launch-templates",
+          "/ec2/create-launch-template",
+        ],
+      },
+      { label: "Images", icon: Image, to: "/ec2/describe-images" },
+      { label: "Key Pairs", icon: Key, to: "/ec2/describe-key-pairs" },
+      {
+        label: "Elastic IPs",
+        icon: MapPin,
+        to: "/ec2/describe-addresses",
+        match: ["/ec2/describe-addresses", "/ec2/allocate-address"],
+      },
+      {
+        label: "Volumes",
+        icon: HardDrive,
+        to: "/ec2/describe-volumes",
+        match: [
+          "/ec2/describe-volumes",
+          "/ec2/create-volume",
+          "/ec2/modify-volume",
+        ],
+      },
+      {
+        label: "Snapshots",
+        icon: Camera,
+        to: "/ec2/describe-snapshots",
+        match: ["/ec2/describe-snapshots", "/ec2/create-snapshot"],
+      },
+      {
+        label: "Placement Groups",
+        icon: Layers,
+        to: "/ec2/describe-placement-groups",
+        match: [
+          "/ec2/describe-placement-groups",
+          "/ec2/create-placement-group",
+        ],
+      },
+      {
+        label: "Load Balancers",
+        icon: Waypoints,
+        to: "/ec2/describe-load-balancers",
+        match: ["/ec2/describe-load-balancers", "/ec2/create-load-balancer"],
+      },
+      {
+        label: "Target Groups",
+        icon: Crosshair,
+        to: "/ec2/describe-target-groups",
+        match: ["/ec2/describe-target-groups", "/ec2/create-target-group"],
+      },
+    ],
+  },
+  {
+    label: "Networking",
+    items: [
+      {
+        label: "VPCs",
+        icon: Network,
+        to: "/ec2/describe-vpcs",
+        match: ["/ec2/describe-vpcs", "/ec2/create-vpc"],
+      },
+      {
+        label: "Subnets",
+        icon: LayoutGrid,
+        to: "/ec2/describe-subnets",
+        match: ["/ec2/describe-subnets", "/ec2/create-subnet"],
+      },
+      {
+        label: "Security Groups",
+        icon: ShieldCheck,
+        to: "/ec2/describe-security-groups",
+        match: ["/ec2/describe-security-groups", "/ec2/create-security-group"],
+      },
+      {
+        label: "Route Tables",
+        icon: Route,
+        to: "/ec2/describe-route-tables",
+        match: ["/ec2/describe-route-tables", "/ec2/create-route-table"],
+      },
+      {
+        label: "Internet Gateways",
+        icon: Globe,
+        to: "/ec2/describe-internet-gateways",
+      },
+      {
+        label: "NAT Gateways",
+        icon: Router,
+        to: "/ec2/describe-nat-gateways",
+        match: ["/ec2/describe-nat-gateways", "/ec2/create-nat-gateway"],
+      },
+    ],
+  },
+  {
+    label: "Containers",
+    items: [
+      {
+        label: "EKS",
+        tooltip: "EKS clusters",
+        icon: Boxes,
+        to: "/eks/list-clusters",
+        match: ["/eks/list-clusters", "/eks/create-cluster"],
+      },
+      {
+        label: "ECR",
+        tooltip: "ECR repositories",
+        icon: Package,
+        to: "/ecr/list-repositories",
+      },
+      {
+        label: "ECS",
+        tooltip: "ECS clusters",
+        icon: Container,
+        to: "/ecs/list-clusters",
+        match: ["/ecs/"],
+      },
+    ],
+  },
+  {
+    label: "RDS",
+    items: [
+      {
+        label: "Databases",
+        icon: Database,
+        to: "/rds/describe-db-instances",
+        match: ["/rds/describe-db-instances", "/rds/create-db-instance"],
+      },
+      {
+        label: "Snapshots",
+        tooltip: "DB Snapshots",
+        icon: Camera,
+        to: "/rds/describe-db-snapshots",
+        match: [
+          "/rds/describe-db-snapshots",
+          "/rds/restore-db-instance-from-db-snapshot",
+        ],
+      },
+      {
+        label: "Subnet Groups",
+        tooltip: "DB Subnet Groups",
+        icon: LayoutGrid,
+        to: "/rds/describe-db-subnet-groups",
+        match: [
+          "/rds/describe-db-subnet-groups",
+          "/rds/create-db-subnet-group",
+        ],
+      },
+      {
+        label: "Parameter Groups",
+        tooltip: "DB Parameter Groups",
+        icon: SlidersHorizontal,
+        to: "/rds/describe-db-parameter-groups",
+        match: [
+          "/rds/describe-db-parameter-groups",
+          "/rds/create-db-parameter-group",
+        ],
+      },
+    ],
+  },
+  {
+    label: "IAM",
+    items: [
+      {
+        label: "Users",
+        icon: Users,
+        to: "/iam/list-users",
+        match: ["/iam/list-users", "/iam/create-user"],
+      },
+      {
+        label: "Groups",
+        icon: UsersRound,
+        to: "/iam/list-groups",
+        match: ["/iam/list-groups", "/iam/create-group"],
+      },
+      {
+        label: "Policies",
+        icon: Shield,
+        to: "/iam/list-policies",
+        match: ["/iam/list-policies", "/iam/create-policy"],
+      },
+      {
+        label: "Roles",
+        icon: UserCog,
+        to: "/iam/list-roles",
+        match: ["/iam/list-roles", "/iam/create-role"],
+      },
+      {
+        label: "Instance Profiles",
+        icon: IdCard,
+        to: "/iam/list-instance-profiles",
+        match: ["/iam/list-instance-profiles", "/iam/create-instance-profile"],
+      },
+    ],
+  },
+  {
+    label: "S3",
+    items: [
+      { label: "Buckets", icon: Server, to: "/s3/ls" },
+      {
+        label: "Service Metrics",
+        icon: Activity,
+        to: "/s3/service-metrics",
+        admin: true,
+      },
+    ],
+  },
+  {
+    label: "Ochre",
+    ochre: true,
+    items: [
+      {
+        label: "Knowledge Bases",
+        icon: Brain,
+        to: "/bedrock/list-knowledge-bases",
+      },
+      { label: "Guardrails", icon: Shield, to: "/bedrock/list-guardrails" },
+      { label: "Playground", icon: MessageSquare, to: "/bedrock/playground" },
+      {
+        label: "Model Catalog",
+        icon: LayoutList,
+        to: "/bedrock/list-model-catalog",
+        admin: true,
+      },
+      {
+        label: "Model Access",
+        icon: KeyRound,
+        to: "/bedrock/list-model-access",
+        admin: true,
+      },
+    ],
+  },
+]
+
+function isItemActive(item: NavItem, pathname: string): boolean {
+  if (item.exact) {
+    return pathname === item.to
+  }
+
+  return (item.match ?? [item.to]).some((prefix) => pathname.startsWith(prefix))
+}
 
 export function SidebarLayout() {
   const pathname = useLocation({
@@ -63,11 +343,10 @@ export function SidebarLayout() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { isAdmin } = useAdmin()
+  const ochreEnabled = isOchreEnabled()
 
   function handleLogout() {
-    clearCredentials()
-    clearClients()
-    queryClient.clear()
+    signOut(queryClient)
     navigate({ to: "/login" })
   }
 
@@ -84,586 +363,48 @@ export function SidebarLayout() {
         </span>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>General</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/">
-                <SidebarMenuButton
-                  isActive={pathname === "/"}
-                  tooltip="Dashboard"
-                >
-                  <Home className="size-4" />
-                  <span>Dashboard</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            {isAdmin && (
-              <SidebarMenuItem>
-                <Link to="/nodes">
-                  <SidebarMenuButton
-                    isActive={pathname.startsWith("/nodes")}
-                    tooltip="Nodes"
-                  >
-                    <Server className="size-4" />
-                    <span>Nodes</span>
-                  </SidebarMenuButton>
-                </Link>
-              </SidebarMenuItem>
-            )}
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>EC2</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-instances">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-instances") ||
-                    pathname.startsWith("/ec2/run-instances")
-                  }
-                  tooltip="Instances"
-                >
-                  <Server className="size-4" />
-                  <span>Instances</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-launch-templates">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-launch-templates") ||
-                    pathname.startsWith("/ec2/create-launch-template")
-                  }
-                  tooltip="Launch Templates"
-                >
-                  <FileStack className="size-4" />
-                  <span>Launch Templates</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-images">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/ec2/describe-images")}
-                  tooltip="Images"
-                >
-                  <Image className="size-4" />
-                  <span>Images</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-key-pairs">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/ec2/describe-key-pairs")}
-                  tooltip="Key Pairs"
-                >
-                  <Key className="size-4" />
-                  <span>Key Pairs</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-addresses">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-addresses") ||
-                    pathname.startsWith("/ec2/allocate-address")
-                  }
-                  tooltip="Elastic IPs"
-                >
-                  <MapPin className="size-4" />
-                  <span>Elastic IPs</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-volumes">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-volumes") ||
-                    pathname.startsWith("/ec2/create-volume") ||
-                    pathname.startsWith("/ec2/modify-volume")
-                  }
-                  tooltip="Volumes"
-                >
-                  <HardDrive className="size-4" />
-                  <span>Volumes</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-snapshots">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-snapshots") ||
-                    pathname.startsWith("/ec2/create-snapshot")
-                  }
-                  tooltip="Snapshots"
-                >
-                  <Camera className="size-4" />
-                  <span>Snapshots</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-placement-groups">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-placement-groups") ||
-                    pathname.startsWith("/ec2/create-placement-group")
-                  }
-                  tooltip="Placement Groups"
-                >
-                  <Layers className="size-4" />
-                  <span>Placement Groups</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-load-balancers">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-load-balancers") ||
-                    pathname.startsWith("/ec2/create-load-balancer")
-                  }
-                  tooltip="Load Balancers"
-                >
-                  <Waypoints className="size-4" />
-                  <span>Load Balancers</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-target-groups">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-target-groups") ||
-                    pathname.startsWith("/ec2/create-target-group")
-                  }
-                  tooltip="Target Groups"
-                >
-                  <Crosshair className="size-4" />
-                  <span>Target Groups</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>Networking</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-vpcs">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-vpcs") ||
-                    pathname.startsWith("/ec2/create-vpc")
-                  }
-                  tooltip="VPCs"
-                >
-                  <Network className="size-4" />
-                  <span>VPCs</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-subnets">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-subnets") ||
-                    pathname.startsWith("/ec2/create-subnet")
-                  }
-                  tooltip="Subnets"
-                >
-                  <LayoutGrid className="size-4" />
-                  <span>Subnets</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-security-groups">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-security-groups") ||
-                    pathname.startsWith("/ec2/create-security-group")
-                  }
-                  tooltip="Security Groups"
-                >
-                  <ShieldCheck className="size-4" />
-                  <span>Security Groups</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-route-tables">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-route-tables") ||
-                    pathname.startsWith("/ec2/create-route-table")
-                  }
-                  tooltip="Route Tables"
-                >
-                  <Route className="size-4" />
-                  <span>Route Tables</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-internet-gateways">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith(
-                    "/ec2/describe-internet-gateways",
-                  )}
-                  tooltip="Internet Gateways"
-                >
-                  <Globe className="size-4" />
-                  <span>Internet Gateways</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/ec2/describe-nat-gateways">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/ec2/describe-nat-gateways") ||
-                    pathname.startsWith("/ec2/create-nat-gateway")
-                  }
-                  tooltip="NAT Gateways"
-                >
-                  <Router className="size-4" />
-                  <span>NAT Gateways</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>Containers</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/eks/list-clusters">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/eks/list-clusters") ||
-                    pathname.startsWith("/eks/create-cluster")
-                  }
-                  tooltip="EKS clusters"
-                >
-                  <Boxes className="size-4" />
-                  <span>EKS</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <Link to="/ecr/list-repositories">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/ecr/list-repositories")}
-                  tooltip="ECR repositories"
-                >
-                  <Package className="size-4" />
-                  <span>ECR</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <Link to="/ecs/list-clusters">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/ecs/")}
-                  tooltip="ECS clusters"
-                >
-                  <Container className="size-4" />
-                  <span>ECS</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>RDS</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/rds/describe-db-instances">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/rds/describe-db-instances") ||
-                    pathname.startsWith("/rds/create-db-instance")
-                  }
-                  tooltip="Databases"
-                >
-                  <Database className="size-4" />
-                  <span>Databases</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/rds/describe-db-snapshots">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/rds/describe-db-snapshots") ||
-                    pathname.startsWith(
-                      "/rds/restore-db-instance-from-db-snapshot",
-                    )
-                  }
-                  tooltip="DB Snapshots"
-                >
-                  <Camera className="size-4" />
-                  <span>Snapshots</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/rds/describe-db-subnet-groups">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/rds/describe-db-subnet-groups") ||
-                    pathname.startsWith("/rds/create-db-subnet-group")
-                  }
-                  tooltip="DB Subnet Groups"
-                >
-                  <LayoutGrid className="size-4" />
-                  <span>Subnet Groups</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/rds/describe-db-parameter-groups">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/rds/describe-db-parameter-groups") ||
-                    pathname.startsWith("/rds/create-db-parameter-group")
-                  }
-                  tooltip="DB Parameter Groups"
-                >
-                  <SlidersHorizontal className="size-4" />
-                  <span>Parameter Groups</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>IAM</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/iam/list-users">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/iam/list-users") ||
-                    pathname.startsWith("/iam/create-user")
-                  }
-                  tooltip="Users"
-                >
-                  <Users className="size-4" />
-                  <span>Users</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/iam/list-groups">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/iam/list-groups") ||
-                    pathname.startsWith("/iam/create-group")
-                  }
-                  tooltip="Groups"
-                >
-                  <UsersRound className="size-4" />
-                  <span>Groups</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/iam/list-policies">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/iam/list-policies") ||
-                    pathname.startsWith("/iam/create-policy")
-                  }
-                  tooltip="Policies"
-                >
-                  <Shield className="size-4" />
-                  <span>Policies</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/iam/list-roles">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/iam/list-roles") ||
-                    pathname.startsWith("/iam/create-role")
-                  }
-                  tooltip="Roles"
-                >
-                  <UserCog className="size-4" />
-                  <span>Roles</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <Link to="/iam/list-instance-profiles">
-                <SidebarMenuButton
-                  isActive={
-                    pathname.startsWith("/iam/list-instance-profiles") ||
-                    pathname.startsWith("/iam/create-instance-profile")
-                  }
-                  tooltip="Instance Profiles"
-                >
-                  <IdCard className="size-4" />
-                  <span>Instance Profiles</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel>S3</SidebarGroupLabel>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <Link to="/s3/ls">
-                <SidebarMenuButton
-                  isActive={pathname.startsWith("/s3/ls")}
-                  tooltip="Buckets"
-                >
-                  <Server className="size-4" />
-                  <span>Buckets</span>
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-            {isAdmin && (
-              <SidebarMenuItem>
-                <Link to="/s3/service-metrics">
-                  <SidebarMenuButton
-                    isActive={pathname.startsWith("/s3/service-metrics")}
-                    tooltip="Service Metrics"
-                  >
-                    <Activity className="size-4" />
-                    <span>Service Metrics</span>
-                  </SidebarMenuButton>
-                </Link>
-              </SidebarMenuItem>
-            )}
-          </SidebarMenu>
-        </SidebarGroup>
-
-        {isOchreEnabled() && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Ochre</SidebarGroupLabel>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <Link to="/bedrock/list-knowledge-bases">
-                  <SidebarMenuButton
-                    isActive={pathname.startsWith(
-                      "/bedrock/list-knowledge-bases",
-                    )}
-                    tooltip="Knowledge Bases"
-                  >
-                    <Brain className="size-4" />
-                    <span>Knowledge Bases</span>
-                  </SidebarMenuButton>
-                </Link>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <Link to="/bedrock/list-guardrails">
-                  <SidebarMenuButton
-                    isActive={pathname.startsWith("/bedrock/list-guardrails")}
-                    tooltip="Guardrails"
-                  >
-                    <Shield className="size-4" />
-                    <span>Guardrails</span>
-                  </SidebarMenuButton>
-                </Link>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <Link to="/bedrock/playground">
-                  <SidebarMenuButton
-                    isActive={pathname.startsWith("/bedrock/playground")}
-                    tooltip="Playground"
-                  >
-                    <MessageSquare className="size-4" />
-                    <span>Playground</span>
-                  </SidebarMenuButton>
-                </Link>
-              </SidebarMenuItem>
-              {isAdmin && (
-                <SidebarMenuItem>
-                  <Link to="/bedrock/list-model-catalog">
-                    <SidebarMenuButton
-                      isActive={pathname.startsWith(
-                        "/bedrock/list-model-catalog",
-                      )}
-                      tooltip="Model Catalog"
-                    >
-                      <LayoutList className="size-4" />
-                      <span>Model Catalog</span>
-                    </SidebarMenuButton>
-                  </Link>
-                </SidebarMenuItem>
-              )}
-              {isAdmin && (
-                <SidebarMenuItem>
-                  <Link to="/bedrock/list-model-access">
-                    <SidebarMenuButton
-                      isActive={pathname.startsWith(
-                        "/bedrock/list-model-access",
-                      )}
-                      tooltip="Model Access"
-                    >
-                      <KeyRound className="size-4" />
-                      <span>Model Access</span>
-                    </SidebarMenuButton>
-                  </Link>
-                </SidebarMenuItem>
-              )}
-            </SidebarMenu>
-          </SidebarGroup>
+        {NAV.map((group) =>
+          group.ochre && !ochreEnabled ? null : (
+            <SidebarGroup key={group.label}>
+              <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+              <SidebarMenu>
+                {group.items.map((item) =>
+                  item.admin && !isAdmin ? null : (
+                    <SidebarMenuItem key={item.to}>
+                      <SidebarMenuButton
+                        isActive={isItemActive(item, pathname)}
+                        render={<Link to={item.to} />}
+                        tooltip={item.tooltip ?? item.label}
+                      >
+                        <item.icon className="size-4" />
+                        <span>{item.label}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ),
+                )}
+              </SidebarMenu>
+            </SidebarGroup>
+          ),
         )}
         {isAdmin && (
           <SidebarGroup>
             <SidebarGroupLabel>Documentation</SidebarGroupLabel>
             <SidebarMenu>
               <SidebarMenuItem>
-                <a
-                  href="https://docs.mulgadc.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <SidebarMenuButton
+                  render={
+                    // oxlint-disable-next-line jsx-a11y/control-has-associated-label -- SidebarMenuButton supplies the label
+                    <a
+                      href="https://docs.mulgadc.com"
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    />
+                  }
+                  tooltip="Documentation"
                 >
-                  <SidebarMenuButton tooltip="Documentation">
-                    <BookOpen className="size-4" />
-                    <span>Docs</span>
-                  </SidebarMenuButton>
-                </a>
+                  <BookOpen className="size-4" />
+                  <span>Docs</span>
+                </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroup>

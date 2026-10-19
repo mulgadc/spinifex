@@ -97,7 +97,7 @@ export function ContainerInstancesTab({
 
       {isError && (
         <ErrorBanner
-          error={error instanceof Error ? error : undefined}
+          error={error ?? undefined}
           msg="Container instance action failed."
         />
       )}

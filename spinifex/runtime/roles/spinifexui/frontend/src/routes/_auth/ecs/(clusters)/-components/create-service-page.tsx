@@ -16,7 +16,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { arnResourceId, securityGroupLabel } from "@/lib/utils"
 import { useCreateService } from "@/mutations/ecs"
 import {
   ec2SecurityGroupsQueryOptions,
@@ -28,6 +27,8 @@ import {
 } from "@/queries/ecs"
 import { elbv2TargetGroupsQueryOptions } from "@/queries/elbv2"
 import { createServiceSchema, type CreateServiceFormData } from "@/types/ecs"
+
+import { AwsvpcNetworkFields, TaskDefinitionField } from "./task-launch-fields"
 
 export function CreateServicePage({ cluster }: { cluster: string }) {
   const navigate = useNavigate()
@@ -46,7 +47,6 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
     handleSubmit,
     register: field,
     setValue,
-    getValues,
     formState: { errors, isSubmitting },
   } = useForm<CreateServiceFormData>({
     resolver: zodResolver(createServiceSchema),
@@ -74,17 +74,6 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
 
   const selectedSubnets = useWatch({ control, name: "subnets" })
   const selectedSgs = useWatch({ control, name: "securityGroups" })
-  const selectedSubnetSet = new Set(selectedSubnets)
-  const selectedSgSet = new Set(selectedSgs)
-
-  const toggle = (name: "subnets" | "securityGroups", id: string) => {
-    const current = getValues(name)
-    setValue(
-      name,
-      current.includes(id) ? current.filter((x) => x !== id) : [...current, id],
-      { shouldValidate: true },
-    )
-  }
 
   function done() {
     void navigate({
@@ -112,11 +101,7 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
 
       {createService.isError && (
         <ErrorBanner
-          error={
-            createService.error instanceof Error
-              ? createService.error
-              : undefined
-          }
+          error={createService.error}
           msg="Failed to create service."
         />
       )}
@@ -130,34 +115,18 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
           <FieldError errors={[errors.serviceName]} />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="taskDefinition">Task definition</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="taskDefinition"
-            render={({ field: f }) => (
-              <Select onValueChange={f.onChange} value={f.value}>
-                <SelectTrigger className="w-full" id="taskDefinition">
-                  <SelectValue placeholder="Select a task definition" />
-                </SelectTrigger>
-                <SelectContent>
-                  {taskDefArns.map((arn) => {
-                    const id = arnResourceId(arn)
-
-                    return (
-                      <SelectItem key={arn} value={id}>
-                        {id}
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.taskDefinition]} />
-        </Field>
+        <Controller
+          control={control}
+          name="taskDefinition"
+          render={({ field: f }) => (
+            <TaskDefinitionField
+              arns={taskDefArns}
+              error={errors.taskDefinition}
+              onChange={f.onChange}
+              value={f.value}
+            />
+          )}
+        />
 
         <Field>
           <FieldTitle>
@@ -172,58 +141,19 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
         </Field>
 
         {awsvpc && (
-          <div className="space-y-4 rounded-lg border bg-card p-4">
-            <p className="text-sm text-muted-foreground">
-              This task definition uses awsvpc networking. Select at least one
-              subnet.
-            </p>
-            <div>
-              <span className="text-sm font-medium">Subnets</span>
-              <div className="mt-2 space-y-1">
-                {subnets.map((s) => (
-                  <label
-                    className="flex items-center gap-2 text-xs"
-                    key={s.SubnetId}
-                  >
-                    <input
-                      checked={selectedSubnetSet.has(s.SubnetId ?? "")}
-                      onChange={() => {
-                        toggle("subnets", s.SubnetId ?? "")
-                      }}
-                      type="checkbox"
-                    />
-                    <span className="font-mono">
-                      {s.SubnetId} ({s.CidrBlock})
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div>
-              <span className="text-sm font-medium">Security groups</span>
-              <div className="mt-2 space-y-1">
-                {securityGroups.map((sg) => (
-                  <label
-                    className="flex items-center gap-2 text-xs"
-                    key={sg.GroupId}
-                  >
-                    <input
-                      checked={selectedSgSet.has(sg.GroupId ?? "")}
-                      onChange={() => {
-                        toggle("securityGroups", sg.GroupId ?? "")
-                      }}
-                      type="checkbox"
-                    />
-                    <span className="font-mono">{securityGroupLabel(sg)}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" {...field("assignPublicIp")} />
-              <span>Assign public IP</span>
-            </label>
-          </div>
+          <AwsvpcNetworkFields
+            assignPublicIp={field("assignPublicIp")}
+            onSecurityGroupsChange={(next) => {
+              setValue("securityGroups", next, { shouldValidate: true })
+            }}
+            onSubnetsChange={(next) => {
+              setValue("subnets", next, { shouldValidate: true })
+            }}
+            securityGroups={securityGroups}
+            selectedSecurityGroups={selectedSgs}
+            selectedSubnets={selectedSubnets}
+            subnets={subnets}
+          />
         )}
 
         <div className="space-y-4 rounded-lg border bg-card p-4">

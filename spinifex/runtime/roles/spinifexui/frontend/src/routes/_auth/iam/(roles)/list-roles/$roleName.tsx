@@ -10,6 +10,7 @@ import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
+import { decodePolicyDocument } from "@/lib/json"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteRole } from "@/mutations/iam"
 import {
@@ -74,7 +75,7 @@ function RoleDetail() {
   const instanceProfiles = profilesData.InstanceProfiles ?? []
 
   const trustPolicy = role?.AssumeRolePolicyDocument
-    ? decodeURIComponent(role.AssumeRolePolicyDocument)
+    ? decodePolicyDocument(role.AssumeRolePolicyDocument)
     : null
 
   const handleDelete = async () => {

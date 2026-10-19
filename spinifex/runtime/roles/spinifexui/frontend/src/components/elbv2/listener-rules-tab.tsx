@@ -40,7 +40,9 @@ import {
 import { elbv2ListenerRulesQueryOptions } from "@/queries/elbv2"
 import {
   type CreateRuleFormData,
+  type RuleConditionField,
   type RuleConditionFormData,
+  RULE_CONDITION_FIELDS,
   createRuleSchema,
 } from "@/types/elbv2"
 
@@ -564,14 +566,11 @@ function ConditionRow({ form, index, onRemove }: ConditionRowProps) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="path-pattern">Path pattern</SelectItem>
-                  <SelectItem value="host-header">Host header</SelectItem>
-                  <SelectItem value="http-header">HTTP header</SelectItem>
-                  <SelectItem value="http-request-method">
-                    HTTP method
-                  </SelectItem>
-                  <SelectItem value="source-ip">Source IP CIDR</SelectItem>
-                  <SelectItem value="query-string">Query string</SelectItem>
+                  {RULE_CONDITION_FIELDS.map((f) => (
+                    <SelectItem key={f} value={f}>
+                      {CONDITION_FIELD_TEXT[f].label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             )}
@@ -618,7 +617,7 @@ function ConditionRow({ form, index, onRemove }: ConditionRowProps) {
         <Input
           aria-invalid={!!errors?.rawValues}
           id={`rule-cond-${index}-values`}
-          placeholder={placeholderForField(fieldName)}
+          placeholder={CONDITION_FIELD_TEXT[fieldName].placeholder}
           {...form.register(`conditions.${index}.rawValues`)}
         />
         <FieldError errors={[errors?.rawValues]} />
@@ -627,51 +626,22 @@ function ConditionRow({ form, index, onRemove }: ConditionRowProps) {
   )
 }
 
-function placeholderForField(field: string): string {
-  switch (field) {
-    case "path-pattern": {
-      return "/api/*"
-    }
-
-    case "host-header": {
-      return "*.example.com"
-    }
-
-    case "http-header": {
-      return "acme"
-    }
-
-    case "http-request-method": {
-      return "GET, POST"
-    }
-
-    case "source-ip": {
-      return "10.0.0.0/8"
-    }
-
-    case "query-string": {
-      return "key=value"
-    }
-
-    default: {
-      return ""
-    }
-  }
+const CONDITION_FIELD_TEXT: Record<
+  RuleConditionField,
+  { label: string; placeholder: string }
+> = {
+  "path-pattern": { label: "Path pattern", placeholder: "/api/*" },
+  "host-header": { label: "Host header", placeholder: "*.example.com" },
+  "http-header": { label: "HTTP header", placeholder: "acme" },
+  "http-request-method": { label: "HTTP method", placeholder: "GET, POST" },
+  "source-ip": { label: "Source IP CIDR", placeholder: "10.0.0.0/8" },
+  "query-string": { label: "Query string", placeholder: "key=value" },
 }
-
-const SUPPORTED_FIELDS = new Set<string>([
-  "host-header",
-  "path-pattern",
-  "http-header",
-  "http-request-method",
-  "source-ip",
-  "query-string",
-])
 
 function isSupportedField(
   value: string | undefined,
-): value is RuleConditionFormData["field"] {
-  return value !== undefined && SUPPORTED_FIELDS.has(value)
+): value is RuleConditionField {
+  return value !== undefined && Object.hasOwn(CONDITION_FIELD_TEXT, value)
 }
 
 function fromSDKCondition(c: RuleCondition): RuleConditionFormData {

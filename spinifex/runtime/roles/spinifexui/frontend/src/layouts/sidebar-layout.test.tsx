@@ -62,4 +62,28 @@ describe("SidebarLayout", () => {
     expect(screen.getByText("Guardrails")).toBeInTheDocument()
     expect(screen.getByText("Playground")).toBeInTheDocument()
   })
+
+  it("renders each item as a link rather than a button inside a link", () => {
+    mockUseAdmin.mockReturnValue({ isAdmin: false })
+    mockIsOchreEnabled.mockReturnValue(false)
+
+    renderSidebar()
+
+    const link = screen.getByRole("link", { name: "Instances" })
+
+    expect(link).toHaveAttribute("href", "/ec2/describe-instances")
+    expect(link.querySelector("button")).toBeNull()
+  })
+
+  it("hides admin-only items from non-admins", () => {
+    mockUseAdmin.mockReturnValue({ isAdmin: false })
+    mockIsOchreEnabled.mockReturnValue(false)
+
+    renderSidebar()
+
+    expect(screen.getByText("Buckets")).toBeInTheDocument()
+    expect(screen.queryByText("Nodes")).not.toBeInTheDocument()
+    expect(screen.queryByText("Service Metrics")).not.toBeInTheDocument()
+    expect(screen.queryByText("Docs")).not.toBeInTheDocument()
+  })
 })

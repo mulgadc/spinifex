@@ -12,30 +12,39 @@ vi.mock("@/lib/awsClient", async () => {
   return mockAwsClients(send)
 })
 
+import {
+  iamAttachedGroupPoliciesQueryOptions,
+  iamAttachedRolePoliciesQueryOptions,
+  iamAttachedUserPoliciesQueryOptions,
+  iamPoliciesQueryOptions,
+} from "@/queries/iam"
+
 import { AttachedPoliciesPanel } from "./attached-policies-panel"
 
 const NAME = "alice"
 const ATTACHED_ARN = "arn:aws:iam::aws:policy/AttachedPolicy"
 const AVAILABLE_ARN = "arn:aws:iam::aws:policy/AvailablePolicy"
 
-const ATTACHED_KEY = {
-  user: "attached-user-policies",
-  role: "attached-role-policies",
-  group: "attached-group-policies",
+const ATTACHED_QUERY = {
+  user: iamAttachedUserPoliciesQueryOptions,
+  role: iamAttachedRolePoliciesQueryOptions,
+  group: iamAttachedGroupPoliciesQueryOptions,
 } as const
 
 function seed(
-  kind: keyof typeof ATTACHED_KEY,
+  kind: keyof typeof ATTACHED_QUERY,
   attachedArns: string[],
 ): QueryClient {
   const qc = createTestQueryClient()
-  qc.setQueryData(["iam", ATTACHED_KEY[kind], NAME], {
+  qc.setQueryData(ATTACHED_QUERY[kind](NAME).queryKey, {
+    $metadata: {},
     AttachedPolicies: attachedArns.map((arn) => ({
       PolicyArn: arn,
       PolicyName: "AttachedPolicy",
     })),
   })
-  qc.setQueryData(["iam", "policies"], {
+  qc.setQueryData(iamPoliciesQueryOptions.queryKey, {
+    $metadata: {},
     Policies: [
       { Arn: ATTACHED_ARN, PolicyName: "AttachedPolicy" },
       { Arn: AVAILABLE_ARN, PolicyName: "AvailablePolicy" },

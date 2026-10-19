@@ -11,6 +11,7 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  commandFlag,
   shellSingleQuote,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -108,12 +109,7 @@ function CreatePlacementGroup() {
             control={control}
             name="strategy"
             render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
+              <Select onValueChange={field.onChange} value={field.value ?? ""}>
                 <SelectTrigger
                   aria-invalid={!!errors.strategy}
                   className="w-full"
@@ -151,8 +147,6 @@ function buildCreatePlacementGroupCommands(
   values: DeepPartialSkipArrayKey<CreatePlacementGroupFormData>,
 ): CliCommand[] {
   const name = values.groupName ?? ""
-  const strategy = values.strategy ?? ""
-  const nameValue = name ? shellSingleQuote(name) : "<GroupName>"
 
   return [
     {
@@ -162,10 +156,11 @@ function buildCreatePlacementGroupCommands(
           type: "bin",
           value: "AWS_PROFILE=spinifex aws ec2 create-placement-group",
         },
-        { type: "flag", value: " \\\n  --group-name" },
-        { type: "value", value: ` ${nameValue}` },
-        { type: "flag", value: " \\\n  --strategy" },
-        { type: "value", value: ` ${strategy || "spread"}` },
+        ...commandFlag(
+          "\\\n  --group-name",
+          name ? shellSingleQuote(name) : "<GroupName>",
+        ),
+        ...commandFlag("\\\n  --strategy", values.strategy || "spread"),
       ],
     },
   ]

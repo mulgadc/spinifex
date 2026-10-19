@@ -7,6 +7,7 @@ import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PickerNoticeText, pickerNotice } from "@/components/picker-notice"
+import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -30,9 +31,9 @@ import {
 
 import {
   DeletionProtectionField,
+  instanceClassOptions,
   parameterGroupsForEngine,
 } from "../../-components/rds-form-fields"
-import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
 
 // ModifyDBInstance refuses these outright, and they are the ones users reach
 // for first, so they are shown read-only rather than left unexplained.
@@ -112,13 +113,10 @@ export function ModifyDBInstanceDialog({
   const selectedStorage = values.allocatedStorage ?? currentStorage
   const selectedGroups = values.vpcSecurityGroupIds ?? []
 
-  const instanceClasses = [
-    ...new Set(
-      (orderableQuery.data?.OrderableDBInstanceOptions ?? [])
-        .map((o) => o.DBInstanceClass ?? "")
-        .filter(Boolean),
-    ),
-  ]
+  const { instanceClasses, classNotice } = instanceClassOptions(
+    orderableQuery,
+    instance.Engine ?? "",
+  )
 
   const parameterGroups = parameterGroupsForEngine(
     parameterGroupsQuery.data?.DBParameterGroups ?? [],
@@ -136,16 +134,6 @@ export function ModifyDBInstanceDialog({
 
   const classChanged = selectedClass !== instance.DBInstanceClass
   const storageChanged = selectedStorage !== currentStorage
-
-  const classNotice = pickerNotice(
-    orderableQuery,
-    instanceClasses.length === 0,
-    {
-      loading: "Loading the instance classes…",
-      failed: "Could not read the instance classes",
-      empty: `No instance class this cluster's nodes can run is available for ${instance.Engine}.`,
-    },
-  )
 
   const parameterGroupNotice = pickerNotice(
     parameterGroupsQuery,

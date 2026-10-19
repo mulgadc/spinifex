@@ -70,6 +70,31 @@ export function optionalFlag(
   return commandFlag(flag, value)
 }
 
+// A flag whose argument is a shell variable set by an earlier command.
+export function variableFlag(flag: string, name: string): CommandPart[] {
+  return [
+    { type: "flag", value: ` ${flag}` },
+    { type: "variable", value: ` "$${name}"` },
+  ]
+}
+
+// Runs a create command inside `NAME=$(…)`, keeping only the ID `query`
+// selects, so later commands can pass it as "$NAME".
+export function captureId(
+  name: string,
+  bin: string,
+  args: CommandPart[],
+  query: string,
+): CommandPart[] {
+  return [
+    { type: "variable", value: `${name}=` },
+    { type: "bin", value: `$(${bin}` },
+    ...args,
+    ...commandFlag("\\\n  --query", `'${query}'`),
+    ...commandFlag("--output", "text)"),
+  ]
+}
+
 export function partsToText(commands: CliCommand[]): string {
   return commands
     .map((cmd) => cmd.parts.map((p) => p.value).join(""))

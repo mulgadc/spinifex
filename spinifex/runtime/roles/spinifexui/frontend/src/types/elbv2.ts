@@ -122,16 +122,20 @@ export type CreateListenerFormData = z.infer<typeof createListenerSchema>
 // printable non-whitespace ASCII
 const RULE_VALUE_REGEX = /^[!-~]+$/
 
+export const RULE_CONDITION_FIELDS = [
+  "path-pattern",
+  "host-header",
+  "http-header",
+  "http-request-method",
+  "source-ip",
+  "query-string",
+] as const
+
+export type RuleConditionField = (typeof RULE_CONDITION_FIELDS)[number]
+
 export const ruleConditionSchema = z
   .object({
-    field: z.enum([
-      "host-header",
-      "path-pattern",
-      "http-header",
-      "http-request-method",
-      "source-ip",
-      "query-string",
-    ]),
+    field: z.enum(RULE_CONDITION_FIELDS),
     httpHeaderName: z.string().max(40).optional(),
     rawValues: z
       .string()

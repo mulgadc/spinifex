@@ -75,13 +75,11 @@ function ScaleNodegroupDialog({
   clusterName,
   nodegroupName,
   current,
-  open,
   onOpenChange,
 }: {
   clusterName: string
   nodegroupName: string
   current: { minSize?: number; desiredSize?: number; maxSize?: number }
-  open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const scaleNodegroup = useScaleNodegroup()
@@ -89,20 +87,6 @@ function ScaleNodegroupDialog({
   const [desiredSize, setDesiredSize] = useState(current.desiredSize ?? 0)
   const [maxSize, setMaxSize] = useState(current.maxSize ?? 0)
   const [error, setError] = useState<string | undefined>()
-
-  // Seed the sizes from the current nodegroup each time the dialog opens.
-  const [wasOpen, setWasOpen] = useState(open)
-
-  if (open !== wasOpen) {
-    setWasOpen(open)
-
-    if (open) {
-      setMinSize(current.minSize ?? 0)
-      setDesiredSize(current.desiredSize ?? 0)
-      setMaxSize(current.maxSize ?? 0)
-      setError(undefined)
-    }
-  }
 
   const handleConfirm = () => {
     if (!(minSize <= desiredSize && desiredSize <= maxSize)) {
@@ -122,7 +106,7 @@ function ScaleNodegroupDialog({
   }
 
   return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
+    <AlertDialog onOpenChange={onOpenChange} open>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Scale {nodegroupName}</AlertDialogTitle>
@@ -270,13 +254,14 @@ function NodegroupRow({
         />
       </DetailCard.Content>
 
-      <ScaleNodegroupDialog
-        clusterName={clusterName}
-        current={scaling ?? {}}
-        nodegroupName={nodegroupName}
-        onOpenChange={setShowScale}
-        open={showScale}
-      />
+      {showScale && (
+        <ScaleNodegroupDialog
+          clusterName={clusterName}
+          current={scaling ?? {}}
+          nodegroupName={nodegroupName}
+          onOpenChange={setShowScale}
+        />
+      )}
     </DetailCard>
   )
 }

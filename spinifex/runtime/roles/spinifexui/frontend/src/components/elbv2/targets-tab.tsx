@@ -9,8 +9,8 @@ import { useState } from "react"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { RegisterTargetsDialog } from "@/components/elbv2/register-targets-dialog"
 import { ErrorBanner } from "@/components/error-banner"
+import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
 import type { TargetInput } from "@/mutations/elbv2"
 import { useDeregisterTargets, useRegisterTargets } from "@/mutations/elbv2"
 import { ec2InstancesQueryOptions } from "@/queries/ec2"
@@ -24,26 +24,6 @@ interface TargetsTabProps {
 }
 
 const HEALTH_POLL_MS = 5000
-
-const HEALTHY_STATES = new Set(["healthy"])
-const UNHEALTHY_STATES = new Set(["unhealthy", "unavailable"])
-const NEUTRAL_STATES = new Set(["initial", "draining"])
-
-function healthChipClass(state: string | undefined): string {
-  if (state && HEALTHY_STATES.has(state)) {
-    return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100"
-  }
-
-  if (state && UNHEALTHY_STATES.has(state)) {
-    return "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100"
-  }
-
-  if (state && NEUTRAL_STATES.has(state)) {
-    return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100"
-  }
-
-  return "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100"
-}
 
 function targetKey(t: TargetDescription): string {
   return `${t.Id ?? ""}:${t.Port ?? ""}`
@@ -184,14 +164,7 @@ export function TargetsTab({
                       {target.AvailabilityZone ?? ""}
                     </td>
                     <td className="px-4 py-2">
-                      <span
-                        className={cn(
-                          "rounded-full px-2 py-0.5 text-xs",
-                          healthChipClass(state),
-                        )}
-                      >
-                        {state ?? "unknown"}
-                      </span>
+                      <StateBadge state={state ?? "unknown"} />
                     </td>
                     <td className="px-4 py-2 text-xs">
                       {desc.TargetHealth?.Reason ?? ""}
@@ -219,14 +192,15 @@ export function TargetsTab({
         </div>
       )}
 
-      <RegisterTargetsDialog
-        defaultPort={defaultPort}
-        instances={vpcInstances}
-        isPending={registerMutation.isPending}
-        onConfirm={handleRegister}
-        onOpenChange={setRegisterOpen}
-        open={registerOpen}
-      />
+      {registerOpen && (
+        <RegisterTargetsDialog
+          defaultPort={defaultPort}
+          instances={vpcInstances}
+          isPending={registerMutation.isPending}
+          onConfirm={handleRegister}
+          onOpenChange={setRegisterOpen}
+        />
+      )}
 
       <DeleteConfirmationDialog
         description={

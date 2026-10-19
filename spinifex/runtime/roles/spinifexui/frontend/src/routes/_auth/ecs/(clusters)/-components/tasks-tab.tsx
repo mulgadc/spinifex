@@ -40,10 +40,7 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
       </div>
 
       {stopTask.isError && (
-        <ErrorBanner
-          error={stopTask.error instanceof Error ? stopTask.error : undefined}
-          msg="Failed to stop task."
-        />
+        <ErrorBanner error={stopTask.error} msg="Failed to stop task." />
       )}
 
       {tasks.length === 0 ? (

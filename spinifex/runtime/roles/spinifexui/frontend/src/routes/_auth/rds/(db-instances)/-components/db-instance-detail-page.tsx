@@ -1,6 +1,6 @@
 import type { DBInstance, Event } from "@aws-sdk/client-rds"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { useNavigate } from "@tanstack/react-router"
 import { Camera, Pencil, Trash2 } from "lucide-react"
 import { useState } from "react"
 
@@ -30,9 +30,7 @@ import {
 } from "@/queries/rds"
 import {
   canDelete,
-  canDeleteSnapshot,
   canReboot,
-  canRestoreSnapshot,
   canSnapshot,
   canStart,
   canStop,
@@ -40,6 +38,7 @@ import {
 } from "@/types/rds"
 
 import { CreateDBSnapshotDialog } from "../../(snapshots)/-components/create-db-snapshot-dialog"
+import { DBSnapshotsTable } from "../../(snapshots)/-components/db-snapshots-table"
 import { DeleteDBSnapshotDialog } from "../../(snapshots)/-components/delete-db-snapshot-dialog"
 import { RdsEventsPanel } from "../../-components/rds-events-panel"
 import { RdsTagsTab } from "../../-components/rds-tags-tab"
@@ -483,88 +482,11 @@ export function DBInstanceDetailPage({ dbInstanceIdentifier }: Props) {
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">Snapshots</h3>
                 {snapshots.length > 0 ? (
-                  <div className="overflow-x-auto rounded-lg border bg-card">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b text-left text-muted-foreground">
-                          <th className="px-4 py-2 font-medium">Identifier</th>
-                          <th className="px-4 py-2 font-medium">Type</th>
-                          <th className="px-4 py-2 font-medium">Status</th>
-                          <th className="px-4 py-2 font-medium">Created</th>
-                          <th className="px-4 py-2 font-medium">
-                            <span className="sr-only">Actions</span>
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {snapshots.map((snapshot) => {
-                          const snapshotId = snapshot.DBSnapshotIdentifier
-
-                          if (!snapshotId) {
-                            return null
-                          }
-
-                          return (
-                            <tr
-                              className="border-b last:border-0"
-                              key={snapshotId}
-                            >
-                              <td className="px-4 py-2 font-medium">
-                                <Link
-                                  className="text-primary hover:underline"
-                                  params={{ id: snapshotId }}
-                                  to="/rds/describe-db-snapshots/$id"
-                                >
-                                  {snapshotId}
-                                </Link>
-                              </td>
-                              <td className="px-4 py-2">
-                                {snapshot.SnapshotType}
-                              </td>
-                              <td className="px-4 py-2">
-                                <StateBadge state={snapshot.Status} />
-                              </td>
-                              <td className="px-4 py-2 font-mono text-xs">
-                                {formatDateTime(snapshot.SnapshotCreateTime)}
-                              </td>
-                              <td className="space-x-2 px-4 py-2 text-right">
-                                <Button
-                                  disabled={
-                                    !canRestoreSnapshot(snapshot.Status)
-                                  }
-                                  onClick={async () => {
-                                    await navigate({
-                                      to: "/rds/restore-db-instance-from-db-snapshot/$id",
-                                      params: { id: snapshotId },
-                                    })
-                                  }}
-                                  size="sm"
-                                  variant="outline"
-                                >
-                                  Restore
-                                </Button>
-                                <Button
-                                  disabled={
-                                    !canDeleteSnapshot(
-                                      snapshot.Status,
-                                      snapshot.SnapshotType,
-                                    )
-                                  }
-                                  onClick={() => {
-                                    setDeleteSnapshotTarget(snapshotId)
-                                  }}
-                                  size="sm"
-                                  variant="destructive"
-                                >
-                                  Delete
-                                </Button>
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                  <DBSnapshotsTable
+                    onDelete={setDeleteSnapshotTarget}
+                    showSourceColumns={false}
+                    snapshots={snapshots}
+                  />
                 ) : (
                   <p className="text-muted-foreground">
                     No snapshots of this instance.

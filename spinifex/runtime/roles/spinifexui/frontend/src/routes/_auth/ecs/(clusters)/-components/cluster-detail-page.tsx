@@ -75,11 +75,7 @@ export function ClusterDetailPage({ clusterName }: { clusterName: string }) {
 
       {deleteCluster.isError && (
         <ErrorBanner
-          error={
-            deleteCluster.error instanceof Error
-              ? deleteCluster.error
-              : undefined
-          }
+          error={deleteCluster.error}
           msg="Failed to delete cluster."
         />
       )}

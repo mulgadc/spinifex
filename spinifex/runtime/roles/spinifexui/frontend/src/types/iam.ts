@@ -100,13 +100,10 @@ export interface UpdateAccessKeyParams {
   status: "Active" | "Inactive"
 }
 
-export interface UserPolicyParams {
-  userName: string
-  policyArn: string
-}
+export type IamPrincipalKind = "user" | "role" | "group"
 
-export interface RolePolicyParams {
-  roleName: string
+export interface PrincipalPolicyParams {
+  name: string
   policyArn: string
 }
 
@@ -118,11 +115,6 @@ export interface AddRoleToProfileParams {
 export interface AssociateInstanceProfileParams {
   instanceId: string
   instanceProfileName: string
-}
-
-export interface GroupPolicyParams {
-  groupName: string
-  policyArn: string
 }
 
 export interface GroupMembershipParams {

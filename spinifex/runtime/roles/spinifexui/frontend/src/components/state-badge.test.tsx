@@ -59,6 +59,17 @@ describe("StateBadge", () => {
     expect(screen.getByText(state).className).toContain("bg-yellow-100")
   })
 
+  it.each([
+    ["healthy", "bg-green-100"],
+    ["unhealthy", "bg-red-100"],
+    ["unavailable", "bg-red-100"],
+    ["initial", "bg-yellow-100"],
+    ["draining", "bg-yellow-100"],
+  ])("renders ELBv2 target health '%s' as %s", (state, colour) => {
+    render(<StateBadge state={state} />)
+    expect(screen.getByText(state).className).toContain(colour)
+  })
+
   it("renders gray for terminated state", () => {
     render(<StateBadge state="terminated" />)
     const badge = screen.getByText("terminated")

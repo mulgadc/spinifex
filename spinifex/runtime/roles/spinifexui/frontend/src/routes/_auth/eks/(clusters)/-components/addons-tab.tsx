@@ -222,7 +222,6 @@ function UpdateAddonDialog({
   addonName,
   current,
   versions,
-  open,
   onOpenChange,
 }: {
   clusterName: string
@@ -233,7 +232,6 @@ function UpdateAddonDialog({
     configurationValues?: string
   }
   versions: string[]
-  open: boolean
   onOpenChange: (open: boolean) => void
 }) {
   const updateAddon = useUpdateAddon()
@@ -241,20 +239,6 @@ function UpdateAddonDialog({
   const [role, setRole] = useState(current.serviceAccountRoleArn ?? "")
   const [config, setConfig] = useState(current.configurationValues ?? "")
   const [error, setError] = useState<string | undefined>()
-
-  // Seed the fields from the current add-on config each time the dialog opens.
-  const [wasOpen, setWasOpen] = useState(open)
-
-  if (open !== wasOpen) {
-    setWasOpen(open)
-
-    if (open) {
-      setVersion(current.addonVersion ?? "")
-      setRole(current.serviceAccountRoleArn ?? "")
-      setConfig(current.configurationValues ?? "")
-      setError(undefined)
-    }
-  }
 
   const handleConfirm = () => {
     const result = addonConfigurationSchema.safeParse(config)
@@ -285,7 +269,7 @@ function UpdateAddonDialog({
   }
 
   return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
+    <AlertDialog onOpenChange={onOpenChange} open>
       <AlertDialogContent className="max-h-[85vh] overflow-y-auto">
         <AlertDialogHeader>
           <AlertDialogTitle>Update {addonName}</AlertDialogTitle>
@@ -436,18 +420,19 @@ function AddonRow({
         )}
       </DetailCard.Content>
 
-      <UpdateAddonDialog
-        addonName={addonName}
-        clusterName={clusterName}
-        current={{
-          addonVersion: addon?.addonVersion,
-          serviceAccountRoleArn: addon?.serviceAccountRoleArn,
-          configurationValues: addon?.configurationValues,
-        }}
-        onOpenChange={setShowUpdate}
-        open={showUpdate}
-        versions={versions}
-      />
+      {showUpdate && (
+        <UpdateAddonDialog
+          addonName={addonName}
+          clusterName={clusterName}
+          current={{
+            addonVersion: addon?.addonVersion,
+            serviceAccountRoleArn: addon?.serviceAccountRoleArn,
+            configurationValues: addon?.configurationValues,
+          }}
+          onOpenChange={setShowUpdate}
+          versions={versions}
+        />
+      )}
     </DetailCard>
   )
 }

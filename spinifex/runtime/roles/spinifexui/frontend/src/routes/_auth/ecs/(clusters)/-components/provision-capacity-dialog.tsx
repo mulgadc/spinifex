@@ -194,9 +194,7 @@ export function ProvisionCapacityDialog({
 
         {provision.error && (
           <ErrorBanner
-            error={
-              provision.error instanceof Error ? provision.error : undefined
-            }
+            error={provision.error}
             msg="Failed to provision capacity."
           />
         )}

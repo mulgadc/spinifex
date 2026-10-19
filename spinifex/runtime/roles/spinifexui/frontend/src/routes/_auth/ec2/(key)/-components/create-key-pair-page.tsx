@@ -12,6 +12,8 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -106,12 +108,7 @@ export function CreateKeyPairPage() {
             control={control}
             name="keyType"
             render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value}
-              >
+              <Select onValueChange={field.onChange} value={field.value}>
                 <SelectTrigger
                   aria-invalid={!!errors.keyType}
                   className="w-full"
@@ -162,18 +159,16 @@ export function CreateKeyPairPage() {
 function buildCreateKeyPairCommands(
   values: DeepPartialSkipArrayKey<CreateKeyPairData>,
 ): CliCommand[] {
-  const keyName = values.keyName ?? ""
-  const keyType = values.keyType ?? "rsa"
-
   return [
     {
       label: "Create Key Pair",
       parts: [
         { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-key-pair" },
-        { type: "flag", value: " --key-name" },
-        { type: "value", value: ` ${keyName || "<KeyName>"}` },
-        { type: "flag", value: " --key-type" },
-        { type: "value", value: ` ${keyType}` },
+        ...commandFlag(
+          "--key-name",
+          cliPlaceholder(values.keyName ?? "", "KeyName"),
+        ),
+        ...commandFlag("--key-type", values.keyType ?? "rsa"),
       ],
     },
   ]

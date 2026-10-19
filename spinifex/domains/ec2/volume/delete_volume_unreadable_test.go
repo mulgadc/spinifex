@@ -171,3 +171,41 @@ func TestDeleteVolumeOnTerminate_DeleteReadFailureIsNotSuccess(t *testing.T) {
 	require.NoError(t, provErr)
 	require.NotNil(t, provVol, "the provider's data must survive a failed delete")
 }
+
+// TestForceDetachVolume_UnreadableDocumentIsInternalError: an attached volume
+// whose document is present but unreadable must answer InternalError and keep
+// its attachment; absence and another account's volume stay NotFound.
+func TestForceDetachVolume_UnreadableDocumentIsInternalError(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", memory)
+
+	volumeID := "vol-forcedetach000"
+	createVolumeInStoreWithMeta(t, svc, memory, volumeID, ebsmetadata.Volume{
+		VolumeID: volumeID, CapacityGiB: 10, State: "in-use", AttachedInstance: "i-0123456789abcdef0",
+	})
+
+	failing := &getFailingStore{MemoryObjectStore: memory, failKey: metadataKey(t, volumeID)}
+	svc.store = failing
+	svc.metadata = ebsmetadata.NewStore(failing, "test-bucket")
+
+	_, err := svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
+		VolumeId: aws.String(volumeID),
+	}, testVolAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, awserrors.ValidErrorCodeFromError(err))
+
+	meta, getErr := ebsmetadata.NewStore(memory, "test-bucket").GetVolume(context.Background(), testVolAccountID, volumeID)
+	require.NoError(t, getErr)
+	assert.Equal(t, "in-use", meta.State, "a failed force-detach must not clear the attachment")
+	assert.Equal(t, "i-0123456789abcdef0", meta.AttachedInstance)
+
+	_, err = svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
+		VolumeId: aws.String("vol-doesnotexist00"),
+	}, testVolAccountID)
+	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, awserrors.ValidErrorCodeFromError(err))
+
+	_, err = svc.ForceDetachVolume(context.Background(), &ec2.DetachVolumeInput{
+		VolumeId: aws.String(volumeID),
+	}, "999999999999")
+	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, awserrors.ValidErrorCodeFromError(err))
+}

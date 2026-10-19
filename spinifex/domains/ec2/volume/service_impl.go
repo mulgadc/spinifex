@@ -1056,7 +1056,10 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 
 	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "get volume metadata %s: %v", volumeID, err)
 	}
 	if meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
@@ -1091,10 +1094,15 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 		return nil, err
 	}
 
-	// AWS-faithful: an absent volume returns InvalidVolume.NotFound.
+	// AWS-faithful: an absent volume returns InvalidVolume.NotFound. Any other
+	// read failure means the document's state is unknown, so it must not be
+	// reported or treated as already deleted.
 	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "get volume metadata %s: %v", volumeID, err)
 	}
 	if meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)

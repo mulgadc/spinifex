@@ -1,9 +1,9 @@
-import type { Address } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
 import { ec2AddressesQueryOptions } from "@/queries/ec2"
@@ -43,37 +43,27 @@ function Addresses() {
         title="Elastic IPs"
       />
 
-      {addresses.length > 0 ? (
-        <div className="space-y-4">
-          {addresses.map((addr: Address) => {
-            if (!addr.AllocationId) {
-              return null
-            }
+      <ResourceList
+        empty="No Elastic IPs found."
+        getKey={(addr) => addr.AllocationId}
+        items={addresses}
+        renderItem={(addr, id) => {
+          const name = getNameTag(addr.Tags)
 
-            const name = getNameTag(addr.Tags)
+          const subtitle = addr.AssociationId
+            ? `${addr.PublicIp} • associated`
+            : `${addr.PublicIp} • available`
 
-            const subtitle = addr.AssociationId
-              ? `${addr.PublicIp} • associated`
-              : `${addr.PublicIp} • available`
-
-            return (
-              <ListCard
-                key={addr.AllocationId}
-                params={{ id: addr.AllocationId }}
-                subtitle={subtitle}
-                title={
-                  name
-                    ? `${addr.AllocationId} (${name})`
-                    : (addr.AllocationId ?? "")
-                }
-                to="/ec2/describe-addresses/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No Elastic IPs found.</p>
-      )}
+          return (
+            <ListCard
+              params={{ id }}
+              subtitle={subtitle}
+              title={name ? `${id} (${name})` : id}
+              to="/ec2/describe-addresses/$id"
+            />
+          )
+        }}
+      />
     </>
   )
 }

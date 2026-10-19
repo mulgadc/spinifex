@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn()
+import { renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockRuntimeClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn())
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import {
   buildConverseInput,
@@ -17,25 +19,6 @@ import {
 } from "./converse"
 
 const USAGE = { inputTokens: 12, outputTokens: 34, totalTokens: 46 }
-
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
 
 describe("buildConverseInput", () => {
   it("builds the request from messages, system and inferenceConfig", () => {
@@ -178,12 +161,11 @@ describe("isWarmingUpError", () => {
 
 describe("useConverse", () => {
   it("sends ConverseCommand via the runtime client", async () => {
-    createQueryClient()
     mockSend.mockResolvedValue({
       output: { message: { role: "assistant", content: [{ text: "hi" }] } },
       usage: USAGE,
     })
-    const { result } = renderHook(() => useConverse(), { wrapper })
+    const { result } = renderMutationHook(() => useConverse())
 
     result.current.mutate({
       modelId: "m1",

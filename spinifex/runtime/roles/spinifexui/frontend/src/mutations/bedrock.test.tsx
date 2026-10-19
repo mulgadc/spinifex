@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { guardrailsQueryOptions } from "@/queries/bedrock"
 import {
@@ -22,25 +24,6 @@ import {
   useUpdateGuardrail,
 } from "./bedrock"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 const FORM: GuardrailFormData = {
   ...EMPTY_GUARDRAIL_FORM_DEFAULTS,
   name: "content-safety",
@@ -50,8 +33,7 @@ const FORM: GuardrailFormData = {
 
 describe("useCreateGuardrail", () => {
   it("sends CreateGuardrailCommand with the form values", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateGuardrail(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateGuardrail())
 
     result.current.mutate(FORM)
 
@@ -65,12 +47,16 @@ describe("useCreateGuardrail", () => {
   })
 
   it("marks the cached guardrail list stale on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(guardrailsQueryOptions.queryKey, {
       guardrails: [],
       $metadata: {},
     })
-    const { result } = renderHook(() => useCreateGuardrail(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateGuardrail(),
+      queryClient,
+    )
 
     result.current.mutate(FORM)
 
@@ -85,8 +71,7 @@ describe("useCreateGuardrail", () => {
 
 describe("useUpdateGuardrail", () => {
   it("sends UpdateGuardrailCommand with the identifier and form values", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useUpdateGuardrail(), { wrapper })
+    const { result } = renderMutationHook(() => useUpdateGuardrail())
 
     result.current.mutate({ guardrailIdentifier: "gr-1", data: FORM })
 
@@ -99,9 +84,13 @@ describe("useUpdateGuardrail", () => {
   })
 
   it("invalidates the list and the single guardrail on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useUpdateGuardrail(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useUpdateGuardrail(),
+      queryClient,
+    )
 
     result.current.mutate({ guardrailIdentifier: "gr-1", data: FORM })
 
@@ -117,8 +106,7 @@ describe("useUpdateGuardrail", () => {
 
 describe("useDeleteGuardrail", () => {
   it("sends DeleteGuardrailCommand with the identifier", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteGuardrail(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteGuardrail())
 
     result.current.mutate("gr-1")
 
@@ -131,9 +119,13 @@ describe("useDeleteGuardrail", () => {
   })
 
   it("invalidates the list and the single guardrail on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeleteGuardrail(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteGuardrail(),
+      queryClient,
+    )
 
     result.current.mutate("gr-1")
 
@@ -149,11 +141,7 @@ describe("useDeleteGuardrail", () => {
 
 describe("useCreateGuardrailVersion", () => {
   it("sends CreateGuardrailVersionCommand with the identifier and description", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useCreateGuardrailVersion(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useCreateGuardrailVersion())
 
     result.current.mutate({
       guardrailIdentifier: "gr-1",
@@ -170,12 +158,13 @@ describe("useCreateGuardrailVersion", () => {
   })
 
   it("invalidates the versions for that guardrail on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
 
-    const { result } = renderHook(() => useCreateGuardrailVersion(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useCreateGuardrailVersion(),
+      queryClient,
+    )
 
     result.current.mutate({ guardrailIdentifier: "gr-1" })
 

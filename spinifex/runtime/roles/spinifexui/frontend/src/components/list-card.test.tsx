@@ -3,21 +3,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import { ListCard } from "./list-card"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({
-    children,
-    className,
-    ...rest
-  }: {
-    children: React.ReactNode
-    className?: string
-    to?: string
-  }) => (
-    <a className={className} href={rest.to}>
-      {children}
-    </a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 describe("ListCard", () => {
   it("renders the title", () => {

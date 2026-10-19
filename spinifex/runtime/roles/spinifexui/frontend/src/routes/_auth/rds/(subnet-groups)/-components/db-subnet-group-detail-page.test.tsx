@@ -2,41 +2,20 @@ import type { DBSubnetGroup } from "@aws-sdk/client-rds"
 import { screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const mockSend = vi.fn().mockResolvedValue({})
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", () => ({
-  getRdsClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => vi.fn(),
-    Link: ({
-      children,
-      to,
-      params,
-    }: {
-      children: React.ReactNode
-      to?: string
-      params?: Record<string, string>
-    }) => {
-      let href = to ?? ""
-
-      for (const [key, value] of Object.entries(params ?? {})) {
-        href = href.replace(`$${key}`, value)
-      }
-
-      return <a href={href}>{children}</a>
-    },
-  }
+  return await mockRouter(importOriginal)
 })
 
 import { DBSubnetGroupDetailPage } from "./db-subnet-group-detail-page"

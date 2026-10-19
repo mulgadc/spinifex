@@ -2,10 +2,7 @@ import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { sdk } = vi.hoisted(() => {
   interface SdkCommand {
@@ -19,26 +16,16 @@ const { sdk } = vi.hoisted(() => {
   }
 })
 
-vi.mock("@/lib/awsClient", () => ({
-  getEc2Client: () => ({ send: sdk.send }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(sdk.send)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    createFileRoute:
-      () =>
-      <TOptions,>(options: TOptions) => ({
-        options,
-        useParams: () => ({ id: "sg-1" }),
-      }),
-    useNavigate: () => vi.fn(),
-    Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return await mockRouter(importOriginal, { params: { id: "sg-1" } })
 })
 
 import { Route } from "./$id"

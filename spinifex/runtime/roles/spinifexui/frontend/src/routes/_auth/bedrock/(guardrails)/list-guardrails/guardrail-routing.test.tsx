@@ -15,17 +15,20 @@ import { render, screen, waitFor } from "@testing-library/react"
 import { act } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockBedrockSend = vi.fn()
+const mockBedrockSend = vi.hoisted(() => vi.fn())
 
 const mockStsSend = vi.fn().mockResolvedValue({
   Account: "000000000002",
   Arn: "arn:aws:iam::000000000002:user/test",
 })
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockClient: () => ({ send: mockBedrockSend }),
-  getBedrockRuntimeClient: () => ({ send: vi.fn().mockResolvedValue({}) }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockBedrockSend, {
+    getBedrockRuntimeClient: vi.fn().mockResolvedValue({}),
+  })
+})
 
 vi.mock("@/lib/sts", () => ({
   getStsClient: () => ({ send: mockStsSend }),
@@ -58,7 +61,7 @@ vi.mock("@/lib/cluster-config", async (importOriginal) => {
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
-import { createTestQueryClient } from "@/test/elbv2-integration"
+import { createTestQueryClient } from "@/test/render"
 
 import { routeTree } from "../../../../../routeTree.gen"
 

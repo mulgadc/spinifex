@@ -1,0 +1,1 @@
+import{H as e,z as t}from"./httpRequest-DQZd8wR4.js";import{i as n}from"./link-Cq0Avu15.js";var r=e(t(),1);function i(e){let t=n();return r.useCallback(n=>t.navigate({...n,from:n.from??e?.from}),[e?.from,t])}export{i as t};

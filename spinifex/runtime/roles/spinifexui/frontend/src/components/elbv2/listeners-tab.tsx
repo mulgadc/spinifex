@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { arnResourceId } from "@/lib/utils"
 import {
   useCreateListener,
   useDeleteListener,
@@ -83,14 +84,14 @@ function formatTls(listener: Listener): string {
     return "—"
   }
 
-  const certId = listener.Certificates?.[0]?.CertificateArn?.split("/").pop()
+  const certId = arnResourceId(listener.Certificates?.[0]?.CertificateArn)
   const policy = listener.SslPolicy
 
   if (certId && policy) {
     return `${policy} · ${certId}`
   }
 
-  return policy ?? certId ?? "—"
+  return policy ?? (certId || "—")
 }
 
 export function ListenersTab({
@@ -323,10 +324,11 @@ export function ListenersTab({
 
       {/* Mounted only while open so every session starts from blank defaults. */}
       {addOpen && (
-        <AddListenerDialog
+        <ListenerDialog
           certificates={certificates}
           isPending={createMutation.isPending}
           lbType={lbType}
+          mode="add"
           onOpenChange={setAddOpen}
           onSubmit={handleCreate}
           open={addOpen}
@@ -336,16 +338,19 @@ export function ListenersTab({
         />
       )}
 
-      <EditListenerDialog
+      <ListenerDialog
         certificates={certificates}
+        initialListener={editTarget}
         isPending={modifyMutation.isPending}
-        listener={editTarget}
+        lbType={lbType}
+        mode="edit"
         onOpenChange={(open) => {
           if (!open) {
             setEditTarget(undefined)
           }
         }}
         onSubmit={handleEdit}
+        open={editTarget !== undefined}
         protocols={protocols}
         sslPolicies={sslPolicies}
         targetGroups={vpcTgs}
@@ -371,7 +376,7 @@ export function ListenersTab({
   )
 }
 
-interface AddListenerDialogProps {
+interface ListenerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   lbType: LbType
@@ -381,9 +386,11 @@ interface AddListenerDialogProps {
   sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
   isPending: boolean
   onSubmit: (data: CreateListenerFormData) => void
+  mode: "add" | "edit"
+  initialListener?: Listener
 }
 
-function AddListenerDialog({
+function ListenerDialog({
   open,
   onOpenChange,
   lbType,
@@ -393,84 +400,17 @@ function AddListenerDialog({
   sslPolicies,
   isPending,
   onSubmit,
-}: AddListenerDialogProps) {
+  mode,
+  initialListener,
+}: ListenerDialogProps) {
   const form = useForm<CreateListenerFormData>({
     resolver: zodResolver(createListenerSchema),
     defaultValues: listenerDefaults(lbType),
-  })
-
-  const handleConfirm = form.handleSubmit(onSubmit)
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent width="md">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Add listener</AlertDialogTitle>
-          <AlertDialogDescription>
-            Listeners forward incoming traffic to a default target group.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        <form
-          className="min-w-0 space-y-4"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void handleConfirm()
-          }}
-        >
-          <ListenerForm
-            certificates={certificates}
-            form={form}
-            protocols={protocols}
-            sslPolicies={sslPolicies}
-            targetGroups={targetGroups}
-          />
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={isPending} onClick={handleConfirm}>
-            {isPending ? "Adding\u2026" : "Add listener"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-interface EditListenerDialogProps {
-  listener: Listener | undefined
-  onOpenChange: (open: boolean) => void
-  protocols: readonly ListenerProtocolValue[]
-  targetGroups: React.ComponentProps<typeof ListenerForm>["targetGroups"]
-  certificates: React.ComponentProps<typeof ListenerForm>["certificates"]
-  sslPolicies: React.ComponentProps<typeof ListenerForm>["sslPolicies"]
-  isPending: boolean
-  onSubmit: (data: CreateListenerFormData) => void
-}
-
-function EditListenerDialog({
-  listener,
-  onOpenChange,
-  protocols,
-  targetGroups,
-  certificates,
-  sslPolicies,
-  isPending,
-  onSubmit,
-}: EditListenerDialogProps) {
-  const open = listener !== undefined
-
-  const form = useForm<CreateListenerFormData>({
-    resolver: zodResolver(createListenerSchema),
-    defaultValues: {
-      protocol: "HTTP",
-      port: 80,
-      defaultTargetGroupArn: "",
-    },
     // Re-seeds the form whenever a different listener is selected. Left
     // undefined while closing so the fields do not visibly reset mid-animation.
-    values: listener ? listenerFormValues(listener, protocols) : undefined,
+    values: initialListener
+      ? listenerFormValues(initialListener, protocols)
+      : undefined,
   })
 
   const handleConfirm = form.handleSubmit(onSubmit)
@@ -479,10 +419,13 @@ function EditListenerDialog({
     <AlertDialog onOpenChange={onOpenChange} open={open}>
       <AlertDialogContent width="md">
         <AlertDialogHeader>
-          <AlertDialogTitle>Edit listener</AlertDialogTitle>
+          <AlertDialogTitle>
+            {mode === "add" ? "Add listener" : "Edit listener"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            Update port, protocol, or default target group. Changes apply
-            without dropping the listener.
+            {mode === "add"
+              ? "Listeners forward incoming traffic to a default target group."
+              : "Update port, protocol, or default target group. Changes apply without dropping the listener."}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -505,10 +448,18 @@ function EditListenerDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction disabled={isPending} onClick={handleConfirm}>
-            {isPending ? "Saving\u2026" : "Save changes"}
+            {actionLabel(mode, isPending)}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
   )
+}
+
+function actionLabel(mode: "add" | "edit", isPending: boolean): string {
+  if (isPending) {
+    return mode === "add" ? "Adding…" : "Saving…"
+  }
+
+  return mode === "add" ? "Add listener" : "Save changes"
 }

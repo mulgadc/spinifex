@@ -1,9 +1,9 @@
-import type { PlacementGroup } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { ec2PlacementGroupsQueryOptions } from "@/queries/ec2"
@@ -43,28 +43,20 @@ function PlacementGroups() {
         title="Placement Groups"
       />
 
-      {placementGroups.length > 0 ? (
-        <div className="space-y-4">
-          {placementGroups.map((pg: PlacementGroup) => {
-            if (!pg.GroupId) {
-              return null
-            }
-
-            return (
-              <ListCard
-                badge={<StateBadge state={pg.State} />}
-                key={pg.GroupId}
-                params={{ id: pg.GroupId }}
-                subtitle={`${pg.Strategy} \u2022 ${pg.GroupId}`}
-                title={pg.GroupName ?? pg.GroupId}
-                to="/ec2/describe-placement-groups/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No placement groups found.</p>
-      )}
+      <ResourceList
+        empty="No placement groups found."
+        getKey={(pg) => pg.GroupId}
+        items={placementGroups}
+        renderItem={(pg, id) => (
+          <ListCard
+            badge={<StateBadge state={pg.State} />}
+            params={{ id }}
+            subtitle={`${pg.Strategy} \u2022 ${id}`}
+            title={pg.GroupName ?? id}
+            to="/ec2/describe-placement-groups/$id"
+          />
+        )}
+      />
     </>
   )
 }

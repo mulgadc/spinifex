@@ -5,13 +5,11 @@ import { SidebarProvider } from "@/components/ui/sidebar"
 
 import { SidebarLayout } from "./sidebar-layout"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
-    <a href={to}>{children}</a>
-  ),
-  useLocation: () => "/",
-  useNavigate: () => vi.fn(),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return { ...(await mockRouter(importOriginal)), useLocation: () => "/" }
+})
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ clear: vi.fn() }),

@@ -1,10 +1,10 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Trash2 } from "lucide-react"
+import { createFileRoute } from "@tanstack/react-router"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -52,13 +52,11 @@ export const Route = createFileRoute(
 
 function AddressDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2AddressQueryOptions(id))
   const { data: instancesData } = useSuspenseQuery(ec2InstancesQueryOptions)
   const associateMutation = useAssociateAddress()
   const disassociateMutation = useDisassociateAddress()
   const releaseMutation = useReleaseAddress()
-  const [showReleaseDialog, setShowReleaseDialog] = useState(false)
   const [showDisassociateDialog, setShowDisassociateDialog] = useState(false)
   const [selectedInstanceId, setSelectedInstanceId] = useState("")
 
@@ -68,15 +66,6 @@ function AddressDetail() {
     instancesData.Reservations?.flatMap((r) => r.Instances ?? []).filter(
       (i) => i.State?.Name === "running" || i.State?.Name === "stopped",
     ) ?? []
-
-  const handleRelease = async () => {
-    try {
-      await releaseMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-addresses" })
-    } finally {
-      setShowReleaseDialog(false)
-    }
-  }
 
   const handleAssociate = async () => {
     if (!selectedInstanceId) {
@@ -119,15 +108,10 @@ function AddressDetail() {
     <>
       <BackLink to="/ec2/describe-addresses">Back to Elastic IPs</BackLink>
 
-      {(releaseMutation.error ??
-        associateMutation.error ??
-        disassociateMutation.error) && (
+      {(associateMutation.error ?? disassociateMutation.error) && (
         <ErrorBanner
           error={
-            releaseMutation.error ??
-            associateMutation.error ??
-            disassociateMutation.error ??
-            undefined
+            associateMutation.error ?? disassociateMutation.error ?? undefined
           }
           msg="Elastic IP action failed"
         />
@@ -136,17 +120,15 @@ function AddressDetail() {
       <div className="space-y-6">
         <PageHeading
           actions={
-            <Button
-              disabled={isAssociated || releaseMutation.isPending}
-              onClick={() => {
-                setShowReleaseDialog(true)
-              }}
-              size="sm"
-              variant="destructive"
-            >
-              <Trash2 className="size-4" />
-              Release
-            </Button>
+            <DeleteResourceButton
+              description={`Are you sure you want to release the Elastic IP "${address.AllocationId}" (${address.PublicIp})? This action cannot be undone.`}
+              disabled={isAssociated}
+              id={id}
+              label="Release"
+              mutation={releaseMutation}
+              title="Release Elastic IP"
+              to="/ec2/describe-addresses"
+            />
           }
           subtitle="Elastic IP Details"
           title={
@@ -228,15 +210,6 @@ function AddressDetail() {
           </DetailCard.Content>
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to release the Elastic IP "${address.AllocationId}" (${address.PublicIp})? This action cannot be undone.`}
-        isPending={releaseMutation.isPending}
-        onConfirm={handleRelease}
-        onOpenChange={setShowReleaseDialog}
-        open={showReleaseDialog}
-        title="Release Elastic IP"
-      />
 
       <DeleteConfirmationDialog
         confirmLabel="Disassociate"

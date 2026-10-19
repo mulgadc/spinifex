@@ -1,6 +1,5 @@
+import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { useDeleteDBSubnetGroup } from "@/mutations/rds"
-
-import { RdsDeleteDialog } from "../../-components/rds-delete-dialog"
 
 interface DeleteDBSubnetGroupDialogProps {
   open: boolean
@@ -16,7 +15,7 @@ export function DeleteDBSubnetGroupDialog({
   onDeleted,
 }: DeleteDBSubnetGroupDialogProps) {
   return (
-    <RdsDeleteDialog
+    <ResourceDeleteDialog
       description={
         <>
           This deletes the DB subnet group &quot;{dbSubnetGroupName}&quot;. It

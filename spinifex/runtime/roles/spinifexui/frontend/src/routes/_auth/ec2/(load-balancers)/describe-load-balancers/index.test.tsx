@@ -2,74 +2,28 @@ import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const { routerState, sdk } = vi.hoisted(() => {
-  interface Command {
-    readonly constructor: { name: string }
-    readonly input: unknown
-  }
-
-  type SdkHandler = (input: never) => unknown
-
-  const handlers = new Map<string, SdkHandler>()
-
-  const send = vi.fn(async (command: Command): Promise<unknown> => {
-    const handler = handlers.get(command.constructor.name)
-
-    if (!handler) {
-      throw new Error(
-        `No handler registered for SDK command ${command.constructor.name}`,
-      )
-    }
-
-    return handler(command.input as never)
-  })
-
-  return {
-    routerState: { navigate: vi.fn() },
-    sdk: {
-      send,
-      // Handlers are keyed by command name, so each one declares the input type
-      // of its own command; the shared registry cannot name them all.
-      setHandler: (name: string, handler: SdkHandler) => {
-        handlers.set(name, handler)
-      },
-      reset: () => {
-        handlers.clear()
-      },
-    },
-  }
-})
-
-vi.mock("@/lib/awsClient", () => ({
-  getElbv2Client: () => ({ send: sdk.send }),
-  getEc2Client: () => ({ send: sdk.send }),
+const { routerState } = vi.hoisted(() => ({
+  routerState: { navigate: vi.fn() },
 }))
 
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+const sdk = await vi.hoisted(async () => {
+  const { createFakeSdk } = await import("@/test/fake-sdk")
 
-  return {
-    ...actual,
-    useNavigate: () => routerState.navigate,
-    Link: ({
-      children,
-      to,
-      className,
-    }: {
-      children: React.ReactNode
-      to?: string
-      className?: string
-    }) => (
-      <a className={className} href={to}>
-        {children}
-      </a>
-    ),
-  }
+  return createFakeSdk()
+})
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(sdk.send)
+})
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal, { navigate: routerState.navigate })
 })
 
 import { DescribeLoadBalancersPage } from "../-components/describe-load-balancers-page"

@@ -6,7 +6,7 @@ import {
   isValidCidr,
   resolveSubnetCidrs,
 } from "@/lib/subnet-calculator"
-import { tagSchema } from "@/types/elbv2"
+import { tagSchema } from "@/types/tags"
 
 const CIDR_REGEX = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/
 

@@ -1,16 +1,12 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Trash2 } from "lucide-react"
-import { useState } from "react"
+import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
-import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
 import { useDeletePlacementGroup } from "@/mutations/ec2"
 import {
   ec2InstancesQueryOptions,
@@ -44,11 +40,9 @@ export const Route = createFileRoute(
 
 function PlacementGroupDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2PlacementGroupQueryOptions(id))
   const { data: instancesData } = useSuspenseQuery(ec2InstancesQueryOptions)
   const deleteMutation = useDeletePlacementGroup()
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   const pg = data.PlacementGroups?.[0]
 
@@ -56,19 +50,6 @@ function PlacementGroupDetail() {
     instancesData.Reservations?.flatMap((r) => r.Instances ?? []).filter(
       (inst) => inst.Placement?.GroupName === pg?.GroupName,
     ) ?? []
-
-  const handleDelete = async () => {
-    if (!pg?.GroupName) {
-      return
-    }
-
-    try {
-      await deleteMutation.mutateAsync(pg.GroupName)
-      navigate({ to: "/ec2/describe-placement-groups" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
 
   if (!pg?.GroupId) {
     return (
@@ -87,27 +68,18 @@ function PlacementGroupDetail() {
         Back to placement groups
       </BackLink>
 
-      {deleteMutation.error && (
-        <ErrorBanner
-          error={deleteMutation.error}
-          msg="Failed to delete placement group"
-        />
-      )}
-
       <div className="space-y-6">
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
-                onClick={() => {
-                  setShowDeleteDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the placement group "${pg.GroupName}"? The group must have no running instances.`}
+                disabled={!pg.GroupName}
+                id={pg.GroupName ?? ""}
+                mutation={deleteMutation}
+                title="Delete Placement Group"
+                to="/ec2/describe-placement-groups"
+              />
               <StateBadge state={pg.State} />
             </div>
           }
@@ -162,15 +134,6 @@ function PlacementGroupDetail() {
           )}
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the placement group "${pg.GroupName}"? The group must have no running instances.`}
-        isPending={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete Placement Group"
-      />
     </>
   )
 }

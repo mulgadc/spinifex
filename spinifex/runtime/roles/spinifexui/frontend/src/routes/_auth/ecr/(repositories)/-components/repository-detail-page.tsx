@@ -4,16 +4,7 @@ import { Link } from "@tanstack/react-router"
 import { useState } from "react"
 
 import { PageHeading } from "@/components/page-heading"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import { formatDateTime, formatSize } from "@/lib/utils"
@@ -49,22 +40,6 @@ export function RepositoryDetailPage({
   )
 
   const images = imagesData.imageDetails ?? []
-
-  async function handleDeleteImage() {
-    if (!deleteTarget) {
-      return
-    }
-
-    try {
-      await deleteImage.mutateAsync({
-        repositoryName,
-        imageIds: [{ imageDigest: deleteTarget }],
-      })
-      setDeleteTarget(null)
-    } catch {
-      // error shown via deleteImage.error
-    }
-  }
 
   return (
     <>
@@ -173,41 +148,21 @@ export function RepositoryDetailPage({
         </TabsPanel>
       </Tabs>
 
-      <AlertDialog
+      <ResourceDeleteDialog
+        description="This permanently deletes the image manifest and any tags pointing at it. This cannot be undone."
+        identifier={{
+          repositoryName,
+          imageIds: [{ imageDigest: deleteTarget ?? "" }],
+        }}
+        mutation={deleteImage}
         onOpenChange={(open) => {
           if (!open) {
             setDeleteTarget(null)
           }
         }}
         open={deleteTarget !== null}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete image?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This permanently deletes the image manifest and any tags pointing
-              at it. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {deleteImage.error && (
-            <p className="text-sm text-destructive">
-              {deleteImage.error.message}
-            </p>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={deleteImage.isPending}
-              onClick={(e) => {
-                e.preventDefault()
-                void handleDeleteImage()
-              }}
-            >
-              {deleteImage.isPending ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title="Delete image?"
+      />
     </>
   )
 }

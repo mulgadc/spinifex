@@ -1,8 +1,8 @@
 import type { Subnet } from "@aws-sdk/client-ec2"
 import { useState } from "react"
 
-import { Button } from "@/components/ui/button"
-import { getNameTag } from "@/lib/utils"
+import { EditorShell } from "@/components/editor-shell"
+import { getNameTag, sameSet } from "@/lib/utils"
 
 interface SubnetsEditorProps {
   // Subnets in the load balancer's VPC, selectable for attachment.
@@ -13,16 +13,6 @@ interface SubnetsEditorProps {
   isPending: boolean
   error?: Error | null
   isSuccess?: boolean
-}
-
-function sameSet(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) {
-    return false
-  }
-
-  const setB = new Set(b)
-
-  return a.every((id) => setB.has(id))
 }
 
 function subnetLabel(subnet: Subnet): string {
@@ -60,90 +50,58 @@ export function SubnetsEditor({
   const selectedIds = new Set(selected)
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-
-        if (!dirty || isEmpty) {
-          return
-        }
-
+    <EditorShell
+      dirty={dirty}
+      error={error}
+      errorMsg="Failed to update subnets"
+      invalid={isEmpty}
+      isPending={isPending}
+      isSuccess={isSuccess}
+      notice={
+        <div
+          className="mb-4 rounded-md border border-warning bg-warning/10 p-3 text-sm text-warning-foreground"
+          role="note"
+        >
+          Applying a subnet change re-homes the load balancer by relaunching its
+          underlying system VM. Expect a brief data-plane interruption while it
+          restarts.
+        </div>
+      }
+      onReset={handleReset}
+      onSave={() => {
         onSubmit(selected)
       }}
+      successMsg="Subnets updated."
     >
-      <div
-        className="mb-4 rounded-md border border-warning bg-warning/10 p-3 text-sm text-warning-foreground"
-        role="note"
-      >
-        Applying a subnet change re-homes the load balancer by relaunching its
-        underlying system VM. Expect a brief data-plane interruption while it
-        restarts.
+      <div className="flex flex-col gap-1 p-4">
+        {available.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No subnets in this VPC.
+          </p>
+        ) : (
+          available.map((subnet) => (
+            <label
+              className="flex items-center gap-2 text-sm"
+              key={subnet.SubnetId}
+            >
+              <input
+                aria-label={`Subnet ${subnet.SubnetId}`}
+                checked={selectedIds.has(subnet.SubnetId ?? "")}
+                onChange={() => {
+                  toggle(subnet.SubnetId ?? "")
+                }}
+                type="checkbox"
+              />
+              <span className="font-mono">{subnetLabel(subnet)}</span>
+            </label>
+          ))
+        )}
+        {isEmpty && (
+          <p className="text-xs text-destructive">
+            At least one subnet is required.
+          </p>
+        )}
       </div>
-      {error && (
-        <div
-          className="mb-4 rounded-md border border-destructive bg-destructive/10 p-3 text-sm text-destructive"
-          role="alert"
-        >
-          {error.message || "Failed to update subnets"}
-        </div>
-      )}
-      {isSuccess && !dirty && (
-        <output className="mb-4 block rounded-md border border-success bg-success/10 p-3 text-sm text-success-foreground">
-          Subnets updated.
-        </output>
-      )}
-      <div className="rounded-lg border bg-card">
-        <div className="flex flex-col gap-1 p-4">
-          {available.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No subnets in this VPC.
-            </p>
-          ) : (
-            available.map((subnet) => (
-              <label
-                className="flex items-center gap-2 text-sm"
-                key={subnet.SubnetId}
-              >
-                <input
-                  aria-label={`Subnet ${subnet.SubnetId}`}
-                  checked={selectedIds.has(subnet.SubnetId ?? "")}
-                  onChange={() => {
-                    toggle(subnet.SubnetId ?? "")
-                  }}
-                  type="checkbox"
-                />
-                <span className="font-mono">{subnetLabel(subnet)}</span>
-              </label>
-            ))
-          )}
-          {isEmpty && (
-            <p className="text-xs text-destructive">
-              At least one subnet is required.
-            </p>
-          )}
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t p-4">
-          <span className="mr-auto text-xs text-muted-foreground">
-            {dirty ? "Unsaved changes" : "No changes"}
-          </span>
-          <Button
-            disabled={isPending || !dirty}
-            onClick={handleReset}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            Reset
-          </Button>
-          <Button
-            disabled={isPending || !dirty || isEmpty}
-            size="sm"
-            type="submit"
-          >
-            {isPending ? "Saving…" : "Save changes"}
-          </Button>
-        </div>
-      </div>
-    </form>
+    </EditorShell>
   )
 }

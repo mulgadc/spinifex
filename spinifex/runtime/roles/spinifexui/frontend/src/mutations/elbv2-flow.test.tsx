@@ -1,0 +1,306 @@
+// Cross-slice ELBv2 flow against a mocked SDK. Exercises the full path
+// a user walks through: create TG → create LB → create listener → register
+// targets → observe target health — all via the same mocked dispatcher.
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+import { renderMutationHook } from "@/test/render"
+
+const { sdk } = await vi.hoisted(async () => {
+  const { createFakeSdk } = await import("@/test/fake-sdk")
+
+  interface StoredLb {
+    arn: string
+    name: string
+    vpcId: string
+    subnets: string[]
+  }
+
+  interface StoredTg {
+    arn: string
+    name: string
+    vpcId: string
+  }
+
+  interface StoredListener {
+    arn: string
+    lbArn: string
+    port: number
+    protocol: string
+    defaultTg: string
+  }
+
+  interface TargetRecord {
+    id: string
+    port?: number
+    state: string
+  }
+
+  const state = {
+    lbs: [] as StoredLb[],
+    tgs: [] as StoredTg[],
+    listeners: [] as StoredListener[],
+    targets: new Map<string, TargetRecord[]>(),
+    seq: 0,
+  }
+
+  const nextSeq = () => {
+    state.seq += 1
+
+    return state.seq
+  }
+
+  const handlers = new Map<string, (i: never) => unknown>([
+    [
+      "CreateTargetGroupCommand",
+      (i: { Name: string; VpcId: string }) => {
+        const tg = {
+          arn: `arn:tg:${nextSeq()}`,
+          name: i.Name,
+          vpcId: i.VpcId,
+        }
+
+        state.tgs.push(tg)
+        state.targets.set(tg.arn, [])
+
+        return { TargetGroups: [{ TargetGroupArn: tg.arn }] }
+      },
+    ],
+    [
+      "CreateLoadBalancerCommand",
+      (i: { Name: string; Subnets: string[] }) => {
+        const lb = {
+          arn: `arn:lb:${nextSeq()}`,
+          name: i.Name,
+          vpcId: "vpc-aaa",
+          subnets: i.Subnets,
+        }
+
+        state.lbs.push(lb)
+
+        return { LoadBalancers: [{ LoadBalancerArn: lb.arn }] }
+      },
+    ],
+    [
+      "CreateListenerCommand",
+      (i: {
+        LoadBalancerArn: string
+        Port: number
+        Protocol: string
+        DefaultActions: { TargetGroupArn: string }[]
+      }) => {
+        const [action] = i.DefaultActions
+
+        if (!action) {
+          throw new Error("CreateListenerCommand requires DefaultActions[0]")
+        }
+
+        const listener = {
+          arn: `arn:listener:${nextSeq()}`,
+          lbArn: i.LoadBalancerArn,
+          port: i.Port,
+          protocol: i.Protocol,
+          defaultTg: action.TargetGroupArn,
+        }
+
+        state.listeners.push(listener)
+
+        return { Listeners: [{ ListenerArn: listener.arn }] }
+      },
+    ],
+    [
+      "RegisterTargetsCommand",
+      (i: {
+        TargetGroupArn: string
+        Targets: { Id: string; Port?: number }[]
+      }) => {
+        const existing = state.targets.get(i.TargetGroupArn) ?? []
+
+        const next = [
+          ...existing,
+          ...i.Targets.map((t) => ({
+            id: t.Id,
+            port: t.Port,
+            state: "healthy",
+          })),
+        ]
+
+        state.targets.set(i.TargetGroupArn, next)
+
+        return {}
+      },
+    ],
+    [
+      "DescribeTargetHealthCommand",
+      (i: { TargetGroupArn: string }) => {
+        const targets = state.targets.get(i.TargetGroupArn) ?? []
+
+        return {
+          TargetHealthDescriptions: targets.map((t) => ({
+            Target: { Id: t.id, Port: t.port },
+            TargetHealth: { State: t.state },
+          })),
+        }
+      },
+    ],
+    [
+      "DescribeLoadBalancersCommand",
+      () => ({
+        LoadBalancers: state.lbs.map((lb) => ({
+          LoadBalancerArn: lb.arn,
+          LoadBalancerName: lb.name,
+          VpcId: lb.vpcId,
+          State: { Code: "active" },
+        })),
+      }),
+    ],
+    [
+      "DescribeTargetGroupsCommand",
+      () => ({
+        TargetGroups: state.tgs.map((tg) => ({
+          TargetGroupArn: tg.arn,
+          TargetGroupName: tg.name,
+          VpcId: tg.vpcId,
+          Protocol: "HTTP",
+          Port: 80,
+          TargetType: "instance",
+        })),
+      }),
+    ],
+    [
+      "DescribeListenersCommand",
+      (i: { LoadBalancerArn: string }) => ({
+        Listeners: state.listeners
+          .filter((l) => l.lbArn === i.LoadBalancerArn)
+          .map((l) => ({
+            ListenerArn: l.arn,
+            Port: l.port,
+            Protocol: l.protocol,
+            DefaultActions: [{ Type: "forward", TargetGroupArn: l.defaultTg }],
+          })),
+      }),
+    ],
+  ])
+
+  const { send } = createFakeSdk(handlers)
+
+  return {
+    sdk: {
+      send,
+      reset: () => {
+        state.lbs = []
+        state.tgs = []
+        state.listeners = []
+        state.targets = new Map()
+        state.seq = 0
+      },
+    },
+  }
+})
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(sdk.send)
+})
+
+import {
+  useCreateLoadBalancerWizard,
+  useRegisterTargets,
+} from "@/mutations/elbv2"
+import {
+  elbv2ListenersQueryOptions,
+  elbv2LoadBalancersQueryOptions,
+  elbv2TargetGroupsQueryOptions,
+  elbv2TargetHealthQueryOptions,
+} from "@/queries/elbv2"
+
+function mustString(value: string | undefined, label: string): string {
+  if (!value) {
+    throw new Error(`expected ${label} to be defined`)
+  }
+
+  return value
+}
+
+function Harness() {
+  return {
+    wizard: useCreateLoadBalancerWizard(),
+    registerTargets: useRegisterTargets(),
+  }
+}
+
+describe("ELBv2 cross-slice flow (mocked SDK)", () => {
+  beforeEach(() => {
+    sdk.reset()
+  })
+
+  it("creates TG → LB → listener via wizard → registers targets", async () => {
+    const { queryClient: qc, result } = renderMutationHook(Harness)
+
+    // Step 1: wizard creates TG + LB + listener in one mutation
+    const wizardResult = await result.current.wizard.mutateAsync({
+      lb: {
+        name: "my-alb",
+        type: "application",
+        scheme: "internet-facing",
+        vpcId: "vpc-aaa",
+        subnetIds: ["subnet-a", "subnet-b"],
+        securityGroupIds: ["sg-1"],
+        tags: [],
+      },
+      listener: {
+        protocol: "HTTP",
+        port: 80,
+        targetGroupMode: "new",
+        newTargetGroup: {
+          name: "my-tg",
+          protocol: "HTTP",
+          port: 80,
+          vpcId: "vpc-aaa",
+          healthCheck: {
+            protocol: "HTTP",
+            path: "/",
+            port: "traffic-port",
+            intervalSeconds: 30,
+            timeoutSeconds: 5,
+            healthyThresholdCount: 5,
+            unhealthyThresholdCount: 2,
+            matcher: "200",
+          },
+          tags: [],
+        },
+      },
+    })
+
+    expect(wizardResult.error).toBeUndefined()
+    const lbArn = mustString(wizardResult.loadBalancerArn, "lbArn")
+
+    const tgArn = mustString(
+      wizardResult.created.find((c) => c.type === "Target Group")?.id,
+      "tgArn",
+    )
+
+    // Step 2: register two targets
+    await result.current.registerTargets.mutateAsync({
+      targetGroupArn: tgArn,
+      targets: [{ id: "i-aaa" }, { id: "i-bbb" }],
+    })
+
+    // Step 3: describe queries should reflect all the writes
+    const lbs = await qc.query(elbv2LoadBalancersQueryOptions)
+    expect(lbs.LoadBalancers).toHaveLength(1)
+    expect(lbs.LoadBalancers?.[0]?.LoadBalancerArn).toBe(lbArn)
+
+    const tgs = await qc.query(elbv2TargetGroupsQueryOptions)
+    expect(tgs.TargetGroups).toHaveLength(1)
+
+    const listeners = await qc.query(elbv2ListenersQueryOptions(lbArn))
+    expect(listeners.Listeners).toHaveLength(1)
+    expect(listeners.Listeners?.[0]?.DefaultActions?.[0]?.TargetGroupArn).toBe(
+      tgArn,
+    )
+
+    const health = await qc.query(elbv2TargetHealthQueryOptions(tgArn))
+    expect(health.TargetHealthDescriptions).toHaveLength(2)
+  })
+})

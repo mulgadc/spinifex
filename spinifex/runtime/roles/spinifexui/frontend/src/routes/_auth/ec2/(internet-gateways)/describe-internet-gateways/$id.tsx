@@ -1,10 +1,10 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Trash2 } from "lucide-react"
+import { createFileRoute, Link } from "@tanstack/react-router"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -55,27 +55,16 @@ export const Route = createFileRoute(
 
 function InternetGatewayDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2InternetGatewayQueryOptions(id))
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const attachMutation = useAttachInternetGateway()
   const detachMutation = useDetachInternetGateway()
   const deleteMutation = useDeleteInternetGateway()
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [vpcToDetach, setVpcToDetach] = useState<string | null>(null)
   const [selectedVpcId, setSelectedVpcId] = useState("")
 
   const igw = data.InternetGateways?.[0]
   const vpcs = vpcsData.Vpcs ?? []
-
-  const handleDelete = async () => {
-    try {
-      await deleteMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-internet-gateways" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
 
   const handleAttach = async () => {
     if (!selectedVpcId) {
@@ -126,16 +115,9 @@ function InternetGatewayDetail() {
         Back to Internet Gateways
       </BackLink>
 
-      {(deleteMutation.error ??
-        attachMutation.error ??
-        detachMutation.error) && (
+      {(attachMutation.error ?? detachMutation.error) && (
         <ErrorBanner
-          error={
-            deleteMutation.error ??
-            attachMutation.error ??
-            detachMutation.error ??
-            undefined
-          }
+          error={attachMutation.error ?? detachMutation.error ?? undefined}
           msg="Internet Gateway action failed"
         />
       )}
@@ -143,17 +125,14 @@ function InternetGatewayDetail() {
       <div className="space-y-6">
         <PageHeading
           actions={
-            <Button
-              disabled={isAttached || deleteMutation.isPending}
-              onClick={() => {
-                setShowDeleteDialog(true)
-              }}
-              size="sm"
-              variant="destructive"
-            >
-              <Trash2 className="size-4" />
-              Delete
-            </Button>
+            <DeleteResourceButton
+              description={`Are you sure you want to delete the Internet Gateway "${igw.InternetGatewayId}"? This action cannot be undone.`}
+              disabled={isAttached}
+              id={id}
+              mutation={deleteMutation}
+              title="Delete Internet Gateway"
+              to="/ec2/describe-internet-gateways"
+            />
           }
           subtitle="Internet Gateway Details"
           title={
@@ -235,15 +214,6 @@ function InternetGatewayDetail() {
           </DetailCard.Content>
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the Internet Gateway "${igw.InternetGatewayId}"? This action cannot be undone.`}
-        isPending={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete Internet Gateway"
-      />
 
       <DeleteConfirmationDialog
         confirmLabel="Detach"

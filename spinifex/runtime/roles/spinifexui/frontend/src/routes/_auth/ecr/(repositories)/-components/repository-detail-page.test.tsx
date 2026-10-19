@@ -1,24 +1,18 @@
 import { fireEvent, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getEcrClient: () => ({ send: vi.fn() }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(vi.fn())
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return await mockRouter(importOriginal)
 })
 
 import { RepositoryDetailPage } from "./repository-detail-page"

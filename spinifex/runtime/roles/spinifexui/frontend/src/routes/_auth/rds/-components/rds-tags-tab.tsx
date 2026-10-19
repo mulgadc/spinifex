@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 
-import { TagsEditor } from "@/components/elbv2/tags-editor"
+import { TagsEditor } from "@/components/tags-editor"
 import { useUpdateRdsTags } from "@/mutations/rds"
 import { rdsTagsQueryOptions } from "@/queries/rds"
 

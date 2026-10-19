@@ -5,23 +5,25 @@ import type {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({ ingestionJobSummaries: [] })
-const mockNavigate = vi.fn()
+const mockSend = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ ingestionJobSummaries: [] }),
+)
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockAgentClient: () => ({ send: mockSend }),
-  getBedrockAgentRuntimeClient: () => ({ send: mockSend }),
-}))
+const mockNavigate = vi.hoisted(() => vi.fn())
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-    <a href={to}>{children}</a>
-  ),
-  useNavigate: () => mockNavigate,
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal, { navigate: mockNavigate })
+})
 
 import {
   dataSourcesQueryOptions,

@@ -1,9 +1,9 @@
-import type { InternetGateway } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
 import { ec2InternetGatewaysQueryOptions } from "@/queries/ec2"
@@ -43,36 +43,24 @@ function InternetGateways() {
         title="Internet Gateways"
       />
 
-      {internetGateways.length > 0 ? (
-        <div className="space-y-4">
-          {internetGateways.map((igw: InternetGateway) => {
-            if (!igw.InternetGatewayId) {
-              return null
-            }
+      <ResourceList
+        empty="No Internet Gateways found."
+        getKey={(igw) => igw.InternetGatewayId}
+        items={internetGateways}
+        renderItem={(igw, id) => {
+          const name = getNameTag(igw.Tags)
+          const attachedVpc = igw.Attachments?.[0]?.VpcId
 
-            const name = getNameTag(igw.Tags)
-            const attachedVpc = igw.Attachments?.[0]?.VpcId
-
-            return (
-              <ListCard
-                key={igw.InternetGatewayId}
-                params={{ id: igw.InternetGatewayId }}
-                subtitle={
-                  attachedVpc ? `attached to ${attachedVpc}` : "detached"
-                }
-                title={
-                  name
-                    ? `${igw.InternetGatewayId} (${name})`
-                    : igw.InternetGatewayId
-                }
-                to="/ec2/describe-internet-gateways/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No Internet Gateways found.</p>
-      )}
+          return (
+            <ListCard
+              params={{ id }}
+              subtitle={attachedVpc ? `attached to ${attachedVpc}` : "detached"}
+              title={name ? `${id} (${name})` : id}
+              to="/ec2/describe-internet-gateways/$id"
+            />
+          )
+        }}
+      />
     </>
   )
 }

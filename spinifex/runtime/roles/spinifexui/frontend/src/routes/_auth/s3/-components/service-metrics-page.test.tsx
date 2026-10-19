@@ -1,10 +1,7 @@
 import { screen, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 vi.mock("@/lib/auth", () => ({
   getCredentials: vi.fn(() => ({

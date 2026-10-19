@@ -2,7 +2,6 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import {
-  Controller,
   type DeepPartialSkipArrayKey,
   useForm,
   useWatch,
@@ -15,17 +14,9 @@ import {
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { getNameTag } from "@/lib/utils"
+import { VpcSelectField } from "@/components/vpc-select-field"
 import { useCreateSecurityGroup } from "@/mutations/ec2"
 import { ec2VpcsQueryOptions } from "@/queries/ec2"
 import {
@@ -105,71 +96,23 @@ function CreateSecurityGroup() {
       )}
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        <Field>
-          <FieldTitle>
-            <label htmlFor="groupName">Group Name</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.groupName}
-            id="groupName"
-            placeholder="my-security-group"
-            {...register("groupName")}
-          />
-          <FieldError errors={[errors.groupName]} />
-        </Field>
+        <TextField
+          error={errors.groupName}
+          id="groupName"
+          label="Group Name"
+          placeholder="my-security-group"
+          {...register("groupName")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="description">Description</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.description}
-            id="description"
-            placeholder="My security group description"
-            {...register("description")}
-          />
-          <FieldError errors={[errors.description]} />
-        </Field>
+        <TextField
+          error={errors.description}
+          id="description"
+          label="Description"
+          placeholder="My security group description"
+          {...register("description")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="vpcId">VPC</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="vpcId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.vpcId}
-                  className="w-full"
-                  id="vpcId"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {vpcs.map((vpc) => {
-                    const name = getNameTag(vpc.Tags)
-
-                    return (
-                      <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
-                        {name
-                          ? `${vpc.VpcId} (${name})`
-                          : `${vpc.VpcId} (${vpc.CidrBlock})`}
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.vpcId]} />
-        </Field>
+        <VpcSelectField control={control} id="vpcId" name="vpcId" vpcs={vpcs} />
 
         <CliCommandPanel commands={buildCreateSecurityGroupCommands(values)} />
 

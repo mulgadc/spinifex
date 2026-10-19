@@ -20,7 +20,9 @@ import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
+import { pickerNotice } from "@/components/picker-notice"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -29,7 +31,6 @@ import {
   FieldError,
   FieldTitle,
 } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import { isRdsSystemImage, rdsImportCommand } from "@/lib/system-managed"
 import { useRestoreDBInstanceFromDBSnapshot } from "@/mutations/rds"
 import {
@@ -50,11 +51,9 @@ import {
   suggestedIdentifier,
 } from "@/types/rds"
 
-import { pickerNotice } from "../../-components/picker-notice"
 import {
   DeletionProtectionField,
   parameterGroupsForEngine,
-  RdsSelectField,
 } from "../../-components/rds-form-fields"
 import {
   SecurityGroupCheckboxes,
@@ -343,70 +342,49 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
         </DetailCard>
 
         <form className="space-y-6" onSubmit={handleSubmit(onSubmit)}>
-          <Field>
-            <FieldTitle>
-              <label htmlFor="restore-identifier">
-                New DB instance identifier
-              </label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.dbInstanceIdentifier}
-              id="restore-identifier"
-              {...register("dbInstanceIdentifier")}
-            />
-            <FieldDescription>
-              A restore always creates a new instance; it never writes back over
-              the one the snapshot came from.
-            </FieldDescription>
-            <FieldError errors={[errors.dbInstanceIdentifier]} />
-          </Field>
+          <TextField
+            description="A restore always creates a new instance; it never writes back over the one the snapshot came from."
+            error={errors.dbInstanceIdentifier}
+            id="restore-identifier"
+            label="New DB instance identifier"
+            {...register("dbInstanceIdentifier")}
+          />
 
-          <RdsSelectField
+          <SelectField
             control={control}
             id="restore-class"
             label="DB instance class"
             name="dbInstanceClass"
             notice={classNotice}
-            options={instanceClasses.map((c) => ({ value: c, label: c }))}
+            options={selectOptions(instanceClasses)}
             placeholder="Select an instance class"
           />
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="restore-storage">Allocated storage (GiB)</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.allocatedStorage}
-              id="restore-storage"
-              min={snapshotStorage}
-              type="number"
-              {...register("allocatedStorage", { valueAsNumber: true })}
-            />
-            <FieldDescription>
-              The snapshot holds {snapshotStorage} GiB. A restore may grow the
-              volume but never shrink it.
-            </FieldDescription>
-            <FieldError errors={[errors.allocatedStorage]} />
-          </Field>
+          <TextField
+            description={
+              <>
+                The snapshot holds {snapshotStorage} GiB. A restore may grow the
+                volume but never shrink it.
+              </>
+            }
+            error={errors.allocatedStorage}
+            id="restore-storage"
+            label="Allocated storage (GiB)"
+            min={snapshotStorage}
+            type="number"
+            {...register("allocatedStorage", { valueAsNumber: true })}
+          />
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="restore-port">Port</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.port}
-              id="restore-port"
-              placeholder="Snapshot's port"
-              {...register("port")}
-            />
-            <FieldDescription>
-              Leave blank to keep the port the snapshot was taken on. The port
-              is fixed once the instance exists.
-            </FieldDescription>
-            <FieldError errors={[errors.port]} />
-          </Field>
+          <TextField
+            description="Leave blank to keep the port the snapshot was taken on. The port is fixed once the instance exists."
+            error={errors.port}
+            id="restore-port"
+            label="Port"
+            placeholder="Snapshot's port"
+            {...register("port")}
+          />
 
-          <RdsSelectField
+          <SelectField
             control={control}
             description="Leave unset to place the restored endpoint in the group the snapshot recorded."
             id="restore-subnet-group"
@@ -438,7 +416,7 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
             <FieldError errors={[errors.vpcSecurityGroupIds]} />
           </Field>
 
-          <RdsSelectField
+          <SelectField
             control={control}
             id="restore-parameter-group"
             label="DB parameter group"

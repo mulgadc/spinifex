@@ -7,12 +7,9 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { ErrorBanner } from "@/components/error-banner"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
+import { arnResourceId } from "@/lib/utils"
 import { useStopTask } from "@/mutations/ecs"
 import { ecsTasksQueryOptions } from "@/queries/ecs"
-
-function taskId(arn: string | undefined): string {
-  return arn?.split("/").at(-1) ?? ""
-}
 
 export function TasksTab({ clusterName }: { clusterName: string }) {
   const { data: tasks } = useSuspenseQuery(ecsTasksQueryOptions(clusterName))
@@ -67,7 +64,7 @@ export function TasksTab({ clusterName }: { clusterName: string }) {
             </thead>
             <tbody>
               {tasks.map((task: Task) => {
-                const id = taskId(task.taskArn)
+                const id = arnResourceId(task.taskArn)
                 const stoppable = task.lastStatus !== "STOPPED"
 
                 return (

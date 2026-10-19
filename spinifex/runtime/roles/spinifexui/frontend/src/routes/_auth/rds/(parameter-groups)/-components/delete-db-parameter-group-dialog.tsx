@@ -1,6 +1,5 @@
+import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { useDeleteDBParameterGroup } from "@/mutations/rds"
-
-import { RdsDeleteDialog } from "../../-components/rds-delete-dialog"
 
 interface DeleteDBParameterGroupDialogProps {
   open: boolean
@@ -16,7 +15,7 @@ export function DeleteDBParameterGroupDialog({
   onDeleted,
 }: DeleteDBParameterGroupDialogProps) {
   return (
-    <RdsDeleteDialog
+    <ResourceDeleteDialog
       description={
         <>
           This deletes the DB parameter group &quot;{dbParameterGroupName}&quot;

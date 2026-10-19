@@ -1,13 +1,14 @@
 import type { ResponseLaunchTemplateData } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Link } from "@tanstack/react-router"
 import { Rocket, Star, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -147,7 +148,6 @@ const BLANK_DATA_FIELDS: Partial<LaunchTemplateFormData> = {
 
 function LaunchTemplateDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data: listData } = useSuspenseQuery(ec2LaunchTemplatesQueryOptions)
 
   const { data: versionsData } = useSuspenseQuery(
@@ -159,7 +159,6 @@ function LaunchTemplateDetail() {
   const deleteTemplate = useDeleteLaunchTemplate()
   const createVersion = useCreateLaunchTemplateVersion()
 
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [versionToDelete, setVersionToDelete] = useState<number | null>(null)
 
   const lt = listData.LaunchTemplates?.find((t) => t.LaunchTemplateId === id)
@@ -241,15 +240,6 @@ function LaunchTemplateDetail() {
     }
   }
 
-  const handleDeleteTemplate = async () => {
-    try {
-      await deleteTemplate.mutateAsync(id)
-      navigate({ to: "/ec2/describe-launch-templates" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
-
   const onCreateVersion = async (data: LaunchTemplateFormData) => {
     await createVersion.mutateAsync({ ...data, launchTemplateId: id })
     reset({
@@ -267,28 +257,17 @@ function LaunchTemplateDetail() {
         Back to launch templates
       </BackLink>
 
-      {deleteTemplate.error && (
-        <ErrorBanner
-          error={deleteTemplate.error}
-          msg="Failed to delete launch template"
-        />
-      )}
-
       <div className="space-y-6">
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
-                disabled={deleteTemplate.isPending}
-                onClick={() => {
-                  setShowDeleteDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the launch template "${lt.LaunchTemplateName ?? lt.LaunchTemplateId}"? All versions will be deleted. This action cannot be undone.`}
+                id={id}
+                mutation={deleteTemplate}
+                title="Delete Launch Template"
+                to="/ec2/describe-launch-templates"
+              />
               <Badge variant="secondary">default v{defaultVersion}</Badge>
             </div>
           }
@@ -484,15 +463,6 @@ function LaunchTemplateDetail() {
           </div>
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the launch template "${lt.LaunchTemplateName ?? lt.LaunchTemplateId}"? All versions will be deleted. This action cannot be undone.`}
-        isPending={deleteTemplate.isPending}
-        onConfirm={handleDeleteTemplate}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete Launch Template"
-      />
 
       <DeleteConfirmationDialog
         description={`Delete version ${versionToDelete} of "${lt.LaunchTemplateName ?? lt.LaunchTemplateId}"? This action cannot be undone.`}

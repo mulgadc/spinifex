@@ -6,16 +6,15 @@ import {
   foundationModelsQueryOptions,
   guardrailsQueryOptions,
 } from "@/queries/bedrock"
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const mockSend = vi.fn()
+const mockSend = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockRuntimeClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { PlaygroundPage } from "./playground-page"
 

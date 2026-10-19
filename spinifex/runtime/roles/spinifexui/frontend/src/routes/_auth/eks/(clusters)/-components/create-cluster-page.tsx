@@ -1,4 +1,4 @@
-import type { Subnet, Vpc } from "@aws-sdk/client-ec2"
+import type { Subnet } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { VpcSelectField } from "@/components/vpc-select-field"
 import { isEksSystemImage } from "@/lib/system-managed"
 import { getNameTag } from "@/lib/utils"
 import { useCreateCluster } from "@/mutations/eks"
@@ -36,12 +37,6 @@ import {
 } from "@/types/eks"
 
 import { CreateClusterRoleDialog } from "./create-cluster-role-dialog"
-
-function vpcLabel(vpc: Vpc): string {
-  const name = getNameTag(vpc.Tags)
-
-  return name ? `${vpc.VpcId} (${name})` : `${vpc.VpcId} (${vpc.CidrBlock})`
-}
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
@@ -272,39 +267,14 @@ export function CreateClusterPage() {
           open={isRoleDialogOpen}
         />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="cluster-vpc">VPC</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="vpcId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(v) => {
-                  handleVpcChange(v)
-                }}
-                value={field.value}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.vpcId}
-                  className="w-full"
-                  id="cluster-vpc"
-                >
-                  <SelectValue placeholder="Select VPC" />
-                </SelectTrigger>
-                <SelectContent>
-                  {vpcs.map((vpc) => (
-                    <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
-                      {vpcLabel(vpc)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.vpcId]} />
-        </Field>
+        <VpcSelectField
+          control={control}
+          id="cluster-vpc"
+          name="vpcId"
+          onValueChange={handleVpcChange}
+          placeholder="Select VPC"
+          vpcs={vpcs}
+        />
 
         <Field>
           <FieldTitle>Subnets (select at least 1)</FieldTitle>

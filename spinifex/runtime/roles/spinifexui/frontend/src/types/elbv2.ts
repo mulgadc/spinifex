@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { tagSchema } from "@/types/tags"
+
 const LB_TG_NAME_REGEX = /^(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])$/
 
 const lbNameField = z
@@ -29,11 +31,6 @@ const portField = z
   .int("Port must be a whole number")
   .min(1, "Port must be at least 1")
   .max(65_535, "Port must be at most 65535")
-
-export const tagSchema = z.object({
-  key: z.string().min(1, "Tag key is required").max(128),
-  value: z.string().max(256),
-})
 
 // ALB health-check config. NLB variant lands with slice 9.
 export const healthCheckSchema = z.object({

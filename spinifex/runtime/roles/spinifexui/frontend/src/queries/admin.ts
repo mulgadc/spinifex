@@ -1,6 +1,5 @@
 import { queryOptions } from "@tanstack/react-query"
 
-import { getCredentials } from "@/lib/auth"
 import { signedAdminFetch, signedFetch } from "@/lib/signed-fetch"
 
 interface InstanceTypeCap {
@@ -204,86 +203,34 @@ export type {
 
 export const adminVersionQueryOptions = queryOptions({
   queryKey: ["admin", "version"],
-  queryFn: async () => {
-    const credentials = getCredentials()
-
-    if (!credentials) {
-      throw new Error("Not authenticated")
-    }
-
-    return await signedFetch<VersionInfo>({
-      action: "GetVersion",
-      credentials,
-    })
-  },
+  queryFn: async () => await signedFetch<VersionInfo>({ action: "GetVersion" }),
   staleTime: "static",
 })
 
 export const adminNodesQueryOptions = queryOptions({
   queryKey: ["admin", "nodes"],
-  queryFn: async () => {
-    const credentials = getCredentials()
-
-    if (!credentials) {
-      throw new Error("Not authenticated")
-    }
-
-    return await signedFetch<GetNodesOutput>({
-      action: "GetNodes",
-      credentials,
-    })
-  },
+  queryFn: async () =>
+    await signedFetch<GetNodesOutput>({ action: "GetNodes" }),
   staleTime: 10_000,
 })
 
 export const adminVMsQueryOptions = queryOptions({
   queryKey: ["admin", "vms"],
-  queryFn: async () => {
-    const credentials = getCredentials()
-
-    if (!credentials) {
-      throw new Error("Not authenticated")
-    }
-
-    return await signedFetch<GetVMsOutput>({
-      action: "GetVMs",
-      credentials,
-    })
-  },
+  queryFn: async () => await signedFetch<GetVMsOutput>({ action: "GetVMs" }),
   staleTime: 10_000,
 })
 
 export const adminStorageStatusQueryOptions = queryOptions({
   queryKey: ["admin", "storageStatus"],
-  queryFn: async () => {
-    const credentials = getCredentials()
-
-    if (!credentials) {
-      throw new Error("Not authenticated")
-    }
-
-    return await signedFetch<StorageStatusOutput>({
-      action: "GetStorageStatus",
-      credentials,
-    })
-  },
+  queryFn: async () =>
+    await signedFetch<StorageStatusOutput>({ action: "GetStorageStatus" }),
   staleTime: 10_000,
 })
 
 export const adminOchreCatalogQueryOptions = queryOptions({
   queryKey: ["admin", "ochreCatalog"],
-  queryFn: async () => {
-    const credentials = getCredentials()
-
-    if (!credentials) {
-      throw new Error("Not authenticated")
-    }
-
-    return await signedFetch<ListOchreCatalogOutput>({
-      action: "ListOchreCatalog",
-      credentials,
-    })
-  },
+  queryFn: async () =>
+    await signedFetch<ListOchreCatalogOutput>({ action: "ListOchreCatalog" }),
   staleTime: 10_000,
 })
 
@@ -292,19 +239,11 @@ export const adminOchreCatalogQueryOptions = queryOptions({
 // gives up fast and falls back to the validated free-text account id.
 export const adminListAccountsQueryOptions = queryOptions({
   queryKey: ["admin", "accounts"],
-  queryFn: async () => {
-    const credentials = getCredentials()
-
-    if (!credentials) {
-      throw new Error("Not authenticated")
-    }
-
-    return await signedAdminFetch<ListAccountsResponse>({
+  queryFn: async () =>
+    await signedAdminFetch<ListAccountsResponse>({
       method: "ListAccounts",
-      credentials,
       body: {},
-    })
-  },
+    }),
   retry: false,
   staleTime: 30_000,
 })
@@ -312,19 +251,11 @@ export const adminListAccountsQueryOptions = queryOptions({
 export const adminModelAccessQueryOptions = (accountId: string) =>
   queryOptions({
     queryKey: ["admin", "modelAccess", accountId],
-    queryFn: async () => {
-      const credentials = getCredentials()
-
-      if (!credentials) {
-        throw new Error("Not authenticated")
-      }
-
-      return await signedFetch<ModelAccessList>({
+    queryFn: async () =>
+      await signedFetch<ModelAccessList>({
         action: "ListModelAccess",
-        credentials,
         params: { AccountId: accountId },
-      })
-    },
+      }),
     enabled: accountId !== "",
     staleTime: 10_000,
   })
@@ -338,15 +269,8 @@ export async function grantModelAccess({
   accountId,
   modelId,
 }: ModelAccessMutationInput): Promise<ModelAccessChange> {
-  const credentials = getCredentials()
-
-  if (!credentials) {
-    throw new Error("Not authenticated")
-  }
-
   return await signedFetch<ModelAccessChange>({
     action: "GrantModelAccess",
-    credentials,
     params: { AccountId: accountId, ModelId: modelId },
   })
 }
@@ -355,15 +279,8 @@ export async function revokeModelAccess({
   accountId,
   modelId,
 }: ModelAccessMutationInput): Promise<ModelAccessChange> {
-  const credentials = getCredentials()
-
-  if (!credentials) {
-    throw new Error("Not authenticated")
-  }
-
   return await signedFetch<ModelAccessChange>({
     action: "RevokeModelAccess",
-    credentials,
     params: { AccountId: accountId, ModelId: modelId },
   })
 }

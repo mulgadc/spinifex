@@ -1,37 +1,30 @@
 import type { ListFoundationModelsCommandOutput } from "@aws-sdk/client-bedrock"
 import { screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({
-  knowledgeBase: { knowledgeBaseId: "kb-new" },
+const mockSend = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    knowledgeBase: { knowledgeBaseId: "kb-new" },
+  }),
+)
+
+const mockNavigate = vi.hoisted(() => vi.fn())
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
 })
 
-const mockNavigate = vi.fn()
-
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockAgentClient: () => ({ send: mockSend }),
-  getBedrockClient: () => ({ send: mockSend }),
-}))
-
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-    Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return await mockRouter(importOriginal, { navigate: mockNavigate })
 })
 
 import { foundationModelsQueryOptions } from "@/queries/bedrock"
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 import { KnowledgeBaseFormPage } from "./knowledge-base-form-page"
 

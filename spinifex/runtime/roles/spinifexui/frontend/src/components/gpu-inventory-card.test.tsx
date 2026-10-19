@@ -1,23 +1,11 @@
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    Link: ({
-      children,
-      to,
-      params,
-    }: {
-      children: ReactNode
-      to?: string
-      params?: Record<string, string>
-    }) => <a href={`${to}/${params?.id ?? ""}`}>{children}</a>,
-  }
+  return await mockRouter(importOriginal)
 })
 
 import type { NodeInfo } from "@/queries/admin"
@@ -112,7 +100,7 @@ describe("GPUInventoryCard", () => {
     expect(screen.getByText(/slice 0/)).toBeInTheDocument()
     expect(screen.getByText(/slice 1/)).toBeInTheDocument()
     const link = screen.getByRole("link", { name: "i-abc123" })
-    expect(link).toHaveAttribute("href", "/ec2/describe-instances/$id/i-abc123")
+    expect(link).toHaveAttribute("href", "/ec2/describe-instances/i-abc123")
     expect(screen.getByText("free")).toBeInTheDocument()
   })
 

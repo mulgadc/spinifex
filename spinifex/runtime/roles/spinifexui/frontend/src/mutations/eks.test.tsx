@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getEksClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { eksNodegroupsQueryOptions } from "@/queries/eks"
 
@@ -24,30 +26,10 @@ import {
   useUpdateAddon,
 } from "./eks"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("eks mutations", () => {
   describe("useCreateCluster", () => {
     it("maps form data to CreateClusterCommand with API auth mode", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useCreateCluster(), { wrapper })
+      const { result } = renderMutationHook(() => useCreateCluster())
 
       result.current.mutate({
         name: "c1",
@@ -82,8 +64,7 @@ describe("eks mutations", () => {
     })
 
     it("omits public access CIDRs for a private-only cluster", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useCreateCluster(), { wrapper })
+      const { result } = renderMutationHook(() => useCreateCluster())
 
       result.current.mutate({
         name: "c1",
@@ -113,8 +94,7 @@ describe("eks mutations", () => {
 
   describe("useDeleteCluster", () => {
     it("sends DeleteClusterCommand with name", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useDeleteCluster(), { wrapper })
+      const { result } = renderMutationHook(() => useDeleteCluster())
 
       result.current.mutate("c1")
 
@@ -127,8 +107,7 @@ describe("eks mutations", () => {
 
   describe("useCreateNodegroup", () => {
     it("maps form data to CreateNodegroupCommand", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useCreateNodegroup(), { wrapper })
+      const { result } = renderMutationHook(() => useCreateNodegroup())
 
       result.current.mutate({
         clusterName: "c1",
@@ -161,11 +140,15 @@ describe("eks mutations", () => {
     })
 
     it("marks the cluster's cached nodegroups stale on success", async () => {
-      createQueryClient()
+      const queryClient = createTestQueryClient()
       queryClient.setQueryData(eksNodegroupsQueryOptions("c1").queryKey, {
         $metadata: {},
       })
-      const { result } = renderHook(() => useCreateNodegroup(), { wrapper })
+
+      const { result } = renderMutationHook(
+        () => useCreateNodegroup(),
+        queryClient,
+      )
 
       result.current.mutate({
         clusterName: "c1",
@@ -193,8 +176,7 @@ describe("eks mutations", () => {
 
   describe("useScaleNodegroup", () => {
     it("sends UpdateNodegroupConfigCommand with scaling config", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useScaleNodegroup(), { wrapper })
+      const { result } = renderMutationHook(() => useScaleNodegroup())
 
       result.current.mutate({
         clusterName: "c1",
@@ -217,8 +199,7 @@ describe("eks mutations", () => {
 
   describe("useDeleteNodegroup", () => {
     it("sends DeleteNodegroupCommand", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useDeleteNodegroup(), { wrapper })
+      const { result } = renderMutationHook(() => useDeleteNodegroup())
 
       result.current.mutate({ clusterName: "c1", nodegroupName: "ng1" })
 
@@ -234,8 +215,7 @@ describe("eks mutations", () => {
 
   describe("useCreateAddon", () => {
     it("maps params to CreateAddonCommand", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useCreateAddon(), { wrapper })
+      const { result } = renderMutationHook(() => useCreateAddon())
 
       result.current.mutate({
         clusterName: "c1",
@@ -260,8 +240,7 @@ describe("eks mutations", () => {
 
   describe("useUpdateAddon", () => {
     it("sends UpdateAddonCommand with target version", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useUpdateAddon(), { wrapper })
+      const { result } = renderMutationHook(() => useUpdateAddon())
 
       result.current.mutate({
         clusterName: "c1",
@@ -284,8 +263,7 @@ describe("eks mutations", () => {
 
   describe("useDeleteAddon", () => {
     it("sends DeleteAddonCommand", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useDeleteAddon(), { wrapper })
+      const { result } = renderMutationHook(() => useDeleteAddon())
 
       result.current.mutate({ clusterName: "c1", addonName: "coredns" })
 
@@ -301,8 +279,7 @@ describe("eks mutations", () => {
 
   describe("useCreateAccessEntry", () => {
     it("sends CreateAccessEntryCommand with kubernetes groups", async () => {
-      createQueryClient()
-      const { result } = renderHook(() => useCreateAccessEntry(), { wrapper })
+      const { result } = renderMutationHook(() => useCreateAccessEntry())
 
       result.current.mutate({
         clusterName: "c1",
@@ -324,11 +301,7 @@ describe("eks mutations", () => {
 
   describe("useAssociateAccessPolicy", () => {
     it("sends AssociateAccessPolicyCommand with cluster scope", async () => {
-      createQueryClient()
-
-      const { result } = renderHook(() => useAssociateAccessPolicy(), {
-        wrapper,
-      })
+      const { result } = renderMutationHook(() => useAssociateAccessPolicy())
 
       result.current.mutate({
         clusterName: "c1",

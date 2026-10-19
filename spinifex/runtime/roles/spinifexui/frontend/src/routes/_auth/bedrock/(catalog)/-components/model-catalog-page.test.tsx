@@ -5,10 +5,7 @@ import {
   adminOchreCatalogQueryOptions,
   type AdminCatalogEntry,
 } from "@/queries/admin"
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 import { ModelCatalogPage } from "./model-catalog-page"
 

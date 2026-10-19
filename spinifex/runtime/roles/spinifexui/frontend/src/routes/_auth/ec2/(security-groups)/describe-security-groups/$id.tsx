@@ -1,13 +1,14 @@
 import type { IpPermission } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Plus, Trash2, X } from "lucide-react"
+import { createFileRoute, Link } from "@tanstack/react-router"
+import { Plus, X } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -375,22 +376,11 @@ function RuleRow({ rule, source, groupId, direction }: RuleRowProps) {
 
 function SecurityGroupDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2SecurityGroupQueryOptions(id))
   const sg = data.SecurityGroups?.[0]
   const deleteMutation = useDeleteSecurityGroup()
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showIngressDialog, setShowIngressDialog] = useState(false)
   const [showEgressDialog, setShowEgressDialog] = useState(false)
-
-  const handleDelete = async () => {
-    try {
-      await deleteMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-security-groups" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
 
   if (!sg?.GroupId) {
     return (
@@ -412,27 +402,17 @@ function SecurityGroupDetail() {
         Back to Security Groups
       </BackLink>
 
-      {deleteMutation.error && (
-        <ErrorBanner
-          error={deleteMutation.error}
-          msg="Failed to delete security group"
-        />
-      )}
-
       <div className="space-y-6">
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
-                onClick={() => {
-                  setShowDeleteDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the security group "${sg.GroupId}"? This action cannot be undone.`}
+                id={id}
+                mutation={deleteMutation}
+                title="Delete Security Group"
+                to="/ec2/describe-security-groups"
+              />
             </div>
           }
           subtitle="Security Group Details"
@@ -539,15 +519,6 @@ function SecurityGroupDetail() {
           )}
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the security group "${sg.GroupId}"? This action cannot be undone.`}
-        isPending={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete Security Group"
-      />
 
       <AddRuleDialog
         direction="ingress"

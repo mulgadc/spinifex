@@ -15,9 +15,9 @@ import {
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import { Field, FieldTitle } from "@/components/ui/field"
 import {
   Select,
   SelectContent,
@@ -25,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { getNameTag } from "@/lib/utils"
+import { VpcSelectField } from "@/components/vpc-select-field"
 import { useCreateSubnet } from "@/mutations/ec2"
 import {
   ec2AvailabilityZonesQueryOptions,
@@ -110,58 +110,15 @@ function CreateSubnet() {
       )}
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        <Field>
-          <FieldTitle>
-            <label htmlFor="vpcId">VPC</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="vpcId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.vpcId}
-                  className="w-full"
-                  id="vpcId"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {vpcs.map((vpc) => {
-                    const name = getNameTag(vpc.Tags)
+        <VpcSelectField control={control} id="vpcId" name="vpcId" vpcs={vpcs} />
 
-                    return (
-                      <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
-                        {name
-                          ? `${vpc.VpcId} (${name})`
-                          : `${vpc.VpcId} (${vpc.CidrBlock})`}
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.vpcId]} />
-        </Field>
-
-        <Field>
-          <FieldTitle>
-            <label htmlFor="cidrBlock">CIDR Block</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.cidrBlock}
-            id="cidrBlock"
-            placeholder="10.0.1.0/24"
-            {...register("cidrBlock")}
-          />
-          <FieldError errors={[errors.cidrBlock]} />
-        </Field>
+        <TextField
+          error={errors.cidrBlock}
+          id="cidrBlock"
+          label="CIDR Block"
+          placeholder="10.0.1.0/24"
+          {...register("cidrBlock")}
+        />
 
         <Field>
           <FieldTitle>

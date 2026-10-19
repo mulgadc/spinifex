@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 
+import { TextField } from "@/components/form-fields"
+import { PickerNoticeText, pickerNotice } from "@/components/picker-notice"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
   AlertDialog,
@@ -12,13 +14,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import { Field, FieldTitle } from "@/components/ui/field"
 import {
   Select,
   SelectContent,
@@ -34,8 +30,6 @@ import {
   createDBSnapshotSchema,
   suggestedIdentifier,
 } from "@/types/rds"
-
-import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
 
 interface CreateDBSnapshotDialogProps {
   open: boolean
@@ -171,21 +165,13 @@ export function CreateDBSnapshotDialog({
             </Field>
           )}
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="snapshot-identifier">Snapshot identifier</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.dbSnapshotIdentifier}
-              id="snapshot-identifier"
-              {...register("dbSnapshotIdentifier")}
-            />
-            <FieldDescription>
-              Lowercase letters, digits and hyphens. The rds: namespace belongs
-              to automated backups and cannot be used here.
-            </FieldDescription>
-            <FieldError errors={[errors.dbSnapshotIdentifier]} />
-          </Field>
+          <TextField
+            description="Lowercase letters, digits and hyphens. The rds: namespace belongs to automated backups and cannot be used here."
+            error={errors.dbSnapshotIdentifier}
+            id="snapshot-identifier"
+            label="Snapshot identifier"
+            {...register("dbSnapshotIdentifier")}
+          />
 
           <TagsFieldArray control={control} name="tags" />
 

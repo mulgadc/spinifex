@@ -4,13 +4,8 @@ import { Link } from "@tanstack/react-router"
 
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
+import { arnResourceId } from "@/lib/utils"
 import { ecsServicesQueryOptions } from "@/queries/ecs"
-
-// shortArn renders the trailing resource segment of an ARN (the part after the
-// final "/"), falling back to the whole string when there is no slash.
-function shortArn(arn: string | undefined): string {
-  return arn?.split("/").at(-1) ?? ""
-}
 
 export function ServicesTab({ clusterName }: { clusterName: string }) {
   const { data: services } = useSuspenseQuery(
@@ -65,7 +60,7 @@ export function ServicesTab({ clusterName }: { clusterName: string }) {
                   <td className="px-4 py-2">{service.runningCount ?? 0}</td>
                   <td className="px-4 py-2">{service.pendingCount ?? 0}</td>
                   <td className="px-4 py-2 font-mono text-xs">
-                    {shortArn(service.taskDefinition)}
+                    {arnResourceId(service.taskDefinition)}
                   </td>
                 </tr>
               ))}

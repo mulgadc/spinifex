@@ -3,7 +3,7 @@ import { HttpRequest } from "@smithy/protocol-http"
 import { SignatureV4 } from "@smithy/signature-v4"
 import { z } from "zod"
 
-import type { SessionCredentials } from "./auth"
+import { getCredentials } from "./auth"
 import { getRegion } from "./cluster-config"
 
 const GATEWAY_PORT = 9999
@@ -11,19 +11,26 @@ const GATEWAY_PORT = 9999
 const FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 export const JSON_CONTENT_TYPE = "application/x-amz-json-1.1"
 
+type ErrorParser = (
+  label: string,
+  status: number,
+  detail: string,
+) => SignedFetchError
+
 interface SignedProxyFetchOptions {
   // label prefixes the thrown error, naming the action or JSON-1.1 target.
   label: string
-  credentials: SessionCredentials
   service: string
   contentType: string
   body: string
   target?: string
+  // path is the gateway path the request is signed for and proxied to.
+  path?: string
+  parseError?: ErrorParser
 }
 
 export interface SignedFetchOptions {
   action: string
-  credentials: SessionCredentials
   service?: string
   params?: Record<string, string>
 }
@@ -100,17 +107,24 @@ function errorFromBody(
   )
 }
 
-// signedProxyFetch SigV4-signs a request against the gateway and POSTs it
-// through the same-origin proxy. Query-form and JSON-1.1 callers differ only in
-// their content type, target header and error body shape.
+// signedProxyFetch SigV4-signs a request with the stored session against the
+// gateway and POSTs it through the same-origin proxy. Callers differ only in
+// path, content type, target header and error body shape.
 export async function signedProxyFetch<T>({
   label,
-  credentials,
   service,
   contentType,
   body,
   target,
+  path = "/",
+  parseError = errorFromBody,
 }: SignedProxyFetchOptions): Promise<T> {
+  const credentials = getCredentials()
+
+  if (!credentials) {
+    throw new Error("Not authenticated")
+  }
+
   const protocol = window.location.protocol.replace(":", "")
 
   // Headers are set before signing so they are part of the signature, against
@@ -130,7 +144,7 @@ export async function signedProxyFetch<T>({
     protocol,
     hostname: "localhost",
     port: GATEWAY_PORT,
-    path: "/",
+    path,
     headers: requestHeaders,
     body,
   })
@@ -154,7 +168,7 @@ export async function signedProxyFetch<T>({
 
   // Send the request through the same-origin reverse proxy instead of
   // directly to the gateway, eliminating cross-origin requests.
-  const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw/`
+  const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw${path}`
 
   const response = await fetch(proxyUrl, {
     method: "POST",
@@ -164,7 +178,7 @@ export async function signedProxyFetch<T>({
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "")
-    throw errorFromBody(label, response.status, detail)
+    throw parseError(label, response.status, detail)
   }
 
   // The caller names the response shape its action returns, and the gateway has
@@ -175,7 +189,6 @@ export async function signedProxyFetch<T>({
 
 export async function signedFetch<T>({
   action,
-  credentials,
   service = "spinifex",
   params,
 }: SignedFetchOptions): Promise<T> {
@@ -183,7 +196,6 @@ export async function signedFetch<T>({
 
   return await signedProxyFetch<T>({
     label: action,
-    credentials,
     service,
     contentType: FORM_CONTENT_TYPE,
     body: `Action=${action}${extraParams}`,
@@ -196,7 +208,6 @@ const ADMIN_JSON_CONTENT_TYPE = "application/json"
 
 interface SignedAdminFetchOptions<TBody = Record<string, never>> {
   method: string
-  credentials: SessionCredentials
   body?: TBody
 }
 
@@ -241,55 +252,14 @@ function adminErrorFromBody(
 // surface signedFetch drives against path "/".
 export async function signedAdminFetch<T, TBody = Record<string, never>>({
   method,
-  credentials,
   body,
 }: SignedAdminFetchOptions<TBody>): Promise<T> {
-  const protocol = window.location.protocol.replace(":", "")
-  const path = `/admin/${method}`
-  const payload = JSON.stringify(body ?? {})
-
-  const headers = {
-    host: `localhost:${GATEWAY_PORT}`,
-    "content-type": ADMIN_JSON_CONTENT_TYPE,
-  }
-
-  const request = new HttpRequest({
-    method: "POST",
-    protocol,
-    hostname: "localhost",
-    port: GATEWAY_PORT,
-    path,
-    headers,
-    body: payload,
-  })
-
-  const signer = new SignatureV4({
-    credentials: {
-      accessKeyId: credentials.accessKeyId,
-      secretAccessKey: credentials.secretAccessKey,
-      sessionToken: credentials.sessionToken,
-    },
-    region: getRegion(),
+  return await signedProxyFetch<T>({
+    label: method,
     service: "spinifex",
-    sha256: Sha256,
+    contentType: ADMIN_JSON_CONTENT_TYPE,
+    body: JSON.stringify(body ?? {}),
+    path: `/admin/${method}`,
+    parseError: adminErrorFromBody,
   })
-
-  const signed = await signer.sign(request)
-  const signedHeaders = { ...signed.headers }
-
-  const proxyUrl = `${window.location.protocol}//${window.location.host}/proxy/awsgw${path}`
-
-  const response = await fetch(proxyUrl, {
-    method: "POST",
-    headers: signedHeaders,
-    body: payload,
-  })
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "")
-    throw adminErrorFromBody(method, response.status, detail)
-  }
-
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
-  return await (response.json() as Promise<T>)
 }

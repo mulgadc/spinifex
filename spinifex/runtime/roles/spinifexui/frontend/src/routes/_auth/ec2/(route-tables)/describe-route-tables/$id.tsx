@@ -1,13 +1,14 @@
 import type { RouteTable } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
+import { createFileRoute, Link } from "@tanstack/react-router"
 import { Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -92,7 +93,6 @@ function routeTarget(route: RouteEntry): string {
 
 function RouteTableDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2RouteTableQueryOptions(id))
   const { data: igwData } = useSuspenseQuery(ec2InternetGatewaysQueryOptions)
   const { data: natData } = useSuspenseQuery(ec2NatGatewaysQueryOptions)
@@ -104,7 +104,6 @@ function RouteTableDetail() {
   const associate = useAssociateRouteTable()
   const disassociate = useDisassociateRouteTable()
 
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [routeToDelete, setRouteToDelete] = useState<string | null>(null)
 
   const [associationToRemove, setAssociationToRemove] = useState<{
@@ -164,15 +163,6 @@ function RouteTableDetail() {
     (s) => s.VpcId === rtb.VpcId && !associatedSubnetIds.has(s.SubnetId),
   )
 
-  const handleDeleteRouteTable = async () => {
-    try {
-      await deleteRouteTable.mutateAsync(routeTableId)
-      navigate({ to: "/ec2/describe-route-tables" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
-
   const handleDeleteRoute = async () => {
     if (!routeToDelete) {
       return
@@ -230,28 +220,18 @@ function RouteTableDetail() {
     <>
       <BackLink to="/ec2/describe-route-tables">Back to Route Tables</BackLink>
 
-      {deleteRouteTable.error && (
-        <ErrorBanner
-          error={deleteRouteTable.error}
-          msg="Failed to delete Route Table"
-        />
-      )}
-
       <div className="space-y-6">
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
-                disabled={isMain || deleteRouteTable.isPending}
-                onClick={() => {
-                  setShowDeleteDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the Route Table "${rtb.RouteTableId}"? This action cannot be undone.`}
+                disabled={isMain}
+                id={routeTableId}
+                mutation={deleteRouteTable}
+                title="Delete Route Table"
+                to="/ec2/describe-route-tables"
+              />
               {isMain && <Badge variant="secondary">Main</Badge>}
             </div>
           }
@@ -564,15 +544,6 @@ function RouteTableDetail() {
           </div>
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the Route Table "${rtb.RouteTableId}"? This action cannot be undone.`}
-        isPending={deleteRouteTable.isPending}
-        onConfirm={handleDeleteRouteTable}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete Route Table"
-      />
 
       <DeleteConfirmationDialog
         description={`Delete the route to ${routeToDelete} from "${routeTableId}"? Traffic to that destination from every subnet using this table stops being routed.`}

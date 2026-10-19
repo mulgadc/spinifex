@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { securityGroupLabel } from "@/lib/utils"
+import { arnResourceId, securityGroupLabel } from "@/lib/utils"
 import { useCreateService } from "@/mutations/ecs"
 import {
   ec2SecurityGroupsQueryOptions,
@@ -28,10 +28,6 @@ import {
 } from "@/queries/ecs"
 import { elbv2TargetGroupsQueryOptions } from "@/queries/elbv2"
 import { createServiceSchema, type CreateServiceFormData } from "@/types/ecs"
-
-function familyRevision(arn: string): string {
-  return arn.split("/").at(-1) ?? arn
-}
 
 export function CreateServicePage({ cluster }: { cluster: string }) {
   const navigate = useNavigate()
@@ -148,7 +144,7 @@ export function CreateServicePage({ cluster }: { cluster: string }) {
                 </SelectTrigger>
                 <SelectContent>
                   {taskDefArns.map((arn) => {
-                    const id = familyRevision(arn)
+                    const id = arnResourceId(arn)
 
                     return (
                       <SelectItem key={arn} value={id}>

@@ -7,6 +7,7 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  shellSingleQuote,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -170,10 +171,6 @@ function CreateLaunchTemplate() {
       </form>
     </>
   )
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`
 }
 
 function buildCreateLaunchTemplateCommands(

@@ -5,6 +5,8 @@ import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import { PickerNoticeText, pickerNotice } from "@/components/picker-notice"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -12,13 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
+import { Field, FieldTitle } from "@/components/ui/field"
 import { useModifyDBInstance } from "@/mutations/rds"
 import { ec2SecurityGroupsQueryOptions } from "@/queries/ec2"
 import {
@@ -32,11 +28,9 @@ import {
   modifyDBInstanceSchema,
 } from "@/types/rds"
 
-import { PickerNoticeText, pickerNotice } from "../../-components/picker-notice"
 import {
   DeletionProtectionField,
   parameterGroupsForEngine,
-  RdsSelectField,
 } from "../../-components/rds-form-fields"
 import { SecurityGroupCheckboxes } from "../../-components/security-group-checkboxes"
 
@@ -197,13 +191,13 @@ export function ModifyDBInstanceDialog({
         </AlertDialogHeader>
 
         <form className="space-y-4" onSubmit={handleSubmit(onSubmit)}>
-          <RdsSelectField
+          <SelectField
             control={control}
             id="modify-class"
             label="DB instance class"
             name="dbInstanceClass"
             notice={classNotice}
-            options={instanceClasses.map((c) => ({ value: c, label: c }))}
+            options={selectOptions(instanceClasses)}
             placeholder="Select an instance class"
             warning={
               classChanged &&
@@ -211,30 +205,21 @@ export function ModifyDBInstanceDialog({
             }
           />
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-storage">Allocated storage (GiB)</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.allocatedStorage}
-              id="modify-storage"
-              min={currentStorage}
-              type="number"
-              {...register("allocatedStorage", { valueAsNumber: true })}
-            />
-            <FieldDescription>
-              Currently {currentStorage} GiB. Storage grows only.
-            </FieldDescription>
-            {storageChanged && (
-              <p className="text-xs text-tactical-amber">
-                Growing storage stops and starts the instance to extend the
-                filesystem.
-              </p>
-            )}
-            <FieldError errors={[errors.allocatedStorage]} />
-          </Field>
+          <TextField
+            description={`Currently ${currentStorage} GiB. Storage grows only.`}
+            error={errors.allocatedStorage}
+            id="modify-storage"
+            label="Allocated storage (GiB)"
+            min={currentStorage}
+            type="number"
+            warning={
+              storageChanged &&
+              "Growing storage stops and starts the instance to extend the filesystem."
+            }
+            {...register("allocatedStorage", { valueAsNumber: true })}
+          />
 
-          <RdsSelectField
+          <SelectField
             control={control}
             id="modify-parameter-group"
             label="DB parameter group"
@@ -261,66 +246,40 @@ export function ModifyDBInstanceDialog({
             )}
           </Field>
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-retention">Backup retention (days)</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.backupRetentionPeriod}
-              id="modify-retention"
-              max={MAX_BACKUP_RETENTION_DAYS}
-              min={0}
-              type="number"
-              {...register("backupRetentionPeriod", { valueAsNumber: true })}
-            />
-            <FieldError errors={[errors.backupRetentionPeriod]} />
-          </Field>
+          <TextField
+            error={errors.backupRetentionPeriod}
+            id="modify-retention"
+            label="Backup retention (days)"
+            max={MAX_BACKUP_RETENTION_DAYS}
+            min={0}
+            type="number"
+            {...register("backupRetentionPeriod", { valueAsNumber: true })}
+          />
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-backup-window">
-                Preferred backup window
-              </label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.preferredBackupWindow}
-              id="modify-backup-window"
-              placeholder="hh24:mi-hh24:mi in UTC"
-              {...register("preferredBackupWindow")}
-            />
-            <FieldError errors={[errors.preferredBackupWindow]} />
-          </Field>
+          <TextField
+            error={errors.preferredBackupWindow}
+            id="modify-backup-window"
+            label="Preferred backup window"
+            placeholder="hh24:mi-hh24:mi in UTC"
+            {...register("preferredBackupWindow")}
+          />
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-maintenance-window">
-                Preferred maintenance window
-              </label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.preferredMaintenanceWindow}
-              id="modify-maintenance-window"
-              placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
-              {...register("preferredMaintenanceWindow")}
-            />
-            <FieldError errors={[errors.preferredMaintenanceWindow]} />
-          </Field>
+          <TextField
+            error={errors.preferredMaintenanceWindow}
+            id="modify-maintenance-window"
+            label="Preferred maintenance window"
+            placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
+            {...register("preferredMaintenanceWindow")}
+          />
 
-          <Field>
-            <FieldTitle>
-              <label htmlFor="modify-password">Reset master password</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.masterUserPassword}
-              id="modify-password"
-              type="password"
-              {...register("masterUserPassword")}
-            />
-            <FieldDescription>
-              Leave blank to keep the current password.
-            </FieldDescription>
-            <FieldError errors={[errors.masterUserPassword]} />
-          </Field>
+          <TextField
+            description="Leave blank to keep the current password."
+            error={errors.masterUserPassword}
+            id="modify-password"
+            label="Reset master password"
+            type="password"
+            {...register("masterUserPassword")}
+          />
 
           <DeletionProtectionField
             control={control}

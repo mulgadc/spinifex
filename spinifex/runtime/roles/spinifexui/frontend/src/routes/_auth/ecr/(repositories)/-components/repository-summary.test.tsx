@@ -1,16 +1,15 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { send } = vi.hoisted(() => ({ send: vi.fn() }))
 
-vi.mock("@/lib/awsClient", () => ({
-  getEcrClient: () => ({ send }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(send)
+})
 
 import { RepositorySummary } from "./repository-summary"
 

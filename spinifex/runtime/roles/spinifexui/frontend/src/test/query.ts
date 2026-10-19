@@ -1,11 +1,13 @@
 import {
-  QueryClient,
+  type QueryClient,
   type Query,
   type QueryFunction,
   type QueryKey,
   type SkipToken,
   skipToken,
 } from "@tanstack/react-query"
+
+import { createTestQueryClient } from "@/test/render"
 
 interface CallableQueryOptions<TData, TQueryKey extends QueryKey> {
   queryKey: TQueryKey
@@ -20,18 +22,12 @@ interface PollingQueryOptions<TData, TQueryKey extends QueryKey> {
     | ((query: Query<TData, Error, TData, TQueryKey>) => RefetchInterval)
 }
 
-function createQueryClient() {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  })
-}
-
 // Calls a query's fetcher with a real context, so a query that starts reading
 // signal or client fails loudly here instead of silently taking another branch.
 // The return type is preserved, so callers can assert on the response.
 export async function callQueryFn<TData, TQueryKey extends QueryKey>(
   options: CallableQueryOptions<TData, TQueryKey>,
-  client: QueryClient = createQueryClient(),
+  client: QueryClient = createTestQueryClient(),
 ): Promise<TData> {
   const { queryFn, queryKey } = options
 

@@ -3,11 +3,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn()
+const mockSend = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockRuntimeClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { GuardrailTester } from "./guardrail-tester"
 

@@ -1,9 +1,9 @@
-import type { NatGateway } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
@@ -44,32 +44,24 @@ function NatGateways() {
         title="NAT Gateways"
       />
 
-      {natGateways.length > 0 ? (
-        <div className="space-y-4">
-          {natGateways.map((nat: NatGateway) => {
-            if (!nat.NatGatewayId) {
-              return null
-            }
+      <ResourceList
+        empty="No NAT Gateways found."
+        getKey={(nat) => nat.NatGatewayId}
+        items={natGateways}
+        renderItem={(nat, id) => {
+          const name = getNameTag(nat.Tags)
 
-            const name = getNameTag(nat.Tags)
-
-            return (
-              <ListCard
-                badge={<StateBadge state={nat.State} />}
-                key={nat.NatGatewayId}
-                params={{ id: nat.NatGatewayId }}
-                subtitle={nat.SubnetId ?? ""}
-                title={
-                  name ? `${nat.NatGatewayId} (${name})` : nat.NatGatewayId
-                }
-                to="/ec2/describe-nat-gateways/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No NAT Gateways found.</p>
-      )}
+          return (
+            <ListCard
+              badge={<StateBadge state={nat.State} />}
+              params={{ id }}
+              subtitle={nat.SubnetId ?? ""}
+              title={name ? `${id} (${name})` : id}
+              to="/ec2/describe-nat-gateways/$id"
+            />
+          )
+        }}
+      />
     </>
   )
 }

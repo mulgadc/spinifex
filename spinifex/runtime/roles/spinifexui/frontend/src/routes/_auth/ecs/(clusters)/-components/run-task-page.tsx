@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { securityGroupLabel } from "@/lib/utils"
+import { arnResourceId, securityGroupLabel } from "@/lib/utils"
 import { useRunTask } from "@/mutations/ecs"
 import {
   ec2SecurityGroupsQueryOptions,
@@ -27,11 +27,6 @@ import {
   ecsTaskDefinitionsQueryOptions,
 } from "@/queries/ecs"
 import { runTaskSchema, type RunTaskFormData } from "@/types/ecs"
-
-// familyRevision turns a task definition ARN into its "family:revision" id.
-function familyRevision(arn: string): string {
-  return arn.split("/").at(-1) ?? arn
-}
 
 export function RunTaskPage({ cluster }: { cluster: string }) {
   const navigate = useNavigate()
@@ -140,7 +135,7 @@ export function RunTaskPage({ cluster }: { cluster: string }) {
                 </SelectTrigger>
                 <SelectContent>
                   {taskDefArns.map((arn) => {
-                    const id = familyRevision(arn)
+                    const id = arnResourceId(arn)
 
                     return (
                       <SelectItem key={arn} value={id}>

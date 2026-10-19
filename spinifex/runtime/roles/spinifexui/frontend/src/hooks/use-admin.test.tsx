@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { SessionCredentials } from "@/lib/auth"
 import type { SignedFetchOptions } from "@/lib/signed-fetch"
 import { callerIdentityQueryOptions } from "@/queries/sts"
-import { createTestQueryClient } from "@/test/elbv2-integration"
+import { createTestQueryClient } from "@/test/render"
 
 const mockGetCredentials = vi.fn<() => SessionCredentials | null>()
 const mockStsSend = vi.fn()
@@ -83,10 +83,7 @@ describe("useAdmin", () => {
     expect(result.current.isAdmin).toBeTruthy()
     expect(result.current.version).toStrictEqual(versionInfo)
     expect(result.current.license).toBe("open-source")
-    expect(mockSignedFetch).toHaveBeenCalledWith({
-      action: "GetVersion",
-      credentials: sessionCreds,
-    })
+    expect(mockSignedFetch).toHaveBeenCalledWith({ action: "GetVersion" })
   })
 
   it("treats a non-admin account as non-admin and skips the version fetch", async () => {

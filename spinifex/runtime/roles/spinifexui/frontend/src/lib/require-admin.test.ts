@@ -1,7 +1,7 @@
 import { isRedirect } from "@tanstack/react-router"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { createTestQueryClient } from "@/test/elbv2-integration"
+import { createTestQueryClient } from "@/test/render"
 
 const mockStsSend = vi.fn()
 

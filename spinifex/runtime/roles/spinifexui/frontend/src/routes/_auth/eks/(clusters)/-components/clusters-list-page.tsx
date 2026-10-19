@@ -3,15 +3,15 @@ import { Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
+import { byName } from "@/lib/utils"
 import { eksClustersQueryOptions } from "@/queries/eks"
 
 export function ClustersListPage() {
   const { data } = useSuspenseQuery(eksClustersQueryOptions)
 
-  const clusters = (data.clusters ?? []).toSorted((a, b) =>
-    a.toLowerCase().localeCompare(b.toLowerCase()),
-  )
+  const clusters = (data.clusters ?? []).toSorted(byName((name) => name))
 
   return (
     <>
@@ -24,20 +24,18 @@ export function ClustersListPage() {
         title="Clusters"
       />
 
-      {clusters.length > 0 ? (
-        <div className="space-y-4">
-          {clusters.map((clusterName) => (
-            <ListCard
-              key={clusterName}
-              params={{ clusterName }}
-              title={clusterName}
-              to="/eks/list-clusters/$clusterName"
-            />
-          ))}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No EKS clusters found.</p>
-      )}
+      <ResourceList
+        empty="No EKS clusters found."
+        getKey={(clusterName) => clusterName}
+        items={clusters}
+        renderItem={(clusterName) => (
+          <ListCard
+            params={{ clusterName }}
+            title={clusterName}
+            to="/eks/list-clusters/$clusterName"
+          />
+        )}
+      />
     </>
   )
 }

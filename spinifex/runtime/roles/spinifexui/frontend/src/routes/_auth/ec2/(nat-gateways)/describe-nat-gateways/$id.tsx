@@ -1,16 +1,12 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Trash2 } from "lucide-react"
-import { useState } from "react"
+import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
-import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
-import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteNatGateway } from "@/mutations/ec2"
 import { ec2NatGatewayQueryOptions } from "@/queries/ec2"
@@ -36,21 +32,10 @@ export const Route = createFileRoute(
 
 function NatGatewayDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2NatGatewayQueryOptions(id))
   const deleteMutation = useDeleteNatGateway()
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
 
   const nat = data.NatGateways?.[0]
-
-  const handleDelete = async () => {
-    try {
-      await deleteMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-nat-gateways" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
 
   if (!nat?.NatGatewayId) {
     return (
@@ -70,28 +55,17 @@ function NatGatewayDetail() {
     <>
       <BackLink to="/ec2/describe-nat-gateways">Back to NAT Gateways</BackLink>
 
-      {deleteMutation.error && (
-        <ErrorBanner
-          error={deleteMutation.error}
-          msg="Failed to delete NAT Gateway"
-        />
-      )}
-
       <div className="space-y-6">
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
-                disabled={deleteMutation.isPending}
-                onClick={() => {
-                  setShowDeleteDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the NAT Gateway "${nat.NatGatewayId}"? This action cannot be undone. The associated Elastic IP is not released.`}
+                id={id}
+                mutation={deleteMutation}
+                title="Delete NAT Gateway"
+                to="/ec2/describe-nat-gateways"
+              />
               <StateBadge state={nat.State} />
             </div>
           }
@@ -157,15 +131,6 @@ function NatGatewayDetail() {
           </DetailCard.Content>
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the NAT Gateway "${nat.NatGatewayId}"? This action cannot be undone. The associated Elastic IP is not released.`}
-        isPending={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete NAT Gateway"
-      />
     </>
   )
 }

@@ -1,9 +1,9 @@
-import type { Bucket } from "@aws-sdk/client-s3"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
 import { formatDateTime } from "@/lib/utils"
 import { s3BucketsQueryOptions } from "@/queries/s3"
@@ -41,31 +41,23 @@ function Buckets() {
         title="Buckets"
       />
 
-      {buckets.length > 0 ? (
-        <div className="space-y-4">
-          {buckets.map((bucket: Bucket) => {
-            if (!bucket.Name) {
-              return null
+      <ResourceList
+        empty="No buckets found."
+        getKey={(bucket) => bucket.Name}
+        items={buckets}
+        renderItem={(bucket, name) => (
+          <ListCard
+            params={{ bucket: name }}
+            subtitle={
+              bucket.CreationDate
+                ? `Created: ${formatDateTime(bucket.CreationDate)}`
+                : undefined
             }
-
-            return (
-              <ListCard
-                key={bucket.Name}
-                params={{ bucket: bucket.Name }}
-                subtitle={
-                  bucket.CreationDate
-                    ? `Created: ${formatDateTime(bucket.CreationDate)}`
-                    : undefined
-                }
-                title={bucket.Name}
-                to="/s3/ls/$bucket"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No buckets found.</p>
-      )}
+            title={name}
+            to="/s3/ls/$bucket"
+          />
+        )}
+      />
     </>
   )
 }

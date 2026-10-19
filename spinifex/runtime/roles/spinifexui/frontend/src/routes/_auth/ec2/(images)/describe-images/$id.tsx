@@ -1,10 +1,10 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { ArrowUpCircle, Trash2 } from "lucide-react"
+import { createFileRoute } from "@tanstack/react-router"
+import { ArrowUpCircle } from "lucide-react"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
@@ -49,13 +49,11 @@ export const Route = createFileRoute("/_auth/ec2/(images)/describe-images/$id")(
 
 function ImageDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2ImageQueryOptions(id))
   const image = data?.Images?.[0]
   const { isAdmin } = useAdmin()
   const deregisterMutation = useDeregisterImage()
   const promoteMutation = usePromoteImage()
-  const [showDeregisterDialog, setShowDeregisterDialog] = useState(false)
   const [showPromoteDialog, setShowPromoteDialog] = useState(false)
 
   if (!image?.ImageId || isSystemManagedImage(image)) {
@@ -69,15 +67,6 @@ function ImageDetail() {
 
   const isSystemImage = image.OwnerId === SYSTEM_OWNER_ID
 
-  async function handleDeregister() {
-    try {
-      await deregisterMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-images" })
-    } finally {
-      setShowDeregisterDialog(false)
-    }
-  }
-
   async function handlePromote() {
     try {
       await promoteMutation.mutateAsync(id)
@@ -90,13 +79,6 @@ function ImageDetail() {
   return (
     <>
       <BackLink to="/ec2/describe-images">Back to images</BackLink>
-
-      {deregisterMutation.error && (
-        <ErrorBanner
-          error={deregisterMutation.error}
-          msg="Failed to deregister image"
-        />
-      )}
 
       {promoteMutation.error && (
         <ErrorBanner
@@ -121,16 +103,14 @@ function ImageDetail() {
                   Promote to System
                 </Button>
               )}
-              <Button
-                onClick={() => {
-                  setShowDeregisterDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Deregister
-              </Button>
+              <DeleteResourceButton
+                description={`Are you sure you want to deregister "${image.ImageId}"? The backing snapshot will not be deleted.`}
+                id={id}
+                label="Deregister"
+                mutation={deregisterMutation}
+                title="Deregister Image"
+                to="/ec2/describe-images"
+              />
               <StateBadge state={image.State} />
             </div>
           }
@@ -140,15 +120,6 @@ function ImageDetail() {
 
         <AmiDetails image={image} showExtendedDetails />
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to deregister "${image.ImageId}"? The backing snapshot will not be deleted.`}
-        isPending={deregisterMutation.isPending}
-        onConfirm={handleDeregister}
-        onOpenChange={setShowDeregisterDialog}
-        open={showDeregisterDialog}
-        title="Deregister Image"
-      />
 
       <AlertDialog onOpenChange={setShowPromoteDialog} open={showPromoteDialog}>
         <AlertDialogContent>

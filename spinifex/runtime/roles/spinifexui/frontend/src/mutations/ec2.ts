@@ -92,6 +92,7 @@ import type {
   SetDefaultLaunchTemplateVersionParams,
 } from "@/types/ec2"
 import type { AssociateInstanceProfileParams } from "@/types/iam"
+import { toSdkTags } from "@/types/tags"
 
 const WHITESPACE_REGEX = /\s+/
 
@@ -854,7 +855,7 @@ export function useCreateVpc() {
         TagSpecifications: buildTagSpec(
           ResourceType.vpc,
           params.name,
-          toSdkTags(params.tags ?? []),
+          toSdkTags(params.tags ?? []) ?? [],
         ),
       })
 
@@ -1530,10 +1531,6 @@ export function useDisassociateRouteTable() {
   })
 }
 
-function toSdkTags(tags: { key: string; value: string }[]): Tag[] {
-  return tags.map((t) => ({ Key: t.key, Value: t.value }))
-}
-
 function buildTags(name: string | undefined, extraTags: Tag[]): Tag[] {
   const tags: Tag[] = []
 
@@ -1600,7 +1597,7 @@ export function useCreateVpcWizard() {
       const created: WizardCreatedResource[] = []
       const prefix = params.autoGenerateNames ? params.namePrefix : undefined
 
-      const extraTags = toSdkTags(params.tags)
+      const extraTags = toSdkTags(params.tags) ?? []
 
       let currentStep = "creating VPC"
 

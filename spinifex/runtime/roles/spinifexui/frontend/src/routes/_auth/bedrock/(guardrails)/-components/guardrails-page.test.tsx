@@ -1,24 +1,13 @@
 import type { GuardrailSummary } from "@aws-sdk/client-bedrock"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({
-    children,
-    to,
-    params,
-  }: {
-    children: ReactNode
-    to?: string
-    params?: Record<string, string>
-  }) => (
-    <a href={`${to}${params?.guardrailId ? `/${params.guardrailId}` : ""}`}>
-      {children}
-    </a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 import { guardrailsQueryOptions } from "@/queries/bedrock"
 
@@ -72,8 +61,8 @@ describe("GuardrailsPage", () => {
       )
 
     expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
-      "/bedrock/list-guardrails/$guardrailId/gr-1",
-      "/bedrock/list-guardrails/$guardrailId/gr-2",
+      "/bedrock/list-guardrails/gr-1",
+      "/bedrock/list-guardrails/gr-2",
     ])
   })
 
@@ -86,7 +75,7 @@ describe("GuardrailsPage", () => {
     renderSeeded([GUARDRAIL])
     expect(
       screen.getByRole("link", { name: /content-safety/ }),
-    ).toHaveAttribute("href", "/bedrock/list-guardrails/$guardrailId/gr-1")
+    ).toHaveAttribute("href", "/bedrock/list-guardrails/gr-1")
   })
 
   it("shows the guardrail id and status", () => {

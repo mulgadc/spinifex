@@ -1,21 +1,21 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", () => ({
-  getEksClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
 
-vi.mock("@tanstack/react-router", () => ({
-  useNavigate: () => vi.fn(),
-  Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-    <a href={to}>{children}</a>
-  ),
-}))
+  return mockAwsClients(mockSend)
+})
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 import {
   ec2ImagesQueryOptions,

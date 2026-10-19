@@ -1,39 +1,23 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({ retrievalResults: [] })
+import { renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockAgentRuntimeClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ retrievalResults: [] }),
+)
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { useRetrieve } from "./bedrockAgentRuntime"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("useRetrieve", () => {
   it("sends RetrieveCommand with the knowledge base id and query text", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useRetrieve(), { wrapper })
+    const { result } = renderMutationHook(() => useRetrieve())
 
     result.current.mutate({ knowledgeBaseId: "kb-1", query: "what is ochre" })
 

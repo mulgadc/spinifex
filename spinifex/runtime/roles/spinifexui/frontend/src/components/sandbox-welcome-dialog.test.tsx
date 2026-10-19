@@ -4,23 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { SandboxWelcomeDialog } from "./sandbox-welcome-dialog"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({
-    children,
-    className,
-    onClick,
-    ...rest
-  }: {
-    children: React.ReactNode
-    className?: string
-    onClick?: () => void
-    to?: string
-  }) => (
-    <a className={className} href={rest.to} onClick={onClick}>
-      {children}
-    </a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 const DISMISSED_KEY = "spinifex:v1:sandbox-welcome"
 

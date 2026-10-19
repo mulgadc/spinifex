@@ -1,14 +1,16 @@
 import { DeleteSecurityGroupCommand } from "@aws-sdk/client-ec2"
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getEc2Client: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import {
   ec2InstanceQueryOptions,
@@ -59,8 +61,6 @@ import {
   useTerminateInstance,
 } from "./ec2"
 
-let queryClient: QueryClient
-
 /* oxlint-disable promise/avoid-new -- holding one SDK call open is the only way to order it after a sibling's failure */
 interface HeldResponse<T> {
   promise: Promise<T>
@@ -83,27 +83,9 @@ const settleTimers = async () =>
   })
 /* oxlint-enable promise/avoid-new */
 
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("useStartInstance", () => {
   it("sends StartInstancesCommand with the instance ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useStartInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useStartInstance())
 
     result.current.mutate("i-abc123")
 
@@ -117,14 +99,14 @@ describe("useStartInstance", () => {
   })
 
   it("marks the cached instance list and detail stale on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(ec2InstancesQueryOptions.queryKey, {
       $metadata: {},
     })
     queryClient.setQueryData(ec2InstanceQueryOptions("i-abc123").queryKey, {
       $metadata: {},
     })
-    const { result } = renderHook(() => useStartInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useStartInstance(), queryClient)
 
     result.current.mutate("i-abc123")
 
@@ -144,8 +126,7 @@ describe("useStartInstance", () => {
 
 describe("useStopInstance", () => {
   it("sends StopInstancesCommand with the instance ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useStopInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useStopInstance())
 
     result.current.mutate("i-abc123")
 
@@ -160,8 +141,7 @@ describe("useStopInstance", () => {
 
 describe("useTerminateInstance", () => {
   it("sends TerminateInstancesCommand with the instance ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useTerminateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useTerminateInstance())
 
     result.current.mutate("i-abc123")
 
@@ -176,8 +156,7 @@ describe("useTerminateInstance", () => {
 
 describe("useCreateInstance", () => {
   it("sends RunInstancesCommand with form data", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -201,8 +180,7 @@ describe("useCreateInstance", () => {
   })
 
   it("omits SubnetId when empty string", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -219,8 +197,7 @@ describe("useCreateInstance", () => {
   })
 
   it("includes Placement when placementGroupName is provided", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -239,8 +216,7 @@ describe("useCreateInstance", () => {
   })
 
   it("omits Placement when placementGroupName is empty", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -257,8 +233,7 @@ describe("useCreateInstance", () => {
   })
 
   it("omits BlockDeviceMappings when no storage fields are set", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -277,8 +252,7 @@ describe("useCreateInstance", () => {
   })
 
   it("includes BlockDeviceMappings when root volume size is set", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -309,8 +283,7 @@ describe("useCreateInstance", () => {
   })
 
   it("includes only the storage fields the user set", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -337,8 +310,7 @@ describe("useCreateInstance", () => {
   })
 
   it("launches from a template with LaunchTemplate and count", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       launchTemplateId: "lt-123",
@@ -361,8 +333,7 @@ describe("useCreateInstance", () => {
   })
 
   it("defaults the template version to $Default", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({ launchTemplateId: "lt-123", count: 1 })
 
@@ -376,8 +347,7 @@ describe("useCreateInstance", () => {
   })
 
   it("omits LaunchTemplate for a direct launch", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate({
       imageId: "ami-123",
@@ -404,13 +374,12 @@ describe("useCreateInstance in create-group mode", () => {
   }
 
   it("deletes the new group when RunInstances fails", async () => {
-    createQueryClient()
     const launchError = new Error("no capacity")
     mockSend
       .mockResolvedValueOnce({ GroupId: "sg-new" })
       .mockResolvedValueOnce({})
       .mockRejectedValueOnce(launchError)
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate(createModeParams)
 
@@ -427,11 +396,10 @@ describe("useCreateInstance in create-group mode", () => {
   })
 
   it("deletes the new group when authorizing its ingress fails", async () => {
-    createQueryClient()
     mockSend
       .mockResolvedValueOnce({ GroupId: "sg-new" })
       .mockRejectedValueOnce(new Error("bad rule"))
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate(createModeParams)
 
@@ -445,14 +413,13 @@ describe("useCreateInstance in create-group mode", () => {
   })
 
   it("reports the launch error when the cleanup delete also fails", async () => {
-    createQueryClient()
     const launchError = new Error("no capacity")
     mockSend
       .mockResolvedValueOnce({ GroupId: "sg-new" })
       .mockResolvedValueOnce({})
       .mockRejectedValueOnce(launchError)
       .mockRejectedValueOnce(new Error("delete failed"))
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate(createModeParams)
 
@@ -462,9 +429,8 @@ describe("useCreateInstance in create-group mode", () => {
   })
 
   it("keeps the new group when the launch succeeds", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ GroupId: "sg-new" })
-    const { result } = renderHook(() => useCreateInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstance())
 
     result.current.mutate(createModeParams)
 
@@ -544,8 +510,7 @@ describe("buildLaunchTemplateData", () => {
 
 describe("useCreateLaunchTemplate", () => {
   it("sends CreateLaunchTemplateCommand with name and data", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateLaunchTemplate(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateLaunchTemplate())
 
     result.current.mutate({
       launchTemplateName: "web",
@@ -567,9 +532,13 @@ describe("useCreateLaunchTemplate", () => {
   })
 
   it("invalidates the launch templates query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateLaunchTemplate(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateLaunchTemplate(),
+      queryClient,
+    )
 
     result.current.mutate({
       launchTemplateName: "web",
@@ -588,11 +557,9 @@ describe("useCreateLaunchTemplate", () => {
 
 describe("useCreateLaunchTemplateVersion", () => {
   it("sends the command with source version and id", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useCreateLaunchTemplateVersion(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useCreateLaunchTemplateVersion(),
+    )
 
     result.current.mutate({
       launchTemplateId: "lt-1",
@@ -613,12 +580,13 @@ describe("useCreateLaunchTemplateVersion", () => {
   })
 
   it("invalidates the list and the versions query", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
 
-    const { result } = renderHook(() => useCreateLaunchTemplateVersion(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useCreateLaunchTemplateVersion(),
+      queryClient,
+    )
 
     result.current.mutate({
       launchTemplateId: "lt-1",
@@ -640,8 +608,7 @@ describe("useCreateLaunchTemplateVersion", () => {
 
 describe("useModifyLaunchTemplate", () => {
   it("sends ModifyLaunchTemplateCommand with the default version", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useModifyLaunchTemplate(), { wrapper })
+    const { result } = renderMutationHook(() => useModifyLaunchTemplate())
 
     result.current.mutate({ launchTemplateId: "lt-1", defaultVersion: "4" })
 
@@ -657,11 +624,9 @@ describe("useModifyLaunchTemplate", () => {
 
 describe("useDeleteLaunchTemplateVersions", () => {
   it("sends DeleteLaunchTemplateVersionsCommand with the versions", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useDeleteLaunchTemplateVersions(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useDeleteLaunchTemplateVersions(),
+    )
 
     result.current.mutate({ launchTemplateId: "lt-1", versions: ["2", "3"] })
 
@@ -675,7 +640,6 @@ describe("useDeleteLaunchTemplateVersions", () => {
   })
 
   it("fails when a version comes back in the unsuccessful list", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({
       SuccessfullyDeletedLaunchTemplateVersions: [],
       UnsuccessfullyDeletedLaunchTemplateVersions: [
@@ -689,9 +653,9 @@ describe("useDeleteLaunchTemplateVersions", () => {
       ],
     })
 
-    const { result } = renderHook(() => useDeleteLaunchTemplateVersions(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useDeleteLaunchTemplateVersions(),
+    )
 
     result.current.mutate({ launchTemplateId: "lt-1", versions: ["2"] })
 
@@ -706,8 +670,7 @@ describe("useDeleteLaunchTemplateVersions", () => {
 
 describe("useDeleteLaunchTemplate", () => {
   it("sends DeleteLaunchTemplateCommand with the id", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteLaunchTemplate(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteLaunchTemplate())
 
     result.current.mutate("lt-1")
 
@@ -722,8 +685,7 @@ describe("useDeleteLaunchTemplate", () => {
 
 describe("useImportKeyPair", () => {
   it("strips the comment from an SSH public key", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useImportKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useImportKeyPair())
 
     result.current.mutate({
       keyName: "my-key",
@@ -742,8 +704,7 @@ describe("useImportKeyPair", () => {
   })
 
   it("handles keys without comments", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useImportKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useImportKeyPair())
 
     result.current.mutate({
       keyName: "my-key",
@@ -762,8 +723,7 @@ describe("useImportKeyPair", () => {
   })
 
   it("handles extra whitespace in key", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useImportKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useImportKeyPair())
 
     result.current.mutate({
       keyName: "my-key",
@@ -784,8 +744,7 @@ describe("useImportKeyPair", () => {
 
 describe("useRebootInstance", () => {
   it("sends RebootInstancesCommand with the instance ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useRebootInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useRebootInstance())
 
     result.current.mutate("i-abc123")
 
@@ -800,9 +759,8 @@ describe("useRebootInstance", () => {
 
 describe("useCreateKeyPair", () => {
   it("sends CreateKeyPairCommand with the selected key type", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ KeyMaterial: "-----BEGIN RSA-----" })
-    const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateKeyPair())
 
     result.current.mutate({ keyName: "my-key", keyType: "rsa" })
 
@@ -816,9 +774,8 @@ describe("useCreateKeyPair", () => {
   })
 
   it("passes ed25519 through rather than forcing rsa", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ KeyMaterial: "-----BEGIN OPENSSH-----" })
-    const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateKeyPair())
 
     result.current.mutate({ keyName: "my-key", keyType: "ed25519" })
 
@@ -832,9 +789,8 @@ describe("useCreateKeyPair", () => {
   })
 
   it("fails when the API omits the private key material", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({})
-    const { result } = renderHook(() => useCreateKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateKeyPair())
 
     result.current.mutate({ keyName: "my-key", keyType: "rsa" })
 
@@ -847,8 +803,7 @@ describe("useCreateKeyPair", () => {
 
 describe("useDeleteKeyPair", () => {
   it("sends DeleteKeyPairCommand with key pair ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteKeyPair(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteKeyPair())
 
     result.current.mutate("kp-abc123")
 
@@ -863,8 +818,7 @@ describe("useDeleteKeyPair", () => {
 
 describe("useCreateVolume", () => {
   it("sends CreateVolumeCommand with size and availability zone", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateVolume(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVolume())
 
     result.current.mutate({ size: 100, availabilityZone: "us-east-1a" })
 
@@ -881,8 +835,7 @@ describe("useCreateVolume", () => {
 
 describe("useModifyVolume", () => {
   it("sends ModifyVolumeCommand with volume ID and new size", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useModifyVolume(), { wrapper })
+    const { result } = renderMutationHook(() => useModifyVolume())
 
     result.current.mutate({ volumeId: "vol-123", size: 200 })
 
@@ -898,8 +851,7 @@ describe("useModifyVolume", () => {
 
 describe("useDeleteVolume", () => {
   it("sends DeleteVolumeCommand with volume ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteVolume(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteVolume())
 
     result.current.mutate("vol-123")
 
@@ -914,8 +866,7 @@ describe("useDeleteVolume", () => {
 
 describe("useCreateSnapshot", () => {
   it("sends CreateSnapshotCommand with volume ID and description", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateSnapshot(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateSnapshot())
 
     result.current.mutate({ volumeId: "vol-123", description: "backup" })
 
@@ -929,8 +880,7 @@ describe("useCreateSnapshot", () => {
   })
 
   it("omits Description when empty", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateSnapshot(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateSnapshot())
 
     result.current.mutate({ volumeId: "vol-123", description: "" })
 
@@ -943,8 +893,7 @@ describe("useCreateSnapshot", () => {
 
 describe("useDeleteSnapshot", () => {
   it("sends DeleteSnapshotCommand with snapshot ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteSnapshot(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteSnapshot())
 
     result.current.mutate("snap-123")
 
@@ -959,8 +908,7 @@ describe("useDeleteSnapshot", () => {
 
 describe("useCopySnapshot", () => {
   it("sends CopySnapshotCommand with source details", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCopySnapshot(), { wrapper })
+    const { result } = renderMutationHook(() => useCopySnapshot())
 
     result.current.mutate({
       sourceSnapshotId: "snap-123",
@@ -981,8 +929,7 @@ describe("useCopySnapshot", () => {
 
 describe("useAttachVolume", () => {
   it("sends AttachVolumeCommand with volume, instance, and device", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useAttachVolume(), { wrapper })
+    const { result } = renderMutationHook(() => useAttachVolume())
 
     result.current.mutate({
       volumeId: "vol-123",
@@ -1003,8 +950,7 @@ describe("useAttachVolume", () => {
 
 describe("useDetachVolume", () => {
   it("sends DetachVolumeCommand with volume, instance, and force", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDetachVolume(), { wrapper })
+    const { result } = renderMutationHook(() => useDetachVolume())
 
     result.current.mutate({
       volumeId: "vol-123",
@@ -1025,11 +971,7 @@ describe("useDetachVolume", () => {
 
 describe("useModifyInstanceAttribute", () => {
   it("sends ModifyInstanceAttributeCommand with instance type", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useModifyInstanceAttribute(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useModifyInstanceAttribute())
 
     result.current.mutate({
       instanceId: "i-abc",
@@ -1048,8 +990,7 @@ describe("useModifyInstanceAttribute", () => {
 
 describe("useGetConsoleOutput", () => {
   it("sends GetConsoleOutputCommand with instance ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useGetConsoleOutput(), { wrapper })
+    const { result } = renderMutationHook(() => useGetConsoleOutput())
 
     result.current.mutate("i-abc123")
 
@@ -1064,8 +1005,7 @@ describe("useGetConsoleOutput", () => {
 
 describe("useCreateImage", () => {
   it("sends CreateImageCommand with instance ID and name", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateImage(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateImage())
 
     result.current.mutate({
       instanceId: "i-abc",
@@ -1086,8 +1026,7 @@ describe("useCreateImage", () => {
 
 describe("useCreateVpc", () => {
   it("includes TagSpecifications when name is provided", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateVpc(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpc())
 
     result.current.mutate({ cidrBlock: "10.0.0.0/16", name: "my-vpc" })
 
@@ -1106,8 +1045,7 @@ describe("useCreateVpc", () => {
   })
 
   it("sends user tags after the Name tag", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateVpc(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpc())
 
     result.current.mutate({
       cidrBlock: "10.0.0.0/16",
@@ -1130,8 +1068,7 @@ describe("useCreateVpc", () => {
   })
 
   it("omits TagSpecifications when name is empty", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateVpc(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpc())
 
     result.current.mutate({ cidrBlock: "10.0.0.0/16", name: "" })
 
@@ -1144,8 +1081,7 @@ describe("useCreateVpc", () => {
 
 describe("useDeleteVpc", () => {
   it("sends DeleteVpcCommand with VPC ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteVpc(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteVpc())
 
     result.current.mutate("vpc-123")
 
@@ -1160,8 +1096,7 @@ describe("useDeleteVpc", () => {
 
 describe("useCreateSubnet", () => {
   it("sends CreateSubnetCommand with VPC ID and CIDR block", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateSubnet())
 
     result.current.mutate({
       vpcId: "vpc-123",
@@ -1180,9 +1115,8 @@ describe("useCreateSubnet", () => {
   })
 
   it("calls ModifySubnetAttribute when mapPublicIpOnLaunch is set", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-abc" } })
-    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateSubnet())
 
     result.current.mutate({
       vpcId: "vpc-123",
@@ -1201,9 +1135,8 @@ describe("useCreateSubnet", () => {
   })
 
   it("skips ModifySubnetAttribute when mapPublicIpOnLaunch is false", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-abc" } })
-    const { result } = renderHook(() => useCreateSubnet(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateSubnet())
 
     result.current.mutate({
       vpcId: "vpc-123",
@@ -1220,8 +1153,7 @@ describe("useCreateSubnet", () => {
 
 describe("useDeleteSubnet", () => {
   it("sends DeleteSubnetCommand with subnet ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteSubnet(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteSubnet())
 
     result.current.mutate("subnet-123")
 
@@ -1236,8 +1168,7 @@ describe("useDeleteSubnet", () => {
 
 describe("useCreatePlacementGroup", () => {
   it("sends CreatePlacementGroupCommand with group name and strategy", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreatePlacementGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreatePlacementGroup())
 
     result.current.mutate({ groupName: "my-group", strategy: "spread" })
 
@@ -1251,9 +1182,13 @@ describe("useCreatePlacementGroup", () => {
   })
 
   it("invalidates placementGroups query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreatePlacementGroup(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreatePlacementGroup(),
+      queryClient,
+    )
 
     result.current.mutate({ groupName: "my-group", strategy: "cluster" })
 
@@ -1268,8 +1203,7 @@ describe("useCreatePlacementGroup", () => {
 
 describe("useDeletePlacementGroup", () => {
   it("sends DeletePlacementGroupCommand with group name", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeletePlacementGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useDeletePlacementGroup())
 
     result.current.mutate("my-group")
 
@@ -1282,9 +1216,13 @@ describe("useDeletePlacementGroup", () => {
   })
 
   it("invalidates placementGroups query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeletePlacementGroup(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeletePlacementGroup(),
+      queryClient,
+    )
 
     result.current.mutate("my-group")
 
@@ -1299,8 +1237,7 @@ describe("useDeletePlacementGroup", () => {
 
 describe("useCreateSecurityGroup", () => {
   it("sends CreateSecurityGroupCommand with form data", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateSecurityGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateSecurityGroup())
 
     result.current.mutate({
       groupName: "web-sg",
@@ -1319,9 +1256,13 @@ describe("useCreateSecurityGroup", () => {
   })
 
   it("invalidates securityGroups query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateSecurityGroup(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateSecurityGroup(),
+      queryClient,
+    )
 
     result.current.mutate({
       groupName: "web-sg",
@@ -1340,8 +1281,7 @@ describe("useCreateSecurityGroup", () => {
 
 describe("useDeleteSecurityGroup", () => {
   it("sends DeleteSecurityGroupCommand with group ID", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteSecurityGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteSecurityGroup())
 
     result.current.mutate("sg-123")
 
@@ -1354,9 +1294,13 @@ describe("useDeleteSecurityGroup", () => {
   })
 
   it("invalidates securityGroups query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeleteSecurityGroup(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteSecurityGroup(),
+      queryClient,
+    )
 
     result.current.mutate("sg-123")
 
@@ -1379,11 +1323,9 @@ describe("useAuthorizeSecurityGroupIngress", () => {
   }
 
   it("sends AuthorizeSecurityGroupIngressCommand with IpPermissions", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useAuthorizeSecurityGroupIngress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useAuthorizeSecurityGroupIngress(),
+    )
 
     result.current.mutate(ruleParams)
 
@@ -1404,12 +1346,13 @@ describe("useAuthorizeSecurityGroupIngress", () => {
   })
 
   it("invalidates securityGroups queries on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
 
-    const { result } = renderHook(() => useAuthorizeSecurityGroupIngress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useAuthorizeSecurityGroupIngress(),
+      queryClient,
+    )
 
     result.current.mutate(ruleParams)
 
@@ -1427,11 +1370,9 @@ describe("useAuthorizeSecurityGroupIngress", () => {
 
 describe("useAuthorizeSecurityGroupEgress", () => {
   it("sends AuthorizeSecurityGroupEgressCommand with IpPermissions", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useAuthorizeSecurityGroupEgress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useAuthorizeSecurityGroupEgress(),
+    )
 
     result.current.mutate({
       groupId: "sg-456",
@@ -1460,11 +1401,7 @@ describe("useAuthorizeSecurityGroupEgress", () => {
 
 describe("useRevokeSecurityGroupIngress", () => {
   it("sends RevokeSecurityGroupIngressCommand with IpPermissions", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useRevokeSecurityGroupIngress())
 
     result.current.mutate({
       groupId: "sg-123",
@@ -1491,11 +1428,7 @@ describe("useRevokeSecurityGroupIngress", () => {
   })
 
   it("uses UserIdGroupPairs when sourceGroupId is given", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useRevokeSecurityGroupIngress())
 
     result.current.mutate({
       groupId: "sg-123",
@@ -1522,12 +1455,13 @@ describe("useRevokeSecurityGroupIngress", () => {
   })
 
   it("invalidates securityGroups queries on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
 
-    const { result } = renderHook(() => useRevokeSecurityGroupIngress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useRevokeSecurityGroupIngress(),
+      queryClient,
+    )
 
     result.current.mutate({
       groupId: "sg-123",
@@ -1551,11 +1485,7 @@ describe("useRevokeSecurityGroupIngress", () => {
 
 describe("useRevokeSecurityGroupEgress", () => {
   it("sends RevokeSecurityGroupEgressCommand with IpPermissions", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRevokeSecurityGroupEgress(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useRevokeSecurityGroupEgress())
 
     result.current.mutate({
       groupId: "sg-456",
@@ -1597,11 +1527,10 @@ describe("useCreateVpcWizard", () => {
   }
 
   it("sends only CreateVpcCommand in vpc-only mode", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({
       Vpc: { VpcId: "vpc-111" },
     })
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate(baseParams)
 
@@ -1615,11 +1544,10 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("includes TagSpecifications with auto-generated name", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({
       Vpc: { VpcId: "vpc-111" },
     })
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate({
       ...baseParams,
@@ -1638,7 +1566,6 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("sends correct command sequence for vpc-and-more with 1 public + 1 private", async () => {
-    createQueryClient()
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
@@ -1663,7 +1590,7 @@ describe("useCreateVpcWizard", () => {
       // AssociateRouteTable (private)
       .mockResolvedValueOnce({})
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate({
       ...baseParams,
@@ -1682,7 +1609,6 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("provisions a NAT gateway when natGateway is single", async () => {
-    createQueryClient()
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
@@ -1706,7 +1632,7 @@ describe("useCreateVpcWizard", () => {
       .mockResolvedValueOnce({ NatGateway: { NatGatewayId: "nat-1" } })
       .mockResolvedValueOnce({})
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate({
       ...baseParams,
@@ -1728,7 +1654,6 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("skips IGW and public route table when publicSubnetCount is 0", async () => {
-    createQueryClient()
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
@@ -1738,7 +1663,7 @@ describe("useCreateVpcWizard", () => {
       // AssociateRouteTable
       .mockResolvedValueOnce({})
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate({
       ...baseParams,
@@ -1757,7 +1682,6 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("returns partial result with failedStep on error mid-orchestration", async () => {
-    createQueryClient()
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-pub-1" } })
@@ -1765,7 +1689,7 @@ describe("useCreateVpcWizard", () => {
       .mockResolvedValueOnce({})
       .mockRejectedValueOnce(new Error("CIDR conflict"))
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate({
       ...baseParams,
@@ -1786,14 +1710,13 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("reports every created subnet when a parallel create fails", async () => {
-    createQueryClient()
     const secondPrivate = heldResponse<{ Subnet: { SubnetId: string } }>()
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockRejectedValueOnce(new Error("CIDR conflict"))
       .mockImplementationOnce(async () => await secondPrivate.promise)
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
     let settled = false
     void result.current
       .mutateAsync({
@@ -1824,13 +1747,12 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("fills subnets beyond the custom CIDR list with defaults", async () => {
-    createQueryClient()
     mockSend
       .mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-1" } })
       .mockResolvedValueOnce({ Subnet: { SubnetId: "subnet-priv-2" } })
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
     result.current.mutate({
       ...baseParams,
       mode: "vpc-and-more",
@@ -1847,10 +1769,9 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("returns error when VPC creation fails", async () => {
-    createQueryClient()
     mockSend.mockRejectedValueOnce(new Error("Access denied"))
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate(baseParams)
 
@@ -1864,10 +1785,9 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("returns error when VPC is created but no ID returned", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ Vpc: {} })
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate(baseParams)
 
@@ -1881,10 +1801,14 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("invalidates related queries on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
     mockSend.mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateVpcWizard(),
+      queryClient,
+    )
 
     result.current.mutate(baseParams)
 
@@ -1900,10 +1824,9 @@ describe("useCreateVpcWizard", () => {
   })
 
   it("propagates extra tags to all resources", async () => {
-    createQueryClient()
     mockSend.mockResolvedValueOnce({ Vpc: { VpcId: "vpc-111" } })
 
-    const { result } = renderHook(() => useCreateVpcWizard(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateVpcWizard())
 
     result.current.mutate({
       ...baseParams,
@@ -1920,11 +1843,9 @@ describe("useCreateVpcWizard", () => {
 
 describe("useAssociateIamInstanceProfile", () => {
   it("sends AssociateIamInstanceProfileCommand with instance and profile", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useAssociateIamInstanceProfile(),
+    )
 
     result.current.mutate({
       instanceId: "i-abc123",
@@ -1941,12 +1862,13 @@ describe("useAssociateIamInstanceProfile", () => {
   })
 
   it("invalidates associations and instances on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
 
-    const { result } = renderHook(() => useAssociateIamInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useAssociateIamInstanceProfile(),
+      queryClient,
+    )
 
     result.current.mutate({
       instanceId: "i-abc123",
@@ -1965,11 +1887,9 @@ describe("useAssociateIamInstanceProfile", () => {
 
 describe("useDisassociateIamInstanceProfile", () => {
   it("sends DisassociateIamInstanceProfileCommand with associationId", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useDisassociateIamInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useDisassociateIamInstanceProfile(),
+    )
 
     result.current.mutate({
       associationId: "iip-assoc-1",

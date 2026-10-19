@@ -1,6 +1,5 @@
+import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { useDeleteDBSnapshot } from "@/mutations/rds"
-
-import { RdsDeleteDialog } from "../../-components/rds-delete-dialog"
 
 interface DeleteDBSnapshotDialogProps {
   open: boolean
@@ -16,7 +15,7 @@ export function DeleteDBSnapshotDialog({
   onDeleted,
 }: DeleteDBSnapshotDialogProps) {
   return (
-    <RdsDeleteDialog
+    <ResourceDeleteDialog
       description={
         <>
           This deletes the DB snapshot &quot;{dbSnapshotIdentifier}&quot; and

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
   CliCommandPanel,
   partsToText,
+  shellSingleQuote,
   type CliCommand,
 } from "./cli-command-panel"
 
@@ -189,5 +190,19 @@ describe("partsToText", () => {
     expect(result).toContain("create-vpc")
     expect(result).toContain("\n\n")
     expect(result).toContain("create-subnet")
+  })
+})
+
+describe("shellSingleQuote", () => {
+  it("wraps a plain value in single quotes", () => {
+    expect(shellSingleQuote("my template")).toBe("'my template'")
+  })
+
+  it("closes and reopens the quote around an embedded single quote", () => {
+    expect(shellSingleQuote("it's")).toBe(`'it'"'"'s'`)
+  })
+
+  it("leaves shell metacharacters literal inside the quotes", () => {
+    expect(shellSingleQuote('{"a":"$HOME"}')).toBe(`'{"a":"$HOME"}'`)
   })
 })

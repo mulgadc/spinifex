@@ -8,10 +8,7 @@ import userEvent from "@testing-library/user-event"
 import { useForm } from "react-hook-form"
 import { describe, expect, it } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 import {
   ALL_LISTENER_PROTOCOLS,
   type CreateListenerFormData,

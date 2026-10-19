@@ -1,10 +1,10 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Copy, Image, Trash2 } from "lucide-react"
+import { createFileRoute, Link } from "@tanstack/react-router"
+import { Copy, Image } from "lucide-react"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -60,14 +60,12 @@ export const Route = createFileRoute(
 
 function SnapshotDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2SnapshotQueryOptions(id))
   const { data: regionsData } = useSuspenseQuery(ec2RegionsQueryOptions)
   const snapshot = data.Snapshots?.[0]
   const deleteMutation = useDeleteSnapshot()
   const copyMutation = useCopySnapshot()
   const registerMutation = useRegisterImage()
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showCopyDialog, setShowCopyDialog] = useState(false)
   const [copyDescription, setCopyDescription] = useState("")
   const [showRegisterDialog, setShowRegisterDialog] = useState(false)
@@ -109,15 +107,6 @@ function SnapshotDetail() {
     }
   }
 
-  const handleDelete = async () => {
-    try {
-      await deleteMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-snapshots" })
-    } finally {
-      setShowDeleteDialog(false)
-    }
-  }
-
   const handleCopy = async () => {
     try {
       await copyMutation.mutateAsync({
@@ -147,13 +136,6 @@ function SnapshotDetail() {
     <>
       <BackLink to="/ec2/describe-snapshots">Back to snapshots</BackLink>
 
-      {deleteMutation.error && (
-        <ErrorBanner
-          error={deleteMutation.error}
-          msg="Failed to delete snapshot"
-        />
-      )}
-
       {copyMutation.error && (
         <ErrorBanner error={copyMutation.error} msg="Failed to copy snapshot" />
       )}
@@ -169,17 +151,14 @@ function SnapshotDetail() {
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the snapshot "${snapshot.SnapshotId}"? This action cannot be undone.`}
                 disabled={!canDelete}
-                onClick={() => {
-                  setShowDeleteDialog(true)
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+                id={id}
+                mutation={deleteMutation}
+                title="Delete Snapshot"
+                to="/ec2/describe-snapshots"
+              />
               <Button
                 disabled={!canDelete}
                 onClick={() => {
@@ -243,15 +222,6 @@ function SnapshotDetail() {
           </DetailCard.Content>
         </DetailCard>
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the snapshot "${snapshot.SnapshotId}"? This action cannot be undone.`}
-        isPending={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={setShowDeleteDialog}
-        open={showDeleteDialog}
-        title="Delete Snapshot"
-      />
 
       <AlertDialog onOpenChange={setShowCopyDialog} open={showCopyDialog}>
         <AlertDialogContent>

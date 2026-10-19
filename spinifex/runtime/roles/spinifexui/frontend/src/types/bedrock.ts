@@ -10,6 +10,8 @@ import type {
 } from "@aws-sdk/client-bedrock"
 import { z } from "zod"
 
+import { tagSchema } from "@/types/tags"
+
 // Mirrors the field constraints CreateGuardrail/UpdateGuardrail enforce, so the
 // form rejects what the backend would reject before the round trip. Value
 // lists are pinned to the SDK's own enums via `satisfies` so a mismatch with a
@@ -139,11 +141,6 @@ export const guardrailContextualGroundingFilterSchema = z.object({
     .max(MAX_THRESHOLD, "Threshold must be between 0 and 1"),
 })
 
-export const guardrailTagSchema = z.object({
-  key: z.string().min(1, "Tag key is required").max(128),
-  value: z.string().max(256),
-})
-
 export const guardrailFormSchema = z.object({
   name: guardrailNameField,
   description: z.string(),
@@ -159,7 +156,7 @@ export const guardrailFormSchema = z.object({
   piiEntities: z.array(guardrailPiiEntitySchema),
   regexes: z.array(guardrailRegexSchema),
   contextualGroundingFilters: z.array(guardrailContextualGroundingFilterSchema),
-  tags: z.array(guardrailTagSchema),
+  tags: z.array(tagSchema),
 })
 
 export type GuardrailFormData = z.infer<typeof guardrailFormSchema>

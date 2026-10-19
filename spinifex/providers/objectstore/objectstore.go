@@ -189,8 +189,9 @@ func (s *S3ObjectStore) EnsureBucket(ctx context.Context, bucket string) error {
 
 // MemoryObjectStore implements ObjectStore using in-memory storage for testing.
 type MemoryObjectStore struct {
-	objects map[string][]byte // key: bucket/key -> value: object data
-	mu      sync.RWMutex
+	objects  map[string][]byte    // key: bucket/key -> value: object data
+	modified map[string]time.Time // key: bucket/key -> last write time
+	mu       sync.RWMutex
 }
 
 var _ ObjectStore = (*MemoryObjectStore)(nil)
@@ -198,7 +199,8 @@ var _ ObjectStore = (*MemoryObjectStore)(nil)
 // NewMemoryObjectStore creates an in-memory ObjectStore for testing.
 func NewMemoryObjectStore() *MemoryObjectStore {
 	return &MemoryObjectStore{
-		objects: make(map[string][]byte),
+		objects:  make(map[string][]byte),
+		modified: make(map[string]time.Time),
 	}
 }
 
@@ -259,6 +261,7 @@ func (m *MemoryObjectStore) PutObject(_ context.Context, input *s3.PutObjectInpu
 	}
 
 	m.objects[storageKey] = data
+	m.modified[storageKey] = time.Now().UTC()
 
 	return &s3.PutObjectOutput{}, nil
 }
@@ -272,6 +275,7 @@ func (m *MemoryObjectStore) DeleteObject(_ context.Context, input *s3.DeleteObje
 
 	storageKey := makeKey(*input.Bucket, *input.Key)
 	delete(m.objects, storageKey)
+	delete(m.modified, storageKey)
 
 	return &s3.DeleteObjectOutput{}, nil
 }
@@ -311,8 +315,9 @@ func (m *MemoryObjectStore) ListObjectsV2(_ context.Context, input *s3.ListObjec
 		}
 
 		contents = append(contents, &s3.Object{
-			Key:  aws.String(objectKey),
-			Size: aws.Int64(int64(len(data))),
+			Key:          aws.String(objectKey),
+			Size:         aws.Int64(int64(len(data))),
+			LastModified: aws.Time(m.modified[key]),
 		})
 	}
 
@@ -340,6 +345,7 @@ func (m *MemoryObjectStore) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.objects = make(map[string][]byte)
+	m.modified = make(map[string]time.Time)
 }
 
 // Count returns the number of objects in the memory store.

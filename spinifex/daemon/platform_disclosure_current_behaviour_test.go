@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -56,11 +55,11 @@ func newDisclosureCluster(t *testing.T) *disclosureCluster {
 	require.NoError(t, err)
 	d.keyService = ec2key.NewKeyServiceImplWithStore(store, disclosureBucket)
 	d.tagsService = ec2tags.NewTagsServiceImplWithStore(cfg, store, tagsKV)
-	d.keyService.SetCentralTagStore(d.tagsService)
 	d.placementGroupService, err = ec2placementgroup.NewPlacementGroupServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
 	d.launchTemplateService, err = ec2launchtemplate.NewLaunchTemplateServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
+	d.wirePlatformTagIndex()
 	require.NoError(t, d.subscribeAll())
 
 	caller, err := nats.Connect(ns.ClientURL())
@@ -225,12 +224,13 @@ func TestCurrentBehaviour_AccountTermination_DirectNATSCallerCannotSeeHiddenResi
 	assert.Equal(t, before.taggedResources, after.taggedResources)
 }
 
-// Pins current behaviour that differs from AWS: deleting a placement group or
-// launch template leaves its tag-index entry, which DescribeTags keeps
-// returning with its values. A key-pair delete clears its entry.
-func TestCurrentBehaviour_AccountTermination_PlatformDeletesLeaveTagIndexEntries(t *testing.T) {
+// Deleting a key pair, placement group or launch template clears its
+// tag-index entry, so DescribeTags no longer returns its rows, as in AWS.
+func TestPlatformDeletesClearTagIndexEntries(t *testing.T) {
 	c := newDisclosureCluster(t)
 	s := c.seed(t, disclosureAccount, "a")
+	before := c.describe(t, disclosureAccount)
+	require.Equal(t, sortedIDs(s.keyID, s.groupID, s.templateID), before.taggedResources)
 
 	c.call(t, "ec2.DeleteKeyPair", disclosureAccount, &ec2.DeleteKeyPairInput{KeyName: aws.String(s.keyName)}, nil)
 	c.call(t, "ec2.DeletePlacementGroup", disclosureAccount, &ec2.DeletePlacementGroupInput{GroupName: aws.String(s.groupName)}, nil)
@@ -240,13 +240,8 @@ func TestCurrentBehaviour_AccountTermination_PlatformDeletesLeaveTagIndexEntries
 	assert.Empty(t, got.keyPairs)
 	assert.Empty(t, got.placementGroups)
 	assert.Empty(t, got.launchTemplates)
-	assert.Equal(t, sortedIDs(s.groupID, s.templateID), got.taggedResources)
-
+	assert.Empty(t, got.taggedResources)
 	var tags ec2.DescribeTagsOutput
 	c.call(t, "ec2.DescribeTags", disclosureAccount, &ec2.DescribeTagsInput{}, &tags)
-	for _, row := range tags.Tags {
-		assert.Equal(t, "owner", aws.StringValue(row.Key))
-		assert.Equal(t, "a", aws.StringValue(row.Value))
-		assert.True(t, strings.HasPrefix(aws.StringValue(row.ResourceId), "pg-") || strings.HasPrefix(aws.StringValue(row.ResourceId), "lt-"))
-	}
+	assert.Empty(t, tags.Tags)
 }

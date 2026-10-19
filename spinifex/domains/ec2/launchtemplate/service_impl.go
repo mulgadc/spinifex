@@ -52,6 +52,9 @@ type LaunchTemplateServiceImpl struct {
 	config   *config.Config
 	natsConn *nats.Conn
 	kv       jetstream.KeyValue
+
+	// Optional: nil leaves the central tag index untouched by delete.
+	centralTags CentralTagStore
 }
 
 // NewLaunchTemplateServiceImplWithNATS creates a launch template service with NATS JetStream.
@@ -103,7 +106,12 @@ func versionPrefix(accountID, ltID string) string {
 func (s *LaunchTemplateServiceImpl) getHeaderByID(ctx context.Context, accountID, ltID string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
 	entry, err := s.kv.Get(ctx, kvutil.AccountKey(accountID, ltID))
 	if err != nil {
-		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdNotFound)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdNotFound)
+		}
+		// A header the store cannot return now is not proven absent.
+		slog.ErrorContext(ctx, "Failed to read launch template header", "launchTemplateId", ltID, "err", err)
+		return nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	var h LaunchTemplateHeader
 	if err := json.Unmarshal(entry.Value(), &h); err != nil {
@@ -117,12 +125,19 @@ func (s *LaunchTemplateServiceImpl) getHeaderByID(ctx context.Context, accountID
 func (s *LaunchTemplateServiceImpl) getHeaderByName(ctx context.Context, accountID, name string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
 	entry, err := s.kv.Get(ctx, nameKey(accountID, name))
 	if err != nil {
-		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
+		}
+		slog.ErrorContext(ctx, "Failed to read launch template name index", "err", err)
+		return nil, nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	ltID := string(entry.Value())
 	h, hentry, err := s.getHeaderByID(ctx, accountID, ltID)
 	if err != nil {
-		return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
+		if err.Error() == awserrors.ErrorInvalidLaunchTemplateIdNotFound {
+			return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException)
+		}
+		return nil, nil, err
 	}
 	return h, hentry, nil
 }
@@ -291,6 +306,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 		Data:               data,
 	}
 	if err := s.putVersion(ctx, accountID, ltID, &rec); err != nil {
+		s.abandonCreate(ctx, accountID, name, ltID, false)
 		return nil, err
 	}
 
@@ -304,6 +320,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 		Tags:                 awstags.Extract(input.TagSpecifications, launchTemplateTagResourceType),
 	}
 	if err := s.putHeader(ctx, accountID, &header); err != nil {
+		s.abandonCreate(ctx, accountID, name, ltID, true)
 		return nil, err
 	}
 
@@ -312,6 +329,39 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplate(ctx context.Context, in
 	return &ec2.CreateLaunchTemplateOutput{
 		LaunchTemplate: headerToEC2(&header, 1),
 	}, nil
+}
+
+// abandonCreate removes what a failed create wrote, newest first. A failure
+// is logged; what remains has no header, and the account cleanup removes it
+// once it is older than an in-flight create could be.
+func (s *LaunchTemplateServiceImpl) abandonCreate(ctx context.Context, accountID, name, ltID string, wroteVersion bool) {
+	if wroteVersion {
+		if err := s.kv.Delete(ctx, versionKey(accountID, ltID, 1)); err != nil {
+			slog.ErrorContext(ctx, "CreateLaunchTemplate: failed to remove version 1 after a failed create", "launchTemplateId", ltID, "err", err)
+		}
+	}
+	if err := s.releaseName(ctx, accountID, name, ltID); err != nil {
+		slog.ErrorContext(ctx, "CreateLaunchTemplate: failed to release the name after a failed create", "launchTemplateId", ltID, "err", err)
+	}
+}
+
+// releaseName removes the name index only while it still names ltID, at the
+// revision read, so a name another template now holds is never released.
+func (s *LaunchTemplateServiceImpl) releaseName(ctx context.Context, accountID, name, ltID string) error {
+	key := nameKey(accountID, name)
+	entry, err := s.kv.Get(ctx, key)
+	switch {
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read name index: %w", err)
+	case string(entry.Value()) != ltID:
+		return nil
+	}
+	if err := s.kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision())); err != nil {
+		return fmt.Errorf("delete name index: %w", err)
+	}
+	return nil
 }
 
 // errNameInUse is AWS's error for a launch template name already taken.
@@ -377,7 +427,7 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 	if input.LaunchTemplateData == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, entry, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
@@ -429,6 +479,13 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 			slog.ErrorContext(ctx, "CreateLaunchTemplateVersion: version-key create failed", "next", next, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+		if err := s.commitVersion(ctx, accountID, header.LaunchTemplateId, entry); err != nil {
+			s.abandonVersion(ctx, accountID, header.LaunchTemplateId, next)
+			if errors.Is(err, errTemplateGone) {
+				return nil, templateNotFound(input.LaunchTemplateId, input.LaunchTemplateName)
+			}
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 		slog.InfoContext(ctx, "CreateLaunchTemplateVersion completed", "launchTemplateId", header.LaunchTemplateId, "version", next, "accountID", accountID)
 		return &ec2.CreateLaunchTemplateVersionOutput{
 			LaunchTemplateVersion: versionToEC2(header, &rec),
@@ -437,6 +494,53 @@ func (s *LaunchTemplateServiceImpl) CreateLaunchTemplateVersion(ctx context.Cont
 
 	slog.ErrorContext(ctx, "CreateLaunchTemplateVersion: version-number retries exhausted", "launchTemplateId", header.LaunchTemplateId, "accountID", accountID)
 	return nil, errors.New(awserrors.ErrorServerInternal)
+}
+
+// errTemplateGone: the header was deleted while a version was being added.
+var errTemplateGone = errors.New("launch template deleted")
+
+// commitVersion rewrites the header's current value under a revision guard
+// after a new body is written. A delete that removed the header at any earlier
+// revision makes it fail, so the body is never left without its template.
+func (s *LaunchTemplateServiceImpl) commitVersion(ctx context.Context, accountID, ltID string, entry jetstream.KeyValueEntry) error {
+	key := kvutil.AccountKey(accountID, ltID)
+	for range maxVersionRetries {
+		_, err := s.kv.Update(ctx, key, entry.Value(), entry.Revision())
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, jetstream.ErrKeyRevisionMismatch) && !errors.Is(err, jetstream.ErrKeyExists) {
+			slog.ErrorContext(ctx, "CreateLaunchTemplateVersion: header commit failed", "launchTemplateId", ltID, "err", err)
+			return err
+		}
+		next, gerr := s.kv.Get(ctx, key)
+		if errors.Is(gerr, jetstream.ErrKeyNotFound) {
+			return errTemplateGone
+		}
+		if gerr != nil {
+			return gerr
+		}
+		entry = next
+	}
+	return errors.New("header commit retries exhausted")
+}
+
+// abandonVersion removes a body whose header commit failed. A failure is
+// logged and leaves a headerless body, which no ID, name or launch resolves.
+func (s *LaunchTemplateServiceImpl) abandonVersion(ctx context.Context, accountID, ltID string, n int64) {
+	if err := s.kv.Delete(ctx, versionKey(accountID, ltID, n)); err != nil {
+		slog.ErrorContext(ctx, "CreateLaunchTemplateVersion: failed to remove an uncommitted version", "launchTemplateId", ltID, "version", n, "err", err)
+	}
+}
+
+// templateNotFound is the NotFound error for the template the request named.
+func templateNotFound(ltID, name *string) error {
+	if id := aws.StringValue(ltID); id != "" {
+		return awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateIdNotFound,
+			"The specified launch template, with template ID %s, does not exist.", id)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidLaunchTemplateNameNotFoundException,
+		"The specified launch template, with template name %s, does not exist.", aws.StringValue(name))
 }
 
 // --- ModifyLaunchTemplate ---
@@ -481,8 +585,11 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 
 // --- DeleteLaunchTemplate ---
 
+// DeleteLaunchTemplate deletes a template and every version. A store failure
+// returns an error with the header still in place, so the template stays
+// visible and a retried delete finishes it.
 func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, input *ec2.DeleteLaunchTemplateInput, accountID string) (*ec2.DeleteLaunchTemplateOutput, error) {
-	header, _, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
+	header, entry, err := s.resolveHeader(ctx, accountID, input.LaunchTemplateId, input.LaunchTemplateName)
 	if err != nil {
 		return nil, err
 	}
@@ -493,26 +600,90 @@ func (s *LaunchTemplateServiceImpl) DeleteLaunchTemplate(ctx context.Context, in
 	}
 	out := headerToEC2(header, latest)
 
-	// Delete the header first: the template immediately vanishes from every
-	// describe. Version bodies and the name index are best-effort cleanup.
-	if err := s.kv.Delete(ctx, kvutil.AccountKey(accountID, header.LaunchTemplateId)); err != nil {
+	if err := s.deleteTemplate(ctx, accountID, header, entry); err != nil {
+		slog.ErrorContext(ctx, "DeleteLaunchTemplate failed", "launchTemplateId", header.LaunchTemplateId, "accountID", accountID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if err := s.kv.Delete(ctx, nameKey(accountID, header.LaunchTemplateName)); err != nil {
-		slog.WarnContext(ctx, "DeleteLaunchTemplate: name index cleanup failed", "name", header.LaunchTemplateName, "err", err)
-	}
-	nums, err := s.listVersionNumbers(ctx, accountID, header.LaunchTemplateId)
-	if err != nil {
-		slog.WarnContext(ctx, "DeleteLaunchTemplate: version enumeration failed, bodies left in place", "launchTemplateId", header.LaunchTemplateId, "err", err)
-	}
-	for _, n := range nums {
-		if err := s.kv.Delete(ctx, versionKey(accountID, header.LaunchTemplateId, n)); err != nil {
-			slog.WarnContext(ctx, "DeleteLaunchTemplate: version cleanup failed", "launchTemplateId", header.LaunchTemplateId, "version", n, "err", err)
-		}
 	}
 
 	slog.InfoContext(ctx, "DeleteLaunchTemplate completed", "launchTemplateId", header.LaunchTemplateId, "accountID", accountID)
 	return &ec2.DeleteLaunchTemplateOutput{LaunchTemplate: out}, nil
+}
+
+// maxHeaderDeleteAttempts bounds restarts when the header changes mid-delete.
+const maxHeaderDeleteAttempts = 3
+
+// deleteTemplate removes every version body, then the name index, then the
+// header at the revision read, and last any body a concurrent version create
+// added meanwhile. The header goes last so every earlier failure is retryable
+// through the public delete; a header changed in between restarts the sweep.
+func (s *LaunchTemplateServiceImpl) deleteTemplate(ctx context.Context, accountID string, header *LaunchTemplateHeader, entry jetstream.KeyValueEntry) error {
+	ltID := header.LaunchTemplateId
+	headerKey := kvutil.AccountKey(accountID, ltID)
+	for attempt := 1; ; attempt++ {
+		if err := s.deleteVersionBodies(ctx, accountID, ltID); err != nil {
+			return err
+		}
+		if err := s.releaseName(ctx, accountID, header.LaunchTemplateName, ltID); err != nil {
+			return err
+		}
+		err := s.kv.Delete(ctx, headerKey, jetstream.LastRevision(entry.Revision()))
+		if err == nil {
+			break
+		}
+		if (!errors.Is(err, jetstream.ErrKeyRevisionMismatch) && !errors.Is(err, jetstream.ErrKeyExists)) || attempt >= maxHeaderDeleteAttempts {
+			return fmt.Errorf("delete header: %w", err)
+		}
+		next, gerr := s.kv.Get(ctx, headerKey)
+		if errors.Is(gerr, jetstream.ErrKeyNotFound) {
+			break
+		}
+		if gerr != nil {
+			return fmt.Errorf("re-read header: %w", gerr)
+		}
+		entry = next
+	}
+	s.clearRecordTags(ctx, accountID, ltID)
+	// A version create in flight fails its header commit and removes its own
+	// body; this sweep catches one that committed nothing before stopping.
+	return s.deleteVersionBodies(ctx, accountID, ltID)
+}
+
+// deleteVersionBodies deletes every version body of ltID, stopping at the
+// first failure so the caller can keep the header for a retry.
+func (s *LaunchTemplateServiceImpl) deleteVersionBodies(ctx context.Context, accountID, ltID string) error {
+	nums, err := s.listVersionNumbers(ctx, accountID, ltID)
+	if err != nil {
+		return fmt.Errorf("list versions: %w", err)
+	}
+	for _, n := range nums {
+		if err := s.kv.Delete(ctx, versionKey(accountID, ltID, n)); err != nil {
+			return fmt.Errorf("delete version %d: %w", n, err)
+		}
+	}
+	return nil
+}
+
+// CentralTagStore clears a deleted template's entry from the central EC2 tag
+// index. Implemented by domains/ec2/tags.TagsServiceImpl.
+type CentralTagStore interface {
+	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
+}
+
+// SetCentralTagStore injects the central tag index that delete clears.
+func (s *LaunchTemplateServiceImpl) SetCentralTagStore(st CentralTagStore) {
+	s.centralTags = st
+}
+
+// clearRecordTags drops a deleted template's tag-index entry. It runs only
+// after the header delete committed; a failure is logged, as a retried delete
+// would find nothing, and the entry is left as tag residue.
+func (s *LaunchTemplateServiceImpl) clearRecordTags(ctx context.Context, accountID, ltID string) {
+	if s.centralTags == nil {
+		return
+	}
+	if err := s.centralTags.DeleteAllTags(ctx, accountID, ltID); err != nil {
+		slog.ErrorContext(ctx, "central tag store clear failed", "launchTemplateId", ltID, "err", err)
+	}
 }
 
 // --- DeleteLaunchTemplateVersions ---

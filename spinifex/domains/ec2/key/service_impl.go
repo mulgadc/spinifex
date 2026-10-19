@@ -500,8 +500,12 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 			Key:    obj.Key,
 		})
 		if err != nil {
-			slog.Debug("Failed to get metadata file", "key", *obj.Key, "err", err)
-			continue
+			if objectstore.IsNoSuchKeyError(err) {
+				continue
+			}
+			// Unread metadata may be the key pair asked for, so absence is unproven.
+			slog.ErrorContext(ctx, "Failed to get metadata file", "key", *obj.Key, "err", err)
+			return "", fmt.Errorf("read metadata %s: %w", *obj.Key, err)
 		}
 
 		body, err := io.ReadAll(getResult.Body)
@@ -509,14 +513,15 @@ func (s *KeyServiceImpl) findKeyPairIdFromKeyName(ctx context.Context, accountID
 			slog.Debug("Failed to close metadata body", "key", *obj.Key, "err", err)
 		}
 		if err != nil {
-			slog.Debug("Failed to read metadata body", "key", *obj.Key, "err", err)
-			continue
+			slog.ErrorContext(ctx, "Failed to read metadata body", "key", *obj.Key, "err", err)
+			return "", fmt.Errorf("read metadata %s: %w", *obj.Key, err)
 		}
 
 		metadata, err := decodeKeyPairMetadata(body)
 		if err != nil {
-			slog.Debug("Failed to unmarshal metadata", "key", *obj.Key, "err", err)
-			continue
+			// Undecodable metadata may be this name's key pair, so absence is unproven.
+			slog.ErrorContext(ctx, "Undecodable key-pair metadata", "key", *obj.Key, "err", err)
+			return "", fmt.Errorf("decode metadata %s: %w", *obj.Key, err)
 		}
 
 		// Check if this metadata matches the keyName
@@ -611,7 +616,7 @@ func (s *KeyServiceImpl) describedPublicKey(accountID, keyName string) (string, 
 	return fmt.Sprintf("%s %s\n", bytes.TrimSpace(ssh.MarshalAuthorizedKey(publicKey)), keyName), nil
 }
 
-// DeleteKeyPair removes a key pair (both public key and metadata from S3).
+// DeleteKeyPair removes a key pair: its public key, metadata and tag-index entry.
 func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKeyPairInput, accountID string) (*ec2.DeleteKeyPairOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -641,7 +646,7 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 				return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true)}, nil
 			}
 			slog.ErrorContext(ctx, "Failed to get keyName from keyPairId", "keyPairId", keyPairID, "err", err)
-			return nil, err
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	} else if input.KeyName != nil && *input.KeyName != "" {
 		// KeyName provided - validate and find the keyPairId
@@ -655,48 +660,68 @@ func (s *KeyServiceImpl) DeleteKeyPair(ctx context.Context, input *ec2.DeleteKey
 
 		keyPairID, err = s.findKeyPairIdFromKeyName(ctx, accountID, keyName)
 		if err != nil {
-			// AWS DeleteKeyPair is idempotent — return success for non-existent keys
+			// AWS DeleteKeyPair is idempotent. A public key left with no metadata
+			// is this name's key, so it goes too and the name becomes reusable.
 			if err.Error() == awserrors.ErrorInvalidKeyPairNotFound {
+				if rmErr := s.deleteObject(ctx, publicKeyPath(accountID, keyName)); rmErr != nil {
+					slog.ErrorContext(ctx, "DeleteKeyPair: failed to remove leftover public key", "keyName", keyName, "err", rmErr)
+					return nil, errors.New(awserrors.ErrorServerInternal)
+				}
 				slog.DebugContext(ctx, "DeleteKeyPair: key pair not found, returning success (idempotent)", "keyName", keyName)
 				return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true)}, nil
 			}
 			slog.ErrorContext(ctx, "Failed to find keyPairId from keyName", "keyName", keyName, "err", err)
-			return nil, err
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	} else {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
 	slog.InfoContext(ctx, "Deleting key pair", "keyName", keyName, "keyPairId", keyPairID)
-
-	// Delete public key
-	publicKeyPath := fmt.Sprintf("keys/%s/%s", accountID, keyName)
-	_, err = s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(publicKeyPath),
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to delete public key", "path", publicKeyPath, "err", err)
-		// Continue to try deleting metadata even if public key deletion fails
-	}
-
-	// Delete metadata file (stored with keyPairID)
-	metadataPath := fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)
-	_, err = s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(metadataPath),
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to delete metadata", "path", metadataPath, "err", err)
+	if err := s.deleteKeyPairRecords(ctx, accountID, keyName, keyPairID); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-
-	s.clearRecordTags(ctx, accountID, keyPairID)
 
 	slog.InfoContext(ctx, "Key pair deleted successfully", "keyName", keyName, "keyPairId", keyPairID)
 
 	// AWS names the key only when one was actually deleted.
 	return &ec2.DeleteKeyPairOutput{Return: aws.Bool(true), KeyPairId: aws.String(keyPairID)}, nil
+}
+
+// deleteKeyPairRecords removes the public key, then the metadata, then the
+// tag-index entry. Metadata goes last: while it exists the key pair is still
+// described and found by name or ID, so a retried delete finishes the job.
+func (s *KeyServiceImpl) deleteKeyPairRecords(ctx context.Context, accountID, keyName, keyPairID string) error {
+	if err := s.deleteObject(ctx, publicKeyPath(accountID, keyName)); err != nil {
+		slog.ErrorContext(ctx, "Failed to delete public key", "keyName", keyName, "keyPairId", keyPairID, "err", err)
+		return fmt.Errorf("delete public key: %w", err)
+	}
+	if err := s.deleteObject(ctx, metadataPath(accountID, keyPairID)); err != nil {
+		slog.ErrorContext(ctx, "Failed to delete key pair metadata", "keyPairId", keyPairID, "err", err)
+		return fmt.Errorf("delete metadata: %w", err)
+	}
+	s.clearRecordTags(ctx, accountID, keyPairID)
+	return nil
+}
+
+// deleteObject deletes one object; an absent object is already deleted.
+func (s *KeyServiceImpl) deleteObject(ctx context.Context, key string) error {
+	_, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
+	})
+	if err != nil && !objectstore.IsNoSuchKeyError(err) {
+		return err
+	}
+	return nil
+}
+
+func publicKeyPath(accountID, keyName string) string {
+	return fmt.Sprintf("keys/%s/%s", accountID, keyName)
+}
+
+func metadataPath(accountID, keyPairID string) string {
+	return fmt.Sprintf("keys/%s/%s.json", accountID, keyPairID)
 }
 
 // DescribeKeyPairs lists available key pairs by reading metadata files from S3
@@ -769,7 +794,7 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 			Key:    obj.Key,
 		})
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to get metadata file", "key", *obj.Key, "err", err)
+			slog.WarnContext(ctx, "DescribeKeyPairs: skipping metadata the store cannot read", "key", *obj.Key, "err", err)
 			continue
 		}
 
@@ -778,13 +803,14 @@ func (s *KeyServiceImpl) DescribeKeyPairs(ctx context.Context, input *ec2.Descri
 			slog.DebugContext(ctx, "Failed to close metadata body", "key", *obj.Key, "err", err)
 		}
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to read metadata body", "key", *obj.Key, "err", err)
+			slog.WarnContext(ctx, "DescribeKeyPairs: skipping metadata whose body cannot be read", "key", *obj.Key, "err", err)
 			continue
 		}
 
+		// The decoder's message is not logged: it can quote the stored bytes.
 		metadata, err := decodeKeyPairMetadata(body)
 		if err != nil {
-			slog.DebugContext(ctx, "Failed to unmarshal metadata", "key", *obj.Key, "err", err)
+			slog.WarnContext(ctx, "DescribeKeyPairs: skipping undecodable metadata", "key", *obj.Key)
 			continue
 		}
 

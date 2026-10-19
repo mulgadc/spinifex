@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -29,10 +30,49 @@ type AccountScan struct {
 	ReadFailures int
 }
 
+// liveKeyPair is a readable metadata record and the name it gives its key.
+type liveKeyPair struct {
+	id, name string
+}
+
+// orphanObject is a public-key object no metadata names, the key name it is
+// served under, and its last write time when the listing reported one.
+type orphanObject struct {
+	key, name string
+	modified  *time.Time
+}
+
+// accountRecords is the private classification ScanAccount and CleanupAccount
+// share. It holds object keys and names, so it never leaves this package.
+type accountRecords struct {
+	live         []liveKeyPair
+	unreadable   []string
+	orphans      []orphanObject
+	unresolved   int
+	readFailures int
+}
+
 // ScanAccount lists and classifies every object under keys/<accountID>/. A
 // listing failure is returned as an error; per-object read failures are
 // counted. It reads only objects named as metadata (key-*.json).
 func (s *KeyServiceImpl) ScanAccount(ctx context.Context, accountID string) (*AccountScan, error) {
+	records, err := s.classifyAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	scan := &AccountScan{
+		UnreadableKeyPairIDs: records.unreadable,
+		OrphanPublicKeys:     len(records.orphans),
+		UnresolvedPublicKeys: records.unresolved,
+		ReadFailures:         records.readFailures,
+	}
+	for _, kp := range records.live {
+		scan.LiveKeyPairIDs = append(scan.LiveKeyPairIDs, kp.id)
+	}
+	return scan, nil
+}
+
+func (s *KeyServiceImpl) classifyAccount(ctx context.Context, accountID string) (*accountRecords, error) {
 	prefix := fmt.Sprintf("keys/%s/", accountID)
 	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucketName),
@@ -42,9 +82,9 @@ func (s *KeyServiceImpl) ScanAccount(ctx context.Context, accountID string) (*Ac
 		return nil, fmt.Errorf("list key-pair objects: %w", err)
 	}
 
-	scan := &AccountScan{}
+	records := &accountRecords{}
 	liveNames := make(map[string]bool)
-	var rest []string
+	var rest []*s3.Object
 	unreadable := make(map[string]bool)
 	for _, obj := range objects {
 		if obj == nil || obj.Key == nil {
@@ -53,24 +93,24 @@ func (s *KeyServiceImpl) ScanAccount(ctx context.Context, accountID string) (*Ac
 		name := strings.TrimPrefix(*obj.Key, prefix)
 		id, isJSON := strings.CutSuffix(name, ".json")
 		if !isJSON || !strings.HasPrefix(id, "key-") {
-			rest = append(rest, name)
+			rest = append(rest, obj)
 			continue
 		}
 		metadata, found, readErr := s.readScanMetadata(ctx, *obj.Key)
 		switch {
 		case readErr != nil:
-			scan.ReadFailures++
+			records.readFailures++
 			unreadable[name] = true
 		case !found:
 			// Removed between the listing and the read.
 		case metadata == nil || aws.StringValue(metadata.KeyPairId) != id || aws.StringValue(metadata.KeyName) == "":
 			unreadable[name] = true
 		default:
-			scan.LiveKeyPairIDs = append(scan.LiveKeyPairIDs, id)
+			records.live = append(records.live, liveKeyPair{id: id, name: *metadata.KeyName})
 			liveNames[*metadata.KeyName] = true
 		}
 		if unreadable[name] {
-			rest = append(rest, name)
+			rest = append(rest, obj)
 		}
 	}
 
@@ -81,19 +121,20 @@ func (s *KeyServiceImpl) ScanAccount(ctx context.Context, accountID string) (*Ac
 			delete(unreadable, name)
 		}
 	}
-	for _, name := range rest {
+	for _, obj := range rest {
+		name := strings.TrimPrefix(*obj.Key, prefix)
 		switch {
 		case liveNames[name]:
 			// The public key of a live key pair.
 		case unreadable[name]:
-			scan.UnreadableKeyPairIDs = append(scan.UnreadableKeyPairIDs, strings.TrimSuffix(name, ".json"))
+			records.unreadable = append(records.unreadable, strings.TrimSuffix(name, ".json"))
 		case len(unreadable) > 0:
-			scan.UnresolvedPublicKeys++
+			records.unresolved++
 		default:
-			scan.OrphanPublicKeys++
+			records.orphans = append(records.orphans, orphanObject{key: *obj.Key, name: name, modified: obj.LastModified})
 		}
 	}
-	return scan, nil
+	return records, nil
 }
 
 // readScanMetadata reads and decodes one metadata object. A decode failure is

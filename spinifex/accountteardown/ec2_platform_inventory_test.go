@@ -6,12 +6,14 @@ package accountteardown
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/s3"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountinventory"
@@ -68,8 +70,12 @@ func TestEC2PlatformInventoryClientReturnsEC2sReport(t *testing.T) {
 		KeyName: aws.String("deploy"), PublicKeyMaterial: []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"),
 	}, testAccountID)
 	require.NoError(t, err)
-	o.store.failDelete = func(key string) bool { return key == "keys/"+testAccountID+"/deploy" }
 	_, err = o.keys.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{KeyName: aws.String("deploy")}, testAccountID)
+	require.NoError(t, err)
+	// A public key without metadata, as an older release's failed delete left.
+	_, err = o.store.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(platformBucket), Key: aws.String("keys/" + testAccountID + "/deploy"), Body: strings.NewReader("ssh-ed25519 AAAA"),
+	})
 	require.NoError(t, err)
 
 	reply := newEC2PlatformInventoryClient(o.nc).PlatformInventory(ctx, testAccountID, "req-1")

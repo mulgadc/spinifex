@@ -6,7 +6,6 @@ package launchtemplate
 import (
 	"context"
 	"encoding/base64"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -43,17 +42,17 @@ func TestScanAccountClassifiesLaunchTemplateRecords(t *testing.T) {
 	svc := setupTestService(t)
 	live := createWithUserData(t, svc, "live")
 
+	// A header removed alone, as a delete interrupted after it leaves the rest.
 	deleted := createWithUserData(t, svc, "deleted")
 	inner := svc.kv
-	deletedHeader, deletedName := kvutil.AccountKey(testAccountID, deleted), nameKey(testAccountID, "deleted")
-	svc.kv = &faultyKV{KeyValue: inner, failDelete: func(key string) bool {
-		return strings.HasPrefix(key, deletedHeader+".v") || key == deletedName
-	}}
-	_, err := svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{LaunchTemplateId: aws.String(deleted)}, testAccountID)
-	require.NoError(t, err)
+	require.NoError(t, inner.Delete(t.Context(), kvutil.AccountKey(testAccountID, deleted)))
 
-	svc.kv = &faultyKV{KeyValue: inner, failPut: func(key string) bool { return isHeaderKey(key, testAccountID+".") }}
-	_, err = svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{
+	// A create whose header write and clean-up both fail.
+	svc.kv = &faultyKV{KeyValue: inner,
+		failPut:    func(key string) bool { return isHeaderKey(key, testAccountID+".") },
+		failDelete: func(string) bool { return true },
+	}
+	_, err := svc.CreateLaunchTemplate(context.Background(), &ec2.CreateLaunchTemplateInput{
 		LaunchTemplateName: aws.String("interrupted"),
 		LaunchTemplateData: &ec2.RequestLaunchTemplateData{UserData: aws.String(base64.StdEncoding.EncodeToString([]byte(ctUserData)))},
 	}, testAccountID)

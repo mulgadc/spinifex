@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Field, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { useAttachRolePolicy, useCreateRole } from "@/mutations/iam"
+import { useAttachPolicy, useCreateRole } from "@/mutations/iam"
 import { PolicyDocumentViewer } from "@/routes/_auth/iam/-components/policy-document-viewer"
 import {
   AMAZON_EKS_CLUSTER_POLICY_ARN,
@@ -21,7 +21,6 @@ import {
 
 interface CreateClusterRoleDialogProps {
   clusterName: string
-  open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: (roleArn: string) => void
 }
@@ -34,36 +33,15 @@ function defaultRoleName(clusterName: string): string {
 
 export function CreateClusterRoleDialog({
   clusterName,
-  open,
   onOpenChange,
   onCreated,
 }: CreateClusterRoleDialogProps) {
   const createRole = useCreateRole()
-  const attachPolicy = useAttachRolePolicy()
+  const attachPolicy = useAttachPolicy("role")
   const [roleName, setRoleName] = useState(() => defaultRoleName(clusterName))
   const [formError, setFormError] = useState<string | null>(null)
 
-  // Seed the role name from the cluster name each time the dialog opens.
-  const [wasOpen, setWasOpen] = useState(open)
-
-  if (open !== wasOpen) {
-    setWasOpen(open)
-
-    if (open) {
-      setRoleName(defaultRoleName(clusterName))
-      setFormError(null)
-    }
-  }
-
   const isPending = createRole.isPending || attachPolicy.isPending
-
-  function handleClose(nextOpen: boolean) {
-    if (!nextOpen) {
-      setFormError(null)
-    }
-
-    onOpenChange(nextOpen)
-  }
 
   async function handleCreate() {
     setFormError(null)
@@ -76,7 +54,7 @@ export function CreateClusterRoleDialog({
       })
 
       await attachPolicy.mutateAsync({
-        roleName: name,
+        name,
         policyArn: AMAZON_EKS_CLUSTER_POLICY_ARN,
       })
       const arn = result.Role?.Arn
@@ -97,7 +75,7 @@ export function CreateClusterRoleDialog({
   }
 
   return (
-    <AlertDialog onOpenChange={handleClose} open={open}>
+    <AlertDialog onOpenChange={onOpenChange} open>
       <AlertDialogContent className="max-w-lg sm:max-w-lg">
         <AlertDialogHeader>
           <AlertDialogTitle>Create cluster IAM role</AlertDialogTitle>

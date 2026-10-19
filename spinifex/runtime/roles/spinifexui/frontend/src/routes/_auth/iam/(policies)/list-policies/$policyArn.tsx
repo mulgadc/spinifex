@@ -10,6 +10,7 @@ import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import { Button } from "@/components/ui/button"
+import { decodePolicyDocument } from "@/lib/json"
 import { formatDateTime, safeDecodeURIComponent } from "@/lib/utils"
 import { useDeletePolicy } from "@/mutations/iam"
 import {
@@ -71,7 +72,7 @@ function PolicyDetail() {
   )
 
   const policyDocument = versionData?.PolicyVersion?.Document
-    ? safeDecodeURIComponent(versionData.PolicyVersion.Document)
+    ? decodePolicyDocument(versionData.PolicyVersion.Document)
     : null
 
   const handleDelete = async () => {

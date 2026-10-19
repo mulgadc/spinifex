@@ -89,6 +89,9 @@ function VolumeDetail() {
 
   const closeDialog = () => {
     setActiveDialog(null)
+    setAttachInstanceId("")
+    setAttachDevice("")
+    setDetachForce(false)
   }
 
   const handleAttach = async () => {
@@ -99,8 +102,6 @@ function VolumeDetail() {
         device: attachDevice || undefined,
       })
       closeDialog()
-      setAttachInstanceId("")
-      setAttachDevice("")
     } catch {
       // error shown via attachMutation.error
     }
@@ -116,7 +117,6 @@ function VolumeDetail() {
         force: detachForce || undefined,
       })
       closeDialog()
-      setDetachForce(false)
     } catch {
       // error shown via detachMutation.error
     }
@@ -275,8 +275,6 @@ function VolumeDetail() {
         onOpenChange={(open) => {
           if (!open) {
             closeDialog()
-            setAttachInstanceId("")
-            setAttachDevice("")
           }
         }}
         open={activeDialog === "attach"}
@@ -347,7 +345,6 @@ function VolumeDetail() {
         onOpenChange={(open) => {
           if (!open) {
             closeDialog()
-            setDetachForce(false)
           }
         }}
         open={activeDialog === "detach"}

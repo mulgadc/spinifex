@@ -1,5 +1,6 @@
 import {
   type Action,
+  type CreateTargetGroupCommandInput,
   type RuleCondition,
   type TargetDescription,
   AddTagsCommand,
@@ -24,9 +25,11 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
 import { getElbv2Client } from "@/lib/awsClient"
-import type {
-  CreateLoadBalancerFormData,
-  CreateTargetGroupFormData,
+import {
+  type CreateLoadBalancerFormData,
+  type CreateTargetGroupFormData,
+  type ListenerProtocolValue,
+  isSecureProtocol,
 } from "@/types/elbv2"
 import { type TagFormData, diffTags, toSdkTags } from "@/types/tags"
 
@@ -183,31 +186,36 @@ export function useSetSubnets() {
   })
 }
 
+// Path and Matcher are HTTP-only; a TCP health check (NLB) rejects them.
+function targetGroupInput(
+  tg: CreateTargetGroupFormData,
+): CreateTargetGroupCommandInput {
+  const httpHealthCheck = tg.healthCheck.protocol === "HTTP"
+
+  return {
+    Name: tg.name,
+    Protocol: tg.protocol,
+    Port: tg.port,
+    VpcId: tg.vpcId,
+    TargetType: "instance",
+    HealthCheckProtocol: tg.healthCheck.protocol,
+    HealthCheckPath: httpHealthCheck ? tg.healthCheck.path : undefined,
+    HealthCheckPort: tg.healthCheck.port,
+    HealthCheckIntervalSeconds: tg.healthCheck.intervalSeconds,
+    HealthCheckTimeoutSeconds: tg.healthCheck.timeoutSeconds,
+    HealthyThresholdCount: tg.healthCheck.healthyThresholdCount,
+    UnhealthyThresholdCount: tg.healthCheck.unhealthyThresholdCount,
+    Matcher: httpHealthCheck ? { HttpCode: tg.healthCheck.matcher } : undefined,
+    Tags: toSdkTags(tg.tags),
+  }
+}
+
 export function useCreateTargetGroup() {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: async (params: CreateTargetGroupFormData) => {
-      const httpHealthCheck = params.healthCheck.protocol === "HTTP"
-
-      const command = new CreateTargetGroupCommand({
-        Name: params.name,
-        Protocol: params.protocol,
-        Port: params.port,
-        VpcId: params.vpcId,
-        TargetType: "instance",
-        HealthCheckProtocol: params.healthCheck.protocol,
-        HealthCheckPath: httpHealthCheck ? params.healthCheck.path : undefined,
-        HealthCheckPort: params.healthCheck.port,
-        HealthCheckIntervalSeconds: params.healthCheck.intervalSeconds,
-        HealthCheckTimeoutSeconds: params.healthCheck.timeoutSeconds,
-        HealthyThresholdCount: params.healthCheck.healthyThresholdCount,
-        UnhealthyThresholdCount: params.healthCheck.unhealthyThresholdCount,
-        Matcher: httpHealthCheck
-          ? { HttpCode: params.healthCheck.matcher }
-          : undefined,
-        Tags: toSdkTags(params.tags),
-      })
+      const command = new CreateTargetGroupCommand(targetGroupInput(params))
 
       return await getElbv2Client().send(command)
     },
@@ -271,14 +279,6 @@ export function useModifyTargetGroupAttributes() {
   })
 }
 
-export type ListenerProtocol =
-  | "HTTP"
-  | "HTTPS"
-  | "TCP"
-  | "UDP"
-  | "TLS"
-  | "TCP_UDP"
-
 // tlsListenerFields returns the Certificates + SslPolicy command fields for a
 // secure listener (HTTPS or NLB TLS), or empty undefined fields otherwise. The
 // server rejects certs on a non-secure protocol, so they are only emitted for
@@ -289,13 +289,11 @@ interface TlsListenerFields {
 }
 
 function tlsListenerFields(
-  protocol: ListenerProtocol,
+  protocol: ListenerProtocolValue,
   certificateArn?: string,
   sslPolicy?: string,
 ): TlsListenerFields {
-  const secure = protocol === "HTTPS" || protocol === "TLS"
-
-  if (!secure || !certificateArn) {
+  if (!isSecureProtocol(protocol) || !certificateArn) {
     return {}
   }
 
@@ -307,7 +305,7 @@ function tlsListenerFields(
 
 export interface CreateListenerParams {
   loadBalancerArn: string
-  protocol: ListenerProtocol
+  protocol: ListenerProtocolValue
   port: number
   defaultTargetGroupArn: string
   certificateArn?: string
@@ -366,7 +364,7 @@ export function useDeleteListener() {
 export interface ModifyListenerParams {
   listenerArn: string
   loadBalancerArn: string
-  protocol: ListenerProtocol
+  protocol: ListenerProtocolValue
   port: number
   defaultTargetGroupArn: string
   certificateArn?: string
@@ -422,7 +420,7 @@ export interface LbWizardResult {
 export interface CreateLoadBalancerWizardParams {
   lb: Omit<CreateLoadBalancerFormData, "listener">
   listener: {
-    protocol: ListenerProtocol
+    protocol: ListenerProtocolValue
     port: number
     targetGroupMode: "new" | "existing"
     existingTargetGroupArn?: string
@@ -458,30 +456,8 @@ export function useCreateLoadBalancerWizard() {
 
           currentStep = "creating target group"
 
-          // Path + Matcher are HTTP-only; a TCP health check (NLB) rejects them.
-          const httpHealthCheck = tg.healthCheck.protocol === "HTTP"
-
           const tgResult = await client.send(
-            new CreateTargetGroupCommand({
-              Name: tg.name,
-              Protocol: tg.protocol,
-              Port: tg.port,
-              VpcId: tg.vpcId,
-              TargetType: "instance",
-              HealthCheckProtocol: tg.healthCheck.protocol,
-              HealthCheckPath: httpHealthCheck
-                ? tg.healthCheck.path
-                : undefined,
-              HealthCheckPort: tg.healthCheck.port,
-              HealthCheckIntervalSeconds: tg.healthCheck.intervalSeconds,
-              HealthCheckTimeoutSeconds: tg.healthCheck.timeoutSeconds,
-              HealthyThresholdCount: tg.healthCheck.healthyThresholdCount,
-              UnhealthyThresholdCount: tg.healthCheck.unhealthyThresholdCount,
-              Matcher: httpHealthCheck
-                ? { HttpCode: tg.healthCheck.matcher }
-                : undefined,
-              Tags: toSdkTags(tg.tags),
-            }),
+            new CreateTargetGroupCommand(targetGroupInput(tg)),
           )
 
           targetGroupArn = tgResult.TargetGroups?.[0]?.TargetGroupArn

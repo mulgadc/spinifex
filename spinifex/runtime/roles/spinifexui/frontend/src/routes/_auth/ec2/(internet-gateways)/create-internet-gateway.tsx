@@ -6,6 +6,7 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  optionalFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -110,22 +111,22 @@ function CreateInternetGateway() {
 }
 
 function buildCreateInternetGatewayCommands(name: string): CliCommand[] {
-  const parts: CliCommand["parts"] = [
+  const tagName = name.trim()
+
+  return [
     {
-      type: "bin",
-      value: "AWS_PROFILE=spinifex aws ec2 create-internet-gateway",
+      label: "Create Internet Gateway",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws ec2 create-internet-gateway",
+        },
+        ...optionalFlag(
+          "\\\n  --tag-specifications",
+          tagName &&
+            `'ResourceType=internet-gateway,Tags=[{Key=Name,Value=${tagName}}]'`,
+        ),
+      ],
     },
   ]
-
-  if (name.trim()) {
-    parts.push(
-      { type: "flag" as const, value: " \\\n  --tag-specifications" },
-      {
-        type: "value" as const,
-        value: ` 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=${name.trim()}}]'`,
-      },
-    )
-  }
-
-  return [{ label: "Create Internet Gateway", parts }]
 }

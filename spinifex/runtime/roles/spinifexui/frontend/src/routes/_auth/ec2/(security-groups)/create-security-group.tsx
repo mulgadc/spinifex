@@ -11,6 +11,9 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -133,27 +136,23 @@ function CreateSecurityGroup() {
 function buildCreateSecurityGroupCommands(
   values: DeepPartialSkipArrayKey<CreateSecurityGroupFormData>,
 ): CliCommand[] {
-  const name = values.groupName ?? ""
-  const desc = values.description ?? ""
-  const vpcId = values.vpcId ?? ""
+  const description = cliPlaceholder(values.description ?? "", "Description")
 
-  const parts = [
+  return [
     {
-      type: "bin" as const,
-      value: "AWS_PROFILE=spinifex aws ec2 create-security-group",
+      label: "Create Security Group",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws ec2 create-security-group",
+        },
+        ...commandFlag(
+          "\\\n  --group-name",
+          cliPlaceholder(values.groupName ?? "", "GroupName"),
+        ),
+        ...commandFlag("\\\n  --description", `"${description}"`),
+        ...optionalFlag("\\\n  --vpc-id", values.vpcId),
+      ],
     },
-    { type: "flag" as const, value: " \\\n  --group-name" },
-    { type: "value" as const, value: ` ${name || "<GroupName>"}` },
-    { type: "flag" as const, value: " \\\n  --description" },
-    { type: "value" as const, value: ` "${desc || "<Description>"}"` },
   ]
-
-  if (vpcId) {
-    parts.push(
-      { type: "flag" as const, value: " \\\n  --vpc-id" },
-      { type: "value" as const, value: ` ${vpcId}` },
-    )
-  }
-
-  return [{ label: "Create Security Group", parts }]
 }

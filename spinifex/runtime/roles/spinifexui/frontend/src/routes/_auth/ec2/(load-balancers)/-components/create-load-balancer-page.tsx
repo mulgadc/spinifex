@@ -5,8 +5,8 @@ import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 import {
   Controller,
+  type DeepPartialSkipArrayKey,
   useForm,
-  type UseFormWatch,
   useWatch,
 } from "react-hook-form"
 
@@ -14,6 +14,10 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  captureId,
+  commandFlag,
+  optionalFlag,
+  variableFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
 import { CertificateImportDialog } from "@/components/elbv2/certificate-import-dialog"
@@ -22,6 +26,7 @@ import { TargetGroupForm } from "@/components/elbv2/target-group-form"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { PageHeading } from "@/components/page-heading"
+import { SecurityGroupCheckboxes } from "@/components/security-group-checkboxes"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
@@ -35,11 +40,8 @@ import {
 } from "@/components/ui/select"
 import { VpcSelectField } from "@/components/vpc-select-field"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
-import { arnResourceId, getNameTag, securityGroupLabel } from "@/lib/utils"
-import {
-  type LbWizardResult,
-  useCreateLoadBalancerWizard,
-} from "@/mutations/elbv2"
+import { arnResourceId, getNameTag } from "@/lib/utils"
+import { useCreateLoadBalancerWizard } from "@/mutations/elbv2"
 import { acmCertificatesQueryOptions } from "@/queries/acm"
 import {
   ec2SecurityGroupsQueryOptions,
@@ -126,7 +128,6 @@ export function CreateLoadBalancerPage() {
 
   const wizardMutation = useCreateLoadBalancerWizard()
 
-  const [wizardResult, setWizardResult] = useState<LbWizardResult | null>(null)
   const [importOpen, setImportOpen] = useState(false)
 
   const vpcs = vpcsData.Vpcs ?? []
@@ -181,18 +182,18 @@ export function CreateLoadBalancerPage() {
   const {
     handleSubmit,
     register,
-    watch,
     control,
     setValue,
     getValues,
     formState: { errors, isSubmitting },
   } = lbForm
 
+  const values = useWatch({ control })
+  const tgValues = useWatch({ control: tgForm.control })
   const selectedVpc = useWatch({ control, name: "vpcId" })
   const selectedSubnets = useWatch({ control, name: "subnetIds" })
   const selectedSgs = useWatch({ control, name: "securityGroupIds" })
   const selectedSubnetSet = new Set(selectedSubnets)
-  const selectedSgSet = new Set(selectedSgs)
   const lbType = useWatch({ control, name: "type" })
   const listenerProtocol = useWatch({ control, name: "listener.protocol" })
   const tgMode = useWatch({ control, name: "listener.targetGroupMode" })
@@ -264,18 +265,8 @@ export function CreateLoadBalancerPage() {
     setValue("subnetIds", next, { shouldValidate: true })
   }
 
-  const toggleSg = (sgId: string) => {
-    const current = getValues("securityGroupIds")
-
-    const next = current.includes(sgId)
-      ? current.filter((id) => id !== sgId)
-      : [...current, sgId]
-
-    setValue("securityGroupIds", next)
-  }
-
   const onSubmit = async (data: CreateLoadBalancerFormData) => {
-    setWizardResult(null)
+    wizardMutation.reset()
 
     let newTargetGroup: CreateTargetGroupFormData | undefined
 
@@ -310,8 +301,6 @@ export function CreateLoadBalancerPage() {
       },
     })
 
-    setWizardResult(result)
-
     if (!result.error && result.loadBalancerArn) {
       navigate({
         to: "/ec2/describe-load-balancers/$id",
@@ -339,7 +328,7 @@ export function CreateLoadBalancerPage() {
 
       <WizardFailureBanner
         createdHeading="Successfully created resources (clean up manually if needed):"
-        result={wizardResult}
+        result={wizardMutation.data}
       />
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
@@ -394,38 +383,26 @@ export function CreateLoadBalancerPage() {
 
         <Field>
           <FieldTitle>Scheme</FieldTitle>
-          <Controller
-            control={control}
-            name="scheme"
-            render={({ field }) => (
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    aria-label="Internet-facing"
-                    checked={field.value === "internet-facing"}
-                    name="scheme"
-                    onChange={() => {
-                      field.onChange("internet-facing")
-                    }}
-                    type="radio"
-                  />
-                  Internet-facing
-                </label>
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    aria-label="Internal"
-                    checked={field.value === "internal"}
-                    name="scheme"
-                    onChange={() => {
-                      field.onChange("internal")
-                    }}
-                    type="radio"
-                  />
-                  Internal
-                </label>
-              </div>
-            )}
-          />
+          <div className="flex gap-4">
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                aria-label="Internet-facing"
+                type="radio"
+                value="internet-facing"
+                {...register("scheme")}
+              />
+              Internet-facing
+            </label>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                aria-label="Internal"
+                type="radio"
+                value="internal"
+                {...register("scheme")}
+              />
+              Internal
+            </label>
+          </div>
         </Field>
 
         <VpcSelectField
@@ -478,30 +455,14 @@ export function CreateLoadBalancerPage() {
         {!isNlb && (
           <Field>
             <FieldTitle>Security groups</FieldTitle>
-            {vpcSgs.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No security groups in the selected VPC.
-              </p>
-            ) : (
-              <div className="space-y-1">
-                {vpcSgs.map((sg) => (
-                  <label
-                    className="flex items-center gap-2 text-xs"
-                    key={sg.GroupId}
-                  >
-                    <input
-                      aria-label={`Security group ${securityGroupLabel(sg)}`}
-                      checked={selectedSgSet.has(sg.GroupId ?? "")}
-                      onChange={() => {
-                        toggleSg(sg.GroupId ?? "")
-                      }}
-                      type="checkbox"
-                    />
-                    <span className="font-mono">{securityGroupLabel(sg)}</span>
-                  </label>
-                ))}
-              </div>
-            )}
+            <SecurityGroupCheckboxes
+              emptyText="No security groups in the selected VPC."
+              groups={vpcSgs}
+              onChange={(next) => {
+                setValue("securityGroupIds", next)
+              }}
+              selected={selectedSgs}
+            />
           </Field>
         )}
 
@@ -652,38 +613,26 @@ export function CreateLoadBalancerPage() {
 
           <Field>
             <FieldTitle>Default target group</FieldTitle>
-            <Controller
-              control={control}
-              name="listener.targetGroupMode"
-              render={({ field }) => (
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-xs">
-                    <input
-                      aria-label="Create new target group"
-                      checked={field.value === "new"}
-                      name="tg-mode"
-                      onChange={() => {
-                        field.onChange("new")
-                      }}
-                      type="radio"
-                    />
-                    Create new
-                  </label>
-                  <label className="flex items-center gap-2 text-xs">
-                    <input
-                      aria-label="Use existing target group"
-                      checked={field.value === "existing"}
-                      name="tg-mode"
-                      onChange={() => {
-                        field.onChange("existing")
-                      }}
-                      type="radio"
-                    />
-                    Use existing
-                  </label>
-                </div>
-              )}
-            />
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  aria-label="Create new target group"
+                  type="radio"
+                  value="new"
+                  {...register("listener.targetGroupMode")}
+                />
+                Create new
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  aria-label="Use existing target group"
+                  type="radio"
+                  value="existing"
+                  {...register("listener.targetGroupMode")}
+                />
+                Use existing
+              </label>
+            </div>
           </Field>
 
           {tgMode === "existing" && (
@@ -748,9 +697,7 @@ export function CreateLoadBalancerPage() {
           open={importOpen}
         />
 
-        <CliCommandPanel
-          commands={buildCreateLbCommands(watch, tgForm.watch)}
-        />
+        <CliCommandPanel commands={buildCreateLbCommands(values, tgValues)} />
 
         <FormActions
           isPending={wizardMutation.isPending}
@@ -767,20 +714,12 @@ export function CreateLoadBalancerPage() {
 }
 
 function buildCreateLbCommands(
-  watch: UseFormWatch<CreateLoadBalancerFormData>,
-  tgWatch: UseFormWatch<CreateTargetGroupFormData>,
+  values: DeepPartialSkipArrayKey<CreateLoadBalancerFormData>,
+  tgValues: DeepPartialSkipArrayKey<CreateTargetGroupFormData>,
 ): CliCommand[] {
-  const name = watch("name") || "<Name>"
-  const lbTypeValue = watch("type") || "application"
-  const scheme = watch("scheme") || "internet-facing"
-  const subnets = watch("subnetIds")
-  const sgs = watch("securityGroupIds")
-  const listenerProtocol = watch("listener.protocol") || "HTTP"
-  const listenerPort = watch("listener.port") ?? 80
-  const certificateArn = watch("listener.certificateArn")
-  const sslPolicy = watch("listener.sslPolicy")
-  const tgMode = watch("listener.targetGroupMode")
-  const existingTgArn = watch("listener.existingTargetGroupArn")
+  const lbTypeValue = values.type || "application"
+  const listener = values.listener ?? {}
+  const listenerProtocol = listener.protocol || "HTTP"
 
   const commands: CliCommand[] = []
 
@@ -793,32 +732,25 @@ function buildCreateLbCommands(
   }
 
   // Either a create-target-group step (mode=new) or just a TG_ARN= assignment
-  if (tgMode === "new") {
-    const tgName = tgWatch("name") || "<TG-Name>"
-    const tgPort = tgWatch("port") ?? 80
-    const tgVpc = tgWatch("vpcId")
-    const tgProtocol = tgWatch("protocol") || "HTTP"
+  if (listener.targetGroupMode === "new") {
     commands.push({
       label: "Create Target Group",
       parts: [
         comment,
-        { type: "variable", value: "TG_ARN=" },
-        {
-          type: "bin",
-          value: "$(AWS_PROFILE=spinifex aws elbv2 create-target-group",
-        },
-        { type: "flag", value: " \\\n  --name" },
-        { type: "value", value: ` ${tgName}` },
-        { type: "flag", value: " \\\n  --protocol" },
-        { type: "value", value: ` ${tgProtocol}` },
-        { type: "flag", value: " --port" },
-        { type: "value", value: ` ${tgPort}` },
-        { type: "flag", value: " \\\n  --target-type instance --vpc-id" },
-        { type: "value", value: ` ${tgVpc || "<vpc-id>"}` },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'TargetGroups[0].TargetGroupArn'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
+        ...captureId(
+          "TG_ARN",
+          "AWS_PROFILE=spinifex aws elbv2 create-target-group",
+          [
+            ...commandFlag("\\\n  --name", tgValues.name || "<TG-Name>"),
+            ...commandFlag("\\\n  --protocol", tgValues.protocol || "HTTP"),
+            ...commandFlag("--port", tgValues.port ?? 80),
+            ...commandFlag(
+              "\\\n  --target-type instance --vpc-id",
+              tgValues.vpcId || "<vpc-id>",
+            ),
+          ],
+          "TargetGroups[0].TargetGroupArn",
+        ),
       ],
     })
   } else {
@@ -827,79 +759,55 @@ function buildCreateLbCommands(
       parts: [
         comment,
         { type: "variable", value: "TG_ARN=" },
-        { type: "value", value: existingTgArn || "<tg-arn>" },
+        { type: "value", value: listener.existingTargetGroupArn || "<tg-arn>" },
       ],
     })
   }
 
-  // Create LB
-  const lbParts: CommandPart[] = [
-    { type: "variable", value: "LB_ARN=" },
-    {
-      type: "bin",
-      value: "$(AWS_PROFILE=spinifex aws elbv2 create-load-balancer",
-    },
-    { type: "flag", value: " \\\n  --name" },
-    { type: "value", value: ` ${name}` },
-    { type: "flag", value: " \\\n  --scheme" },
-    { type: "value", value: ` ${scheme}` },
-    { type: "flag", value: " \\\n  --type" },
-    { type: "value", value: ` ${lbTypeValue}` },
-  ]
+  commands.push({
+    label: "Create Load Balancer",
+    parts: captureId(
+      "LB_ARN",
+      "AWS_PROFILE=spinifex aws elbv2 create-load-balancer",
+      [
+        ...commandFlag("\\\n  --name", values.name || "<Name>"),
+        ...commandFlag("\\\n  --scheme", values.scheme || "internet-facing"),
+        ...commandFlag("\\\n  --type", lbTypeValue),
+        ...optionalFlag("\\\n  --subnets", values.subnetIds?.join(" ")),
+        ...optionalFlag(
+          "\\\n  --security-groups",
+          values.securityGroupIds?.join(" "),
+        ),
+      ],
+      "LoadBalancers[0].LoadBalancerArn",
+    ),
+  })
 
-  if (subnets.length > 0) {
-    lbParts.push(
-      { type: "flag", value: " \\\n  --subnets" },
-      { type: "value", value: ` ${subnets.join(" ")}` },
-    )
-  }
-
-  if (sgs.length > 0) {
-    lbParts.push(
-      { type: "flag", value: " \\\n  --security-groups" },
-      { type: "value", value: ` ${sgs.join(" ")}` },
-    )
-  }
-
-  lbParts.push(
-    { type: "flag", value: " \\\n  --query" },
-    { type: "value", value: " 'LoadBalancers[0].LoadBalancerArn'" },
-    { type: "flag", value: " --output" },
-    { type: "value", value: " text)" },
-  )
-  commands.push({ label: "Create Load Balancer", parts: lbParts })
-
-  // Create Listener
   const listenerParts: CommandPart[] = [
     { type: "bin", value: "AWS_PROFILE=spinifex aws elbv2 create-listener" },
-    { type: "flag", value: " \\\n  --load-balancer-arn" },
-    { type: "variable", value: ' "$LB_ARN"' },
-    { type: "flag", value: " \\\n  --protocol" },
-    { type: "value", value: ` ${listenerProtocol}` },
-    { type: "flag", value: " \\\n  --port" },
-    { type: "value", value: ` ${listenerPort}` },
+    ...variableFlag("\\\n  --load-balancer-arn", "LB_ARN"),
+    ...commandFlag("\\\n  --protocol", listenerProtocol),
+    ...commandFlag("\\\n  --port", listener.port ?? 80),
   ]
 
-  const secureListener =
-    listenerProtocol === "HTTPS" || listenerProtocol === "TLS"
-
-  if (secureListener && certificateArn) {
+  if (isSecureProtocol(listenerProtocol) && listener.certificateArn) {
     listenerParts.push(
-      { type: "flag", value: " \\\n  --certificates" },
-      { type: "value", value: ` CertificateArn=${certificateArn}` },
+      ...commandFlag(
+        "\\\n  --certificates",
+        `CertificateArn=${listener.certificateArn}`,
+      ),
+      ...optionalFlag(
+        "\\\n  --ssl-policy",
+        listenerProtocol === "HTTPS" && listener.sslPolicy,
+      ),
     )
-
-    if (listenerProtocol === "HTTPS" && sslPolicy) {
-      listenerParts.push(
-        { type: "flag", value: " \\\n  --ssl-policy" },
-        { type: "value", value: ` ${sslPolicy}` },
-      )
-    }
   }
 
   listenerParts.push(
-    { type: "flag", value: " \\\n  --default-actions" },
-    { type: "value", value: ' Type=forward,TargetGroupArn="$TG_ARN"' },
+    ...commandFlag(
+      "\\\n  --default-actions",
+      'Type=forward,TargetGroupArn="$TG_ARN"',
+    ),
   )
   commands.push({ label: "Create Listener", parts: listenerParts })
 

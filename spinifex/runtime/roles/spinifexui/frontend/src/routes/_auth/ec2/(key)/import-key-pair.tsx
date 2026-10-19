@@ -10,6 +10,8 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -120,17 +122,19 @@ function ImportKeyPair() {
 function buildImportKeyPairCommands(
   values: DeepPartialSkipArrayKey<ImportKeyPairData>,
 ): CliCommand[] {
-  const keyName = values.keyName ?? ""
-
   return [
     {
       label: "Import Key Pair",
       parts: [
         { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 import-key-pair" },
-        { type: "flag", value: " \\\n  --key-name" },
-        { type: "value", value: ` ${keyName || "<KeyName>"}` },
-        { type: "flag", value: " \\\n  --public-key-material" },
-        { type: "value", value: " fileb://path/to/key.pub" },
+        ...commandFlag(
+          "\\\n  --key-name",
+          cliPlaceholder(values.keyName ?? "", "KeyName"),
+        ),
+        ...commandFlag(
+          "\\\n  --public-key-material",
+          "fileb://path/to/key.pub",
+        ),
       ],
     },
   ]

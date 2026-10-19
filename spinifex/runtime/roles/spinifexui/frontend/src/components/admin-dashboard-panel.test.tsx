@@ -172,8 +172,9 @@ describe("AdminDashboardPanel", () => {
     expect(screen.getByText("node-1")).toBeInTheDocument()
     expect(screen.getByText("10.0.0.1")).toBeInTheDocument()
     expect(screen.getByText("us-east-1a")).toBeInTheDocument()
-    expect(screen.getByText("nats:leader")).toBeInTheDocument()
-    expect(screen.getByText("ps:primary")).toBeInTheDocument()
+    expect(
+      screen.getByText("nats:leader,predastore:primary"),
+    ).toBeInTheDocument()
   })
 
   it("formats uptime in days and hours", async () => {

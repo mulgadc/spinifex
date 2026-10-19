@@ -1,5 +1,5 @@
 import type { Cluster } from "@aws-sdk/client-ecs"
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query"
+import { useSuspenseQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 
@@ -19,27 +19,13 @@ import { EcsSectionNav } from "./ecs-section-nav"
 
 export function ClustersListPage() {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const { data: clusters } = useSuspenseQuery(ecsClustersQueryOptions)
   const { data: imagesData } = useSuspenseQuery(ec2ImagesQueryOptions)
   const deleteCluster = useDeleteCluster()
   const [createOpen, setCreateOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
-  const [isRechecking, setIsRechecking] = useState(false)
 
   const hasEcsSystemImage = (imagesData.Images ?? []).some(isEcsSystemImage)
-
-  async function handleRecheck() {
-    setIsRechecking(true)
-
-    try {
-      await queryClient.invalidateQueries({
-        queryKey: ec2ImagesQueryOptions.queryKey,
-      })
-    } finally {
-      setIsRechecking(false)
-    }
-  }
 
   function handleDelete() {
     if (!deleteTarget) {
@@ -76,19 +62,13 @@ export function ClustersListPage() {
           className="mb-6"
           description="ECS clusters need a Spinifex-managed node image (containerd + ecs-agent) to launch container instances. Import it before creating a cluster."
           importCommand="spx admin images import --name spinifex-ecs-node"
-          isRechecking={isRechecking}
-          onRecheck={handleRecheck}
           title="ECS system image not found"
         />
       )}
 
       {deleteCluster.isError && (
         <ErrorBanner
-          error={
-            deleteCluster.error instanceof Error
-              ? deleteCluster.error
-              : undefined
-          }
+          error={deleteCluster.error}
           msg="Failed to delete cluster."
         />
       )}

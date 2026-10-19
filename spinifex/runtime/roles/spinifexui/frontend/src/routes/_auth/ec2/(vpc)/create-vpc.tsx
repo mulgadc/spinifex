@@ -1,10 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useState } from "react"
 import {
   Controller,
+  type DeepPartialSkipArrayKey,
   useForm,
-  type UseFormWatch,
   useWatch,
 } from "react-hook-form"
 
@@ -12,6 +11,10 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  captureId,
+  commandFlag,
+  optionalFlag,
+  variableFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
@@ -35,11 +38,7 @@ import {
   calculateSubnetCidrs,
   resolveSubnetCidrs,
 } from "@/lib/subnet-calculator"
-import {
-  type WizardResult,
-  useCreateVpc,
-  useCreateVpcWizard,
-} from "@/mutations/ec2"
+import { useCreateVpc, useCreateVpcWizard } from "@/mutations/ec2"
 import {
   type CreateVpcWizardFormData,
   createVpcWizardSchema,
@@ -63,7 +62,6 @@ function CreateVpc() {
   const navigate = useNavigate()
   const createVpcMutation = useCreateVpc()
   const wizardMutation = useCreateVpcWizard()
-  const [wizardResult, setWizardResult] = useState<WizardResult | null>(null)
 
   const form = useForm<CreateVpcWizardFormData>({
     resolver: zodResolver(createVpcWizardSchema),
@@ -85,11 +83,11 @@ function CreateVpc() {
   const {
     handleSubmit,
     register,
-    watch,
     control,
     formState: { errors, isSubmitting },
   } = form
 
+  const values = useWatch({ control })
   const mode = useWatch({ control, name: "mode" })
   const cidrBlock = useWatch({ control, name: "cidrBlock" })
   const publicSubnetCount = useWatch({ control, name: "publicSubnetCount" })
@@ -116,10 +114,8 @@ function CreateVpc() {
     { publicCidrs: publicSubnetCidrs, privateCidrs: privateSubnetCidrs },
   )
 
-  const [progressMessage, setProgressMessage] = useState("")
-
   const onSubmit = async (data: CreateVpcWizardFormData) => {
-    setWizardResult(null)
+    wizardMutation.reset()
 
     if (data.mode === "vpc-only") {
       const name =
@@ -145,9 +141,7 @@ function CreateVpc() {
     }
 
     // VPC and more mode
-    setProgressMessage("Creating VPC and resources...")
     const result = await wizardMutation.mutateAsync(data)
-    setWizardResult(result)
 
     if (!result.error && result.vpcId) {
       navigate({
@@ -155,8 +149,6 @@ function CreateVpc() {
         params: { id: result.vpcId },
       })
     }
-
-    setProgressMessage("")
   }
 
   const mutationError = createVpcMutation.error ?? wizardMutation.error
@@ -172,11 +164,11 @@ function CreateVpc() {
         <ErrorBanner error={mutationError} msg="Failed to create VPC" />
       )}
 
-      <WizardFailureBanner result={wizardResult} />
+      <WizardFailureBanner result={wizardMutation.data} />
 
-      {progressMessage && (
+      {wizardMutation.isPending && (
         <div className="mb-4 max-w-4xl text-sm text-muted-foreground">
-          {progressMessage}
+          Creating VPC and resources...
         </div>
       )}
 
@@ -189,38 +181,26 @@ function CreateVpc() {
           {/* Section 1: Resources to create */}
           <Field>
             <FieldTitle>Resources to create</FieldTitle>
-            <Controller
-              control={control}
-              name="mode"
-              render={({ field }) => (
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-xs">
-                    <input
-                      aria-label="VPC only"
-                      checked={field.value === "vpc-only"}
-                      name="mode"
-                      onChange={() => {
-                        field.onChange("vpc-only")
-                      }}
-                      type="radio"
-                    />
-                    VPC only
-                  </label>
-                  <label className="flex items-center gap-2 text-xs">
-                    <input
-                      aria-label="VPC and more"
-                      checked={field.value === "vpc-and-more"}
-                      name="mode"
-                      onChange={() => {
-                        field.onChange("vpc-and-more")
-                      }}
-                      type="radio"
-                    />
-                    VPC and more
-                  </label>
-                </div>
-              )}
-            />
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  aria-label="VPC only"
+                  type="radio"
+                  value="vpc-only"
+                  {...register("mode")}
+                />
+                VPC only
+              </label>
+              <label className="flex items-center gap-2 text-xs">
+                <input
+                  aria-label="VPC and more"
+                  type="radio"
+                  value="vpc-and-more"
+                  {...register("mode")}
+                />
+                VPC and more
+              </label>
+            </div>
           </Field>
 
           {/* Section 2: Name tag auto-generation */}
@@ -234,23 +214,14 @@ function CreateVpc() {
                 placeholder="project"
                 {...register("namePrefix")}
               />
-              <Controller
-                control={control}
-                name="autoGenerateNames"
-                render={({ field }) => (
-                  <label className="flex shrink-0 items-center gap-2 text-xs">
-                    <input
-                      aria-label="Auto-generate name tags"
-                      checked={field.value}
-                      onChange={(e) => {
-                        field.onChange(e.target.checked)
-                      }}
-                      type="checkbox"
-                    />
-                    Auto-generate
-                  </label>
-                )}
-              />
+              <label className="flex shrink-0 items-center gap-2 text-xs">
+                <input
+                  aria-label="Auto-generate name tags"
+                  type="checkbox"
+                  {...register("autoGenerateNames")}
+                />
+                Auto-generate
+              </label>
             </div>
           </Field>
 
@@ -389,7 +360,7 @@ function CreateVpc() {
           )}
 
           <CliCommandPanel
-            commands={buildCreateVpcCommands(watch, subnetCidrs)}
+            commands={buildCreateVpcCommands(values, subnetCidrs)}
           />
 
           <FormActions
@@ -419,32 +390,30 @@ function CreateVpc() {
 }
 
 function buildCreateVpcCommands(
-  watch: UseFormWatch<CreateVpcWizardFormData>,
+  values: DeepPartialSkipArrayKey<CreateVpcWizardFormData>,
   subnetCidrs: {
     publicSubnets: { cidr: string }[]
     privateSubnets: { cidr: string }[]
   },
 ): CliCommand[] {
-  const mode = watch("mode")
-  const cidr = watch("cidrBlock")
-  const tenancy = watch("tenancy")
-  const natGateway = watch("natGateway")
+  const cidr = values.cidrBlock || "10.0.0.0/16"
 
-  if (mode === "vpc-only") {
-    const parts: CommandPart[] = [
-      { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-vpc" },
-      { type: "flag", value: " \\\n  --cidr-block" },
-      { type: "value", value: ` ${cidr || "10.0.0.0/16"}` },
+  if (values.mode === "vpc-only") {
+    const { tenancy } = values
+
+    return [
+      {
+        label: "Create VPC",
+        parts: [
+          { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-vpc" },
+          ...commandFlag("\\\n  --cidr-block", cidr),
+          ...optionalFlag(
+            "\\\n  --instance-tenancy",
+            tenancy !== "default" && tenancy,
+          ),
+        ],
+      },
     ]
-
-    if (tenancy && tenancy !== "default") {
-      parts.push(
-        { type: "flag", value: " \\\n  --instance-tenancy" },
-        { type: "value", value: ` ${tenancy}` },
-      )
-    }
-
-    return [{ label: "Create VPC", parts }]
   }
 
   // VPC-and-more: pasteable bash script
@@ -461,46 +430,34 @@ function buildCreateVpcCommands(
     })),
   ]
 
-  // Comment header
-  const commentParts: CommandPart[] = [
-    {
-      type: "comment",
-      value: "# Create VPC with subnets, internet gateway, and routing\n\n",
-    },
-  ]
-
-  // Create VPC
   commands.push({
     label: "Create VPC",
     parts: [
-      ...commentParts,
-      { type: "variable", value: "VPC_ID=" },
-      { type: "bin", value: "$(AWS_PROFILE=spinifex aws ec2 create-vpc" },
-      { type: "flag", value: " \\\n  --cidr-block" },
-      { type: "value", value: ` ${cidr || "10.0.0.0/16"}` },
-      { type: "flag", value: " \\\n  --query" },
-      { type: "value", value: " 'Vpc.VpcId'" },
-      { type: "flag", value: " --output" },
-      { type: "value", value: " text)" },
+      {
+        type: "comment",
+        value: "# Create VPC with subnets, internet gateway, and routing\n\n",
+      },
+      ...captureId(
+        "VPC_ID",
+        "AWS_PROFILE=spinifex aws ec2 create-vpc",
+        commandFlag("\\\n  --cidr-block", cidr),
+        "Vpc.VpcId",
+      ),
     ],
   })
 
-  // Create subnets
   for (const subnet of allSubnets) {
     commands.push({
       label: `Create Subnet (${subnet.name})`,
-      parts: [
-        { type: "variable", value: `${subnet.name}_ID=` },
-        { type: "bin", value: "$(AWS_PROFILE=spinifex aws ec2 create-subnet" },
-        { type: "flag", value: " \\\n  --vpc-id" },
-        { type: "variable", value: ' "$VPC_ID"' },
-        { type: "flag", value: " \\\n  --cidr-block" },
-        { type: "value", value: ` ${subnet.cidr}` },
-        { type: "flag", value: " \\\n  --query" },
-        { type: "value", value: " 'Subnet.SubnetId'" },
-        { type: "flag", value: " --output" },
-        { type: "value", value: " text)" },
-      ],
+      parts: captureId(
+        `${subnet.name}_ID`,
+        "AWS_PROFILE=spinifex aws ec2 create-subnet",
+        [
+          ...variableFlag("\\\n  --vpc-id", "VPC_ID"),
+          ...commandFlag("\\\n  --cidr-block", subnet.cidr),
+        ],
+        "Subnet.SubnetId",
+      ),
     })
   }
 
@@ -509,17 +466,12 @@ function buildCreateVpcCommands(
     commands.push(
       {
         label: "Create Internet Gateway",
-        parts: [
-          { type: "variable", value: "IGW_ID=" },
-          {
-            type: "bin",
-            value: "$(AWS_PROFILE=spinifex aws ec2 create-internet-gateway",
-          },
-          { type: "flag", value: " \\\n  --query" },
-          { type: "value", value: " 'InternetGateway.InternetGatewayId'" },
-          { type: "flag", value: " --output" },
-          { type: "value", value: " text)" },
-        ],
+        parts: captureId(
+          "IGW_ID",
+          "AWS_PROFILE=spinifex aws ec2 create-internet-gateway",
+          [],
+          "InternetGateway.InternetGatewayId",
+        ),
       },
       {
         label: "Attach Internet Gateway",
@@ -528,148 +480,120 @@ function buildCreateVpcCommands(
             type: "bin",
             value: "AWS_PROFILE=spinifex aws ec2 attach-internet-gateway",
           },
-          { type: "flag", value: " \\\n  --internet-gateway-id" },
-          { type: "variable", value: ' "$IGW_ID"' },
-          { type: "flag", value: " \\\n  --vpc-id" },
-          { type: "variable", value: ' "$VPC_ID"' },
+          ...variableFlag("\\\n  --internet-gateway-id", "IGW_ID"),
+          ...variableFlag("\\\n  --vpc-id", "VPC_ID"),
         ],
       },
-      // Route table for public subnets
-      {
-        label: "Create Route Table",
-        parts: [
-          { type: "variable", value: "RT_ID=" },
-          {
-            type: "bin",
-            value: "$(AWS_PROFILE=spinifex aws ec2 create-route-table",
-          },
-          { type: "flag", value: " \\\n  --vpc-id" },
-          { type: "variable", value: ' "$VPC_ID"' },
-          { type: "flag", value: " \\\n  --query" },
-          { type: "value", value: " 'RouteTable.RouteTableId'" },
-          { type: "flag", value: " --output" },
-          { type: "value", value: " text)" },
-        ],
-      },
-      {
-        label: "Create Default Route",
-        parts: [
-          { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
-          { type: "flag", value: " \\\n  --route-table-id" },
-          { type: "variable", value: ' "$RT_ID"' },
-          { type: "flag", value: " \\\n  --destination-cidr-block" },
-          { type: "value", value: " 0.0.0.0/0" },
-          { type: "flag", value: " \\\n  --gateway-id" },
-          { type: "variable", value: ' "$IGW_ID"' },
-        ],
-      },
+      ...routeTableCommands(
+        "",
+        "RT_ID",
+        variableFlag("\\\n  --gateway-id", "IGW_ID"),
+      ),
     )
 
     // Associate route table with each public subnet
     for (let i = 0; i < subnetCidrs.publicSubnets.length; i++) {
-      commands.push({
-        label: `Associate Route Table (PUBLIC_SUBNET_${i + 1})`,
-        parts: [
-          {
-            type: "bin",
-            value: "AWS_PROFILE=spinifex aws ec2 associate-route-table",
-          },
-          { type: "flag", value: " \\\n  --route-table-id" },
-          { type: "variable", value: ' "$RT_ID"' },
-          { type: "flag", value: " \\\n  --subnet-id" },
-          { type: "variable", value: ` "$PUBLIC_SUBNET_${i + 1}_ID"` },
-        ],
-      })
+      commands.push(
+        associateRouteTableCommand(
+          `Associate Route Table (PUBLIC_SUBNET_${i + 1})`,
+          "RT_ID",
+          `PUBLIC_SUBNET_${i + 1}_ID`,
+        ),
+      )
     }
   }
 
   // NAT gateway for private egress (needs both a public and a private subnet)
   if (
-    natGateway === "single" &&
+    values.natGateway === "single" &&
     subnetCidrs.publicSubnets.length > 0 &&
     subnetCidrs.privateSubnets.length > 0
   ) {
     commands.push(
       {
         label: "Allocate Elastic IP",
-        parts: [
-          { type: "variable", value: "EIP_ALLOC_ID=" },
-          {
-            type: "bin",
-            value: "$(AWS_PROFILE=spinifex aws ec2 allocate-address",
-          },
-          { type: "flag", value: " \\\n  --domain" },
-          { type: "value", value: " vpc" },
-          { type: "flag", value: " \\\n  --query" },
-          { type: "value", value: " 'AllocationId'" },
-          { type: "flag", value: " --output" },
-          { type: "value", value: " text)" },
-        ],
+        parts: captureId(
+          "EIP_ALLOC_ID",
+          "AWS_PROFILE=spinifex aws ec2 allocate-address",
+          commandFlag("\\\n  --domain", "vpc"),
+          "AllocationId",
+        ),
       },
       {
         label: "Create NAT Gateway",
-        parts: [
-          { type: "variable", value: "NAT_ID=" },
-          {
-            type: "bin",
-            value: "$(AWS_PROFILE=spinifex aws ec2 create-nat-gateway",
-          },
-          { type: "flag", value: " \\\n  --subnet-id" },
-          { type: "variable", value: ' "$PUBLIC_SUBNET_1_ID"' },
-          { type: "flag", value: " \\\n  --allocation-id" },
-          { type: "variable", value: ' "$EIP_ALLOC_ID"' },
-          { type: "flag", value: " \\\n  --query" },
-          { type: "value", value: " 'NatGateway.NatGatewayId'" },
-          { type: "flag", value: " --output" },
-          { type: "value", value: " text)" },
-        ],
+        parts: captureId(
+          "NAT_ID",
+          "AWS_PROFILE=spinifex aws ec2 create-nat-gateway",
+          [
+            ...variableFlag("\\\n  --subnet-id", "PUBLIC_SUBNET_1_ID"),
+            ...variableFlag("\\\n  --allocation-id", "EIP_ALLOC_ID"),
+          ],
+          "NatGateway.NatGatewayId",
+        ),
       },
-      {
-        label: "Create Private Route Table",
-        parts: [
-          { type: "variable", value: "PRIV_RT_ID=" },
-          {
-            type: "bin",
-            value: "$(AWS_PROFILE=spinifex aws ec2 create-route-table",
-          },
-          { type: "flag", value: " \\\n  --vpc-id" },
-          { type: "variable", value: ' "$VPC_ID"' },
-          { type: "flag", value: " \\\n  --query" },
-          { type: "value", value: " 'RouteTable.RouteTableId'" },
-          { type: "flag", value: " --output" },
-          { type: "value", value: " text)" },
-        ],
-      },
-      {
-        label: "Create Private Default Route",
-        parts: [
-          { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
-          { type: "flag", value: " \\\n  --route-table-id" },
-          { type: "variable", value: ' "$PRIV_RT_ID"' },
-          { type: "flag", value: " \\\n  --destination-cidr-block" },
-          { type: "value", value: " 0.0.0.0/0" },
-          { type: "flag", value: " \\\n  --nat-gateway-id" },
-          { type: "variable", value: ' "$NAT_ID"' },
-        ],
-      },
+      ...routeTableCommands(
+        "Private ",
+        "PRIV_RT_ID",
+        variableFlag("\\\n  --nat-gateway-id", "NAT_ID"),
+      ),
     )
 
     for (let i = 0; i < subnetCidrs.privateSubnets.length; i++) {
-      commands.push({
-        label: `Associate Private Route Table (PRIVATE_SUBNET_${i + 1})`,
-        parts: [
-          {
-            type: "bin",
-            value: "AWS_PROFILE=spinifex aws ec2 associate-route-table",
-          },
-          { type: "flag", value: " \\\n  --route-table-id" },
-          { type: "variable", value: ' "$PRIV_RT_ID"' },
-          { type: "flag", value: " \\\n  --subnet-id" },
-          { type: "variable", value: ` "$PRIVATE_SUBNET_${i + 1}_ID"` },
-        ],
-      })
+      commands.push(
+        associateRouteTableCommand(
+          `Associate Private Route Table (PRIVATE_SUBNET_${i + 1})`,
+          "PRIV_RT_ID",
+          `PRIVATE_SUBNET_${i + 1}_ID`,
+        ),
+      )
     }
   }
 
   return commands
+}
+
+// Creates a route table in $VPC_ID whose default route goes to `target`.
+function routeTableCommands(
+  labelPrefix: string,
+  tableVar: string,
+  target: CommandPart[],
+): CliCommand[] {
+  return [
+    {
+      label: `Create ${labelPrefix}Route Table`,
+      parts: captureId(
+        tableVar,
+        "AWS_PROFILE=spinifex aws ec2 create-route-table",
+        variableFlag("\\\n  --vpc-id", "VPC_ID"),
+        "RouteTable.RouteTableId",
+      ),
+    },
+    {
+      label: `Create ${labelPrefix}Default Route`,
+      parts: [
+        { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-route" },
+        ...variableFlag("\\\n  --route-table-id", tableVar),
+        ...commandFlag("\\\n  --destination-cidr-block", "0.0.0.0/0"),
+        ...target,
+      ],
+    },
+  ]
+}
+
+function associateRouteTableCommand(
+  label: string,
+  tableVar: string,
+  subnetVar: string,
+): CliCommand {
+  return {
+    label,
+    parts: [
+      {
+        type: "bin",
+        value: "AWS_PROFILE=spinifex aws ec2 associate-route-table",
+      },
+      ...variableFlag("\\\n  --route-table-id", tableVar),
+      ...variableFlag("\\\n  --subnet-id", subnetVar),
+    ],
+  }
 }

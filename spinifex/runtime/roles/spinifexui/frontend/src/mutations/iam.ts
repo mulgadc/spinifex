@@ -46,12 +46,16 @@ import type {
   DeleteAccessKeyParams,
   DeleteInlinePolicyParams,
   GroupMembershipParams,
-  GroupPolicyParams,
+  IamPrincipalKind,
+  PrincipalPolicyParams,
   PutInlinePolicyParams,
-  RolePolicyParams,
   UpdateAccessKeyParams,
-  UserPolicyParams,
 } from "@/types/iam"
+
+type PrincipalSenders<TParams> = Record<
+  IamPrincipalKind,
+  (params: TParams) => Promise<void>
+>
 
 export function useCreateUser() {
   const queryClient = useQueryClient()
@@ -176,86 +180,140 @@ export function useDeletePolicy() {
   })
 }
 
-export function useAttachUserPolicy() {
-  const queryClient = useQueryClient()
+// One sender per principal kind keeps each SDK command's input type checked.
+const attachPolicy = {
+  user: async ({ name, policyArn }) => {
+    await getIamClient().send(
+      new AttachUserPolicyCommand({ UserName: name, PolicyArn: policyArn }),
+    )
+  },
+  role: async ({ name, policyArn }) => {
+    await getIamClient().send(
+      new AttachRolePolicyCommand({ RoleName: name, PolicyArn: policyArn }),
+    )
+  },
+  group: async ({ name, policyArn }) => {
+    await getIamClient().send(
+      new AttachGroupPolicyCommand({ GroupName: name, PolicyArn: policyArn }),
+    )
+  },
+} satisfies PrincipalSenders<PrincipalPolicyParams>
 
-  return useMutation({
-    mutationFn: async ({ userName, policyArn }: UserPolicyParams) => {
-      const command = new AttachUserPolicyCommand({
-        UserName: userName,
-        PolicyArn: policyArn,
-      })
+const detachPolicy = {
+  user: async ({ name, policyArn }) => {
+    await getIamClient().send(
+      new DetachUserPolicyCommand({ UserName: name, PolicyArn: policyArn }),
+    )
+  },
+  role: async ({ name, policyArn }) => {
+    await getIamClient().send(
+      new DetachRolePolicyCommand({ RoleName: name, PolicyArn: policyArn }),
+    )
+  },
+  group: async ({ name, policyArn }) => {
+    await getIamClient().send(
+      new DetachGroupPolicyCommand({ GroupName: name, PolicyArn: policyArn }),
+    )
+  },
+} satisfies PrincipalSenders<PrincipalPolicyParams>
 
-      return await getIamClient().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "attached-user-policies"],
-      })
-    },
-  })
-}
-
-export function useDetachUserPolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ userName, policyArn }: UserPolicyParams) => {
-      const command = new DetachUserPolicyCommand({
-        UserName: userName,
-        PolicyArn: policyArn,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "attached-user-policies"],
-      })
-    },
-  })
-}
-
-export function usePutUserPolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({
-      name,
-      policyName,
-      policyDocument,
-    }: PutInlinePolicyParams) => {
-      const command = new PutUserPolicyCommand({
+const putInlinePolicy = {
+  user: async ({ name, policyName, policyDocument }) => {
+    await getIamClient().send(
+      new PutUserPolicyCommand({
         UserName: name,
         PolicyName: policyName,
         PolicyDocument: policyDocument,
-      })
+      }),
+    )
+  },
+  role: async ({ name, policyName, policyDocument }) => {
+    await getIamClient().send(
+      new PutRolePolicyCommand({
+        RoleName: name,
+        PolicyName: policyName,
+        PolicyDocument: policyDocument,
+      }),
+    )
+  },
+  group: async ({ name, policyName, policyDocument }) => {
+    await getIamClient().send(
+      new PutGroupPolicyCommand({
+        GroupName: name,
+        PolicyName: policyName,
+        PolicyDocument: policyDocument,
+      }),
+    )
+  },
+} satisfies PrincipalSenders<PutInlinePolicyParams>
 
-      return await getIamClient().send(command)
-    },
-    onSuccess: (_data, variables) => {
+const deleteInlinePolicy = {
+  user: async ({ name, policyName }) => {
+    await getIamClient().send(
+      new DeleteUserPolicyCommand({ UserName: name, PolicyName: policyName }),
+    )
+  },
+  role: async ({ name, policyName }) => {
+    await getIamClient().send(
+      new DeleteRolePolicyCommand({ RoleName: name, PolicyName: policyName }),
+    )
+  },
+  group: async ({ name, policyName }) => {
+    await getIamClient().send(
+      new DeleteGroupPolicyCommand({ GroupName: name, PolicyName: policyName }),
+    )
+  },
+} satisfies PrincipalSenders<DeleteInlinePolicyParams>
+
+// Attached-policy keys carry no name, so one attach refreshes every principal
+// page of that kind; inline keys are per principal.
+export function useAttachPolicy(kind: IamPrincipalKind) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: attachPolicy[kind],
+    onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["iam", "user-inline-policies", variables.name],
+        queryKey: ["iam", `attached-${kind}-policies`],
       })
     },
   })
 }
 
-export function useDeleteUserPolicy() {
+export function useDetachPolicy(kind: IamPrincipalKind) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ name, policyName }: DeleteInlinePolicyParams) => {
-      const command = new DeleteUserPolicyCommand({
-        UserName: name,
-        PolicyName: policyName,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: (_data, variables) => {
+    mutationFn: detachPolicy[kind],
+    onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["iam", "user-inline-policies", variables.name],
+        queryKey: ["iam", `attached-${kind}-policies`],
+      })
+    },
+  })
+}
+
+export function usePutInlinePolicy(kind: IamPrincipalKind) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: putInlinePolicy[kind],
+    onSuccess: (_data, { name }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", `${kind}-inline-policies`, name],
+      })
+    },
+  })
+}
+
+export function useDeleteInlinePolicy(kind: IamPrincipalKind) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: deleteInlinePolicy[kind],
+    onSuccess: (_data, { name }) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["iam", `${kind}-inline-policies`, name],
       })
     },
   })
@@ -292,91 +350,6 @@ export function useDeleteRole() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["iam", "roles"] })
-    },
-  })
-}
-
-export function useAttachRolePolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ roleName, policyArn }: RolePolicyParams) => {
-      const command = new AttachRolePolicyCommand({
-        RoleName: roleName,
-        PolicyArn: policyArn,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "attached-role-policies"],
-      })
-    },
-  })
-}
-
-export function useDetachRolePolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ roleName, policyArn }: RolePolicyParams) => {
-      const command = new DetachRolePolicyCommand({
-        RoleName: roleName,
-        PolicyArn: policyArn,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "attached-role-policies"],
-      })
-    },
-  })
-}
-
-export function usePutRolePolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({
-      name,
-      policyName,
-      policyDocument,
-    }: PutInlinePolicyParams) => {
-      const command = new PutRolePolicyCommand({
-        RoleName: name,
-        PolicyName: policyName,
-        PolicyDocument: policyDocument,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "role-inline-policies", variables.name],
-      })
-    },
-  })
-}
-
-export function useDeleteRolePolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ name, policyName }: DeleteInlinePolicyParams) => {
-      const command = new DeleteRolePolicyCommand({
-        RoleName: name,
-        PolicyName: policyName,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "role-inline-policies", variables.name],
-      })
     },
   })
 }
@@ -497,91 +470,6 @@ export function useDeleteGroup() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["iam", "groups"] })
-    },
-  })
-}
-
-export function useAttachGroupPolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ groupName, policyArn }: GroupPolicyParams) => {
-      const command = new AttachGroupPolicyCommand({
-        GroupName: groupName,
-        PolicyArn: policyArn,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "attached-group-policies"],
-      })
-    },
-  })
-}
-
-export function useDetachGroupPolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ groupName, policyArn }: GroupPolicyParams) => {
-      const command = new DetachGroupPolicyCommand({
-        GroupName: groupName,
-        PolicyArn: policyArn,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "attached-group-policies"],
-      })
-    },
-  })
-}
-
-export function usePutGroupPolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({
-      name,
-      policyName,
-      policyDocument,
-    }: PutInlinePolicyParams) => {
-      const command = new PutGroupPolicyCommand({
-        GroupName: name,
-        PolicyName: policyName,
-        PolicyDocument: policyDocument,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "group-inline-policies", variables.name],
-      })
-    },
-  })
-}
-
-export function useDeleteGroupPolicy() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ name, policyName }: DeleteInlinePolicyParams) => {
-      const command = new DeleteGroupPolicyCommand({
-        GroupName: name,
-        PolicyName: policyName,
-      })
-
-      return await getIamClient().send(command)
-    },
-    onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: ["iam", "group-inline-policies", variables.name],
-      })
     },
   })
 }

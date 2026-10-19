@@ -13,6 +13,8 @@ const SUCCESS_STATES = new Set([
   "AVAILABLE",
   "COMPLETE",
   "READY",
+  // ELBv2 target health.
+  "healthy",
 ])
 
 // "stopped" stays an error state because EC2 reads it that way. RDS treats a
@@ -25,6 +27,8 @@ const ERROR_STATES = new Set([
   "FAILED",
   "DELETE_UNSUCCESSFUL",
   "UPDATE_UNSUCCESSFUL",
+  "unhealthy",
+  "unavailable",
 ])
 
 const WARNING_STATES = new Set([
@@ -45,6 +49,8 @@ const WARNING_STATES = new Set([
   "STOPPING",
   "UPDATING",
   "VERSIONING",
+  "initial",
+  "draining",
 ])
 
 function getStateClass(state: string | undefined): string {

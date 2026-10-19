@@ -12,6 +12,9 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -192,41 +195,34 @@ function CreateSubnet() {
 function buildCreateSubnetCommands(
   values: DeepPartialSkipArrayKey<CreateSubnetFormData>,
 ): CliCommand[] {
-  const vpcId = values.vpcId ?? ""
-  const cidr = values.cidrBlock ?? ""
-  const az = values.availabilityZone ?? ""
-
-  const parts = [
+  const commands: CliCommand[] = [
     {
-      type: "bin" as const,
-      value: "AWS_PROFILE=spinifex aws ec2 create-subnet",
+      label: "Create Subnet",
+      parts: [
+        { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-subnet" },
+        ...commandFlag(
+          "\\\n  --vpc-id",
+          cliPlaceholder(values.vpcId ?? "", "VpcId"),
+        ),
+        ...commandFlag(
+          "\\\n  --cidr-block",
+          cliPlaceholder(values.cidrBlock ?? "", "CidrBlock"),
+        ),
+        ...optionalFlag("\\\n  --availability-zone", values.availabilityZone),
+      ],
     },
-    { type: "flag" as const, value: " \\\n  --vpc-id" },
-    { type: "value" as const, value: ` ${vpcId || "<VpcId>"}` },
-    { type: "flag" as const, value: " \\\n  --cidr-block" },
-    { type: "value" as const, value: ` ${cidr || "<CidrBlock>"}` },
   ]
-
-  if (az) {
-    parts.push(
-      { type: "flag" as const, value: " \\\n  --availability-zone" },
-      { type: "value" as const, value: ` ${az}` },
-    )
-  }
-
-  const commands: CliCommand[] = [{ label: "Create Subnet", parts }]
 
   if (values.mapPublicIpOnLaunch === true) {
     commands.push({
       label: "Enable auto-assign public IPv4",
       parts: [
         {
-          type: "bin" as const,
+          type: "bin",
           value: "AWS_PROFILE=spinifex aws ec2 modify-subnet-attribute",
         },
-        { type: "flag" as const, value: " \\\n  --subnet-id" },
-        { type: "value" as const, value: " <SubnetId>" },
-        { type: "flag" as const, value: " \\\n  --map-public-ip-on-launch" },
+        ...commandFlag("\\\n  --subnet-id", "<SubnetId>"),
+        ...optionalFlag("\\\n  --map-public-ip-on-launch", true),
       ],
     })
   }

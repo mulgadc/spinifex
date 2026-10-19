@@ -1,5 +1,7 @@
+import type { Vpc } from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Link, createFileRoute } from "@tanstack/react-router"
+import type { LinkProps } from "@tanstack/react-router"
 import {
   Box,
   Globe,
@@ -11,7 +13,8 @@ import {
   Shield,
   Waypoints,
 } from "lucide-react"
-import { Suspense, type ReactNode } from "react"
+import type { LucideIcon } from "lucide-react"
+import type { ReactNode } from "react"
 
 import { AdminDashboardPanel } from "@/components/admin-dashboard-panel"
 import { PageHeading } from "@/components/page-heading"
@@ -88,57 +91,109 @@ export const Route = createFileRoute("/_auth/")({
 })
 
 function Dashboard() {
+  const vpcs = useQuery(ec2VpcsQueryOptions).data?.Vpcs
+  const keyPairs = useQuery(ec2KeyPairsQueryOptions).data?.KeyPairs
+  const buckets = useQuery(s3BucketsQueryOptions).data?.Buckets
+  const groups = useQuery(ec2SecurityGroupsQueryOptions).data?.SecurityGroups
+  const natGateways = useQuery(ec2NatGatewaysQueryOptions).data?.NatGateways
+  const addresses = useQuery(ec2AddressesQueryOptions).data?.Addresses
+  const igws = useQuery(ec2InternetGatewaysQueryOptions).data?.InternetGateways
+
   return (
     <>
       <PageHeading title="Dashboard" />
       <SandboxWelcomeDialog />
       <AdminDashboardPanel />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <Suspense fallback={<CardSkeleton />}>
-          <InstancesCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <VolumesCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <VpcsCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <KeyPairsCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <BucketsCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <SecurityGroupsCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <NatGatewaysCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <ElasticIpsCard />
-        </Suspense>
-        <Suspense fallback={<CardSkeleton />}>
-          <InternetGatewaysCard />
-        </Suspense>
+        <InstancesCard />
+        <VolumesCard />
+        <ResourceCard
+          emptyText="No VPCs"
+          getKey={(vpc) => vpc.VpcId}
+          icon={Network}
+          items={vpcs}
+          primary={vpcIdWithName}
+          secondary={(vpc) => vpc.CidrBlock}
+          title="VPCs"
+          to="/ec2/describe-vpcs"
+        />
+        <ResourceCard
+          emptyText="No key pairs"
+          getKey={(kp) => kp.KeyPairId}
+          icon={Key}
+          items={keyPairs}
+          primary={(kp) => kp.KeyName}
+          title="Key Pairs"
+          to="/ec2/describe-key-pairs"
+        />
+        <ResourceCard
+          emptyText="No buckets"
+          getKey={(b) => b.Name}
+          icon={FolderOpen}
+          items={buckets}
+          primary={(b) => b.Name}
+          title="S3 Buckets"
+          to="/s3/ls"
+        />
+        <ResourceCard
+          emptyText="No security groups"
+          getKey={(sg) => sg.GroupId}
+          icon={Shield}
+          items={groups}
+          primary={(sg) => sg.GroupName}
+          secondary={(sg) => sg.VpcId}
+          title="Security Groups"
+          to="/ec2/describe-security-groups"
+        />
+        <ResourceCard
+          emptyText="No NAT gateways"
+          getKey={(nat) => nat.NatGatewayId}
+          icon={Waypoints}
+          items={natGateways}
+          primary={(nat) => nat.NatGatewayId}
+          secondary={(nat) => nat.State}
+          title="NAT Gateways"
+          to="/ec2/describe-nat-gateways"
+        />
+        <ResourceCard
+          emptyText="No Elastic IPs"
+          getKey={(addr) => addr.AllocationId}
+          icon={Globe}
+          items={addresses}
+          primary={(addr) => addr.PublicIp}
+          secondary={(addr) =>
+            addr.AssociationId ? "associated" : "available"
+          }
+          title="Elastic IPs"
+          to="/ec2/describe-addresses"
+        />
+        <ResourceCard
+          emptyText="No internet gateways"
+          getKey={(igw) => igw.InternetGatewayId}
+          icon={Router}
+          items={igws}
+          primary={(igw) => igw.InternetGatewayId}
+          secondary={(igw) =>
+            igw.Attachments?.[0]?.VpcId ? "attached" : "detached"
+          }
+          title="Internet Gateways"
+          to="/ec2/describe-internet-gateways"
+        />
       </div>
     </>
   )
 }
 
-function CardSkeleton() {
+function vpcIdWithName(vpc: Vpc): ReactNode {
+  const name = getNameTag(vpc.Tags)
+
   return (
-    <Card>
-      <CardHeader>
-        <div className="h-4 w-32 animate-pulse rounded bg-muted" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          <div className="h-3 w-48 animate-pulse rounded bg-muted" />
-          <div className="h-3 w-36 animate-pulse rounded bg-muted" />
-        </div>
-      </CardContent>
-    </Card>
+    <>
+      {vpc.VpcId}
+      {name && (
+        <span className="ml-1 font-sans text-muted-foreground">({name})</span>
+      )}
+    </>
   )
 }
 
@@ -146,7 +201,7 @@ interface DashboardCardProps {
   title: string
   icon: ReactNode
   count: number
-  to: string
+  to: LinkProps["to"]
   children: ReactNode
 }
 
@@ -180,6 +235,56 @@ function DashboardCard({
         </Link>
       </CardFooter>
     </Card>
+  )
+}
+
+interface ResourceCardProps<T> {
+  emptyText: string
+  getKey: (item: T) => string | undefined
+  icon: LucideIcon
+  items: T[] | undefined
+  primary: (item: T) => ReactNode
+  secondary?: (item: T) => ReactNode
+  title: string
+  to: LinkProps["to"]
+}
+
+// A count, the first few items as id/detail rows, and a link to the list page.
+function ResourceCard<T>({
+  emptyText,
+  getKey,
+  icon: Icon,
+  items,
+  primary,
+  secondary,
+  title,
+  to,
+}: ResourceCardProps<T>) {
+  const list = items ?? []
+
+  return (
+    <DashboardCard
+      title={title}
+      icon={<Icon className="size-3.5" />}
+      count={list.length}
+      to={to}
+    >
+      {list.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{emptyText}</p>
+      ) : (
+        <div className="space-y-0.5">
+          {list.slice(0, MAX_ITEMS).map((item) => (
+            <ItemRow key={getKey(item)}>
+              <span className="font-mono">{primary(item)}</span>
+              {secondary && (
+                <span className="text-muted-foreground">{secondary(item)}</span>
+              )}
+            </ItemRow>
+          ))}
+          <Overflow total={list.length} />
+        </div>
+      )}
+    </DashboardCard>
   )
 }
 
@@ -279,222 +384,6 @@ function VolumesCard() {
           </div>
           <Overflow total={volumes.length} />
         </>
-      )}
-    </DashboardCard>
-  )
-}
-
-function VpcsCard() {
-  const { data } = useQuery(ec2VpcsQueryOptions)
-  const vpcs = data?.Vpcs ?? []
-  const display = vpcs.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="VPCs"
-      icon={<Network className="size-3.5" />}
-      count={vpcs.length}
-      to="/ec2/describe-vpcs"
-    >
-      {vpcs.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No VPCs</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((vpc) => {
-            const name = getNameTag(vpc.Tags)
-
-            return (
-              <ItemRow key={vpc.VpcId}>
-                <span className="font-mono">
-                  {vpc.VpcId}
-                  {name && (
-                    <span className="ml-1 font-sans text-muted-foreground">
-                      ({name})
-                    </span>
-                  )}
-                </span>
-                <span className="text-muted-foreground">{vpc.CidrBlock}</span>
-              </ItemRow>
-            )
-          })}
-          <Overflow total={vpcs.length} />
-        </div>
-      )}
-    </DashboardCard>
-  )
-}
-
-function KeyPairsCard() {
-  const { data } = useQuery(ec2KeyPairsQueryOptions)
-  const keyPairs = data?.KeyPairs ?? []
-  const display = keyPairs.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="Key Pairs"
-      icon={<Key className="size-3.5" />}
-      count={keyPairs.length}
-      to="/ec2/describe-key-pairs"
-    >
-      {keyPairs.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No key pairs</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((kp) => (
-            <ItemRow key={kp.KeyPairId}>
-              <span className="font-mono">{kp.KeyName}</span>
-            </ItemRow>
-          ))}
-          <Overflow total={keyPairs.length} />
-        </div>
-      )}
-    </DashboardCard>
-  )
-}
-
-function BucketsCard() {
-  const { data } = useQuery(s3BucketsQueryOptions)
-  const buckets = data?.Buckets ?? []
-  const display = buckets.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="S3 Buckets"
-      icon={<FolderOpen className="size-3.5" />}
-      count={buckets.length}
-      to="/s3/ls"
-    >
-      {buckets.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No buckets</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((b) => (
-            <ItemRow key={b.Name}>
-              <span className="font-mono">{b.Name}</span>
-            </ItemRow>
-          ))}
-          <Overflow total={buckets.length} />
-        </div>
-      )}
-    </DashboardCard>
-  )
-}
-
-function SecurityGroupsCard() {
-  const { data } = useQuery(ec2SecurityGroupsQueryOptions)
-  const groups = data?.SecurityGroups ?? []
-  const display = groups.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="Security Groups"
-      icon={<Shield className="size-3.5" />}
-      count={groups.length}
-      to="/ec2/describe-security-groups"
-    >
-      {groups.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No security groups</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((sg) => (
-            <ItemRow key={sg.GroupId}>
-              <span className="font-mono">{sg.GroupName}</span>
-              <span className="text-muted-foreground">{sg.VpcId}</span>
-            </ItemRow>
-          ))}
-          <Overflow total={groups.length} />
-        </div>
-      )}
-    </DashboardCard>
-  )
-}
-
-function NatGatewaysCard() {
-  const { data } = useQuery(ec2NatGatewaysQueryOptions)
-  const natGateways = data?.NatGateways ?? []
-  const display = natGateways.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="NAT Gateways"
-      icon={<Waypoints className="size-3.5" />}
-      count={natGateways.length}
-      to="/ec2/describe-nat-gateways"
-    >
-      {natGateways.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No NAT gateways</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((nat) => (
-            <ItemRow key={nat.NatGatewayId}>
-              <span className="font-mono">{nat.NatGatewayId}</span>
-              <span className="text-muted-foreground">{nat.State}</span>
-            </ItemRow>
-          ))}
-          <Overflow total={natGateways.length} />
-        </div>
-      )}
-    </DashboardCard>
-  )
-}
-
-function InternetGatewaysCard() {
-  const { data } = useQuery(ec2InternetGatewaysQueryOptions)
-  const internetGateways = data?.InternetGateways ?? []
-  const display = internetGateways.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="Internet Gateways"
-      icon={<Router className="size-3.5" />}
-      count={internetGateways.length}
-      to="/ec2/describe-internet-gateways"
-    >
-      {internetGateways.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No internet gateways</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((igw) => (
-            <ItemRow key={igw.InternetGatewayId}>
-              <span className="font-mono">{igw.InternetGatewayId}</span>
-              <span className="text-muted-foreground">
-                {igw.Attachments?.[0]?.VpcId ? "attached" : "detached"}
-              </span>
-            </ItemRow>
-          ))}
-          <Overflow total={internetGateways.length} />
-        </div>
-      )}
-    </DashboardCard>
-  )
-}
-
-function ElasticIpsCard() {
-  const { data } = useQuery(ec2AddressesQueryOptions)
-  const addresses = data?.Addresses ?? []
-  const display = addresses.slice(0, MAX_ITEMS)
-
-  return (
-    <DashboardCard
-      title="Elastic IPs"
-      icon={<Globe className="size-3.5" />}
-      count={addresses.length}
-      to="/ec2/describe-addresses"
-    >
-      {addresses.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No Elastic IPs</p>
-      ) : (
-        <div className="space-y-0.5">
-          {display.map((addr) => (
-            <ItemRow key={addr.AllocationId}>
-              <span className="font-mono">{addr.PublicIp}</span>
-              <span className="text-muted-foreground">
-                {addr.AssociationId ? "associated" : "available"}
-              </span>
-            </ItemRow>
-          ))}
-          <Overflow total={addresses.length} />
-        </div>
       )}
     </DashboardCard>
   )

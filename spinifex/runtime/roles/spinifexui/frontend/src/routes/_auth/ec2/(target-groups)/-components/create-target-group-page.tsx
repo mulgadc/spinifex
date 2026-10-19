@@ -1,12 +1,19 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { useForm, type UseFormWatch } from "react-hook-form"
+import {
+  type DeepPartialSkipArrayKey,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
 import { TargetGroupForm } from "@/components/elbv2/target-group-form"
@@ -50,9 +57,10 @@ export function CreateTargetGroupPage() {
 
   const {
     handleSubmit,
-    watch,
     formState: { isSubmitting },
   } = form
+
+  const values = useWatch({ control: form.control })
 
   const onSubmit = async (data: CreateTargetGroupFormData) => {
     try {
@@ -90,7 +98,7 @@ export function CreateTargetGroupPage() {
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
         <TargetGroupForm form={form} vpcs={vpcs} />
 
-        <CliCommandPanel commands={buildCreateTargetGroupCommands(watch)} />
+        <CliCommandPanel commands={buildCreateTargetGroupCommands(values)} />
 
         <FormActions
           isPending={createMutation.isPending}
@@ -107,75 +115,52 @@ export function CreateTargetGroupPage() {
 }
 
 function buildCreateTargetGroupCommands(
-  watch: UseFormWatch<CreateTargetGroupFormData>,
+  values: DeepPartialSkipArrayKey<CreateTargetGroupFormData>,
 ): CliCommand[] {
-  const name = watch("name")
-  const protocol = watch("protocol") || "HTTP"
-  const port = watch("port")
-  const vpcId = watch("vpcId")
-  const hcProtocol = watch("healthCheck.protocol") || "HTTP"
-  const hcPath = watch("healthCheck.path") || "/"
-  const hcPort = watch("healthCheck.port") || "traffic-port"
-  const hcInterval = watch("healthCheck.intervalSeconds")
-  const hcTimeout = watch("healthCheck.timeoutSeconds")
-  const hcHealthy = watch("healthCheck.healthyThresholdCount")
-  const hcUnhealthy = watch("healthCheck.unhealthyThresholdCount")
-  const hcMatcher = watch("healthCheck.matcher") || "200"
+  const healthCheck = values.healthCheck ?? {}
+  const hcProtocol = healthCheck.protocol || "HTTP"
+  const httpHealthCheck = hcProtocol === "HTTP"
 
   const parts: CommandPart[] = [
     {
       type: "bin",
       value: "AWS_PROFILE=spinifex aws elbv2 create-target-group",
     },
-    { type: "flag", value: " \\\n  --name" },
-    { type: "value", value: ` ${name || "<Name>"}` },
-    { type: "flag", value: " \\\n  --protocol" },
-    { type: "value", value: ` ${protocol}` },
-    { type: "flag", value: " \\\n  --port" },
-    { type: "value", value: ` ${port ?? 80}` },
-    { type: "flag", value: " \\\n  --target-type" },
-    { type: "value", value: " instance" },
+    ...commandFlag("\\\n  --name", cliPlaceholder(values.name ?? "", "Name")),
+    ...commandFlag("\\\n  --protocol", values.protocol || "HTTP"),
+    ...commandFlag("\\\n  --port", values.port ?? 80),
+    ...commandFlag("\\\n  --target-type", "instance"),
+    ...optionalFlag("\\\n  --vpc-id", values.vpcId),
+    ...commandFlag("\\\n  --health-check-protocol", hcProtocol),
+    ...optionalFlag(
+      "\\\n  --health-check-path",
+      httpHealthCheck && (healthCheck.path || "/"),
+    ),
+    ...commandFlag(
+      "\\\n  --health-check-port",
+      healthCheck.port || "traffic-port",
+    ),
+    ...commandFlag(
+      "\\\n  --health-check-interval-seconds",
+      healthCheck.intervalSeconds ?? 30,
+    ),
+    ...commandFlag(
+      "\\\n  --health-check-timeout-seconds",
+      healthCheck.timeoutSeconds ?? 5,
+    ),
+    ...commandFlag(
+      "\\\n  --healthy-threshold-count",
+      healthCheck.healthyThresholdCount ?? 5,
+    ),
+    ...commandFlag(
+      "\\\n  --unhealthy-threshold-count",
+      healthCheck.unhealthyThresholdCount ?? 2,
+    ),
+    ...optionalFlag(
+      "\\\n  --matcher",
+      httpHealthCheck && `HttpCode=${healthCheck.matcher || "200"}`,
+    ),
   ]
-
-  if (vpcId) {
-    parts.push(
-      { type: "flag", value: " \\\n  --vpc-id" },
-      { type: "value", value: ` ${vpcId}` },
-    )
-  }
-
-  const httpHealthCheck = hcProtocol === "HTTP"
-  parts.push(
-    { type: "flag", value: " \\\n  --health-check-protocol" },
-    { type: "value", value: ` ${hcProtocol}` },
-  )
-
-  if (httpHealthCheck) {
-    parts.push(
-      { type: "flag", value: " \\\n  --health-check-path" },
-      { type: "value", value: ` ${hcPath}` },
-    )
-  }
-
-  parts.push(
-    { type: "flag", value: " \\\n  --health-check-port" },
-    { type: "value", value: ` ${hcPort}` },
-    { type: "flag", value: " \\\n  --health-check-interval-seconds" },
-    { type: "value", value: ` ${hcInterval ?? 30}` },
-    { type: "flag", value: " \\\n  --health-check-timeout-seconds" },
-    { type: "value", value: ` ${hcTimeout ?? 5}` },
-    { type: "flag", value: " \\\n  --healthy-threshold-count" },
-    { type: "value", value: ` ${hcHealthy ?? 5}` },
-    { type: "flag", value: " \\\n  --unhealthy-threshold-count" },
-    { type: "value", value: ` ${hcUnhealthy ?? 2}` },
-  )
-
-  if (httpHealthCheck) {
-    parts.push(
-      { type: "flag", value: " \\\n  --matcher" },
-      { type: "value", value: ` HttpCode=${hcMatcher}` },
-    )
-  }
 
   return [{ label: "Create Target Group", parts }]
 }

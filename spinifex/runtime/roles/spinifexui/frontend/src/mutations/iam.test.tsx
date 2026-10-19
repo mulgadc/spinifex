@@ -12,14 +12,15 @@ vi.mock("@/lib/awsClient", async () => {
   return mockAwsClients(mockSend)
 })
 
-import { iamUsersQueryOptions } from "@/queries/iam"
+import {
+  iamInstanceProfilesForRoleQueryOptions,
+  iamUsersQueryOptions,
+} from "@/queries/iam"
 
 import {
   useAddRoleToInstanceProfile,
   useAddUserToGroup,
-  useAttachGroupPolicy,
-  useAttachRolePolicy,
-  useAttachUserPolicy,
+  useAttachPolicy,
   useCreateAccessKey,
   useCreateGroup,
   useCreateInstanceProfile,
@@ -28,19 +29,13 @@ import {
   useCreateUser,
   useDeleteAccessKey,
   useDeleteGroup,
-  useDeleteGroupPolicy,
+  useDeleteInlinePolicy,
   useDeleteInstanceProfile,
   useDeletePolicy,
   useDeleteRole,
-  useDeleteRolePolicy,
   useDeleteUser,
-  useDeleteUserPolicy,
-  useDetachGroupPolicy,
-  useDetachRolePolicy,
-  useDetachUserPolicy,
-  usePutGroupPolicy,
-  usePutRolePolicy,
-  usePutUserPolicy,
+  useDetachPolicy,
+  usePutInlinePolicy,
   useRemoveRoleFromInstanceProfile,
   useRemoveUserFromGroup,
   useUpdateAccessKey,
@@ -243,266 +238,101 @@ describe("useDeletePolicy", () => {
   })
 })
 
-describe("useAttachUserPolicy", () => {
-  it("sends AttachUserPolicyCommand with userName and policyArn", async () => {
-    const { result } = renderMutationHook(() => useAttachUserPolicy())
+// Runs a mutation to success and returns the sent command and invalidation spy.
+async function runToSuccess<TParams>(
+  hook: () => { mutate: (params: TParams) => void; isSuccess: boolean },
+  params: TParams,
+) {
+  const queryClient = createTestQueryClient()
+  const spy = vi.spyOn(queryClient, "invalidateQueries")
+  const { result } = renderMutationHook(hook, queryClient)
 
-    result.current.mutate({ userName: "admin", policyArn: "arn:test" })
+  result.current.mutate(params)
 
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      UserName: "admin",
-      PolicyArn: "arn:test",
-    })
+  await waitFor(() => {
+    expect(result.current.isSuccess).toBeTruthy()
   })
 
-  it("invalidates attached-user-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
+  return { command: mockSend.mock.calls[0]?.[0], spy }
+}
 
-    const { result } = renderMutationHook(
-      () => useAttachUserPolicy(),
-      queryClient,
+const principals = [
+  { kind: "user", nameField: "UserName" },
+  { kind: "role", nameField: "RoleName" },
+  { kind: "group", nameField: "GroupName" },
+] as const
+
+describe.each(principals)("$kind policy mutations", ({ kind, nameField }) => {
+  it.each([
+    ["attach", useAttachPolicy, `Attach${capitalised(kind)}PolicyCommand`],
+    ["detach", useDetachPolicy, `Detach${capitalised(kind)}PolicyCommand`],
+  ] as const)(
+    "%s sends %s and invalidates every attached list of the kind",
+    async (_verb, useHook, commandName) => {
+      const { command, spy } = await runToSuccess(() => useHook(kind), {
+        name: "p1",
+        policyArn: "arn:test",
+      })
+
+      expect(command.constructor.name).toBe(commandName)
+      expect(command.input).toStrictEqual({
+        [nameField]: "p1",
+        PolicyArn: "arn:test",
+      })
+      expect(spy).toHaveBeenCalledWith({
+        queryKey: ["iam", `attached-${kind}-policies`],
+      })
+    },
+  )
+
+  it("put sends the inline policy and invalidates that principal's list", async () => {
+    const { command, spy } = await runToSuccess(
+      () => usePutInlinePolicy(kind),
+      {
+        name: "p1",
+        policyName: "s3-read",
+        policyDocument: "{}",
+      },
     )
 
-    result.current.mutate({ userName: "admin", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "attached-user-policies"],
-    })
-  })
-})
-
-describe("useDetachUserPolicy", () => {
-  it("sends DetachUserPolicyCommand with userName and policyArn", async () => {
-    const { result } = renderMutationHook(() => useDetachUserPolicy())
-
-    result.current.mutate({ userName: "admin", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      UserName: "admin",
-      PolicyArn: "arn:test",
-    })
-  })
-
-  it("invalidates attached-user-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-
-    const { result } = renderMutationHook(
-      () => useDetachUserPolicy(),
-      queryClient,
+    expect(command.constructor.name).toBe(
+      `Put${capitalised(kind)}PolicyCommand`,
     )
-
-    result.current.mutate({ userName: "admin", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "attached-user-policies"],
-    })
-  })
-})
-
-describe("usePutUserPolicy", () => {
-  it("sends PutUserPolicyCommand with mapped fields", async () => {
-    const { result } = renderMutationHook(() => usePutUserPolicy())
-
-    result.current.mutate({
-      name: "admin",
-      policyName: "s3-read",
-      policyDocument: "{}",
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      UserName: "admin",
+    expect(command.input).toStrictEqual({
+      [nameField]: "p1",
       PolicyName: "s3-read",
       PolicyDocument: "{}",
     })
-  })
-
-  it("invalidates the user inline-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderMutationHook(() => usePutUserPolicy(), queryClient)
-
-    result.current.mutate({
-      name: "admin",
-      policyName: "s3-read",
-      policyDocument: "{}",
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
     expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "user-inline-policies", "admin"],
-    })
-  })
-})
-
-describe("useDeleteUserPolicy", () => {
-  it("sends DeleteUserPolicyCommand with mapped fields", async () => {
-    const { result } = renderMutationHook(() => useDeleteUserPolicy())
-
-    result.current.mutate({ name: "admin", policyName: "s3-read" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      UserName: "admin",
-      PolicyName: "s3-read",
+      queryKey: ["iam", `${kind}-inline-policies`, "p1"],
     })
   })
 
-  it("invalidates the user inline-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-
-    const { result } = renderMutationHook(
-      () => useDeleteUserPolicy(),
-      queryClient,
+  it("delete removes the inline policy and invalidates that principal's list", async () => {
+    const { command, spy } = await runToSuccess(
+      () => useDeleteInlinePolicy(kind),
+      {
+        name: "p1",
+        policyName: "s3-read",
+      },
     )
 
-    result.current.mutate({ name: "admin", policyName: "s3-read" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "user-inline-policies", "admin"],
-    })
-  })
-})
-
-describe("usePutRolePolicy", () => {
-  it("sends PutRolePolicyCommand with mapped fields", async () => {
-    const { result } = renderMutationHook(() => usePutRolePolicy())
-
-    result.current.mutate({
-      name: "my-role",
-      policyName: "s3-read",
-      policyDocument: "{}",
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      RoleName: "my-role",
-      PolicyName: "s3-read",
-      PolicyDocument: "{}",
-    })
-  })
-
-  it("invalidates the role inline-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderMutationHook(() => usePutRolePolicy(), queryClient)
-
-    result.current.mutate({
-      name: "my-role",
-      policyName: "s3-read",
-      policyDocument: "{}",
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "role-inline-policies", "my-role"],
-    })
-  })
-})
-
-describe("useDeleteRolePolicy", () => {
-  it("sends DeleteRolePolicyCommand with mapped fields", async () => {
-    const { result } = renderMutationHook(() => useDeleteRolePolicy())
-
-    result.current.mutate({ name: "my-role", policyName: "s3-read" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      RoleName: "my-role",
-      PolicyName: "s3-read",
-    })
-  })
-})
-
-describe("usePutGroupPolicy", () => {
-  it("sends PutGroupPolicyCommand with mapped fields", async () => {
-    const { result } = renderMutationHook(() => usePutGroupPolicy())
-
-    result.current.mutate({
-      name: "my-group",
-      policyName: "s3-read",
-      policyDocument: "{}",
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      GroupName: "my-group",
-      PolicyName: "s3-read",
-      PolicyDocument: "{}",
-    })
-  })
-
-  it("invalidates the group inline-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-
-    const { result } = renderMutationHook(
-      () => usePutGroupPolicy(),
-      queryClient,
+    expect(command.constructor.name).toBe(
+      `Delete${capitalised(kind)}PolicyCommand`,
     )
-
-    result.current.mutate({
-      name: "my-group",
-      policyName: "s3-read",
-      policyDocument: "{}",
-    })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "group-inline-policies", "my-group"],
-    })
-  })
-})
-
-describe("useDeleteGroupPolicy", () => {
-  it("sends DeleteGroupPolicyCommand with mapped fields", async () => {
-    const { result } = renderMutationHook(() => useDeleteGroupPolicy())
-
-    result.current.mutate({ name: "my-group", policyName: "s3-read" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      GroupName: "my-group",
+    expect(command.input).toStrictEqual({
+      [nameField]: "p1",
       PolicyName: "s3-read",
     })
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ["iam", `${kind}-inline-policies`, "p1"],
+    })
   })
 })
+
+function capitalised(word: string): string {
+  return word.charAt(0).toUpperCase() + word.slice(1)
+}
 
 describe("useCreateRole", () => {
   it("sends CreateRoleCommand with role data", async () => {
@@ -573,57 +403,6 @@ describe("useDeleteRole", () => {
     })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       RoleName: "my-role",
-    })
-  })
-})
-
-describe("useAttachRolePolicy", () => {
-  it("sends AttachRolePolicyCommand with roleName and policyArn", async () => {
-    const { result } = renderMutationHook(() => useAttachRolePolicy())
-
-    result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      RoleName: "my-role",
-      PolicyArn: "arn:test",
-    })
-  })
-
-  it("invalidates attached-role-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-
-    const { result } = renderMutationHook(
-      () => useAttachRolePolicy(),
-      queryClient,
-    )
-
-    result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "attached-role-policies"],
-    })
-  })
-})
-
-describe("useDetachRolePolicy", () => {
-  it("sends DetachRolePolicyCommand with roleName and policyArn", async () => {
-    const { result } = renderMutationHook(() => useDetachRolePolicy())
-
-    result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      RoleName: "my-role",
-      PolicyArn: "arn:test",
     })
   })
 })
@@ -741,11 +520,14 @@ describe("useRemoveRoleFromInstanceProfile", () => {
 })
 
 describe("instance profile membership changes", () => {
-  const roleProfilesKey = ["iam", "instance-profiles-for-role", "app"]
+  const roleProfilesKey = iamInstanceProfilesForRoleQueryOptions("app").queryKey
 
   function seedRoleProfiles() {
     const queryClient = createTestQueryClient()
-    queryClient.setQueryData(roleProfilesKey, { InstanceProfiles: [] })
+    queryClient.setQueryData(roleProfilesKey, {
+      $metadata: {},
+      InstanceProfiles: [],
+    })
 
     return queryClient
   }
@@ -858,57 +640,6 @@ describe("useDeleteGroup", () => {
     })
     expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
       GroupName: "my-group",
-    })
-  })
-})
-
-describe("useAttachGroupPolicy", () => {
-  it("sends AttachGroupPolicyCommand with groupName and policyArn", async () => {
-    const { result } = renderMutationHook(() => useAttachGroupPolicy())
-
-    result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      GroupName: "my-group",
-      PolicyArn: "arn:test",
-    })
-  })
-
-  it("invalidates attached-group-policies query on success", async () => {
-    const queryClient = createTestQueryClient()
-    const spy = vi.spyOn(queryClient, "invalidateQueries")
-
-    const { result } = renderMutationHook(
-      () => useAttachGroupPolicy(),
-      queryClient,
-    )
-
-    result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(spy).toHaveBeenCalledWith({
-      queryKey: ["iam", "attached-group-policies"],
-    })
-  })
-})
-
-describe("useDetachGroupPolicy", () => {
-  it("sends DetachGroupPolicyCommand with groupName and policyArn", async () => {
-    const { result } = renderMutationHook(() => useDetachGroupPolicy())
-
-    result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
-
-    await waitFor(() => {
-      expect(result.current.isSuccess).toBeTruthy()
-    })
-    expect(mockSend.mock.calls[0]?.[0].input).toStrictEqual({
-      GroupName: "my-group",
-      PolicyArn: "arn:test",
     })
   })
 })

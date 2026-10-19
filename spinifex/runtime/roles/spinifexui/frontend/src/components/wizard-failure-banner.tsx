@@ -10,7 +10,7 @@ export function WizardFailureBanner({
   result,
   createdHeading = "Successfully created resources:",
 }: {
-  result: WizardFailure | null
+  result: WizardFailure | undefined
   createdHeading?: string
 }) {
   if (!result?.error) {

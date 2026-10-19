@@ -158,3 +158,50 @@ describe("run-instances instance type picker", () => {
     expect(screen.queryByText(/^GPU:/)).not.toBeInTheDocument()
   })
 })
+
+describe("run-instances root device", () => {
+  it("re-prefills the device name from the newly picked image", async () => {
+    const user = userEvent.setup()
+    setup([
+      DEFAULT_IMAGE,
+      {
+        ImageId: "ami-2",
+        Name: "debian-12",
+        Architecture: "x86_64",
+        RootDeviceName: "/dev/vda",
+      },
+    ])
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Block Device Mappings (root volume)",
+      }),
+    )
+    expect(screen.getByLabelText("Device Name")).toHaveValue("/dev/sda1")
+
+    await user.click(screen.getByLabelText("Image"))
+    await user.click(screen.getByRole("option", { name: "debian-12 (x86_64)" }))
+
+    expect(screen.getByLabelText("Device Name")).toHaveValue("/dev/vda")
+  })
+})
+
+describe("run-instances security group mode", () => {
+  it("defaults to creating a group with SSH allowed and switches to existing groups", async () => {
+    const user = userEvent.setup()
+    setup()
+
+    await expect(
+      screen.findByLabelText("Create new security group"),
+    ).resolves.toBeChecked()
+    expect(screen.getByLabelText("Allow SSH")).toBeChecked()
+    expect(screen.getByLabelText("Allow HTTP")).not.toBeChecked()
+
+    await user.click(screen.getByLabelText("Select existing security group"))
+
+    expect(
+      screen.getByText("No security groups in the resolved VPC."),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText("Allow SSH")).not.toBeInTheDocument()
+  })
+})

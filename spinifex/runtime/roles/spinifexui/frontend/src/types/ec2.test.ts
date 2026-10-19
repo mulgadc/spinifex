@@ -1,17 +1,15 @@
 import { describe, expect, it } from "vitest"
 
 import {
-  attachVolumeSchema,
-  copySnapshotSchema,
   createInstanceSchema,
   createKeyPairSchema,
   createLaunchTemplateSchema,
   createPlacementGroupSchema,
+  createRouteSchema,
   createSecurityGroupSchema,
   createSnapshotSchema,
   createSubnetSchema,
   createVolumeSchema,
-  createVpcSchema,
   createVpcWizardSchema,
   importKeyPairSchema,
   launchTemplateFormSchema,
@@ -434,32 +432,6 @@ describe("modifyVolumeSchema", () => {
   })
 })
 
-describe("createVpcSchema", () => {
-  it("accepts valid CIDR block", () => {
-    const result = createVpcSchema.safeParse({ cidrBlock: "10.0.0.0/16" })
-    expect(result.success).toBeTruthy()
-  })
-
-  it("accepts CIDR block with optional name", () => {
-    const result = createVpcSchema.safeParse({
-      cidrBlock: "10.0.0.0/16",
-      name: "my-vpc",
-    })
-
-    expect(result.success).toBeTruthy()
-  })
-
-  it("rejects invalid CIDR format", () => {
-    const result = createVpcSchema.safeParse({ cidrBlock: "not-a-cidr" })
-    expect(result.success).toBeFalsy()
-  })
-
-  it("rejects empty CIDR block", () => {
-    const result = createVpcSchema.safeParse({ cidrBlock: "" })
-    expect(result.success).toBeFalsy()
-  })
-})
-
 describe("createSubnetSchema", () => {
   it("accepts valid subnet params", () => {
     const result = createSubnetSchema.safeParse({
@@ -479,6 +451,18 @@ describe("createSubnetSchema", () => {
     expect(result.success).toBeFalsy()
   })
 
+  it.each(["999.0.0.0/24", "10.0.0.0/15", "10.0.0.0/29"])(
+    "rejects %s, outside the octet or /16-/28 prefix range",
+    (cidrBlock) => {
+      const result = createSubnetSchema.safeParse({
+        vpcId: "vpc-123",
+        cidrBlock,
+      })
+
+      expect(result.success).toBeFalsy()
+    },
+  )
+
   it("allows optional availability zone", () => {
     const result = createSubnetSchema.safeParse({
       vpcId: "vpc-123",
@@ -490,6 +474,31 @@ describe("createSubnetSchema", () => {
   })
 })
 
+describe("createRouteSchema", () => {
+  const base = { targetType: "igw", targetId: "igw-123" } as const
+
+  it.each(["0.0.0.0/0", "192.168.1.1/32"])("accepts %s", (cidr) => {
+    const result = createRouteSchema.safeParse({
+      ...base,
+      destinationCidrBlock: cidr,
+    })
+
+    expect(result.success).toBeTruthy()
+  })
+
+  it.each(["999.0.0.0/8", "10.0.0.0/33", "not-a-cidr"])(
+    "rejects %s",
+    (cidr) => {
+      const result = createRouteSchema.safeParse({
+        ...base,
+        destinationCidrBlock: cidr,
+      })
+
+      expect(result.success).toBeFalsy()
+    },
+  )
+})
+
 describe("createSnapshotSchema", () => {
   it("accepts valid snapshot params", () => {
     const result = createSnapshotSchema.safeParse({ volumeId: "vol-123" })
@@ -498,37 +507,6 @@ describe("createSnapshotSchema", () => {
 
   it("rejects empty volumeId", () => {
     const result = createSnapshotSchema.safeParse({ volumeId: "" })
-    expect(result.success).toBeFalsy()
-  })
-})
-
-describe("copySnapshotSchema", () => {
-  it("accepts valid copy params", () => {
-    const result = copySnapshotSchema.safeParse({
-      sourceSnapshotId: "snap-123",
-      sourceRegion: "us-east-1",
-    })
-
-    expect(result.success).toBeTruthy()
-  })
-})
-
-describe("attachVolumeSchema", () => {
-  it("accepts valid attach params", () => {
-    const result = attachVolumeSchema.safeParse({
-      volumeId: "vol-123",
-      instanceId: "i-123",
-    })
-
-    expect(result.success).toBeTruthy()
-  })
-
-  it("rejects empty instanceId", () => {
-    const result = attachVolumeSchema.safeParse({
-      volumeId: "vol-123",
-      instanceId: "",
-    })
-
     expect(result.success).toBeFalsy()
   })
 })
@@ -741,6 +719,17 @@ describe("securityGroupRuleSchema", () => {
       fromPort: 22,
       toPort: 22,
       cidrIp: "not-a-cidr",
+    })
+
+    expect(result.success).toBeFalsy()
+  })
+
+  it("rejects a CIDR with out-of-range octets or prefix", () => {
+    const result = securityGroupRuleSchema.safeParse({
+      ipProtocol: "tcp",
+      fromPort: 22,
+      toPort: 22,
+      cidrIp: "999.0.0.0/99",
     })
 
     expect(result.success).toBeFalsy()

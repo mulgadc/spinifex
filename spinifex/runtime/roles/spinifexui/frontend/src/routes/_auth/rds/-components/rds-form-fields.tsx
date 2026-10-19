@@ -1,3 +1,4 @@
+import type { OrderableDBInstanceOption } from "@aws-sdk/client-rds"
 import {
   type Control,
   type FieldValues,
@@ -5,6 +6,7 @@ import {
   Controller,
 } from "react-hook-form"
 
+import { pickerNotice } from "@/components/picker-notice"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 
 // Offered identically wherever an instance is created, restored or modified.
@@ -56,4 +58,31 @@ export function parameterGroupsForEngine<
   )
 
   return groups.filter((g) => families.has(g.DBParameterGroupFamily))
+}
+
+// The catalog lists a class once per engine version, so it is offered once.
+export function instanceClassOptions(
+  query: {
+    data?: { OrderableDBInstanceOptions?: OrderableDBInstanceOption[] }
+    error: Error | null
+    isPending: boolean
+  },
+  engine: string,
+) {
+  const instanceClasses = [
+    ...new Set(
+      (query.data?.OrderableDBInstanceOptions ?? [])
+        .map((o) => o.DBInstanceClass ?? "")
+        .filter(Boolean),
+    ),
+  ]
+
+  return {
+    instanceClasses,
+    classNotice: pickerNotice(query, instanceClasses.length === 0, {
+      loading: "Loading the instance classes…",
+      failed: "Could not read the instance classes",
+      empty: `No instance class this cluster's nodes can run is available for ${engine}.`,
+    }),
+  }
 }

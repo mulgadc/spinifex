@@ -11,6 +11,11 @@ vi.mock("@/lib/awsClient", async () => {
   return mockAwsClients(send)
 })
 
+import {
+  iamUserPoliciesQueryOptions,
+  iamUserPolicyQueryOptions,
+} from "@/queries/iam"
+
 import { InlinePoliciesPanel } from "./inline-policies-panel"
 
 const USER = "alice"
@@ -19,12 +24,13 @@ const DOCUMENT = '{"Version":"2012-10-17"}'
 
 function seed(policyNames: string[], document?: string) {
   const qc = createTestQueryClient()
-  qc.setQueryData(["iam", "user-inline-policies", USER], {
+  qc.setQueryData(iamUserPoliciesQueryOptions(USER).queryKey, {
+    $metadata: {},
     PolicyNames: policyNames,
   })
 
   if (document !== undefined) {
-    qc.setQueryData(["iam", "user-inline-policies", USER, POLICY], document)
+    qc.setQueryData(iamUserPolicyQueryOptions(USER, POLICY).queryKey, document)
   }
 
   return qc

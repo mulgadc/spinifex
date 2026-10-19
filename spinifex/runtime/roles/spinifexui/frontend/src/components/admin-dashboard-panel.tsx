@@ -2,33 +2,17 @@ import { useQuery } from "@tanstack/react-query"
 import { ChevronDown, ChevronRight, Lock, Monitor, Server } from "lucide-react"
 import { useState } from "react"
 
+import { NodesTable } from "@/components/nodes-table"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useAdmin } from "@/hooks/use-admin"
-import {
-  adminNodesQueryOptions,
-  adminVMsQueryOptions,
-  type NodeInfo,
-} from "@/queries/admin"
+import { adminNodesQueryOptions, adminVMsQueryOptions } from "@/queries/admin"
 
 const ADDONS = [
   { name: "Air-gap Support", key: "airgap" },
   { name: "NVIDIA Bluefield DPU", key: "bluefield" },
   { name: "NVIDIA MIG Support", key: "mig" },
 ] as const
-
-function formatUptime(seconds: number): string {
-  const days = Math.floor(seconds / 86_400)
-  const hours = Math.floor((seconds % 86_400) / 3600)
-
-  if (days > 0) {
-    return `${days}d ${hours}h`
-  }
-
-  const minutes = Math.floor((seconds % 3600) / 60)
-
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`
-}
 
 export function AdminDashboardPanel() {
   const { isAdmin, version, license } = useAdmin()
@@ -186,7 +170,7 @@ export function AdminDashboardPanel() {
           </CardHeader>
           {nodesExpanded && (
             <CardContent className="mt-2">
-              <NodesTable nodes={nodes} />
+              <NodesTable compact={true} nodes={nodes} />
             </CardContent>
           )}
         </Card>
@@ -229,66 +213,6 @@ export function AdminDashboardPanel() {
           )}
         </CardContent>
       </Card>
-    </div>
-  )
-}
-
-function NodesTable({ nodes }: { nodes: NodeInfo[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="pr-4 pb-1 font-medium">Name</th>
-            <th className="pr-4 pb-1 font-medium">Status</th>
-            <th className="pr-4 pb-1 font-medium">Roles</th>
-            <th className="pr-4 pb-1 font-medium">IP</th>
-            <th className="pr-4 pb-1 font-medium">Region</th>
-            <th className="pr-4 pb-1 font-medium">AZ</th>
-            <th className="pr-4 pb-1 font-medium">Uptime</th>
-            <th className="pr-4 pb-1 font-medium">EC2</th>
-            <th className="pb-1 font-medium">Services</th>
-          </tr>
-        </thead>
-        <tbody>
-          {nodes.map((node) => (
-            <tr key={node.node} className="border-b last:border-0">
-              <td className="py-1.5 pr-4 font-mono font-medium">{node.node}</td>
-              <td className="py-1.5 pr-4">
-                <Badge
-                  variant={node.status === "Ready" ? "default" : "secondary"}
-                >
-                  {node.status}
-                </Badge>
-              </td>
-              <td className="py-1.5 pr-4">
-                <div className="flex gap-1">
-                  {node.nats_role && (
-                    <span className="text-muted-foreground">
-                      nats:{node.nats_role}
-                    </span>
-                  )}
-                  {node.predastore_role && (
-                    <span className="text-muted-foreground">
-                      ps:{node.predastore_role}
-                    </span>
-                  )}
-                </div>
-              </td>
-              <td className="py-1.5 pr-4 font-mono">{node.host}</td>
-              <td className="py-1.5 pr-4">{node.region}</td>
-              <td className="py-1.5 pr-4">{node.az}</td>
-              <td className="py-1.5 pr-4">{formatUptime(node.uptime)}</td>
-              <td className="py-1.5 pr-4">{node.vm_count}</td>
-              <td className="py-1.5">
-                <span className="text-muted-foreground">
-                  {node.services.length}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   )
 }

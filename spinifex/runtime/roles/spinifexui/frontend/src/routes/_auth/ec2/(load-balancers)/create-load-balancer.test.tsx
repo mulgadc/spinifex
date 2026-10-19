@@ -1,9 +1,22 @@
 import type { SecurityGroup, Subnet, Vpc } from "@aws-sdk/client-ec2"
-import type { TargetGroup } from "@aws-sdk/client-elastic-load-balancing-v2"
+import type {
+  CreateLoadBalancerCommandInput,
+  TargetGroup,
+} from "@aws-sdk/client-elastic-load-balancing-v2"
 import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { acmCertificatesQueryOptions } from "@/queries/acm"
+import {
+  ec2SecurityGroupsQueryOptions,
+  ec2SubnetsQueryOptions,
+  ec2VpcsQueryOptions,
+} from "@/queries/ec2"
+import {
+  elbv2SslPoliciesQueryOptions,
+  elbv2TargetGroupsQueryOptions,
+} from "@/queries/elbv2"
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { routerState } = vi.hoisted(() => ({
@@ -64,12 +77,28 @@ const EXISTING_TG: TargetGroup = {
 
 function seedClient() {
   const qc = createTestQueryClient()
-  qc.setQueryData(["ec2", "vpcs"], { Vpcs: VPCS })
-  qc.setQueryData(["ec2", "subnets"], { Subnets: SUBNETS })
-  qc.setQueryData(["ec2", "securityGroups"], { SecurityGroups: SGS })
-  qc.setQueryData(["elbv2", "targetGroups"], { TargetGroups: [EXISTING_TG] })
-  qc.setQueryData(["acm", "certificates"], { CertificateSummaryList: [] })
-  qc.setQueryData(["elbv2", "sslPolicies"], { SslPolicies: [] })
+  const $metadata = {}
+  qc.setQueryData(ec2VpcsQueryOptions.queryKey, { Vpcs: VPCS, $metadata })
+  qc.setQueryData(ec2SubnetsQueryOptions.queryKey, {
+    Subnets: SUBNETS,
+    $metadata,
+  })
+  qc.setQueryData(ec2SecurityGroupsQueryOptions.queryKey, {
+    SecurityGroups: SGS,
+    $metadata,
+  })
+  qc.setQueryData(elbv2TargetGroupsQueryOptions.queryKey, {
+    TargetGroups: [EXISTING_TG],
+    $metadata,
+  })
+  qc.setQueryData(acmCertificatesQueryOptions.queryKey, {
+    CertificateSummaryList: [],
+    $metadata,
+  })
+  qc.setQueryData(elbv2SslPoliciesQueryOptions.queryKey, {
+    SslPolicies: [],
+    $metadata,
+  })
 
   return qc
 }
@@ -147,6 +176,47 @@ describe("create-load-balancer route", () => {
         to: "/ec2/describe-load-balancers/$id",
         params: { id: encodeURIComponent("arn:lb:new") },
       })
+    })
+  })
+
+  it("sends the chosen scheme and security groups", async () => {
+    const user = userEvent.setup()
+
+    const createLb = vi.fn((_input: CreateLoadBalancerCommandInput) => ({
+      LoadBalancers: [{ LoadBalancerArn: "arn:lb:new" }],
+    }))
+
+    sdk.setHandler("CreateTargetGroupCommand", () => ({
+      TargetGroups: [{ TargetGroupArn: "arn:tg:new" }],
+    }))
+    sdk.setHandler("CreateLoadBalancerCommand", createLb)
+    sdk.setHandler("CreateListenerCommand", () => ({ Listeners: [] }))
+
+    renderWithClient(<CreateLoadBalancerPage />, seedClient())
+
+    await user.type(
+      screen.getByLabelText("Name", { selector: "#lb-name" }),
+      "my-alb",
+    )
+    await user.type(
+      screen.getByLabelText("Name", { selector: "#tg-name" }),
+      "my-tg",
+    )
+    await selectSubnets(user)
+    await user.click(screen.getByLabelText("Internal"))
+    await user.click(screen.getByLabelText("Security group sg-1 (web)"))
+
+    await user.click(
+      screen.getByRole("button", { name: "Create Load Balancer" }),
+    )
+
+    await waitFor(() => {
+      expect(createLb).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Scheme: "internal",
+          SecurityGroups: ["sg-1"],
+        }),
+      )
     })
   })
 

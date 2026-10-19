@@ -41,9 +41,7 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
 
       {deregister.isError && (
         <ErrorBanner
-          error={
-            deregister.error instanceof Error ? deregister.error : undefined
-          }
+          error={deregister.error}
           msg="Failed to deregister task definition."
         />
       )}

@@ -179,12 +179,7 @@ function AddRuleDialog({
               control={control}
               name="ipProtocol"
               render={({ field }) => (
-                <Select
-                  onValueChange={(value) => {
-                    field.onChange(value)
-                  }}
-                  value={field.value}
-                >
+                <Select onValueChange={field.onChange} value={field.value}>
                   <SelectTrigger className="w-full" id="ipProtocol">
                     <SelectValue />
                   </SelectTrigger>

@@ -12,6 +12,9 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  cliPlaceholder,
+  commandFlag,
+  optionalFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -139,12 +142,7 @@ function CreateNatGateway() {
             control={control}
             name="subnetId"
             render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
+              <Select onValueChange={field.onChange} value={field.value ?? ""}>
                 <SelectTrigger
                   aria-invalid={!!errors.subnetId}
                   className="w-full"
@@ -184,9 +182,7 @@ function CreateNatGateway() {
               name="allocationId"
               render={({ field }) => (
                 <Select
-                  onValueChange={(value) => {
-                    field.onChange(value)
-                  }}
+                  onValueChange={field.onChange}
                   value={field.value ?? ""}
                 >
                   <SelectTrigger
@@ -243,30 +239,30 @@ function CreateNatGateway() {
 function buildCreateNatGatewayCommands(
   values: DeepPartialSkipArrayKey<CreateNatGatewayFormData>,
 ): CliCommand[] {
-  const subnetId = values.subnetId ?? ""
-  const allocationId = values.allocationId ?? ""
-  const name = values.name ?? ""
+  const tagName = values.name?.trim()
 
-  const parts = [
+  return [
     {
-      type: "bin" as const,
-      value: "AWS_PROFILE=spinifex aws ec2 create-nat-gateway",
+      label: "Create NAT Gateway",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws ec2 create-nat-gateway",
+        },
+        ...commandFlag(
+          "\\\n  --subnet-id",
+          cliPlaceholder(values.subnetId ?? "", "SubnetId"),
+        ),
+        ...commandFlag(
+          "\\\n  --allocation-id",
+          cliPlaceholder(values.allocationId ?? "", "AllocationId"),
+        ),
+        ...optionalFlag(
+          "\\\n  --tag-specifications",
+          tagName &&
+            `'ResourceType=natgateway,Tags=[{Key=Name,Value=${tagName}}]'`,
+        ),
+      ],
     },
-    { type: "flag" as const, value: " \\\n  --subnet-id" },
-    { type: "value" as const, value: ` ${subnetId || "<SubnetId>"}` },
-    { type: "flag" as const, value: " \\\n  --allocation-id" },
-    { type: "value" as const, value: ` ${allocationId || "<AllocationId>"}` },
   ]
-
-  if (name.trim()) {
-    parts.push(
-      { type: "flag" as const, value: " \\\n  --tag-specifications" },
-      {
-        type: "value" as const,
-        value: ` 'ResourceType=natgateway,Tags=[{Key=Name,Value=${name.trim()}}]'`,
-      },
-    )
-  }
-
-  return [{ label: "Create NAT Gateway", parts }]
 }

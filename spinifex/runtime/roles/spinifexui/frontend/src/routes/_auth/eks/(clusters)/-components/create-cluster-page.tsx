@@ -48,7 +48,6 @@ function subnetLabel(subnet: Subnet): string {
 export function CreateClusterPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [isRechecking, setIsRechecking] = useState(false)
   const [isRoleDialogOpen, setIsRoleDialogOpen] = useState(false)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
@@ -57,18 +56,6 @@ export function CreateClusterPage() {
   const createCluster = useCreateCluster()
 
   const hasEksSystemImage = (imagesData.Images ?? []).some(isEksSystemImage)
-
-  const handleRecheck = async () => {
-    setIsRechecking(true)
-
-    try {
-      await queryClient.invalidateQueries({
-        queryKey: ec2ImagesQueryOptions.queryKey,
-      })
-    } finally {
-      setIsRechecking(false)
-    }
-  }
 
   const vpcs = vpcsData.Vpcs ?? []
   const allSubnets = subnetsData.Subnets ?? []
@@ -161,8 +148,6 @@ export function CreateClusterPage() {
         <SystemImageRequired
           description="EKS clusters boot a Spinifex-managed node image (K3s) that is not shipped with the platform. Import it before creating a cluster."
           importCommand="spx admin images import --name spinifex-eks-node"
-          isRechecking={isRechecking}
-          onRecheck={handleRecheck}
           title="EKS system image not found"
         />
       </>
@@ -260,12 +245,13 @@ export function CreateClusterPage() {
           <FieldError errors={[errors.roleArn]} />
         </Field>
 
-        <CreateClusterRoleDialog
-          clusterName={clusterName}
-          onCreated={handleRoleCreated}
-          onOpenChange={setIsRoleDialogOpen}
-          open={isRoleDialogOpen}
-        />
+        {isRoleDialogOpen && (
+          <CreateClusterRoleDialog
+            clusterName={clusterName}
+            onCreated={handleRoleCreated}
+            onOpenChange={setIsRoleDialogOpen}
+          />
+        )}
 
         <VpcSelectField
           control={control}

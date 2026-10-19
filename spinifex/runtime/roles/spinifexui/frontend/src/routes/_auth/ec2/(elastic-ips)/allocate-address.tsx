@@ -6,6 +6,8 @@ import { BackLink } from "@/components/back-link"
 import {
   CliCommandPanel,
   type CliCommand,
+  commandFlag,
+  optionalFlag,
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
@@ -104,24 +106,23 @@ function AllocateAddress() {
 }
 
 function buildAllocateAddressCommands(name: string): CliCommand[] {
-  const parts = [
+  const tagName = name.trim()
+
+  return [
     {
-      type: "bin" as const,
-      value: "AWS_PROFILE=spinifex aws ec2 allocate-address",
+      label: "Allocate Elastic IP",
+      parts: [
+        {
+          type: "bin",
+          value: "AWS_PROFILE=spinifex aws ec2 allocate-address",
+        },
+        ...commandFlag("\\\n  --domain", "vpc"),
+        ...optionalFlag(
+          "\\\n  --tag-specifications",
+          tagName &&
+            `'ResourceType=elastic-ip,Tags=[{Key=Name,Value=${tagName}}]'`,
+        ),
+      ],
     },
-    { type: "flag" as const, value: " \\\n  --domain" },
-    { type: "value" as const, value: " vpc" },
   ]
-
-  if (name.trim()) {
-    parts.push(
-      { type: "flag" as const, value: " \\\n  --tag-specifications" },
-      {
-        type: "value" as const,
-        value: ` 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=${name.trim()}}]'`,
-      },
-    )
-  }
-
-  return [{ label: "Allocate Elastic IP", parts }]
 }

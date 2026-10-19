@@ -1,5 +1,6 @@
 import {
   type _InstanceType,
+  type EC2Client,
   type RequestLaunchTemplateData,
   type Tag,
   type TagSpecification,
@@ -96,72 +97,47 @@ import { toSdkTags } from "@/types/tags"
 
 const WHITESPACE_REGEX = /\s+/
 
-export function useStartInstance() {
+// Start, stop, terminate and reboot differ only by command; each stays its own
+// hook so every button keeps its own pending state.
+function useInstanceStateMutation<Output>(
+  send: (InstanceIds: string[]) => Promise<Output>,
+) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (instanceId: string) => {
-      const command = new StartInstancesCommand({
-        InstanceIds: [instanceId],
-      })
-
-      return await getEc2Client().send(command)
-    },
+    mutationFn: async (instanceId: string) => await send([instanceId]),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
     },
   })
+}
+
+export function useStartInstance() {
+  return useInstanceStateMutation(
+    async (InstanceIds) =>
+      await getEc2Client().send(new StartInstancesCommand({ InstanceIds })),
+  )
 }
 
 export function useStopInstance() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (instanceId: string) => {
-      const command = new StopInstancesCommand({
-        InstanceIds: [instanceId],
-      })
-
-      return await getEc2Client().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
-  })
+  return useInstanceStateMutation(
+    async (InstanceIds) =>
+      await getEc2Client().send(new StopInstancesCommand({ InstanceIds })),
+  )
 }
 
 export function useTerminateInstance() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (instanceId: string) => {
-      const command = new TerminateInstancesCommand({
-        InstanceIds: [instanceId],
-      })
-
-      return await getEc2Client().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
-  })
+  return useInstanceStateMutation(
+    async (InstanceIds) =>
+      await getEc2Client().send(new TerminateInstancesCommand({ InstanceIds })),
+  )
 }
 
 export function useRebootInstance() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (instanceId: string) => {
-      const command = new RebootInstancesCommand({
-        InstanceIds: [instanceId],
-      })
-
-      return await getEc2Client().send(command)
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["ec2", "instances"] })
-    },
-  })
+  return useInstanceStateMutation(
+    async (InstanceIds) =>
+      await getEc2Client().send(new RebootInstancesCommand({ InstanceIds })),
+  )
 }
 
 export function useCreateInstance() {
@@ -1586,6 +1562,112 @@ async function settleAll<T>(tasks: Promise<T>[]): Promise<T[]> {
   return values
 }
 
+interface WizardContext {
+  client: EC2Client
+  vpcId: string
+  prefix: string | undefined
+  extraTags: Tag[]
+  created: WizardCreatedResource[]
+}
+
+type WizardTier = "Public" | "Private"
+
+// Subnet CIDRs are fixed up front, so the creations run concurrently. Each
+// subnet is recorded before its attribute call so a failure report lists every
+// subnet that was made. Nothing is rolled back.
+async function createWizardSubnets(
+  ctx: WizardContext,
+  tier: WizardTier,
+  subnets: { cidr: string }[],
+): Promise<string[]> {
+  return await settleAll(
+    subnets.map(async ({ cidr }, i) => {
+      const name = ctx.prefix
+        ? `${ctx.prefix}-subnet-${tier.toLowerCase()}-${i + 1}`
+        : undefined
+
+      const result = await ctx.client.send(
+        new CreateSubnetCommand({
+          VpcId: ctx.vpcId,
+          CidrBlock: cidr,
+          TagSpecifications: buildTagSpec(
+            ResourceType.subnet,
+            name,
+            ctx.extraTags,
+          ),
+        }),
+      )
+
+      const subnetId = result.Subnet?.SubnetId
+
+      if (!subnetId) {
+        throw new Error(
+          `${tier} subnet ${i + 1} was created but no subnet ID was returned`,
+        )
+      }
+
+      ctx.created.push({ type: `${tier} Subnet`, id: subnetId })
+
+      // CreateSubnet leaves auto-assign public IPs off, so without this an
+      // instance in a public subnet never gets a routable address.
+      if (tier === "Public") {
+        await ctx.client.send(
+          new ModifySubnetAttributeCommand({
+            SubnetId: subnetId,
+            MapPublicIpOnLaunch: { Value: true },
+          }),
+        )
+      }
+
+      return subnetId
+    }),
+  )
+}
+
+async function createWizardRouteTable(
+  ctx: WizardContext,
+  tier: WizardTier,
+): Promise<string> {
+  const result = await ctx.client.send(
+    new CreateRouteTableCommand({
+      VpcId: ctx.vpcId,
+      TagSpecifications: buildTagSpec(
+        ResourceType.route_table,
+        ctx.prefix ? `${ctx.prefix}-rtb-${tier.toLowerCase()}` : undefined,
+        ctx.extraTags,
+      ),
+    }),
+  )
+
+  const routeTableId = result.RouteTable?.RouteTableId
+
+  if (!routeTableId) {
+    throw new Error(`${tier} route table was created but no ID was returned`)
+  }
+
+  ctx.created.push({ type: `${tier} Route Table`, id: routeTableId })
+
+  return routeTableId
+}
+
+async function associateWizardSubnets(
+  ctx: WizardContext,
+  routeTableId: string,
+  subnetIds: string[],
+): Promise<void> {
+  await Promise.all(
+    subnetIds.map(
+      async (subnetId) =>
+        await ctx.client.send(
+          new AssociateRouteTableCommand({
+            RouteTableId: routeTableId,
+            SubnetId: subnetId,
+          }),
+        ),
+    ),
+  )
+}
+
 export function useCreateVpcWizard() {
   const queryClient = useQueryClient()
 
@@ -1602,7 +1684,7 @@ export function useCreateVpcWizard() {
       let currentStep = "creating VPC"
 
       try {
-        // Step 1: Create VPC
+        // Create VPC
         const vpcName = prefix ? `${prefix}-vpc` : params.namePrefix
 
         const vpcResult = await client.send(
@@ -1641,88 +1723,25 @@ export function useCreateVpcWizard() {
           },
         )
 
-        // Step 2: Create public subnets. Each subnet's CIDR is fixed up front, so
-        // the creations are independent — run them concurrently. Each task records
-        // its subnet in `created` before the attribute call so the failure report
-        // lists every subnet that was made. Nothing is rolled back.
+        const ctx: WizardContext = { client, vpcId, prefix, extraTags, created }
+
         currentStep = "creating public subnets"
 
-        const publicSubnetIds = await settleAll(
-          plan.publicSubnets.map(async ({ cidr }, i) => {
-            const name = prefix ? `${prefix}-subnet-public-${i + 1}` : undefined
-
-            const result = await client.send(
-              new CreateSubnetCommand({
-                VpcId: vpcId,
-                CidrBlock: cidr,
-                TagSpecifications: buildTagSpec(
-                  ResourceType.subnet,
-                  name,
-                  extraTags,
-                ),
-              }),
-            )
-
-            const subnetId = result.Subnet?.SubnetId
-
-            if (!subnetId) {
-              throw new Error(
-                `Public subnet ${i + 1} was created but no subnet ID was returned`,
-              )
-            }
-
-            created.push({ type: "Public Subnet", id: subnetId })
-
-            // Auto-assign public IPs on launch — CreateSubnet defaults this to
-            // false, so without it instances in a "public" subnet never get a
-            // routable public IP even though the IGW route is in place.
-            await client.send(
-              new ModifySubnetAttributeCommand({
-                SubnetId: subnetId,
-                MapPublicIpOnLaunch: { Value: true },
-              }),
-            )
-
-            return subnetId
-          }),
+        const publicSubnetIds = await createWizardSubnets(
+          ctx,
+          "Public",
+          plan.publicSubnets,
         )
 
-        // Step 3: Create private subnets (independent CIDRs — concurrent).
         currentStep = "creating private subnets"
 
-        const privateSubnetIds = await settleAll(
-          plan.privateSubnets.map(async ({ cidr }, i) => {
-            const name = prefix
-              ? `${prefix}-subnet-private-${i + 1}`
-              : undefined
-
-            const result = await client.send(
-              new CreateSubnetCommand({
-                VpcId: vpcId,
-                CidrBlock: cidr,
-                TagSpecifications: buildTagSpec(
-                  ResourceType.subnet,
-                  name,
-                  extraTags,
-                ),
-              }),
-            )
-
-            const subnetId = result.Subnet?.SubnetId
-
-            if (!subnetId) {
-              throw new Error(
-                `Private subnet ${i + 1} was created but no subnet ID was returned`,
-              )
-            }
-
-            created.push({ type: "Private Subnet", id: subnetId })
-
-            return subnetId
-          }),
+        const privateSubnetIds = await createWizardSubnets(
+          ctx,
+          "Private",
+          plan.privateSubnets,
         )
 
-        // Step 4: Create and attach internet gateway (if public subnets > 0)
+        // Create and attach internet gateway (if public subnets > 0)
         if (params.publicSubnetCount > 0) {
           currentStep = "creating internet gateway"
           const igwName = prefix ? `${prefix}-igw` : undefined
@@ -1747,7 +1766,7 @@ export function useCreateVpcWizard() {
 
           created.push({ type: "Internet Gateway", id: igwId })
 
-          // Step 5: Attach IGW to VPC
+          // Attach IGW to VPC
           currentStep = "attaching internet gateway to VPC"
           await client.send(
             new AttachInternetGatewayCommand({
@@ -1756,32 +1775,9 @@ export function useCreateVpcWizard() {
             }),
           )
 
-          // Step 6: Create public route table
           currentStep = "creating public route table"
-          const rtbPubName = prefix ? `${prefix}-rtb-public` : undefined
+          const pubRtbId = await createWizardRouteTable(ctx, "Public")
 
-          const rtbPubResult = await client.send(
-            new CreateRouteTableCommand({
-              VpcId: vpcId,
-              TagSpecifications: buildTagSpec(
-                ResourceType.route_table,
-                rtbPubName,
-                extraTags,
-              ),
-            }),
-          )
-
-          const pubRtbId = rtbPubResult.RouteTable?.RouteTableId
-
-          if (!pubRtbId) {
-            throw new Error(
-              "Public route table was created but no ID was returned",
-            )
-          }
-
-          created.push({ type: "Public Route Table", id: pubRtbId })
-
-          // Step 7: Add default route to IGW
           currentStep = "creating default route to internet gateway"
           await client.send(
             new CreateRouteCommand({
@@ -1791,62 +1787,18 @@ export function useCreateVpcWizard() {
             }),
           )
 
-          // Step 8: Associate public subnets with public route table
           currentStep = "associating public subnets with route table"
-          await Promise.all(
-            publicSubnetIds.map(
-              async (subnetId) =>
-                await client.send(
-                  new AssociateRouteTableCommand({
-                    RouteTableId: pubRtbId,
-                    SubnetId: subnetId,
-                  }),
-                ),
-            ),
-          )
+          await associateWizardSubnets(ctx, pubRtbId, publicSubnetIds)
         }
 
-        // Step 9: Create private route table (if private subnets > 0)
         if (params.privateSubnetCount > 0) {
           currentStep = "creating private route table"
-          const rtbPrivName = prefix ? `${prefix}-rtb-private` : undefined
+          const privRtbId = await createWizardRouteTable(ctx, "Private")
 
-          const rtbPrivResult = await client.send(
-            new CreateRouteTableCommand({
-              VpcId: vpcId,
-              TagSpecifications: buildTagSpec(
-                ResourceType.route_table,
-                rtbPrivName,
-                extraTags,
-              ),
-            }),
-          )
-
-          const privRtbId = rtbPrivResult.RouteTable?.RouteTableId
-
-          if (!privRtbId) {
-            throw new Error(
-              "Private route table was created but no ID was returned",
-            )
-          }
-
-          created.push({ type: "Private Route Table", id: privRtbId })
-
-          // Step 10: Associate private subnets with private route table
           currentStep = "associating private subnets with route table"
-          await Promise.all(
-            privateSubnetIds.map(
-              async (subnetId) =>
-                await client.send(
-                  new AssociateRouteTableCommand({
-                    RouteTableId: privRtbId,
-                    SubnetId: subnetId,
-                  }),
-                ),
-            ),
-          )
+          await associateWizardSubnets(ctx, privRtbId, privateSubnetIds)
 
-          // Step 11: NAT gateway for private egress (optional). Needs a public
+          // NAT gateway for private egress (optional). Needs a public
           // subnet to live in and an Elastic IP; routes private 0.0.0.0/0 to it.
           if (params.natGateway === "single" && publicSubnetIds[0]) {
             currentStep = "allocating Elastic IP for NAT gateway"

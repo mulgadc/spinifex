@@ -1,11 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import {
-  useQuery,
-  useQueryClient,
-  useSuspenseQuery,
-} from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { useState } from "react"
 import { useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
@@ -22,7 +17,12 @@ import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
-import { pickerNotice } from "@/components/picker-notice"
+import {
+  SecurityGroupCheckboxes,
+  defaultSecurityGroupIdForVpc,
+  securityGroupIdsForVpc,
+  securityGroupsForVpc,
+} from "@/components/security-group-checkboxes"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -53,14 +53,9 @@ import {
 
 import {
   DeletionProtectionField,
+  instanceClassOptions,
   parameterGroupsForEngine,
 } from "../../-components/rds-form-fields"
-import {
-  SecurityGroupCheckboxes,
-  defaultSecurityGroupIdForVpc,
-  securityGroupIdsForVpc,
-  securityGroupsForVpc,
-} from "../../-components/security-group-checkboxes"
 
 interface Props {
   dbSnapshotIdentifier: string
@@ -89,9 +84,7 @@ const INHERITED_FIELDS: { label: string; note: string }[] = [
 
 export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const restoreInstance = useRestoreDBInstanceFromDBSnapshot()
-  const [isRechecking, setIsRechecking] = useState(false)
 
   const { data: snapshotData } = useSuspenseQuery(
     rdsDBSnapshotQueryOptions(dbSnapshotIdentifier),
@@ -151,18 +144,6 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
   const values = useWatch({ control })
   const selectedSubnetGroup = values.dbSubnetGroupName ?? ""
   const selectedSecurityGroups = values.vpcSecurityGroupIds ?? []
-
-  const handleRecheck = async () => {
-    setIsRechecking(true)
-
-    try {
-      await queryClient.invalidateQueries({
-        queryKey: ec2ImagesQueryOptions.queryKey,
-      })
-    } finally {
-      setIsRechecking(false)
-    }
-  }
 
   const setSecurityGroups = (next: string[]) => {
     clearErrors("vpcSecurityGroupIds")
@@ -263,30 +244,15 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
         <SystemImageRequired
           description={`This snapshot holds ${engine} data and can only be restored onto a ${engine} instance, but no ${engine} image is imported on this cluster.`}
           importCommand={rdsImportCommand(engine)}
-          isRechecking={isRechecking}
-          onRecheck={handleRecheck}
           title={`${engine} image not found`}
         />
       </>
     )
   }
 
-  const orderableOptions = orderableQuery.data?.OrderableDBInstanceOptions ?? []
-
-  const instanceClasses = [
-    ...new Set(
-      orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
-    ),
-  ]
-
-  const classNotice = pickerNotice(
+  const { instanceClasses, classNotice } = instanceClassOptions(
     orderableQuery,
-    instanceClasses.length === 0,
-    {
-      loading: "Loading the instance classes…",
-      failed: "Could not read the instance classes",
-      empty: `No instance class this cluster's nodes can run is available for ${engine}.`,
-    },
+    engine,
   )
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []

@@ -6,9 +6,20 @@ import {
   isValidCidr,
   resolveSubnetCidrs,
 } from "@/lib/subnet-calculator"
-import { tagSchema } from "@/types/tags"
+import { type TagFormData, tagSchema } from "@/types/tags"
 
-const CIDR_REGEX = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/
+// An IPv4 CIDR whose octets are 0-255 and whose prefix is in range.
+function cidrField(
+  requiredMessage: string,
+  invalidMessage: string,
+  minPrefix: number,
+  maxPrefix: number,
+) {
+  return z
+    .string()
+    .min(1, requiredMessage)
+    .refine((cidr) => isValidCidr(cidr, minPrefix, maxPrefix), invalidMessage)
+}
 
 const keyNameField = z
   .string()
@@ -206,53 +217,43 @@ export const createSnapshotSchema = z.object({
 
 export type CreateSnapshotFormData = z.infer<typeof createSnapshotSchema>
 
-export const copySnapshotSchema = z.object({
-  sourceSnapshotId: z.string().min(1, "Source snapshot is required"),
-  sourceRegion: z.string().min(1, "Source region is required"),
-  description: z.string().optional(),
-})
+export interface CopySnapshotFormData {
+  sourceSnapshotId: string
+  sourceRegion: string
+  description?: string
+}
 
-export type CopySnapshotFormData = z.infer<typeof copySnapshotSchema>
+export interface AttachVolumeFormData {
+  volumeId: string
+  instanceId: string
+  device?: string
+}
 
-export const attachVolumeSchema = z.object({
-  volumeId: z.string().min(1, "Volume is required"),
-  instanceId: z.string().min(1, "Instance is required"),
-  device: z.string().optional(),
-})
+export interface DetachVolumeFormData {
+  volumeId: string
+  instanceId?: string
+  force?: boolean
+}
 
-export type AttachVolumeFormData = z.infer<typeof attachVolumeSchema>
+export interface ModifyInstanceTypeFormData {
+  instanceType: string
+}
 
-export const detachVolumeSchema = z.object({
-  volumeId: z.string().min(1, "Volume is required"),
-  instanceId: z.string().optional(),
-  force: z.boolean().optional(),
-})
-
-export type DetachVolumeFormData = z.infer<typeof detachVolumeSchema>
-
-export const modifyInstanceTypeSchema = z.object({
-  instanceType: z.string().min(1, "Instance type is required"),
-})
-
-export type ModifyInstanceTypeFormData = z.infer<
-  typeof modifyInstanceTypeSchema
->
-
-export const createImageSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  description: z.string().optional(),
-})
-
-export type CreateImageFormData = z.infer<typeof createImageSchema>
+export interface CreateImageFormData {
+  name: string
+  description?: string
+}
 
 export type CreateImageParams = CreateImageFormData & { instanceId: string }
 
 export const createSubnetSchema = z.object({
   vpcId: z.string().min(1, "VPC is required"),
-  cidrBlock: z
-    .string()
-    .min(1, "CIDR block is required")
-    .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 10.0.1.0/24)"),
+  cidrBlock: cidrField(
+    "CIDR block is required",
+    "Must be a valid CIDR block from /16 to /28 (e.g. 10.0.1.0/24)",
+    16,
+    28,
+  ),
   availabilityZone: z.string().optional(),
   // AWS subnet console "Auto-assign public IPv4 address". CreateSubnet
   // defaults this off; a follow-up ModifySubnetAttribute turns it on.
@@ -291,10 +292,12 @@ export const createRouteTableSchema = z.object({
 export type CreateRouteTableFormData = z.infer<typeof createRouteTableSchema>
 
 export const createRouteSchema = z.object({
-  destinationCidrBlock: z
-    .string()
-    .min(1, "Destination is required")
-    .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 0.0.0.0/0)"),
+  destinationCidrBlock: cidrField(
+    "Destination is required",
+    "Must be a valid CIDR block (e.g. 0.0.0.0/0)",
+    0,
+    32,
+  ),
   targetType: z.enum(["igw", "nat"]),
   targetId: z.string().min(1, "Target is required"),
 })
@@ -309,30 +312,23 @@ export type AssociateRouteTableFormData = z.infer<
   typeof associateRouteTableSchema
 >
 
-export const createVpcSchema = z.object({
-  cidrBlock: z
-    .string()
-    .min(1, "CIDR block is required")
-    .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 10.0.0.0/16)"),
-  name: z.string().optional(),
-  tags: z.array(tagSchema).optional(),
-})
-
-export type CreateVpcFormData = z.infer<typeof createVpcSchema>
+export interface CreateVpcFormData {
+  cidrBlock: string
+  name?: string
+  tags?: TagFormData[]
+}
 
 export const createVpcWizardSchema = z
   .object({
     mode: z.enum(["vpc-only", "vpc-and-more"]),
     namePrefix: z.string().optional(),
     autoGenerateNames: z.boolean(),
-    cidrBlock: z
-      .string()
-      .min(1, "CIDR block is required")
-      .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 10.0.0.0/16)")
-      .refine(
-        (cidr) => isValidCidr(cidr),
-        "CIDR has invalid octets or prefix length (must be /16 to /28)",
-      ),
+    cidrBlock: cidrField(
+      "CIDR block is required",
+      "CIDR has invalid octets or prefix length (must be /16 to /28)",
+      16,
+      28,
+    ),
     tenancy: z.enum(["default", "dedicated"]),
     // NAT gateway for private-subnet egress. Optional so existing callers/tests
     // default to "none"; "single" provisions one NAT GW (+ Elastic IP) in the
@@ -443,10 +439,12 @@ export const securityGroupRuleSchema = z.object({
   ipProtocol: z.string().min(1, "Protocol is required"),
   fromPort: z.number().int().min(-1).max(65_535),
   toPort: z.number().int().min(-1).max(65_535),
-  cidrIp: z
-    .string()
-    .min(1, "CIDR is required")
-    .regex(CIDR_REGEX, "Must be a valid CIDR block (e.g. 0.0.0.0/0)"),
+  cidrIp: cidrField(
+    "CIDR is required",
+    "Must be a valid CIDR block (e.g. 0.0.0.0/0)",
+    0,
+    32,
+  ),
 })
 
 export type SecurityGroupRuleFormData = z.infer<typeof securityGroupRuleSchema>

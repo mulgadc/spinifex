@@ -1,11 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import {
-  useQueryClient,
-  useSuspenseQuery,
-  useQuery,
-} from "@tanstack/react-query"
+import { useSuspenseQuery, useQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { useState } from "react"
 import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
@@ -20,7 +15,12 @@ import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
-import { type PickerNotice, pickerNotice } from "@/components/picker-notice"
+import type { PickerNotice } from "@/components/picker-notice"
+import {
+  SecurityGroupCheckboxes,
+  securityGroupIdsForVpc,
+  securityGroupsForVpc,
+} from "@/components/security-group-checkboxes"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -58,13 +58,9 @@ import {
 
 import {
   DeletionProtectionField,
+  instanceClassOptions,
   parameterGroupsForEngine,
 } from "../../-components/rds-form-fields"
-import {
-  SecurityGroupCheckboxes,
-  securityGroupIdsForVpc,
-  securityGroupsForVpc,
-} from "../../-components/security-group-checkboxes"
 
 // The retention the backend applies when a create names none.
 const DEFAULT_BACKUP_RETENTION_DAYS = 7
@@ -92,9 +88,7 @@ const UNAVAILABLE_OPTIONS = [
 
 export function CreateDBInstancePage() {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const createInstance = useCreateDBInstance()
-  const [isRechecking, setIsRechecking] = useState(false)
 
   const { data: engineVersionsData } = useSuspenseQuery(
     rdsEngineVersionsQueryOptions,
@@ -137,18 +131,6 @@ export function CreateDBInstancePage() {
 
   const bootableEngines = engines.filter(engineHasImage)
   const initialEngine = bootableEngines[0] ?? ""
-
-  const handleRecheck = async () => {
-    setIsRechecking(true)
-
-    try {
-      await queryClient.invalidateQueries({
-        queryKey: ec2ImagesQueryOptions.queryKey,
-      })
-    } finally {
-      setIsRechecking(false)
-    }
-  }
 
   const {
     control,
@@ -193,15 +175,10 @@ export function CreateDBInstancePage() {
     (v) => v.Engine === selectedEngine,
   )
 
-  const orderableOptions = orderableQuery.data?.OrderableDBInstanceOptions ?? []
+  const { instanceClasses, classNotice: engineClassNotice } =
+    instanceClassOptions(orderableQuery, selectedEngine)
 
-  const instanceClasses = [
-    ...new Set(
-      orderableOptions.map((o) => o.DBInstanceClass ?? "").filter(Boolean),
-    ),
-  ]
-
-  const [storageBounds] = orderableOptions
+  const [storageBounds] = orderableQuery.data?.OrderableDBInstanceOptions ?? []
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
 
@@ -262,8 +239,6 @@ export function CreateDBInstancePage() {
         <SystemImageRequired
           description={`RDS boots a Spinifex-managed engine image that is not shipped with the platform. Import one before creating a database. Engines offered: ${engines.join(", ")}.`}
           importCommand={rdsImportCommand(engines[0] ?? "")}
-          isRechecking={isRechecking}
-          onRecheck={handleRecheck}
           title="RDS system image not found"
         />
       </>
@@ -281,11 +256,7 @@ export function CreateDBInstancePage() {
           tone: "muted",
           text: "Select an engine to see the instance classes this cluster can run.",
         }
-      : pickerNotice(orderableQuery, instanceClasses.length === 0, {
-          loading: "Loading the instance classes…",
-          failed: "Could not read the instance classes",
-          empty: `No instance class this cluster's nodes can run is available for ${selectedEngine}.`,
-        })
+      : engineClassNotice
 
   return (
     <>
@@ -353,9 +324,7 @@ export function CreateDBInstancePage() {
           <SystemImageRequired
             description={`No ${engine} image is imported on this cluster, so a ${engine} database cannot launch. The other engines are unaffected.`}
             importCommand={rdsImportCommand(engine)}
-            isRechecking={isRechecking}
             key={engine}
-            onRecheck={handleRecheck}
             title={`${engine} image not found`}
           />
         ))}

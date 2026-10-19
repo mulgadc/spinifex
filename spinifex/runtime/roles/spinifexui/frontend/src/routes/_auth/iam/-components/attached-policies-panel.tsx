@@ -5,59 +5,26 @@ import { useState } from "react"
 import { DetailCard } from "@/components/detail-card"
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
-import {
-  useAttachGroupPolicy,
-  useAttachRolePolicy,
-  useAttachUserPolicy,
-  useDetachGroupPolicy,
-  useDetachRolePolicy,
-  useDetachUserPolicy,
-} from "@/mutations/iam"
+import { useAttachPolicy, useDetachPolicy } from "@/mutations/iam"
 import {
   iamAttachedGroupPoliciesQueryOptions,
   iamAttachedRolePoliciesQueryOptions,
   iamAttachedUserPoliciesQueryOptions,
   iamPoliciesQueryOptions,
 } from "@/queries/iam"
+import type { IamPrincipalKind } from "@/types/iam"
 
-import type { InlinePolicyKind } from "./inline-policies-panel"
-
-// Structural subset of a mutation result so one panel works with the user, role
-// and group hooks regardless of their differing command output types.
-interface PolicyMutation<TParams> {
-  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the panel awaits the attach or detach and never reads its payload
-  mutateAsync: (params: TParams) => Promise<unknown>
-  error: Error | null
-}
-
-// Each kind's hooks name the principal differently in their params, so a bound
-// mutation pairs a hook with its param shape and exposes one arn-only call.
-interface BoundPolicyMutation {
-  // oxlint-disable-next-line anti-slop/no-unknown-returns -- the panel awaits the attach or detach and never reads its payload
-  run: (policyArn: string) => Promise<unknown>
-  error: Error | null
-}
-
-function bindPolicyMutation<TParams>(
-  mutation: PolicyMutation<TParams>,
-  toParams: (policyArn: string) => TParams,
-): BoundPolicyMutation {
-  return {
-    run: async (policyArn) => await mutation.mutateAsync(toParams(policyArn)),
-    error: mutation.error,
-  }
-}
-
-interface KindConfig {
-  listQuery: (
-    name: string,
-  ) => ReturnType<typeof iamAttachedUserPoliciesQueryOptions>
-  attach: BoundPolicyMutation
-  detach: BoundPolicyMutation
+const listQueries: Record<
+  IamPrincipalKind,
+  (name: string) => ReturnType<typeof iamAttachedUserPoliciesQueryOptions>
+> = {
+  user: iamAttachedUserPoliciesQueryOptions,
+  role: iamAttachedRolePoliciesQueryOptions,
+  group: iamAttachedGroupPoliciesQueryOptions,
 }
 
 interface AttachedPoliciesPanelProps {
-  kind: InlinePolicyKind
+  kind: IamPrincipalKind
   name: string
 }
 
@@ -67,52 +34,10 @@ export function AttachedPoliciesPanel({
   kind,
   name,
 }: AttachedPoliciesPanelProps) {
-  const attachUser = useAttachUserPolicy()
-  const attachRole = useAttachRolePolicy()
-  const attachGroup = useAttachGroupPolicy()
-  const detachUser = useDetachUserPolicy()
-  const detachRole = useDetachRolePolicy()
-  const detachGroup = useDetachGroupPolicy()
+  const attach = useAttachPolicy(kind)
+  const detach = useDetachPolicy(kind)
 
-  const config = {
-    user: {
-      listQuery: iamAttachedUserPoliciesQueryOptions,
-      attach: bindPolicyMutation(attachUser, (policyArn) => ({
-        userName: name,
-        policyArn,
-      })),
-      detach: bindPolicyMutation(detachUser, (policyArn) => ({
-        userName: name,
-        policyArn,
-      })),
-    },
-    role: {
-      listQuery: iamAttachedRolePoliciesQueryOptions,
-      attach: bindPolicyMutation(attachRole, (policyArn) => ({
-        roleName: name,
-        policyArn,
-      })),
-      detach: bindPolicyMutation(detachRole, (policyArn) => ({
-        roleName: name,
-        policyArn,
-      })),
-    },
-    group: {
-      listQuery: iamAttachedGroupPoliciesQueryOptions,
-      attach: bindPolicyMutation(attachGroup, (policyArn) => ({
-        groupName: name,
-        policyArn,
-      })),
-      detach: bindPolicyMutation(detachGroup, (policyArn) => ({
-        groupName: name,
-        policyArn,
-      })),
-    },
-  } satisfies Record<InlinePolicyKind, KindConfig>
-
-  const { listQuery, attach, detach } = config[kind]
-
-  const { data: attachedData } = useSuspenseQuery(listQuery(name))
+  const { data: attachedData } = useSuspenseQuery(listQueries[kind](name))
   const { data: allPoliciesData } = useSuspenseQuery(iamPoliciesQueryOptions)
 
   const [showAttachSelect, setShowAttachSelect] = useState(false)
@@ -131,7 +56,7 @@ export function AttachedPoliciesPanel({
     setPendingArn(policyArn)
 
     try {
-      await attach.run(policyArn)
+      await attach.mutateAsync({ name, policyArn })
       // Only collapse the select once the attach lands, so a failure leaves the
       // list open for a retry.
       setShowAttachSelect(false)
@@ -146,7 +71,7 @@ export function AttachedPoliciesPanel({
     setPendingArn(policyArn)
 
     try {
-      await detach.run(policyArn)
+      await detach.mutateAsync({ name, policyArn })
     } catch {
       // surfaced via detach.error
     } finally {

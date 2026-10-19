@@ -21,7 +21,8 @@ export const s3BucketObjectsQueryOptions = (
     queryFn: async () => {
       const command = new ListObjectsV2Command({
         Bucket: bucketName,
-        Prefix: prefix,
+        // The bucket root lists with no Prefix rather than an empty one.
+        Prefix: prefix || undefined,
         Delimiter: "/",
       })
 

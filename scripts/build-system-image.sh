@@ -284,6 +284,9 @@ if [[ "$DISTRO" == "alpine" ]] && [[ -n "${APK_PACKAGES:-}" ]]; then
     CUST+=(--run-command 'sed -i "s|^#\(.*community\)|\1|" /etc/apk/repositories 2>/dev/null || true')
     CUST+=(--run-command 'grep -q community /etc/apk/repositories || grep main /etc/apk/repositories | head -1 | sed "s|/main|/community|" >> /etc/apk/repositories')
     CUST+=(--run-command 'apk update')
+    # The base cloud image's kernel is only as fresh as its release; upgrade so
+    # the AMI ships the branch's current linux-virt and security fixes.
+    CUST+=(--run-command 'apk upgrade')
     CUST+=(--run-command "apk add ${APK_PACKAGES}")
 elif [[ "$DISTRO" == "ubuntu" ]] && [[ -n "${APT_PACKAGES:-}" ]]; then
     echo "Will install packages: ${APT_PACKAGES}"

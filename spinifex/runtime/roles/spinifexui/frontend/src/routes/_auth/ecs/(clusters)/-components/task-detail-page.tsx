@@ -6,13 +6,8 @@ import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
+import { arnResourceId } from "@/lib/utils"
 import { ecsTasksQueryOptions } from "@/queries/ecs"
-
-// shortArn renders the trailing resource segment of an ARN, falling back to the
-// whole string when there is no slash.
-function shortArn(arn: string | undefined): string {
-  return arn?.split("/").at(-1) ?? ""
-}
 
 function attachmentDetail(
   attachment: Attachment | undefined,
@@ -63,13 +58,13 @@ export function TaskDetailPage({
       <PageHeading
         actions={<StateBadge state={task.lastStatus} />}
         subtitle="Task Details"
-        title={shortArn(task.taskArn)}
+        title={arnResourceId(task.taskArn)}
       />
 
       <DetailCard>
         <DetailCard.Header>Configuration</DetailCard.Header>
         <DetailCard.Content>
-          <DetailRow label="Task ID" value={shortArn(task.taskArn)} />
+          <DetailRow label="Task ID" value={arnResourceId(task.taskArn)} />
           <DetailRow
             label="Last status"
             value={<StateBadge state={task.lastStatus} />}
@@ -77,12 +72,12 @@ export function TaskDetailPage({
           <DetailRow label="Desired status" value={task.desiredStatus} />
           <DetailRow
             label="Task definition"
-            value={shortArn(task.taskDefinitionArn)}
+            value={arnResourceId(task.taskDefinitionArn)}
           />
           <DetailRow label="Launch type" value={task.launchType} />
           <DetailRow
             label="Container instance"
-            value={shortArn(task.containerInstanceArn)}
+            value={arnResourceId(task.containerInstanceArn)}
           />
           <DetailRow label="Created at" value={formatTime(task.createdAt)} />
           <DetailRow label="Started at" value={formatTime(task.startedAt)} />

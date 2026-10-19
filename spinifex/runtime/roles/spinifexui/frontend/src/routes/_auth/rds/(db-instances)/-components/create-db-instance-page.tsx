@@ -18,7 +18,9 @@ import {
 } from "@/components/cli-command-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
+import { type PickerNotice, pickerNotice } from "@/components/picker-notice"
 import { SystemImageRequired } from "@/components/system-image-required"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import {
@@ -27,7 +29,6 @@ import {
   FieldError,
   FieldTitle,
 } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -56,13 +57,8 @@ import {
 } from "@/types/rds"
 
 import {
-  type PickerNotice,
-  pickerNotice,
-} from "../../-components/picker-notice"
-import {
   DeletionProtectionField,
   parameterGroupsForEngine,
-  RdsSelectField,
 } from "../../-components/rds-form-fields"
 import {
   SecurityGroupCheckboxes,
@@ -304,22 +300,14 @@ export function CreateDBInstancePage() {
       )}
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-identifier">DB instance identifier</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.dbInstanceIdentifier}
-            id="db-identifier"
-            placeholder="orders-db"
-            {...register("dbInstanceIdentifier")}
-          />
-          <FieldDescription>
-            Lowercase letters, digits and hyphens. This is also the endpoint
-            hostname, so it cannot be changed later.
-          </FieldDescription>
-          <FieldError errors={[errors.dbInstanceIdentifier]} />
-        </Field>
+        <TextField
+          description="Lowercase letters, digits and hyphens. This is also the endpoint hostname, so it cannot be changed later."
+          error={errors.dbInstanceIdentifier}
+          id="db-identifier"
+          label="DB instance identifier"
+          placeholder="orders-db"
+          {...register("dbInstanceIdentifier")}
+        />
 
         <Field>
           <FieldTitle>
@@ -411,35 +399,32 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.engineVersion]} />
         </Field>
 
-        <RdsSelectField
+        <SelectField
           control={control}
           id="db-instance-class"
           label="DB instance class"
           name="dbInstanceClass"
           notice={classNotice}
-          options={instanceClasses.map((c) => ({ value: c, label: c }))}
+          options={selectOptions(instanceClasses)}
           placeholder="Select an instance class"
         />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-storage">Allocated storage (GiB)</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.allocatedStorage}
-            id="db-storage"
-            max={storageBounds?.MaxStorageSize}
-            min={storageBounds?.MinStorageSize}
-            type="number"
-            {...register("allocatedStorage", { valueAsNumber: true })}
-          />
-          <FieldDescription>
-            gp3, encrypted. Storage grows only — it can never be shrunk.
-            {storageBounds?.MinStorageSize !== undefined &&
-              ` This engine accepts ${storageBounds.MinStorageSize}–${storageBounds.MaxStorageSize} GiB.`}
-          </FieldDescription>
-          <FieldError errors={[errors.allocatedStorage]} />
-        </Field>
+        <TextField
+          description={
+            <>
+              gp3, encrypted. Storage grows only — it can never be shrunk.
+              {storageBounds?.MinStorageSize !== undefined &&
+                ` This engine accepts ${storageBounds.MinStorageSize}–${storageBounds.MaxStorageSize} GiB.`}
+            </>
+          }
+          error={errors.allocatedStorage}
+          id="db-storage"
+          label="Allocated storage (GiB)"
+          max={storageBounds?.MaxStorageSize}
+          min={storageBounds?.MinStorageSize}
+          type="number"
+          {...register("allocatedStorage", { valueAsNumber: true })}
+        />
 
         <Field>
           <FieldTitle>Storage encryption</FieldTitle>
@@ -450,84 +435,55 @@ export function CreateDBInstancePage() {
           </FieldDescription>
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-master-username">Master username</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.masterUsername}
-            id="db-master-username"
-            placeholder="dbadmin"
-            {...register("masterUsername")}
-          />
-          <FieldError errors={[errors.masterUsername]} />
-        </Field>
+        <TextField
+          error={errors.masterUsername}
+          id="db-master-username"
+          label="Master username"
+          placeholder="dbadmin"
+          {...register("masterUsername")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-master-password">Master password</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.masterUserPassword}
-            id="db-master-password"
-            type="password"
-            {...register("masterUserPassword")}
-          />
-          <FieldDescription>
-            8–128 printable ASCII characters, excluding &apos;/&apos;,
-            &apos;&quot;&apos;, &apos;@&apos; and spaces.
-          </FieldDescription>
-          <FieldError errors={[errors.masterUserPassword]} />
-        </Field>
+        <TextField
+          description={
+            <>
+              8–128 printable ASCII characters, excluding &apos;/&apos;,
+              &apos;&quot;&apos;, &apos;@&apos; and spaces.
+            </>
+          }
+          error={errors.masterUserPassword}
+          id="db-master-password"
+          label="Master password"
+          type="password"
+          {...register("masterUserPassword")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-confirm-password">Confirm master password</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.confirmPassword}
-            id="db-confirm-password"
-            type="password"
-            {...register("confirmPassword")}
-          />
-          <FieldError errors={[errors.confirmPassword]} />
-        </Field>
+        <TextField
+          error={errors.confirmPassword}
+          id="db-confirm-password"
+          label="Confirm master password"
+          type="password"
+          {...register("confirmPassword")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-name">Initial database name</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.dbName}
-            id="db-name"
-            placeholder="Optional"
-            {...register("dbName")}
-          />
-          <FieldDescription>
-            Leave blank to create no database. Letters, digits and underscores,
-            starting with a letter.
-          </FieldDescription>
-          <FieldError errors={[errors.dbName]} />
-        </Field>
+        <TextField
+          description="Leave blank to create no database. Letters, digits and underscores, starting with a letter."
+          error={errors.dbName}
+          id="db-name"
+          label="Initial database name"
+          placeholder="Optional"
+          {...register("dbName")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-port">Port</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.port}
-            id="db-port"
-            placeholder="Engine default"
-            {...register("port")}
-          />
-          <FieldDescription>
-            Leave blank to use the engine&apos;s own port. The port is fixed at
-            create and cannot be changed later.
-          </FieldDescription>
-          <FieldError errors={[errors.port]} />
-        </Field>
+        <TextField
+          description="Leave blank to use the engine's own port. The port is fixed at create and cannot be changed later."
+          error={errors.port}
+          id="db-port"
+          label="Port"
+          placeholder="Engine default"
+          {...register("port")}
+        />
 
-        <RdsSelectField
+        <SelectField
           control={control}
           description="Leave unset to place the endpoint in the account's default VPC subnet. The subnet group cannot be changed after create."
           id="db-subnet-group"
@@ -556,7 +512,7 @@ export function CreateDBInstancePage() {
           <FieldError errors={[errors.vpcSecurityGroupIds]} />
         </Field>
 
-        <RdsSelectField
+        <SelectField
           control={control}
           id="db-parameter-group"
           label="DB parameter group"
@@ -568,58 +524,34 @@ export function CreateDBInstancePage() {
           placeholder="Engine default group"
         />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-backup-retention">Backup retention (days)</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.backupRetentionPeriod}
-            id="db-backup-retention"
-            max={MAX_BACKUP_RETENTION_DAYS}
-            min={0}
-            type="number"
-            {...register("backupRetentionPeriod", { valueAsNumber: true })}
-          />
-          <FieldDescription>
-            0 disables automated backups. There is no point-in-time restore;
-            backups are daily snapshots taken in the window below.
-          </FieldDescription>
-          <FieldError errors={[errors.backupRetentionPeriod]} />
-        </Field>
+        <TextField
+          description="0 disables automated backups. There is no point-in-time restore; backups are daily snapshots taken in the window below."
+          error={errors.backupRetentionPeriod}
+          id="db-backup-retention"
+          label="Backup retention (days)"
+          max={MAX_BACKUP_RETENTION_DAYS}
+          min={0}
+          type="number"
+          {...register("backupRetentionPeriod", { valueAsNumber: true })}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-backup-window">Preferred backup window</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.preferredBackupWindow}
-            id="db-backup-window"
-            placeholder="hh24:mi-hh24:mi in UTC"
-            {...register("preferredBackupWindow")}
-          />
-          <FieldDescription>
-            Leave blank to have one assigned. Minimum 30 minutes.
-          </FieldDescription>
-          <FieldError errors={[errors.preferredBackupWindow]} />
-        </Field>
+        <TextField
+          description="Leave blank to have one assigned. Minimum 30 minutes."
+          error={errors.preferredBackupWindow}
+          id="db-backup-window"
+          label="Preferred backup window"
+          placeholder="hh24:mi-hh24:mi in UTC"
+          {...register("preferredBackupWindow")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="db-maintenance-window">
-              Preferred maintenance window
-            </label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.preferredMaintenanceWindow}
-            id="db-maintenance-window"
-            placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
-            {...register("preferredMaintenanceWindow")}
-          />
-          <FieldDescription>
-            Leave blank to have one assigned clear of the backup window.
-          </FieldDescription>
-          <FieldError errors={[errors.preferredMaintenanceWindow]} />
-        </Field>
+        <TextField
+          description="Leave blank to have one assigned clear of the backup window."
+          error={errors.preferredMaintenanceWindow}
+          id="db-maintenance-window"
+          label="Preferred maintenance window"
+          placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
+          {...register("preferredMaintenanceWindow")}
+        />
 
         <DeletionProtectionField control={control} name="deletionProtection" />
 

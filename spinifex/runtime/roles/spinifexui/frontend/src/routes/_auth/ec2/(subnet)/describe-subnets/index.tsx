@@ -1,9 +1,9 @@
-import type { Subnet } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
@@ -42,30 +42,24 @@ function Subnets() {
         title="Subnets"
       />
 
-      {subnets.length > 0 ? (
-        <div className="space-y-4">
-          {subnets.map((subnet: Subnet) => {
-            if (!subnet.SubnetId) {
-              return null
-            }
+      <ResourceList
+        empty="No subnets found."
+        getKey={(subnet) => subnet.SubnetId}
+        items={subnets}
+        renderItem={(subnet, id) => {
+          const name = getNameTag(subnet.Tags)
 
-            const name = getNameTag(subnet.Tags)
-
-            return (
-              <ListCard
-                badge={<StateBadge state={subnet.State} />}
-                key={subnet.SubnetId}
-                params={{ id: subnet.SubnetId }}
-                subtitle={`${subnet.CidrBlock ?? ""} \u2022 ${subnet.AvailabilityZone ?? ""}`}
-                title={name ? `${subnet.SubnetId} (${name})` : subnet.SubnetId}
-                to="/ec2/describe-subnets/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No subnets found.</p>
-      )}
+          return (
+            <ListCard
+              badge={<StateBadge state={subnet.State} />}
+              params={{ id }}
+              subtitle={`${subnet.CidrBlock ?? ""} \u2022 ${subnet.AvailabilityZone ?? ""}`}
+              title={name ? `${id} (${name})` : id}
+              to="/ec2/describe-subnets/$id"
+            />
+          )
+        }}
+      />
     </>
   )
 }

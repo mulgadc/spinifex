@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/select"
 import { SubnetCidrInputs } from "@/components/vpc-wizard/subnet-cidr-inputs"
 import { VpcPreview } from "@/components/vpc-wizard/vpc-preview"
+import { WizardFailureBanner } from "@/components/wizard-failure-banner"
 import {
   calculateSubnetCidrs,
   resolveSubnetCidrs,
@@ -171,31 +172,7 @@ function CreateVpc() {
         <ErrorBanner error={mutationError} msg="Failed to create VPC" />
       )}
 
-      {wizardResult?.error && (
-        <div className="mb-6 max-w-4xl rounded-md border border-destructive bg-destructive/10 p-4">
-          <h2 className="text-sm font-medium text-destructive">
-            Wizard failed: {wizardResult.failedStep}
-          </h2>
-          <p className="mt-1 text-sm text-destructive">
-            {wizardResult.error.message}
-          </p>
-          {wizardResult.created.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-destructive">
-                Successfully created resources:
-              </p>
-              <ul className="mt-1 list-inside list-disc text-xs text-destructive">
-                {wizardResult.created.map((r, i) => (
-                  // oxlint-disable-next-line no-array-index-key -- static failure summary, never reordered or filtered
-                  <li key={i}>
-                    {r.type}: {r.id}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
+      <WizardFailureBanner result={wizardResult} />
 
       {progressMessage && (
         <div className="mb-4 max-w-4xl text-sm text-muted-foreground">

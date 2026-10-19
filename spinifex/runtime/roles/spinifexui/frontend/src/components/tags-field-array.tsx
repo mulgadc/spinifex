@@ -40,6 +40,7 @@ export function TagsFieldArray<T extends FieldValues>({
                 <div className="min-w-0 flex-1">
                   <Input
                     aria-invalid={!!fieldState.error}
+                    aria-label="Tag key"
                     placeholder="Key"
                     {...key}
                   />
@@ -55,6 +56,7 @@ export function TagsFieldArray<T extends FieldValues>({
                 <div className="min-w-0 flex-1">
                   <Input
                     aria-invalid={!!fieldState.error}
+                    aria-label="Tag value"
                     placeholder="Value"
                     {...value}
                   />

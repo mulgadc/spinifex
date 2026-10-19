@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { arnResourceId } from "@/lib/utils"
 import {
   type CreateListenerFormData,
   DEFAULT_SSL_POLICY,
@@ -39,7 +40,7 @@ const EMPTY_CERTIFICATES: CertificateSummary[] = []
 const EMPTY_SSL_POLICIES: SslPolicy[] = []
 
 function certLabel(cert: CertificateSummary): string {
-  const id = cert.CertificateArn?.split("/").pop() ?? cert.CertificateArn ?? ""
+  const id = arnResourceId(cert.CertificateArn)
 
   return cert.DomainName ? `${cert.DomainName} · ${id}` : id
 }

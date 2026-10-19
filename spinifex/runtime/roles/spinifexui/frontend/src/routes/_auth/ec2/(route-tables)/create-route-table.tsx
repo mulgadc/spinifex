@@ -1,22 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { Controller, useForm } from "react-hook-form"
+import { useForm } from "react-hook-form"
 
 import { BackLink } from "@/components/back-link"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { getNameTag } from "@/lib/utils"
+import { VpcSelectField } from "@/components/vpc-select-field"
 import { useCreateRouteTable } from "@/mutations/ec2"
 import { ec2VpcsQueryOptions } from "@/queries/ec2"
 import {
@@ -54,7 +46,7 @@ function CreateRouteTable() {
     control,
     handleSubmit,
     register,
-    formState: { errors, isSubmitting },
+    formState: { isSubmitting },
   } = useForm<CreateRouteTableFormData>({
     resolver: zodResolver(createRouteTableSchema),
     defaultValues: {
@@ -95,52 +87,20 @@ function CreateRouteTable() {
       )}
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        <Field>
-          <FieldTitle>
-            <label htmlFor="name">Name (optional)</label>
-          </FieldTitle>
-          <Input id="name" placeholder="my-route-table" {...register("name")} />
-        </Field>
+        <TextField
+          id="name"
+          label="Name (optional)"
+          placeholder="my-route-table"
+          {...register("name")}
+        />
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="vpcId">VPC</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="vpcId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(value) => {
-                  field.onChange(value)
-                }}
-                value={field.value ?? ""}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.vpcId}
-                  className="w-full"
-                  id="vpcId"
-                >
-                  <SelectValue placeholder="Select a VPC" />
-                </SelectTrigger>
-                <SelectContent>
-                  {vpcs.map((vpc) => {
-                    const name = getNameTag(vpc.Tags)
-
-                    return (
-                      <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
-                        {name
-                          ? `${vpc.VpcId} (${name})`
-                          : `${vpc.VpcId} (${vpc.CidrBlock})`}
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.vpcId]} />
-        </Field>
+        <VpcSelectField
+          control={control}
+          id="vpcId"
+          name="vpcId"
+          placeholder="Select a VPC"
+          vpcs={vpcs}
+        />
 
         <FormActions
           isPending={createMutation.isPending}

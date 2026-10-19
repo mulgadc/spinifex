@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockAgentClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { dataSourcesQueryOptions } from "@/queries/bedrockAgent"
 import {
@@ -21,25 +23,6 @@ import {
   useDeleteDataSource,
   useDeleteKnowledgeBase,
 } from "./bedrockAgent"
-
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
 
 const KB_FORM = {
   ...EMPTY_KB_FORM_DEFAULTS,
@@ -57,8 +40,7 @@ const DATA_SOURCE_FORM = {
 
 describe("useCreateKnowledgeBase", () => {
   it("sends CreateKnowledgeBaseCommand with the mapped form values", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateKnowledgeBase(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateKnowledgeBase())
 
     result.current.mutate(KB_FORM)
 
@@ -72,9 +54,13 @@ describe("useCreateKnowledgeBase", () => {
   })
 
   it("invalidates the knowledge base list on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateKnowledgeBase(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateKnowledgeBase(),
+      queryClient,
+    )
 
     result.current.mutate(KB_FORM)
 
@@ -89,8 +75,7 @@ describe("useCreateKnowledgeBase", () => {
 
 describe("useDeleteKnowledgeBase", () => {
   it("sends DeleteKnowledgeBaseCommand with the id", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteKnowledgeBase(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteKnowledgeBase())
 
     result.current.mutate("kb-1")
 
@@ -103,9 +88,13 @@ describe("useDeleteKnowledgeBase", () => {
   })
 
   it("invalidates the list and the single knowledge base on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeleteKnowledgeBase(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteKnowledgeBase(),
+      queryClient,
+    )
 
     result.current.mutate("kb-1")
 
@@ -123,8 +112,7 @@ describe("useDeleteKnowledgeBase", () => {
 
 describe("useCreateDataSource", () => {
   it("sends CreateDataSourceCommand with the knowledge base id and mapped values", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDataSource(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDataSource())
 
     result.current.mutate({ data: DATA_SOURCE_FORM, knowledgeBaseId: "kb-1" })
 
@@ -140,12 +128,16 @@ describe("useCreateDataSource", () => {
   })
 
   it("marks the cached data sources for that knowledge base stale on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(dataSourcesQueryOptions("kb-1").queryKey, {
       dataSourceSummaries: [],
       $metadata: {},
     })
-    const { result } = renderHook(() => useCreateDataSource(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateDataSource(),
+      queryClient,
+    )
 
     result.current.mutate({ data: DATA_SOURCE_FORM, knowledgeBaseId: "kb-1" })
 
@@ -161,8 +153,7 @@ describe("useCreateDataSource", () => {
 
 describe("useDeleteDataSource", () => {
   it("sends DeleteDataSourceCommand with both ids", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteDataSource(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteDataSource())
 
     result.current.mutate({ dataSourceId: "ds-1", knowledgeBaseId: "kb-1" })
 
@@ -176,9 +167,13 @@ describe("useDeleteDataSource", () => {
   })
 
   it("invalidates the data sources for that knowledge base on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeleteDataSource(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteDataSource(),
+      queryClient,
+    )
 
     result.current.mutate({ dataSourceId: "ds-1", knowledgeBaseId: "kb-1" })
 

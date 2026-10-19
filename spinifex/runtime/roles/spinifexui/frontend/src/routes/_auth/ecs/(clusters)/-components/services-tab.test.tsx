@@ -1,21 +1,19 @@
 import { screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getEcsClient: () => ({ send: vi.fn() }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
 
-vi.mock("@tanstack/react-router", async (orig) => ({
-  ...(await orig<typeof import("@tanstack/react-router")>()),
-  Link: ({ children }: { children: React.ReactNode }) => (
-    <span>{children}</span>
-  ),
-}))
+  return mockAwsClients(vi.fn())
+})
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 import { ServicesTab } from "./services-tab"
 

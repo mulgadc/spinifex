@@ -1,10 +1,11 @@
-import type { KeyPairInfo } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
+import { byName } from "@/lib/utils"
 import { ec2KeyPairsQueryOptions } from "@/queries/ec2"
 
 export const Route = createFileRoute("/_auth/ec2/(key)/describe-key-pairs/")({
@@ -27,12 +28,7 @@ export const Route = createFileRoute("/_auth/ec2/(key)/describe-key-pairs/")({
 function KeyPairs() {
   const { data } = useSuspenseQuery(ec2KeyPairsQueryOptions)
 
-  const keyPairs = (data.KeyPairs ?? []).toSorted((a, b) => {
-    const nameA = a.KeyName?.toLowerCase() ?? ""
-    const nameB = b.KeyName?.toLowerCase() ?? ""
-
-    return nameA.localeCompare(nameB)
-  })
+  const keyPairs = (data.KeyPairs ?? []).toSorted(byName((k) => k.KeyName))
 
   return (
     <>
@@ -50,27 +46,19 @@ function KeyPairs() {
         title="Key Pairs"
       />
 
-      {keyPairs.length > 0 ? (
-        <div className="space-y-4">
-          {keyPairs.map((keyPair: KeyPairInfo) => {
-            if (!keyPair.KeyPairId) {
-              return null
-            }
-
-            return (
-              <ListCard
-                key={keyPair.KeyPairId}
-                params={{ id: keyPair.KeyPairId }}
-                subtitle={keyPair.KeyPairId ?? ""}
-                title={keyPair.KeyName ?? ""}
-                to="/ec2/describe-key-pairs/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No key pairs found.</p>
-      )}
+      <ResourceList
+        empty="No key pairs found."
+        getKey={(keyPair) => keyPair.KeyPairId}
+        items={keyPairs}
+        renderItem={(keyPair, id) => (
+          <ListCard
+            params={{ id }}
+            subtitle={id}
+            title={keyPair.KeyName ?? ""}
+            to="/ec2/describe-key-pairs/$id"
+          />
+        )}
+      />
     </>
   )
 }

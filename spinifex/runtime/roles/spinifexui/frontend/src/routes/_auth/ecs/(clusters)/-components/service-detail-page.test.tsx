@@ -1,31 +1,18 @@
 import { screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getEcsClient: () => ({ send: vi.fn() }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(vi.fn())
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => vi.fn(),
-    Link: ({
-      children,
-      to,
-      params,
-    }: {
-      children: React.ReactNode
-      to?: string
-      params?: { taskId?: string }
-    }) => <a href={`${to}-${params?.taskId ?? ""}`}>{children}</a>,
-  }
+  return await mockRouter(importOriginal)
 })
 
 import { ServiceDetailPage } from "./service-detail-page"
@@ -93,10 +80,10 @@ describe("ServiceDetailPage", () => {
 
     const link = screen.getByRole("link", { name: TASK_ID })
     expect(link).toBeInTheDocument()
-    expect(link.getAttribute("href")).toContain(
-      "/ecs/list-clusters/$clusterName/tasks/$taskId",
+    expect(link).toHaveAttribute(
+      "href",
+      `/ecs/list-clusters/web/tasks/${TASK_ID}`,
     )
-    expect(link.getAttribute("href")).toContain(TASK_ID)
     expect(screen.getByText("10.0.1.5")).toBeInTheDocument()
     expect(screen.getByText("54.1.2.3")).toBeInTheDocument()
   })

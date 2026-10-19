@@ -1,6 +1,6 @@
 import { useState } from "react"
 
-import { Button } from "@/components/ui/button"
+import { EditorShell } from "@/components/editor-shell"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
@@ -133,130 +133,95 @@ export function AttributesEditor({
   }
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-
-        if (hasError || changed.length === 0) {
-          return
-        }
-
+    <EditorShell
+      dirty={changed.length > 0}
+      dirtyLabel={`${changed.length} change${changed.length === 1 ? "" : "s"} pending`}
+      error={error}
+      errorMsg="Failed to save attributes"
+      invalid={hasError}
+      isPending={isPending}
+      isSuccess={isSuccess}
+      onReset={handleReset}
+      onSave={() => {
         onSubmit(changed)
       }}
+      successMsg="Attributes saved."
     >
-      {error && (
-        <div
-          className="mb-4 rounded-md border border-destructive bg-destructive/10 p-3 text-sm text-destructive"
-          role="alert"
-        >
-          {error.message || "Failed to save attributes"}
-        </div>
-      )}
-      {isSuccess && changed.length === 0 && (
-        <output className="mb-4 block rounded-md border border-success bg-success/10 p-3 text-sm text-success-foreground">
-          Attributes saved.
-        </output>
-      )}
-      <div className="rounded-lg border bg-card">
-        <div className="grid gap-4 p-4 sm:grid-cols-2">
-          {specs.map((spec) => {
-            const id = `attr-${spec.key}`
-            const value = values[spec.key] ?? ""
-            const fieldError = errors[spec.key]
+      <div className="grid gap-4 p-4 sm:grid-cols-2">
+        {specs.map((spec) => {
+          const id = `attr-${spec.key}`
+          const value = values[spec.key] ?? ""
+          const fieldError = errors[spec.key]
 
-            return (
-              <Field key={spec.key}>
-                <FieldTitle>
-                  <label htmlFor={id}>{spec.label}</label>
-                </FieldTitle>
-                {spec.type === "bool" && (
-                  <input
-                    aria-label={spec.label}
-                    checked={value === "true"}
-                    id={id}
-                    onChange={(e) => {
-                      setValue(spec.key, e.target.checked ? "true" : "false")
-                    }}
-                    type="checkbox"
-                  />
-                )}
-                {spec.type === "int" && (
-                  <Input
-                    aria-invalid={!!fieldError}
-                    id={id}
-                    inputMode="numeric"
-                    onChange={(e) => {
-                      setValue(spec.key, e.target.value)
-                    }}
-                    value={value}
-                  />
-                )}
-                {spec.type === "text" && (
-                  <Input
-                    id={id}
-                    onChange={(e) => {
-                      setValue(spec.key, e.target.value)
-                    }}
-                    placeholder={spec.placeholder}
-                    value={value}
-                  />
-                )}
-                {spec.type === "select" && (
-                  <Select
-                    onValueChange={(v) => {
-                      setValue(spec.key, v ?? "")
-                    }}
-                    value={value}
-                  >
-                    <SelectTrigger className="w-full" id={id}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {spec.options.map((opt) => (
-                        <SelectItem key={opt} value={opt}>
-                          {opt}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                {spec.description && (
-                  <p className="text-xs text-muted-foreground">
-                    {spec.description}
-                  </p>
-                )}
-                <FieldError
-                  errors={[fieldError ? { message: fieldError } : undefined]}
+          return (
+            <Field key={spec.key}>
+              <FieldTitle>
+                <label htmlFor={id}>{spec.label}</label>
+              </FieldTitle>
+              {spec.type === "bool" && (
+                <input
+                  aria-label={spec.label}
+                  checked={value === "true"}
+                  id={id}
+                  onChange={(e) => {
+                    setValue(spec.key, e.target.checked ? "true" : "false")
+                  }}
+                  type="checkbox"
                 />
-              </Field>
-            )
-          })}
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t p-4">
-          <span className="mr-auto text-xs text-muted-foreground">
-            {changed.length === 0
-              ? "No changes"
-              : `${changed.length} change${changed.length === 1 ? "" : "s"} pending`}
-          </span>
-          <Button
-            disabled={isPending || changed.length === 0}
-            onClick={handleReset}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            Reset
-          </Button>
-          <Button
-            disabled={isPending || hasError || changed.length === 0}
-            size="sm"
-            type="submit"
-          >
-            {isPending ? "Saving…" : "Save changes"}
-          </Button>
-        </div>
+              )}
+              {spec.type === "int" && (
+                <Input
+                  aria-invalid={!!fieldError}
+                  id={id}
+                  inputMode="numeric"
+                  onChange={(e) => {
+                    setValue(spec.key, e.target.value)
+                  }}
+                  value={value}
+                />
+              )}
+              {spec.type === "text" && (
+                <Input
+                  id={id}
+                  onChange={(e) => {
+                    setValue(spec.key, e.target.value)
+                  }}
+                  placeholder={spec.placeholder}
+                  value={value}
+                />
+              )}
+              {spec.type === "select" && (
+                <Select
+                  onValueChange={(v) => {
+                    setValue(spec.key, v ?? "")
+                  }}
+                  value={value}
+                >
+                  <SelectTrigger className="w-full" id={id}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {spec.options.map((opt) => (
+                      <SelectItem key={opt} value={opt}>
+                        {opt}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {spec.description && (
+                <p className="text-xs text-muted-foreground">
+                  {spec.description}
+                </p>
+              )}
+              <FieldError
+                errors={[fieldError ? { message: fieldError } : undefined]}
+              />
+            </Field>
+          )
+        })}
       </div>
-    </form>
+    </EditorShell>
   )
 }
 

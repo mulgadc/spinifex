@@ -4,16 +4,7 @@ import { Link, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 
 import { PageHeading } from "@/components/page-heading"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Button } from "@/components/ui/button"
 import { formatDateTime } from "@/lib/utils"
 import { useDeleteRepository } from "@/mutations/ecr"
@@ -29,19 +20,6 @@ export function RepositoriesPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
 
   const repositories = data.repositories ?? []
-
-  async function handleDelete() {
-    if (!deleteTarget) {
-      return
-    }
-
-    try {
-      await deleteRepository.mutateAsync(deleteTarget)
-      setDeleteTarget(null)
-    } catch {
-      // error shown via deleteRepository.error
-    }
-  }
 
   return (
     <>
@@ -136,41 +114,23 @@ export function RepositoriesPage() {
 
       <CreateRepositoryDialog onOpenChange={setCreateOpen} open={createOpen} />
 
-      <AlertDialog
+      <ResourceDeleteDialog
+        description={
+          <>
+            This permanently deletes {deleteTarget} and every image it holds.
+            This cannot be undone.
+          </>
+        }
+        identifier={deleteTarget ?? ""}
+        mutation={deleteRepository}
         onOpenChange={(open) => {
           if (!open) {
             setDeleteTarget(null)
           }
         }}
         open={deleteTarget !== null}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete repository?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This permanently deletes {deleteTarget} and every image it holds.
-              This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {deleteRepository.error && (
-            <p className="text-sm text-destructive">
-              {deleteRepository.error.message}
-            </p>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={deleteRepository.isPending}
-              onClick={(e) => {
-                e.preventDefault()
-                void handleDelete()
-              }}
-            >
-              {deleteRepository.isPending ? "Deleting…" : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title="Delete repository?"
+      />
     </>
   )
 }

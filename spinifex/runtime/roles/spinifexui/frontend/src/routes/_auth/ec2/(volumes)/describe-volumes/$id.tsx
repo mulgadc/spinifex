@@ -1,10 +1,10 @@
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
-import { Camera, Link2, Link2Off, Trash2 } from "lucide-react"
+import { createFileRoute, Link } from "@tanstack/react-router"
+import { Camera, Link2, Link2Off } from "lucide-react"
 import { useState } from "react"
 
 import { BackLink } from "@/components/back-link"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
+import { DeleteResourceButton } from "@/components/delete-resource-button"
 import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { ErrorBanner } from "@/components/error-banner"
@@ -38,7 +38,7 @@ import {
 } from "@/mutations/ec2"
 import { ec2InstancesQueryOptions, ec2VolumeQueryOptions } from "@/queries/ec2"
 
-type DialogType = "delete" | "attach" | "detach" | null
+type DialogType = "attach" | "detach" | null
 
 export const Route = createFileRoute(
   "/_auth/ec2/(volumes)/describe-volumes/$id",
@@ -67,7 +67,6 @@ export const Route = createFileRoute(
 
 function VolumeDetail() {
   const { id } = Route.useParams()
-  const navigate = useNavigate()
   const { data } = useSuspenseQuery(ec2VolumeQueryOptions(id))
   const { data: instancesData } = useSuspenseQuery(ec2InstancesQueryOptions)
   const volume = data.Volumes?.[0]
@@ -90,15 +89,6 @@ function VolumeDetail() {
 
   const closeDialog = () => {
     setActiveDialog(null)
-  }
-
-  const handleDelete = async () => {
-    try {
-      await deleteMutation.mutateAsync(id)
-      navigate({ to: "/ec2/describe-volumes" })
-    } finally {
-      closeDialog()
-    }
   }
 
   const handleAttach = async () => {
@@ -145,13 +135,6 @@ function VolumeDetail() {
     <>
       <BackLink to="/ec2/describe-volumes">Back to volumes</BackLink>
 
-      {deleteMutation.error && (
-        <ErrorBanner
-          error={deleteMutation.error}
-          msg="Failed to delete volume"
-        />
-      )}
-
       {attachMutation.error && (
         <ErrorBanner
           error={attachMutation.error}
@@ -170,17 +153,14 @@ function VolumeDetail() {
         <PageHeading
           actions={
             <div className="flex items-center gap-2">
-              <Button
+              <DeleteResourceButton
+                description={`Are you sure you want to delete the volume "${volume.VolumeId}"? This action cannot be undone.`}
                 disabled={!isAvailable}
-                onClick={() => {
-                  setActiveDialog("delete")
-                }}
-                size="sm"
-                variant="destructive"
-              >
-                <Trash2 className="size-4" />
-                Delete
-              </Button>
+                id={id}
+                mutation={deleteMutation}
+                title="Delete Volume"
+                to="/ec2/describe-volumes"
+              />
               {isAvailable ? (
                 <Link
                   className={buttonVariants({ variant: "outline" })}
@@ -290,19 +270,6 @@ function VolumeDetail() {
           </DetailCard>
         )}
       </div>
-
-      <DeleteConfirmationDialog
-        description={`Are you sure you want to delete the volume "${volume.VolumeId}"? This action cannot be undone.`}
-        isPending={deleteMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={(open) => {
-          if (!open) {
-            closeDialog()
-          }
-        }}
-        open={activeDialog === "delete"}
-        title="Delete Volume"
-      />
 
       <AlertDialog
         onOpenChange={(open) => {

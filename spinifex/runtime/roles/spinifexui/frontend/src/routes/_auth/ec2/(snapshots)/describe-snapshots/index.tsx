@@ -1,9 +1,9 @@
-import type { Snapshot } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { ec2SnapshotsQueryOptions } from "@/queries/ec2"
@@ -43,28 +43,20 @@ function Snapshots() {
         title="Snapshots"
       />
 
-      {snapshots.length > 0 ? (
-        <div className="space-y-4">
-          {snapshots.map((snapshot: Snapshot) => {
-            if (!snapshot.SnapshotId) {
-              return null
-            }
-
-            return (
-              <ListCard
-                badge={<StateBadge state={snapshot.State} />}
-                key={snapshot.SnapshotId}
-                params={{ id: snapshot.SnapshotId }}
-                subtitle={`${snapshot.VolumeSize} GiB \u2022 ${snapshot.VolumeId}`}
-                title={snapshot.SnapshotId}
-                to="/ec2/describe-snapshots/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No snapshots found.</p>
-      )}
+      <ResourceList
+        empty="No snapshots found."
+        getKey={(snapshot) => snapshot.SnapshotId}
+        items={snapshots}
+        renderItem={(snapshot, id) => (
+          <ListCard
+            badge={<StateBadge state={snapshot.State} />}
+            params={{ id }}
+            subtitle={`${snapshot.VolumeSize} GiB \u2022 ${snapshot.VolumeId}`}
+            title={id}
+            to="/ec2/describe-snapshots/$id"
+          />
+        )}
+      />
     </>
   )
 }

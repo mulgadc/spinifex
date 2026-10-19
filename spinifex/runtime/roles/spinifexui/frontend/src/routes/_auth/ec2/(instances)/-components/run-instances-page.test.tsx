@@ -1,24 +1,14 @@
 import type { Image, InstanceTypeInfo } from "@aws-sdk/client-ec2"
 import { screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => vi.fn(),
-    Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return await mockRouter(importOriginal)
 })
 
 import {

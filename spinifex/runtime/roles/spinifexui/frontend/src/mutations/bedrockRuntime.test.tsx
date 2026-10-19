@@ -1,44 +1,28 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({
-  action: "NONE",
-  assessments: [],
-  outputs: [],
-  usage: {},
-})
+import { renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockRuntimeClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    action: "NONE",
+    assessments: [],
+    outputs: [],
+    usage: {},
+  }),
+)
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { useApplyGuardrail } from "./bedrockRuntime"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("useApplyGuardrail", () => {
   it("sends ApplyGuardrailCommand with the guardrail id, version, source and content", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useApplyGuardrail(), { wrapper })
+    const { result } = renderMutationHook(() => useApplyGuardrail())
 
     result.current.mutate({
       guardrailIdentifier: "gr-1",

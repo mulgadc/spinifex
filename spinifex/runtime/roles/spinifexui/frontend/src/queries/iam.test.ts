@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", () => ({
-  getIamClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { callQueryFn } from "@/test/query"
 

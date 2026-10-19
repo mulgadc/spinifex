@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { arnResourceId } from "@/lib/utils"
 import {
   useAssociateAccessPolicy,
   useCreateAccessEntry,
@@ -35,10 +36,6 @@ import {
   createAccessEntrySchema,
   EKS_ACCESS_POLICIES,
 } from "@/types/eks"
-
-function shortPolicyName(arn: string | undefined): string {
-  return arn?.split("/").pop() ?? arn ?? ""
-}
 
 function AccessEntryRow({
   clusterName,
@@ -101,7 +98,7 @@ function AccessEntryRow({
                     className="flex items-center justify-between gap-2"
                     key={p.policyArn}
                   >
-                    <span>{shortPolicyName(p.policyArn)}</span>
+                    <span>{arnResourceId(p.policyArn)}</span>
                     <Button
                       onClick={() => {
                         disassociate.mutate({

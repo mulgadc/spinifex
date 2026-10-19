@@ -6,7 +6,6 @@ import {
   type FieldErrors,
   type Path,
   type UseFormRegister,
-  Controller,
   useFieldArray,
   useForm,
 } from "react-hook-form"
@@ -14,6 +13,7 @@ import {
 import { BackLink } from "@/components/back-link"
 import { ErrorBanner } from "@/components/error-banner"
 import { FormActions } from "@/components/form-actions"
+import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { PageHeading } from "@/components/page-heading"
 import { TagsFieldArray } from "@/components/tags-field-array"
 import { Button } from "@/components/ui/button"
@@ -26,13 +26,6 @@ import {
   FieldTitle,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { useCreateGuardrail, useUpdateGuardrail } from "@/mutations/bedrock"
 import {
@@ -62,67 +55,6 @@ interface SectionProps {
   errors: FieldErrors<GuardrailFormData>
 }
 
-interface SelectOptionFieldProps {
-  control: Control<GuardrailFormData>
-  name: Path<GuardrailFormData>
-  id: string
-  label: string
-  options: readonly string[]
-}
-
-// The single Select-driven field every policy row needs: react-hook-form's
-// Controller is required here because the base-ui Select is not a native
-// input and cannot be wired up with `register`.
-function SelectOptionField({
-  control,
-  name,
-  id,
-  label,
-  options,
-}: SelectOptionFieldProps) {
-  return (
-    <Controller
-      control={control}
-      name={name}
-      render={({ field, fieldState }) => {
-        // The generic path's value has no narrower static type to branch on.
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- as above
-        const selected = typeof field.value === "string" ? field.value : ""
-
-        return (
-          <Field>
-            <FieldTitle>
-              <label htmlFor={id}>{label}</label>
-            </FieldTitle>
-            <Select
-              onValueChange={(value) => {
-                field.onChange(value ?? "")
-              }}
-              value={selected}
-            >
-              <SelectTrigger
-                aria-invalid={!!fieldState.error}
-                className="w-full"
-                id={id}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {options.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {option}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <FieldError errors={[fieldState.error]} />
-          </Field>
-        )
-      }}
-    />
-  )
-}
-
 function TopicsFieldArray({ control, register, errors }: SectionProps) {
   const { fields, append, remove } = useFieldArray({
     control,
@@ -133,17 +65,12 @@ function TopicsFieldArray({ control, register, errors }: SectionProps) {
     <div className="space-y-3">
       {fields.map((field, index) => (
         <div className="space-y-2 rounded-md border p-3" key={field.id}>
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`topic-name-${field.id}`}>Topic name</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.topics?.[index]?.name}
-              id={`topic-name-${field.id}`}
-              {...register(path(`topics.${index}.name`))}
-            />
-            <FieldError errors={[errors.topics?.[index]?.name]} />
-          </Field>
+          <TextField
+            error={errors.topics?.[index]?.name}
+            id={`topic-name-${field.id}`}
+            label="Topic name"
+            {...register(path(`topics.${index}.name`))}
+          />
           <Field>
             <FieldTitle>
               <label htmlFor={`topic-definition-${field.id}`}>Definition</label>
@@ -210,26 +137,26 @@ function ContentFiltersFieldArray({ control }: SectionProps) {
           className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-3"
           key={field.id}
         >
-          <SelectOptionField
+          <SelectField
             control={control}
             id={`filter-type-${field.id}`}
             label="Category"
             name={path(`contentFilters.${index}.type`)}
-            options={CONTENT_FILTER_TYPES}
+            options={selectOptions(CONTENT_FILTER_TYPES)}
           />
-          <SelectOptionField
+          <SelectField
             control={control}
             id={`filter-input-${field.id}`}
             label="Input strength"
             name={path(`contentFilters.${index}.inputStrength`)}
-            options={FILTER_STRENGTHS}
+            options={selectOptions(FILTER_STRENGTHS)}
           />
-          <SelectOptionField
+          <SelectField
             control={control}
             id={`filter-output-${field.id}`}
             label="Output strength"
             name={path(`contentFilters.${index}.outputStrength`)}
-            options={FILTER_STRENGTHS}
+            options={selectOptions(FILTER_STRENGTHS)}
           />
           <div className="sm:col-span-3">
             <Button
@@ -337,19 +264,19 @@ function PiiEntitiesFieldArray({ control }: SectionProps) {
           className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-2"
           key={field.id}
         >
-          <SelectOptionField
+          <SelectField
             control={control}
             id={`pii-type-${field.id}`}
             label="PII type"
             name={path(`piiEntities.${index}.type`)}
-            options={PII_ENTITY_TYPES}
+            options={selectOptions(PII_ENTITY_TYPES)}
           />
-          <SelectOptionField
+          <SelectField
             control={control}
             id={`pii-action-${field.id}`}
             label="Action"
             name={path(`piiEntities.${index}.action`)}
-            options={SENSITIVE_INFORMATION_ACTIONS}
+            options={selectOptions(SENSITIVE_INFORMATION_ACTIONS)}
           />
           <div className="sm:col-span-2">
             <Button
@@ -391,46 +318,30 @@ function RegexesFieldArray({ control, register, errors }: SectionProps) {
     <div className="space-y-3">
       {fields.map((field, index) => (
         <div className="space-y-2 rounded-md border p-3" key={field.id}>
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`regex-name-${field.id}`}>Name</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.regexes?.[index]?.name}
-              id={`regex-name-${field.id}`}
-              {...register(path(`regexes.${index}.name`))}
-            />
-            <FieldError errors={[errors.regexes?.[index]?.name]} />
-          </Field>
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`regex-pattern-${field.id}`}>Pattern</label>
-            </FieldTitle>
-            <Input
-              aria-invalid={!!errors.regexes?.[index]?.pattern}
-              id={`regex-pattern-${field.id}`}
-              {...register(path(`regexes.${index}.pattern`))}
-            />
-            <FieldError errors={[errors.regexes?.[index]?.pattern]} />
-          </Field>
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`regex-description-${field.id}`}>
-                Description
-              </label>
-            </FieldTitle>
-            <Input
-              id={`regex-description-${field.id}`}
-              placeholder="Optional"
-              {...register(path(`regexes.${index}.description`))}
-            />
-          </Field>
-          <SelectOptionField
+          <TextField
+            error={errors.regexes?.[index]?.name}
+            id={`regex-name-${field.id}`}
+            label="Name"
+            {...register(path(`regexes.${index}.name`))}
+          />
+          <TextField
+            error={errors.regexes?.[index]?.pattern}
+            id={`regex-pattern-${field.id}`}
+            label="Pattern"
+            {...register(path(`regexes.${index}.pattern`))}
+          />
+          <TextField
+            id={`regex-description-${field.id}`}
+            label="Description"
+            placeholder="Optional"
+            {...register(path(`regexes.${index}.description`))}
+          />
+          <SelectField
             control={control}
             id={`regex-action-${field.id}`}
             label="Action"
             name={path(`regexes.${index}.action`)}
-            options={SENSITIVE_INFORMATION_ACTIONS}
+            options={selectOptions(SENSITIVE_INFORMATION_ACTIONS)}
           />
           <Button
             onClick={() => {
@@ -479,37 +390,26 @@ function ContextualGroundingFiltersFieldArray({
           className="grid grid-cols-1 gap-2 rounded-md border p-3 sm:grid-cols-2"
           key={field.id}
         >
-          <SelectOptionField
+          <SelectField
             control={control}
             id={`grounding-type-${field.id}`}
             label="Filter type"
             name={path(`contextualGroundingFilters.${index}.type`)}
-            options={CONTEXTUAL_GROUNDING_FILTER_TYPES}
+            options={selectOptions(CONTEXTUAL_GROUNDING_FILTER_TYPES)}
           />
-          <Field>
-            <FieldTitle>
-              <label htmlFor={`grounding-threshold-${field.id}`}>
-                Threshold
-              </label>
-            </FieldTitle>
-            <Input
-              aria-invalid={
-                !!errors.contextualGroundingFilters?.[index]?.threshold
-              }
-              id={`grounding-threshold-${field.id}`}
-              max={1}
-              min={0}
-              step={0.01}
-              type="number"
-              {...register(
-                path(`contextualGroundingFilters.${index}.threshold`),
-                { valueAsNumber: true },
-              )}
-            />
-            <FieldError
-              errors={[errors.contextualGroundingFilters?.[index]?.threshold]}
-            />
-          </Field>
+          <TextField
+            error={errors.contextualGroundingFilters?.[index]?.threshold}
+            id={`grounding-threshold-${field.id}`}
+            label="Threshold"
+            max={1}
+            min={0}
+            step={0.01}
+            type="number"
+            {...register(
+              path(`contextualGroundingFilters.${index}.threshold`),
+              { valueAsNumber: true },
+            )}
+          />
           <div className="sm:col-span-2">
             <Button
               onClick={() => {
@@ -617,21 +517,14 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
       )}
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        <Field>
-          <FieldTitle>
-            <label htmlFor="guardrail-name">Name</label>
-          </FieldTitle>
-          <Input
-            aria-invalid={!!errors.name}
-            id="guardrail-name"
-            placeholder="content-safety"
-            {...register("name")}
-          />
-          <FieldDescription>
-            Letters, digits, hyphens and underscores only.
-          </FieldDescription>
-          <FieldError errors={[errors.name]} />
-        </Field>
+        <TextField
+          description="Letters, digits, hyphens and underscores only."
+          error={errors.name}
+          id="guardrail-name"
+          label="Name"
+          placeholder="content-safety"
+          {...register("name")}
+        />
 
         <Field>
           <FieldTitle>
@@ -682,19 +575,13 @@ export function GuardrailFormPage(props: GuardrailFormPageProps) {
           <FieldError errors={[errors.blockedOutputsMessaging]} />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="guardrail-kms-key">KMS key ARN</label>
-          </FieldTitle>
-          <Input
-            id="guardrail-kms-key"
-            placeholder="Optional"
-            {...register("kmsKeyId")}
-          />
-          <FieldDescription>
-            Leave blank to use the account default.
-          </FieldDescription>
-        </Field>
+        <TextField
+          description="Leave blank to use the account default."
+          id="guardrail-kms-key"
+          label="KMS key ARN"
+          placeholder="Optional"
+          {...register("kmsKeyId")}
+        />
 
         <FieldSet>
           <FieldLegend>Denied topics</FieldLegend>

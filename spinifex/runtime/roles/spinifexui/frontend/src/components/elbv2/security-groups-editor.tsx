@@ -1,8 +1,8 @@
 import type { SecurityGroup } from "@aws-sdk/client-ec2"
 import { useState } from "react"
 
-import { Button } from "@/components/ui/button"
-import { securityGroupLabel } from "@/lib/utils"
+import { EditorShell } from "@/components/editor-shell"
+import { sameSet, securityGroupLabel } from "@/lib/utils"
 
 interface SecurityGroupsEditorProps {
   // Security groups in the load balancer's VPC, selectable for attachment.
@@ -13,16 +13,6 @@ interface SecurityGroupsEditorProps {
   isPending: boolean
   error?: Error | null
   isSuccess?: boolean
-}
-
-function sameSet(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) {
-    return false
-  }
-
-  const setB = new Set(b)
-
-  return a.every((id) => setB.has(id))
 }
 
 export function SecurityGroupsEditor({
@@ -52,82 +42,45 @@ export function SecurityGroupsEditor({
   const selectedIds = new Set(selected)
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-
-        if (!dirty || isEmpty) {
-          return
-        }
-
+    <EditorShell
+      dirty={dirty}
+      error={error}
+      errorMsg="Failed to update security groups"
+      invalid={isEmpty}
+      isPending={isPending}
+      isSuccess={isSuccess}
+      onReset={handleReset}
+      onSave={() => {
         onSubmit(selected)
       }}
+      successMsg="Security groups updated."
     >
-      {error && (
-        <div
-          className="mb-4 rounded-md border border-destructive bg-destructive/10 p-3 text-sm text-destructive"
-          role="alert"
-        >
-          {error.message || "Failed to update security groups"}
-        </div>
-      )}
-      {isSuccess && !dirty && (
-        <output className="mb-4 block rounded-md border border-success bg-success/10 p-3 text-sm text-success-foreground">
-          Security groups updated.
-        </output>
-      )}
-      <div className="rounded-lg border bg-card">
-        <div className="flex flex-col gap-1 p-4">
-          {available.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No security groups in this VPC.
-            </p>
-          ) : (
-            available.map((sg) => (
-              <label
-                className="flex items-center gap-2 text-sm"
-                key={sg.GroupId}
-              >
-                <input
-                  aria-label={`Security group ${securityGroupLabel(sg)}`}
-                  checked={selectedIds.has(sg.GroupId ?? "")}
-                  onChange={() => {
-                    toggle(sg.GroupId ?? "")
-                  }}
-                  type="checkbox"
-                />
-                <span className="font-mono">{securityGroupLabel(sg)}</span>
-              </label>
-            ))
-          )}
-          {isEmpty && (
-            <p className="text-xs text-destructive">
-              At least one security group is required.
-            </p>
-          )}
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t p-4">
-          <span className="mr-auto text-xs text-muted-foreground">
-            {dirty ? "Unsaved changes" : "No changes"}
-          </span>
-          <Button
-            disabled={isPending || !dirty}
-            onClick={handleReset}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            Reset
-          </Button>
-          <Button
-            disabled={isPending || !dirty || isEmpty}
-            size="sm"
-            type="submit"
-          >
-            {isPending ? "Saving…" : "Save changes"}
-          </Button>
-        </div>
+      <div className="flex flex-col gap-1 p-4">
+        {available.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No security groups in this VPC.
+          </p>
+        ) : (
+          available.map((sg) => (
+            <label className="flex items-center gap-2 text-sm" key={sg.GroupId}>
+              <input
+                aria-label={`Security group ${securityGroupLabel(sg)}`}
+                checked={selectedIds.has(sg.GroupId ?? "")}
+                onChange={() => {
+                  toggle(sg.GroupId ?? "")
+                }}
+                type="checkbox"
+              />
+              <span className="font-mono">{securityGroupLabel(sg)}</span>
+            </label>
+          ))
+        )}
+        {isEmpty && (
+          <p className="text-xs text-destructive">
+            At least one security group is required.
+          </p>
+        )}
       </div>
-    </form>
+    </EditorShell>
   )
 }

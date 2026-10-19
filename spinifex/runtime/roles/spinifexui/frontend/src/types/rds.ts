@@ -1,6 +1,8 @@
 import type { ApplyMethod } from "@aws-sdk/client-rds"
 import { z } from "zod"
 
+import { tagSchema } from "@/types/tags"
+
 // Mirrors handlers/rds/validate.go and domains/rds/engine/engine.go so the form
 // rejects what the backend would reject, before the round trip. Engines,
 // versions and instance classes are deliberately absent: those are read from
@@ -220,16 +222,11 @@ export const MAX_TAGS_PER_RESOURCE = 50
 // silently discarded tag would read back as absent on the next apply.
 const RESERVED_TAG_PREFIX = "aws:"
 
-export const rdsTagSchema = z.object({
-  key: z
-    .string()
-    .min(1, "Tag key is required")
-    .max(128)
-    .refine(
-      (v) => !v.toLowerCase().startsWith(RESERVED_TAG_PREFIX),
-      `Tag keys may not start with the reserved ${RESERVED_TAG_PREFIX} prefix`,
-    ),
-  value: z.string().max(256),
+export const rdsTagSchema = tagSchema.extend({
+  key: tagSchema.shape.key.refine(
+    (v) => !v.toLowerCase().startsWith(RESERVED_TAG_PREFIX),
+    `Tag keys may not start with the reserved ${RESERVED_TAG_PREFIX} prefix`,
+  ),
 })
 
 export const rdsTagsField = z

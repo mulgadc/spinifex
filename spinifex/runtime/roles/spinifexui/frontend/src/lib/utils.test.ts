@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  arnResourceId,
   buildFullS3Key,
+  byName,
   cn,
   ensureTrailingSlash,
   extractDisplayName,
@@ -10,6 +12,8 @@ import {
   getNameTag,
   removeTrailingSlash,
   safeDecodeURIComponent,
+  sameSet,
+  vpcLabel,
 } from "./utils"
 
 describe("cn", () => {
@@ -195,5 +199,94 @@ describe("safeDecodeURIComponent", () => {
 
   it("leaves an undecorated value untouched", () => {
     expect(safeDecodeURIComponent("my-db-instance")).toBe("my-db-instance")
+  })
+})
+
+describe("arnResourceId", () => {
+  it("returns the segment after the last slash", () => {
+    expect(
+      arnResourceId(
+        "arn:aws:ecs:us-east-1:123456789012:task/my-cluster/0a1b2c3d",
+      ),
+    ).toBe("0a1b2c3d")
+  })
+
+  it("keeps the family:revision of a task definition", () => {
+    expect(
+      arnResourceId("arn:aws:ecs:us-east-1:123456789012:task-definition/web:7"),
+    ).toBe("web:7")
+  })
+
+  it("returns the whole ARN when it has no slash", () => {
+    expect(arnResourceId("arn:aws:sns:us-east-1:123456789012:topic")).toBe(
+      "arn:aws:sns:us-east-1:123456789012:topic",
+    )
+  })
+
+  it("returns an empty string for a missing ARN", () => {
+    expect(arnResourceId(undefined)).toBe("")
+  })
+})
+
+describe("byName", () => {
+  it("orders case-insensitively", () => {
+    const sorted = [{ n: "charlie" }, { n: "Bravo" }, { n: "alpha" }].toSorted(
+      byName((x) => x.n),
+    )
+
+    expect(sorted.map((x) => x.n)).toStrictEqual(["alpha", "Bravo", "charlie"])
+  })
+
+  it("sorts a missing name first, as an empty string", () => {
+    const sorted = [{ n: "alpha" }, { n: undefined }].toSorted(
+      byName((x) => x.n),
+    )
+
+    expect(sorted.map((x) => x.n)).toStrictEqual([undefined, "alpha"])
+  })
+
+  it("keeps names differing only in case in their original order", () => {
+    const sorted = [{ n: "WEB" }, { n: "web" }].toSorted(byName((x) => x.n))
+
+    expect(sorted.map((x) => x.n)).toStrictEqual(["WEB", "web"])
+  })
+})
+
+describe("sameSet", () => {
+  it("treats the same members in a different order as equal", () => {
+    expect(sameSet(["sg-1", "sg-2"], ["sg-2", "sg-1"])).toBeTruthy()
+  })
+
+  it("rejects lists of different sizes", () => {
+    expect(sameSet(["sg-1"], ["sg-1", "sg-2"])).toBeFalsy()
+  })
+
+  it("rejects lists of the same size with different members", () => {
+    expect(sameSet(["sg-1", "sg-2"], ["sg-1", "sg-3"])).toBeFalsy()
+  })
+})
+
+describe("vpcLabel", () => {
+  it("names the VPC by its Name tag", () => {
+    expect(
+      vpcLabel({
+        VpcId: "vpc-1",
+        CidrBlock: "10.0.0.0/16",
+        Tags: [{ Key: "Name", Value: "prod" }],
+      }),
+    ).toBe("vpc-1 (prod)")
+  })
+
+  it("falls back to the CIDR when the VPC has no usable Name tag", () => {
+    expect(vpcLabel({ VpcId: "vpc-1", CidrBlock: "10.0.0.0/16" })).toBe(
+      "vpc-1 (10.0.0.0/16)",
+    )
+    expect(
+      vpcLabel({
+        VpcId: "vpc-1",
+        CidrBlock: "10.0.0.0/16",
+        Tags: [{ Key: "Name", Value: "" }],
+      }),
+    ).toBe("vpc-1 (10.0.0.0/16)")
   })
 })

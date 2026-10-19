@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getRdsClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import {
   rdsAutomatedBackupsQueryOptions,
@@ -39,25 +41,6 @@ import {
   useUpdateRdsTags,
 } from "./rds"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 const CREATE_FORM: CreateDBInstanceFormData = {
   dbInstanceIdentifier: "orders-db",
   engine: "postgres",
@@ -81,8 +64,7 @@ const CREATE_FORM: CreateDBInstanceFormData = {
 
 describe("useCreateDBInstance", () => {
   it("sends CreateDBInstanceCommand with the form values", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBInstance())
 
     result.current.mutate(CREATE_FORM)
 
@@ -100,8 +82,7 @@ describe("useCreateDBInstance", () => {
   })
 
   it("omits an empty port so the engine default applies", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBInstance())
 
     result.current.mutate(CREATE_FORM)
 
@@ -112,8 +93,7 @@ describe("useCreateDBInstance", () => {
   })
 
   it("sends a port when one was typed", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBInstance())
 
     result.current.mutate({ ...CREATE_FORM, port: "5555" })
 
@@ -124,8 +104,7 @@ describe("useCreateDBInstance", () => {
   })
 
   it("omits empty optional strings rather than sending blanks", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBInstance())
 
     result.current.mutate({ ...CREATE_FORM, dbName: "", engineVersion: "" })
 
@@ -143,8 +122,7 @@ describe("useCreateDBInstance", () => {
 
 describe("useModifyDBInstance", () => {
   it("sends ModifyDBInstanceCommand with the identifier and ApplyImmediately", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useModifyDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useModifyDBInstance())
 
     result.current.mutate({
       dbInstanceIdentifier: "orders-db",
@@ -174,7 +152,7 @@ describe("useModifyDBInstance", () => {
   })
 
   it("marks the cached instance, its automated backups and both snapshot views stale", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(rdsDBInstancesQueryOptions.queryKey, {
       $metadata: {},
     })
@@ -192,7 +170,11 @@ describe("useModifyDBInstance", () => {
       rdsInstanceDBSnapshotsQueryOptions("orders-db").queryKey,
       { $metadata: {} },
     )
-    const { result } = renderHook(() => useModifyDBInstance(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useModifyDBInstance(),
+      queryClient,
+    )
 
     result.current.mutate({
       dbInstanceIdentifier: "orders-db",
@@ -239,8 +221,7 @@ describe("useModifyDBInstance", () => {
 
 describe("useDeleteDBInstance", () => {
   it("sends a final snapshot identifier by default", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteDBInstance())
 
     result.current.mutate({
       dbInstanceIdentifier: "orders-db",
@@ -259,8 +240,7 @@ describe("useDeleteDBInstance", () => {
   })
 
   it("drops the snapshot identifier when the final snapshot is skipped", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteDBInstance(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteDBInstance())
 
     result.current.mutate({
       dbInstanceIdentifier: "orders-db",
@@ -279,9 +259,13 @@ describe("useDeleteDBInstance", () => {
   // The final snapshot appears and the automated backups go, neither of which
   // is reachable from the instance list alone.
   it("invalidates the automated backups and snapshots as well as the instance", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeleteDBInstance(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteDBInstance(),
+      queryClient,
+    )
 
     result.current.mutate({
       dbInstanceIdentifier: "orders-db",
@@ -306,8 +290,7 @@ describe("rds lifecycle mutations", () => {
     ["stop", useStopDBInstance],
     ["reboot", useRebootDBInstance],
   ])("%s sends the instance identifier", async (_name, useHook) => {
-    createQueryClient()
-    const { result } = renderHook(() => useHook(), { wrapper })
+    const { result } = renderMutationHook(() => useHook())
 
     result.current.mutate("orders-db")
 
@@ -322,8 +305,7 @@ describe("rds lifecycle mutations", () => {
 
 describe("useUpdateRdsTags", () => {
   it("adds the final set and removes the keys that went away", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useUpdateRdsTags(), { wrapper })
+    const { result } = renderMutationHook(() => useUpdateRdsTags())
 
     result.current.mutate({
       resourceName: "arn:db",
@@ -345,8 +327,7 @@ describe("useUpdateRdsTags", () => {
   })
 
   it("skips both calls when there is nothing to do", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useUpdateRdsTags(), { wrapper })
+    const { result } = renderMutationHook(() => useUpdateRdsTags())
 
     result.current.mutate({
       resourceName: "arn:db",
@@ -363,8 +344,7 @@ describe("useUpdateRdsTags", () => {
 
 describe("useCreateDBSubnetGroup", () => {
   it("sends the name, description and subnets", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBSubnetGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBSubnetGroup())
 
     result.current.mutate({
       dbSubnetGroupName: "orders-subnets",
@@ -384,8 +364,7 @@ describe("useCreateDBSubnetGroup", () => {
   })
 
   it("omits an empty tag set rather than sending a blank list", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBSubnetGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBSubnetGroup())
 
     result.current.mutate({
       dbSubnetGroupName: "orders-subnets",
@@ -403,11 +382,7 @@ describe("useCreateDBSubnetGroup", () => {
 
 describe("useCreateDBParameterGroup", () => {
   it("sends the name, family and description", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useCreateDBParameterGroup(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useCreateDBParameterGroup())
 
     result.current.mutate({
       dbParameterGroupName: "orders-pg",
@@ -428,11 +403,7 @@ describe("useCreateDBParameterGroup", () => {
 
 describe("useModifyDBParameterGroup", () => {
   it("sends every edit in one request", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useModifyDBParameterGroup(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useModifyDBParameterGroup())
 
     result.current.mutate({
       dbParameterGroupName: "orders-pg",
@@ -473,8 +444,7 @@ describe("useModifyDBParameterGroup", () => {
 
 describe("useCreateDBSnapshot", () => {
   it("sends the snapshot name, the instance and its tags", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateDBSnapshot(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateDBSnapshot())
 
     result.current.mutate({
       dbSnapshotIdentifier: "orders-db-snapshot-20260817-1432",
@@ -495,8 +465,7 @@ describe("useCreateDBSnapshot", () => {
 
 describe("useDeleteDBSnapshot", () => {
   it("sends the snapshot identifier", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteDBSnapshot(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteDBSnapshot())
 
     result.current.mutate("orders-db-snapshot-20260817-1432")
 
@@ -524,11 +493,9 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
   }
 
   it("sends the snapshot, the new identifier and the overrides", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useRestoreDBInstanceFromDBSnapshot(),
+    )
 
     result.current.mutate({
       ...RESTORE_FORM,
@@ -560,11 +527,9 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
   // Every one of these is either refused by the backend or read from the
   // snapshot's datadir, so sending one would fail the restore or lie about it.
   it("never sends the engine, the credentials or the database name", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useRestoreDBInstanceFromDBSnapshot(),
+    )
 
     result.current.mutate({
       ...RESTORE_FORM,
@@ -588,11 +553,9 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
   // An empty port means "keep the snapshot's", which is a field left off the
   // request rather than a zero.
   it("omits a blank port", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRestoreDBInstanceFromDBSnapshot(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useRestoreDBInstanceFromDBSnapshot(),
+    )
 
     result.current.mutate({
       ...RESTORE_FORM,
@@ -608,8 +571,7 @@ describe("useRestoreDBInstanceFromDBSnapshot", () => {
 
 describe("rds group delete mutations", () => {
   it("deleting a subnet group sends its name", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteDBSubnetGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteDBSubnetGroup())
 
     result.current.mutate("orders-subnets")
 
@@ -622,11 +584,7 @@ describe("rds group delete mutations", () => {
   })
 
   it("deleting a parameter group sends its name", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useDeleteDBParameterGroup(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useDeleteDBParameterGroup())
 
     result.current.mutate("orders-pg")
 

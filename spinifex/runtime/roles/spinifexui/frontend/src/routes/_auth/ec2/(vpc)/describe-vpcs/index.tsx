@@ -1,9 +1,9 @@
-import type { Vpc } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { getNameTag } from "@/lib/utils"
@@ -42,30 +42,24 @@ function Vpcs() {
         title="VPCs"
       />
 
-      {vpcs.length > 0 ? (
-        <div className="space-y-4">
-          {vpcs.map((vpc: Vpc) => {
-            if (!vpc.VpcId) {
-              return null
-            }
+      <ResourceList
+        empty="No VPCs found."
+        getKey={(vpc) => vpc.VpcId}
+        items={vpcs}
+        renderItem={(vpc, id) => {
+          const name = getNameTag(vpc.Tags)
 
-            const name = getNameTag(vpc.Tags)
-
-            return (
-              <ListCard
-                badge={<StateBadge state={vpc.State} />}
-                key={vpc.VpcId}
-                params={{ id: vpc.VpcId }}
-                subtitle={vpc.CidrBlock ?? ""}
-                title={name ? `${vpc.VpcId} (${name})` : vpc.VpcId}
-                to="/ec2/describe-vpcs/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No VPCs found.</p>
-      )}
+          return (
+            <ListCard
+              badge={<StateBadge state={vpc.State} />}
+              params={{ id }}
+              subtitle={vpc.CidrBlock ?? ""}
+              title={name ? `${id} (${name})` : id}
+              to="/ec2/describe-vpcs/$id"
+            />
+          )
+        }}
+      />
     </>
   )
 }

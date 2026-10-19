@@ -3,16 +3,13 @@ import { fireEvent, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getEksClient: () => ({ send: vi.fn().mockResolvedValue({}) }),
-  getEc2Client: () => ({ send: vi.fn().mockResolvedValue({}) }),
-  getIamClient: () => ({ send: vi.fn().mockResolvedValue({}) }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(vi.fn().mockResolvedValue({}))
+})
 
 import { NodegroupsTab } from "./nodegroups-tab"
 

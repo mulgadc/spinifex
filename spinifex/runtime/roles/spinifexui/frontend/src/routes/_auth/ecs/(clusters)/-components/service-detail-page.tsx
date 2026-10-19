@@ -12,13 +12,8 @@ import { DetailCard } from "@/components/detail-card"
 import { DetailRow } from "@/components/detail-row"
 import { PageHeading } from "@/components/page-heading"
 import { StateBadge } from "@/components/state-badge"
+import { arnResourceId } from "@/lib/utils"
 import { ecsServicesQueryOptions, ecsTasksQueryOptions } from "@/queries/ecs"
-
-// shortArn renders the trailing resource segment of an ARN, falling back to the
-// whole string when there is no slash.
-function shortArn(arn: string | undefined): string {
-  return arn?.split("/").at(-1) ?? ""
-}
 
 function attachmentDetail(task: Task, name: string): string | undefined {
   const eni = (task.attachments ?? []).find(
@@ -96,7 +91,7 @@ export function ServiceDetailPage({
           />
           <DetailRow
             label="Task definition"
-            value={shortArn(service.taskDefinition)}
+            value={arnResourceId(service.taskDefinition)}
           />
           <DetailRow label="Launch type" value={service.launchType} />
           <DetailRow
@@ -127,7 +122,7 @@ export function ServiceDetailPage({
                     key={`${lb.targetGroupArn ?? ""}-${lb.containerName ?? ""}-${lb.containerPort ?? ""}`}
                   >
                     <td className="px-4 py-2 font-mono text-xs">
-                      {shortArn(lb.targetGroupArn)}
+                      {arnResourceId(lb.targetGroupArn)}
                     </td>
                     <td className="px-4 py-2">{lb.containerName}</td>
                     <td className="px-4 py-2">{lb.containerPort}</td>
@@ -156,7 +151,7 @@ export function ServiceDetailPage({
               </thead>
               <tbody>
                 {memberTasks.map((task: Task) => {
-                  const id = shortArn(task.taskArn)
+                  const id = arnResourceId(task.taskArn)
 
                   return (
                     <tr className="border-b last:border-0" key={id}>
@@ -208,7 +203,7 @@ export function ServiceDetailPage({
                   <tr className="border-b last:border-0" key={deployment.id}>
                     <td className="px-4 py-2">{deployment.status}</td>
                     <td className="px-4 py-2 font-mono text-xs">
-                      {shortArn(deployment.taskDefinition)}
+                      {arnResourceId(deployment.taskDefinition)}
                     </td>
                     <td className="px-4 py-2">
                       {deployment.desiredCount ?? 0}

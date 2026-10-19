@@ -1,13 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-    <a href={to}>{children}</a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 import { eksClustersQueryOptions } from "@/queries/eks"
 
@@ -46,7 +45,7 @@ describe("ClustersListPage", () => {
     renderSeeded(["c1"])
     expect(screen.getByRole("link", { name: "c1" })).toHaveAttribute(
       "href",
-      "/eks/list-clusters/$clusterName",
+      "/eks/list-clusters/c1",
     )
   })
 })

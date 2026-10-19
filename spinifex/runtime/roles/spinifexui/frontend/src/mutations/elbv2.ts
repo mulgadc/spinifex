@@ -1,7 +1,6 @@
 import {
   type Action,
   type RuleCondition,
-  type Tag,
   type TargetDescription,
   AddTagsCommand,
   CreateListenerCommand,
@@ -29,6 +28,7 @@ import type {
   CreateLoadBalancerFormData,
   CreateTargetGroupFormData,
 } from "@/types/elbv2"
+import { type TagFormData, diffTags, toSdkTags } from "@/types/tags"
 
 export function useDeleteLoadBalancer() {
   const queryClient = useQueryClient()
@@ -87,7 +87,7 @@ export interface UpdateTagsParams {
   // listener rule).
   resourceArn: string
   // Desired final tag set after the edit.
-  tags: { key: string; value: string }[]
+  tags: TagFormData[]
   // Tag keys present before the edit, used to compute removals.
   initialKeys: string[]
 }
@@ -100,15 +100,14 @@ export function useUpdateTags() {
 
   return useMutation({
     mutationFn: async (params: UpdateTagsParams) => {
-      const finalKeys = new Set(params.tags.map((t) => t.key))
-      const toRemove = params.initialKeys.filter((k) => !finalKeys.has(k))
+      const { toSet, toRemove } = diffTags(params.tags, params.initialKeys)
       const client = getElbv2Client()
 
-      if (params.tags.length > 0) {
+      if (toSet) {
         await client.send(
           new AddTagsCommand({
             ResourceArns: [params.resourceArn],
-            Tags: params.tags.map((t) => ({ Key: t.key, Value: t.value })),
+            Tags: toSet,
           }),
         )
       }
@@ -189,10 +188,6 @@ export function useCreateTargetGroup() {
 
   return useMutation({
     mutationFn: async (params: CreateTargetGroupFormData) => {
-      const tags: Tag[] = params.tags
-        .filter((t) => t.key.length > 0)
-        .map((t) => ({ Key: t.key, Value: t.value }))
-
       const httpHealthCheck = params.healthCheck.protocol === "HTTP"
 
       const command = new CreateTargetGroupCommand({
@@ -211,7 +206,7 @@ export function useCreateTargetGroup() {
         Matcher: httpHealthCheck
           ? { HttpCode: params.healthCheck.matcher }
           : undefined,
-        Tags: tags.length > 0 ? tags : undefined,
+        Tags: toSdkTags(params.tags),
       })
 
       return await getElbv2Client().send(command)
@@ -463,10 +458,6 @@ export function useCreateLoadBalancerWizard() {
 
           currentStep = "creating target group"
 
-          const tgTags: Tag[] = tg.tags
-            .filter((t) => t.key.length > 0)
-            .map((t) => ({ Key: t.key, Value: t.value }))
-
           // Path + Matcher are HTTP-only; a TCP health check (NLB) rejects them.
           const httpHealthCheck = tg.healthCheck.protocol === "HTTP"
 
@@ -489,7 +480,7 @@ export function useCreateLoadBalancerWizard() {
               Matcher: httpHealthCheck
                 ? { HttpCode: tg.healthCheck.matcher }
                 : undefined,
-              Tags: tgTags.length > 0 ? tgTags : undefined,
+              Tags: toSdkTags(tg.tags),
             }),
           )
 
@@ -511,10 +502,6 @@ export function useCreateLoadBalancerWizard() {
         // Step 2: create LB
         currentStep = "creating load balancer"
 
-        const lbTags: Tag[] = params.lb.tags
-          .filter((t) => t.key.length > 0)
-          .map((t) => ({ Key: t.key, Value: t.value }))
-
         const lbResult = await client.send(
           new CreateLoadBalancerCommand({
             Name: params.lb.name,
@@ -526,7 +513,7 @@ export function useCreateLoadBalancerWizard() {
               params.lb.securityGroupIds.length > 0
                 ? params.lb.securityGroupIds
                 : undefined,
-            Tags: lbTags.length > 0 ? lbTags : undefined,
+            Tags: toSdkTags(params.lb.tags),
           }),
         )
 

@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import { NotFound } from "./not-found"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
-    <a href={to}>{children}</a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 describe("NotFound", () => {
   it("renders the 404 heading", () => {

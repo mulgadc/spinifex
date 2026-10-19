@@ -2,45 +2,24 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { formatDateTime } from "@/lib/utils"
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { routerState } = vi.hoisted(() => ({
   routerState: { navigate: vi.fn() },
 }))
 
-const mockSend = vi.fn().mockResolvedValue({})
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", () => ({
-  getRdsClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => routerState.navigate,
-    Link: ({
-      children,
-      to,
-      params,
-    }: {
-      children: React.ReactNode
-      to?: string
-      params?: Record<string, string>
-    }) => {
-      let href = to ?? ""
-
-      for (const [key, value] of Object.entries(params ?? {})) {
-        href = href.replace(`$${key}`, value)
-      }
-
-      return <a href={href}>{children}</a>
-    },
-  }
+  return await mockRouter(importOriginal, { navigate: routerState.navigate })
 })
 
 import { DBSnapshotsListPage } from "./db-snapshots-list-page"

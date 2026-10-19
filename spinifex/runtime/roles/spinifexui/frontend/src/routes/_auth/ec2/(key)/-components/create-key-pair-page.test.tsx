@@ -1,12 +1,8 @@
 import { screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { send } = vi.hoisted(() => {
   interface Command {
@@ -20,20 +16,16 @@ const { send } = vi.hoisted(() => {
   }
 })
 
-vi.mock("@/lib/awsClient", () => ({
-  getEc2Client: () => ({ send }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(send)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => vi.fn(),
-    Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return await mockRouter(importOriginal)
 })
 
 import { CreateKeyPairPage } from "./create-key-pair-page"

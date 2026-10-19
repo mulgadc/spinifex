@@ -1,31 +1,26 @@
 import { screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({ guardrailId: "gr-new" })
-const mockNavigate = vi.fn()
+const mockSend = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ guardrailId: "gr-new" }),
+)
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockClient: () => ({ send: mockSend }),
-}))
+const mockNavigate = vi.hoisted(() => vi.fn())
 
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-    Link: ({ children, to }: { children: ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return mockAwsClients(mockSend)
 })
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal, { navigate: mockNavigate })
+})
+
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 import {
   EMPTY_GUARDRAIL_FORM_DEFAULTS,
   type GuardrailFormData,

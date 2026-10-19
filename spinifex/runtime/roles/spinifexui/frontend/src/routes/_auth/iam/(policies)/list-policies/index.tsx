@@ -1,10 +1,11 @@
-import type { Policy } from "@aws-sdk/client-iam"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
+import { byName } from "@/lib/utils"
 import { iamPoliciesQueryOptions } from "@/queries/iam"
 
 export const Route = createFileRoute("/_auth/iam/(policies)/list-policies/")({
@@ -23,12 +24,7 @@ export const Route = createFileRoute("/_auth/iam/(policies)/list-policies/")({
 function Policies() {
   const { data } = useSuspenseQuery(iamPoliciesQueryOptions)
 
-  const policies = (data.Policies ?? []).toSorted((a, b) => {
-    const nameA = a.PolicyName?.toLowerCase() ?? ""
-    const nameB = b.PolicyName?.toLowerCase() ?? ""
-
-    return nameA.localeCompare(nameB)
-  })
+  const policies = (data.Policies ?? []).toSorted(byName((p) => p.PolicyName))
 
   return (
     <>
@@ -41,27 +37,19 @@ function Policies() {
         title="Policies"
       />
 
-      {policies.length > 0 ? (
-        <div className="space-y-4">
-          {policies.map((policy: Policy) => {
-            if (!policy.Arn) {
-              return null
-            }
-
-            return (
-              <ListCard
-                key={policy.Arn}
-                params={{ policyArn: encodeURIComponent(policy.Arn) }}
-                subtitle={policy.Arn ?? ""}
-                title={policy.PolicyName ?? ""}
-                to="/iam/list-policies/$policyArn"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No IAM policies found.</p>
-      )}
+      <ResourceList
+        empty="No IAM policies found."
+        getKey={(policy) => policy.Arn}
+        items={policies}
+        renderItem={(policy, arn) => (
+          <ListCard
+            params={{ policyArn: encodeURIComponent(arn) }}
+            subtitle={arn}
+            title={policy.PolicyName ?? ""}
+            to="/iam/list-policies/$policyArn"
+          />
+        )}
+      />
     </>
   )
 }

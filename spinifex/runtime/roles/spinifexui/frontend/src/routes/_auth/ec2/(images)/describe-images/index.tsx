@@ -1,9 +1,9 @@
-import type { Image } from "@aws-sdk/client-ec2"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { StateBadge } from "@/components/state-badge"
 import { isSystemManagedImage } from "@/lib/system-managed"
 import { ec2ImagesQueryOptions } from "@/queries/ec2"
@@ -36,28 +36,20 @@ function Images() {
     <>
       <PageHeading title="Images" />
 
-      {images.length > 0 ? (
-        <div className="space-y-4">
-          {images.map((image: Image) => {
-            if (!image.ImageId) {
-              return null
-            }
-
-            return (
-              <ListCard
-                badge={<StateBadge state={image.State} />}
-                key={image.ImageId}
-                params={{ id: image.ImageId }}
-                subtitle={image.ImageId ?? ""}
-                title={image.Name ?? image.ImageId ?? ""}
-                to="/ec2/describe-images/$id"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No images found.</p>
-      )}
+      <ResourceList
+        empty="No images found."
+        getKey={(image) => image.ImageId}
+        items={images}
+        renderItem={(image, id) => (
+          <ListCard
+            badge={<StateBadge state={image.State} />}
+            params={{ id }}
+            subtitle={id}
+            title={image.Name ?? id}
+            to="/ec2/describe-images/$id"
+          />
+        )}
+      />
     </>
   )
 }

@@ -4,12 +4,13 @@ import userEvent from "@testing-library/user-event"
 import type { ReactNode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn()
+const mockSend = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", () => ({
-  getElbv2Client: () => ({ send: mockSend }),
-  getEc2Client: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { TargetsTab } from "./targets-tab"
 

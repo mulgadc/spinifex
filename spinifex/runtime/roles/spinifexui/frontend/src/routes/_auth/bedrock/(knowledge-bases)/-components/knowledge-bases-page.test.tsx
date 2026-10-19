@@ -1,26 +1,13 @@
 import type { KnowledgeBaseSummary } from "@aws-sdk/client-bedrock-agent"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen } from "@testing-library/react"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({
-    children,
-    to,
-    params,
-  }: {
-    children: ReactNode
-    to?: string
-    params?: Record<string, string>
-  }) => (
-    <a
-      href={`${to}${params?.knowledgeBaseId ? `/${params.knowledgeBaseId}` : ""}`}
-    >
-      {children}
-    </a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 import { knowledgeBasesQueryOptions } from "@/queries/bedrockAgent"
 
@@ -65,8 +52,8 @@ describe("KnowledgeBasesPage", () => {
       )
 
     expect(links.map((l) => l.getAttribute("href"))).toStrictEqual([
-      "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-1",
-      "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-2",
+      "/bedrock/list-knowledge-bases/kb-1",
+      "/bedrock/list-knowledge-bases/kb-2",
     ])
   })
 
@@ -79,7 +66,7 @@ describe("KnowledgeBasesPage", () => {
     renderSeeded([KB])
     expect(screen.getByRole("link", { name: /docs-kb/ })).toHaveAttribute(
       "href",
-      "/bedrock/list-knowledge-bases/$knowledgeBaseId/kb-1",
+      "/bedrock/list-knowledge-bases/kb-1",
     )
   })
 

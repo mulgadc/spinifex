@@ -1,13 +1,16 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import type { QueryClient } from "@tanstack/react-query"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getIamClient: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { iamUsersQueryOptions } from "@/queries/iam"
 
@@ -43,29 +46,9 @@ import {
   useUpdateAccessKey,
 } from "./iam"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("useCreateUser", () => {
   it("sends CreateUserCommand with userName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateUser(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateUser())
 
     result.current.mutate({ userName: "admin" })
 
@@ -79,8 +62,7 @@ describe("useCreateUser", () => {
   })
 
   it("includes Path when provided", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateUser(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateUser())
 
     result.current.mutate({ userName: "admin", path: "/engineering/" })
 
@@ -94,12 +76,12 @@ describe("useCreateUser", () => {
   })
 
   it("marks the cached user list stale on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(iamUsersQueryOptions.queryKey, {
       Users: [],
       $metadata: {},
     })
-    const { result } = renderHook(() => useCreateUser(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateUser(), queryClient)
 
     result.current.mutate({ userName: "admin" })
 
@@ -114,8 +96,7 @@ describe("useCreateUser", () => {
 
 describe("useDeleteUser", () => {
   it("sends DeleteUserCommand with userName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteUser(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteUser())
 
     result.current.mutate("admin")
 
@@ -130,8 +111,7 @@ describe("useDeleteUser", () => {
 
 describe("useCreateAccessKey", () => {
   it("sends CreateAccessKeyCommand with userName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateAccessKey(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateAccessKey())
 
     result.current.mutate("admin")
 
@@ -144,9 +124,13 @@ describe("useCreateAccessKey", () => {
   })
 
   it("invalidates access-keys query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateAccessKey(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateAccessKey(),
+      queryClient,
+    )
 
     result.current.mutate("admin")
 
@@ -159,8 +143,7 @@ describe("useCreateAccessKey", () => {
 
 describe("useDeleteAccessKey", () => {
   it("sends DeleteAccessKeyCommand with userName and accessKeyId", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteAccessKey(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteAccessKey())
 
     result.current.mutate({ userName: "admin", accessKeyId: "AKIA123" })
 
@@ -176,8 +159,7 @@ describe("useDeleteAccessKey", () => {
 
 describe("useUpdateAccessKey", () => {
   it("sends UpdateAccessKeyCommand with status", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useUpdateAccessKey(), { wrapper })
+    const { result } = renderMutationHook(() => useUpdateAccessKey())
 
     result.current.mutate({
       userName: "admin",
@@ -198,8 +180,7 @@ describe("useUpdateAccessKey", () => {
 
 describe("useCreatePolicy", () => {
   it("sends CreatePolicyCommand with policy data", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreatePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useCreatePolicy())
 
     result.current.mutate({
       policyName: "ReadOnly",
@@ -217,8 +198,7 @@ describe("useCreatePolicy", () => {
   })
 
   it("includes Description when provided", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreatePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useCreatePolicy())
 
     result.current.mutate({
       policyName: "ReadOnly",
@@ -235,9 +215,9 @@ describe("useCreatePolicy", () => {
   })
 
   it("invalidates policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreatePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useCreatePolicy(), queryClient)
 
     result.current.mutate({ policyName: "ReadOnly", policyDocument: "{}" })
 
@@ -250,8 +230,7 @@ describe("useCreatePolicy", () => {
 
 describe("useDeletePolicy", () => {
   it("sends DeletePolicyCommand with policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeletePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDeletePolicy())
 
     result.current.mutate("arn:aws:iam::123:policy/ReadOnly")
 
@@ -266,8 +245,7 @@ describe("useDeletePolicy", () => {
 
 describe("useAttachUserPolicy", () => {
   it("sends AttachUserPolicyCommand with userName and policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useAttachUserPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useAttachUserPolicy())
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
@@ -281,9 +259,13 @@ describe("useAttachUserPolicy", () => {
   })
 
   it("invalidates attached-user-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useAttachUserPolicy(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useAttachUserPolicy(),
+      queryClient,
+    )
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
@@ -298,8 +280,7 @@ describe("useAttachUserPolicy", () => {
 
 describe("useDetachUserPolicy", () => {
   it("sends DetachUserPolicyCommand with userName and policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDetachUserPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDetachUserPolicy())
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
@@ -313,9 +294,13 @@ describe("useDetachUserPolicy", () => {
   })
 
   it("invalidates attached-user-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDetachUserPolicy(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDetachUserPolicy(),
+      queryClient,
+    )
 
     result.current.mutate({ userName: "admin", policyArn: "arn:test" })
 
@@ -330,8 +315,7 @@ describe("useDetachUserPolicy", () => {
 
 describe("usePutUserPolicy", () => {
   it("sends PutUserPolicyCommand with mapped fields", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => usePutUserPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => usePutUserPolicy())
 
     result.current.mutate({
       name: "admin",
@@ -350,9 +334,9 @@ describe("usePutUserPolicy", () => {
   })
 
   it("invalidates the user inline-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => usePutUserPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => usePutUserPolicy(), queryClient)
 
     result.current.mutate({
       name: "admin",
@@ -371,8 +355,7 @@ describe("usePutUserPolicy", () => {
 
 describe("useDeleteUserPolicy", () => {
   it("sends DeleteUserPolicyCommand with mapped fields", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteUserPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteUserPolicy())
 
     result.current.mutate({ name: "admin", policyName: "s3-read" })
 
@@ -386,9 +369,13 @@ describe("useDeleteUserPolicy", () => {
   })
 
   it("invalidates the user inline-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useDeleteUserPolicy(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteUserPolicy(),
+      queryClient,
+    )
 
     result.current.mutate({ name: "admin", policyName: "s3-read" })
 
@@ -403,8 +390,7 @@ describe("useDeleteUserPolicy", () => {
 
 describe("usePutRolePolicy", () => {
   it("sends PutRolePolicyCommand with mapped fields", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => usePutRolePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => usePutRolePolicy())
 
     result.current.mutate({
       name: "my-role",
@@ -423,9 +409,9 @@ describe("usePutRolePolicy", () => {
   })
 
   it("invalidates the role inline-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => usePutRolePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => usePutRolePolicy(), queryClient)
 
     result.current.mutate({
       name: "my-role",
@@ -444,8 +430,7 @@ describe("usePutRolePolicy", () => {
 
 describe("useDeleteRolePolicy", () => {
   it("sends DeleteRolePolicyCommand with mapped fields", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteRolePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteRolePolicy())
 
     result.current.mutate({ name: "my-role", policyName: "s3-read" })
 
@@ -461,8 +446,7 @@ describe("useDeleteRolePolicy", () => {
 
 describe("usePutGroupPolicy", () => {
   it("sends PutGroupPolicyCommand with mapped fields", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => usePutGroupPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => usePutGroupPolicy())
 
     result.current.mutate({
       name: "my-group",
@@ -481,9 +465,13 @@ describe("usePutGroupPolicy", () => {
   })
 
   it("invalidates the group inline-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => usePutGroupPolicy(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => usePutGroupPolicy(),
+      queryClient,
+    )
 
     result.current.mutate({
       name: "my-group",
@@ -502,8 +490,7 @@ describe("usePutGroupPolicy", () => {
 
 describe("useDeleteGroupPolicy", () => {
   it("sends DeleteGroupPolicyCommand with mapped fields", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteGroupPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteGroupPolicy())
 
     result.current.mutate({ name: "my-group", policyName: "s3-read" })
 
@@ -519,8 +506,7 @@ describe("useDeleteGroupPolicy", () => {
 
 describe("useCreateRole", () => {
   it("sends CreateRoleCommand with role data", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateRole(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateRole())
 
     result.current.mutate({
       roleName: "my-role",
@@ -539,8 +525,7 @@ describe("useCreateRole", () => {
   })
 
   it("includes Path and Description when provided", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateRole(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateRole())
 
     result.current.mutate({
       roleName: "my-role",
@@ -561,9 +546,9 @@ describe("useCreateRole", () => {
   })
 
   it("invalidates roles query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateRole(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateRole(), queryClient)
 
     result.current.mutate({
       roleName: "my-role",
@@ -579,8 +564,7 @@ describe("useCreateRole", () => {
 
 describe("useDeleteRole", () => {
   it("sends DeleteRoleCommand with roleName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteRole(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteRole())
 
     result.current.mutate("my-role")
 
@@ -595,8 +579,7 @@ describe("useDeleteRole", () => {
 
 describe("useAttachRolePolicy", () => {
   it("sends AttachRolePolicyCommand with roleName and policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useAttachRolePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useAttachRolePolicy())
 
     result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
 
@@ -610,9 +593,13 @@ describe("useAttachRolePolicy", () => {
   })
 
   it("invalidates attached-role-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useAttachRolePolicy(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useAttachRolePolicy(),
+      queryClient,
+    )
 
     result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
 
@@ -627,8 +614,7 @@ describe("useAttachRolePolicy", () => {
 
 describe("useDetachRolePolicy", () => {
   it("sends DetachRolePolicyCommand with roleName and policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDetachRolePolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDetachRolePolicy())
 
     result.current.mutate({ roleName: "my-role", policyArn: "arn:test" })
 
@@ -644,8 +630,7 @@ describe("useDetachRolePolicy", () => {
 
 describe("useCreateInstanceProfile", () => {
   it("sends CreateInstanceProfileCommand with name", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateInstanceProfile(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateInstanceProfile())
 
     result.current.mutate({ instanceProfileName: "my-profile" })
 
@@ -659,9 +644,13 @@ describe("useCreateInstanceProfile", () => {
   })
 
   it("invalidates instance-profiles query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateInstanceProfile(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useCreateInstanceProfile(),
+      queryClient,
+    )
 
     result.current.mutate({ instanceProfileName: "my-profile" })
 
@@ -676,8 +665,7 @@ describe("useCreateInstanceProfile", () => {
 
 describe("useDeleteInstanceProfile", () => {
   it("sends DeleteInstanceProfileCommand with name", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteInstanceProfile(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteInstanceProfile())
 
     result.current.mutate("my-profile")
 
@@ -692,11 +680,7 @@ describe("useDeleteInstanceProfile", () => {
 
 describe("useAddRoleToInstanceProfile", () => {
   it("sends AddRoleToInstanceProfileCommand with name and role", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useAddRoleToInstanceProfile())
 
     result.current.mutate({
       instanceProfileName: "my-profile",
@@ -713,12 +697,13 @@ describe("useAddRoleToInstanceProfile", () => {
   })
 
   it("invalidates instance-profiles query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
 
-    const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useAddRoleToInstanceProfile(),
+      queryClient,
+    )
 
     result.current.mutate({
       instanceProfileName: "my-profile",
@@ -736,11 +721,9 @@ describe("useAddRoleToInstanceProfile", () => {
 
 describe("useRemoveRoleFromInstanceProfile", () => {
   it("sends RemoveRoleFromInstanceProfileCommand with name and role", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useRemoveRoleFromInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useRemoveRoleFromInstanceProfile(),
+    )
 
     result.current.mutate({
       instanceProfileName: "my-profile",
@@ -761,65 +744,69 @@ describe("instance profile membership changes", () => {
   const roleProfilesKey = ["iam", "instance-profiles-for-role", "app"]
 
   function seedRoleProfiles() {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(roleProfilesKey, { InstanceProfiles: [] })
+
+    return queryClient
   }
 
-  function roleProfilesInvalidated() {
+  function roleProfilesInvalidated(queryClient: QueryClient) {
     return queryClient.getQueryCache().find({ queryKey: roleProfilesKey })
       ?.state.isInvalidated
   }
 
   it("refreshes the role page after adding a role", async () => {
-    seedRoleProfiles()
+    const queryClient = seedRoleProfiles()
 
-    const { result } = renderHook(() => useAddRoleToInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useAddRoleToInstanceProfile(),
+      queryClient,
+    )
 
     result.current.mutate({ instanceProfileName: "p", roleName: "app" })
 
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(roleProfilesInvalidated()).toBeTruthy()
+    expect(roleProfilesInvalidated(queryClient)).toBeTruthy()
   })
 
   it("refreshes the role page after removing a role", async () => {
-    seedRoleProfiles()
+    const queryClient = seedRoleProfiles()
 
-    const { result } = renderHook(() => useRemoveRoleFromInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useRemoveRoleFromInstanceProfile(),
+      queryClient,
+    )
 
     result.current.mutate({ instanceProfileName: "p", roleName: "app" })
 
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(roleProfilesInvalidated()).toBeTruthy()
+    expect(roleProfilesInvalidated(queryClient)).toBeTruthy()
   })
 
   it("refreshes the role page after deleting a profile", async () => {
-    seedRoleProfiles()
+    const queryClient = seedRoleProfiles()
 
-    const { result } = renderHook(() => useDeleteInstanceProfile(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(
+      () => useDeleteInstanceProfile(),
+      queryClient,
+    )
 
     result.current.mutate("p")
 
     await waitFor(() => {
       expect(result.current.isSuccess).toBeTruthy()
     })
-    expect(roleProfilesInvalidated()).toBeTruthy()
+    expect(roleProfilesInvalidated(queryClient)).toBeTruthy()
   })
 })
 
 describe("useCreateGroup", () => {
   it("sends CreateGroupCommand with groupName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateGroup())
 
     result.current.mutate({ groupName: "my-group" })
 
@@ -833,8 +820,7 @@ describe("useCreateGroup", () => {
   })
 
   it("includes Path when provided", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateGroup())
 
     result.current.mutate({ groupName: "my-group", path: "/engineering/" })
 
@@ -848,9 +834,9 @@ describe("useCreateGroup", () => {
   })
 
   it("invalidates groups query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useCreateGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateGroup(), queryClient)
 
     result.current.mutate({ groupName: "my-group" })
 
@@ -863,8 +849,7 @@ describe("useCreateGroup", () => {
 
 describe("useDeleteGroup", () => {
   it("sends DeleteGroupCommand with groupName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteGroup())
 
     result.current.mutate("my-group")
 
@@ -879,8 +864,7 @@ describe("useDeleteGroup", () => {
 
 describe("useAttachGroupPolicy", () => {
   it("sends AttachGroupPolicyCommand with groupName and policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useAttachGroupPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useAttachGroupPolicy())
 
     result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
 
@@ -894,9 +878,13 @@ describe("useAttachGroupPolicy", () => {
   })
 
   it("invalidates attached-group-policies query on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useAttachGroupPolicy(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useAttachGroupPolicy(),
+      queryClient,
+    )
 
     result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
 
@@ -911,8 +899,7 @@ describe("useAttachGroupPolicy", () => {
 
 describe("useDetachGroupPolicy", () => {
   it("sends DetachGroupPolicyCommand with groupName and policyArn", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDetachGroupPolicy(), { wrapper })
+    const { result } = renderMutationHook(() => useDetachGroupPolicy())
 
     result.current.mutate({ groupName: "my-group", policyArn: "arn:test" })
 
@@ -928,8 +915,7 @@ describe("useDetachGroupPolicy", () => {
 
 describe("useAddUserToGroup", () => {
   it("sends AddUserToGroupCommand with groupName and userName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useAddUserToGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useAddUserToGroup())
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
@@ -943,9 +929,13 @@ describe("useAddUserToGroup", () => {
   })
 
   it("invalidates groups and groups-for-user queries on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useAddUserToGroup(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useAddUserToGroup(),
+      queryClient,
+    )
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
@@ -959,8 +949,7 @@ describe("useAddUserToGroup", () => {
 
 describe("useRemoveUserFromGroup", () => {
   it("sends RemoveUserFromGroupCommand with groupName and userName", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useRemoveUserFromGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useRemoveUserFromGroup())
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 
@@ -974,9 +963,13 @@ describe("useRemoveUserFromGroup", () => {
   })
 
   it("invalidates groups and groups-for-user queries on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useRemoveUserFromGroup(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useRemoveUserFromGroup(),
+      queryClient,
+    )
 
     result.current.mutate({ groupName: "my-group", userName: "admin" })
 

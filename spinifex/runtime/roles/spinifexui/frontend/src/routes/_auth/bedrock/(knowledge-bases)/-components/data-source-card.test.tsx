@@ -4,11 +4,13 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn()
+const mockSend = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", () => ({
-  getBedrockAgentClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { DataSourceCard } from "./data-source-card"
 

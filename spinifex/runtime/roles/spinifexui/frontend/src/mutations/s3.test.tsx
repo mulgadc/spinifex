@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getS3Client: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 vi.mock("@aws-sdk/lib-storage", () => ({
   Upload: class MockUpload {
@@ -28,29 +30,9 @@ import {
 
 import { useCreateBucket, useDeleteObject, useUploadObject } from "./s3"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("useCreateBucket", () => {
   it("sends CreateBucketCommand with bucket name", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateBucket(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateBucket())
 
     result.current.mutate({ bucketName: "my-bucket" })
 
@@ -63,9 +45,9 @@ describe("useCreateBucket", () => {
   })
 
   it("marks the cached bucket list stale on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(s3BucketsQueryOptions.queryKey, { $metadata: {} })
-    const { result } = renderHook(() => useCreateBucket(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateBucket(), queryClient)
 
     result.current.mutate({ bucketName: "my-bucket" })
 
@@ -80,8 +62,7 @@ describe("useCreateBucket", () => {
 
 describe("useDeleteObject", () => {
   it("sends DeleteObjectCommand with bucket and key", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteObject(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteObject())
 
     result.current.mutate({ bucket: "my-bucket", key: "photos/cat.jpg" })
 
@@ -95,7 +76,7 @@ describe("useDeleteObject", () => {
   })
 
   it("marks every cached listing of the bucket stale on success", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(
       s3BucketObjectsQueryOptions("my-bucket").queryKey,
       { $metadata: {} },
@@ -104,7 +85,7 @@ describe("useDeleteObject", () => {
       s3BucketObjectsQueryOptions("my-bucket", "photos/").queryKey,
       { $metadata: {} },
     )
-    const { result } = renderHook(() => useDeleteObject(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteObject(), queryClient)
 
     result.current.mutate({ bucket: "my-bucket", key: "file.txt" })
 
@@ -126,9 +107,9 @@ describe("useDeleteObject", () => {
 
 describe("useUploadObject", () => {
   it("uploads a file and invalidates bucket objects query", async () => {
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     const spy = vi.spyOn(queryClient, "invalidateQueries")
-    const { result } = renderHook(() => useUploadObject(), { wrapper })
+    const { result } = renderMutationHook(() => useUploadObject(), queryClient)
 
     const file = new File(["hello"], "test.txt", { type: "text/plain" })
     result.current.mutate({ bucket: "my-bucket", key: "test.txt", file })

@@ -5,14 +5,9 @@ import { useState } from "react"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
 import { Button } from "@/components/ui/button"
+import { arnResourceId } from "@/lib/utils"
 import { useDeregisterTaskDefinition } from "@/mutations/ecs"
 import { ecsTaskDefinitionsQueryOptions } from "@/queries/ecs"
-
-// familyRevision extracts the "family:revision" identifier from a task
-// definition ARN; DeregisterTaskDefinition requires that explicit form.
-function familyRevision(arn: string): string {
-  return arn.split("/").at(-1) ?? arn
-}
 
 // TaskDefinitionsList renders the account-scoped task definitions. clusterName,
 // when present, is only the return target for the register wizard.
@@ -68,7 +63,8 @@ export function TaskDefinitionsList({ clusterName }: { clusterName?: string }) {
             </thead>
             <tbody>
               {arns.map((arn: string) => {
-                const id = familyRevision(arn)
+                // DeregisterTaskDefinition requires the explicit "family:revision".
+                const id = arnResourceId(arn)
 
                 return (
                   <tr className="border-b last:border-0" key={arn}>

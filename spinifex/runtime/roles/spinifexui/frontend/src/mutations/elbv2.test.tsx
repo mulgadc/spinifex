@@ -1,13 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { renderHook, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import { waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.fn().mockResolvedValue({})
+import { createTestQueryClient, renderMutationHook } from "@/test/render"
 
-vi.mock("@/lib/awsClient", () => ({
-  getElbv2Client: () => ({ send: mockSend }),
-}))
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
+
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import {
   elbv2LoadBalancerQueryOptions,
@@ -30,32 +32,11 @@ import {
 
 const TG_ARN = "arn:aws:elasticloadbalancing:tg/app/foo/abc"
 
-let queryClient: QueryClient
-
-function wrapper({ children }: { children: ReactNode }) {
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  )
-}
-
-function createQueryClient() {
-  queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  })
-
-  return queryClient
-}
-
 describe("useModifyLoadBalancerAttributes", () => {
   it("sends ModifyLoadBalancerAttributesCommand with arn + changed attributes", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useModifyLoadBalancerAttributes(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useModifyLoadBalancerAttributes(),
+    )
 
     result.current.mutate({
       loadBalancerArn: "arn:lb:1",
@@ -80,11 +61,9 @@ describe("useModifyLoadBalancerAttributes", () => {
 
 describe("useModifyTargetGroupAttributes", () => {
   it("sends ModifyTargetGroupAttributesCommand with arn + changed attributes", async () => {
-    createQueryClient()
-
-    const { result } = renderHook(() => useModifyTargetGroupAttributes(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() =>
+      useModifyTargetGroupAttributes(),
+    )
 
     result.current.mutate({
       targetGroupArn: TG_ARN,
@@ -103,8 +82,7 @@ describe("useModifyTargetGroupAttributes", () => {
 
 describe("useDeleteLoadBalancer", () => {
   it("sends DeleteLoadBalancerCommand with load balancer ARN", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteLoadBalancer(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteLoadBalancer())
 
     result.current.mutate("arn:aws:elasticloadbalancing:lb/app/foo/abc")
 
@@ -118,14 +96,18 @@ describe("useDeleteLoadBalancer", () => {
 
   it("marks the cached load balancer list and detail stale on success", async () => {
     const arn = "arn:aws:elasticloadbalancing:lb/app/foo/abc"
-    createQueryClient()
+    const queryClient = createTestQueryClient()
     queryClient.setQueryData(elbv2LoadBalancersQueryOptions.queryKey, {
       $metadata: {},
     })
     queryClient.setQueryData(elbv2LoadBalancerQueryOptions(arn).queryKey, {
       $metadata: {},
     })
-    const { result } = renderHook(() => useDeleteLoadBalancer(), { wrapper })
+
+    const { result } = renderMutationHook(
+      () => useDeleteLoadBalancer(),
+      queryClient,
+    )
 
     result.current.mutate(arn)
 
@@ -145,8 +127,7 @@ describe("useDeleteLoadBalancer", () => {
 
 describe("useDeleteTargetGroup", () => {
   it("sends DeleteTargetGroupCommand with target group ARN", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteTargetGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteTargetGroup())
 
     result.current.mutate("arn:aws:elasticloadbalancing:tg/app/foo/abc")
 
@@ -179,8 +160,7 @@ describe("useCreateTargetGroup", () => {
   }
 
   it("sends CreateTargetGroupCommand with form data and hardcoded instance target type", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateTargetGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateTargetGroup())
 
     result.current.mutate(baseParams)
 
@@ -206,8 +186,7 @@ describe("useCreateTargetGroup", () => {
   })
 
   it("passes non-empty tags through and skips empty keys", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateTargetGroup(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateTargetGroup())
 
     result.current.mutate({
       ...baseParams,
@@ -228,8 +207,7 @@ describe("useCreateTargetGroup", () => {
 
 describe("useCreateListener", () => {
   it("sends CreateListenerCommand with forward default action", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useCreateListener(), { wrapper })
+    const { result } = renderMutationHook(() => useCreateListener())
 
     result.current.mutate({
       loadBalancerArn: "arn:lb:1",
@@ -252,8 +230,7 @@ describe("useCreateListener", () => {
 
 describe("useRegisterTargets", () => {
   it("sends RegisterTargetsCommand with id-only targets when port omitted", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useRegisterTargets(), { wrapper })
+    const { result } = renderMutationHook(() => useRegisterTargets())
 
     result.current.mutate({
       targetGroupArn: TG_ARN,
@@ -273,8 +250,7 @@ describe("useRegisterTargets", () => {
   })
 
   it("passes per-target port override through", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useRegisterTargets(), { wrapper })
+    const { result } = renderMutationHook(() => useRegisterTargets())
 
     result.current.mutate({
       targetGroupArn: TG_ARN,
@@ -292,8 +268,7 @@ describe("useRegisterTargets", () => {
 
 describe("useDeregisterTargets", () => {
   it("sends DeregisterTargetsCommand with target id and port", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeregisterTargets(), { wrapper })
+    const { result } = renderMutationHook(() => useDeregisterTargets())
 
     result.current.mutate({
       targetGroupArn: TG_ARN,
@@ -312,8 +287,7 @@ describe("useDeregisterTargets", () => {
 
 describe("useDeleteListener", () => {
   it("sends DeleteListenerCommand with listener ARN", async () => {
-    createQueryClient()
-    const { result } = renderHook(() => useDeleteListener(), { wrapper })
+    const { result } = renderMutationHook(() => useDeleteListener())
 
     result.current.mutate("arn:listener:1")
 
@@ -356,7 +330,6 @@ describe("useCreateLoadBalancerWizard", () => {
   }
 
   it("creates TG → LB → Listener on happy path with new target group", async () => {
-    createQueryClient()
     mockSend.mockReset()
     mockSend
       .mockResolvedValueOnce({
@@ -367,9 +340,7 @@ describe("useCreateLoadBalancerWizard", () => {
       })
       .mockResolvedValueOnce({})
 
-    const { result } = renderHook(() => useCreateLoadBalancerWizard(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useCreateLoadBalancerWizard())
 
     result.current.mutate({
       lb: lbBase,
@@ -391,7 +362,6 @@ describe("useCreateLoadBalancerWizard", () => {
   })
 
   it("skips TG creation when mode=existing", async () => {
-    createQueryClient()
     mockSend.mockReset()
     mockSend
       .mockResolvedValueOnce({
@@ -399,9 +369,7 @@ describe("useCreateLoadBalancerWizard", () => {
       })
       .mockResolvedValueOnce({})
 
-    const { result } = renderHook(() => useCreateLoadBalancerWizard(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useCreateLoadBalancerWizard())
 
     result.current.mutate({
       lb: lbBase,
@@ -421,7 +389,6 @@ describe("useCreateLoadBalancerWizard", () => {
   })
 
   it("surfaces partial creation when LB step fails", async () => {
-    createQueryClient()
     mockSend.mockReset()
     mockSend
       .mockResolvedValueOnce({
@@ -429,9 +396,7 @@ describe("useCreateLoadBalancerWizard", () => {
       })
       .mockRejectedValueOnce(new Error("lb boom"))
 
-    const { result } = renderHook(() => useCreateLoadBalancerWizard(), {
-      wrapper,
-    })
+    const { result } = renderMutationHook(() => useCreateLoadBalancerWizard())
 
     result.current.mutate({
       lb: lbBase,

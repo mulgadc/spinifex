@@ -1,5 +1,4 @@
 import {
-  type Tag,
   AddTagsToResourceCommand,
   CreateDBInstanceCommand,
   CreateDBParameterGroupCommand,
@@ -29,6 +28,7 @@ import type {
   ParameterUpdate,
   RestoreDBInstanceFormData,
 } from "@/types/rds"
+import { type TagFormData, diffTags, toSdkTags } from "@/types/tags"
 
 const DB_INSTANCES_KEY = ["rds", "dbInstances"]
 const DB_SNAPSHOTS_KEY = ["rds", "dbSnapshots"]
@@ -40,14 +40,6 @@ const PARAMETER_GROUPS_KEY = ["rds", "parameterGroups"]
 // rejects several parameters on sight, and an empty string is still a value.
 function optional(value: string): string | undefined {
   return value.length > 0 ? value : undefined
-}
-
-function toTags(tags: { key: string; value: string }[]): Tag[] | undefined {
-  const set = tags.flatMap((t) =>
-    t.key.length > 0 ? [{ Key: t.key, Value: t.value }] : [],
-  )
-
-  return set.length > 0 ? set : undefined
 }
 
 export function useCreateDBInstance() {
@@ -75,7 +67,7 @@ export function useCreateDBInstance() {
         BackupRetentionPeriod: params.backupRetentionPeriod,
         PreferredBackupWindow: optional(params.preferredBackupWindow),
         PreferredMaintenanceWindow: optional(params.preferredMaintenanceWindow),
-        Tags: toTags(params.tags),
+        Tags: toSdkTags(params.tags),
       })
 
       return await getRdsClient().send(command)
@@ -219,7 +211,7 @@ export function useCreateDBSnapshot() {
       const command = new CreateDBSnapshotCommand({
         DBSnapshotIdentifier: params.dbSnapshotIdentifier,
         DBInstanceIdentifier: params.dbInstanceIdentifier,
-        Tags: toTags(params.tags),
+        Tags: toSdkTags(params.tags),
       })
 
       return await getRdsClient().send(command)
@@ -274,7 +266,7 @@ export function useRestoreDBInstanceFromDBSnapshot() {
             : undefined,
         DBParameterGroupName: optional(params.dbParameterGroupName),
         DeletionProtection: params.deletionProtection,
-        Tags: toTags(params.tags),
+        Tags: toSdkTags(params.tags),
       })
 
       return await getRdsClient().send(command)
@@ -294,7 +286,7 @@ export function useCreateDBSubnetGroup() {
         DBSubnetGroupName: params.dbSubnetGroupName,
         DBSubnetGroupDescription: params.dbSubnetGroupDescription,
         SubnetIds: params.subnetIds,
-        Tags: toTags(params.tags),
+        Tags: toSdkTags(params.tags),
       })
 
       return await getRdsClient().send(command)
@@ -331,7 +323,7 @@ export function useCreateDBParameterGroup() {
         DBParameterGroupName: params.dbParameterGroupName,
         DBParameterGroupFamily: params.dbParameterGroupFamily,
         Description: params.description,
-        Tags: toTags(params.tags),
+        Tags: toSdkTags(params.tags),
       })
 
       return await getRdsClient().send(command)
@@ -396,7 +388,7 @@ export function useDeleteDBParameterGroup() {
 
 export interface UpdateRdsTagsParams {
   resourceName: string
-  tags: { key: string; value: string }[]
+  tags: TagFormData[]
   initialKeys: string[]
 }
 
@@ -408,15 +400,14 @@ export function useUpdateRdsTags() {
 
   return useMutation({
     mutationFn: async (params: UpdateRdsTagsParams) => {
-      const finalKeys = new Set(params.tags.map((t) => t.key))
-      const toRemove = params.initialKeys.filter((k) => !finalKeys.has(k))
+      const { toSet, toRemove } = diffTags(params.tags, params.initialKeys)
       const client = getRdsClient()
 
-      if (params.tags.length > 0) {
+      if (toSet) {
         await client.send(
           new AddTagsToResourceCommand({
             ResourceName: params.resourceName,
-            Tags: params.tags.map((t) => ({ Key: t.key, Value: t.value })),
+            Tags: toSet,
           }),
         )
       }

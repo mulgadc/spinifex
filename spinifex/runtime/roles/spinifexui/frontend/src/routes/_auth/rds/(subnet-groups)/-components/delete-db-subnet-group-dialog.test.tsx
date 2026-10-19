@@ -1,16 +1,15 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const mockSend = vi.fn().mockResolvedValue({})
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", () => ({
-  getRdsClient: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 import { DeleteDBSubnetGroupDialog } from "./delete-db-subnet-group-dialog"
 

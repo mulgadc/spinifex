@@ -13,26 +13,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { SignedFetchOptions } from "@/lib/signed-fetch"
 
 const mockStsSend = vi.fn()
-const mockAwsSend = vi.fn()
+const mockAwsSend = vi.hoisted(() => vi.fn())
 const mockSignedFetch = vi.fn<(opts: SignedFetchOptions) => Promise<unknown>>()
-
-function stubAwsClient() {
-  return { send: mockAwsSend }
-}
 
 vi.mock("@/lib/sts", () => ({
   getStsClient: () => ({ send: mockStsSend }),
 }))
 
-vi.mock("@/lib/awsClient", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/awsClient")>()
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return Object.fromEntries(
-    Object.entries(actual).map(([name, value]) => [
-      name,
-      name.startsWith("get") ? stubAwsClient : value,
-    ]),
-  )
+  return mockAwsClients(mockAwsSend)
 })
 
 vi.mock("@/lib/signed-fetch", () => ({
@@ -56,7 +47,7 @@ vi.mock("@/lib/auth", async (importOriginal) => {
 
 import { ThemeProvider } from "@/components/theme-provider"
 import { SidebarProvider } from "@/components/ui/sidebar"
-import { createTestQueryClient } from "@/test/elbv2-integration"
+import { createTestQueryClient } from "@/test/render"
 
 import { routeTree } from "../../../routeTree.gen"
 

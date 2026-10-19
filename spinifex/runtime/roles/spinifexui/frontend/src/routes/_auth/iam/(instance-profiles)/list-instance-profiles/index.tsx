@@ -1,10 +1,11 @@
-import type { InstanceProfile } from "@aws-sdk/client-iam"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { createFileRoute, Link } from "@tanstack/react-router"
 
 import { ListCard } from "@/components/list-card"
 import { PageHeading } from "@/components/page-heading"
+import { ResourceList } from "@/components/resource-list"
 import { Button } from "@/components/ui/button"
+import { byName } from "@/lib/utils"
 import { iamInstanceProfilesQueryOptions } from "@/queries/iam"
 
 export const Route = createFileRoute(
@@ -25,12 +26,9 @@ export const Route = createFileRoute(
 function InstanceProfiles() {
   const { data } = useSuspenseQuery(iamInstanceProfilesQueryOptions)
 
-  const profiles = (data.InstanceProfiles ?? []).toSorted((a, b) => {
-    const nameA = a.InstanceProfileName?.toLowerCase() ?? ""
-    const nameB = b.InstanceProfileName?.toLowerCase() ?? ""
-
-    return nameA.localeCompare(nameB)
-  })
+  const profiles = (data.InstanceProfiles ?? []).toSorted(
+    byName((p) => p.InstanceProfileName),
+  )
 
   return (
     <>
@@ -43,27 +41,19 @@ function InstanceProfiles() {
         title="Instance Profiles"
       />
 
-      {profiles.length > 0 ? (
-        <div className="space-y-4">
-          {profiles.map((profile: InstanceProfile) => {
-            if (!profile.InstanceProfileName) {
-              return null
-            }
-
-            return (
-              <ListCard
-                key={profile.InstanceProfileName}
-                params={{ instanceProfileName: profile.InstanceProfileName }}
-                subtitle={profile.Arn ?? ""}
-                title={profile.InstanceProfileName}
-                to="/iam/list-instance-profiles/$instanceProfileName"
-              />
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground">No instance profiles found.</p>
-      )}
+      <ResourceList
+        empty="No instance profiles found."
+        getKey={(profile) => profile.InstanceProfileName}
+        items={profiles}
+        renderItem={(profile, instanceProfileName) => (
+          <ListCard
+            params={{ instanceProfileName }}
+            subtitle={profile.Arn ?? ""}
+            title={instanceProfileName}
+            to="/iam/list-instance-profiles/$instanceProfileName"
+          />
+        )}
+      />
     </>
   )
 }

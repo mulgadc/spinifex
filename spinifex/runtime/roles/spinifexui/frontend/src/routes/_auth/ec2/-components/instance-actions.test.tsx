@@ -2,7 +2,7 @@ import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import { renderWithProviders } from "@/test/utils"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 import { InstanceActions } from "./instance-actions"
 
@@ -24,8 +24,9 @@ vi.mock("@/mutations/ec2", () => ({
 describe("InstanceActions", () => {
   describe("running instance", () => {
     it("shows Stop, Reboot, and Terminate buttons", () => {
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="running" />,
+        createTestQueryClient(),
       )
       expect(screen.getByText("Stop")).toBeInTheDocument()
       expect(screen.getByText("Reboot")).toBeInTheDocument()
@@ -35,8 +36,9 @@ describe("InstanceActions", () => {
 
     it("calls stop mutation on click", async () => {
       const user = userEvent.setup()
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="running" />,
+        createTestQueryClient(),
       )
       await user.click(screen.getByText("Stop"))
       expect(mockMutate).toHaveBeenCalledWith("i-123")
@@ -45,8 +47,9 @@ describe("InstanceActions", () => {
 
   describe("stopped instance", () => {
     it("shows Start and Terminate buttons", () => {
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="stopped" />,
+        createTestQueryClient(),
       )
       expect(screen.getByText("Start")).toBeInTheDocument()
       expect(screen.getByText("Terminate")).toBeInTheDocument()
@@ -59,8 +62,9 @@ describe("InstanceActions", () => {
     it.each(["pending", "stopping", "shutting-down"])(
       "shows transitioning message for '%s' state",
       (state) => {
-        renderWithProviders(
+        renderWithClient(
           <InstanceActions instanceId="i-123" state={state} />,
+          createTestQueryClient(),
         )
         expect(screen.getByText(TRANSITIONING_RE)).toBeInTheDocument()
         expect(screen.queryByText("Start")).not.toBeInTheDocument()
@@ -71,8 +75,9 @@ describe("InstanceActions", () => {
 
   describe("terminated instance", () => {
     it("shows terminated message", () => {
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="terminated" />,
+        createTestQueryClient(),
       )
       expect(screen.getByText(TERMINATED_RE)).toBeInTheDocument()
     })
@@ -81,8 +86,9 @@ describe("InstanceActions", () => {
   describe("terminate confirmation", () => {
     it("does not call mutation when Terminate button is clicked", async () => {
       const user = userEvent.setup()
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="running" />,
+        createTestQueryClient(),
       )
       await user.click(screen.getByText("Terminate"))
       expect(mockMutate).not.toHaveBeenCalled()
@@ -90,8 +96,9 @@ describe("InstanceActions", () => {
 
     it("opens confirmation dialog showing instance ID on Terminate click", async () => {
       const user = userEvent.setup()
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="running" />,
+        createTestQueryClient(),
       )
       await user.click(screen.getByText("Terminate"))
       expect(screen.getByText(TERMINATE_CONFIRM_RE)).toBeInTheDocument()
@@ -100,8 +107,9 @@ describe("InstanceActions", () => {
 
     it("calls terminate mutation only after confirming", async () => {
       const user = userEvent.setup()
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="running" />,
+        createTestQueryClient(),
       )
       await user.click(screen.getByText("Terminate"))
       const dialog = screen.getByRole("alertdialog")
@@ -116,8 +124,9 @@ describe("InstanceActions", () => {
 
     it("closes dialog without calling mutation when Cancel clicked", async () => {
       const user = userEvent.setup()
-      renderWithProviders(
+      renderWithClient(
         <InstanceActions instanceId="i-123" state="running" />,
+        createTestQueryClient(),
       )
       await user.click(screen.getByText("Terminate"))
       await user.click(screen.getByText("Cancel"))

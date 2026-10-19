@@ -1,1 +1,0 @@
-import{F as e,R as t}from"./httpRequest-DMCevR5j.js";import{i as n}from"./link-D7Q_hBRX.js";var r=t(e(),1);function i(e){let t=n();return r.useCallback(n=>t.navigate({...n,from:n.from??e?.from}),[e?.from,t])}export{i as t};

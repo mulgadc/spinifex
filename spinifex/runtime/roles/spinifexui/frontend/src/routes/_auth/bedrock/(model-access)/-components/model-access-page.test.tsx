@@ -26,10 +26,7 @@ import {
   type AccountSummary,
   type AdminCatalogEntry,
 } from "@/queries/admin"
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 import { ModelAccessPage } from "./model-access-page"
 

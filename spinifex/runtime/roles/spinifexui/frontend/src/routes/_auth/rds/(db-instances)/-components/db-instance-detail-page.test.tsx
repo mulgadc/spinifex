@@ -3,28 +3,20 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { formatDateTime } from "@/lib/utils"
-import {
-  createTestQueryClient,
-  renderWithClient,
-} from "@/test/elbv2-integration"
+import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const mockSend = vi.fn().mockResolvedValue({})
+const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", () => ({
-  getRdsClient: () => ({ send: mockSend }),
-  getEc2Client: () => ({ send: mockSend }),
-}))
+vi.mock("@/lib/awsClient", async () => {
+  const { mockAwsClients } = await import("@/test/aws-clients")
+
+  return mockAwsClients(mockSend)
+})
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tanstack/react-router")>()
+  const { mockRouter } = await import("@/test/router")
 
-  return {
-    ...actual,
-    useNavigate: () => vi.fn(),
-    Link: ({ children, to }: { children: React.ReactNode; to?: string }) => (
-      <a href={to}>{children}</a>
-    ),
-  }
+  return await mockRouter(importOriginal)
 })
 
 import { DBInstanceDetailPage } from "./db-instance-detail-page"

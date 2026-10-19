@@ -1,4 +1,4 @@
-import type { Subnet, Vpc } from "@aws-sdk/client-ec2"
+import type { Subnet } from "@aws-sdk/client-ec2"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
@@ -33,7 +33,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { getNameTag, securityGroupLabel } from "@/lib/utils"
+import { VpcSelectField } from "@/components/vpc-select-field"
+import { WizardFailureBanner } from "@/components/wizard-failure-banner"
+import { arnResourceId, getNameTag, securityGroupLabel } from "@/lib/utils"
 import {
   type LbWizardResult,
   useCreateLoadBalancerWizard,
@@ -61,16 +63,6 @@ import {
   isSecureProtocol,
   protocolsForType,
 } from "@/types/elbv2"
-
-function vpcLabel(vpc: Vpc): string {
-  const name = getNameTag(vpc.Tags)
-
-  if (name) {
-    return `${vpc.VpcId} (${name})`
-  }
-
-  return `${vpc.VpcId} (${vpc.CidrBlock})`
-}
 
 function subnetLabel(subnet: Subnet): string {
   const name = getNameTag(subnet.Tags)
@@ -345,31 +337,10 @@ export function CreateLoadBalancerPage() {
         />
       )}
 
-      {wizardResult?.error && (
-        <div className="mb-6 max-w-4xl rounded-md border border-destructive bg-destructive/10 p-4">
-          <h2 className="text-sm font-medium text-destructive">
-            Wizard failed: {wizardResult.failedStep}
-          </h2>
-          <p className="mt-1 text-sm text-destructive">
-            {wizardResult.error.message}
-          </p>
-          {wizardResult.created.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-medium text-destructive">
-                Successfully created resources (clean up manually if needed):
-              </p>
-              <ul className="mt-1 list-inside list-disc text-xs text-destructive">
-                {wizardResult.created.map((r, i) => (
-                  // oxlint-disable-next-line no-array-index-key -- static failure summary, never reordered or filtered
-                  <li key={i}>
-                    {r.type}: {r.id ?? "(created)"}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
+      <WizardFailureBanner
+        createdHeading="Successfully created resources (clean up manually if needed):"
+        result={wizardResult}
+      />
 
       <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
         <Field>
@@ -457,39 +428,14 @@ export function CreateLoadBalancerPage() {
           />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="lb-vpc">VPC</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="vpcId"
-            render={({ field }) => (
-              <Select
-                onValueChange={(v) => {
-                  handleVpcChange(v)
-                }}
-                value={field.value ?? ""}
-              >
-                <SelectTrigger
-                  aria-invalid={!!errors.vpcId}
-                  className="w-full"
-                  id="lb-vpc"
-                >
-                  <SelectValue placeholder="Select VPC" />
-                </SelectTrigger>
-                <SelectContent>
-                  {vpcs.map((vpc) => (
-                    <SelectItem key={vpc.VpcId} value={vpc.VpcId ?? ""}>
-                      {vpcLabel(vpc)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.vpcId]} />
-        </Field>
+        <VpcSelectField
+          control={control}
+          id="lb-vpc"
+          name="vpcId"
+          onValueChange={handleVpcChange}
+          placeholder="Select VPC"
+          vpcs={vpcs}
+        />
 
         <Field>
           <FieldTitle>Subnets (select at least 1)</FieldTitle>
@@ -639,7 +585,7 @@ export function CreateLoadBalancerPage() {
                             value={cert.CertificateArn ?? ""}
                           >
                             {cert.DomainName ??
-                              cert.CertificateArn?.split("/").pop()}
+                              arnResourceId(cert.CertificateArn)}
                           </SelectItem>
                         ))}
                       </SelectContent>

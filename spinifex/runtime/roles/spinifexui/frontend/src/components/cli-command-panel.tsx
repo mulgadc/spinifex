@@ -36,6 +36,13 @@ export function cliPlaceholder(value: string, name: string): string {
   return value.length > 0 ? value : `<${name}>`
 }
 
+// Wraps a value in single quotes for a POSIX shell. A single quote cannot be
+// escaped inside them, so each one ends the string, is emitted double-quoted,
+// and the string reopens.
+export function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`
+}
+
 export function commandFlag(
   flag: string,
   value: string | number,

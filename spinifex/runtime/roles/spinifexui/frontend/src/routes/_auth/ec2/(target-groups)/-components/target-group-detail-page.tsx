@@ -11,10 +11,10 @@ import {
   AttributesEditor,
   targetGroupAttributeSpecs,
 } from "@/components/elbv2/attributes-editor"
-import { TagsEditor } from "@/components/elbv2/tags-editor"
 import { TargetsTab } from "@/components/elbv2/targets-tab"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
+import { TagsEditor } from "@/components/tags-editor"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs"
 import {

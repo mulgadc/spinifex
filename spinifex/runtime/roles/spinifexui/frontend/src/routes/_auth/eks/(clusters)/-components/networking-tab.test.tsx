@@ -1,28 +1,12 @@
 import type { Cluster } from "@aws-sdk/client-eks"
 import { render, screen } from "@testing-library/react"
-import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({
-    children,
-    to,
-    params,
-    className,
-  }: {
-    children: ReactNode
-    to: string
-    params?: { id?: string }
-    className?: string
-  }) => (
-    <a
-      className={className}
-      href={params?.id ? to.replace("$id", params.id) : to}
-    >
-      {children}
-    </a>
-  ),
-}))
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const { mockRouter } = await import("@/test/router")
+
+  return await mockRouter(importOriginal)
+})
 
 import { NetworkingTab } from "./networking-tab"
 

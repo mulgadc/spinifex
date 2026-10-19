@@ -124,9 +124,10 @@ func TestCurrentBehaviour_AccountTermination_CreateImageSnapshotDoesNotPinSource
 	assert.Equal(t, "vol-imaged", source, "a launch from the image still resolves the deleted volume")
 }
 
-// DeleteSnapshot consults volumes cloned from the snapshot, not images
-// registered on it, so the snapshot under a live image deletes.
-func TestCurrentBehaviour_AccountTermination_DeleteSnapshotIgnoresRegisteredImage(t *testing.T) {
+// DeleteSnapshot consults AMI documents as well as volumes cloned from the
+// snapshot, so the snapshot under a live image refuses to delete until the
+// image is deregistered.
+func TestAccountTermination_DeleteSnapshotRefusesARegisteredImage(t *testing.T) {
 	s := newStorageServices(t)
 	ctx := context.Background()
 
@@ -146,16 +147,18 @@ func TestCurrentBehaviour_AccountTermination_DeleteSnapshotIgnoresRegisteredImag
 	require.NoError(t, err)
 
 	_, err = s.snapshots.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, ctAccountID)
-	require.NoError(t, err, "the snapshot deletes while an image is registered on it")
+	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse, "the snapshot refuses to delete while an image is registered on it")
 
-	images, err := s.images.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []*string{registered.ImageId}}, ctAccountID)
+	_, err = s.metadata.GetSnapshot(ctx, ctAccountID, snapshotID)
+	assert.NoError(t, err, "the snapshot document is still present")
+	_, held := s.provider.Snapshot(snapshotID)
+	assert.True(t, held, "the provider still holds the snapshot")
+
+	_, err = s.images.DeregisterImage(ctx, &ec2.DeregisterImageInput{ImageId: registered.ImageId}, ctAccountID)
 	require.NoError(t, err)
-	require.Len(t, images.Images, 1)
-	assert.Equal(t, ec2.ImageStateAvailable, aws.StringValue(images.Images[0].State), "the image still reports available")
 
-	_, err = s.images.GetAMISourceVolumeID(ctx, aws.StringValue(registered.ImageId))
-	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotNotFound, "a launch from the image can no longer resolve its snapshot")
-	require.NoError(t, s.deleteVolume("vol-registered"), "with the snapshot gone, the source volume deletes too")
+	_, err = s.snapshots.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, ctAccountID)
+	require.NoError(t, err, "the snapshot deletes once the image is deregistered")
 }
 
 // deleteDuringClone runs a hook once, after the provider has accepted a clone

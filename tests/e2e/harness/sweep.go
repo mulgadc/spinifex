@@ -78,8 +78,10 @@ func (r *SweepReport) errf(format string, args ...any) {
 }
 
 // SweepRunResources deletes every EC2/ELBv2 resource tagged e2e:run=<runID>,
-// in dependency order (load balancers → instances → NAT gateways → snapshots →
-// volumes → images → security groups → subnets → key pairs). It is idempotent
+// in dependency order (load balancers → instances → NAT gateways → images →
+// snapshots → volumes → security groups → subnets → key pairs). Images come
+// before snapshots: DeleteSnapshot now refuses while a registered AMI names
+// the snapshot, so its AMI has to be deregistered first. It is idempotent
 // and best-effort; callers inspect SweepReport but a non-empty Errors list is
 // not necessarily a run failure (resources may already be gone, or still
 // settling). A blank runID returns an empty report without touching anything.
@@ -92,9 +94,9 @@ func SweepRunResources(ec2c ec2iface.EC2API, elbc elbv2iface.ELBV2API, runID str
 	sweepLoadBalancers(elbc, runID, rep)
 	sweepInstances(ec2c, runID, rep)
 	sweepNatGateways(ec2c, runID, rep)
+	sweepImages(ec2c, runID, rep)
 	sweepSnapshots(ec2c, runID, rep)
 	sweepVolumes(ec2c, runID, rep)
-	sweepImages(ec2c, runID, rep)
 	sweepSecurityGroups(ec2c, runID, rep)
 	sweepSubnets(ec2c, runID, rep)
 	sweepKeyPairs(ec2c, runID, rep)

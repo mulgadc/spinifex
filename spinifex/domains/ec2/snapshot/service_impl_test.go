@@ -490,6 +490,101 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	assert.Len(t, result.Snapshots, 1)
 }
 
+// TestDeleteSnapshot_InUseByRegisteredAMI tests that deleting a snapshot
+// fails while an AMI's own CreateImage snapshot still names it, matching AWS.
+func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolume(t, svc, store, "vol-source", 50)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-source"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.metadata.PutAMI(context.Background(), ebsmetadata.AMI{
+		ImageID: "ami-registered", Name: "ct-ami", SnapshotID: *snap.SnapshotId,
+	}))
+
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
+
+	// The provider and control-plane document both survive the refusal.
+	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+		SnapshotIds: []*string{snap.SnapshotId},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, result.Snapshots, 1)
+
+	require.NoError(t, svc.metadata.DeleteAMI(context.Background(), "ami-registered"))
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	require.NoError(t, err, "once the AMI is gone, the delete succeeds")
+}
+
+// TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount tests that the AMI
+// check is whole-cluster: a system AMI registered by a different account than
+// the snapshot's owner still blocks the delete.
+func TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolume(t, svc, store, "vol-source", 50)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-source"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.metadata.PutAMI(context.Background(), ebsmetadata.AMI{
+		ImageID: "ami-other-account", Name: "ct-system-ami",
+		ImageOwnerAlias: otherAccountID, SnapshotID: *snap.SnapshotId,
+	}))
+
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
+}
+
+// TestDeleteSnapshot_AMIReadFailureFailsClosed tests that an AMI document
+// this cannot decode aborts the delete rather than being treated as absent:
+// a partial AMI listing is not evidence that no AMI names the snapshot.
+func TestDeleteSnapshot_AMIReadFailureFailsClosed(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolume(t, svc, store, "vol-source", 50)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-source"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	key, err := ebsmetadata.AMIKey("ami-corrupt")
+	require.NoError(t, err)
+	_, err = store.PutObject(context.Background(), &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String(key),
+		Body:   strings.NewReader("not-json"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
+
+	// Nothing was deleted: the snapshot survives in both the provider and the
+	// control-plane document.
+	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+		SnapshotIds: []*string{snap.SnapshotId},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, result.Snapshots, 1)
+}
+
 // TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot.
 func TestDeleteSnapshot_NotFound(t *testing.T) {
 	svc, _ := setupTestSnapshotService(t)

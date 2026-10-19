@@ -685,6 +685,25 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapsh
 	return false, nil
 }
 
+// amiInUseBySnapshot checks if any registered AMI names the given snapshot as
+// its root device. AWS refuses DeleteSnapshot while a registered AMI
+// references the snapshot, the same way it refuses one backing a volume.
+func (s *SnapshotServiceImpl) amiInUseBySnapshot(ctx context.Context, snapshotID string) (bool, error) {
+	// Whole-cluster and strict for the same reason as the volume check above:
+	// a system AMI can be registered by an account other than the snapshot's
+	// owner, and an AMI this cannot read is not evidence that none exists.
+	amis, err := s.metadata.ListAMIsStrict(ctx)
+	if err != nil {
+		return false, fmt.Errorf("amiInUseBySnapshot: failed to list AMIs: %w", err)
+	}
+	for _, ami := range amis {
+		if ami.SnapshotID == snapshotID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // DeleteSnapshot deletes a snapshot after verifying the caller owns it.
 func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.DeleteSnapshotInput, accountID string) (*ec2.DeleteSnapshotOutput, error) {
 	if input == nil || input.SnapshotId == nil {
@@ -722,6 +741,17 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 	if inUse {
 		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID)
+		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+	}
+
+	// Check if any registered AMI names this snapshot as its root device
+	amiInUse, err := s.amiInUseBySnapshot(ctx, snapshotID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DeleteSnapshot failed to check AMI usage", "snapshotId", snapshotID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if amiInUse {
+		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by registered AMI", "snapshotId", snapshotID)
 		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
 	}
 	if s.provider == nil {

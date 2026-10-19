@@ -17,7 +17,7 @@ BUILD_DIR="$REPO_ROOT/build/microvm"
 INIT_SH="$BUILD_DIR/init.sh"
 INITTAB="$BUILD_DIR/inittab"
 
-ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
+ALPINE_VERSION="${ALPINE_VERSION:-3.24}"
 ALPINE_MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}"
 # haproxy: ALB (L7) data plane. nginx + nginx-mod-stream: NLB (L4) data plane —
 # the `stream` module (a separate Alpine package) load-balances TCP/UDP/TLS,

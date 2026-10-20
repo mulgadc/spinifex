@@ -335,6 +335,32 @@ func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+// A node with no subscriber on its launch subject surfaces as capacity, never the raw NATS error.
+func TestAggregateResults_NoRespondersIsCapacity(t *testing.T) {
+	t.Parallel()
+	noResp := fmt.Errorf("launch on node-1: %w", fmt.Errorf("NATS request to ec2.RunInstances.t3.large.node-1: %w", nats.ErrNoResponders))
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: noResp},
+	}
+
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
+	require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
+}
+
+// A real launch failure on another node outranks a no-responders node.
+func TestAggregateResults_RealFailureOutranksNoResponders(t *testing.T) {
+	t.Parallel()
+	noResp := fmt.Errorf("launch on node-1: %w", nats.ErrNoResponders)
+	timeoutErr := fmt.Errorf("launch on node-2: %w", context.DeadlineExceeded)
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: noResp},
+		{NodeID: "node-2", Err: timeoutErr},
+	}
+
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 // Short launch with no node errors (nodes returned fewer instances than assigned
 // without erroring) keeps the generic capacity code.
 func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {

@@ -227,7 +227,7 @@ func aggregateResults(ctx context.Context, results []nodeLaunchResult, minCount 
 			return nil, clientErr
 		}
 		// A launch that was attempted and failed is not a capacity shortage; surface the real cause.
-		if failErr := launchFailure(results); failErr != nil {
+		if failErr := launchFailure(ctx, results); failErr != nil {
 			slog.ErrorContext(ctx, "distributeInstances: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
 			return nil, failErr
 		}
@@ -321,7 +321,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
 		}
-		if failErr := launchFailure(results); failErr != nil {
+		if failErr := launchFailure(ctx, results); failErr != nil {
 			slog.ErrorContext(ctx, "distributeInstancesSpread: launch fell short of minCount", "minCount", minCount, "launched", totalLaunched, "err", failErr)
 			return nil, failErr
 		}
@@ -414,7 +414,7 @@ func distributeInstancesCluster(ctx context.Context, input *ec2.RunInstancesInpu
 		if clientErr := extractClientError(results); clientErr != nil {
 			return nil, clientErr
 		}
-		return nil, results[0].Err
+		return nil, launchFailure(ctx, results)
 	}
 
 	reservation := results[0].Reservation
@@ -468,17 +468,26 @@ func extractClientError(results []nodeLaunchResult) error {
 	return nil
 }
 
-// launchFailure returns the first node launch error, or nil when no node errored.
-// A sub-minCount launch whose nodes actually errored is not a capacity shortage:
-// genuine capacity is caught pre-launch in distributeInstances, and a node-side
-// capacity race is surfaced by extractClientError. Surfacing the real error (RPC
-// timeout, network/OVN failure) stops it masquerading as
-// InsufficientInstanceCapacity — the mislabel that derails triage.
-func launchFailure(results []nodeLaunchResult) error {
+// launchFailure returns the first real node launch error so an RPC or OVN failure is
+// not mislabelled as capacity; a node with no launch subscriber for the type cannot
+// place it, so when only those failed the result is InsufficientInstanceCapacity.
+func launchFailure(ctx context.Context, results []nodeLaunchResult) error {
+	var noResponders error
 	for _, r := range results {
-		if r.Err != nil {
-			return r.Err
+		if r.Err == nil {
+			continue
 		}
+		if errors.Is(r.Err, nats.ErrNoResponders) {
+			if noResponders == nil {
+				noResponders = r.Err
+			}
+			continue
+		}
+		return r.Err
+	}
+	if noResponders != nil {
+		slog.WarnContext(ctx, "distributeInstances: no launch subscriber on node, reporting InsufficientInstanceCapacity", "err", noResponders)
+		return errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	}
 	return nil
 }

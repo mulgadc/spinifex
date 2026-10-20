@@ -1146,6 +1146,40 @@ func TestDistributeInstancesCluster_InsufficientCapacityOnPinnedNode(t *testing.
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 }
 
+// A pinned node with no launch subscriber reports capacity, not the raw NATS error.
+func TestDistributeInstancesCluster_NoLaunchSubscriberIsCapacity(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	statusSub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
+		data, _ := json.Marshal(types.NodeStatusResponse{Node: "node-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 10}}})
+		_ = nc.Publish(msg.Reply, data)
+	})
+	require.NoError(t, err)
+	defer statusSub.Unsubscribe()
+
+	reserveSub, err := nc.QueueSubscribe("ec2.ReserveClusterNode", "spinifex-workers", func(msg *nats.Msg) {
+		data, _ := json.Marshal(struct {
+			TargetNode string `json:"target_node"`
+		}{TargetNode: "node-1"})
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer reserveSub.Unsubscribe()
+
+	require.NoError(t, nc.Flush())
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-test"),
+		InstanceType: aws.String("t3.micro"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}
+
+	_, err = distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 1)
+	require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
+}
+
 func TestDistributeInstancesCluster_PinnedNodeNotInCapacityResults(t *testing.T) {
 	t.Parallel()
 	// Pinned node has no capacity at all (not in fan-out results) → InsufficientInstanceCapacity

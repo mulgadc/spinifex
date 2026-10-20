@@ -43,7 +43,13 @@ esac
 # Teardown, dry run. Every mutation must go through run(), so a dry run can
 # report the whole plan without performing any of it.
 # --------------------------------------------------------------------------
-out=$("$SETUP" --teardown --dry-run 2>&1) && rc=0 || rc=$?
+# The teardown plans the veth steps only when ovs-vsctl exists and the link is
+# present, so stub both or the order check depends on the machine running it.
+mkdir "$TMP/bin"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/ip"
+cp "$TMP/bin/ip" "$TMP/bin/ovs-vsctl"
+chmod +x "$TMP/bin/ip" "$TMP/bin/ovs-vsctl"
+out=$(PATH="$TMP/bin:$PATH" "$SETUP" --teardown --dry-run 2>&1) && rc=0 || rc=$?
 [ "$rc" = 0 ] && pass "--teardown --dry-run exits 0" || fail "--teardown --dry-run exited $rc, want 0"
 
 case "$out" in

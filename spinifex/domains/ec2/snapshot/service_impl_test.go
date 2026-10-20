@@ -205,9 +205,9 @@ func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 		VolumeID: "vol-fromsnap", CapacityGiB: 50, SnapshotID: "snap-src", Encrypted: true,
 	})
 
-	inUse, err := svc.snapshotInUseByVolumes(context.Background(), "snap-src")
+	volumeID, err := svc.snapshotInUseByVolumes(context.Background(), "snap-src")
 	require.NoError(t, err)
-	assert.True(t, inUse, "encrypted volume's SnapshotID must be visible through the envelope")
+	assert.Equal(t, "vol-fromsnap", volumeID, "encrypted volume's SnapshotID must be visible through the envelope")
 }
 
 // TestCreateSnapshot_VolumeNotFound tests creating a snapshot from non-existent volume.
@@ -459,6 +459,18 @@ func TestDeleteSnapshot_WrongAccount(t *testing.T) {
 	assert.Len(t, result.Snapshots, 1)
 }
 
+// clientErrorDetail returns the code and message the gateway renders for err:
+// a message attached at the call site, else the code's registered EC2 wording.
+func clientErrorDetail(t *testing.T, err error) (string, string) {
+	t.Helper()
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unregistered error: %v", err)
+	if message == "" {
+		message = awserrors.LookupErrorMessage("ec2", code).Message
+	}
+	return code, message
+}
+
 // TestDeleteSnapshot_InUseByVolume tests that deleting a snapshot fails when a volume was created from it.
 func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
@@ -480,7 +492,9 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 		SnapshotId: snap.SnapshotId,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.Equal(t, "The snapshot '"+*snap.SnapshotId+"' is in use by volume 'vol-cloned'.", message)
 
 	// Verify snapshot still exists
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
@@ -509,7 +523,9 @@ func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
 		SnapshotId: snap.SnapshotId,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.Equal(t, "The snapshot that you are trying to delete is in use by one or more AMIs.", message)
 
 	// The provider and control-plane document both survive the refusal.
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
@@ -1169,7 +1185,7 @@ func TestDeleteSnapshot_Provider_BlockedByCloneRecordedInMetadata(t *testing.T) 
 	}))
 
 	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidSnapshotInUse), "got %v", err)
 
 	// Once the clone is gone the snapshot is deletable again.
 	require.NoError(t, svc.metadata.DeleteVolume(ctx, testAccountID, "vol-clone"))

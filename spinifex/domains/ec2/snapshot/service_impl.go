@@ -662,10 +662,10 @@ func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]strin
 	return awsfilters.MatchesTags(filters, cfg.Tags)
 }
 
-// snapshotInUseByVolumes checks if any volume was created from the given
-// snapshot. A clone records its source in its ebsmetadata document; missing one
-// here would let a delete strip the chunks a live clone still reads.
-func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID string) (bool, error) {
+// snapshotInUseByVolumes returns the ID of a volume created from the given
+// snapshot, or "" if none. A clone records its source in its ebsmetadata
+// document; missing one here would let a delete strip chunks it still reads.
+func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID string) (string, error) {
 	// Whole-cluster, and not scoping this to the snapshot's own account is the
 	// point: launching from a system AMI writes a root volume owned by the
 	// launching tenant whose SnapshotID is the system snapshot, so a clone
@@ -675,14 +675,14 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapsh
 	// the snapshot's chunks, and this answer gates deleting them.
 	volumes, err := s.metadata.ListAllVolumesStrict(ctx)
 	if err != nil {
-		return false, fmt.Errorf("snapshotInUseByVolumes: failed to list volumes: %w", err)
+		return "", fmt.Errorf("snapshotInUseByVolumes: failed to list volumes: %w", err)
 	}
 	for _, volume := range volumes {
 		if volume.SnapshotID == snapshotID {
-			return true, nil
+			return volume.VolumeID, nil
 		}
 	}
-	return false, nil
+	return "", nil
 }
 
 // amiInUseBySnapshot checks if any registered AMI names the given snapshot as
@@ -734,14 +734,15 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 
 	// Check if any volumes were created from this snapshot
-	inUse, err := s.snapshotInUseByVolumes(ctx, snapshotID)
+	volumeID, err := s.snapshotInUseByVolumes(ctx, snapshotID)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if inUse {
-		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID)
-		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+	if volumeID != "" {
+		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by volume", "snapshotId", snapshotID, "volumeId", volumeID)
+		// The registered message blames AMIs, so name the volume instead.
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidSnapshotInUse, "The snapshot '%s' is in use by volume '%s'.", snapshotID, volumeID)
 	}
 
 	// Check if any registered AMI names this snapshot as its root device

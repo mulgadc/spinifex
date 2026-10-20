@@ -41,12 +41,12 @@ func AcquireLeader(ctx context.Context, nc *nats.Conn, bucket, holder string) (f
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "reconcile/lock: lease config invalid",
-			"holder", holder, "bucket", bucket, "err", err)
+			"node", holder, "bucket", bucket, "err", err)
 		return nil, false
 	}
 	if !lease.TryAcquire(ctx) {
 		slog.InfoContext(ctx, "reconcile/lock: not leader, skipping reconcile",
-			"holder", holder, "bucket", bucket)
+			"node", holder, "bucket", bucket)
 		return nil, false
 	}
 	return func() { lease.Release(ctx) }, true

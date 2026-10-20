@@ -18,7 +18,10 @@ import (
 // context and so cannot inherit the caller's deadline.
 const releaseTimeout = 5 * time.Second
 
-var errNotHolder = errors.New("kvlease: another node holds the lease")
+// heldError reports the node that owns the key when a claim loses to it.
+type heldError struct{ holder string }
+
+func (e *heldError) Error() string { return "kvlease: lease held by " + e.holder }
 
 // BucketFunc returns the KV bucket holding the lease key. It is injected because
 // each subsystem initialises its own bucket, some with migrations attached.
@@ -83,10 +86,11 @@ func (l *Lease) Held() bool {
 	return l.held
 }
 
-// logArgs prefixes the lease identity onto a log line's own fields.
+// logArgs prefixes the lease identity onto a log line's own fields. The local
+// node logs as "node"; "holder" is reserved for whoever owns the key.
 func (l *Lease) logArgs(extra ...any) []any {
 	args := make([]any, 0, 4+len(l.cfg.Attrs)+len(extra))
-	args = append(args, "lease", l.cfg.Name, "holder", l.cfg.Holder)
+	args = append(args, "lease", l.cfg.Name, "node", l.cfg.Holder)
 	args = append(args, l.cfg.Attrs...)
 	return append(args, extra...)
 }
@@ -104,6 +108,9 @@ func (l *Lease) TryAcquire(ctx context.Context) bool {
 	}
 	rev, err := l.claim(ctx, kv)
 	if err != nil {
+		if held, ok := errors.AsType[*heldError](err); ok {
+			slog.DebugContext(ctx, "kvlease: held by another node", l.logArgs("holder", held.holder)...)
+		}
 		return false
 	}
 
@@ -142,7 +149,7 @@ func (l *Lease) claim(ctx context.Context, kv jetstream.KeyValue) (uint64, error
 		return 0, gerr
 	}
 	if string(entry.Value()) != l.cfg.Holder {
-		return 0, errNotHolder
+		return 0, &heldError{holder: string(entry.Value())}
 	}
 	return kv.Update(ctx, l.cfg.Key, []byte(l.cfg.Holder), entry.Revision())
 }

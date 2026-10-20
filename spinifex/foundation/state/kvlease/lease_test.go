@@ -3,6 +3,7 @@ package kvlease_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync/atomic"
@@ -387,4 +388,50 @@ func TestRelease_AfterRenewalLossWarns(t *testing.T) {
 
 	a.Release(t.Context())
 	assert.Contains(t, buf.String(), "already lost before release")
+}
+
+// logLines captures default-logger output as decoded JSON records.
+func logLines(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return func() []map[string]any {
+		var out []map[string]any
+		dec := json.NewDecoder(&buf)
+		for dec.More() {
+			var rec map[string]any
+			require.NoError(t, dec.Decode(&rec))
+			out = append(out, rec)
+		}
+		return out
+	}
+}
+
+// "holder" must name whoever owns the key. The local node logs as "node", so a
+// loser's log does not read as though it won.
+func TestLogFields_SeparateLocalNodeFromCurrentHolder(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	read := logLines(t)
+
+	a := newTestLease(t, nc, "node-a", nil)
+	require.True(t, a.TryAcquire(t.Context()))
+	t.Cleanup(func() { a.Release(t.Context()) })
+	b := newTestLease(t, nc, "node-b", nil)
+	require.False(t, b.TryAcquire(t.Context()))
+
+	var elected, refused map[string]any
+	for _, rec := range read() {
+		switch {
+		case rec["msg"] == "kvlease: elected" && rec["node"] == "node-a":
+			elected = rec
+		case rec["node"] == "node-b":
+			refused = rec
+		}
+	}
+	require.NotNil(t, elected, "the elected line must carry the local node as node")
+	assert.NotContains(t, elected, "holder")
+	require.NotNil(t, refused, "a refused acquire must log the local node as node")
+	assert.Equal(t, "node-a", refused["holder"], "a refused acquire must report the node that holds the key")
 }

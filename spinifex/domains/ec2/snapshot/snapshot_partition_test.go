@@ -270,7 +270,7 @@ func TestDeleteSnapshot_BlockedByACloneInAnotherAccount(t *testing.T) {
 
 	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, awsidentifiers.GlobalAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidSnapshotInUse), "got %v", err)
 }
 
 // The irreversible case. The teardown reaper lists with OwnerIds set to the

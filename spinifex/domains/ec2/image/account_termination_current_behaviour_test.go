@@ -200,7 +200,7 @@ func TestCurrentBehaviour_AccountTermination_DeleteSnapshotDuringCloneCreationSt
 	require.NoError(t, err)
 	_, err = createFrom(aws.StringValue(settled.SnapshotId))
 	require.NoError(t, err)
-	assert.EqualError(t, deleteSnapshot(aws.StringValue(settled.SnapshotId)), awserrors.ErrorInvalidSnapshotInUse,
+	assert.True(t, awserrors.IsErrorCode(deleteSnapshot(aws.StringValue(settled.SnapshotId)), awserrors.ErrorInvalidSnapshotInUse),
 		"once the clone's document exists, the delete is refused")
 
 	s.seedVolume(t, "vol-raced")

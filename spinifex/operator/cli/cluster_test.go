@@ -541,3 +541,39 @@ func TestReportGuestsLeftRunningSevereLogsErrorAndNamesGuests(t *testing.T) {
 	assert.Contains(t, out, "i-abandoned")
 	assert.NotContains(t, out, "i-stopped")
 }
+
+// shutdownACKResponder answers each request on topic with one ACK per entry
+// in nodes, so a repeated name simulates one node replying twice.
+func shutdownACKResponder(t *testing.T, nc *nats.Conn, topic string, nodes ...string) {
+	t.Helper()
+	sub, err := nc.Subscribe(topic, func(msg *nats.Msg) {
+		for _, node := range nodes {
+			body, _ := json.Marshal(daemon.ShutdownACK{Node: node, Phase: "gate"})
+			_ = msg.Respond(body)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+func TestCollectShutdownACKsCountsADuplicateNodeOnce(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	shutdownACKResponder(t, nc, "test.shutdown.dup", "node1", "node1")
+
+	acks, err := collectShutdownACKs(nc, "test.shutdown.dup", []byte(`{}`), 2, "", 300*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, acks, 1, "a second ACK from node1 must not stand in for the silent node2")
+	assert.Equal(t, "node1", acks[0].Node)
+}
+
+func TestCollectShutdownACKsNodeFilterIgnoresOtherNodes(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	shutdownACKResponder(t, nc, "test.shutdown.filter", "node2", "node1", "node1")
+
+	acks, err := collectShutdownACKs(nc, "test.shutdown.filter", []byte(`{}`), 1, "node1", 300*time.Millisecond)
+	require.NoError(t, err)
+	require.Len(t, acks, 1)
+	assert.Equal(t, "node1", acks[0].Node)
+}

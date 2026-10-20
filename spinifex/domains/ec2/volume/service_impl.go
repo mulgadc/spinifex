@@ -289,6 +289,7 @@ var describeVolumesValidFilters = map[string]bool{
 	"attachment.status":      true,
 	"attachment.device":      true,
 	"availability-zone":      true,
+	"snapshot-id":            true,
 }
 
 // DescribeVolumes lists EBS volumes by reading config.json files from S3.
@@ -400,6 +401,10 @@ func volumeMatchesFilters(vol *ec2.Volume, filters map[string][]string) bool {
 		case "availability-zone":
 			if vol.AvailabilityZone != nil {
 				field = *vol.AvailabilityZone
+			}
+		case "snapshot-id":
+			if vol.SnapshotId != nil {
+				field = *vol.SnapshotId
 			}
 		default:
 			return false

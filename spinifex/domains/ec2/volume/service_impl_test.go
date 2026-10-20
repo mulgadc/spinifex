@@ -2081,6 +2081,40 @@ func TestDescribeVolumes_FilterByAZ(t *testing.T) {
 	assert.Equal(t, "vol-az1", *out.Volumes[0].VolumeId)
 }
 
+func TestDescribeVolumes_FilterBySnapshotId(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	createVolumeInStoreWithMeta(t, svc, store, "vol-fromsnap", ebsmetadata.Volume{
+		VolumeID: "vol-fromsnap", CapacityGiB: 10, State: "available",
+		SnapshotID: "snap-src", TenantID: "000000000001",
+	})
+	createVolumeInStoreWithMeta(t, svc, store, "vol-othersnap", ebsmetadata.Volume{
+		VolumeID: "vol-othersnap", CapacityGiB: 10, State: "available",
+		SnapshotID: "snap-other", TenantID: "000000000001",
+	})
+	createVolumeInStoreWithMeta(t, svc, store, "vol-blank", ebsmetadata.Volume{
+		VolumeID: "vol-blank", CapacityGiB: 10, State: "available", TenantID: "000000000001",
+	})
+
+	describe := func(values ...string) []string {
+		t.Helper()
+		out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
+			Filters: []*ec2.Filter{{Name: aws.String("snapshot-id"), Values: aws.StringSlice(values)}},
+		}, "000000000001")
+		require.NoError(t, err)
+		ids := make([]string, 0, len(out.Volumes))
+		for _, v := range out.Volumes {
+			ids = append(ids, *v.VolumeId)
+		}
+		return ids
+	}
+
+	assert.Equal(t, []string{"vol-fromsnap"}, describe("snap-src"))
+	assert.ElementsMatch(t, []string{"vol-fromsnap", "vol-othersnap"}, describe("snap-src", "snap-other"))
+	assert.Empty(t, describe("snap-unknown"))
+}
+
 func TestDescribeVolumes_FilterMultipleValues_OR(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)

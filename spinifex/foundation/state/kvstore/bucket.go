@@ -378,7 +378,8 @@ func (b *Bucket) WatchFrom(ctx context.Context, filter string, revision uint64) 
 	return w, nil
 }
 
-// open picks the kvutil helper matching the configured TTL and replica count.
+// open attaches to the bucket or creates it through kvutil, which sets the
+// cluster's replica count on every bucket, TTL-backed or not.
 func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 	switch {
 	case b.cfg.AttachOnly:

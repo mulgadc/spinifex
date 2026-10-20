@@ -600,6 +600,8 @@ func drainDHCPLeases(nc *nats.Conn, timeout time.Duration) (released, responders
 // collectShutdownACKs publishes a shutdown request and collects ACKs from nodes.
 // When nodeFilter is non-empty, only ACKs from that node count toward nodeCount
 // and all others are ignored (used by the single-node local-drain path).
+// Only the first ACK from each node counts; repeats are dropped so a duplicate
+// cannot stand in for a node that never answered.
 func collectShutdownACKs(nc *nats.Conn, topic string, reqData []byte, nodeCount int, nodeFilter string, timeout time.Duration) ([]daemon.ShutdownACK, error) {
 	inbox := nats.NewInbox()
 	sub, err := nc.SubscribeSync(inbox)
@@ -614,6 +616,7 @@ func collectShutdownACKs(nc *nats.Conn, topic string, reqData []byte, nodeCount 
 	nc.Flush()
 
 	var acks []daemon.ShutdownACK
+	seen := make(map[string]bool, nodeCount)
 	deadline := time.Now().Add(timeout)
 	for len(acks) < nodeCount {
 		remaining := time.Until(deadline)
@@ -631,6 +634,10 @@ func collectShutdownACKs(nc *nats.Conn, topic string, reqData []byte, nodeCount 
 		if nodeFilter != "" && ack.Node != nodeFilter {
 			continue
 		}
+		if seen[ack.Node] {
+			continue
+		}
+		seen[ack.Node] = true
 		acks = append(acks, ack)
 	}
 	return acks, nil

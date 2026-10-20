@@ -205,8 +205,9 @@ func TestSnapshotInUseByVolumes_EncryptedVolume(t *testing.T) {
 		VolumeID: "vol-fromsnap", CapacityGiB: 50, SnapshotID: "snap-src", Encrypted: true,
 	})
 
-	volumeID, err := svc.snapshotInUseByVolumes(context.Background(), "snap-src")
+	inUse, volumeID, err := svc.snapshotInUseByVolumes(context.Background(), "snap-src", testAccountID)
 	require.NoError(t, err)
+	assert.True(t, inUse)
 	assert.Equal(t, "vol-fromsnap", volumeID, "encrypted volume's SnapshotID must be visible through the envelope")
 }
 
@@ -502,6 +503,42 @@ func TestDeleteSnapshot_InUseByVolume(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Len(t, result.Snapshots, 1)
+}
+
+// TestDeleteSnapshot_InUseByAnotherAccountsVolume tests that the refusal
+// never names a volume the caller does not own, since the dependency scan is
+// whole-cluster and an endpoint never confirms another account's IDs.
+func TestDeleteSnapshot_InUseByAnotherAccountsVolume(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+
+	createTestVolume(t, svc, store, "vol-source", 50)
+	snap, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{
+		VolumeId: aws.String("vol-source"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-foreign", TenantID: otherAccountID, CapacityGiB: 50, SnapshotID: *snap.SnapshotId,
+	})
+
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	require.Error(t, err)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.NotContains(t, message, "vol-foreign")
+	assert.Equal(t, "The snapshot '"+*snap.SnapshotId+"' is in use by a volume.", message)
+
+	// A volume the caller owns is named even when a foreign one also matches.
+	seedVolumeDocument(t, store, ebsmetadata.Volume{
+		VolumeID: "vol-own", CapacityGiB: 50, SnapshotID: *snap.SnapshotId,
+	})
+	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
+		SnapshotId: snap.SnapshotId,
+	}, testAccountID)
+	_, message = clientErrorDetail(t, err)
+	assert.Equal(t, "The snapshot '"+*snap.SnapshotId+"' is in use by volume 'vol-own'.", message)
 }
 
 // TestDeleteSnapshot_InUseByRegisteredAMI tests that deleting a snapshot

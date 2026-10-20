@@ -1,7 +1,10 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -102,4 +105,35 @@ func TestAcquireLeader_ReleaseDoesNotDeleteSuccessorKey(t *testing.T) {
 	entry, err := kv.Get(t.Context(), reconcileLeaderKey)
 	require.NoError(t, err, "stale release deleted the successor's leader key")
 	assert.Equal(t, "node-2", string(entry.Value()), "successor's key must survive a stale release")
+}
+
+// A node that loses the election logs itself as node: "holder=node-2" on
+// node-2's log reads as though node-2 holds the lock.
+func TestAcquireLeader_NotLeaderLogNamesLocalNode(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	release, ok := AcquireLeader(t.Context(), nc, KVBucketVPCDReconcile, "node-1")
+	require.True(t, ok)
+	defer release()
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	_, ok = AcquireLeader(t.Context(), nc, KVBucketVPCDReconcile, "node-2")
+	require.False(t, ok)
+
+	var line map[string]any
+	dec := json.NewDecoder(&buf)
+	for dec.More() {
+		var rec map[string]any
+		require.NoError(t, dec.Decode(&rec))
+		if rec["msg"] == "reconcile/lock: not leader, skipping reconcile" {
+			line = rec
+		}
+	}
+	require.NotNil(t, line, "a losing acquire must log that it is skipping")
+	assert.Equal(t, "node-2", line["node"])
+	assert.NotEqual(t, "node-2", line["holder"], "the local node is not the holder")
 }

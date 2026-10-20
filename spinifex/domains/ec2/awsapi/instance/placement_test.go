@@ -335,6 +335,32 @@ func TestAggregateResults_TimeoutSurfacedNotMasked(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+// A node with no subscriber on its launch subject surfaces as capacity, never the raw NATS error.
+func TestAggregateResults_NoRespondersIsCapacity(t *testing.T) {
+	t.Parallel()
+	noResp := fmt.Errorf("launch on node-1: %w", fmt.Errorf("NATS request to ec2.RunInstances.t3.large.node-1: %w", nats.ErrNoResponders))
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: noResp},
+	}
+
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
+	require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
+}
+
+// A real launch failure on another node outranks a no-responders node.
+func TestAggregateResults_RealFailureOutranksNoResponders(t *testing.T) {
+	t.Parallel()
+	noResp := fmt.Errorf("launch on node-1: %w", nats.ErrNoResponders)
+	timeoutErr := fmt.Errorf("launch on node-2: %w", context.DeadlineExceeded)
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: noResp},
+		{NodeID: "node-2", Err: timeoutErr},
+	}
+
+	_, err := aggregateResults(context.Background(), results, 1, nil, "")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 // Short launch with no node errors (nodes returned fewer instances than assigned
 // without erroring) keeps the generic capacity code.
 func TestAggregateResults_ShortWithoutNodeErrors(t *testing.T) {
@@ -1118,6 +1144,40 @@ func TestDistributeInstancesCluster_InsufficientCapacityOnPinnedNode(t *testing.
 	_, err = distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 2)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
+}
+
+// A pinned node with no launch subscriber reports capacity, not the raw NATS error.
+func TestDistributeInstancesCluster_NoLaunchSubscriberIsCapacity(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	statusSub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
+		data, _ := json.Marshal(types.NodeStatusResponse{Node: "node-1", InstanceTypes: []types.InstanceTypeCap{{Name: "t3.micro", Available: 10}}})
+		_ = nc.Publish(msg.Reply, data)
+	})
+	require.NoError(t, err)
+	defer statusSub.Unsubscribe()
+
+	reserveSub, err := nc.QueueSubscribe("ec2.ReserveClusterNode", "spinifex-workers", func(msg *nats.Msg) {
+		data, _ := json.Marshal(struct {
+			TargetNode string `json:"target_node"`
+		}{TargetNode: "node-1"})
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer reserveSub.Unsubscribe()
+
+	require.NoError(t, nc.Flush())
+
+	input := &ec2.RunInstancesInput{
+		ImageId:      aws.String("ami-test"),
+		InstanceType: aws.String("t3.micro"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}
+
+	_, err = distributeInstancesCluster(context.Background(), input, nc, "test-account", "my-cluster-group", 1)
+	require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
 }
 
 func TestDistributeInstancesCluster_PinnedNodeNotInCapacityResults(t *testing.T) {

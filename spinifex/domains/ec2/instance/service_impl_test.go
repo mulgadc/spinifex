@@ -4507,6 +4507,30 @@ func TestDescribeInstanceStatus_AccountFilteringHidesOtherTenant(t *testing.T) {
 	assert.Empty(t, out.InstanceStatuses)
 }
 
+// A platform-managed VM recorded under a customer account stays out of that
+// customer's status listing, matching DescribeInstances.
+func TestDescribeInstanceStatus_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	owner := "111122223333"
+	v := runningVM("i-ekscp", owner)
+	v.ManagedBy = tags.ManagedByEKS
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, owner)
+	require.NoError(t, err)
+	assert.Empty(t, out.InstanceStatuses, "managed system VM must not appear in customer status listing")
+}
+
+func TestDescribeInstanceStatus_RootSeesManagedSystemVM(t *testing.T) {
+	v := runningVM("i-lb", awsidentifiers.GlobalAccountID)
+	v.ManagedBy = tags.ManagedByELBv2
+	svc := instanceStatusService(t, "az-a", map[string]*vm.VM{v.ID: v})
+
+	out, err := svc.DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	assert.Equal(t, "i-lb", *out.InstanceStatuses[0].InstanceId)
+}
+
 func TestDescribeInstanceStatus_StoppedExcludedByDefault(t *testing.T) {
 	owner := "111122223333"
 	stopped := runningVM("i-stop", owner)

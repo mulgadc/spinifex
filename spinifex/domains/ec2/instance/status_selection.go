@@ -59,7 +59,7 @@ func ParseStatusSelection(input *ec2.DescribeInstanceStatusInput, accountID stri
 // status is built. Split out so a caller can test membership without paying
 // for the projection.
 func (s StatusSelection) Includes(v *vm.VM) bool {
-	if v == nil || !IsInstanceVisible(s.accountID, v.AccountID) {
+	if v == nil || !IsInstanceVisibleToCaller(s.accountID, v) {
 		return false
 	}
 	if len(s.instanceIDs) > 0 && !s.instanceIDs[v.ID] {

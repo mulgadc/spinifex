@@ -12,6 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -235,6 +237,44 @@ func TestSynthesis_HonoursInstanceIDFilter(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1)
 	require.Equal(t, "i-asked", aws.StringValue(out.InstanceStatuses[0].InstanceId))
+}
+
+// Synthesis shares the node path's selection, so a platform-managed VM on a
+// stale node is hidden from the customer account it is recorded under.
+func TestSynthesis_HidesManagedSystemVMFromCustomer(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	answerWith(t, nc, "node-active")
+
+	managed := cachedVM("i-ekscp", "node-dead", "az-a", vm.StateRunning)
+	managed.ManagedBy = tags.ManagedByEKS
+	synth := StatusSynthesis{
+		Records:  fakeRecords{ready: true, vms: []*vm.VM{managed}},
+		Liveness: fakeLiveness{states: map[string]instancecache.NodeState{"node-dead": instancecache.NodeStale}},
+	}
+
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth)
+	require.NoError(t, err)
+	require.Empty(t, out.InstanceStatuses)
+}
+
+func TestSynthesis_RootSeesManagedSystemVM(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	answerWith(t, nc, "node-active")
+
+	managed := cachedVM("i-lb", "node-dead", "az-a", vm.StateRunning)
+	managed.AccountID = awsidentifiers.GlobalAccountID
+	managed.ManagedBy = tags.ManagedByELBv2
+	synth := StatusSynthesis{
+		Records:  fakeRecords{ready: true, vms: []*vm.VM{managed}},
+		Liveness: fakeLiveness{states: map[string]instancecache.NodeState{"node-dead": instancecache.NodeStale}},
+	}
+
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, awsidentifiers.GlobalAccountID, "az-a", synth)
+	require.NoError(t, err)
+	require.Len(t, out.InstanceStatuses, 1)
+	require.Equal(t, "i-lb", aws.StringValue(out.InstanceStatuses[0].InstanceId))
 }
 
 // A cache that has not finished its first whole-set sync cannot support a

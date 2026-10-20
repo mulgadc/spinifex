@@ -71,16 +71,19 @@ func TestBucket_TTLBucketIsReplicatedAcrossTheCluster(t *testing.T) {
 		TTL:     90 * time.Minute,
 	})
 
-	// Before a meta leader is elected a create blocks for the client's default
-	// timeout, so each attempt gets its own short deadline.
-	var kv jetstream.KeyValue
-	var err error
-	require.Eventually(t, func() bool {
+	// Wait for a meta leader before the one open, so a retried open cannot find a
+	// one-replica bucket from a timed-out create and raise it into a false pass.
+	var lastErr error
+	ready := assert.Eventually(t, func() bool {
 		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 		defer cancel()
-		kv, err = bucket.KV(ctx)
-		return err == nil
-	}, 30*time.Second, 50*time.Millisecond, "open TTL bucket on the cluster: %v", err)
+		_, lastErr = js.AccountInfo(ctx)
+		return lastErr == nil
+	}, 30*time.Second, 50*time.Millisecond)
+	require.True(t, ready, "JetStream cluster never elected a meta leader: %v", lastErr)
+
+	kv, err := bucket.KV(t.Context())
+	require.NoError(t, err)
 
 	status, err := kv.Status(t.Context())
 	require.NoError(t, err)

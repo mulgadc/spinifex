@@ -81,9 +81,15 @@ mkcfg() { # mkcfg <dir> <node>...
 mkcfg "$TMP/three" node1 node2 node3
 mkcfg "$TMP/one" node1
 
+# The node count is read through sudo, so a pass-through stub keeps the refusal
+# from depending on whether the machine running this has sudo.
+mkdir "$TMP/bin"
+printf '#!/bin/sh\nexec "$@"\n' > "$TMP/bin/sudo"
+chmod +x "$TMP/bin/sudo"
+
 for args in "" "--yes" "--yes --dry-run"; do
     # shellcheck disable=SC2086
-    SPX_ETC_DIR="$TMP/three" "$UNINSTALL" $args >"$TMP/out" 2>"$TMP/err" && rc=0 || rc=$?
+    PATH="$TMP/bin:$PATH" SPX_ETC_DIR="$TMP/three" "$UNINSTALL" $args >"$TMP/out" 2>"$TMP/err" && rc=0 || rc=$?
     label=${args:-"(no flags)"}
     [ "$rc" = 1 ] \
         && pass "three-node config refuses with $label" \

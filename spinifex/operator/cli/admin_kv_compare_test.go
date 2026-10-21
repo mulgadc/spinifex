@@ -160,6 +160,83 @@ func TestKVCompareNoCommonRange(t *testing.T) {
 	assert.Contains(t, report, "no sequence range is common")
 }
 
+// A 60s lease bucket renewed every few seconds turns over between digests
+// taken a couple of seconds apart, so its replicas share no window.
+func TestKVCompareVolatileStream(t *testing.T) {
+	t1, t2, t3 := t0, t0.Add(2*time.Second), t0.Add(4*time.Second)
+	lease := func(maxAge time.Duration, msgs ...msg) stream {
+		return stream{name: "KV_bedrock-leader", replicas: 3, maxAge: maxAge, msgs: msgs}
+	}
+	early := kvs(msg{3984, "$KV.bedrock-leader.leader", "h3984", t1.Add(-time.Second)})
+	late := kvs(msg{3985, "$KV.bedrock-leader.leader", "h3985", t2.Add(-time.Second)}, msg{3986, "$KV.bedrock-leader.leader", "h3986", t2})
+
+	t.Run("adjacent windows of a max_age stream are skipped, not diverged", func(t *testing.T) {
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(time.Minute, early...)),
+			doc(t, "node2", t2, lease(time.Minute, late...)),
+			doc(t, "node3", t3, lease(time.Minute, late...)))
+		require.NoError(t, err)
+		assert.False(t, divergent, report)
+		assert.Contains(t, report, "skipped   KV_bedrock-leader")
+		assert.Contains(t, report, "volatile: max_age 1m0s")
+		assert.Contains(t, report, "1 streams: 0 consistent, 0 diverged, 1 skipped as volatile")
+	})
+
+	t.Run("a sequence two replicas share must still match", func(t *testing.T) {
+		mid := kvs(msg{3984, "$KV.bedrock-leader.leader", "other", t1.Add(-time.Second)}, late[0])
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(time.Minute, early...)),
+			doc(t, "node2", t2, lease(time.Minute, mid...)),
+			doc(t, "node3", t3, lease(time.Minute, late[1])))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "seq 3984 $KV.bedrock-leader.leader holds different content: node1=h3984 node2=other")
+	})
+
+	t.Run("a long-lived bucket with no common window is still diverged", func(t *testing.T) {
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(0, early...)),
+			doc(t, "node2", t2, lease(0, late...)),
+			doc(t, "node3", t3, lease(0, late...)))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "no sequence range is common")
+	})
+
+	t.Run("a long max_age stream whose missing messages nothing explains is still diverged", func(t *testing.T) {
+		old := kvs(msg{1, "a", "h1", t1.Add(-time.Minute)}, msg{2, "b", "h2", t1.Add(-time.Minute)})
+		newer := kvs(msg{10, "c", "h10", t1.Add(-time.Minute)}, msg{11, "d", "h11", t1.Add(-time.Minute)})
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(30*24*time.Hour, old...)),
+			doc(t, "node2", t2, lease(30*24*time.Hour, newer...)),
+			doc(t, "node3", t3, lease(30*24*time.Hour, newer...)))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "no sequence range is common")
+		assert.NotContains(t, report, "volatile")
+	})
+
+	t.Run("a replica copied last but holding the older window is still diverged", func(t *testing.T) {
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(time.Minute, late...)),
+			doc(t, "node2", t2, lease(time.Minute, late...)),
+			doc(t, "node3", t3, lease(time.Minute, early...)))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "seq 3985 $KV.bedrock-leader.leader is on node1,node2 but missing from node3")
+	})
+
+	t.Run("digests copied at the same instant are not excused", func(t *testing.T) {
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(time.Minute, early...)),
+			doc(t, "node2", t1, lease(time.Minute, late...)),
+			doc(t, "node3", t1, lease(time.Minute, late...)))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "no sequence range is common")
+	})
+}
+
 func TestKVCompareReplicaPlacement(t *testing.T) {
 	s := stream{name: "KV_a", replicas: 3, msgs: kvs(msg{1, "k", "h1", t0})}
 	other := stream{name: "KV_b", replicas: 1, msgs: kvs(msg{1, "k", "h1", t0})}

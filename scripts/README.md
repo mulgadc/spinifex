@@ -30,6 +30,19 @@ Each probe prints its answer, or names every candidate it tried on stderr and re
 `lib/distro_test.sh` fails when an inline copy differs from the library.
 Go code uses `spinifex/runtime/host/hostos` for the same purpose.
 
+### System packages
+
+`setup.sh` installs `APT_RUNTIME_PACKAGES` with apt, or on Oracle Linux `OL_RUNTIME_PACKAGES` with dnf, choosing by `distro_pkg_manager`.
+Before the dnf install it enables `ol10_UEKR8` and `ol10_kvm_utils`, excludes `qemu-kvm*` and `qemu-img*` from `ol10_appstream` so QEMU always comes from KVM Utilities, and writes `/etc/yum.repos.d/spinifex-nfv-sig.repo` for OVS 3.5 and OVN 25.03 from the CentOS NFV SIG.
+That repo carries an `includepkgs=` allowlist, and its key is refused unless its fingerprint matches `NFV_SIG_KEY_FPR`.
+It then installs `kernel-uek-modules` for the running kernel, stopping with a reboot instruction if that version has left the repositories, and loads `openvswitch`, `geneve`, `vhost_net` and `tun`.
+`make install-system` takes the same dnf path, adding the build packages from CodeReady Builder.
+
+| Script | What it does |
+|---|---|
+| `lint-apt-packages.sh <image>` | Resolves the apt list against a Debian or Ubuntu image's real indices with `apt-get install -s`. |
+| `lint-dnf-packages.sh [image]` | Runs `setup.sh`'s Oracle Linux repository setup in an `oraclelinux:10` container, resolves the dnf list, and fails unless QEMU comes from KVM Utilities and OVS and OVN from the NFV SIG. |
+
 ## Teardown
 
 Both ship to `/usr/local/share/spinifex/` on every node, so they are available on a host installed with `curl … | bash` and not only from a checkout. They differ in what they take away:

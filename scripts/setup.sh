@@ -7,7 +7,7 @@
 #   INSTALL_SPINIFEX_CHANNEL   Release channel: latest (default), dev
 #   INSTALL_SPINIFEX_VERSION   Pin to specific version (overrides channel)
 #   INSTALL_SPINIFEX_TARBALL   Path to local tarball (skips download, for testing/air-gapped)
-#   INSTALL_SPINIFEX_SKIP_APT  Set to 1 to skip apt dependency install
+#   INSTALL_SPINIFEX_SKIP_APT  Set to 1 to skip the system package install (apt or dnf)
 #   INSTALL_SPINIFEX_SKIP_AWS  Set to 1 to skip AWS CLI install
 #   INSTALL_SPINIFEX_SKIP_NEWGRP  Set to 1 to skip newgrp exec at end (for callers like dev-install.sh)
 #   ISO_BUILD                  Set to 1 when running inside a debootstrap chroot from the ISO
@@ -176,6 +176,25 @@ check_oracle_linux() {
     esac
 
     check_x86_64_v3
+    check_selinux_not_enforcing
+}
+
+# Spinifex ships no SELinux policy yet. Oracle's templates boot enforcing, and
+# setenforce alone reverts on reboot, so the config file is checked as well.
+check_selinux_not_enforcing() {
+    local config="${SPINIFEX_SELINUX_CONFIG:-/etc/selinux/config}" now="" boot=""
+    if command -v getenforce >/dev/null 2>&1; then
+        now=$(getenforce 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    fi
+    if [ -f "$config" ]; then
+        boot=$(os_release_field SELINUX "$config" | tr '[:upper:]' '[:lower:]')
+    fi
+    if [ "$now" = "enforcing" ]; then
+        fatal "SELinux is enforcing, and Spinifex has no SELinux policy. Run 'sudo setenforce 0', set SELINUX=permissive in $config, then re-run this installer"
+    fi
+    if [ "$boot" = "enforcing" ]; then
+        fatal "SELinux is set to enforcing at next boot (SELINUX=enforcing in $config). Set SELINUX=permissive there, then re-run this installer"
+    fi
 }
 
 # The NFV SIG OVS/OVN and the KVM Utilities QEMU are built for x86-64-v3, so an
@@ -808,7 +827,7 @@ SUDOERS
     info "Scoped sudoers rules installed for spinifex-daemon (spinifex-vpcd needs none)"
 }
 
-# --- Install apt dependencies ---
+# --- Install system dependencies ---
 # NOTE: Runtime deps must stay in sync with the ISO package list at
 # scripts/iso-builder/build/packages.list in the mulga repo. When you add,
 # remove, or change a runtime package here, review that file too — drift means
@@ -825,29 +844,43 @@ jq curl iproute2 ethtool netcat-openbsd wget unzip xz-utils file
 ovn-central ovn-host openvswitch-switch openvswitch-ipsec strongswan-charon dhcpcd-base
 chrony nftables"
 
-install_apt_deps() {
-    stage "installing apt dependencies"
+# The Oracle Linux equivalents, plus what a minimal OL install lacks. OVS 3.5
+# and OVN 25.03 come from the CentOS NFV SIG; 25.03 is Debian 13's OVN, which
+# the hand-written OVN NB models are written against.
+OL_RUNTIME_PACKAGES="nbdkit nbdkit-basic-filters
+qemu-kvm qemu-img edk2-ovmf seabios-bin less
+pciutils
+jq curl iproute ethtool nmap-ncat wget unzip xz file
+ovn25.03-central ovn25.03-host openvswitch3.5 openvswitch3.5-ipsec libreswan dhcpcd
+chrony nftables iptables-nft systemd-resolved"
+
+# Oracle ships no OVS or OVN for OL10. The allowlist stops the SIG supplying
+# anything but OVS, OVN and the two SIG-only packages they depend on.
+NFV_SIG_REPO_ID="spinifex-nfv-sig"
+NFV_SIG_KEY_URL="https://www.centos.org/keys/RPM-GPG-KEY-CentOS-SIG-NFV"
+NFV_SIG_KEY_FILE="/etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-SIG-NFV"
+NFV_SIG_KEY_FPR="35154228174901BEFA8E69A621465E289D2A76A7"
+NFV_SIG_INCLUDEPKGS="openvswitch3.5* ovn25.03* python3-openvswitch3.5 openvswitch-selinux-extra-policy"
+
+# Only the KVM Utilities QEMU has the microvm machine. Excluding QEMU from
+# AppStream stops a later AppStream build ever replacing part of that stack.
+OL_KVM_UTILS_REPO="ol10_kvm_utils"
+OL_APPSTREAM_REPO="ol10_appstream"
+OL_APPSTREAM_EXCLUDES="qemu-kvm* qemu-img*"
+# The running kernel's modules come from here, and KVM Utilities requires kernel-uek.
+OL_UEK_REPO="ol10_UEKR8"
+
+install_deps() {
+    stage "installing system dependencies"
     if [ "${INSTALL_SPINIFEX_SKIP_APT}" = "1" ]; then
-        info "Skipping apt dependencies (INSTALL_SPINIFEX_SKIP_APT=1)"
+        info "Skipping system dependencies (INSTALL_SPINIFEX_SKIP_APT=1)"
     else
-        info "Installing system dependencies..."
-        $SUDO apt-get update -qq
-
-        # Unquoted on purpose: both variables are whitespace-separated package lists.
-        # shellcheck disable=SC2086
-        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
-            $QEMU_PACKAGES $APT_RUNTIME_PACKAGES \
-            > /dev/null
-
-        info "System dependencies installed"
-
-        # Only on a machine that already boots from ZFS. Pulling zfsutils-linux
-        # in unconditionally would drag zfs-dkms onto every dev box and rebuild
-        # the module on each kernel upgrade for no benefit.
-        if [ "$(findmnt -no FSTYPE /)" = "zfs" ] && ! command -v zpool >/dev/null 2>&1; then
-            info "ZFS root detected, installing zfsutils-linux..."
-            DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq zfsutils-linux > /dev/null
-        fi
+        local pm
+        pm=$(distro_pkg_manager) || fatal "Cannot tell which package manager this host uses"
+        case "$pm" in
+            apt) install_apt_deps ;;
+            dnf) install_dnf_deps ;;
+        esac
     fi
 
     # Mask the standalone dhcpcd.service auto-enabled on Debian Trixie when
@@ -859,6 +892,149 @@ install_apt_deps() {
     # same mask (spinifex/operator/installer/install/install.go).
     $SUDO systemctl disable --now dhcpcd.service 2>/dev/null || true
     $SUDO systemctl mask dhcpcd.service 2>/dev/null || true
+}
+
+install_apt_deps() {
+    info "Installing system dependencies..."
+    $SUDO apt-get update -qq
+
+    # Unquoted on purpose: both variables are whitespace-separated package lists.
+    # shellcheck disable=SC2086
+    DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq \
+        $QEMU_PACKAGES $APT_RUNTIME_PACKAGES \
+        > /dev/null
+
+    info "System dependencies installed"
+
+    # Only on a machine that already boots from ZFS. Pulling zfsutils-linux
+    # in unconditionally would drag zfs-dkms onto every dev box and rebuild
+    # the module on each kernel upgrade for no benefit.
+    if [ "$(findmnt -no FSTYPE /)" = "zfs" ] && ! command -v zpool >/dev/null 2>&1; then
+        info "ZFS root detected, installing zfsutils-linux..."
+        DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq zfsutils-linux > /dev/null
+    fi
+}
+
+# The package table is the other place keyed on the OS ID: dnf alone does not
+# say which repositories or package names a host has.
+install_dnf_deps() {
+    case "${ID:-}" in
+        ol) ;;
+        *) fatal "No dnf package list for ${ID:-an unknown OS}. Spinifex installs with dnf on Oracle Linux only" ;;
+    esac
+    if [ "$(findmnt -no FSTYPE /)" = "zfs" ]; then
+        fatal "A ZFS root is not supported on Oracle Linux"
+    fi
+
+    ensure_ol_repos
+    install_running_kernel_modules
+
+    info "Installing system dependencies..."
+    # shellcheck disable=SC2086  # a whitespace-separated package list
+    $SUDO dnf install -y -q $OL_RUNTIME_PACKAGES > /dev/null
+    info "System dependencies installed"
+
+    load_kernel_modules openvswitch geneve vhost_net tun
+}
+
+# Enables KVM Utilities, pins QEMU to it, and adds the NFV SIG repository with
+# a key whose fingerprint must match the one recorded above.
+ensure_ol_repos() {
+    info "Configuring Oracle Linux repositories..."
+    local repo
+    $SUDO dnf install -y -q dnf-plugins-core gnupg2 curl > /dev/null
+
+    for repo in "$OL_UEK_REPO" "$OL_KVM_UTILS_REPO" "$OL_APPSTREAM_REPO"; do
+        dnf config-manager --dump "$repo" > /dev/null 2>&1 \
+            || fatal "Repository $repo is not defined on this host. Oracle Linux's release packages define it; reinstall oraclelinux-release-el10"
+    done
+    $SUDO dnf config-manager --set-enabled "$OL_UEK_REPO" "$OL_KVM_UTILS_REPO" > /dev/null
+    exclude_from_appstream
+
+    install_nfv_sig_key
+    $SUDO tee "/etc/yum.repos.d/${NFV_SIG_REPO_ID}.repo" > /dev/null <<EOF
+# Written by the Spinifex installer. Re-running it rewrites this file.
+[${NFV_SIG_REPO_ID}]
+name=CentOS NFV SIG Open vSwitch and OVN, for Spinifex
+baseurl=https://mirror.stream.centos.org/SIGs/10-stream/nfv/\$basearch/openvswitch-2/
+enabled=1
+gpgcheck=1
+gpgkey=file://${NFV_SIG_KEY_FILE}
+includepkgs=${NFV_SIG_INCLUDEPKGS}
+EOF
+
+    for repo in "$OL_UEK_REPO" "$OL_APPSTREAM_REPO" "$OL_KVM_UTILS_REPO" "$NFV_SIG_REPO_ID"; do
+        $SUDO dnf -q makecache --repo "$repo" > /dev/null \
+            || fatal "Repository $repo is unreachable. Check this host's network access and proxy settings, then re-run this installer"
+    done
+}
+
+# Adds the QEMU excludes to AppStream, keeping any exclude already set there.
+exclude_from_appstream() {
+    local current pattern merged="" patterns
+    current=$(dnf config-manager --dump "$OL_APPSTREAM_REPO" | sed -n 's/^excludepkgs = //p' | tr ',' ' ')
+    # read, not an unquoted expansion, so the patterns are never globbed.
+    read -ra patterns <<< "$current $OL_APPSTREAM_EXCLUDES"
+    for pattern in "${patterns[@]}"; do
+        case " $merged " in
+            *" $pattern "*) ;;
+            *) merged="${merged:+$merged }$pattern" ;;
+        esac
+    done
+    $SUDO dnf config-manager --save --setopt="${OL_APPSTREAM_REPO}.excludepkgs=${merged// /,}" > /dev/null
+}
+
+# gpg_fingerprints <file> — the primary-key fingerprint of each key in file.
+gpg_fingerprints() {
+    local home
+    home=$(mktemp -d)
+    GNUPGHOME="$home" gpg --batch --with-colons --show-keys "$1" 2>/dev/null \
+        | awk -F: '$1 == "pub" { want = 1; next } want && $1 == "fpr" { print $10; want = 0 }'
+    rm -rf "$home"
+}
+
+install_nfv_sig_key() {
+    if [ -f "$NFV_SIG_KEY_FILE" ] && [ "$(gpg_fingerprints "$NFV_SIG_KEY_FILE")" = "$NFV_SIG_KEY_FPR" ]; then
+        $SUDO rpm --import "$NFV_SIG_KEY_FILE"
+        return 0
+    fi
+    local tmp got
+    tmp=$(mktemp)
+    curl -fsSL "$NFV_SIG_KEY_URL" -o "$tmp" \
+        || { rm -f "$tmp"; fatal "Cannot download the CentOS NFV SIG key from $NFV_SIG_KEY_URL"; }
+    got=$(gpg_fingerprints "$tmp")
+    if [ "$got" != "$NFV_SIG_KEY_FPR" ]; then
+        rm -f "$tmp"
+        fatal "The key at $NFV_SIG_KEY_URL has fingerprint ${got:-<unreadable>}, not the CentOS NFV SIG's $NFV_SIG_KEY_FPR. Refusing to trust it"
+    fi
+    $SUDO install -D -m 0644 "$tmp" "$NFV_SIG_KEY_FILE"
+    rm -f "$tmp"
+    $SUDO rpm --import "$NFV_SIG_KEY_FILE"
+}
+
+# Oracle ships kernel modules per kernel version. The unversioned package
+# follows the newest kernel and leaves the running one without openvswitch.ko.
+install_running_kernel_modules() {
+    local pkg
+    pkg="kernel-uek-modules-$(uname -r)"
+    if rpm -q "$pkg" > /dev/null 2>&1; then
+        return 0
+    fi
+    if ! $SUDO dnf -q list --available "$pkg" > /dev/null 2>&1; then
+        fatal "$pkg, the modules for the running kernel, is no longer in the repositories. Run 'sudo dnf update kernel-uek', reboot into the new kernel, then re-run this installer"
+    fi
+    info "Installing $pkg (it pulls in linux-firmware, about 800 MB)..."
+    $SUDO dnf install -y -q "$pkg" > /dev/null
+}
+
+load_kernel_modules() {
+    local mod failed=""
+    for mod in "$@"; do
+        $SUDO modprobe "$mod" || failed="${failed:+$failed }$mod"
+    done
+    if [ -n "$failed" ]; then
+        fatal "Cannot load kernel modules for the running kernel $(uname -r): $failed"
+    fi
 }
 
 # --- Install AWS CLI ---
@@ -1533,7 +1709,7 @@ main() {
         download_spinifex
     fi
 
-    stage_enabled deps       && install_apt_deps
+    stage_enabled deps       && install_deps
     stage_enabled aws        && install_aws_cli
     stage_enabled users      && create_service_users
     stage_enabled sudoers    && install_sudoers

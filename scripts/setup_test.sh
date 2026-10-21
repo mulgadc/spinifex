@@ -2,7 +2,8 @@
 # setup_test.sh — tests for setup.sh's supported-OS gate.
 #
 # setup.sh is sourced with INSTALL_SPINIFEX_LIB_ONLY=1 so main never runs, and
-# detect_os reads a fixture os-release, a fixture cpuinfo and a stub uname.
+# detect_os reads fixture os-release, cpuinfo and SELinux config files, and stub
+# uname and getenforce commands.
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -21,11 +22,18 @@ V2_FLAGS="fpu cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3"
 UEK_R8="6.12.0-207.111.5.4.el10uek.x86_64"
 
 # gate <os-release body> [machine] [kernel] [cpu flags] — runs detect_os and
-# sets RC and OUT (stdout and stderr together).
+# sets RC and OUT (stdout and stderr together). SELINUX_NOW is what getenforce
+# prints; SELINUX_BOOT is the config file's SELINUX=, or "none" for no file.
 gate() {
     printf '%s\n' "$1" > "$TMP/os-release"
     printf 'processor\t: 0\nflags\t\t: %s\n' "${4:-$V3_FLAGS}" > "$TMP/cpuinfo"
+    rm -f "$TMP/selinux-config"
+    if [ "${SELINUX_BOOT:-permissive}" != none ]; then
+        printf '# fixture\nSELINUX=%s\nSELINUXTYPE=targeted\n' "${SELINUX_BOOT:-permissive}" > "$TMP/selinux-config"
+    fi
     mkdir -p "$TMP/bin"
+    printf '#!/bin/sh\necho %s\n' "${SELINUX_NOW:-Permissive}" > "$TMP/bin/getenforce"
+    chmod +x "$TMP/bin/getenforce"
     cat > "$TMP/bin/uname" <<EOF
 #!/bin/sh
 case "\$1" in
@@ -37,7 +45,9 @@ EOF
     chmod +x "$TMP/bin/uname"
     RC=0
     OUT=$(PATH="$TMP/bin:$PATH" SPINIFEX_OS_RELEASE="$TMP/os-release" SPINIFEX_CPUINFO="$TMP/cpuinfo" \
-        INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. "$1"; detect_os' _ "$SETUP" 2>&1) || RC=$?
+        SPINIFEX_SELINUX_CONFIG="$TMP/selinux-config" INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. "$1"; detect_os' _ "$SETUP" 2>&1) || RC=$?
+    # Some shells keep a prefix assignment to a function call after it returns.
+    unset SELINUX_NOW SELINUX_BOOT
 }
 accepts() {
     if [ "$RC" = 0 ]; then pass "accepts $1"; else fail "rejects $1: $OUT"; fi
@@ -124,6 +134,30 @@ rejects "Oracle Linux on a UEK older than R8" "is not UEK R8"
 gate "$OL
 VERSION_ID=\"10.2\"" x86_64 "$UEK_R8" "$V2_FLAGS"
 rejects "Oracle Linux on an x86-64-v2 CPU" "missing: avx avx2 bmi1 bmi2 f16c fma abm movbe xsave"
+
+OL102="$OL
+VERSION_ID=\"10.2\""
+
+SELINUX_NOW=Enforcing gate "$OL102"
+rejects "Oracle Linux with SELinux enforcing" "SELinux is enforcing"
+
+SELINUX_BOOT=enforcing gate "$OL102"
+rejects "Oracle Linux with SELinux permissive now but enforcing at next boot" "enforcing at next boot"
+
+SELINUX_BOOT='"enforcing"' gate "$OL102"
+rejects "Oracle Linux with a quoted SELINUX=\"enforcing\"" "enforcing at next boot"
+
+SELINUX_NOW=Disabled SELINUX_BOOT=disabled gate "$OL102"
+accepts "Oracle Linux with SELinux disabled"
+
+SELINUX_NOW=Disabled SELINUX_BOOT=none gate "$OL102"
+accepts "Oracle Linux with no SELinux config file"
+
+# Spinifex has no SELinux policy on any OS, but refusing enforcing on Debian
+# would change Debian behaviour, so only the Oracle Linux gate checks it.
+SELINUX_NOW=Enforcing SELINUX_BOOT=enforcing gate 'ID=debian
+VERSION_ID="13"'
+accepts "Debian 13 regardless of SELinux"
 
 gate 'ID="rocky"
 VERSION_ID="10.0"'

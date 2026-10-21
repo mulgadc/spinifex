@@ -367,16 +367,25 @@ clean:
 	rm -f ./bin/$(GO_PROJECT_NAME)
 	rm -rf spinifex/runtime/roles/spinifexui/frontend/dist
 
+# On dnf hosts the runtime packages and repositories come from setup.sh, so the
+# two cannot drift; nbdkit-devel, for building the plugin, is only in CodeReady.
 install-system:
 	@echo -e "\n....Installing system dependencies for $(ARCH)...."
-	sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-		-o Dpkg::Options::="--force-confdef" \
-		-o Dpkg::Options::="--force-confold" \
-		nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils \
-		ovmf qemu-efi-aarch64 \
-		libvirt-daemon-system libvirt-clients libvirt-dev make gcc jq curl \
-		iproute2 netcat-openbsd openssh-client wget git unzip sudo xz-utils file \
-		ovn-central ovn-host openvswitch-switch dhcpcd-base
+	@pm=$$(INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. scripts/setup.sh && distro_pkg_manager') || exit 1; \
+	if [ "$$pm" = dnf ]; then \
+		INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '. scripts/setup.sh && setup_sudo && detect_os && install_dnf_deps' && \
+		sudo dnf config-manager --set-enabled ol10_codeready_builder && \
+		sudo dnf install -y nbdkit-devel pkgconf-pkg-config make gcc openssh-clients git sudo; \
+	else \
+		sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+			-o Dpkg::Options::="--force-confdef" \
+			-o Dpkg::Options::="--force-confold" \
+			nbdkit nbdkit-plugin-dev pkg-config qemu-system-x86 qemu-system-arm qemu-utils \
+			ovmf qemu-efi-aarch64 \
+			libvirt-daemon-system libvirt-clients libvirt-dev make gcc jq curl \
+			iproute2 netcat-openbsd openssh-client wget git unzip sudo xz-utils file \
+			ovn-central ovn-host openvswitch-switch dhcpcd-base; \
+	fi
 
 install-go:
 	@echo -e "\n....Installing Go 1.27.3 for $(ARCH) ($(GO_ARCH))...."

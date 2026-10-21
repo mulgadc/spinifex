@@ -21,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -380,7 +381,7 @@ func (w *Witness) waitForRunning(ctx context.Context, id string, timeout time.Du
 // findHost walks cluster nodes looking for the QEMU process that owns instanceID
 // (the instance ID appears in -pidfile, -qmp, and -name on the QEMU command line).
 func (w *Witness) findHost(ctx context.Context, instanceID string) (Node, error) {
-	cmd := fmt.Sprintf("ps auxw | grep %s | grep qemu-system | grep -v grep", ShellQuote(instanceID))
+	cmd := fmt.Sprintf("ps auxw | grep %s | grep -E %s | grep -v grep", ShellQuote(instanceID), ShellQuote(hostos.QEMUProcessPattern))
 	// EC2 "running" state is reported before QEMU is forked; give it a window.
 	deadline := time.Now().Add(30 * time.Second)
 	const interval = 1 * time.Second

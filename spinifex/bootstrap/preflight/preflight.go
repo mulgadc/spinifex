@@ -29,6 +29,8 @@ const (
 	Stale
 	// Ungranted means the sudoers grant for a helper is absent or missing its NOPASSWD line.
 	Ungranted
+	// Unsupported means the asset is present but lacks a capability this build needs.
+	Unsupported
 )
 
 // String returns the human-readable name of the status, used in table output and log lines.
@@ -42,6 +44,8 @@ func (s Status) String() string {
 		return "Stale"
 	case Ungranted:
 		return "Ungranted"
+	case Unsupported:
+		return "Unsupported"
 	default:
 		return "Unknown"
 	}
@@ -50,7 +54,7 @@ func (s Status) String() string {
 // Result is the outcome of checking one managed asset against this build's manifest.
 type Result struct {
 	Path   string
-	Kind   string // "helper" | "sudoers-grant" | "service"
+	Kind   string // "helper" | "sudoers-grant" | "service" | "qemu" | "firmware"
 	Status Status
 	Detail string
 }
@@ -82,6 +86,7 @@ func CheckHostAt(root string) []Result {
 	}
 	results = append(results, checkSudoersGrant(root))
 	results = append(results, checkRunningBinaries(root)...)
+	results = append(results, checkMicroVM(root)...)
 	return results
 }
 

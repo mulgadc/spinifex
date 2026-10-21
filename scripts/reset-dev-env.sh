@@ -360,16 +360,25 @@ fi
 echo "==> Stopping services"
 sudo systemctl stop spinifex.target 2>/dev/null || true
 sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
-sudo pkill -x qemu-system-x86_64 2>/dev/null || true
-sudo pkill -x qemu-system-aarch64 2>/dev/null || true
+# comm truncates to 15 characters, so match qemu-system-* by prefix; EL-family
+# hosts run qemu-kvm. Scoped to the user the daemon runs guests as, as in
+# node-reset.sh, so libvirt guests on the same host are left alone.
+QEMU_PGREP=('^(qemu-system|qemu-kvm$)')
+for qemu_user in spinifex-daemon spinifex "$INVOKING_USER"; do
+    if id -u "$qemu_user" >/dev/null 2>&1; then
+        QEMU_PGREP=(-u "$qemu_user" "${QEMU_PGREP[@]}")
+        break
+    fi
+done
+sudo pkill "${QEMU_PGREP[@]}" 2>/dev/null || true
 
 # Wait for QEMU to fully exit before tearing down viperblock state.
 timeout=30
 elapsed=0
-while pgrep -x 'qemu-system-x86_64|qemu-system-aarch64' > /dev/null 2>&1; do
+while pgrep "${QEMU_PGREP[@]}" > /dev/null 2>&1; do
     if [ "$elapsed" -ge "$timeout" ]; then
         echo "❌ QEMU still running after ${timeout}s:"
-        pgrep -af 'qemu-system-' || true
+        pgrep -a "${QEMU_PGREP[@]}" || true
         echo "   Kill them manually and re-run this script."
         exit 1
     fi

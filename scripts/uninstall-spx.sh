@@ -221,7 +221,7 @@ fi
 #
 # It handles the guests, the OVS bridges, the OVN databases and the JetStream
 # store, and it carries correctness that is invisible in its code: QEMU matched
-# as ^qemu-system because comm truncates at 15 characters, a wait for QEMU to
+# by a comm prefix because comm truncates at 15 characters, a wait for QEMU to
 # exit rather than for the signal, and the firewall-mode stash that stops an
 # interrupted run leaving the node unarmed. A second copy of that would drift,
 # and the failure mode of the drift is data loss.

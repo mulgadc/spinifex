@@ -205,8 +205,9 @@ fi
 # `pgrep -x` and `pkill -x` match against comm, which the kernel truncates to 15
 # characters, so `qemu-system-x86_64` is stored as `qemu-system-x86` and an -x
 # match on the full name can never fire. Match the prefix instead: it is 11
-# characters, well under the limit, and covers both x86_64 and aarch64. This is
-# the same rule qemuProcessPrefix applies in spinifex/runtime/compute/vm/orphan_scan.go.
+# characters, well under the limit, and covers both x86_64 and aarch64. EL-family
+# hosts run /usr/libexec/qemu-kvm, whose comm is exactly `qemu-kvm`. This is the
+# rule hostos.IsQEMUProcess applies in spinifex/runtime/host/hostos.
 #
 # Deliberately not -f. That matches the whole command line, where argv[0] may
 # carry a path, so an anchored pattern misses the process it was written for.
@@ -215,7 +216,7 @@ fi
 # ones has both under the same comm and an unscoped kill would take the wrong
 # set down. The daemon runs guests as its own service user on an installed node;
 # a dev install runs them as whoever invoked spx.
-QEMU_PGREP=('^qemu-system')
+QEMU_PGREP=('^(qemu-system|qemu-kvm$)')
 for qemu_user in spinifex-daemon spinifex "${SUDO_USER:-$(id -un)}"; do
     if id -u "$qemu_user" >/dev/null 2>&1; then
         QEMU_PGREP=(-u "$qemu_user" "${QEMU_PGREP[@]}")

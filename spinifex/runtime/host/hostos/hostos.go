@@ -17,6 +17,22 @@ import (
 // guests of the host's own architecture.
 const QEMUKVMPath = "/usr/libexec/qemu-kvm"
 
+// QEMU guest processes are named qemu-system-<arch> (comm truncates it to 15
+// bytes, so qemu-system-x86_64 reads qemu-system-x86) or qemu-kvm.
+const (
+	qemuSystemPrefix = "qemu-system"
+	qemuKVMName      = "qemu-kvm"
+	// QEMUProcessPattern is an extended regular expression, for grep -E and
+	// pgrep, that matches a QEMU guest's process name or command line.
+	QEMUProcessPattern = qemuSystemPrefix + "|" + qemuKVMName
+)
+
+// IsQEMUProcess reports whether a /proc/<pid>/comm value names a QEMU guest.
+func IsQEMUProcess(comm string) bool {
+	comm = strings.TrimSpace(comm)
+	return strings.HasPrefix(comm, qemuSystemPrefix) || comm == qemuKVMName
+}
+
 // Tool is a host command found by a resolver.
 type Tool struct {
 	// Name is the candidate that matched, such as "grubby" or "update-grub".

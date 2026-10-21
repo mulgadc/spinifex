@@ -274,9 +274,9 @@ find_instance_node() {
     for ip in "${NODE_IPS[@]}"; do
         local found
         if [ "$ip" = "$LOCAL_IP" ]; then
-            found=$(ps auxw | grep "$instance_id" | grep qemu-system | grep -v grep || true)
+            found=$(ps auxw | grep "$instance_id" | grep -E "qemu-system|qemu-kvm" | grep -v grep || true)
         else
-            found=$(peer_ssh "$ip" "ps auxw | grep '$instance_id' | grep qemu-system | grep -v grep" 2>/dev/null || true)
+            found=$(peer_ssh "$ip" "ps auxw | grep '$instance_id' | grep -E 'qemu-system|qemu-kvm' | grep -v grep" 2>/dev/null || true)
         fi
         if [ -n "$found" ]; then
             echo "$ip"
@@ -298,9 +298,9 @@ get_remote_ssh_port() {
     while [ $attempt -lt $max_attempts ]; do
         local qemu_cmd
         if [ "$node_ip" = "$LOCAL_IP" ]; then
-            qemu_cmd=$(ps auxw | grep "$instance_id" | grep qemu-system | grep -v grep || true)
+            qemu_cmd=$(ps auxw | grep "$instance_id" | grep -E "qemu-system|qemu-kvm" | grep -v grep || true)
         else
-            qemu_cmd=$(peer_ssh "$node_ip" "ps auxw | grep '$instance_id' | grep qemu-system | grep -v grep" 2>/dev/null || true)
+            qemu_cmd=$(peer_ssh "$node_ip" "ps auxw | grep '$instance_id' | grep -E 'qemu-system|qemu-kvm' | grep -v grep" 2>/dev/null || true)
         fi
 
         if [ -n "$qemu_cmd" ]; then

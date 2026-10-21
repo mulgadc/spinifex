@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -292,5 +293,38 @@ func TestSystemBootTools(t *testing.T) {
 				t.Fatalf("got %+v, want %s and %s", got, tc.wantBootloader, tc.wantInitramfs)
 			}
 		})
+	}
+}
+
+func TestIsQEMUProcess(t *testing.T) {
+	for comm, want := range map[string]bool{
+		// comm truncates to 15 bytes, so qemu-system-x86_64 reads qemu-system-x86.
+		"qemu-system-x86\n": true,
+		"qemu-system-aar":   true,
+		"qemu-kvm\n":        true,
+		"qemu-img":          false,
+		"qemu-kvm-helper":   false,
+		"qemu-nbd":          false,
+		"nbdkit":            false,
+		"":                  false,
+	} {
+		if got := IsQEMUProcess(comm); got != want {
+			t.Errorf("IsQEMUProcess(%q) = %v, want %v", comm, got, want)
+		}
+	}
+}
+
+func TestQEMUProcessPatternMatchesEveryQEMUName(t *testing.T) {
+	re := regexp.MustCompile(QEMUProcessPattern)
+	for _, line := range []string{
+		"spinifex 4242 qemu-system-x86_64 -name guest=i-0abc,debug-threads=on",
+		"spinifex 4243 /usr/libexec/qemu-kvm -name guest=i-0def,debug-threads=on",
+	} {
+		if !re.MatchString(line) {
+			t.Errorf("QEMUProcessPattern %q does not match %q", QEMUProcessPattern, line)
+		}
+	}
+	if re.MatchString("spinifex 4244 nbdkit --unix /run/spinifex/nbd.sock") {
+		t.Errorf("QEMUProcessPattern %q matches an nbdkit line", QEMUProcessPattern)
 	}
 }

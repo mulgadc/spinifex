@@ -140,12 +140,23 @@ $(MICROVM_ARTIFACTS) &: $(MICROVM_INPUTS)
 bin/lb-agent:
 	$(MAKE) build-lb-agent
 
-build-microvm-image: $(MICROVM_ARTIFACTS) ## Build microVM kernel + initramfs (incremental — skips when up to date)
+# qboot is the microvm firmware. The source tarball ships with each release
+# because qboot is GPL-2.0.
+QBOOT_COMMIT := $(shell sed -n 's/^QBOOT_COMMIT="\(.*\)"$$/\1/p' scripts/build-qboot.sh)
+QBOOT_SOURCE := build/qboot/qboot-$(QBOOT_COMMIT).tar.gz
+QBOOT_ARTIFACTS := $(MICROVM_OUT_DIR)/qboot.rom $(MICROVM_OUT_DIR)/qboot.LICENSE $(QBOOT_SOURCE)
 
-install-microvm: $(MICROVM_ARTIFACTS) ## Install microVM artifacts to /usr/share/spinifex/microvm/
+$(QBOOT_ARTIFACTS) &: scripts/build-qboot.sh
+	./scripts/build-qboot.sh
+
+build-microvm-image: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Build microVM kernel, initramfs and qboot firmware (incremental — skips when up to date)
+
+install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM artifacts to /usr/share/spinifex/microvm/
 	sudo install -d /usr/share/spinifex/microvm
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/vmlinuz /usr/share/spinifex/microvm/vmlinuz
 	sudo install -m 0644 $(MICROVM_OUT_DIR)/initramfs.cpio.gz /usr/share/spinifex/microvm/initramfs.cpio.gz
+	sudo install -m 0644 $(MICROVM_OUT_DIR)/qboot.rom /usr/share/spinifex/microvm/qboot.rom
+	sudo install -m 0644 $(MICROVM_OUT_DIR)/qboot.LICENSE /usr/share/spinifex/microvm/qboot.LICENSE
 
 # the pre-commit gate: manifest checks, lint, vuln, and the unit and e2e-harness tiers.
 # integration and race tests skipped to keep quick, they run in CI.
@@ -333,14 +344,20 @@ fuzz:
 # Microvm artifacts are reinstalled when they already exist on disk — the rule's
 # input timestamps drive a rebuild only if anything actually changed. On a fresh
 # checkout (no build/microvm/vmlinuz yet) the install step is skipped; run
-# `make install-microvm` explicitly the first time.
+# `make install-microvm` explicitly the first time. They go in before the
+# preflight, which checks the microvm firmware.
 deploy: build
 	sudo install -m 755 bin/spx /usr/local/bin/spx
+	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ]; then \
+		$(MAKE) install-microvm; \
+	else \
+		echo "[deploy] microvm artifacts absent — run 'make install-microvm' for first-time setup"; \
+	fi
 	@if [ "$${SKIP_ASSET_PREFLIGHT:-}" != "1" ]; then \
 		if ! sudo /usr/local/bin/spx admin preflight; then \
 			echo ""; \
-			echo "[deploy] host-asset preflight failed: this node's helper scripts or sudoers"; \
-			echo "  grants don't match the binary just installed. Remediate with:"; \
+			echo "[deploy] host-asset preflight failed: this node's helper scripts, sudoers"; \
+			echo "  grants, QEMU or microvm firmware don't match the binary just installed. Remediate with:"; \
 			echo "    scripts/update-nodes.sh   (from the mulga root)"; \
 			echo "  or:"; \
 			echo "    make reinstall"; \
@@ -349,11 +366,6 @@ deploy: build
 		fi; \
 	else \
 		echo "[deploy] SKIP_ASSET_PREFLIGHT=1 — skipping host-asset preflight"; \
-	fi
-	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ]; then \
-		$(MAKE) install-microvm; \
-	else \
-		echo "[deploy] microvm artifacts absent — run 'make install-microvm' for first-time setup"; \
 	fi
 	sudo systemctl daemon-reload
 	sudo systemctl restart spinifex.target
@@ -447,10 +459,11 @@ distro-amd64:
 		-f build/Dockerfile.distro \
 		--output type=local,dest=dist/amd64/ \
 		../
-	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ] && [ -f $(MICROVM_OUT_DIR)/initramfs.cpio.gz ]; then \
+	@if [ -f $(MICROVM_OUT_DIR)/vmlinuz ] && [ -f $(MICROVM_OUT_DIR)/initramfs.cpio.gz ] && [ -f $(MICROVM_OUT_DIR)/qboot.rom ] && [ -f $(QBOOT_SOURCE) ]; then \
 		echo "[distro-amd64] staging microvm artifacts into tarball"; \
 		mkdir -p dist/amd64/microvm; \
-		cp $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz dist/amd64/microvm/; \
+		cp $(MICROVM_OUT_DIR)/vmlinuz $(MICROVM_OUT_DIR)/initramfs.cpio.gz $(MICROVM_OUT_DIR)/qboot.rom $(MICROVM_OUT_DIR)/qboot.LICENSE dist/amd64/microvm/; \
+		cp $(QBOOT_SOURCE) dist/; \
 	else \
 		echo "[distro-amd64] WARNING: microvm artifacts missing — tarball will not include them"; \
 		echo "[distro-amd64]          run 'make build-microvm-image' before 'make distro-amd64'"; \

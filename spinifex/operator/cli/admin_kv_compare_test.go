@@ -203,6 +203,29 @@ func TestKVCompareVolatileStream(t *testing.T) {
 		assert.Contains(t, report, "no sequence range is common")
 	})
 
+	t.Run("a long max_age stream whose missing messages nothing explains is still diverged", func(t *testing.T) {
+		old := kvs(msg{1, "a", "h1", t1.Add(-time.Minute)}, msg{2, "b", "h2", t1.Add(-time.Minute)})
+		newer := kvs(msg{10, "c", "h10", t1.Add(-time.Minute)}, msg{11, "d", "h11", t1.Add(-time.Minute)})
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(30*24*time.Hour, old...)),
+			doc(t, "node2", t2, lease(30*24*time.Hour, newer...)),
+			doc(t, "node3", t3, lease(30*24*time.Hour, newer...)))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "no sequence range is common")
+		assert.NotContains(t, report, "volatile")
+	})
+
+	t.Run("a replica copied last but holding the older window is still diverged", func(t *testing.T) {
+		divergent, report, err := cli.CompareKVDigests(
+			doc(t, "node1", t1, lease(time.Minute, late...)),
+			doc(t, "node2", t2, lease(time.Minute, late...)),
+			doc(t, "node3", t3, lease(time.Minute, early...)))
+		require.NoError(t, err)
+		assert.True(t, divergent, report)
+		assert.Contains(t, report, "seq 3985 $KV.bedrock-leader.leader is on node1,node2 but missing from node3")
+	})
+
 	t.Run("digests copied at the same instant are not excused", func(t *testing.T) {
 		divergent, report, err := cli.CompareKVDigests(
 			doc(t, "node1", t1, lease(time.Minute, early...)),

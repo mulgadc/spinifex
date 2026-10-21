@@ -35,7 +35,8 @@ A replica that is merely behind is not divergent, so only these fail:
 A stream with a max_age whose replicas, copied at different times, share no
 sequence range is reported as skipped (volatile) rather than diverged: a short
 lived bucket such as a leader lease turns over between two copies. Sequences
-two of its replicas do share must still hold the same content.
+two of its replicas do share must still hold the same content, and each
+message a replica lacks must be superseded, expired, or written after its copy.
 
 Sequences past the slowest replica's last one are not compared. Digests are
 taken from live stores a few seconds apart, so re-run before trusting a
@@ -237,9 +238,13 @@ func compareStream(name string, hosts []string, views []*replicaView) streamVerd
 	if lo > hi {
 		maxAge, spread := views[0].d.MaxAge, copySpread(views)
 		if maxAge > 0 && spread > 0 {
-			v.Problems = append(v.Problems, sharedSeqMismatches(views)...)
-			v.Volatile = fmt.Sprintf("volatile: max_age %s and copies %s apart share no sequence range, so it turned over between them; not compared", maxAge, spread)
-			return v
+			mismatches, unexplained := turnoverFindings(views)
+			v.Problems = append(v.Problems, mismatches...)
+			if len(unexplained) == 0 {
+				v.Volatile = fmt.Sprintf("volatile: max_age %s and copies %s apart share no sequence range, so it turned over between them; not compared", maxAge, spread)
+				return v
+			}
+			v.Problems = append(v.Problems, unexplained...)
 		}
 		v.Problems = append(v.Problems, "no sequence range is common to every replica, so nothing could be compared")
 		return v
@@ -318,28 +323,42 @@ func contentMismatch(seq uint64, present []*replicaView) string {
 	return fmt.Sprintf("seq %d %s holds different content: %s", seq, present[0].bySeq[seq].Subject, strings.Join(parts, " "))
 }
 
-// sharedSeqMismatches compares every sequence held by two or more replicas,
-// since no timing between copies explains two values at one sequence.
-func sharedSeqMismatches(views []*replicaView) []string {
+// turnoverFindings compares every sequence held by two or more replicas, since
+// no timing explains two values at one sequence, and lists each absence that
+// neither absenceExplained nor a write after that replica's copy accounts for.
+func turnoverFindings(views []*replicaView) (mismatches, unexplained []string) {
 	seqSet := map[uint64]struct{}{}
 	for _, r := range views {
 		for s := range r.bySeq {
 			seqSet[s] = struct{}{}
 		}
 	}
-	var problems []string
 	for _, seq := range slices.Sorted(maps.Keys(seqSet)) {
-		var present []*replicaView
+		var present, absent []*replicaView
 		for _, r := range views {
 			if e, ok := r.bySeq[seq]; ok && e.Hash != deletedHash {
 				present = append(present, r)
+			} else {
+				absent = append(absent, r)
 			}
 		}
+		if len(present) == 0 {
+			continue
+		}
 		if p := contentMismatch(seq, present); p != "" {
-			problems = append(problems, p)
+			mismatches = append(mismatches, p)
+			continue
+		}
+		msg := present[0].bySeq[seq]
+		for _, r := range absent {
+			if absenceExplained(r, msg) || (seq > r.d.LastSeq && msg.Time.After(r.copiedAt)) {
+				continue
+			}
+			unexplained = append(unexplained, fmt.Sprintf("seq %d %s is on %s but missing from %s, with no later write to that subject, expiry, limit or copy order to explain it",
+				seq, msg.Subject, hostsOf(present), r.host))
 		}
 	}
-	return capFindings(problems)
+	return capFindings(mismatches), capFindings(unexplained)
 }
 
 func capFindings(problems []string) []string {

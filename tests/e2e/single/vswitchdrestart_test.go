@@ -77,10 +77,10 @@ func runIMDSDatapathSurvivesVswitchdRestart(t *testing.T, fix *Fixture) {
 	}
 	tgt := harness.SSHTarget{User: "ubuntu", Host: eipIP, Port: 22, KeyPath: keyPath}
 
+	cookie := host.IMDSFlowCookie(primaryENI(t, harness.WaitForInstanceState(t, c, instanceID, "running")))
 	require.NoError(t, guestIMDSAnswers(t, tgt, instanceID), "IMDS before any restart")
-	baseline := imdsBridgeFlowCount(t)
-	require.Positive(t, baseline, "br-imds has no flows with a guest running")
-	harness.Detail(t, "eip", eipIP, "unit", unit, "br_imds_flows", baseline)
+	require.Equal(t, host.IMDSTapFlowCount, guestIMDSFlowCount(t, cookie), "guest's br-imds flows before any restart")
+	harness.Detail(t, "eip", eipIP, "unit", unit, "cookie", cookie)
 
 	for _, disruption := range []struct {
 		name string
@@ -100,8 +100,8 @@ func runIMDSDatapathSurvivesVswitchdRestart(t *testing.T, fix *Fixture) {
 			if err := guestIMDSAnswers(t, tgt, instanceID); err != nil {
 				return err
 			}
-			if n := imdsBridgeFlowCount(t); n != baseline {
-				return fmt.Errorf("br-imds has %d flows, had %d before the restart", n, baseline)
+			if n := guestIMDSFlowCount(t, cookie); n != host.IMDSTapFlowCount {
+				return fmt.Errorf("guest has %d br-imds flows, want %d", n, host.IMDSTapFlowCount)
 			}
 			return nil
 		}, vswitchdRecoveryBudget, 2*time.Second)
@@ -127,11 +127,11 @@ func guestIMDSAnswers(t *testing.T, tgt harness.SSHTarget, instanceID string) er
 	return nil
 }
 
-// imdsBridgeFlowCount returns how many flows br-imds holds, or -1 while
-// ovs-vswitchd is not answering.
-func imdsBridgeFlowCount(t *testing.T) int {
+// guestIMDSFlowCount returns how many br-imds flows carry the guest's cookie, or
+// -1 while ovs-vswitchd is not answering. Other guests' teardowns cannot skew it.
+func guestIMDSFlowCount(t *testing.T, cookie string) int {
 	t.Helper()
-	out, err := exec.Command("sudo", "-n", "ovs-ofctl", "--no-stats", "dump-flows", host.IMDSBridge).Output()
+	out, err := exec.Command("sudo", "-n", "ovs-ofctl", "--no-stats", "dump-flows", host.IMDSBridge, "cookie="+cookie+"/-1").Output()
 	if err != nil {
 		return -1
 	}

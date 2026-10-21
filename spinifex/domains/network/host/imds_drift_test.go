@@ -173,6 +173,25 @@ func TestRepairIMDSDatapath(t *testing.T) {
 		}
 	})
 
+	// After a kmod reload the flows survive and only the endpoint is lost; a
+	// repair that fails on the endpoint must not take the flows with it.
+	t.Run("endpoint failure keeps the surviving flows", func(t *testing.T) {
+		s := newStubRunner()
+		s.expect("ovs-vsctl list-ports "+IMDSBridge, []byte(d.Tap+"\n"), nil)
+		s.expect("ovs-vsctl --may-exist add-br", nil, nil)
+		s.expect("ovs-vsctl set", nil, nil)
+		s.expect("ip link set "+IMDSBridge, nil, nil)
+		s.expect("ovs-vsctl --may-exist add-port "+IMDSBridge+" "+d.Endpoint, nil, errors.New("ovsdb busy"))
+		s.expect("ovs-ofctl", nil, nil)
+
+		if err := repairIMDSDatapath(context.Background(), s, d); err == nil {
+			t.Fatal("want the endpoint failure to surface")
+		}
+		if s.called("ovs-ofctl del-flows") {
+			t.Errorf("flows cleared before the endpoint was ready; calls: %v", s.calls)
+		}
+	})
+
 	t.Run("port list failure installs nothing", func(t *testing.T) {
 		s := newStubRunner()
 		s.expect("ovs-vsctl list-ports", nil, errors.New("ovsdb unreachable"))

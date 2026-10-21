@@ -15,6 +15,11 @@ import (
 // after ovs-vswitchd restarts. A var so tests can shorten it.
 var IMDSDatapathReconcileInterval = 10 * time.Second
 
+// imdsRepairConcurrency bounds how many datapaths one pass re-installs at once.
+// An ovs-vswitchd restart drops every guest's flows together, so serial repairs
+// would keep the last guest dark for the sum of everyone else's install.
+const imdsRepairConcurrency = 8
+
 // imdsDatapathTarget is a running guest whose primary ENI has an IMDS datapath,
 // copied out of the manager lock with everything a re-install needs.
 type imdsDatapathTarget struct {
@@ -62,9 +67,16 @@ func (m *Manager) reconcileIMDSDatapaths() {
 		slog.Warn("IMDS: datapath state read failed; skipping reconcile pass", "err", err)
 		return
 	}
+	sem := make(chan struct{}, imdsRepairConcurrency)
+	var wg sync.WaitGroup
 	for _, t := range imdsDatapathsToRepair(targets, states) {
-		m.repairIMDSDatapath(t, states[t.eniID])
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			m.repairIMDSDatapath(t, states[t.eniID])
+		})
 	}
+	wg.Wait()
 }
 
 // imdsDatapathTargets returns the running guests attachPrimaryIMDSDatapath

@@ -19,6 +19,11 @@ import (
 // egress flow, and the two tap<->patch forward flows.
 const IMDSTapFlowCount = 7
 
+// IMDSFlowCookie is the cookie every br-imds flow of eniID's datapath carries.
+func IMDSFlowCookie(eniID string) string {
+	return imdsFlowCookie(IMDSEndpointName(eniID))
+}
+
 // endpointSysctlDir is where the kernel exposes per-device IPv4 settings.
 var endpointSysctlDir = "/proc/sys/net/ipv4/conf"
 

@@ -74,7 +74,7 @@ func imdsDetachSpec(eniID string) IMDSTapDatapath {
 // endpoint, patch, demux/egress flows, and reply routing. Stale flows are cleared
 // once here (all installers share the tap's cookie) before any flow is added.
 //
-// Bridge, cookie clear, endpoint, and patch are connectivity-critical (error bare):
+// Bridge, endpoint, cookie clear, and patch are connectivity-critical (error bare):
 // ListIMDSTaps advertises the tap off the patch and vpcd binds the endpoint, so the
 // endpoint must exist whenever the patch does, else vpcd binds a missing device every
 // reconcile forever. The flows and reply routing only serve, so theirs wrap
@@ -90,10 +90,12 @@ func installIMDSDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error
 	// The INPUT accept and the remap DNAT are wildcarded over every endpoint and
 	// installed once by vpcd at start. They are not attempted here: the daemon
 	// has no iptables grant and no CAP_NET_ADMIN, so trying aborts every launch.
-	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
+	if err := ensureIMDSEndpoint(ctx, r, d); err != nil {
 		return err
 	}
-	if err := ensureIMDSEndpoint(ctx, r, d); err != nil {
+	// Cleared after the endpoint so a failed endpoint step leaves a repaired
+	// guest's surviving flows, and with them its connectivity, in place.
+	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		return err
 	}
 	if err := installTapPatch(ctx, r, d); err != nil {

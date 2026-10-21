@@ -2,6 +2,10 @@ package vm
 
 import (
 	"errors"
+	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -186,6 +190,96 @@ func TestRepairIMDSDatapath_WaitsForTeardownLock(t *testing.T) {
 	<-done
 	if len(plumber.imdsRepairCalls) != 1 {
 		t.Errorf("repair calls after unlock = %d, want 1", len(plumber.imdsRepairCalls))
+	}
+}
+
+// A repair landing between detach and tap cleanup would find the tap still on
+// br-imds and re-create the endpoint and patch of a guest being torn down.
+func TestCleanupTapDevices_HoldsENILockAcrossDetachAndCleanup(t *testing.T) {
+	inDetach, releaseDetach := make(chan struct{}), make(chan struct{})
+	inCleanup, releaseCleanup := make(chan struct{}), make(chan struct{})
+	plumber := &fakeNetworkPlumber{
+		detachHook:  func() { close(inDetach); <-releaseDetach },
+		cleanupHook: func() { close(inCleanup); <-releaseCleanup },
+	}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	v := imdsTestVM("i-a", "eni-a", StateRunning)
+	m.Insert(v)
+	target, _ := imdsTargetOf(v)
+
+	var wg sync.WaitGroup
+	wg.Go(func() { m.cleanupTapDevices(v) })
+	<-inDetach
+	wg.Go(func() { m.repairIMDSDatapath(target, imdsFlushed) })
+	for _, step := range []struct {
+		name    string
+		release chan struct{}
+		next    chan struct{}
+	}{{"detach", releaseDetach, inCleanup}, {"tap cleanup", releaseCleanup, nil}} {
+		time.Sleep(50 * time.Millisecond)
+		if n := plumber.repairCount(); n != 0 {
+			t.Fatalf("repair ran during %s: %d calls", step.name, n)
+		}
+		close(step.release)
+		if step.next != nil {
+			<-step.next
+		}
+	}
+	wg.Wait()
+
+	want := []string{"detach:eni-a", "cleanup:" + TapDeviceName("eni-a"), "repair:eni-a"}
+	if !slices.Equal(plumber.order, want) {
+		t.Errorf("call order = %v, want %v", plumber.order, want)
+	}
+}
+
+// An ovs-vswitchd restart drifts every guest at once; repairs must overlap so
+// the last guest is not dark for the sum of everyone else's install.
+func TestReconcileIMDSDatapaths_RepairsConcurrentlyUpToLimit(t *testing.T) {
+	const guests = imdsRepairConcurrency + 4
+	var inFlight atomic.Int32
+	var overLimit atomic.Bool
+	full, release := make(chan struct{}), make(chan struct{})
+	var fullOnce sync.Once
+	plumber := &fakeNetworkPlumber{
+		imdsStates: map[string]IMDSDatapathState{},
+		repairHook: func() {
+			n := inFlight.Add(1)
+			if n > imdsRepairConcurrency {
+				overLimit.Store(true)
+			}
+			if n == imdsRepairConcurrency {
+				fullOnce.Do(func() { close(full) })
+			}
+			<-release
+			inFlight.Add(-1)
+		},
+	}
+	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
+	for i := range guests {
+		eni := fmt.Sprintf("eni-%d", i)
+		plumber.imdsStates[eni] = imdsFlushed
+		m.Insert(imdsTestVM(fmt.Sprintf("i-%d", i), eni, StateRunning))
+	}
+
+	done := make(chan struct{})
+	go func() {
+		m.reconcileIMDSDatapaths()
+		close(done)
+	}()
+	select {
+	case <-full:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("repairs did not reach %d in flight: %d", imdsRepairConcurrency, inFlight.Load())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if overLimit.Load() {
+		t.Errorf("more than %d repairs ran at once", imdsRepairConcurrency)
+	}
+	close(release)
+	<-done
+	if n := plumber.repairCount(); n != guests {
+		t.Errorf("repairs = %d, want %d", n, guests)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -13,10 +14,19 @@ import (
 
 // fakeNetworkPlumber records calls so tests can assert per-spec behaviour.
 type fakeNetworkPlumber struct {
+	mu                  sync.Mutex
+	order               []string // cleanup, detach and repair calls, in order
+	detachHook          func()
+	cleanupHook         func()
+	repairHook          func()
 	setupCalls          []TapSpec
 	cleanupCalls        []string
 	imdsAttachCalls     []imdsAttachCall
 	imdsDetachCalls     []string
+	imdsRepairCalls     []imdsAttachCall
+	imdsStates          map[string]IMDSDatapathState
+	imdsStatesErr       error
+	imdsRepairErr       error
 	hostPortCalls       []hostPortCall
 	hostPortRemoveCalls []string
 	ensureBridgeCalls   int
@@ -49,7 +59,13 @@ func (p *fakeNetworkPlumber) SetupTap(spec TapSpec) error {
 }
 
 func (p *fakeNetworkPlumber) CleanupTap(name string) error {
+	if p.cleanupHook != nil {
+		p.cleanupHook()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.cleanupCalls = append(p.cleanupCalls, name)
+	p.order = append(p.order, "cleanup:"+name)
 	return p.cleanupErr
 }
 
@@ -59,8 +75,44 @@ func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) err
 }
 
 func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
+	if p.detachHook != nil {
+		p.detachHook()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.imdsDetachCalls = append(p.imdsDetachCalls, eniID)
+	p.order = append(p.order, "detach:"+eniID)
 	return p.imdsDetachErr
+}
+
+func (p *fakeNetworkPlumber) IMDSDatapathStates(eniIDs []string) (map[string]IMDSDatapathState, error) {
+	if p.imdsStatesErr != nil {
+		return nil, p.imdsStatesErr
+	}
+	out := make(map[string]IMDSDatapathState, len(eniIDs))
+	for _, id := range eniIDs {
+		if s, ok := p.imdsStates[id]; ok {
+			out[id] = s
+		}
+	}
+	return out, nil
+}
+
+func (p *fakeNetworkPlumber) RepairIMDSDatapath(eniID, mac, subnetID string) error {
+	if p.repairHook != nil {
+		p.repairHook()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.imdsRepairCalls = append(p.imdsRepairCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
+	p.order = append(p.order, "repair:"+eniID)
+	return p.imdsRepairErr
+}
+
+func (p *fakeNetworkPlumber) repairCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.imdsRepairCalls)
 }
 
 func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {

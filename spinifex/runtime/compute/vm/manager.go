@@ -96,6 +96,10 @@ type Manager struct {
 	vms         map[string]*VM
 	deps        Deps
 	goroutineWg sync.WaitGroup
+
+	// imdsLocks serialises each primary ENI's IMDS datapath attach, repair and
+	// teardown, which run outside mu.
+	imdsLocks keyedMutex
 }
 
 // NewManager returns a Manager with no collaborators wired. Tests that only

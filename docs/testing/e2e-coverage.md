@@ -19,7 +19,7 @@ The nightly permutation sets are deliberately narrower than the full ones: those
 
 ### `single` — the broad single-node EC2/EBS/VPC surface
 
-The largest suite, 25 top-level tests. Notable entry points:
+The largest suite, 27 top-level tests. Notable entry points:
 
 - **`TestVPCEgressPaths`** — **the authority on subnet egress semantics.** One VPC with a public and a private subnet, sharing two guests across four stages: `PublicSubnetEgress` (IGW egress works), `RouteBeforeSubnet` (a regression guard for an IGW route installed on the main route table before the subnet exists), the NAT Gateway rounds, and `EIPFlip` (associating an Elastic IP onto a running instance).
   - **`NATBaseline` hard-fails if a private-subnet guest reaches the internet with no NAT Gateway.** `NATGatewayUp` then proves egress appears and `NATGatewayDown` that it disappears. `SPINIFEX_VPCEGRESS_NAT_ROUNDS` repeats the up/down cycle for a soak run.
@@ -27,6 +27,7 @@ The largest suite, 25 top-level tests. Notable entry points:
 - `TestSGPolicyDatapath`, `TestSGReachabilityPolicy` — security groups as an actual datapath, not just API state.
 - `TestWANEgressSMTPBlock` — egress port blocking.
 - `TestInstanceMetadata` — IMDS from inside a guest.
+- **`TestIMDSDatapathSurvivesVswitchdRestart`** restarts `ovs-vswitchd` under a guest with an Elastic IP, once through systemd and once with SIGKILL. After each, the guest must answer over its EIP and fetch its instance ID through IMDSv2 within 60 seconds, and `br-imds` must hold all 7 of the guest's own flows. It is sequential because it takes the whole node's datapath down.
 - `TestStopStart`, `TestEarlyRebootLiveness`, `TestGuestChurnDurability`, `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch`, `TestCreateImage`, `TestVolumeLifecycle`, `TestSpotInstanceLifecycle`, `TestLaunchTemplateBoot`.
 - `TestNegativeErrorPaths` — the `8a`–`8t` AWS error-shape cases (malformed AMI ID, invalid instance type, volume in use, detach-root forbidden, unknown or malformed instance IDs on the lifecycle verbs, and so on).
 - **`TestKVReplication`** — the single-node half of the KV replication policy, and it is not the multi-node assertion with a smaller number in it. On one node one replica per bucket is the correct answer rather than the defect, so what it proves is the opposite: that nothing declared a replica count this deployment cannot place, that `spx admin kv replicas` exits 0 and reports `WANT 1`, and that `--repair` run twice against a cluster with nothing to repair changes no bucket's replica count and leaves every bucket serving. The multi-node suites cannot cover any of that, because on three nodes the unplaceable count is the right one. It lives here rather than in its own suite so it runs in every single-node nightly cell, across all three host and network permutations.

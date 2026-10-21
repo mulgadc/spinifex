@@ -11,6 +11,24 @@ import "errors"
 // was not set up and is equally fatal.
 var ErrIMDSServingDegraded = errors.New("imds: per-tap serving install failed (guest connectivity intact)")
 
+// ErrIMDSTapDetached is RepairIMDSDatapath declining a tap no longer on br-imds:
+// its guest is being torn down, and a repair would re-create ports it just lost.
+var ErrIMDSTapDetached = errors.New("imds: tap is no longer on the IMDS bridge")
+
+// IMDSDatapathState is what survives of a primary ENI's IMDS datapath: its
+// br-imds flows against the number installed, and whether its endpoint still
+// carries the settings the install gave it.
+type IMDSDatapathState struct {
+	FlowsFound    int
+	FlowsExpected int
+	EndpointReady bool
+}
+
+// Intact reports whether nothing the install put in place has been lost.
+func (s IMDSDatapathState) Intact() bool {
+	return s.FlowsFound >= s.FlowsExpected && s.EndpointReady
+}
+
 // NetworkPlumber handles tap device and OVS bridge operations. Defined in vm
 // so the manager avoids importing network/host. All methods must be idempotent.
 type NetworkPlumber interface {
@@ -31,6 +49,15 @@ type NetworkPlumber interface {
 	// patch pair, endpoint), leaving the shared br-imds bridge in place. Idempotent,
 	// so safe for an ENI that never had a datapath installed.
 	DetachIMDSDatapath(eniID string) error
+
+	// IMDSDatapathStates reports, per primary ENI, what survives of its IMDS
+	// datapath. One pass covers every ENI; an error means nothing was read.
+	IMDSDatapathStates(eniIDs []string) (map[string]IMDSDatapathState, error)
+
+	// RepairIMDSDatapath re-installs the IMDS datapath of a running guest whose
+	// state was lost. Returns ErrIMDSTapDetached, changing nothing, when the tap
+	// is no longer on br-imds.
+	RepairIMDSDatapath(eniID, mac, subnetID string) error
 
 	// EnsureVPCHostPort gives the host a routed presence in a managed VPC subnet
 	// by binding an ENI the daemon itself owns to an internal port on br-int.

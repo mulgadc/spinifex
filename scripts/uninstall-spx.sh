@@ -307,12 +307,14 @@ rm_path /etc/systemd/system/spinifex-*.service \
 # exactly that way on the first dev-oci round trip.
 log "removing drop-ins written into other units"
 rm_path /etc/systemd/system/openvswitch-switch.service.d/spinifex-perms.conf \
+        /etc/systemd/system/ovs-vswitchd.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-controller.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-controller.service.d/log-level.conf \
         /etc/systemd/system/openvswitch-ipsec.service.d/spinifex-perms.conf \
+        /etc/systemd/system/ovn-northd.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf
 # Only if we emptied them — another package may own the same override dir.
-for d in openvswitch-switch ovn-controller openvswitch-ipsec ovn-northd; do
+for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd; do
     dir="/etc/systemd/system/${d}.service.d"
     if sudo test -d "$dir" && [ -z "$(sudo ls -A "$dir" 2>/dev/null)" ]; then
         rm_path "$dir"

@@ -7,7 +7,7 @@ Node installation, dev-environment lifecycle, guest image builds, and verificati
 | Script | What it does |
 |---|---|
 | `setup.sh` | The production binary installer, served from `install.mulgadc.com`. Installs deps, users, sudoers, files, systemd units, logrotate and udev rules. `SETUP_STAGES` runs a subset; `ISO_BUILD=1` runs it inside the ISO builder's chroot. |
-| `setup-ovn.sh` | Bootstraps a compute node for OVN VPC networking: installs OVN/OVS, creates `br-int`, configures the WAN bridge (bridged, DHCP, or routed-NAT uplink), sets the chassis identity, and applies overlay sysctls. `--management` also starts the OVN central services. |
+| `setup-ovn.sh` | Bootstraps a compute node for OVN VPC networking: installs OVN/OVS, creates `br-int`, configures the WAN bridge (bridged, DHCP, or routed-NAT uplink), sets the chassis identity, and applies overlay sysctls. It runs OVS and OVN as root, setting `OVS_USER_ID` and `OVN_USER_ID` where `/etc/sysconfig` holds them, and hooks the socket-permission helper onto `ovs-vswitchd`, `ovn-controller`, `openvswitch-ipsec` and, on EL, `ovn-northd`. `--management` also starts the OVN central services. |
 | `install-node.sh` | Forms a multi-node cluster across hosts that are already running Spinifex: rebuilds the OVN database in clustered form, runs `spx admin init` on the first host and `spx admin join` on the rest, then verifies. The scripted form of [install-multi-node](../docs/install/install-multi-node/README.md). Destroys the joining nodes' logical network state and crypto — see its `--help`. |
 | `dev-install.sh` | Full local dev setup through the production installer: builds from source, packs a tarball, runs `setup.sh`, initialises the cluster, and starts services under systemd. |
 | `clone-deps.sh` | Clones or updates the viperblock and predastore checkouts alongside spinifex for cross-repo development. |
@@ -24,6 +24,9 @@ Each probe prints its answer, or names every candidate it tried on stderr and re
 | `distro_ovn_central_layout` | `split` (Debian's `ovn-central` plus separate NB and SB units) or `lone-northd` (EL's single `ovn-northd.service`) |
 | `distro_ca_trust` | the trust-store update command and its anchor directory |
 | `distro_ovn_logrotate` | `/etc/logrotate.d/ovn-common` or `/etc/logrotate.d/ovn` |
+
+`distro_missing_ovs_deps <unit-file>...` is a check rather than a probe: it prints each OVS or OVN unit the given unit files depend on or order against that is not installed, and fails only when a file cannot be read.
+`setup-ovn.sh` runs it against the installed Spinifex units and stops when one is missing, because systemd silently drops ordering against a unit that does not exist; a missing `openvswitch-ipsec.service` is only a warning.
 
 `setup-ovn.sh`, `uninstall-spx.sh` and `dev-install.sh` source it from `lib/` beside themselves, then from `/usr/local/share/spinifex/lib/distro.sh`, where `setup.sh` installs it, and stop naming both paths when neither exists.
 `setup.sh` is piped from the install endpoint before the tarball is downloaded, and `install-node.sh --wipe` copies `node-reset.sh` alone to each host, so those two carry inline copies of the probes they need between `# --- BEGIN distro.sh probes ---` markers.

@@ -139,6 +139,41 @@ else
     fail "transit MAC disagrees: script=$script_mac go=$go_mac"
 fi
 
+# --------------------------------------------------------------------------
+# OVS and OVN service users.
+# --------------------------------------------------------------------------
+# EL runs OVS and OVN as non-root users and re-chowns their sockets on every
+# start. The function is run on its own against scratch files, through a sudo
+# that only runs its arguments.
+awk '$0 == "set_root_service_user() {" { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >"$TMP/user_fn.sh"
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\nexec "$@"\n' >"$TMP/bin/sudo"
+chmod +x "$TMP/bin/sudo"
+
+# set_user <file> — runs the function on <file> for OVS_USER_ID; sets RC.
+set_user() {
+    RC=0
+    PATH="$TMP/bin:$PATH" bash -c '. "$1"; set_root_service_user "$2" OVS_USER_ID' _ "$TMP/user_fn.sh" "$1" >/dev/null || RC=$?
+}
+
+set_user "$TMP/absent"
+if [ "$RC" != 0 ] && [ ! -e "$TMP/absent" ]; then pass "service user: no file, no change"; else fail "service user: absent file gave rc=$RC or was created"; fi
+
+printf '# OVS_USER_ID="openvswitch:openvswitch"\nOPTIONS=""\nOVS_USER_ID="openvswitch:hugetlbfs"\n' >"$TMP/el"
+set_user "$TMP/el"
+want='# OVS_USER_ID="openvswitch:openvswitch"
+OPTIONS=""
+OVS_USER_ID="root:root"'
+if [ "$RC" = 0 ] && [ "$(cat "$TMP/el")" = "$want" ]; then pass "service user: EL default replaced in place, comments and other lines kept"; else fail "service user: EL file rc=$RC: $(cat "$TMP/el")"; fi
+
+set_user "$TMP/el"
+if [ "$RC" != 0 ] && [ "$(cat "$TMP/el")" = "$want" ]; then pass "service user: already root reports no change"; else fail "service user: second run rc=$RC: $(cat "$TMP/el")"; fi
+
+printf 'OPTIONS=""\n' >"$TMP/unset"
+set_user "$TMP/unset"
+if [ "$RC" = 0 ] && [ "$(cat "$TMP/unset")" = 'OPTIONS=""
+OVS_USER_ID="root:root"' ]; then pass "service user: appended when the file does not set it"; else fail "service user: unset file rc=$RC: $(cat "$TMP/unset")"; fi
+
 if [ "$fails" -ne 0 ]; then
     echo "  setup-ovn.sh: $fails failure(s)"
     exit 1

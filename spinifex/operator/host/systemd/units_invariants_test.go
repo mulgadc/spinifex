@@ -423,6 +423,7 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "04b0f23b9cda322e4012d589acc196abe466b619dec5ac0d832897b9af2f926c",
 		2: "97a2d4c72967a9bdf9545ff74593de532e8469568bb717c9958d33b77e62d0ed",
 		3: "8059fe13a678b8cb2a383ae75c069560cf39adece9a9394e17781998c711cd57",
+		4: "f66e1240cc5655f6a13f3b56ca282c73e2fe289f2e51d0ce624d14b90f12f838",
 	},
 	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
 	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
@@ -449,9 +450,15 @@ var unitBodyHashes = map[string]map[int]string{
 		1: "5c8cdd2004abf8e5725cbce0200565b9b29be7ab3210a4e0a2cdfe37ec5facb9",
 		2: "5d691bf5ce4a5a636d5dcc07f7bfa36d0da9eb0d7fb26079f89358ca0e5440cd",
 	},
-	"spinifex-vpcd.service": {1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965"},
-	"spinifex.slice":        {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
-	"spinifex.target":       {1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078"},
+	"spinifex-vpcd.service": {
+		1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965",
+		2: "6ca01c8104ce0fc96ee4fdd8c0f2cd2ae907211b58b6f868fdc6a26f55a579f8",
+	},
+	"spinifex.slice": {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
+	"spinifex.target": {
+		1: "0ffba9faee5a477f8ff7466a6bccb4dc7e04f5cf92a405553c242e6548402078",
+		2: "0dc31d0e415277d10e4d90959f40d574f5c2319560299448002f701453737d5b",
+	},
 }
 
 // TestUnitBodyPinnedToVersion asserts each unit's body hash matches the
@@ -492,4 +499,59 @@ func stripVersionMarkerLine(content string) string {
 		return rest
 	}
 	return content
+}
+
+// crossDistroOVSUnits are the OVS and OVN units Debian and EL both ship under
+// the same name. The umbrella differs (openvswitch-switch against openvswitch),
+// and systemd silently drops ordering against a unit that does not exist.
+var crossDistroOVSUnits = []string{
+	"ovsdb-server.service",
+	"ovs-vswitchd.service",
+	"ovn-controller.service",
+	"ovn-northd.service",
+	"openvswitch-ipsec.service",
+}
+
+// TestOVSDependenciesExistOnEveryDistro asserts every OVS or OVN unit a
+// Spinifex unit depends on or orders against is one both distros ship.
+func TestOVSDependenciesExistOnEveryDistro(t *testing.T) {
+	dir := unitsDir(t)
+	keys := []string{"After", "Before", "Wants", "Requires", "Requisite", "BindsTo", "PartOf", "Upholds"}
+	for _, name := range allUnitFiles(t, dir) {
+		u := readUnit(t, dir, name)
+		for line := range strings.SplitSeq(u, "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if !ok || !slices.Contains(keys, key) {
+				continue
+			}
+			for dep := range strings.FieldsSeq(value) {
+				if !strings.HasPrefix(dep, "ovs") && !strings.HasPrefix(dep, "ovn") && !strings.HasPrefix(dep, "openvswitch") {
+					continue
+				}
+				if !slices.Contains(crossDistroOVSUnits, dep) {
+					t.Errorf("%s: %s=%s is not shipped under that name on every distro; use one of %v", name, key, dep, crossDistroOVSUnits)
+				}
+			}
+		}
+	}
+}
+
+// TestHostnetIsWantedNotRequired asserts the daemon and vpcd start after
+// spinifex-hostnet without Requires=: hostnet is PartOf ovs-vswitchd, so a
+// Requires= would restart both on every OVS restart or package upgrade.
+func TestHostnetIsWantedNotRequired(t *testing.T) {
+	dir := unitsDir(t)
+	for _, name := range []string{"spinifex-daemon.service", "spinifex-vpcd.service"} {
+		u := readUnit(t, dir, name)
+		for _, key := range []string{"Wants", "After"} {
+			if !directiveContains(u, key, "spinifex-hostnet.service") {
+				t.Errorf("%s: %s= must include spinifex-hostnet.service", name, key)
+			}
+		}
+		for _, key := range []string{"Requires", "Requisite", "BindsTo", "PartOf"} {
+			if directiveContains(u, key, "spinifex-hostnet.service") {
+				t.Errorf("%s: %s=spinifex-hostnet.service would restart it with OVS; use Wants=", name, key)
+			}
+		}
+	}
 }

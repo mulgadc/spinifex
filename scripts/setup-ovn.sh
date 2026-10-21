@@ -4,7 +4,7 @@
 #
 # This script bootstraps a compute node for OVN-based VPC networking:
 #   1. Installs OVN/OVS packages (if not present)
-#   2. Enables required services (openvswitch-switch, ovn-controller)
+#   2. Enables required services (Open vSwitch, ovn-controller)
 #   3. Creates br-int with secure fail-mode
 #   4. Configures WAN bridge for public subnet uplink (auto-detected or manual)
 #   5. Configures OVS external_ids for OVN chassis identity
@@ -588,19 +588,70 @@ ensure_clustered_db_storage() {
     # fresh SB and re-registers under whatever system-id it started with — which
     # on a renamed node is the old one, and that row then holds this node's encap
     # IP so the correctly-named chassis can never commit. Step 5 restarts it.
-    sudo systemctl stop ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-central ovn-controller 2>/dev/null || true
+    sudo systemctl stop "${OVN_CENTRAL_UNITS[@]}" ovn-controller 2>/dev/null || true
     sudo rm -f "${standalone[@]}"
+}
+
+# set_root_service_user <file> <var> — sets <var>="root:root" in <file> when
+# the file exists. Returns 0 only when it changed the file.
+set_root_service_user() {
+    local file=$1 var=$2
+    [ -f "$file" ] || return 1
+    grep -qx "$var=\"root:root\"" "$file" && return 1
+    if grep -q "^$var=" "$file"; then
+        sudo sed -i "s|^$var=.*|$var=\"root:root\"|" "$file"
+    else
+        echo "$var=\"root:root\"" | sudo tee -a "$file" >/dev/null
+    fi
+    echo "  $file: $var=\"root:root\""
 }
 
 echo ""
 echo "Step 2: Enabling services..."
 
-sudo systemctl enable openvswitch-switch
-sudo systemctl start openvswitch-switch
-echo "  openvswitch-switch: started"
+# Unit names differ by distro: the OVS umbrella, and whether the OVN databases
+# have units of their own (Debian) or are started by ovn-northd.service (EL).
+OVS_UNIT=$(distro_ovs_unit) || exit 1
+OVN_CENTRAL_LAYOUT=""
+if [ "$MANAGEMENT" = true ] || distro_unit_exists ovn-central.service || distro_unit_exists ovn-northd.service; then
+    OVN_CENTRAL_LAYOUT=$(distro_ovn_central_layout) || exit 1
+fi
+case "$OVN_CENTRAL_LAYOUT" in
+    split)
+        OVN_CENTRAL_UNIT=ovn-central.service
+        OVN_DB_UNITS=(ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service)
+        OVN_SERVER_UNITS=("${OVN_DB_UNITS[@]}" ovn-northd.service)
+        OVN_CENTRAL_UNITS=(ovn-central.service "${OVN_SERVER_UNITS[@]}")
+        ;;
+    lone-northd)
+        OVN_CENTRAL_UNIT=ovn-northd.service
+        OVN_DB_UNITS=(ovn-northd.service)
+        OVN_SERVER_UNITS=(ovn-northd.service)
+        OVN_CENTRAL_UNITS=(ovn-northd.service)
+        ;;
+esac
+
+# OVS and OVN run as root, as on Debian: the service users reach the sockets
+# through the spinifex group, a model tested only against root-owned daemons.
+# EL ships non-root users and re-chowns the run dirs to them on every start.
+OVS_USER_CHANGED=false
+if set_root_service_user /etc/sysconfig/openvswitch OVS_USER_ID; then
+    OVS_USER_CHANGED=true
+fi
+# Takes effect below: ovn-northd and ovn-controller are restarted either way.
+set_root_service_user /etc/sysconfig/ovn OVN_USER_ID || true
+
+sudo systemctl enable "$OVS_UNIT"
+if [ "$OVS_USER_CHANGED" = true ]; then
+    # start is a no-op on a running OVS, which would keep its old user.
+    sudo systemctl restart "$OVS_UNIT"
+else
+    sudo systemctl start "$OVS_UNIT"
+fi
+echo "  ${OVS_UNIT%.service}: started"
 
 if [ "$MANAGEMENT" = true ]; then
-    sudo systemctl enable ovn-central
+    sudo systemctl enable "$OVN_CENTRAL_UNIT"
 
     # LAN-plane NB/SB client listener, added to the loopback one set below.
     # Guard is load-bearing: --db-nb-addr defaults to 0.0.0.0, so
@@ -664,10 +715,10 @@ ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ov
 EOF
         sudo systemctl daemon-reload
 
-        # The ovn-central aggregator is ExecStart=/bin/true, so restarting it
-        # won't restart the children — restart the per-DB units directly to
-        # pick up the new OVN_CTL_OPTS.
-        sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-northd
+        # Debian's ovn-central aggregator is ExecStart=/bin/true, so restarting
+        # it won't restart the children — restart the DB and northd units
+        # directly to pick up the new OVN_CTL_OPTS.
+        sudo systemctl restart "${OVN_SERVER_UNITS[@]}"
         echo "  ovn-central: started clustered (NB DB + SB DB + ovn-northd)"
     else
         # Always write the file, even when there is nothing to put in it. This
@@ -677,12 +728,12 @@ EOF
         # peer that no longer exists, which looks like a hung leader election.
         echo "OVN_CTL_OPTS=\"$OVN_DB_LISTEN_OPTS\"" | sudo tee /etc/default/ovn-central >/dev/null
         echo "  wrote /etc/default/ovn-central"
-        sudo systemctl start ovn-central
+        sudo systemctl start "$OVN_CENTRAL_UNIT"
 
-        # ovn-central is ExecStart=/bin/true; restarting it does not restart
-        # its children, so a re-run with changed options needs the per-DB units
-        # restarted directly to pick them up.
-        sudo systemctl restart ovn-ovsdb-server-nb ovn-ovsdb-server-sb
+        # Debian's ovn-central is ExecStart=/bin/true; restarting it does not
+        # restart its children, so a re-run with changed options needs the DB
+        # units restarted directly to pick them up.
+        sudo systemctl restart "${OVN_DB_UNITS[@]}"
         echo "  ovn-central: started (NB DB + SB DB + ovn-northd)"
         if [ -n "$LAN_ADDR" ]; then
             echo "  NB/SB client listen: 127.0.0.1, $LAN_ADDR"
@@ -825,10 +876,10 @@ else
         exit 1
     fi
 
-    if systemctl is-enabled ovn-central >/dev/null 2>&1 ||
-        systemctl is-active ovn-central >/dev/null 2>&1; then
-        sudo systemctl stop ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
-        sudo systemctl disable ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb 2>/dev/null || true
+    if [ -n "$OVN_CENTRAL_LAYOUT" ] && { systemctl is-enabled "$OVN_CENTRAL_UNIT" >/dev/null 2>&1 ||
+        systemctl is-active "$OVN_CENTRAL_UNIT" >/dev/null 2>&1; }; then
+        sudo systemctl stop "${OVN_CENTRAL_UNITS[@]}" 2>/dev/null || true
+        sudo systemctl disable "${OVN_CENTRAL_UNITS[@]}" 2>/dev/null || true
         echo "  ovn-central: stopped and disabled (compute node runs no database)"
     fi
     for db in "$OVN_DBDIR/ovnnb_db.db" "$OVN_DBDIR/ovnsb_db.db"; do
@@ -1522,17 +1573,24 @@ echo "  OVS/OVN sockets: 0660 root:spinifex (group-scoped, no world access)"
 # file is the old 0666 override, and skipping would leave that exposure in place.
 # openvswitch-ipsec is included because Step 10 restarts it after this sweep,
 # so its ctl socket would otherwise be the one file left at the shipped mode.
-for unit in openvswitch-switch:/var/run/openvswitch/db.sock \
-    "ovn-controller:/var/run/ovn/*.ctl" \
-    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl"; do
+# ovs-vswitchd starts after ovsdb-server and restarts with it (Requires=), so
+# its hook sees both daemons' sockets and fires on a restart of either.
+PERMS_UNITS=("ovs-vswitchd:/var/run/openvswitch/ovs-vswitchd.*.ctl"
+    "ovn-controller:/var/run/ovn/*.ctl"
+    "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl")
+# EL's ovn-northd.service starts the NB and SB databases as well as northd.
+if [ "$OVN_CENTRAL_LAYOUT" = lone-northd ]; then
+    PERMS_UNITS+=("ovn-northd:/var/run/ovn/ovn-northd.*.ctl")
+fi
+for unit in "${PERMS_UNITS[@]}"; do
     UNIT="${unit%%:*}"
     WAIT_GLOB="${unit#*:}"
     OVERRIDE_DIR="/etc/systemd/system/${UNIT}.service.d"
     sudo mkdir -p "$OVERRIDE_DIR"
     # `ExecStartPost=-` so a failure here cannot stop the unit. This drop-in goes
     # into another package's service, and tightening a socket mode is hardening,
-    # not a liveness requirement — it must never be the reason openvswitch-switch
-    # or ovn-controller will not start. Without the dash, removing the helper
+    # not a liveness requirement — it must never be the reason OVS or
+    # ovn-controller will not start. Without the dash, removing the helper
     # (an uninstall, a partial re-run that has not reached this step yet) takes
     # OVS down across the whole host with `Failed at step EXEC`, which reads as
     # an OVS fault and is nothing of the sort.
@@ -1583,7 +1641,7 @@ fi
 # to prevent log spam during those retries.
 echo ""
 echo "Step 10: Enabling OVN auto-start on boot..."
-sudo systemctl enable openvswitch-switch 2>/dev/null || true
+sudo systemctl enable "$OVS_UNIT" 2>/dev/null || true
 sudo systemctl enable ovn-controller 2>/dev/null || true
 # ovs-monitor-ipsec drives strongSwan from OVS DB cert pointers. The daemon's
 # enableOVNIPSec() flips ipsec_encapsulation=true at runtime and silently drops
@@ -1596,9 +1654,30 @@ sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
 # now that strongswan-starter is present.
 sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
 sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
-echo "  openvswitch-switch:   enabled on boot"
-echo "  ovn-controller:       enabled on boot"
-echo "  openvswitch-ipsec:    enabled on boot"
+printf '  %-21s enabled on boot\n' "${OVS_UNIT%.service}:" ovn-controller: openvswitch-ipsec:
+
+# systemd silently drops ordering against a unit that is not installed, so a
+# missing OVS or OVN unit would leave Spinifex starting unordered against OVS.
+SPINIFEX_UNITS=()
+for f in /etc/systemd/system/spinifex.target /etc/systemd/system/spinifex-*.service; do
+    [ -f "$f" ] && SPINIFEX_UNITS+=("$f")
+done
+if [ ${#SPINIFEX_UNITS[@]} -eq 0 ]; then
+    echo "  Spinifex units: not installed yet — run setup.sh, then re-run this script"
+else
+    MISSING_DEPS=$(distro_missing_ovs_deps "${SPINIFEX_UNITS[@]}") || exit 1
+    DEPS_OK=true
+    for dep in $MISSING_DEPS; do
+        if [ "$dep" = openvswitch-ipsec.service ]; then
+            echo "  WARNING: $dep is not installed; IPsec cannot be turned on"
+        else
+            echo "ERROR: the Spinifex units order against $dep, which is not installed" >&2
+            DEPS_OK=false
+        fi
+    done
+    [ "$DEPS_OK" = true ] || exit 1
+    echo "  OVS/OVN units the Spinifex units name: installed"
+fi
 
 # --- Step 11: Health check ---
 echo ""

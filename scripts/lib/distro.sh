@@ -103,3 +103,33 @@ distro_ovn_logrotate() {
     echo "distro.sh: OVN logrotate: found neither /etc/logrotate.d/ovn-common nor /etc/logrotate.d/ovn; is OVN installed?" >&2
     return 1
 }
+
+# The OVS and OVN units the given unit files depend on or order against that
+# are not installed, one per line; prints nothing when all are. Fails only
+# when a unit file cannot be read.
+distro_missing_ovs_deps() {
+    local file line dep missing=""
+    for file in "$@"; do
+        if [ ! -r "${DISTRO_ROOT:-}$file" ]; then
+            echo "distro.sh: OVS dependencies: cannot read $file" >&2
+            return 1
+        fi
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                After=* | Before=* | Wants=* | Requires=* | Requisite=* | BindsTo=* | PartOf=* | Upholds=*) ;;
+                *) continue ;;
+            esac
+            for dep in ${line#*=}; do
+                case "$dep" in
+                    ovs* | ovn* | openvswitch*) ;;
+                    *) continue ;;
+                esac
+                case " $missing " in
+                    *" $dep "*) continue ;;
+                esac
+                distro_unit_exists "$dep" || missing="${missing:+$missing }$dep"
+            done
+        done <"${DISTRO_ROOT:-}$file"
+    done
+    for dep in $missing; do echo "$dep"; done
+}

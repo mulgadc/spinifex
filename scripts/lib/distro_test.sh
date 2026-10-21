@@ -27,11 +27,11 @@ unit() { mkdir -p "$ROOT/usr/lib/systemd/system" && : > "$ROOT/usr/lib/systemd/s
 file() { mkdir -p "$ROOT$(dirname "$1")" && : > "$ROOT$1"; }
 cmd() { printf '#!/bin/sh\nexit 0\n' > "$BIN/$1" && chmod +x "$BIN/$1"; }
 
-# probe <fn> — runs one probe in bash against the current fixture, with only
-# the stub dir on PATH. Sets OUT, ERR and RC.
+# probe <fn> [arg...] — runs one probe in bash against the current fixture,
+# with only the stub dir on PATH. Sets OUT, ERR and RC.
 probe() {
     RC=0
-    OUT=$(DISTRO_ROOT="$ROOT" PATH="$BIN" /bin/bash -c '. "$1"; "$2"' _ "$DISTRO" "$1" 2>"$TMP/err") || RC=$?
+    OUT=$(DISTRO_ROOT="$ROOT" PATH="$BIN" /bin/bash -c '. "$1"; shift; "$@"' _ "$DISTRO" "$@" 2>"$TMP/err") || RC=$?
     ERR=$(cat "$TMP/err")
 }
 
@@ -125,6 +125,38 @@ fixture lr-both; file /etc/logrotate.d/ovn-common; file /etc/logrotate.d/ovn; pr
 expect_fail "OVN logrotate: both fails naming both" /etc/logrotate.d/ovn-common /etc/logrotate.d/ovn
 fixture lr-none; probe distro_ovn_logrotate
 expect_fail "OVN logrotate: neither fails naming both" /etc/logrotate.d/ovn-common /etc/logrotate.d/ovn
+
+# --------------------------------------------------------------------------
+# OVS and OVN units the shipped Spinifex units name. Run against the real unit
+# files, so a unit that names a Debian-only OVS unit fails on the EL fixture.
+# --------------------------------------------------------------------------
+UNITS_SRC="$(dirname -- "$SCRIPTS_DIR")/build/systemd"
+spinifex_units() {
+    mkdir -p "$ROOT/etc/systemd/system"
+    cp "$UNITS_SRC"/spinifex.target "$UNITS_SRC"/spinifex-*.service "$ROOT/etc/systemd/system/"
+}
+deps_probe() {
+    set --
+    for f in "$ROOT"/etc/systemd/system/spinifex*; do set -- "$@" "${f#"$ROOT"}"; done
+    probe distro_missing_ovs_deps "$@"
+}
+el_ovs_units() {
+    for u in openvswitch.service ovsdb-server.service ovs-vswitchd.service ovn-controller.service ovn-northd.service openvswitch-ipsec.service; do unit "$u"; done
+}
+
+fixture deps-el; spinifex_units; el_ovs_units; deps_probe
+expect_ok "OVS dependencies: every one the shipped units name is installed on EL" ""
+fixture deps-no-ipsec; spinifex_units; el_ovs_units; rm "$ROOT/usr/lib/systemd/system/openvswitch-ipsec.service"; deps_probe
+expect_ok "OVS dependencies: a missing unit is printed once" openvswitch-ipsec.service
+fixture deps-debian-only; el_ovs_units
+mkdir -p "$ROOT/etc/systemd/system"
+printf '[Unit]\n# After=ovs-old.service\nAfter=openvswitch-switch.service ovn-controller.service\nWants=openvswitch-switch.service\n' >"$ROOT/etc/systemd/system/spinifex-x.service"
+printf '[Unit]\nRequires=ovn-central.service' >"$ROOT/etc/systemd/system/spinifex-y.service"
+deps_probe
+expect_ok "OVS dependencies: Debian-only names are missing on EL, comments are not read" "openvswitch-switch.service
+ovn-central.service"
+fixture deps-unreadable; probe distro_missing_ovs_deps /etc/systemd/system/spinifex.target
+expect_fail "OVS dependencies: an unreadable unit file fails naming it" "cannot read /etc/systemd/system/spinifex.target"
 
 # --------------------------------------------------------------------------
 # Inline copies. setup.sh and node-reset.sh cannot source the library, so they

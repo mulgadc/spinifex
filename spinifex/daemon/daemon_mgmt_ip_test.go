@@ -639,6 +639,10 @@ func (p *recordingPlumber) CleanupTap(name string) error {
 func (p *recordingPlumber) EnsureIMDSDatapathBridge() error         { return nil }
 func (p *recordingPlumber) AttachIMDSDatapath(_, _, _ string) error { return nil }
 func (p *recordingPlumber) DetachIMDSDatapath(string) error         { return nil }
+func (p *recordingPlumber) IMDSDatapathStates([]string) (map[string]vm.IMDSDatapathState, error) {
+	return nil, nil
+}
+func (p *recordingPlumber) RepairIMDSDatapath(_, _, _ string) error { return nil }
 func (p *recordingPlumber) EnsureVPCHostPort(_, _, _ string) error  { return nil }
 func (p *recordingPlumber) RemoveVPCHostPort(string) error          { return nil }
 

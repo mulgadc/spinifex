@@ -17,6 +17,10 @@ type fakeNetworkPlumber struct {
 	cleanupCalls        []string
 	imdsAttachCalls     []imdsAttachCall
 	imdsDetachCalls     []string
+	imdsRepairCalls     []imdsAttachCall
+	imdsStates          map[string]IMDSDatapathState
+	imdsStatesErr       error
+	imdsRepairErr       error
 	hostPortCalls       []hostPortCall
 	hostPortRemoveCalls []string
 	ensureBridgeCalls   int
@@ -61,6 +65,24 @@ func (p *fakeNetworkPlumber) AttachIMDSDatapath(eniID, mac, subnetID string) err
 func (p *fakeNetworkPlumber) DetachIMDSDatapath(eniID string) error {
 	p.imdsDetachCalls = append(p.imdsDetachCalls, eniID)
 	return p.imdsDetachErr
+}
+
+func (p *fakeNetworkPlumber) IMDSDatapathStates(eniIDs []string) (map[string]IMDSDatapathState, error) {
+	if p.imdsStatesErr != nil {
+		return nil, p.imdsStatesErr
+	}
+	out := make(map[string]IMDSDatapathState, len(eniIDs))
+	for _, id := range eniIDs {
+		if s, ok := p.imdsStates[id]; ok {
+			out[id] = s
+		}
+	}
+	return out, nil
+}
+
+func (p *fakeNetworkPlumber) RepairIMDSDatapath(eniID, mac, subnetID string) error {
+	p.imdsRepairCalls = append(p.imdsRepairCalls, imdsAttachCall{eniID: eniID, mac: mac, subnetID: subnetID})
+	return p.imdsRepairErr
 }
 
 func (p *fakeNetworkPlumber) EnsureIMDSDatapathBridge() error {

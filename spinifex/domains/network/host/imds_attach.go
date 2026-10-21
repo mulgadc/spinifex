@@ -23,6 +23,19 @@ func (p *OVSPlumber) DetachIMDSDatapath(eniID string) error {
 	return removeIMDSDatapath(context.Background(), NewExecRunner(), imdsDetachSpec(eniID))
 }
 
+// IMDSDatapathStates reports what survives of each primary ENI's datapath, so
+// the daemon can re-install one that an ovs-vswitchd restart or a kernel-module
+// reload took down.
+func (p *OVSPlumber) IMDSDatapathStates(eniIDs []string) (map[string]vm.IMDSDatapathState, error) {
+	return IMDSDatapathStates(context.Background(), NewExecRunner(), eniIDs)
+}
+
+// RepairIMDSDatapath re-installs a running guest's datapath. It returns
+// vm.ErrIMDSTapDetached, changing nothing, once the tap has left br-imds.
+func (p *OVSPlumber) RepairIMDSDatapath(eniID, mac, subnetID string) error {
+	return repairIMDSDatapath(context.Background(), NewExecRunner(), imdsDatapathSpec(eniID, mac, subnetID))
+}
+
 // EnsureIMDSDatapathBridge idempotently creates the dedicated IMDS bridge. The
 // daemon calls it before SetupTap places a primary tap on br-imds, since OVS
 // cannot add a port to a bridge that does not exist yet.

@@ -1031,6 +1031,12 @@ func (p *scriptedNetworkPlumber) AttachIMDSDatapath(_, _, _ string) error { retu
 
 func (p *scriptedNetworkPlumber) DetachIMDSDatapath(_ string) error { return nil }
 
+func (p *scriptedNetworkPlumber) IMDSDatapathStates(_ []string) (map[string]IMDSDatapathState, error) {
+	return nil, nil
+}
+
+func (p *scriptedNetworkPlumber) RepairIMDSDatapath(_, _, _ string) error { return nil }
+
 func (p *scriptedNetworkPlumber) EnsureIMDSDatapathBridge() error { return nil }
 
 func (p *scriptedNetworkPlumber) EnsureVPCHostPort(_, _, _ string) error { return nil }

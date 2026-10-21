@@ -126,6 +126,8 @@ func (m *Manager) attachPrimaryIMDSDatapath(instance *VM) error {
 			"instance", instance.ID, "eni", instance.ENIId)
 		return nil
 	}
+	unlock := m.imdsLocks.lock(instance.ENIId)
+	defer unlock()
 	if err := m.deps.NetworkPlumber.AttachIMDSDatapath(instance.ENIId, instance.ENIMac, subnetID); err != nil {
 		slog.Error("IMDS: per-tap datapath install failed; aborting launch",
 			"instance", instance.ID, "eni", instance.ENIId, "err", err)

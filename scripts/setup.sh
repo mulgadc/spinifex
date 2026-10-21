@@ -58,6 +58,24 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 fatal() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# --- BEGIN distro.sh probes ---
+# Copied from scripts/lib/distro.sh, which this script installs but cannot source
+# when piped from the install endpoint. distro_test.sh keeps the copies equal.
+distro_pkg_manager() {
+    local apt=false dnf=false
+    command -v apt-get >/dev/null 2>&1 && apt=true
+    command -v dnf >/dev/null 2>&1 && dnf=true
+    if $apt && $dnf; then
+        echo "distro.sh: package manager: found both apt-get and dnf; cannot tell which one manages this host" >&2
+        return 1
+    fi
+    if $apt; then echo apt; return 0; fi
+    if $dnf; then echo dnf; return 0; fi
+    echo "distro.sh: package manager: found neither apt-get nor dnf on PATH" >&2
+    return 1
+}
+# --- END distro.sh probes ---
+
 stage() {
     [ "${VERBOSE:-0}" = "1" ] && echo "[setup] $*"
     return 0
@@ -92,14 +110,25 @@ setup_sudo() {
 }
 
 # --- OS detection ---
+# os_release_field <key> <file> — the value of KEY=value, with one level of quotes removed.
+os_release_field() {
+    sed -n "s/^$1=//p" "$2" | head -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+}
+
+# The only place that keys on the OS ID: the gate and, later, the package table.
+# Everything else probes for the capability (scripts/lib/distro.sh).
 detect_os() {
-    if [ ! -f /etc/os-release ]; then
-        fatal "Cannot detect OS: /etc/os-release not found"
+    local os_release="${SPINIFEX_OS_RELEASE:-/etc/os-release}"
+    if [ ! -f "$os_release" ]; then
+        fatal "Cannot detect OS: $os_release not found"
     fi
 
-    . /etc/os-release
+    # Parsed, not sourced, so a malformed file is refused instead of executed.
+    ID=$(os_release_field ID "$os_release")
+    VERSION_ID=$(os_release_field VERSION_ID "$os_release")
+    PRETTY_NAME=$(os_release_field PRETTY_NAME "$os_release")
 
-    case "$ID" in
+    case "${ID:-}" in
         debian)
             if [ "${VERSION_ID%%.*}" -lt 13 ] 2>/dev/null; then
                 fatal "Debian $VERSION_ID is not supported. Minimum: Debian 13"
@@ -111,12 +140,58 @@ detect_os() {
                 fatal "Ubuntu $VERSION_ID is not supported. Minimum: Ubuntu 24.04"
             fi
             ;;
+        ol)
+            check_oracle_linux
+            ;;
         *)
-            fatal "Unsupported OS: $ID $VERSION_ID. Spinifex requires Debian 13+ or Ubuntu 24.04+"
+            fatal "Unsupported OS: ${ID:-unknown} ${VERSION_ID:-}. Spinifex requires Debian 13+, Ubuntu 24.04+ or Oracle Linux 10.2+"
             ;;
     esac
 
-    info "Detected OS: $PRETTY_NAME"
+    info "Detected OS: ${PRETTY_NAME:-$ID $VERSION_ID}"
+}
+
+# Oracle Linux 10.2+ on x86_64 only, running UEK R8: the KVM Utilities QEMU
+# needs UEK, and Oracle ships kernel modules per kernel, so installing a newer
+# kernel-uek alone leaves the running one without openvswitch.ko.
+check_oracle_linux() {
+    local unsupported="Oracle Linux ${VERSION_ID:-<no VERSION_ID>} is not supported. Spinifex requires Oracle Linux 10.2 or a later 10.x"
+    local major="${VERSION_ID%%.*}" minor="${VERSION_ID#*.}" kernel
+    minor="${minor%%.*}"
+    case "${VERSION_ID:-}" in *.*) ;; *) fatal "$unsupported" ;; esac
+    case "$major" in "" | *[!0-9]*) fatal "$unsupported" ;; esac
+    case "$minor" in "" | *[!0-9]*) fatal "$unsupported" ;; esac
+    if [ "$major" -ne 10 ] || [ "$minor" -lt 2 ]; then
+        fatal "$unsupported"
+    fi
+
+    if [ "$(uname -m)" != "x86_64" ]; then
+        fatal "Oracle Linux on $(uname -m) is not supported. Spinifex supports Oracle Linux on x86_64 only"
+    fi
+
+    kernel=$(uname -r)
+    case "$kernel" in
+        6.12.0-*uek*) ;;
+        *) fatal "The running kernel $kernel is not UEK R8 (6.12.0-*uek). Install kernel-uek, reboot into it, then re-run this installer" ;;
+    esac
+
+    check_x86_64_v3
+}
+
+# The NFV SIG OVS/OVN and the KVM Utilities QEMU are built for x86-64-v3, so an
+# older CPU installs cleanly and then dies on an illegal instruction.
+check_x86_64_v3() {
+    local cpuinfo="${SPINIFEX_CPUINFO:-/proc/cpuinfo}" flags flag missing=""
+    flags=" $(grep -m1 '^flags' "$cpuinfo" 2>/dev/null | cut -d: -f2) "
+    for flag in cx16 lahf_lm popcnt sse4_1 sse4_2 ssse3 avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; do
+        case "$flags" in
+            *" $flag "*) ;;
+            *) missing="${missing:+$missing }$flag" ;;
+        esac
+    done
+    if [ -n "$missing" ]; then
+        fatal "This CPU is below x86-64-v3 (missing: $missing). Oracle Linux's OVS, OVN and QEMU builds require x86-64-v3"
+    fi
 }
 
 # --- Architecture detection ---
@@ -889,6 +964,13 @@ install_files() {
     if [ -f "$EXTRACT_DIR/setup-ovn.sh" ]; then
         $SUDO install -m 0755 "$EXTRACT_DIR/setup-ovn.sh" /usr/local/share/spinifex/setup-ovn.sh
         info "  /usr/local/share/spinifex/setup-ovn.sh"
+    fi
+
+    # Sourced, not run, by setup-ovn.sh and uninstall-spx.sh wherever they are
+    # installed, including the ISO's /usr/local/bin/setup-ovn.sh.
+    if [ -f "$EXTRACT_DIR/lib/distro.sh" ]; then
+        $SUDO install -D -m 0644 "$EXTRACT_DIR/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh
+        info "  /usr/local/share/spinifex/lib/distro.sh"
     fi
 
     # Install setup.sh itself so firstboot and future re-runs can find it at a

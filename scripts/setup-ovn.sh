@@ -121,6 +121,19 @@
 
 set -e
 
+# Host-OS capability probes: beside this script in a checkout and in the
+# installed share dir, else where setup.sh installs them.
+DISTRO_LIB=""
+for candidate in "$(dirname "${BASH_SOURCE[0]}")/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh; do
+    if [ -f "$candidate" ]; then DISTRO_LIB="$candidate"; break; fi
+done
+if [ -z "$DISTRO_LIB" ]; then
+    echo "ERROR: distro.sh not found at $(dirname "${BASH_SOURCE[0]}")/lib/distro.sh or /usr/local/share/spinifex/lib/distro.sh; re-run setup.sh to install it" >&2
+    exit 1
+fi
+# shellcheck source=lib/distro.sh
+. "$DISTRO_LIB"
+
 # Defaults
 MANAGEMENT=false
 WAN_BRIDGE=""

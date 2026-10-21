@@ -12,6 +12,24 @@ Node installation, dev-environment lifecycle, guest image builds, and verificati
 | `dev-install.sh` | Full local dev setup through the production installer: builds from source, packs a tarball, runs `setup.sh`, initialises the cluster, and starts services under systemd. |
 | `clone-deps.sh` | Clones or updates the viperblock and predastore checkouts alongside spinifex for cross-repo development. |
 
+### `lib/distro.sh`: host-OS capability probes
+
+The node scripts select host-OS behaviour by probing for the capability, not by reading `/etc/os-release`; only `setup.sh`'s supported-OS gate keys on the OS ID.
+Each probe prints its answer, or names every candidate it tried on stderr and returns 1, which it also does when it finds both candidates of a pair.
+
+| Probe | Answers |
+|---|---|
+| `distro_pkg_manager` | `apt` or `dnf` |
+| `distro_ovs_unit` | `openvswitch-switch.service` (Debian, Ubuntu) or `openvswitch.service` (EL) |
+| `distro_ovn_central_layout` | `split` (Debian's `ovn-central` plus separate NB and SB units) or `lone-northd` (EL's single `ovn-northd.service`) |
+| `distro_ca_trust` | the trust-store update command and its anchor directory |
+| `distro_ovn_logrotate` | `/etc/logrotate.d/ovn-common` or `/etc/logrotate.d/ovn` |
+
+`setup-ovn.sh`, `uninstall-spx.sh` and `dev-install.sh` source it from `lib/` beside themselves, then from `/usr/local/share/spinifex/lib/distro.sh`, where `setup.sh` installs it, and stop naming both paths when neither exists.
+`setup.sh` is piped from the install endpoint before the tarball is downloaded, and `install-node.sh --wipe` copies `node-reset.sh` alone to each host, so those two carry inline copies of the probes they need between `# --- BEGIN distro.sh probes ---` markers.
+`lib/distro_test.sh` fails when an inline copy differs from the library.
+Go code uses `spinifex/runtime/host/hostos` for the same purpose.
+
 ## Teardown
 
 Both ship to `/usr/local/share/spinifex/` on every node, so they are available on a host installed with `curl … | bash` and not only from a checkout. They differ in what they take away:

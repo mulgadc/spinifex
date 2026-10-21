@@ -57,6 +57,77 @@ run() {
     "$@"
 }
 
+# --- BEGIN distro.sh probes ---
+# Copied from scripts/lib/distro.sh: install-node.sh --wipe copies this script
+# alone to each host, so it cannot source the library. distro_test.sh keeps them equal.
+distro_unit_exists() {
+    local dir
+    for dir in /etc/systemd/system /run/systemd/system /usr/lib/systemd/system /lib/systemd/system; do
+        if [ -e "${DISTRO_ROOT:-}$dir/$1" ] || [ -L "${DISTRO_ROOT:-}$dir/$1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+distro_ovs_unit() {
+    local deb=false el=false
+    distro_unit_exists openvswitch-switch.service && deb=true
+    distro_unit_exists openvswitch.service && el=true
+    if $deb && $el; then
+        echo "distro.sh: OVS unit: found both openvswitch-switch.service and openvswitch.service; cannot tell which one owns OVS" >&2
+        return 1
+    fi
+    if $deb; then echo openvswitch-switch.service; return 0; fi
+    if $el; then echo openvswitch.service; return 0; fi
+    echo "distro.sh: OVS unit: found neither openvswitch-switch.service nor openvswitch.service; is Open vSwitch installed?" >&2
+    return 1
+}
+
+distro_ovn_central_layout() {
+    local split=false lone=false unit missing=""
+    for unit in ovn-central.service ovn-ovsdb-server-nb.service ovn-ovsdb-server-sb.service; do
+        if distro_unit_exists "$unit"; then
+            split=true
+        else
+            missing="${missing:+$missing, }$unit"
+        fi
+    done
+    if distro_unit_exists ovn-northd.service && [ -f "${DISTRO_ROOT:-}/etc/sysconfig/ovn" ]; then
+        lone=true
+    fi
+    if $split && $lone; then
+        echo "distro.sh: OVN central layout: found both the split units (ovn-central.service) and a lone ovn-northd.service with /etc/sysconfig/ovn; cannot tell which one owns the OVN databases" >&2
+        return 1
+    fi
+    if $split; then
+        if [ -n "$missing" ]; then
+            echo "distro.sh: OVN central layout: ovn-central is installed but $missing is missing" >&2
+            return 1
+        fi
+        echo split
+        return 0
+    fi
+    if $lone; then echo lone-northd; return 0; fi
+    echo "distro.sh: OVN central layout: found neither ovn-central.service nor ovn-northd.service with /etc/sysconfig/ovn; is OVN central installed?" >&2
+    return 1
+}
+
+distro_ca_trust() {
+    local deb=false el=false
+    command -v update-ca-certificates >/dev/null 2>&1 && deb=true
+    command -v update-ca-trust >/dev/null 2>&1 && el=true
+    if $deb && $el; then
+        echo "distro.sh: CA trust: found both update-ca-certificates and update-ca-trust; cannot tell which trust store TLS clients read" >&2
+        return 1
+    fi
+    if $deb; then echo "update-ca-certificates /usr/local/share/ca-certificates"; return 0; fi
+    if $el; then echo "update-ca-trust /etc/pki/ca-trust/source/anchors"; return 0; fi
+    echo "distro.sh: CA trust: found neither update-ca-certificates nor update-ca-trust on PATH" >&2
+    return 1
+}
+# --- END distro.sh probes ---
+
 WIPE_DIRS=("$ETC_DIR" "$LOG_DIR" "$RUN_DIR")
 $KEEP_DATA || WIPE_DIRS+=("$DATA_DIR")
 

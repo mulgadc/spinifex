@@ -45,6 +45,7 @@ RUN cd viperblock && GOFIPS140=v1.0.0 go build -o /out/nbdkit-viperblock-plugin.
 # Copy setup scripts and systemd units
 RUN cp spinifex/scripts/setup.sh /out/setup.sh 2>/dev/null || true
 RUN cp spinifex/scripts/setup-ovn.sh /out/setup-ovn.sh
+RUN mkdir -p /out/lib && cp spinifex/scripts/lib/distro.sh /out/lib/distro.sh
 RUN mkdir -p /out/systemd && cp spinifex/build/systemd/* /out/systemd/
 RUN mkdir -p /out/scripts && cp spinifex/build/scripts/* /out/scripts/
 RUN cp spinifex/build/logrotate/spinifex /out/logrotate-spinifex

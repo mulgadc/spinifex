@@ -19,6 +19,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MULGA_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
 
+# Host-OS capability probes: beside this script in a checkout and in the
+# installed share dir, else where setup.sh installs them.
+DISTRO_LIB=""
+for candidate in "$(dirname "${BASH_SOURCE[0]}")/lib/distro.sh" /usr/local/share/spinifex/lib/distro.sh; do
+    if [ -f "$candidate" ]; then DISTRO_LIB="$candidate"; break; fi
+done
+if [ -z "$DISTRO_LIB" ]; then
+    echo "ERROR: distro.sh not found at $(dirname "${BASH_SOURCE[0]}")/lib/distro.sh or /usr/local/share/spinifex/lib/distro.sh; re-run setup.sh to install it" >&2
+    exit 1
+fi
+# shellcheck source=lib/distro.sh
+. "$DISTRO_LIB"
+
 echo "=== Building ==="
 cd "$PROJECT_ROOT" && make build
 cd "$MULGA_ROOT/viperblock" && make go_build_nbd
@@ -31,6 +44,8 @@ cp "$MULGA_ROOT/viperblock/lib/nbdkit-viperblock-plugin.so" "$STAGING/"
 cp "$PROJECT_ROOT/scripts/setup-ovn.sh" "$STAGING/"
 cp "$PROJECT_ROOT/scripts/node-reset.sh" "$STAGING/"
 cp "$PROJECT_ROOT/scripts/uninstall-spx.sh" "$STAGING/"
+mkdir -p "$STAGING/lib"
+cp "$PROJECT_ROOT/scripts/lib/distro.sh" "$STAGING/lib/"
 mkdir -p "$STAGING/systemd"
 cp "$PROJECT_ROOT/build/systemd/"* "$STAGING/systemd/"
 mkdir -p "$STAGING/scripts"

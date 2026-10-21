@@ -359,6 +359,9 @@ fi
 # --- Shutdown services ---
 echo "==> Stopping services"
 sudo systemctl stop spinifex.target 2>/dev/null || true
+# spinifex-hostnet starts with OVS, which is started below to delete bridges; it
+# would rebuild the old veth pairs. setup-ovn.sh enables it again.
+sudo systemctl disable --now spinifex-hostnet.service 2>/dev/null || true
 sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 # comm truncates to 15 characters, so match qemu-system-* by prefix; EL-family
 # hosts run qemu-kvm. Scoped to the user the daemon runs guests as, as in

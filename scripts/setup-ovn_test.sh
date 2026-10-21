@@ -131,7 +131,7 @@ esac
 
 # The script and the Go constant must agree: vpcd repairs a veth made before
 # this existed, and a disagreement would have the two fighting every pass.
-script_mac=$(printf '%s\n' "$nat_mode_body" | sed -n 's/.*NAT_TRANSIT_HOST_MAC="\([^"]*\)".*/\1/p' | head -1)
+script_mac=$(sed -n 's/^NAT_TRANSIT_HOST_MAC="\([^"]*\)".*/\1/p' "$SETUP" | head -1)
 go_mac=$(sed -n 's/.*NATTransitHostMAC = "\([^"]*\)".*/\1/p' "$SCRIPT_DIR/../spinifex/domains/network/host/routed.go" | head -1)
 if [ -n "$script_mac" ] && [ "$script_mac" = "$go_mac" ]; then
     pass "the transit MAC matches host.NATTransitHostMAC"
@@ -173,6 +173,91 @@ printf 'OPTIONS=""\n' >"$TMP/unset"
 set_user "$TMP/unset"
 if [ "$RC" = 0 ] && [ "$(cat "$TMP/unset")" = 'OPTIONS=""
 OVS_USER_ID="root:root"' ]; then pass "service user: appended when the file does not set it"; else fail "service user: unset file rc=$RC: $(cat "$TMP/unset")"; fi
+
+# --------------------------------------------------------------------------
+# Host network persistence backend.
+# --------------------------------------------------------------------------
+# The backend is picked once and recorded; every later run reads the record.
+# The functions run on their own against scratch paths, with systemctl stubbed.
+for fn in select_hostnet_backend write_nm_unmanaged; do
+    awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/hostnet_fn.sh"
+done
+
+# backend <networkd-enabled:yes|no> — runs select_hostnet_backend; sets RC, OUT.
+backend() {
+    printf '#!/bin/sh
+[ "$1 $2" = "is-enabled --quiet" ] && [ "%s" = yes ]
+' "$1" >"$TMP/bin/systemctl"
+    chmod +x "$TMP/bin/systemctl"
+    RC=0
+    OUT=$(PATH="$TMP/bin:$PATH" HOSTNET_BACKEND_FILE="$TMP/hn/etc/hostnet-backend" NETWORKD_DIR="$TMP/hn/network" \
+        bash -c '. "$1"; select_hostnet_backend' _ "$TMP/hostnet_fn.sh" 2>&1) || RC=$?
+}
+
+reset_hn() { rm -rf "$TMP/hn"; mkdir -p "$TMP/hn/network"; }
+
+reset_hn
+backend no
+if [ "$RC" = 0 ] && [ "$OUT" = hostnet ] && [ "$(cat "$TMP/hn/etc/hostnet-backend")" = hostnet ]; then pass "backend: no networkd picks and records hostnet"; else fail "backend: no networkd gave rc=$RC out=$OUT"; fi
+
+reset_hn
+backend yes
+if [ "$RC" = 0 ] && [ "$OUT" = networkd ] && [ "$(cat "$TMP/hn/etc/hostnet-backend")" = networkd ]; then pass "backend: networkd enabled picks networkd"; else fail "backend: networkd enabled gave rc=$RC out=$OUT"; fi
+
+reset_hn
+: >"$TMP/hn/network/10-spinifex-mgmt.network"
+backend no
+if [ "$RC" = 0 ] && [ "$OUT" = networkd ]; then pass "backend: legacy Spinifex networkd files keep networkd"; else fail "backend: legacy files gave rc=$RC out=$OUT"; fi
+
+reset_hn
+mkdir -p "$TMP/hn/etc"
+echo hostnet >"$TMP/hn/etc/hostnet-backend"
+backend yes
+if [ "$RC" = 0 ] && [ "$OUT" = hostnet ]; then pass "backend: the record wins over networkd being enabled"; else fail "backend: recorded hostnet gave rc=$RC out=$OUT"; fi
+
+echo ifupdown >"$TMP/hn/etc/hostnet-backend"
+backend yes
+case "$RC:$OUT" in
+    0:*) fail "backend: an unknown record was accepted: $OUT" ;;
+    *"expected networkd or hostnet"*) pass "backend: an unknown record is refused" ;;
+    *) fail "backend: an unknown record gave rc=$RC out=$OUT" ;;
+esac
+
+# --------------------------------------------------------------------------
+# NetworkManager unmanaged config.
+# --------------------------------------------------------------------------
+# NetworkManager globs have no character classes, so the management TAPs go to
+# a udev rule; the keyfile lists the rest. The host uplink bridge stays managed.
+printf '#!/bin/sh
+exit 0
+' >"$TMP/bin/udevadm"
+cp "$TMP/bin/udevadm" "$TMP/bin/nmcli"
+chmod +x "$TMP/bin/udevadm" "$TMP/bin/nmcli"
+glob=$(sed -n "s/^MGMT_TAP_GLOB='\([^']*\)'$/\1/p" "$SETUP")
+RC=0
+PATH="$TMP/bin:$PATH" NM_UNMANAGED_CONF="$TMP/nm/conf.d/00-spinifex-unmanaged.conf" NM_UNMANAGED_RULE="$TMP/nm/rules.d/90.rules" \
+    MGMT_TAP_GLOB="$glob" WAN_BRIDGE=br-ext WAN_BRIDGE_MODE=direct WAN_IFACE=eth3 LINUX_BRIDGE=br-wan \
+    MGMT_BRIDGE_ENABLED=true MGMT_BRIDGE=br-mgmt MGMT_IFACE=eth2 \
+    bash -c '. "$1"; write_nm_unmanaged' _ "$TMP/hostnet_fn.sh" >/dev/null 2>&1 || RC=$?
+conf=$(cat "$TMP/nm/conf.d/00-spinifex-unmanaged.conf" 2>/dev/null || true)
+line=$(printf '%s\n' "$conf" | grep '^unmanaged-devices+=' || true)
+if [ "$RC" = 0 ] && printf '%s\n' "$conf" | grep -qx '\[keyfile\]' && [ -n "$line" ]; then pass "nm: keyfile section appends to unmanaged-devices"; else fail "nm: rc=$RC conf=$conf"; fi
+for want in br-int br-ext 'veth-wan-*' 'spx-nat-*' 'tap*' br-mgmt eth2 eth3; do
+    case ";${line#unmanaged-devices+=};" in
+        *";interface-name:$want;"*) pass "nm: $want unmanaged" ;;
+        *) fail "nm: $want missing from $line" ;;
+    esac
+done
+case "$line" in
+    *br-wan*) fail "nm: the host uplink bridge br-wan was made unmanaged" ;;
+    *'['*) fail "nm: keyfile uses a character class NetworkManager cannot match: $line" ;;
+    *) pass "nm: host uplink left managed and no character classes" ;;
+esac
+rule=$(cat "$TMP/nm/rules.d/90.rules" 2>/dev/null || true)
+case "$rule" in
+    *"KERNEL==\"$glob\", ENV{NM_UNMANAGED}=\"1\""*) pass "nm: udev rule unmanages management TAPs" ;;
+    *) fail "nm: udev rule is $rule" ;;
+esac
 
 if [ "$fails" -ne 0 ]; then
     echo "  setup-ovn.sh: $fails failure(s)"

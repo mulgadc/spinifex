@@ -31,6 +31,8 @@ const (
 	Ungranted
 	// Unsupported means the asset is present but lacks a capability this build needs.
 	Unsupported
+	// Failed means a host check that gates the services did not pass.
+	Failed
 )
 
 // String returns the human-readable name of the status, used in table output and log lines.
@@ -46,6 +48,8 @@ func (s Status) String() string {
 		return "Ungranted"
 	case Unsupported:
 		return "Unsupported"
+	case Failed:
+		return "Failed"
 	default:
 		return "Unknown"
 	}
@@ -54,7 +58,7 @@ func (s Status) String() string {
 // Result is the outcome of checking one managed asset against this build's manifest.
 type Result struct {
 	Path   string
-	Kind   string // "helper" | "sudoers-grant" | "service" | "qemu" | "firmware"
+	Kind   string // "helper" | "sudoers-grant" | "service" | "qemu" | "firmware" | "hostnet"
 	Status Status
 	Detail string
 }
@@ -87,6 +91,7 @@ func CheckHostAt(root string) []Result {
 	results = append(results, checkSudoersGrant(root))
 	results = append(results, checkRunningBinaries(root)...)
 	results = append(results, checkMicroVM(root)...)
+	results = append(results, checkHostnet(root))
 	return results
 }
 

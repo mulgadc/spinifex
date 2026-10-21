@@ -173,6 +173,9 @@ fi
 
 log "stopping services"
 run sudo systemctl stop spinifex.target 2>/dev/null || true
+# spinifex-hostnet starts with OVS, which is started below to delete bridges; it
+# would rebuild the old veth pairs. setup-ovn.sh enables it again.
+run sudo systemctl disable --now spinifex-hostnet.service 2>/dev/null || true
 run sudo systemctl reset-failed 'spinifex-*' 2>/dev/null || true
 
 # Stopping the target is not the same as its services being stopped.

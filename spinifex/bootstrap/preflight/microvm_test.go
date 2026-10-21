@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ func TestMain(m *testing.M) {
 	microvmChecked = true
 	resolveQEMU = func() (string, error) { return hostos.QEMUKVMPath, nil }
 	machineHelp = func(string) ([]byte, error) { return []byte(helpWithMicroVM), nil }
+	hostnetOVNRemote = func(context.Context) (string, error) { return "", nil }
 	os.Exit(m.Run())
 }
 

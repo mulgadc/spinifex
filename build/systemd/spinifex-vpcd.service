@@ -1,4 +1,4 @@
-# spinifex-unit-version: 2
+# spinifex-unit-version: 3
 [Unit]
 Description=Spinifex VPC Daemon (OVN Networking)
 PartOf=spinifex.target
@@ -11,6 +11,7 @@ Type=simple
 Slice=spinifex-system.slice
 User=spinifex-vpcd
 Group=spinifex
+ExecStartPre=/usr/local/bin/spx admin hostnet check
 ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
 ExecStart=/usr/local/bin/spx service vpcd start
 Restart=on-failure

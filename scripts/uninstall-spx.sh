@@ -394,8 +394,12 @@ rm_path /etc/sysctl.d/*spinifex* \
         /etc/sudoers.d/spinifex-network \
         /etc/chrony/conf.d/spinifex.conf \
         /etc/logrotate.d/spinifex \
-        /etc/udev/rules.d/*spinifex*
+        /etc/udev/rules.d/*spinifex* \
+        /etc/NetworkManager/conf.d/*spinifex*
 run sudo sysctl --system >/dev/null 2>&1 || true
+if systemctl is-active --quiet NetworkManager.service 2>/dev/null; then
+    run sudo nmcli general reload conf 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # 10. Spinifex directories.
@@ -518,6 +522,7 @@ if ! $DRY_RUN; then
     for p in /etc/systemd/system/spinifex-*.service /etc/systemd/system/spinifex*.slice \
              /etc/systemd/system/spinifex.target /etc/sysctl.d/*spinifex* \
              /etc/systemd/network/1[5-8]-spinifex-* \
+             /etc/NetworkManager/conf.d/*spinifex* \
              /etc/systemd/system/*.service.d/spinifex-perms.conf \
              /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
              /etc/systemd/system/ovn-controller.service.d/log-level.conf; do

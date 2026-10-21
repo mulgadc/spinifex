@@ -28,9 +28,12 @@ On x86_64 it checks that the QEMU binary the daemon will run has the microvm
 machine type, and that the microvm firmware is installed: load balancers boot
 on both.
 
+It runs the host network check spinifex-daemon and spinifex-vpcd run before they
+start, so a failed spinifex-hostnet apply shows here.
+
 Checks compare content, not mere existence, so a present-but-stale asset is
-caught too. Exits non-zero if any asset is Missing, Stale, Ungranted, or
-Unsupported.`,
+caught too. Exits non-zero if any asset is Missing, Stale, Ungranted, Unsupported or
+Failed.`,
 	RunE:         runAdminPreflight,
 	SilenceUsage: true,
 }

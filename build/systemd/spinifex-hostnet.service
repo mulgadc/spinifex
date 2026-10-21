@@ -1,0 +1,22 @@
+# spinifex-unit-version: 1
+[Unit]
+Description=Spinifex host network wiring (veth pairs, mgmt address, encap route)
+# PartOf/WantedBy ovs-vswitchd: re-applied whenever OVS starts; daemon and vpcd only Want it
+Requires=ovs-vswitchd.service
+After=ovs-vswitchd.service NetworkManager-wait-online.service
+PartOf=ovs-vswitchd.service
+Before=spinifex.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/spx admin hostnet apply
+# Covers the 120s wait behind setup-ovn.sh plus the 60s wait for links
+TimeoutStartSec=240
+TimeoutStopSec=10
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=spinifex.target ovs-vswitchd.service

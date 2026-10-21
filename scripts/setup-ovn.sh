@@ -10,6 +10,14 @@
 #   5. Configures OVS external_ids for OVN chassis identity
 #   6. Applies sysctl tuning for overlay networking
 #
+# Host network persistence: the links this script creates are kernel-only. On
+# a host where systemd-networkd is enabled, or that already has Spinifex
+# networkd files, they persist in /etc/systemd/network. Otherwise (for example
+# a NetworkManager host) the topology goes to /etc/spinifex/hostnet.json and
+# spinifex-hostnet.service re-creates it at boot and on every OVS start. The
+# first run records which in /etc/spinifex/hostnet-backend; it never changes.
+# Where NetworkManager runs, the links Spinifex owns are made unmanaged.
+#
 # Usage:
 #   ./scripts/setup-ovn.sh [options]
 #
@@ -233,6 +241,152 @@ iface_master() {
     local m
     m=$(ip -o link show "$1" 2>/dev/null | sed -n 's/.* master \([^ ]*\) .*/\1/p')
     printf '%s' "$m"
+}
+
+# --- Host network persistence ---
+#
+# Links this script creates are kernel-only and vanish on reboot. The first run
+# picks how they persist and records it: networkd where systemd-networkd is
+# enabled, else hostnet (spinifex-hostnet.service replays HOSTNET_STATE at boot
+# and on every ovs-vswitchd start). There is no switching; reset the node.
+HOSTNET_BACKEND_FILE=/etc/spinifex/hostnet-backend
+HOSTNET_STATE=/etc/spinifex/hostnet.json
+HOSTNET_LOCK=/run/spinifex/hostnet.lock
+NETWORKD_DIR=/etc/systemd/network
+NM_UNMANAGED_CONF=/etc/NetworkManager/conf.d/00-spinifex-unmanaged.conf
+NM_UNMANAGED_RULE=/etc/udev/rules.d/90-spinifex-nm-unmanaged.rules
+# System-instance management TAPs: "mg" plus 13 hex digits of the instance ID.
+# NetworkManager globs have no character classes, so this match goes to udev.
+MGMT_TAP_GLOB='mg[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+
+# Prints the recorded backend, or picks one and records it. A node with
+# Spinifex networkd files and no record was set up before the record existed.
+select_hostnet_backend() {
+    local backend
+    if sudo test -e "$HOSTNET_BACKEND_FILE"; then
+        backend=$(sudo cat "$HOSTNET_BACKEND_FILE" | tr -d '[:space:]')
+        case "$backend" in
+            networkd|hostnet) printf '%s\n' "$backend"; return 0 ;;
+        esac
+        echo "ERROR: $HOSTNET_BACKEND_FILE says '$backend'; expected networkd or hostnet" >&2
+        return 1
+    fi
+    if compgen -G "$NETWORKD_DIR/*-spinifex-*.network" >/dev/null || compgen -G "$NETWORKD_DIR/*-spinifex-*.netdev" >/dev/null; then
+        backend=networkd
+    elif systemctl is-enabled --quiet systemd-networkd.service 2>/dev/null; then
+        backend=networkd
+    else
+        backend=hostnet
+    fi
+    sudo mkdir -p "$(dirname "$HOSTNET_BACKEND_FILE")"
+    printf '%s\n' "$backend" | sudo tee "$HOSTNET_BACKEND_FILE" >/dev/null
+    # Read by `spx admin hostnet check`, which the daemon and vpcd run unprivileged.
+    sudo chmod 0644 "$HOSTNET_BACKEND_FILE"
+    printf '%s\n' "$backend"
+}
+
+# write_hostnet_state <true|false> — records the topology for
+# `spx admin hostnet apply`, atomically. true marks it pending: apply refuses
+# it until the run that wrote it finishes.
+write_hostnet_state() {
+    local pending="$1" body
+    body=$(printf '{\n  "version": 1,\n  "pending": %s,\n  "int_bridge": "br-int"' "$pending")
+    case "$WAN_BRIDGE_MODE" in
+        existing)
+            body="$body"$(printf ',\n  "wan": {"mode": "existing", "ovs_bridge": "%s"}' "$WAN_BRIDGE") ;;
+        veth)
+            body="$body"$(printf ',\n  "wan": {"mode": "veth", "ovs_bridge": "%s", "linux_bridge": "%s", "host_end": "veth-wan-br", "ovs_end": "veth-wan-ovs"}' "$WAN_BRIDGE" "$LINUX_BRIDGE") ;;
+        direct)
+            body="$body"$(printf ',\n  "wan": {"mode": "direct", "ovs_bridge": "%s", "nic": "%s"}' "$WAN_BRIDGE" "$WAN_IFACE") ;;
+        nat)
+            body="$body"$(printf ',\n  "wan": {"mode": "nat", "ovs_bridge": "%s", "host_end": "spx-nat-host", "ovs_end": "spx-nat-ovs", "host_mac": "%s", "host_cidr": "%s"}' "$WAN_BRIDGE" "$NAT_TRANSIT_HOST_MAC" "$NAT_TRANSIT_GW_CIDR") ;;
+    esac
+    if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
+        body="$body"$(printf ',\n  "mgmt": {"bridge": "%s", "cidr": "%s", "nic": "%s"}' "$MGMT_BRIDGE" "$MGMT_CIDR" "$MGMT_IFACE")
+    fi
+    if [ -n "${ENCAP_ROUTE_DST:-}" ]; then
+        body="$body"$(printf ',\n  "encap_route": {"dst": "%s", "dev": "%s", "src": "%s", "metric": %s}' \
+            "$ENCAP_ROUTE_DST" "$ENCAP_ROUTE_DEV" "$ENCAP_IP" "$ENCAP_ROUTE_METRIC")
+    fi
+    sudo mkdir -p "$(dirname "$HOSTNET_STATE")"
+    printf '%s\n}\n' "$body" | sudo tee "$HOSTNET_STATE.tmp" >/dev/null
+    sudo chmod 0644 "$HOSTNET_STATE.tmp"
+    sudo mv -f "$HOSTNET_STATE.tmp" "$HOSTNET_STATE"
+}
+
+# Holds the lock `spx admin hostnet apply` takes, from a root flock process fed
+# by a pipe, so an apply started by an OVS restart waits for this run's links.
+# Never run systemctl against OVS or spinifex-hostnet while holding it.
+hostnet_lock() {
+    local reply=""
+    sudo mkdir -p "$(dirname "$HOSTNET_LOCK")"
+    coproc HOSTNET_LOCK_HOLDER { exec sudo flock -w 120 "$HOSTNET_LOCK" sh -c 'echo locked; read -r _'; }
+    read -r reply <&"${HOSTNET_LOCK_HOLDER[0]}" || true
+    if [ "$reply" != locked ]; then
+        echo "ERROR: $HOSTNET_LOCK still held after 120 s; is spx admin hostnet apply stuck? (systemctl status spinifex-hostnet)" >&2
+        exit 1
+    fi
+}
+
+hostnet_unlock() {
+    local fd="${HOSTNET_LOCK_HOLDER[1]}" pid="$HOSTNET_LOCK_HOLDER_PID"
+    exec {fd}>&-
+    wait "$pid" 2>/dev/null || true
+}
+
+nm_running() {
+    systemctl is-active --quiet NetworkManager.service 2>/dev/null
+}
+
+# nm_release_nic <nic> — before a NIC moves into OVS, refuse the one carrying
+# the default route or this SSH session, then take it from NetworkManager. Its
+# profiles are left alone: once unmanaged, none can activate on it.
+nm_release_nic() {
+    local nic="$1" ssh_ip state
+    if sudo ovs-vsctl port-to-br "$nic" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev") print $(i+1)}' | grep -qx "$nic"; then
+        echo "ERROR: $nic carries the default route; moving it into OVS would cut this host off" >&2
+        exit 1
+    fi
+    ssh_ip=$(printf '%s\n' "${SSH_CONNECTION:-}" | awk '{print $3}')
+    if [ -n "$ssh_ip" ] && ip -o -4 addr show dev "$nic" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$ssh_ip"; then
+        echo "ERROR: this SSH session arrived on $nic ($ssh_ip); moving it into OVS would drop it" >&2
+        exit 1
+    fi
+    state=$(nmcli -g GENERAL.STATE device show "$nic" 2>/dev/null || true)
+    case "$state" in
+        *"(connect"*)
+            sudo nmcli device disconnect "$nic" >/dev/null
+            echo "  $nic: disconnected from NetworkManager"
+            ;;
+    esac
+}
+
+# Writes the NetworkManager config and udev rule that leave every link Spinifex
+# owns unmanaged, then has NetworkManager and udev reread them. The host uplink
+# (a Linux bridge such as br-wan, and its NIC) stays NetworkManager's.
+write_nm_unmanaged() {
+    local names=(br-int "$WAN_BRIDGE" 'veth-wan-*' 'spx-nat-*' 'tap*' 'ime-*' 'imi-*' 'vhp-*' br-imds 'genev_sys_*')
+    local list="" name
+    if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
+        names+=("$MGMT_BRIDGE" "$MGMT_IFACE")
+    fi
+    if [ "$WAN_BRIDGE_MODE" = direct ]; then
+        names+=("$WAN_IFACE")
+    fi
+    for name in "${names[@]}"; do
+        [ -n "$name" ] && list="${list:+$list;}interface-name:$name"
+    done
+    sudo mkdir -p "$(dirname "$NM_UNMANAGED_CONF")" "$(dirname "$NM_UNMANAGED_RULE")"
+    printf '# Written by setup-ovn.sh on every run: links Spinifex owns.\n[keyfile]\nunmanaged-devices+=%s\n' "$list" \
+        | sudo tee "$NM_UNMANAGED_CONF" >/dev/null
+    printf '# Written by setup-ovn.sh: system-instance management TAPs.\nSUBSYSTEM=="net", KERNEL=="%s", ENV{NM_UNMANAGED}="1"\n' "$MGMT_TAP_GLOB" \
+        | sudo tee "$NM_UNMANAGED_RULE" >/dev/null
+    sudo udevadm control --reload
+    sudo udevadm trigger --action=change --subsystem-match=net --sysname-match='mg*'
+    sudo nmcli general reload conf
 }
 
 teardown() {
@@ -481,6 +635,15 @@ if [ "$NAT_UPLINK" = true ]; then
 else
     detect_wan_bridge
 fi
+
+# Routed NAT transit, used by nat mode and recorded for spinifex-hostnet.
+NAT_TRANSIT_CIDR="100.127.0.0/24"
+NAT_TRANSIT_GW_CIDR="100.127.0.1/24"
+# Same on every node. OVN keeps one MAC binding for the transit nexthop
+# cluster-wide, so a random per-node MAC sends every chassis's egress to
+# whichever node seeded it; the pair is node-local, so one address everywhere
+# is unambiguous.
+NAT_TRANSIT_HOST_MAC="02:00:64:7f:00:01"
 
 # Auto-detect encap IP if not specified
 if [ -z "$ENCAP_IP" ]; then
@@ -889,6 +1052,34 @@ else
     done
 fi
 
+# --- Step 2b: Host network persistence and NetworkManager ---
+echo ""
+echo "Step 2b: Host network persistence..."
+HOSTNET_BACKEND=$(select_hostnet_backend)
+echo "  backend: $HOSTNET_BACKEND (recorded in $HOSTNET_BACKEND_FILE)"
+
+if nm_running; then
+    if [ "$MGMT_BRIDGE_ENABLED" = true ] && [ -n "$MGMT_IFACE" ]; then
+        nm_release_nic "$MGMT_IFACE"
+    fi
+    if [ "$WAN_BRIDGE_MODE" = direct ]; then
+        nm_release_nic "$WAN_IFACE"
+    fi
+    write_nm_unmanaged
+    echo "  NetworkManager: Spinifex links unmanaged ($NM_UNMANAGED_CONF, $NM_UNMANAGED_RULE)"
+fi
+
+# Held until the wiring below is complete; a run that dies before then leaves
+# the state pending, and spinifex-hostnet refuses it until this script is rerun.
+ENCAP_ROUTE_DST=""
+ENCAP_ROUTE_DEV=""
+ENCAP_ROUTE_METRIC=50
+if [ "$HOSTNET_BACKEND" = hostnet ]; then
+    hostnet_lock
+    write_hostnet_state true
+    echo "  $HOSTNET_STATE: pending until this run finishes wiring"
+fi
+
 # --- Step 3: Create and configure br-int ---
 echo ""
 echo "Step 3: Configuring br-int..."
@@ -906,7 +1097,7 @@ echo "  br-int: created, fail-mode=secure, up"
 # still forwards, but ovn-controller flow programming and any tooling that
 # probes link state misbehave. Unmanaged=yes keeps OVS in sole control.
 OVS_INTERNAL_NET=/etc/systemd/network/05-spinifex-ovs-internal.network
-if [ ! -f "$OVS_INTERNAL_NET" ]; then
+if [ "$HOSTNET_BACKEND" = networkd ] && [ ! -f "$OVS_INTERNAL_NET" ]; then
     sudo tee "$OVS_INTERNAL_NET" >/dev/null <<'NETWORK'
 [Match]
 Name=br-int br-ext
@@ -1020,23 +1211,24 @@ if [ -n "$WAN_BRIDGE" ]; then
             # existing networkd config. networkd searches /etc, /run, /usr/lib;
             # check all three. Our own file is excluded so idempotent re-runs
             # still rewrite when needed.
-            BR_WAN_NETDEV="/etc/systemd/network/14-spinifex-br-wan.netdev"
-            VETH_NETDEV="/etc/systemd/network/15-spinifex-veth-wan.netdev"
-            VETH_NETWORK="/etc/systemd/network/15-spinifex-veth-wan.network"
-            VETH_OVS_NETWORK="/etc/systemd/network/16-spinifex-veth-wan-ovs.network"
-            EXISTING_BR_NETDEV=$(grep -rls --include="*.netdev" -E "^\s*Name=$LINUX_BRIDGE\s*$" \
-                /etc/systemd/network /run/systemd/network /usr/lib/systemd/network 2>/dev/null \
-                | grep -v "^$BR_WAN_NETDEV$" || true)
-            if [ -n "$EXISTING_BR_NETDEV" ]; then
-                echo "  skipping $BR_WAN_NETDEV — operator-managed NetDev already declares $LINUX_BRIDGE: $EXISTING_BR_NETDEV"
-            else
-                sudo tee "$BR_WAN_NETDEV" >/dev/null <<NETDEV
+            if [ "$HOSTNET_BACKEND" = networkd ]; then
+                BR_WAN_NETDEV="/etc/systemd/network/14-spinifex-br-wan.netdev"
+                VETH_NETDEV="/etc/systemd/network/15-spinifex-veth-wan.netdev"
+                VETH_NETWORK="/etc/systemd/network/15-spinifex-veth-wan.network"
+                VETH_OVS_NETWORK="/etc/systemd/network/16-spinifex-veth-wan-ovs.network"
+                EXISTING_BR_NETDEV=$(grep -rls --include="*.netdev" -E "^\s*Name=$LINUX_BRIDGE\s*$" \
+                    /etc/systemd/network /run/systemd/network /usr/lib/systemd/network 2>/dev/null \
+                    | grep -v "^$BR_WAN_NETDEV$" || true)
+                if [ -n "$EXISTING_BR_NETDEV" ]; then
+                    echo "  skipping $BR_WAN_NETDEV — operator-managed NetDev already declares $LINUX_BRIDGE: $EXISTING_BR_NETDEV"
+                else
+                    sudo tee "$BR_WAN_NETDEV" >/dev/null <<NETDEV
 [NetDev]
 Name=$LINUX_BRIDGE
 Kind=bridge
 NETDEV
-            fi
-            sudo tee "$VETH_NETDEV" >/dev/null <<NETDEV
+                fi
+                sudo tee "$VETH_NETDEV" >/dev/null <<NETDEV
 [NetDev]
 Name=veth-wan-br
 Kind=veth
@@ -1044,7 +1236,7 @@ Kind=veth
 [Peer]
 Name=veth-wan-ovs
 NETDEV
-            sudo tee "$VETH_NETWORK" >/dev/null <<NETWORK
+                sudo tee "$VETH_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=veth-wan-br
 
@@ -1052,12 +1244,12 @@ Name=veth-wan-br
 Bridge=$LINUX_BRIDGE
 ConfigureWithoutCarrier=yes
 NETWORK
-            # Second unit admin-ups the OVS end of the pair. OVS owns the port
-            # (enslaved via ovs-vsctl add-port above) but does not flip admin
-            # state on external ports — that's networkd's job. Without this,
-            # veth-wan-ovs stays DOWN after reboot, peer goes LOWERLAYERDOWN,
-            # br-wan loses carrier.
-            sudo tee "$VETH_OVS_NETWORK" >/dev/null <<NETWORK
+                # Second unit admin-ups the OVS end of the pair. OVS owns the port
+                # (enslaved via ovs-vsctl add-port above) but does not flip admin
+                # state on external ports — that's networkd's job. Without this,
+                # veth-wan-ovs stays DOWN after reboot, peer goes LOWERLAYERDOWN,
+                # br-wan loses carrier.
+                sudo tee "$VETH_OVS_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=veth-wan-ovs
 
@@ -1067,8 +1259,9 @@ RequiredForOnline=no
 [Network]
 ConfigureWithoutCarrier=yes
 NETWORK
-            sudo networkctl reload 2>/dev/null || true
-            echo "  wrote $VETH_NETDEV + $VETH_NETWORK + $VETH_OVS_NETWORK (veth persists on reboot)"
+                sudo networkctl reload 2>/dev/null || true
+                echo "  wrote $VETH_NETDEV + $VETH_NETWORK + $VETH_OVS_NETWORK (veth persists on reboot)"
+            fi
             ;;
 
         direct)
@@ -1102,14 +1295,6 @@ NETWORK
             # forwards and masquerades the transit /24 out whatever uplink it
             # has. OVN SNATs each VPC CIDR to its gateway LRP transit IP, so
             # the masquerade rule below is the only host-side NAT state.
-            NAT_TRANSIT_CIDR="100.127.0.0/24"
-            NAT_TRANSIT_GW_CIDR="100.127.0.1/24"
-            # Same on every node. OVN keeps one MAC binding for the transit
-            # nexthop cluster-wide, so a random per-node MAC sends every
-            # chassis's egress to whichever node seeded it; the pair is
-            # node-local, so one address everywhere is unambiguous.
-            NAT_TRANSIT_HOST_MAC="02:00:64:7f:00:01"
-
             if ! sudo ovs-vsctl br-exists "$WAN_BRIDGE" 2>/dev/null; then
                 sudo ovs-vsctl --may-exist add-br "$WAN_BRIDGE"
                 echo "  created OVS bridge: $WAN_BRIDGE"
@@ -1137,10 +1322,11 @@ NETWORK
 
             # Persist the veth pair + transit IP across reboot (veths are
             # kernel-only; same rationale as veth mode above).
-            NAT_NETDEV="/etc/systemd/network/17-spinifex-nat.netdev"
-            NAT_NETWORK="/etc/systemd/network/17-spinifex-nat.network"
-            NAT_OVS_NETWORK="/etc/systemd/network/18-spinifex-nat-ovs.network"
-            sudo tee "$NAT_NETDEV" >/dev/null <<NETDEV
+            if [ "$HOSTNET_BACKEND" = networkd ]; then
+                NAT_NETDEV="/etc/systemd/network/17-spinifex-nat.netdev"
+                NAT_NETWORK="/etc/systemd/network/17-spinifex-nat.network"
+                NAT_OVS_NETWORK="/etc/systemd/network/18-spinifex-nat-ovs.network"
+                sudo tee "$NAT_NETDEV" >/dev/null <<NETDEV
 [NetDev]
 Name=spx-nat-host
 Kind=veth
@@ -1149,7 +1335,7 @@ MACAddress=$NAT_TRANSIT_HOST_MAC
 [Peer]
 Name=spx-nat-ovs
 NETDEV
-            sudo tee "$NAT_NETWORK" >/dev/null <<NETWORK
+                sudo tee "$NAT_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=spx-nat-host
 
@@ -1157,9 +1343,9 @@ Name=spx-nat-host
 Address=$NAT_TRANSIT_GW_CIDR
 ConfigureWithoutCarrier=yes
 NETWORK
-            # Admin-up the OVS end after reboot (OVS owns the port but does
-            # not flip admin state on external ports — same as veth mode).
-            sudo tee "$NAT_OVS_NETWORK" >/dev/null <<NETWORK
+                # Admin-up the OVS end after reboot (OVS owns the port but does
+                # not flip admin state on external ports — same as veth mode).
+                sudo tee "$NAT_OVS_NETWORK" >/dev/null <<NETWORK
 [Match]
 Name=spx-nat-ovs
 
@@ -1169,8 +1355,9 @@ RequiredForOnline=no
 [Network]
 ConfigureWithoutCarrier=yes
 NETWORK
-            sudo networkctl reload 2>/dev/null || true
-            echo "  wrote $NAT_NETDEV + $NAT_NETWORK + $NAT_OVS_NETWORK (transit veth persists on reboot)"
+                sudo networkctl reload 2>/dev/null || true
+                echo "  wrote $NAT_NETDEV + $NAT_NETWORK + $NAT_OVS_NETWORK (transit veth persists on reboot)"
+            fi
 
             # Kernel egress: masquerade the transit /24 out any uplink and
             # accept forwarded transit traffic. vpcd re-ensures these on every
@@ -1325,8 +1512,9 @@ if [ "$MGMT_BRIDGE_ENABLED" = true ]; then
         # Persist the IP across reboots via a systemd-networkd drop-in. The
         # OVS bridge definition itself survives in ovsdb; only the L3 IP
         # needs re-applying on boot.
-        MGMT_NETD_UNIT="/etc/systemd/network/10-spinifex-mgmt.network"
-        sudo tee "$MGMT_NETD_UNIT" >/dev/null <<NETD
+        if [ "$HOSTNET_BACKEND" = networkd ]; then
+            MGMT_NETD_UNIT="/etc/systemd/network/10-spinifex-mgmt.network"
+            sudo tee "$MGMT_NETD_UNIT" >/dev/null <<NETD
 [Match]
 Name=$MGMT_BRIDGE
 
@@ -1334,7 +1522,8 @@ Name=$MGMT_BRIDGE
 Address=$MGMT_CIDR
 ConfigureWithoutCarrier=yes
 NETD
-        echo "  wrote $MGMT_NETD_UNIT (IP persists on reboot via systemd-networkd)"
+            echo "  wrote $MGMT_NETD_UNIT (IP persists on reboot via systemd-networkd)"
+        fi
     fi
 fi
 
@@ -1465,13 +1654,21 @@ DATA_IFACE=$(ip -o -4 addr show | awk -v ip="$ENCAP_IP" '$0 ~ ip"/" {print $2}')
 if [ -n "$DATA_IFACE" ]; then
     SUBNET=$(ip -o -4 route show dev "$DATA_IFACE" proto kernel scope link | awk '{print $1}' | head -1)
     if [ -n "$SUBNET" ]; then
-        sudo ip route replace "$SUBNET" dev "$DATA_IFACE" src "$ENCAP_IP" metric 50
-        echo "  data route: $SUBNET via $DATA_IFACE src $ENCAP_IP (metric 50)"
+        sudo ip route replace "$SUBNET" dev "$DATA_IFACE" src "$ENCAP_IP" metric "$ENCAP_ROUTE_METRIC"
+        echo "  data route: $SUBNET via $DATA_IFACE src $ENCAP_IP (metric $ENCAP_ROUTE_METRIC)"
+        ENCAP_ROUTE_DST="$SUBNET"
+        ENCAP_ROUTE_DEV="$DATA_IFACE"
     else
         echo "  skipped: no kernel route found for $DATA_IFACE"
     fi
 else
     echo "  skipped: could not find interface for $ENCAP_IP"
+fi
+
+if [ "$HOSTNET_BACKEND" = hostnet ]; then
+    write_hostnet_state false
+    hostnet_unlock
+    echo "  $HOSTNET_STATE: recorded for spinifex-hostnet"
 fi
 
 # --- Step 7: Verify Geneve kernel support ---
@@ -1655,6 +1852,19 @@ sudo systemctl enable openvswitch-ipsec.service 2>/dev/null || true
 sudo systemctl reset-failed openvswitch-ipsec.service 2>/dev/null || true
 sudo systemctl restart openvswitch-ipsec.service 2>/dev/null || true
 printf '  %-21s enabled on boot\n' "${OVS_UNIT%.service}:" ovn-controller: openvswitch-ipsec:
+
+# Applied now, outside the hostnet lock, so the daemon and vpcd find its
+# readiness marker; on the networkd backend the apply does nothing.
+if [ -f /etc/systemd/system/spinifex-hostnet.service ]; then
+    sudo systemctl enable spinifex-hostnet.service >/dev/null 2>&1
+    if ! sudo systemctl restart spinifex-hostnet.service; then
+        echo "ERROR: spinifex-hostnet could not apply the host network: journalctl -u spinifex-hostnet" >&2
+        exit 1
+    fi
+    printf '  %-21s enabled on boot, applied (%s backend)\n' spinifex-hostnet: "$HOSTNET_BACKEND"
+else
+    echo "  spinifex-hostnet: not installed yet — run setup.sh, then re-run this script"
+fi
 
 # systemd silently drops ordering against a unit that is not installed, so a
 # missing OVS or OVN unit would leave Spinifex starting unordered against OVS.

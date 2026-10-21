@@ -424,9 +424,11 @@ var unitBodyHashes = map[string]map[int]string{
 		2: "97a2d4c72967a9bdf9545ff74593de532e8469568bb717c9958d33b77e62d0ed",
 		3: "8059fe13a678b8cb2a383ae75c069560cf39adece9a9394e17781998c711cd57",
 		4: "f66e1240cc5655f6a13f3b56ca282c73e2fe289f2e51d0ce624d14b90f12f838",
+		5: "d3d25d7eb0051ccf97f70838ddff763bade38bef934b8f85733e048151ac9319",
 	},
 	"spinifex-firewall.service": {1: "01d0a7a79f47eedca02aaab3ff97a0b6462d61b7834e16c7336a7b96034dc392"},
 	"spinifex-guests.slice":     {1: "22dac772e81a9a716db98415a4cf590885c9cf19d4290cc21e645e5fe15bc793"},
+	"spinifex-hostnet.service":  {1: "4a110daac63b652aef49e358f22ac8a27a7797261b231d5b1184e171cccb8f87"},
 	"spinifex-nats-watchdog.service": {
 		1: "b778e398da37c4cb3c170781f074c76555cb6a137a7f96f8dc692457b12aa9b8",
 		2: "c31eb4fa964060e1681113a3de4f8f3ee4336aee96469380aac5fc77480c964a",
@@ -453,6 +455,7 @@ var unitBodyHashes = map[string]map[int]string{
 	"spinifex-vpcd.service": {
 		1: "1b722640310145767cd34e87f4804852e63f46d2145ed20f8cc5f5400ebc5965",
 		2: "6ca01c8104ce0fc96ee4fdd8c0f2cd2ae907211b58b6f868fdc6a26f55a579f8",
+		3: "3ac639bf8017f6eeb8777096edc40aaeeda9ca2bcc0a8313b93c51d20847ea20",
 	},
 	"spinifex.slice": {1: "f73d9343e0e1bedd647835c8bb0c80fb3a3bd66474661234ecac23a4caafc24f"},
 	"spinifex.target": {
@@ -552,6 +555,46 @@ func TestHostnetIsWantedNotRequired(t *testing.T) {
 			if directiveContains(u, key, "spinifex-hostnet.service") {
 				t.Errorf("%s: %s=spinifex-hostnet.service would restart it with OVS; use Wants=", name, key)
 			}
+		}
+	}
+}
+
+// TestHostnetFollowsOVS asserts spinifex-hostnet re-applies whenever
+// ovs-vswitchd starts, and runs even when its state file is gone: a unit
+// skipped by a condition still satisfies the daemon and vpcd ordering on it.
+func TestHostnetFollowsOVS(t *testing.T) {
+	dir := unitsDir(t)
+	u := readUnit(t, dir, "spinifex-hostnet.service")
+	for key, values := range map[string][]string{
+		"Requires": {"ovs-vswitchd.service"},
+		"After":    {"ovs-vswitchd.service", "NetworkManager-wait-online.service"},
+		"PartOf":   {"ovs-vswitchd.service"},
+		"Before":   {"spinifex.target"},
+		"WantedBy": {"spinifex.target", "ovs-vswitchd.service"},
+	} {
+		for _, v := range values {
+			if !directiveContains(u, key, v) {
+				t.Errorf("spinifex-hostnet.service: %s= must include %s", key, v)
+			}
+		}
+	}
+	for _, want := range []string{"Type=oneshot", "RemainAfterExit=yes", "ExecStart=/usr/local/bin/spx admin hostnet apply"} {
+		if !hasDirective(u, want) {
+			t.Errorf("spinifex-hostnet.service must carry %q", want)
+		}
+	}
+	if strings.Contains(u, "\nCondition") {
+		t.Error("spinifex-hostnet.service must not be conditional: a skipped unit lets the daemon and vpcd start unwired")
+	}
+}
+
+// TestDaemonAndVPCDCheckHostnet asserts both refuse to start, including on a
+// crash restart, while the host network is not applied.
+func TestDaemonAndVPCDCheckHostnet(t *testing.T) {
+	dir := unitsDir(t)
+	for _, name := range []string{"spinifex-daemon.service", "spinifex-vpcd.service"} {
+		if !hasDirective(readUnit(t, dir, name), "ExecStartPre=/usr/local/bin/spx admin hostnet check") {
+			t.Errorf("%s must run `spx admin hostnet check` before it starts", name)
 		}
 	}
 }

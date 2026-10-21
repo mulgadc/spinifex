@@ -61,6 +61,9 @@ func newDisclosureCluster(t *testing.T) *disclosureCluster {
 	require.NoError(t, err)
 	d.wirePlatformTagIndex()
 	require.NoError(t, d.subscribeAll())
+	// The caller is a separate connection, so the server must hold the SUBs
+	// before it publishes or the request can see no responders.
+	require.NoError(t, nc.Flush())
 
 	caller, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)

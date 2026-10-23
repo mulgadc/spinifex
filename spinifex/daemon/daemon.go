@@ -1026,6 +1026,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.GetSerialConsoleAccessStatus", handleNATSRequest(d.node, d.accountService.GetSerialConsoleAccessStatus), "spinifex-workers"},
 		{"ec2.EnableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.EnableSerialConsoleAccess), "spinifex-workers"},
 		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
+		{ec2v1.SealAccountSettingsSubject, handleNATSRequest(d.node, d.sealAccountSettings), "spinifex-workers"},
 		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
@@ -1992,6 +1993,12 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
 	}
+	accountStatusJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("jetstream handle for account status reader: %w", err)
+	}
+	var _ ec2account.AccountTerminationChecker = (*handlers_iam.AccountStatusReader)(nil)
+	d.accountService.SetAccountTerminationChecker(handlers_iam.NewAccountStatusReader(accountStatusJS))
 
 	// ELBv2 resolves listener certificate private keys through its own ACM
 	// Store over the same JetStream bucket the ACM service writes, so it needs

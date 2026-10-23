@@ -2,11 +2,13 @@ package account
 
 import (
 	"context"
+	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -142,4 +144,45 @@ func TestSerialConsole_MultiAccountIsolation(t *testing.T) {
 func TestSettingsKey_EmptyAccountIDFallback(t *testing.T) {
 	assert.Equal(t, awsidentifiers.GlobalAccountID, settingsKey(""))
 	assert.Equal(t, "123456789012", settingsKey("123456789012"))
+}
+
+// A raw pre-seal record, with no state field at all, is readable and
+// mutable, and a mutation writes it back without adding one.
+func TestRecordWithoutStateIsActive(t *testing.T) {
+	svc := setupTestAccountService(t)
+	ctx := context.Background()
+	_, err := svc.settingsKV.Put(ctx, testAccountID, []byte(`{"ebs_encryption_by_default":true,"serial_console_access":false}`))
+	require.NoError(t, err)
+
+	out, err := svc.GetEbsEncryptionByDefault(ctx, &ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, *out.EbsEncryptionByDefault)
+
+	_, err = svc.EnableSerialConsoleAccess(ctx, &ec2.EnableSerialConsoleAccessInput{}, testAccountID)
+	require.NoError(t, err)
+
+	entry, err := svc.settingsKV.Get(ctx, testAccountID)
+	require.NoError(t, err)
+	assert.NotContains(t, string(entry.Value()), "state")
+}
+
+// A record with an unrecognised state fails closed rather than being treated
+// as active or sealed, for both a read and a mutation.
+func TestUnknownStateFailsClosed(t *testing.T) {
+	svc := setupTestAccountService(t)
+	ctx := context.Background()
+	_, err := svc.settingsKV.Put(ctx, testAccountID, []byte(`{"ebs_encryption_by_default":false,"serial_console_access":false,"state":"quarantined"}`))
+	require.NoError(t, err)
+
+	_, err = svc.GetEbsEncryptionByDefault(ctx, &ec2.GetEbsEncryptionByDefaultInput{}, testAccountID)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInternalError), "got %v", err)
+
+	_, err = svc.EnableEbsEncryptionByDefault(ctx, &ec2.EnableEbsEncryptionByDefaultInput{}, testAccountID)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInternalError), "got %v", err)
+
+	entry, err := svc.settingsKV.Get(ctx, testAccountID)
+	require.NoError(t, err)
+	var rec AccountSettingsRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+	assert.EqualValues(t, "quarantined", rec.State, "the unknown-state record was never overwritten")
 }

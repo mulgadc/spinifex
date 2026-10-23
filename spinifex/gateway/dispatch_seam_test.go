@@ -385,7 +385,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
-	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "route53", time.Now().UTC())
+	signTestRequestAs(t, req, nil, testAccessKey, testSecretKey, "sqs", time.Now().UTC())
 
 	resp := doRequest(r, req)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -400,7 +400,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 	}
 	require.NoError(t, xml.Unmarshal(body, &parsed))
 	assert.Equal(t, awserrors.ErrorInvalidAction, parsed.Error.Code)
-	assert.Contains(t, parsed.Error.Message, "route53")
+	assert.Contains(t, parsed.Error.Message, "sqs")
 }
 
 // --- h. ValidateServices overlap guard --------------------------------------

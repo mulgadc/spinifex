@@ -31,6 +31,7 @@ services:
       - "ec2.*"
       - "elbv2.*"
       - "acm.*"
+      - "route53.*"
       - "iam.*"
       - "rds.*"
       - "ecs.*"
@@ -39,6 +40,7 @@ services:
       - "ec2.*"
       - "elbv2.*"
       - "acm.*"
+      - "route53.*"
       - "iam.*"
       - "rds.*"
       - "ecs.*"
@@ -76,6 +78,7 @@ services:
       - spinifex/domains/ec2/vpc
       - spinifex/handlers/elbv2
       - spinifex/domains/acm
+      - spinifex/domains/route53
       - spinifex/handlers/iam
       - spinifex/handlers/ecs
       - spinifex/handlers/rds
@@ -154,6 +157,8 @@ services:
       - "acm.DescribeCertificate"
       - "acm.ListCertificates"
       - "acm.DeleteCertificate"
+      # Route 53 hosted zones (domains/route53; subscribed in daemon.go).
+      - "route53.*"
       - "elbv2.AddListenerCertificates"
       - "elbv2.RemoveListenerCertificates"
       - "elbv2.DescribeListenerCertificates"

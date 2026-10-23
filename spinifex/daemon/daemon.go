@@ -71,6 +71,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -175,6 +176,7 @@ type Daemon struct {
 	bedrockReaper         *ochre.Reaper
 	acmService            *acmdomain.ACMServiceImpl
 	acmRenewalWorker      *acmdomain.Worker
+	route53Service        *route53domain.Service
 	ochreVectorService    ochrevector.VectorService
 	ochreAppliance        *ochrevector.Appliance
 	ochreBackupService    *ochrevector.BackupService
@@ -1232,6 +1234,25 @@ func (d *Daemon) subscribeAll() error {
 		)
 	}
 
+	// Route 53 is global: any daemon serves any account's zones from shared KV.
+	if d.route53Service != nil {
+		subs = append(subs,
+			natsSub{"route53.CreateHostedZone", handleNATSRequest(d.node, d.route53Service.CreateHostedZone), "spinifex-workers"},
+			natsSub{"route53.GetHostedZone", handleNATSRequest(d.node, d.route53Service.GetHostedZone), "spinifex-workers"},
+			natsSub{"route53.GetHostedZoneCount", handleNATSRequest(d.node, d.route53Service.GetHostedZoneCount), "spinifex-workers"},
+			natsSub{"route53.ListHostedZones", handleNATSRequest(d.node, d.route53Service.ListHostedZones), "spinifex-workers"},
+			natsSub{"route53.ListHostedZonesByName", handleNATSRequest(d.node, d.route53Service.ListHostedZonesByName), "spinifex-workers"},
+			natsSub{"route53.UpdateHostedZoneComment", handleNATSRequest(d.node, d.route53Service.UpdateHostedZoneComment), "spinifex-workers"},
+			natsSub{"route53.DeleteHostedZone", handleNATSRequest(d.node, d.route53Service.DeleteHostedZone), "spinifex-workers"},
+			natsSub{"route53.ChangeResourceRecordSets", handleNATSRequest(d.node, d.route53Service.ChangeResourceRecordSets), "spinifex-workers"},
+			natsSub{"route53.ListResourceRecordSets", handleNATSRequest(d.node, d.route53Service.ListResourceRecordSets), "spinifex-workers"},
+			natsSub{"route53.GetChange", handleNATSRequest(d.node, d.route53Service.GetChange), "spinifex-workers"},
+			natsSub{"route53.ChangeTagsForResource", handleNATSRequest(d.node, d.route53Service.ChangeTagsForResource), "spinifex-workers"},
+			natsSub{"route53.ListTagsForResource", handleNATSRequest(d.node, d.route53Service.ListTagsForResource), "spinifex-workers"},
+			natsSub{"route53.ListTagsForResources", handleNATSRequest(d.node, d.route53Service.ListTagsForResources), "spinifex-workers"},
+		)
+	}
+
 	// Ochre vector store tenant surface is deliberately NOT registered here:
 	// its subjects only exist once the platform appliance has finished
 	// launching (startOchreVector, run in the background after this method
@@ -2172,6 +2193,12 @@ func (d *Daemon) startCluster() error {
 	d.acmService.NorthstarHostsZone = func(domain string) bool {
 		return dns.HostsZone(d.config, domain)
 	}
+
+	route53JS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Route 53 service: %w", err)
+	}
+	d.route53Service = d.newRoute53Service(route53JS)
 
 	// The tenant private CA is optional, unlike the master key above: a
 	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has

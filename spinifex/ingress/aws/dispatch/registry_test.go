@@ -139,12 +139,12 @@ func TestLookupServesEveryNameOfOneRegistration(t *testing.T) {
 func TestUnknownServiceKeepsTheEstablishedResult(t *testing.T) {
 	b := NewBuilder()
 	require.NoError(t, b.Register(validReg("ecr")))
-	_, ok := b.Build().Lookup("route53")
+	_, ok := b.Build().Lookup("sqs")
 	assert.False(t, ok)
 
-	code, msg := UnknownService("route53")
+	code, msg := UnknownService("sqs")
 	assert.Equal(t, awserrors.ErrorInvalidAction, code)
-	assert.Equal(t, `Service "route53" is not served by this gateway.`, msg)
+	assert.Equal(t, `Service "sqs" is not served by this gateway.`, msg)
 }
 
 func TestResolveActionIsAdvisory(t *testing.T) {

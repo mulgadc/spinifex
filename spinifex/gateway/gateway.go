@@ -464,10 +464,10 @@ func (gw *GatewayConfig) writeThrottleError(w http.ResponseWriter, r *http.Reque
 	svc, _ := r.Context().Value(ctxService).(string)
 
 	errorCode := awserrors.ErrorRequestLimitExceeded
-	if svc == "iam" || svc == "sts" || svc == "eks" {
+	if svc == "iam" || svc == "sts" || svc == "eks" || svc == "route53" {
 		errorCode = awserrors.ErrorThrottling
 	}
-	errorMsg := awserrors.ErrorLookup[errorCode]
+	errorMsg := awserrors.LookupErrorMessage(svc, errorCode)
 
 	// AWS JSON 1.1 services (EKS/ECS/bedrock family, …) get a JSON body.
 	if gw.jsonErrorService(svc) {

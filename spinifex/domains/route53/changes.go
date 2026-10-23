@@ -241,6 +241,10 @@ func validateValue(rrType, v string) error {
 		if len(f) != 7 {
 			return fmt.Errorf("value %q is not a seven-field SOA", v)
 		}
+	case "TXT", "SPF":
+		if _, err := characterStrings(v); err != nil {
+			return fmt.Errorf("FATAL problem: %w encountered with '%s'", err, v)
+		}
 	}
 	return nil
 }

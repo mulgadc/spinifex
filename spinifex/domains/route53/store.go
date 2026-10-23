@@ -15,11 +15,14 @@ import (
 const (
 	KVBucketRoute53        = "spinifex-route53"
 	KVBucketRoute53Version = 1
+	// KVBucketRoute53Realize elects the one node that publishes zones.
+	KVBucketRoute53Realize = "spinifex-route53-realize"
 
 	keyPrefixZone     = "zone."
 	keyPrefixRRSets   = "rrsets."
 	keyPrefixChange   = "change."
 	keyPrefixCallerRf = "ref."
+	keyPrefixPublish  = "published."
 	casAttempts       = 20
 )
 
@@ -56,9 +59,10 @@ type ZoneRecord struct {
 // RRSetsDoc is a zone's complete record-set document. Version increases by one
 // on every committed change batch and is what a realized zone is stamped with.
 type RRSetsDoc struct {
-	ZoneID  string  `json:"zone_id"`
-	Version uint64  `json:"version"`
-	Sets    []RRSet `json:"sets"`
+	ZoneID    string    `json:"zone_id"`
+	Version   uint64    `json:"version"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Sets      []RRSet   `json:"sets"`
 }
 
 // RRSet is one simple-routing record set. Name is normalized.
@@ -80,6 +84,17 @@ type ChangeRecord struct {
 	SubmittedAt time.Time `json:"submitted_at"`
 }
 
+// PublishedZone records what the realizer last wrote to northstar for a zone
+// name. It is how a withdrawn zone is found, since its own records may be gone.
+type PublishedZone struct {
+	Apex      string `json:"apex"`
+	AccountID string `json:"account_id"`
+	ZoneID    string `json:"zone_id"`
+	Version   uint64 `json:"version"`
+	Digest    string `json:"digest"`
+	InSync    bool   `json:"in_sync"`
+}
+
 type callerRef struct {
 	ZoneID string `json:"zone_id"`
 }
@@ -92,6 +107,7 @@ type Store struct {
 	rrsets  *kvstore.Store[RRSetsDoc]
 	changes *kvstore.Store[ChangeRecord]
 	refs    *kvstore.Store[callerRef]
+	publish *kvstore.Store[PublishedZone]
 }
 
 // NewStore returns a Store over js. The bucket is created on first use.
@@ -112,6 +128,7 @@ func NewStore(js jetstream.JetStream) *Store {
 		rrsets:  kvstore.On[RRSetsDoc](b),
 		changes: kvstore.On[ChangeRecord](b),
 		refs:    kvstore.On[callerRef](b),
+		publish: kvstore.On[PublishedZone](b),
 	}
 }
 
@@ -274,4 +291,37 @@ func (s *Store) PruneChanges(ctx context.Context, account, zoneID string, cutoff
 // caller can retry with the same reference.
 func (s *Store) ReleaseCallerReference(ctx context.Context, account, ref string) error {
 	return s.bucket.Delete(ctx, refKey(account, ref))
+}
+
+// ListAllChanges returns every change in every account.
+func (s *Store) ListAllChanges(ctx context.Context) ([]ChangeRecord, error) {
+	return s.changes.List(ctx, keyPrefixChange)
+}
+
+// DeleteChange removes one change.
+func (s *Store) DeleteChange(ctx context.Context, account, id string) error {
+	return s.bucket.Delete(ctx, changeKey(account, id))
+}
+
+// ListPublished returns the published zones keyed by apex.
+func (s *Store) ListPublished(ctx context.Context) (map[string]PublishedZone, error) {
+	all, err := s.publish.List(ctx, keyPrefixPublish)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]PublishedZone, len(all))
+	for _, p := range all {
+		out[p.Apex] = p
+	}
+	return out, nil
+}
+
+// SetPublished records what was written for p.Apex.
+func (s *Store) SetPublished(ctx context.Context, p *PublishedZone) error {
+	return s.publish.Set(ctx, keyPrefixPublish+p.Apex, p)
+}
+
+// DeletePublished forgets a withdrawn zone.
+func (s *Store) DeletePublished(ctx context.Context, apex string) error {
+	return s.bucket.Delete(ctx, keyPrefixPublish+apex)
 }

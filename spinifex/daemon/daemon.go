@@ -2342,6 +2342,9 @@ func (d *Daemon) startCluster() error {
 		go d.dnsReconciler.Run(d.ctx)
 		slog.Info("Started DNS reconcile backstop", "interval_ms", otelsetup.Millis(dns.DefaultReconcileInterval))
 	}
+	if d.route53Service != nil {
+		d.startRoute53Realizer()
+	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.
 	d.resourceMgr.initSubscriptions(d.natsConn, d.handleEC2RunInstances, d.handleSystemLaunchInstance, d.node)

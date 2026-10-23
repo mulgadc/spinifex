@@ -123,7 +123,7 @@ func (s *Service) CreateHostedZone(ctx context.Context, in *route53.CreateHosted
 		ID: id, AccountID: account, Name: name, CallerReference: ref, Comment: comment,
 		CreatedAt: now, Nameservers: nameservers, State: StatePendingNameservers,
 	}
-	doc := &RRSetsDoc{ZoneID: id, Version: 1, Sets: defaultRecordSets(name, nameservers)}
+	doc := &RRSetsDoc{ZoneID: id, Version: 1, UpdatedAt: now, Sets: defaultRecordSets(name, nameservers)}
 	if err := s.store.CreateZone(ctx, zone, doc); err != nil {
 		_ = s.store.ReleaseCallerReference(ctx, account, ref)
 		return nil, internal("create hosted zone", err)
@@ -301,7 +301,7 @@ func (s *Service) ChangeResourceRecordSets(ctx context.Context, in *route53.Chan
 		if err != nil {
 			return nil, err
 		}
-		next := &RRSetsDoc{ZoneID: zone.ID, Version: doc.Version + 1, Sets: sets}
+		next := &RRSetsDoc{ZoneID: zone.ID, Version: doc.Version + 1, UpdatedAt: s.Now().UTC(), Sets: sets}
 		if err := s.store.CommitRRSets(ctx, account, next, rev); err != nil {
 			if errors.Is(err, kvstore.ErrConflict) {
 				continue

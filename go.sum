@@ -297,6 +297,10 @@ github.com/mulgadc/bluebottle v1.22.0 h1:pGZ5/Ly3CYem62pPu2zKBRpvMpAG0LHMIMw9Yt/
 github.com/mulgadc/bluebottle v1.22.0/go.mod h1:DwT91bJyUsrpg1gCJmcCOTG+tgw5J124LloHYvGAQu0=
 github.com/mulgadc/northstar v1.22.1-0.20261023220040-11ff69dd571a h1:juPJ0jubDYy6Sdk14BGnYB4QF7N0PhAmV522FdBA2yI=
 github.com/mulgadc/northstar v1.22.1-0.20261023220040-11ff69dd571a/go.mod h1:Halhinpgo5rzUhYemGN8uYTWu1pJsL5e/7l1eEKc7nM=
+github.com/mulgadc/northstar v1.22.1-0.20261023224401-31cf7e48e4db h1:OrXatiBIUEv6InRzh0zHIPnfp+CrIxf2+rX4T3fo7cI=
+github.com/mulgadc/northstar v1.22.1-0.20261023224401-31cf7e48e4db/go.mod h1:Halhinpgo5rzUhYemGN8uYTWu1pJsL5e/7l1eEKc7nM=
+github.com/mulgadc/northstar v1.22.1-0.20261023224547-8c5555ef1d1d h1:FTch26kEKKv+c4X3L0cQKMXwBJ4D1SCFlV4Mfgh7nEU=
+github.com/mulgadc/northstar v1.22.1-0.20261023224547-8c5555ef1d1d/go.mod h1:Halhinpgo5rzUhYemGN8uYTWu1pJsL5e/7l1eEKc7nM=
 github.com/mulgadc/predastore v1.22.0 h1:mUQJMTxMiRDVvemMP+34BP/+r1U0iCptc9B++u4NJ8o=
 github.com/mulgadc/predastore v1.22.0/go.mod h1:/cMIoKtnQG/DWyeX/0matEQrG2/abY60tNHWcBKS9Kc=
 github.com/mulgadc/viperblock v1.22.0 h1:8vS2AtpIDkIhGNOazQPicKXV2y/8PAy8BNrVWIOCP6I=

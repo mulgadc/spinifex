@@ -297,3 +297,15 @@ func TestSealCapabilityBoundedByOneDeadline(t *testing.T) {
 	assert.False(t, report.Complete)
 	assert.Less(t, elapsed, client.wait+time.Second, "five silent nodes must not cost five deadlines")
 }
+
+// The stuck reason is logged and stored as one line naming each failing node;
+// the retry hint and the ServiceUnavailable code travel with it.
+func TestSealCapabilityIncompleteErrorIsOneLine(t *testing.T) {
+	err := errSealCapabilityIncomplete(sealCapabilityReport{Nodes: []nodeSealCapability{{Node: "node-1", Reason: sealCapabilityReasonDuplicate}}})
+
+	assert.Equal(t, "EC2 account-settings seal capability incomplete: node-1=duplicate: ServiceUnavailable", err.Error())
+	d, ok := awserrors.ResolveRetryAfter(err)
+	assert.True(t, ok)
+	assert.Equal(t, 5*time.Second, d)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorServiceUnavailable))
+}

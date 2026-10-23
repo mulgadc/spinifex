@@ -523,14 +523,22 @@ func isInstanceProcessRunning(instance *VM) bool {
 }
 
 // AreVolumeSocketsValid dials each NBD Unix socket to confirm viperblock is
-// still listening. A stat-only check is insufficient since viperblock may restart
-// leaving stale socket files. TCP and unparseable URIs are treated as valid.
+// still listening, and checks each block export's device still exists. TCP,
+// unparseable and invalid exports are treated as valid.
 func AreVolumeSocketsValid(instance *VM) bool {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
 	for _, req := range instance.EBSRequests.Requests {
-		if req.NBDURI == "" {
+		kind, _ := classifyVolumeExport(req)
+		if kind == volumeExportBlock {
+			if err := checkBlockDevice(req.BlockDevice); err != nil {
+				slog.Debug("Block device missing", "volume", req.Name, "device", req.BlockDevice, "err", err)
+				return false
+			}
+			continue
+		}
+		if kind != volumeExportNBD {
 			continue
 		}
 		serverType, sockPath, _, _, err := nbd.ParseNBDURI(req.NBDURI)

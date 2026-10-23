@@ -119,17 +119,36 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		return "", fmt.Errorf("mount volume %s: %w", volumeID, err)
 	}
 
-	serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(ebsRequest.NBDURI)
-	if err != nil {
-		slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
-		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
-		return "", fmt.Errorf("parse NBDURI: %w", err)
-	}
-	serverArg := NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg()
-
 	// Shared with buildDrives' cold-boot path so a relaunched volume's block
 	// graph uses exactly the same names DetachVolume addresses.
 	nodeName := VolumeNodeName(volumeID)
+
+	kind, err := classifyVolumeExport(ebsRequest)
+	if err != nil {
+		slog.ErrorContext(ctx, "AttachVolume: invalid volume export", "volumeId", volumeID, "err", err)
+		_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
+		return "", fmt.Errorf("volume export: %w", err)
+	}
+	var blockdevArgs map[string]any
+	if kind == volumeExportBlock {
+		blockdevArgs = HostDeviceOpts{Path: ebsRequest.BlockDevice, SizeBytes: ebsRequest.BlockSizeBytes}.QMPArgs(nodeName)
+	} else {
+		serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(ebsRequest.NBDURI)
+		if err != nil {
+			slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
+			_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
+			return "", fmt.Errorf("parse NBDURI: %w", err)
+		}
+		blockdevArgs = map[string]any{
+			"node-name":       nodeName,
+			"driver":          "nbd",
+			"server":          NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg(),
+			"export":          "",
+			"read-only":       false,
+			"reconnect-delay": NBDReconnectDelaySeconds,
+		}
+	}
+
 	deviceID := VolumeDeviceID(volumeID)
 	iothreadID := VolumeIOThreadID(volumeID)
 
@@ -163,15 +182,8 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	}
 
 	if _, err := sendQMPCommand(ctx, instance.QMPClient, qmp.QMPCommand{
-		Execute: "blockdev-add",
-		Arguments: map[string]any{
-			"node-name":       nodeName,
-			"driver":          "nbd",
-			"server":          serverArg,
-			"export":          "",
-			"read-only":       false,
-			"reconnect-delay": NBDReconnectDelaySeconds,
-		},
+		Execute:   "blockdev-add",
+		Arguments: blockdevArgs,
 	}, instance.ID); err != nil {
 		slog.ErrorContext(ctx, "AttachVolume: QMP blockdev-add failed", "volumeId", volumeID, "err", err)
 		m.delIothreadBestEffort(ctx, instance, iothreadID, volumeID)

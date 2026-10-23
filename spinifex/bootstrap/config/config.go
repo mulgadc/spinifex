@@ -18,13 +18,29 @@ import (
 // ClusterConfig is the root of spinifex.toml as returned by LoadConfig: the
 // cluster-wide settings plus a [nodes.<name>] Config for every node.
 type ClusterConfig struct {
-	Epoch     uint64            `mapstructure:"epoch"`     // bump when leader commits changes
-	Node      string            `mapstructure:"node"`      // my node name
-	Version   string            `mapstructure:"version"`   // spinifex version
-	Network   NetworkConfig     `mapstructure:"network"`   // cluster-wide external network settings
-	Bootstrap BootstrapConfig   `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
-	AWS       AWSConfig         `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
-	Nodes     map[string]Config `mapstructure:"nodes"`     // full config for every node
+	Epoch     uint64                 `mapstructure:"epoch"`     // bump when leader commits changes
+	Node      string                 `mapstructure:"node"`      // my node name
+	Version   string                 `mapstructure:"version"`   // spinifex version
+	Network   NetworkConfig          `mapstructure:"network"`   // cluster-wide external network settings
+	Bootstrap BootstrapConfig        `mapstructure:"bootstrap"` // default VPC IDs for OVN reconciliation
+	AWS       AWSConfig              `mapstructure:"aws"`       // cluster-wide AWS-parity settings (region, endpoint suffix)
+	Northstar NorthstarClusterConfig `mapstructure:"northstar"` // cluster-wide authoritative DNS settings
+	Nodes     map[string]Config      `mapstructure:"nodes"`     // full config for every node
+}
+
+// MaxNameservers caps the nsN names a cluster publishes for its zones. Every
+// northstar node still serves every zone; the cap bounds only the delegation a
+// registrar has to carry.
+const MaxNameservers = 4
+
+// NorthstarClusterConfig is the cluster-wide [northstar] block.
+type NorthstarClusterConfig struct {
+	// NameserverCount is how many nsN names to publish, 1 to MaxNameservers.
+	// Zero means one per northstar node, up to MaxNameservers.
+	NameserverCount int `mapstructure:"nameserver_count"`
+	// NameserverNodes pins ns1, ns2, ... to these nodes, in order. Unpinned
+	// slots are filled from the remaining northstar nodes in name order.
+	NameserverNodes []string `mapstructure:"nameserver_nodes"`
 }
 
 // Defaults for cluster-wide AWS-parity settings.
@@ -654,6 +670,32 @@ func LoadConfig(configPath string) (*ClusterConfig, error) {
 	return &config, nil
 }
 
+// validateNorthstarCluster checks the [northstar] nameserver settings against
+// the cap and the configured nodes.
+func validateNorthstarCluster(cc *ClusterConfig) error {
+	ns := cc.Northstar
+	if ns.NameserverCount < 0 || ns.NameserverCount > MaxNameservers {
+		return fmt.Errorf("config: [northstar] nameserver_count=%d out of range; use 1-%d, or remove the key for one per northstar node up to %d", ns.NameserverCount, MaxNameservers, MaxNameservers)
+	}
+	if len(ns.NameserverNodes) > MaxNameservers {
+		return fmt.Errorf("config: [northstar] nameserver_nodes lists %d nodes; at most %d are published", len(ns.NameserverNodes), MaxNameservers)
+	}
+	if ns.NameserverCount > 0 && len(ns.NameserverNodes) > ns.NameserverCount {
+		return fmt.Errorf("config: [northstar] nameserver_nodes lists %d nodes but nameserver_count is %d", len(ns.NameserverNodes), ns.NameserverCount)
+	}
+	seen := make(map[string]bool, len(ns.NameserverNodes))
+	for _, name := range ns.NameserverNodes {
+		if _, ok := cc.Nodes[name]; !ok {
+			return fmt.Errorf("config: [northstar] nameserver_nodes names %q, which is not a configured node", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("config: [northstar] nameserver_nodes names %q twice", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
 // validateClusterConfig rejects legacy DHCP config keys and validates external pool ranges.
 func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
@@ -682,6 +724,10 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		if c := nodeCfg.EBS.CacheSizeMB; c != nil && *c < 0 {
 			return fmt.Errorf("config: [nodes.%s.ebs] cache_size_mb=%d must not be negative; use 0 to disable the cache, or remove the key for the default of %d", nodeName, *c, DefaultCacheSizeMB)
 		}
+	}
+
+	if err := validateNorthstarCluster(cc); err != nil {
+		return err
 	}
 
 	if len(cc.Network.NATExemptCIDRs) > 0 && cc.Network.ExternalMode != "nat" {

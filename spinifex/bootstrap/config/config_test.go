@@ -1426,3 +1426,43 @@ exoscale_instance_id = "0f1e2d3c-0000-4000-8000-000000000001"
 		})
 	}
 }
+
+func TestLoadConfig_NorthstarNameservers(t *testing.T) {
+	load := func(t *testing.T, block string) (*ClusterConfig, error) {
+		t.Helper()
+		resetViper(t)
+		path := filepath.Join(t.TempDir(), "spinifex.toml")
+		body := "node = \"n1\"\n\n" + block + "\n[nodes.n1]\nregion = \"us-east-1\"\n\n[nodes.n2]\nregion = \"us-east-1\"\n"
+		require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+		return LoadConfig(path)
+	}
+
+	t.Run("absent block means automatic", func(t *testing.T) {
+		cfg, err := load(t, "")
+		require.NoError(t, err)
+		assert.Zero(t, cfg.Northstar.NameserverCount)
+		assert.Empty(t, cfg.Northstar.NameserverNodes)
+	})
+
+	t.Run("count and pin load", func(t *testing.T) {
+		cfg, err := load(t, "[northstar]\nnameserver_count = 2\nnameserver_nodes = [\"n2\", \"n1\"]\n")
+		require.NoError(t, err)
+		assert.Equal(t, 2, cfg.Northstar.NameserverCount)
+		assert.Equal(t, []string{"n2", "n1"}, cfg.Northstar.NameserverNodes)
+	})
+
+	for name, tc := range map[string]struct{ block, want string }{
+		"count above the cap":       {"[northstar]\nnameserver_count = 5\n", "nameserver_count=5"},
+		"negative count":            {"[northstar]\nnameserver_count = -1\n", "nameserver_count=-1"},
+		"pin longer than count":     {"[northstar]\nnameserver_count = 1\nnameserver_nodes = [\"n1\", \"n2\"]\n", "nameserver_count is 1"},
+		"pin names an unknown node": {"[northstar]\nnameserver_nodes = [\"n9\"]\n", `"n9"`},
+		"pin repeats a node":        {"[northstar]\nnameserver_nodes = [\"n1\", \"n1\"]\n", "twice"},
+		"pin above the cap":         {"[northstar]\nnameserver_nodes = [\"n1\", \"n2\", \"n3\", \"n4\", \"n5\"]\n", "at most 4"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := load(t, tc.block)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}

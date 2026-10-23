@@ -62,6 +62,7 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 	firstNode := fix.Cluster.Nodes[0]
 	baseDomain, internalDomain := harness.PeerNorthstarDomains(t, firstNode)
 	firstConfig := configs[firstNode.Name]
+	require.Zerof(t, firstConfig.Northstar, "expected nameservers assume no [northstar] pin or count on %s", firstNode.Name)
 	expectedSeeds := make([]nsconfig.NameserverSeed, 0, len(fix.Cluster.Nodes))
 	expectedResolvers := make([]string, 0, len(fix.Cluster.Nodes))
 	for i, node := range fix.Cluster.Nodes {
@@ -69,7 +70,9 @@ func runMultinodeDNS(t *testing.T, fix *Fixture) {
 		require.NotNilf(t, ip, "cluster node %s address %q is not an IP", node.Name, node.Addr)
 		require.Falsef(t, ip.IsLoopback() || ip.IsUnspecified(), "cluster node %s has unusable DNS address %s", node.Name, ip)
 		expectedResolvers = append(expectedResolvers, ip.String())
-		expectedSeeds = append(expectedSeeds, nsconfig.NameserverSeed{Host: fmt.Sprintf("ns%d", i+1), IP: ip.String()})
+		if i < spinconfig.MaxNameservers {
+			expectedSeeds = append(expectedSeeds, nsconfig.NameserverSeed{Host: fmt.Sprintf("ns%d", i+1), IP: ip.String()})
+		}
 	}
 	expectedTopology := seedTopology(baseDomain, expectedSeeds)
 

@@ -1289,6 +1289,15 @@ func (d *Daemon) subscribeAll() error {
 		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
 
+	// Per-node, no queue group: a second daemon claiming this node ID also
+	// answers, so the teardown probe sees a duplicate and refuses to seal. An
+	// invalid node ID serves nothing, so this daemon reads as incompatible.
+	if ec2v1.ValidSealCapabilityNode(d.node) {
+		subs = append(subs, natsSub{ec2v1.AccountSettingsSealCapabilitySubject(d.node), handleNATSRequest(d.node, d.accountSettingsSealCapability), ""})
+	} else {
+		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
+	}
+
 	return d.registerNatsSubs(subs)
 }
 

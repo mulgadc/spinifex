@@ -41,6 +41,27 @@ func TestNewClusterEngineCoversEveryStage(t *testing.T) {
 	}
 }
 
+// The EC2 settings seal reaper must be registered in StageAccount on every
+// surface that builds a cluster engine, or teardown would finalise accounts
+// without ever sealing their settings.
+func TestNewClusterEngineRegistersTheEC2SettingsSealReaper(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	masterKey, err := handlers_iam.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	require.NoError(t, err)
+
+	engine, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
+	require.NoError(t, err)
+
+	var kinds []string
+	for _, reaper := range engine.reapersFor(StageAccount) {
+		kinds = append(kinds, reaper.Kind())
+	}
+	assert.Contains(t, kinds, "ec2-account-settings")
+}
+
 // A teardown must refuse the accounts no credential may delete before it reads
 // anything, and refuse a name confirmation that does not match the record.
 func TestClusterEnginePrechecks(t *testing.T) {

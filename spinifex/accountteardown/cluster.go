@@ -70,6 +70,11 @@ func NewClusterEngine(
 	reapers = append(reapers, S3Reapers(buckets)...)
 	reapers = append(reapers, ACMReapers(nc)...)
 	reapers = append(reapers, IAMReapers(svc)...)
+
+	// Before the account counters and reservations: the seal must still be
+	// able to find the account IAM holds as TERMINATING, which the account
+	// record reaper does not remove.
+	reapers = append(reapers, EC2AccountSettingsReapers(nc, nodeIDs)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 
 	engine := NewEngine(NewIAMAccounts(svc), reapers...)

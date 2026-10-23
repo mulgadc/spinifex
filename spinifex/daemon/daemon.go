@@ -177,6 +177,7 @@ type Daemon struct {
 	acmService            *acmdomain.ACMServiceImpl
 	acmRenewalWorker      *acmdomain.Worker
 	route53Service        *route53domain.Service
+	route53Verifier       *route53domain.Verifier
 	ochreVectorService    ochrevector.VectorService
 	ochreAppliance        *ochrevector.Appliance
 	ochreBackupService    *ochrevector.BackupService
@@ -1250,6 +1251,12 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"route53.ChangeTagsForResource", handleNATSRequest(d.node, d.route53Service.ChangeTagsForResource), "spinifex-workers"},
 			natsSub{"route53.ListTagsForResource", handleNATSRequest(d.node, d.route53Service.ListTagsForResource), "spinifex-workers"},
 			natsSub{"route53.ListTagsForResources", handleNATSRequest(d.node, d.route53Service.ListTagsForResources), "spinifex-workers"},
+			natsSub{"route53.GetHostedZoneActivation", handleNATSRequest(d.node, d.route53Service.GetHostedZoneActivation), "spinifex-workers"},
+			natsSub{"route53.VerifyHostedZoneDelegation", handleNATSRequest(d.node, d.route53Service.VerifyHostedZoneDelegation), "spinifex-workers"},
+			natsSub{"route53.admin.FindZones", handleNATSRequest(d.node, d.route53Service.AdminFindZones), "spinifex-workers"},
+			natsSub{"route53.admin.Verify", handleNATSRequest(d.node, d.route53Service.AdminVerify), "spinifex-workers"},
+			natsSub{"route53.admin.Override", handleNATSRequest(d.node, d.route53Service.AdminOverride), "spinifex-workers"},
+			natsSub{"route53.admin.Delegate", handleNATSRequest(d.node, d.route53Delegate), "spinifex-workers"},
 		)
 	}
 
@@ -2199,6 +2206,8 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize Route 53 service: %w", err)
 	}
 	d.route53Service = d.newRoute53Service(route53JS)
+	d.route53Verifier = d.newRoute53Verifier()
+	d.route53Service.Verifier = d.route53Verifier
 
 	// The tenant private CA is optional, unlike the master key above: a
 	// deployment issuing only public (PROVIDER_API/MANUAL_TXT) certificates has
@@ -2344,6 +2353,7 @@ func (d *Daemon) startCluster() error {
 	}
 	if d.route53Service != nil {
 		d.startRoute53Realizer()
+		go d.route53Verifier.Run(d.ctx)
 	}
 
 	// Initialize per-instance-type NATS subscriptions for capacity-aware routing.

@@ -5,6 +5,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/route53/ext"
 )
 
 // Route 53 ARNs carry no region or account, so the policy gate cannot scope
@@ -25,6 +27,10 @@ func ResourceARNs(input any) []string {
 		return zoneARN(in.HostedZoneId)
 	case *route53.ListResourceRecordSetsInput:
 		return zoneARN(in.HostedZoneId)
+	case *ext.GetHostedZoneActivationInput:
+		return zoneARN(in.Id)
+	case *ext.VerifyHostedZoneDelegationInput:
+		return zoneARN(in.Id)
 	case *route53.GetChangeInput:
 		return []string{arnPrefix + "change/" + strings.TrimPrefix(aws.StringValue(in.Id), "/change/")}
 	case *route53.ChangeTagsForResourceInput:

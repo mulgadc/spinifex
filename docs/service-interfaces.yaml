@@ -159,6 +159,8 @@ services:
       - "acm.DeleteCertificate"
       # Route 53 hosted zones (domains/route53; subscribed in daemon.go).
       - "route53.*"
+      # Operator-only zone activation and delegation, sent by spx admin dns.
+      - "route53.admin.*"
       - "elbv2.AddListenerCertificates"
       - "elbv2.RemoveListenerCertificates"
       - "elbv2.DescribeListenerCertificates"
@@ -470,6 +472,12 @@ suites:
     # DDIL = degraded / disconnected / intermittent / low-bandwidth.
     # Exercises the full daemon stack under network failure injection;
     # any service touching the wire path is in scope.
+
+  e2e-route53:
+    path: tests/e2e/route53
+    covers: [awsgw, spinifex_daemon, predastore]
+    # Hosted zones end to end: delegation check, publish to the northstar zone
+    # store in predastore, and every node answering before a change is INSYNC.
 
   # Suites below are bash-only today. Entries activate as the Go ports
   # land (Bead 2 fixtures unblock new-shape ports for multinode etc.).

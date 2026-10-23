@@ -45,6 +45,8 @@ type Service struct {
 	Now func() time.Time
 	// MaxZonesPerAccount caps CreateHostedZone; zero means the AWS default.
 	MaxZonesPerAccount int
+	// Verifier checks a delegation on demand; nil leaves zones to the schedule.
+	Verifier *Verifier
 }
 
 // NewService returns a Service over store.

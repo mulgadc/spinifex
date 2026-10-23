@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/route53"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/spinifex/domains/route53/ext"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -70,7 +71,14 @@ var routes = []rest.Route[operation]{
 	{Method: http.MethodPost, Pattern: base + "/tags/{ResourceType}/{ResourceId}", Action: "ChangeTagsForResource", Handler: op[route53.ChangeTagsForResourceInput, route53.ChangeTagsForResourceOutput](http.StatusOK)},
 	{Method: http.MethodGet, Pattern: base + "/tags/{ResourceType}/{ResourceId}", Action: "ListTagsForResource", Handler: op[route53.ListTagsForResourceInput, route53.ListTagsForResourceOutput](http.StatusOK)},
 	{Method: http.MethodPost, Pattern: base + "/tags/{ResourceType}", Action: "ListTagsForResources", Handler: op[route53.ListTagsForResourcesInput, route53.ListTagsForResourcesOutput](http.StatusOK)},
+
+	// Spinifex extensions, which standard SDKs never call.
+	{Method: http.MethodGet, Pattern: base + "/hostedzone/{Id}/activation", Action: ext.ActionGetHostedZoneActivation, Handler: op[ext.GetHostedZoneActivationInput, ext.GetHostedZoneActivationOutput](http.StatusOK)},
+	{Method: http.MethodPost, Pattern: base + "/hostedzone/{Id}/activation", Action: ext.ActionVerifyHostedZoneDelegation, Handler: op[ext.VerifyHostedZoneDelegationInput, ext.VerifyHostedZoneDelegationOutput](http.StatusOK)},
 }
+
+// extensions are served but are not operations of the AWS model.
+var extensions = []string{ext.ActionGetHostedZoneActivation, ext.ActionVerifyHostedZoneDelegation}
 
 var router = rest.NewRouter(ServiceName, routes)
 
@@ -85,11 +93,16 @@ func NewRegistration(deps Deps) dispatch.Registration {
 	}
 }
 
-// OperationInventory lists the actions the registration serves.
+// ExtensionActions lists the Spinifex actions served beside the AWS model's.
+func ExtensionActions() []string { return slices.Clone(extensions) }
+
+// OperationInventory lists the AWS model actions the registration serves.
 func OperationInventory() dispatch.Inventory {
 	names := make([]string, 0, len(routes))
 	for _, r := range routes {
-		names = append(names, r.Action)
+		if !slices.Contains(extensions, r.Action) {
+			names = append(names, r.Action)
+		}
 	}
 	slices.Sort(names)
 	return dispatch.Inventory{Registered: names}

@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	r53 "github.com/aws/aws-sdk-go/service/route53"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
@@ -25,6 +26,7 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	"github.com/mulgadc/spinifex/spinifex/domains/route53/ext"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -49,7 +51,7 @@ func (a *authorized) record(service, action string, resources []string, _ iampol
 func serveDomain(t *testing.T, nc *nats.Conn, svc *route53.Service) {
 	t.Helper()
 	v := reflect.ValueOf(svc)
-	for _, action := range awsapi.OperationInventory().Registered {
+	for _, action := range append(awsapi.OperationInventory().Registered, awsapi.ExtensionActions()...) {
 		m := v.MethodByName(action)
 		require.True(t, m.IsValid(), "the service has no method for %s", action)
 		inType := m.Type().In(1).Elem()
@@ -256,7 +258,7 @@ func TestUnservedRouteIsInvalidAction(t *testing.T) {
 func TestOperationInventoryMatchesTheServiceMethods(t *testing.T) {
 	inv := awsapi.OperationInventory()
 	svc := reflect.TypeFor[*route53.Service]()
-	for _, action := range inv.Registered {
+	for _, action := range append(inv.Registered, awsapi.ExtensionActions()...) {
 		_, ok := svc.MethodByName(action)
 		assert.True(t, ok, "%s is routed but the service does not implement it", action)
 	}
@@ -281,6 +283,8 @@ func TestResolveActionMatchesEveryRoute(t *testing.T) {
 		"POST /2013-04-01/tags/hostedzone/Z1":            "ChangeTagsForResource",
 		"GET /2013-04-01/tags/hostedzone/Z1":             "ListTagsForResource",
 		"POST /2013-04-01/tags/hostedzone":               "ListTagsForResources",
+		"GET /2013-04-01/hostedzone/Z1/activation":       "GetHostedZoneActivation",
+		"POST /2013-04-01/hostedzone/Z1/activation":      "VerifyHostedZoneDelegation",
 		"POST /2013-04-01/healthcheck":                   "",
 		"GET /2013-04-01/hostedzone/Z1/rrset/extra/more": "",
 	}
@@ -289,5 +293,32 @@ func TestResolveActionMatchesEveryRoute(t *testing.T) {
 		r := httptest.NewRequest(method, path, nil)
 		assert.Equal(t, want, reg.ResolveAction(r), req)
 	}
-	assert.Len(t, awsapi.OperationInventory().Registered, 13)
+	assert.Len(t, awsapi.OperationInventory().Registered, 13, "extensions are not AWS model operations")
+}
+
+// The extensions are REST-XML like the rest of the API, so an SDK client can
+// call them as custom operations; this is how the console and spx do.
+func TestExtensionsRoundTripThroughTheSDK(t *testing.T) {
+	client, auth := newClient(t)
+	zone, err := client.CreateHostedZone(&r53.CreateHostedZoneInput{Name: aws.String("example.com"), CallerReference: aws.String("ext")})
+	require.NoError(t, err)
+	id := strings.TrimPrefix(aws.StringValue(zone.HostedZone.Id), "/hostedzone/")
+
+	out := &ext.GetHostedZoneActivationOutput{}
+	req := client.NewRequest(&request.Operation{Name: ext.ActionGetHostedZoneActivation, HTTPMethod: http.MethodGet, HTTPPath: "/2013-04-01/hostedzone/{Id}/activation"},
+		&ext.GetHostedZoneActivationInput{Id: aws.String(id)}, out)
+	require.NoError(t, req.Send())
+	assert.Equal(t, "/hostedzone/"+id, aws.StringValue(out.HostedZoneId))
+	require.NotNil(t, out.Activation)
+	assert.Equal(t, route53.StatePendingNameservers, aws.StringValue(out.Activation.State))
+	assert.Equal(t, []string{"ns1.spx3.net", "ns2.spx3.net"}, aws.StringValueSlice(out.Activation.NameServers))
+	assert.Contains(t, auth.calls, "route53:GetHostedZoneActivation arn:aws:route53:::hostedzone/"+id)
+
+	verify := client.NewRequest(&request.Operation{Name: ext.ActionVerifyHostedZoneDelegation, HTTPMethod: http.MethodPost, HTTPPath: "/2013-04-01/hostedzone/{Id}/activation"},
+		&ext.VerifyHostedZoneDelegationInput{Id: aws.String(id)}, &ext.VerifyHostedZoneDelegationOutput{})
+	requireAWSCode(t, verify.Send(), "ServiceUnavailable")
+
+	missing := client.NewRequest(&request.Operation{Name: ext.ActionGetHostedZoneActivation, HTTPMethod: http.MethodGet, HTTPPath: "/2013-04-01/hostedzone/{Id}/activation"},
+		&ext.GetHostedZoneActivationInput{Id: aws.String("ZNOPE")}, &ext.GetHostedZoneActivationOutput{})
+	requireAWSCode(t, missing.Send(), "NoSuchHostedZone")
 }

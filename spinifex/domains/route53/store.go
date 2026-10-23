@@ -17,6 +17,8 @@ const (
 	KVBucketRoute53Version = 1
 	// KVBucketRoute53Realize elects the one node that publishes zones.
 	KVBucketRoute53Realize = "spinifex-route53-realize"
+	// KVBucketRoute53Verify elects the one node that checks delegations.
+	KVBucketRoute53Verify = "spinifex-route53-verify"
 
 	keyPrefixZone     = "zone."
 	keyPrefixRRSets   = "rrsets."
@@ -31,6 +33,8 @@ const (
 	StatePendingNameservers = "PENDING_NAMESERVERS"
 	StateActive             = "ACTIVE"
 	StateNameserversLost    = "NAMESERVERS_LOST"
+	// StateSuspended is an operator's deactivation; only the operator lifts it.
+	StateSuspended = "SUSPENDED"
 )
 
 // Change statuses, as GetChange reports them.
@@ -54,6 +58,15 @@ type ZoneRecord struct {
 	State       string    `json:"state"`
 	StateReason string    `json:"state_reason,omitempty"`
 	CheckedAt   time.Time `json:"checked_at"`
+	// Delegation is the NS set the parent published at the last check, and
+	// DelegationSource the parent zone or server that answered.
+	Delegation       []string  `json:"delegation,omitempty"`
+	DelegationSource string    `json:"delegation_source,omitempty"`
+	FailingSince     time.Time `json:"failing_since,omitzero"`
+	// Override is set when an operator activated or suspended the zone; the
+	// verifier leaves such a zone alone.
+	Override       string `json:"override,omitempty"`
+	OverrideReason string `json:"override_reason,omitempty"`
 }
 
 // RRSetsDoc is a zone's complete record-set document. Version increases by one

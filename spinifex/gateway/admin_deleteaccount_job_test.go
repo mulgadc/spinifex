@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/s3"
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -31,6 +32,10 @@ const deleteClientToken = "8b9c1d2e3f4a5b6c7d8e9f0a1b2c3d4e"
 // to keep step with the reapers NewClusterEngine wires.
 var teardownSubjects = []string{"ec2.>", "ecs.>", "eks.>", "rds.>", "elbv2.>", "acm.>", "bedrock.>"}
 
+// sealCapabilitySubjectPrefix matches every per-node seal-capability subject,
+// which the generic ec2.> stub below must not also answer.
+const sealCapabilitySubjectPrefix = "ec2.v1.AccountSettingsSealCapability."
+
 // newDeleteAccountGateway wires a gateway against a real IAM service and
 // embedded JetStream, with a stub cluster answering the subjects the reapers
 // drive. The tenant has no resources, so every stage drains empty and the test
@@ -46,8 +51,12 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 
 	for _, subject := range teardownSubjects {
 		// Replies carry a node ID: the instance inventory only counts a frame
-		// it can attribute to a configured node.
+		// it can attribute to a configured node. The seal subjects have their
+		// own responders below, which a second reply here would race.
 		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+			if msg.Subject == ec2v1.SealAccountSettingsSubject || strings.HasPrefix(msg.Subject, sealCapabilitySubjectPrefix) {
+				return
+			}
 			reply := nats.NewMsg(msg.Reply)
 			reply.Data = []byte(`{}`)
 			reply.Header.Set(natsmsg.NodeIDHeader, "node-1")
@@ -55,6 +64,38 @@ func newDeleteAccountGateway(t *testing.T) *GatewayConfig {
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+
+	// The seal reaper needs a real sealed disposition and revision, and every
+	// configured node answering capability version 1, or it never finalises:
+	// the generic `{}` stub above is neither.
+	sealSub, err := nc.Subscribe(ec2v1.SealAccountSettingsSubject, func(msg *nats.Msg) {
+		var req ec2v1.SealAccountSettingsRequest
+		if json.Unmarshal(msg.Data, &req) != nil {
+			return
+		}
+		data, _ := json.Marshal(ec2v1.SealAccountSettingsReply{
+			AccountID: req.AccountID, CorrelationRef: req.CorrelationRef,
+			Disposition: ec2v1.AccountSettingsDispositionSealed, Revision: 1,
+		})
+		reply := nats.NewMsg(msg.Reply)
+		reply.Data = data
+		reply.Header.Set(natsmsg.NodeIDHeader, "node-1")
+		_ = msg.RespondMsg(reply)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sealSub.Unsubscribe() })
+
+	for _, node := range []string{"node-1"} {
+		capSub, err := nc.Subscribe(ec2v1.AccountSettingsSealCapabilitySubject(node), func(msg *nats.Msg) {
+			data, _ := json.Marshal(ec2v1.AccountSettingsSealCapabilityReply{Node: node, CapabilityVersion: ec2v1.AccountSettingsSealCapabilityVersion})
+			reply := nats.NewMsg(msg.Reply)
+			reply.Data = data
+			reply.Header.Set(natsmsg.NodeIDHeader, node)
+			_ = msg.RespondMsg(reply)
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = capSub.Unsubscribe() })
 	}
 	require.NoError(t, nc.Flush())
 

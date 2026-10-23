@@ -914,6 +914,7 @@ func runNorthstarStart(options northstarStartOptions, deps northstarStartDepende
 	svc, err := deps.newService(&northstar.Config{
 		ConfigPath: configPath,
 		BasePath:   baseDir,
+		NodeName:   clusterConfig.Node,
 		NatsHost:   nodeConfig.NATS.Host,
 		NatsToken:  nodeConfig.NATS.ACL.Token,
 		NatsCACert: nodeConfig.NATS.CACert,

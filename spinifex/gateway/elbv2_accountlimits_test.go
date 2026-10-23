@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,6 +120,20 @@ func TestELBv2AccountLoadBalancerLimitDefaultsForExemptAccount(t *testing.T) {
 	limit, err := accountLoadBalancerLimit(t.Context(), gw, "000000000042")
 	require.NoError(t, err)
 	assert.Equal(t, gateway_elbv2.DefaultLoadBalancerLimit, limit)
+}
+
+// A sealed override must refuse the load balancer cap with Blocked rather
+// than the generic InternalError every other read failure maps to.
+func TestELBv2AccountLoadBalancerLimitBlockedOnSealedRecord(t *testing.T) {
+	gw, account := quotaTestGateway(t)
+	gw.Quota.SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
+	_, err := gw.Quota.SealAccountOverrides(t.Context(), account)
+	require.NoError(t, err)
+
+	limit, err := accountLoadBalancerLimit(t.Context(), gw, account)
+	require.Error(t, err)
+	require.Equal(t, awserrors.ErrorBlocked, err.Error())
+	assert.Zero(t, limit)
 }
 
 // The dispatch entry must accept the paging parameters the model defines and

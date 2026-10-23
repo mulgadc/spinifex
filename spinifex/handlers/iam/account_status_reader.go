@@ -10,8 +10,8 @@ import (
 )
 
 // AccountStatusReader reads account status from spinifex-accounts and never
-// writes. It is the read-only capability EC2's settings seal uses to check
-// its TERMINATING precondition.
+// writes. It is the read-only capability EC2's settings seal and the quota
+// override seal both use to check their TERMINATING precondition.
 type AccountStatusReader struct {
 	accounts *kvstore.Bucket // AttachOnly: never creates the bucket
 }

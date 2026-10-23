@@ -126,10 +126,10 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 			// An incomplete sweep cannot prove absence, so a missing id is
 			// unresolved, not gone. NotFound would be a false negative and an
 			// empty success would look identical to a real one, so return 503.
-			return nil, errors.Join(
+			return nil, awserrors.WithRetryAfter(
 				awserrors.Errorf(awserrors.ErrorServiceUnavailable,
 					"cannot confirm status of instance(s) %s: describe fan-out did not complete", strings.Join(missing, ", ")),
-				awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+				describeIncompleteRetryAfter,
 			)
 		}
 	}
@@ -198,10 +198,10 @@ func DescribeAccountInstancesComplete(ctx context.Context, natsConn *nats.Conn, 
 }
 
 func incompleteListingError() error {
-	return errors.Join(
+	return awserrors.WithRetryAfter(
 		awserrors.Errorf(awserrors.ErrorServiceUnavailable,
 			"cannot list instances: not every node and instance store answered"),
-		awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+		describeIncompleteRetryAfter,
 	)
 }
 

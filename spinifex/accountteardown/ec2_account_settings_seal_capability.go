@@ -3,7 +3,6 @@ package accountteardown
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -184,8 +183,8 @@ func errSealCapabilityIncomplete(report sealCapabilityReport) error {
 	if len(parts) > 0 {
 		detail = strings.Join(parts, ", ")
 	}
-	return errors.Join(
+	return awserrors.WithRetryAfter(
 		awserrors.Errorf(awserrors.ErrorServiceUnavailable, "EC2 account-settings seal capability incomplete: %s", detail),
-		awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, 5*time.Second),
+		5*time.Second,
 	)
 }

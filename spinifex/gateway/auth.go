@@ -158,9 +158,9 @@ func (gw *GatewayConfig) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Region is pinned to the gateway; service is the client-claimed scope,
-			// already gated against supportedServices above.
-			if _, err := sig.Verify(secret, gw.Region, sig.Credential.Service); err != nil {
+			// Region is the gateway's, or a global service's fixed signing region;
+			// service is the client-claimed scope, gated against supportedServices above.
+			if _, err := sig.Verify(secret, gw.expectedSigningRegion(sig.Credential.Service, sig.Credential.Region), sig.Credential.Service); err != nil {
 				// A mismatch means our canonical request differs from the one the client
 				// signed, so log ours to diff against the SDK's. Warn, not Debug: these
 				// failures are intermittent and never reproduce on demand.
@@ -557,4 +557,21 @@ func (gw *GatewayConfig) writeSigV4Error(w http.ResponseWriter, r *http.Request,
 func signedService(r *http.Request) string {
 	svc, _ := r.Context().Value(ctxService).(string)
 	return svc
+}
+
+// globalSigningRegions maps a global AWS service to the region its clients sign
+// with when they use the default endpoint. A client given an endpoint override
+// signs with its own configured region instead, so both are accepted.
+var globalSigningRegions = map[string]string{
+	"route53": "us-east-1",
+}
+
+// expectedSigningRegion returns the credential-scope region a request for
+// service must carry: the global service's signing region when the client
+// claimed it, else the gateway's own region.
+func (gw *GatewayConfig) expectedSigningRegion(service, claimed string) string {
+	if global, ok := globalSigningRegions[service]; ok && claimed == global {
+		return global
+	}
+	return gw.Region
 }

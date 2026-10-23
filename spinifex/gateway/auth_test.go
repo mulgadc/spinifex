@@ -2803,3 +2803,20 @@ func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
 		})
 	}
 }
+
+// Route 53 is global: the AWS CLI and SDKs sign it for us-east-1 against the
+// default endpoint and for the configured region against an override. Every
+// other service stays pinned to the gateway's region.
+func TestExpectedSigningRegion(t *testing.T) {
+	gw := &GatewayConfig{Region: "ap-southeast-2"}
+	for _, tc := range []struct {
+		service, claimed, want string
+	}{
+		{"route53", "us-east-1", "us-east-1"},
+		{"route53", "ap-southeast-2", "ap-southeast-2"},
+		{"route53", "eu-west-1", "ap-southeast-2"},
+		{"ec2", "us-east-1", "ap-southeast-2"},
+	} {
+		assert.Equalf(t, tc.want, gw.expectedSigningRegion(tc.service, tc.claimed), "%s signed for %s", tc.service, tc.claimed)
+	}
+}

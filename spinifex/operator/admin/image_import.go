@@ -71,7 +71,12 @@ func ImportImage(ctx context.Context, provider ebsprovider.EBSProvider, opts Imp
 		return fmt.Errorf("import: publish volume %s: %w", opts.VolumeID, err)
 	}
 
-	writeErr := writeImage(ctx, opts.SourcePath, published.NBDURI, opts.Progress)
+	var writeErr error
+	if published.Export.Kind == ebsprovider.ExportKindNBD && published.Export.NBD != nil {
+		writeErr = writeImage(ctx, opts.SourcePath, published.Export.NBD.NBDURI, opts.Progress)
+	} else {
+		writeErr = fmt.Errorf("volume is published as a %q export; image import writes only through nbd", published.Export.Kind)
+	}
 
 	// Unpublish regardless: a volume left published cannot be snapshotted or
 	// attached, and on the failure path it would strand the export too.

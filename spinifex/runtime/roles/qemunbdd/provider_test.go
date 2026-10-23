@@ -544,7 +544,7 @@ func TestPublishVolume_ArgvReadWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "vol-pub", pub.VolumeID)
 	assert.Equal(t, "node-1", pub.NodeID)
-	assert.Equal(t, "nbd+unix:///?socket="+p.socketPath("vol-pub"), pub.NBDURI)
+	assert.Equal(t, ebsprovider.NewNBDExport("nbd+unix:///?socket="+p.socketPath("vol-pub")), pub.Export)
 
 	calls := fr.callsSnapshot()
 	require.Len(t, calls, 1)

@@ -432,6 +432,50 @@ func TestNATSProviderRejectsEmptySuccessResponse(t *testing.T) {
 	})
 }
 
+// TestNATSProviderRejectsInvalidExport covers the client-side export check: a
+// reply the server marks successful but whose export cannot be attached must
+// fail here, not later when QEMU is handed it.
+func TestNATSProviderRejectsInvalidExport(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	provider := NewNATSProvider(conn, time.Second)
+
+	tests := []struct {
+		node    string
+		export  VolumeExport
+		wantErr string
+	}{
+		{node: "node-nokind", export: VolumeExport{NBD: &NBDExport{NBDURI: "nbd://10.0.0.1:10809"}}, wantErr: `unknown export kind ""`},
+		{node: "node-noblock", export: VolumeExport{Kind: ExportKindBlock}, wantErr: "block export has no block details"},
+		{node: "node-emptyuri", export: VolumeExport{Kind: ExportKindNBD, NBD: &NBDExport{}}, wantErr: "nbd export has an empty NBD URI"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.node, func(t *testing.T) {
+			subject, err := PublishSubject(tt.node)
+			require.NoError(t, err)
+			respondWith(t, conn, subject, PublishVolumeResponse{
+				Versioned: NewVersioned(),
+				Published: &PublishedVolume{VolumeID: "vol-1", NodeID: tt.node, Export: tt.export},
+			})
+			published, err := provider.PublishVolume(t.Context(), PublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: tt.node})
+			require.EqualError(t, err, subject+" returned an invalid export: "+tt.wantErr)
+			assert.Nil(t, published)
+		})
+	}
+
+	t.Run("valid block export passes", func(t *testing.T) {
+		subject, err := PublishSubject("node-block")
+		require.NoError(t, err)
+		export := VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "/dev/sdb", SizeBytes: 10 << 30}}
+		respondWith(t, conn, subject, PublishVolumeResponse{
+			Versioned: NewVersioned(),
+			Published: &PublishedVolume{VolumeID: "vol-1", NodeID: "node-block", Export: export},
+		})
+		published, err := provider.PublishVolume(t.Context(), PublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: "node-block"})
+		require.NoError(t, err)
+		assert.Equal(t, export, published.Export)
+	})
+}
+
 // TestNATSProviderPropagatesProviderErrors covers responseError's populated
 // branch on the enumeration and unpublish verbs, whose errors otherwise reach
 // the caller as an empty page or a silent success.

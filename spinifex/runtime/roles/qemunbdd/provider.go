@@ -688,7 +688,7 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 		if pub.nodeID != req.NodeID {
 			return nil, fmt.Errorf("%w: volume %s is published to %s", ebsprovider.ErrVolumeInUse, req.VolumeID, pub.nodeID)
 		}
-		return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: pub.nodeID, NBDURI: nbd.FormatNBDSocketURI(pub.socketPath)}, nil
+		return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: pub.nodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(pub.socketPath))}, nil
 	}
 
 	sockPath := p.socketPath(req.VolumeID)
@@ -718,7 +718,7 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 
 	pid := readPID(pidPath)
 	p.published[req.VolumeID] = &publication{nodeID: req.NodeID, socketPath: sockPath, pid: pid}
-	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, NBDURI: nbd.FormatNBDSocketURI(sockPath)}, nil
+	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: ebsprovider.NewNBDExport(nbd.FormatNBDSocketURI(sockPath))}, nil
 }
 
 // readPID best-effort reads the PID qemu-nbd's --fork wrote to pidPath. A

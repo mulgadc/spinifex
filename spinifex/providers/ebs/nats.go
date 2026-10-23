@@ -452,6 +452,9 @@ func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeReque
 	if response.Published == nil {
 		return nil, fmt.Errorf("%s returned no published volume", subject)
 	}
+	if err := response.Published.Export.Validate(); err != nil {
+		return nil, fmt.Errorf("%s returned an invalid export: %w", subject, err)
+	}
 	return response.Published, nil
 }
 

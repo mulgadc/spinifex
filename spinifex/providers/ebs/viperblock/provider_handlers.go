@@ -1765,7 +1765,7 @@ func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *n
 			Published: &ebsprovider.PublishedVolume{
 				VolumeID: req.VolumeID,
 				NodeID:   cfg.NodeName,
-				NBDURI:   mv.NBDURI,
+				Export:   ebsprovider.NewNBDExport(mv.NBDURI),
 			},
 		})
 		return
@@ -1795,7 +1795,7 @@ func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *n
 		Published: &ebsprovider.PublishedVolume{
 			VolumeID: req.VolumeID,
 			NodeID:   cfg.NodeName,
-			NBDURI:   mountResp.URI,
+			Export:   ebsprovider.NewNBDExport(mountResp.URI),
 		},
 	})
 }

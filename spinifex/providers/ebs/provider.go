@@ -6,14 +6,16 @@ package ebsprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 )
 
 // SchemaVersion is the only wire-contract version understood by this build.
 // Every request and response carries it so version skew fails at the boundary
 // instead of silently decoding a changed payload.
-const SchemaVersion uint16 = 1
+const SchemaVersion uint16 = 2
 
 // Versioned is embedded in every request and response sent over NATS.
 type Versioned struct {
@@ -443,12 +445,80 @@ type PublishVolumeRequest struct {
 	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
-// PublishedVolume is where a published volume is served: the NBD URI on NodeID
-// that QEMU connects to.
+// ExportKind names how a published volume is reached on its node, and so
+// which VolumeExport variant carries the details.
+type ExportKind string
+
+const (
+	ExportKindNBD   ExportKind = "nbd"
+	ExportKindBlock ExportKind = "block"
+)
+
+// VolumeExport is how a published volume is reached; exactly one of NBD and
+// Block is set, and it is the one Kind names.
+type VolumeExport struct {
+	Kind  ExportKind   `json:"kind"`
+	NBD   *NBDExport   `json:"nbd,omitempty"`
+	Block *BlockExport `json:"block,omitempty"`
+}
+
+// NBDExport is a volume served over NBD: the URI on the node that QEMU
+// connects to.
+type NBDExport struct {
+	NBDURI string `json:"nbd_uri"`
+}
+
+// BlockExport is a volume exposed as a host block device. SizeBytes is the
+// size the guest sees, which may be smaller than the device itself.
+type BlockExport struct {
+	DevicePath string `json:"device_path"`
+	SizeBytes  uint64 `json:"size_bytes"`
+}
+
+// Validate rejects an export a consumer could not attach: an unknown kind, a
+// missing or extra variant, or a variant with an unusable field.
+func (e VolumeExport) Validate() error {
+	switch e.Kind {
+	case ExportKindNBD:
+		if e.NBD == nil {
+			return errors.New("nbd export has no nbd details")
+		}
+		if e.Block != nil {
+			return errors.New("nbd export also sets block details")
+		}
+		if e.NBD.NBDURI == "" {
+			return errors.New("nbd export has an empty NBD URI")
+		}
+	case ExportKindBlock:
+		if e.Block == nil {
+			return errors.New("block export has no block details")
+		}
+		if e.NBD != nil {
+			return errors.New("block export also sets nbd details")
+		}
+		if !filepath.IsAbs(e.Block.DevicePath) {
+			return fmt.Errorf("block export device path %q is not absolute", e.Block.DevicePath)
+		}
+		if e.Block.SizeBytes == 0 {
+			return errors.New("block export has a zero size")
+		}
+	default:
+		return fmt.Errorf("unknown export kind %q", e.Kind)
+	}
+	return nil
+}
+
+// PublishedVolume is where a published volume is served: the export on NodeID
+// that QEMU attaches.
 type PublishedVolume struct {
-	VolumeID string `json:"volume_id"`
-	NodeID   string `json:"node_id"`
-	NBDURI   string `json:"nbd_uri"`
+	VolumeID string       `json:"volume_id"`
+	NodeID   string       `json:"node_id"`
+	Export   VolumeExport `json:"export"`
+}
+
+// NewNBDExport returns an nbd export for uri.
+func NewNBDExport(uri string) VolumeExport {
+	return VolumeExport{Kind: ExportKindNBD, NBD: &NBDExport{NBDURI: uri}}
 }
 
 // PublishVolumeResponse is the reply to PublishVolumeRequest: the mount, or

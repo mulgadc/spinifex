@@ -501,6 +501,16 @@ func handlePublishVolume(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: classifyError(err)})
 			return
 		}
+		if pub == nil {
+			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("provider returned no published volume for %s", req.VolumeID)})
+			return
+		}
+		// An unattachable export is the provider's fault, so it is reported as
+		// internal rather than relayed for the client to reject.
+		if err := pub.Export.Validate(); err != nil {
+			respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("provider returned an invalid export for %s: %v", req.VolumeID, err)})
+			return
+		}
 		respond(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Published: pub})
 	}
 }

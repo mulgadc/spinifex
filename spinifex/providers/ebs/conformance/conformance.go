@@ -791,7 +791,10 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NotNil(t, pub)
 			assert.Equal(t, cfg.id("vol-pub-ok"), pub.VolumeID)
 			assert.Equal(t, cfg.node(), pub.NodeID)
-			assertNBDURI(t, pub.NBDURI)
+			require.NoError(t, pub.Export.Validate(), "published export is not attachable")
+			if pub.Export.Kind == ebsprovider.ExportKindNBD {
+				assertNBDURI(t, pub.Export.NBD.NBDURI)
+			}
 		})
 
 		t.Run("idempotent republish to the same node", func(t *testing.T) {

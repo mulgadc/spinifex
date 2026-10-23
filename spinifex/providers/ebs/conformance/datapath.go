@@ -167,9 +167,9 @@ func RunDataPathSuite(t *testing.T, newProvider func(t *testing.T) ebsprovider.E
 	provider := newProvider(t)
 	volumeID := cfg.VolumePrefix + "datapath"
 
-	pub := publishForNBD(t, provider, cfg, volumeID, false)
-	assertNBDURI(t, pub.NBDURI)
-	uri := dialURI(t, pub.NBDURI)
+	nbdURI := publishForNBD(t, provider, cfg, volumeID, false)
+	assertNBDURI(t, nbdURI)
+	uri := dialURI(t, nbdURI)
 
 	export := nbdInfo(t, uri)
 	require.Equalf(t, cfg.VolumeBytes, export.Size, "export size does not match the volume that was created")

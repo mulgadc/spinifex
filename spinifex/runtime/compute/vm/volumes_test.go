@@ -943,6 +943,91 @@ func TestAttachVolume_NBDURIParseFailure_TriggersUnmountOne(t *testing.T) {
 	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
 }
 
+// TestAttachVolume_BlockDeviceBlockdevAdd pins the blockdev-add a block export
+// sends: a sized raw node over a host_device file node, under the same node
+// name the NBD path uses, followed by the usual device_add.
+func TestAttachVolume_BlockDeviceBlockdevAdd(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{mountOneBlockDevice: "/dev/sdx", mountOneBlockSize: 10 << 30}
+	m, v := attachVolumeRunningInstance(t, qmpClient, mounter)
+
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	require.NoError(t, err)
+
+	recorder.mu.Lock()
+	var blockdevAdd *qmp.QMPCommand
+	for i := range recorder.commands {
+		if recorder.commands[i].Execute == "blockdev-add" {
+			blockdevAdd = &recorder.commands[i]
+		}
+	}
+	recorder.mu.Unlock()
+	require.NotNil(t, blockdevAdd)
+	got, err := json.Marshal(blockdevAdd.Arguments)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+		"node-name":"nbd-vol-1", "driver":"raw", "size":10737418240,
+		"file":{"driver":"host_device", "filename":"/dev/sdx", "aio":"native", "cache":{"direct":true}}
+	}`, string(got))
+	assert.Equal(t, []string{"object-add", "blockdev-add", "device_add"}, recorder.executes()[:3])
+
+	v.EBSRequests.Mu.Lock()
+	defer v.EBSRequests.Mu.Unlock()
+	require.Len(t, v.EBSRequests.Requests, 1)
+	assert.Equal(t, "/dev/sdx", v.EBSRequests.Requests[0].BlockDevice)
+	assert.Equal(t, uint64(10<<30), v.EBSRequests.Requests[0].BlockSizeBytes)
+	assert.Empty(t, v.EBSRequests.Requests[0].NBDURI)
+}
+
+// TestAttachVolume_InvalidExport_TriggersUnmountOne covers a mount that
+// returns both exports: AttachVolume must unmount before any QMP traffic.
+func TestAttachVolume_InvalidExport_TriggersUnmountOne(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{mountOneURI: "nbd:unix:/tmp/test.sock", mountOneBlockDevice: "/dev/sdx", mountOneBlockSize: 1 << 20}
+	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
+
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "both NBDURI and BlockDevice set")
+	assert.Empty(t, recorder.executes())
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
+}
+
+// TestAttachVolume_BlockDeviceBlockdevAddFailure_TriggersUnmountOne checks a
+// block export unwinds a failed blockdev-add exactly as an NBD one does.
+func TestAttachVolume_BlockDeviceBlockdevAddFailure_TriggersUnmountOne(t *testing.T) {
+	recorder := &qmpRecorder{}
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		recorder.record(cmd)
+		if cmd.Execute == "blockdev-add" {
+			return map[string]any{"error": map[string]any{"class": "GenericError", "desc": "Could not open '/dev/sdx'"}}
+		}
+		return nil
+	})
+	defer cancel()
+
+	mounter := &fakeVolumeMounter{mountOneBlockDevice: "/dev/sdx", mountOneBlockSize: 1 << 20}
+	m, _ := attachVolumeRunningInstance(t, qmpClient, mounter)
+
+	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blockdev-add")
+	assert.Equal(t, []string{"object-add", "blockdev-add", "object-del"}, recorder.executes())
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne)
+}
+
 // TestAttachVolume_ObjectAddFailure_TriggersUnmountOne covers QMP iothread
 // object-add failure: AttachVolume must unmount and bail before issuing
 // blockdev-add (no further QMP traffic past the failed object-add).

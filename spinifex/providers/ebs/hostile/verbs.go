@@ -74,11 +74,22 @@ func corruptPublished(published *ebsprovider.PublishedVolume, flavour string) *e
 	corrupted := *published
 	switch flavour {
 	case "handle", "capacity":
-		corrupted.NBDURI = "nbd+unix:///?socket=/hostile/wrong.sock"
+		corrupted.Export = corruptExport(published.Export)
 	case "state":
 		corrupted.NodeID = "hostile-wrong-node"
 	}
 	return &corrupted
+}
+
+// corruptExport points a still-valid export at the wrong place, building new
+// variants so the inner provider's own export is never mutated.
+func corruptExport(export ebsprovider.VolumeExport) ebsprovider.VolumeExport {
+	if export.Kind == ebsprovider.ExportKindBlock && export.Block != nil {
+		block := *export.Block
+		block.DevicePath = "/dev/hostile-wrong"
+		return ebsprovider.VolumeExport{Kind: ebsprovider.ExportKindBlock, Block: &block}
+	}
+	return ebsprovider.NewNBDExport("nbd+unix:///?socket=/hostile/wrong.sock")
 }
 
 func (p *Provider) GetCapabilities(ctx context.Context, req ebsprovider.GetCapabilitiesRequest) (*ebsprovider.GetCapabilitiesResponse, error) {

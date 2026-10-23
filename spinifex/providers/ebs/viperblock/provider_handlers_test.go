@@ -837,7 +837,7 @@ func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
 	require.NotNil(t, resp.Published)
 	assert.Equal(t, volumeName, resp.Published.VolumeID)
 	assert.Equal(t, cfg.NodeName, resp.Published.NodeID)
-	assert.Equal(t, existingURI, resp.Published.NBDURI)
+	assert.Equal(t, ebsprovider.NewNBDExport(existingURI), resp.Published.Export)
 
 	cfg.mu.Lock()
 	count := len(cfg.MountedVolumes)

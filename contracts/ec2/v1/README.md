@@ -60,3 +60,25 @@ The subject name carries the contract major; `platform_inventory_test.go` preser
 Producer and consumer are in the coordinated Spinifex release, so the window is N and N-1.
 A daemon that predates the subject has no subscription, so the request gets no responder; the consumer treats no responder, a timeout, an error reply, an undecodable reply, a reply for another account, and a missing, repeated or unknown-status kind as `scan-incomplete`, never clean.
 An incompatible change to the subject, fields or vocabulary needs a new major.
+
+## Seal account settings
+
+`SealAccountSettingsSubject` (`ec2.v1.SealAccountSettings`) is a request/reply route on which a daemon in the `spinifex-workers` queue group irreversibly seals one account's EC2 settings record.
+EC2 owns it: `domains/ec2/account` serves it through the daemon.
+`accountteardown` is the intended consumer from a later release; no teardown calls it yet.
+
+The request names the account in its body (`account_id`) and may carry an opaque `correlation_ref` that is echoed for logs.
+The daemon ignores `X-Account-ID` for this subject: the account sealed is the one named in the body.
+A seal is refused with `IncorrectState` unless IAM already holds the account as `TERMINATING`; a precondition read failure answers `InternalError`.
+Both refusals write nothing.
+
+A reply is sent only on success: `disposition` is always `sealed` and `revision` is the stream leader's accepted write for that seal.
+A failure is the standard awserrors error payload, not this reply shape.
+Sealing is idempotent: a seal on an already-sealed record re-writes the same value and returns a fresh, higher revision.
+
+### Compatibility boundary
+
+The subject name carries the contract major; `account_settings_seal_test.go` preserves the version-1 JSON shape.
+Producer and consumer are in the coordinated Spinifex release, so the window is N and N-1.
+A daemon that predates the subject has no subscription, so the request gets no responder.
+An incompatible change to the subject or fields needs a new major.

@@ -95,8 +95,25 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 	// Deferred past req.Verify for the reason the SigV4 door defers it: the check
 	// reads the IAM users and roles buckets, and an AKID travels in cleartext, so
 	// running it earlier lets anyone holding a copy drive IAM reads unauthenticated.
-	if err := s.checkVerifySessionPrincipal(sessionCred, req.Credential.AccessKeyID); err != nil {
+	live, err := s.checkVerifySessionPrincipal(sessionCred, req.Credential.AccessKeyID)
+	if err != nil {
 		return nil, err
+	}
+	// A user session persists only the user name, so its ARN, path included,
+	// comes from the record the continuity check just read.
+	if sessionCred != nil && principal.PrincipalType == principalTypeUserPresigned {
+		principal.ARN = live.UserARN
+		if principal.ARN == "" {
+			principal.ARN = arn.FormatIAMPath(arn.IAMUser, sessionCred.AccountID, "/", sessionCred.SessionName)
+		}
+	}
+
+	// The EKS webhook keys its access-entry lookup on this ARN, so an identity
+	// without one is refused here rather than handed downstream.
+	if principal.ARN == "" {
+		slog.Error("VerifyPresignedGetCallerIdentity: resolved principal has no ARN",
+			"akid", req.Credential.AccessKeyID, "principal_type", principal.PrincipalType)
+		return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 	}
 
 	principal.XK8sAwsID = expectedClusterName
@@ -105,27 +122,28 @@ func (s *STSServiceImpl) VerifyPresignedGetCallerIdentity(presignedURL, expected
 
 // checkVerifySessionPrincipal maps a continuity verdict onto this door's
 // vocabulary. A nil cred is the long-lived path, which has no session to check.
-func (s *STSServiceImpl) checkVerifySessionPrincipal(cred *SessionCredential, accessKeyID string) error {
+func (s *STSServiceImpl) checkVerifySessionPrincipal(cred *SessionCredential, accessKeyID string) (*SessionPrincipal, error) {
 	if cred == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Without this the session branch performs no IAM lookup at all, so even a
 	// deleted principal leaves a working path to its cluster identity mapping.
-	if _, err := s.VerifySessionPrincipal(cred); err != nil {
+	live, err := s.VerifySessionPrincipal(cred)
+	if err != nil {
 		if IsSessionPrincipalVerdict(err) {
 			slog.Warn("VerifyPresignedGetCallerIdentity: session principal continuity check failed",
 				"akid", accessKeyID, "reason", err)
-			return errors.New(awserrors.ErrorInvalidIdentityToken)
+			return nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 		}
 		// The NATS responder logs every verify failure at Debug, on the assumption
 		// that a rejection is the expected case. A fault is not, and would otherwise
 		// take the fleet down with nothing written at production log level.
 		slog.Error("VerifyPresignedGetCallerIdentity: session principal check faulted, refusing to authorize",
 			"akid", accessKeyID, "err", err)
-		return fmt.Errorf("verify session principal: %w", err)
+		return nil, fmt.Errorf("verify session principal: %w", err)
 	}
-	return nil
+	return live, nil
 }
 
 // mapSigv4Err maps sigv4 sentinel errors onto AWS error codes. Time-window failures
@@ -140,7 +158,7 @@ func mapSigv4Err(err error) error {
 }
 
 // resolvePrincipalForVerify resolves an access key to its plaintext secret and a
-// PresignedCallerIdentity skeleton. Branches on AKID prefix (session vs long-lived).
+// PresignedCallerIdentity skeleton, branching on AKID prefix then session PrincipalType.
 // The session record comes back so the caller can check continuity past the signature.
 func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*PresignedCallerIdentity, string, *SessionCredential, error) {
 	switch {
@@ -159,6 +177,16 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("decrypt session secret: %w", err)
 		}
+		if cred.PrincipalType == principalTypeUser {
+			// GetSessionToken session: the caller is the IAM user itself. The ARN
+			// is filled in once the signature and continuity check have passed.
+			return &PresignedCallerIdentity{
+				AccountID:     cred.AccountID,
+				UserID:        cred.UserID,
+				PrincipalType: principalTypeUserPresigned,
+			}, secret, cred, nil
+		}
+		// "assumed-role", or empty for a record predating PrincipalType.
 		return &PresignedCallerIdentity{
 			AccountID:     cred.AccountID,
 			ARN:           cred.AssumedRoleARN,

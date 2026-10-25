@@ -402,7 +402,7 @@ func init() {
 	adminInitCmd.Flags().String("external-pool", "", "External IP pool range as start-end (e.g., 192.168.1.150-192.168.1.250)")
 	adminInitCmd.Flags().String("external-gateway", "", "WAN gateway IP (auto-detected from default route)")
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
-	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
+	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated IPv4 DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
@@ -1501,6 +1501,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// forced re-init, resolvconf may still list this address first; forwarding it
 	// back to Northstar creates a recursive DNS loop.
 	var dnsServers []string
+	if cmd.Flags().Changed("external-dns") && len(externalDNS) == 0 {
+		fmt.Fprintf(os.Stderr, "❌ Error: --external-dns requires at least one IP\n")
+		os.Exit(1)
+	}
 	if externalMode == "" && len(externalDNS) > 0 {
 		fmt.Fprintf(os.Stderr, "❌ Error: --external-dns requires external networking (--external-mode)\n")
 		os.Exit(1)
@@ -3283,7 +3287,8 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
 	settings.ExternalMode = nc.ExternalMode
-	settings.PoolDNSServers = nc.PoolDNSServers
+	// A node's own address is northstar itself; forwarding to it would loop.
+	settings.PoolDNSServers = filterDNSServers(nc.PoolDNSServers, settings.AdvertiseIP, settings.BindIP)
 	// Derived from the mode rather than carried in NetworkConfig, so the leader
 	// and every joiner pin the same value from the same rule as single-node init.
 	settings.BridgeMode = bridgeModeFor(nc.ExternalMode)
@@ -3589,8 +3594,8 @@ func resolvePoolDNSServers(explicit []string, detect func() []string, localIPs .
 	servers := make([]string, 0, len(explicit))
 	for _, value := range explicit {
 		ip := net.ParseIP(strings.TrimSpace(value))
-		if ip == nil {
-			return nil, fmt.Errorf("--external-dns entry is not a valid IP: %q", value)
+		if ip == nil || ip.To4() == nil || ip.IsUnspecified() {
+			return nil, fmt.Errorf("--external-dns entry is not a valid IPv4 address: %q", value)
 		}
 		if _, ok := local[ip.String()]; ip.IsLoopback() || ok {
 			return nil, fmt.Errorf("--external-dns entry %s is this node's own resolver and would loop back into northstar", ip)

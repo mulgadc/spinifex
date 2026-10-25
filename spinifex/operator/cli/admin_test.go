@@ -25,6 +25,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1699,6 +1700,8 @@ func TestResolvePoolDNSServers(t *testing.T) {
 
 	for name, explicit := range map[string][]string{
 		"invalid IP":           {"1.1.1.1", "dns.example"},
+		"IPv6 resolver":        {"2606:4700:4700::1111"},
+		"unspecified address":  {"0.0.0.0"},
 		"too many servers":     {"1.1.1.1", "8.8.8.8", "9.9.9.9", "4.4.4.4"},
 		"loopback resolver":    {"127.0.0.53"},
 		"local northstar loop": {"10.0.0.5"},
@@ -1708,4 +1711,40 @@ func TestResolvePoolDNSServers(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+// The flag value reaches the resolver as the separate entries the operator typed.
+func TestAdminInitCmd_ExternalDNSFlagSplitsCommaList(t *testing.T) {
+	flags := adminInitCmd.Flags()
+	flag := flags.Lookup("external-dns")
+	require.NotNil(t, flag)
+	t.Cleanup(func() {
+		_ = flag.Value.(pflag.SliceValue).Replace(nil)
+		flag.Changed = false
+	})
+	require.NoError(t, flags.Set("external-dns", "1.1.1.1,8.8.8.8"))
+
+	explicit, err := flags.GetStringSlice("external-dns")
+	require.NoError(t, err)
+	got, err := resolvePoolDNSServers(explicit, func() []string { return []string{"10.20.0.53"} }, "10.0.0.5")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, got)
+}
+
+// Joiners take the init node's DNS servers, except their own address, which is
+// their northstar and would forward recursive queries back to itself.
+func TestApplyNetworkConfig_PropagatesPoolDNSServersWithoutSelf(t *testing.T) {
+	settings := &admin.ConfigSettings{AdvertiseIP: "10.0.0.6", BindIP: "10.0.0.6"}
+	nc := &formation.NetworkConfig{
+		ExternalMode:   "pool",
+		PoolDNSServers: []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"},
+		Pools: []formation.PoolData{{
+			Name: "wan", Source: "static", PrefixLen: 24,
+			DNSServers: []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"},
+		}},
+	}
+	applyNetworkConfig(settings, nc)
+	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, settings.PoolDNSServers)
+	require.Len(t, settings.Pools, 1)
+	assert.Equal(t, []string{"1.1.1.1", "10.0.0.6", "8.8.8.8"}, settings.Pools[0].DNSServers)
 }

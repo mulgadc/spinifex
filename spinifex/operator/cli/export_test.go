@@ -195,3 +195,16 @@ func GetStorageStatusRemote(ctx context.Context, target adminTarget, w io.Writer
 	}
 	return renderStorageStatus(w, status)
 }
+
+// ExecuteRoot runs spx with args through cobra, sending cobra's own stderr
+// output to stderr, and returns the command's error.
+func ExecuteRoot(args []string, stderr io.Writer) error {
+	rootCmd.SetArgs(args)
+	rootCmd.SetErr(stderr)
+	defer func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetErr(nil)
+	}()
+	_, err := rootCmd.ExecuteC()
+	return err
+}

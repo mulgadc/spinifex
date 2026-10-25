@@ -34,8 +34,10 @@ var storageStatusCmd = &cobra.Command{
 	Long: `Show the predastore encoding, each meta node's raft state and the blob nodes,
 as the web console's Service Metrics page does. The request goes to the AWS
 gateway signed with the standard AWS credential chain (e.g. AWS_PROFILE=spinifex).`,
-	Args: cobra.NoArgs,
-	RunE: runStorageStatus,
+	Args:          cobra.NoArgs,
+	RunE:          runStorageStatus,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {

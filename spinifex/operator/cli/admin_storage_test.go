@@ -138,3 +138,22 @@ func TestStorageStatusSurfacesGatewayError(t *testing.T) {
 	assert.Contains(t, err.Error(), "AccessDenied")
 	assert.Contains(t, err.Error(), "req-9")
 }
+
+// A failed call is a runtime failure, not a usage mistake: cobra must print
+// neither usage nor the error, which Execute already reports once.
+func TestStorageStatusCommandFailureIsNotAUsageError(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+	var got http.Request
+	srv := newAdminTestServer(t, http.StatusForbidden,
+		`<?xml version="1.0" encoding="UTF-8"?><Response><Errors><Error><Code>AccessDenied</Code><Message>no</Message></Error></Errors><RequestID>req-9</RequestID></Response>`, &got)
+
+	var stderr bytes.Buffer
+	err := cli.ExecuteRoot([]string{"admin", "storage", "status",
+		"--endpoint", srv.URL, "--region", "us-west-1", "--ca-bundle", writeServerCA(t, srv)}, &stderr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AccessDenied")
+	assert.Equal(t, http.MethodPost, got.Method)
+	assert.Empty(t, stderr.String())
+}

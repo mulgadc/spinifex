@@ -9,11 +9,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // dnsWatchSources names the buckets whose changes should wake the DNS
@@ -72,7 +72,7 @@ func (d *Daemon) rdsWatchBuckets(ctx context.Context) ([]*kvstore.Bucket, error)
 	if d.rdsService == nil || d.jsManager == nil || d.jsManager.js == nil {
 		return nil, nil
 	}
-	return handlers_rds.AccountWatchBuckets(ctx, d.jsManager.js)
+	return rdsinstance.AccountWatchBuckets(ctx, d.jsManager.js)
 }
 
 // dnsDesiredSet builds the full desired managed-record set for the reconcile

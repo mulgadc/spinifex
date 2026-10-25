@@ -6,8 +6,8 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -22,7 +22,7 @@ func NewClusterEngine(
 	nc *nats.Conn,
 	expectedNodes int,
 	nodeIDs []string,
-	svc handlers_iam.IAMService,
+	svc iamdomain.IAMService,
 	buckets BucketStore,
 ) (*Engine, error) {
 	// Refused rather than skipped. A teardown missing its bucket reaper still
@@ -37,7 +37,7 @@ func NewClusterEngine(
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	names, err := handlers_iam.NewAccountNameIndex(ctx, js)
+	names, err := iamdomain.NewAccountNameIndex(ctx, js)
 	if err != nil {
 		return nil, fmt.Errorf("open account name index: %w", err)
 	}
@@ -70,6 +70,11 @@ func NewClusterEngine(
 	reapers = append(reapers, S3Reapers(buckets)...)
 	reapers = append(reapers, ACMReapers(nc)...)
 	reapers = append(reapers, IAMReapers(svc)...)
+
+	// Before the account counters and reservations: the seal must still be
+	// able to find the account IAM holds as TERMINATING, which the account
+	// record reaper does not remove.
+	reapers = append(reapers, EC2AccountSettingsReapers(nc, nodeIDs)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 
 	engine := NewEngine(NewIAMAccounts(svc), reapers...)

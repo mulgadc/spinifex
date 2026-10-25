@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // statusGateRouter builds a signed-request harness whose only job is to report
 // whether the auth middleware let the request through.
-func statusGateRouter(t *testing.T, svc handlers_iam.IAMService) (chi.Router, *http.Request) {
+func statusGateRouter(t *testing.T, svc iamdomain.IAMService) (chi.Router, *http.Request) {
 	t.Helper()
 
 	gw := &GatewayConfig{DisableLogging: true, Region: testRegion, IAMService: svc}
@@ -35,29 +35,29 @@ func statusGateRouter(t *testing.T, svc handlers_iam.IAMService) (chi.Router, *h
 func statusGateService(t *testing.T, accountID, status string) *mockIAMService {
 	t.Helper()
 
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("encrypt secret: %v", err)
 	}
 	return &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
 				UserName:        "alice",
 				AccountID:       accountID,
-				Status:          handlers_iam.AccessKeyStatusActive,
+				Status:          iamdomain.AccessKeyStatusActive,
 			},
 		},
-		accounts: map[string]*handlers_iam.Account{
+		accounts: map[string]*iamdomain.Account{
 			accountID: {AccountID: accountID, Status: status},
 		},
 	}
 }
 
 func TestAuthAllowsAnActiveAccount(t *testing.T) {
-	r, req := statusGateRouter(t, statusGateService(t, "123456789012", handlers_iam.AccountStatusActive))
+	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusActive))
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for an ACTIVE account, got %d", resp.StatusCode)
@@ -67,7 +67,7 @@ func TestAuthAllowsAnActiveAccount(t *testing.T) {
 // Until this gate existed, account status was enforced only in ECR's principal
 // resolution, so suspending an account left EC2, S3 and STS wide open.
 func TestAuthDeniesASuspendedAccount(t *testing.T) {
-	r, req := statusGateRouter(t, statusGateService(t, "123456789012", handlers_iam.AccountStatusSuspended))
+	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusSuspended))
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for a SUSPENDED account, got %d", resp.StatusCode)
@@ -77,7 +77,7 @@ func TestAuthDeniesASuspendedAccount(t *testing.T) {
 // The quiesce that makes teardown converge: a terminating account must not be
 // able to create resources the cascade has already walked past.
 func TestAuthDeniesATerminatingAccount(t *testing.T) {
-	r, req := statusGateRouter(t, statusGateService(t, "123456789012", handlers_iam.AccountStatusTerminating))
+	r, req := statusGateRouter(t, statusGateService(t, "123456789012", iamdomain.AccountStatusTerminating))
 
 	if resp := doRequest(r, req); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for a TERMINATING account, got %d", resp.StatusCode)
@@ -89,13 +89,13 @@ type unreadableAccountService struct {
 	*mockIAMService
 }
 
-func (s *unreadableAccountService) GetAccount(string) (*handlers_iam.Account, error) {
+func (s *unreadableAccountService) GetAccount(string) (*iamdomain.Account, error) {
 	return nil, errors.New("account store unavailable")
 }
 
 // An account we cannot read is not evidence of an account in good standing.
 func TestAuthFailsClosedWhenTheAccountCannotBeRead(t *testing.T) {
-	svc := &unreadableAccountService{statusGateService(t, "123456789012", handlers_iam.AccountStatusActive)}
+	svc := &unreadableAccountService{statusGateService(t, "123456789012", iamdomain.AccountStatusActive)}
 	r, req := statusGateRouter(t, svc)
 
 	if resp := doRequest(r, req); resp.StatusCode == http.StatusOK {

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +28,7 @@ func agentCaller() Caller {
 	return Caller{
 		AccountID:     awsidentifiers.GlobalAccountID,
 		PrincipalType: principalTypeAssumedRole,
-		RoleName:      handlers_rds.InstanceRoleName,
+		RoleName:      rdsinstance.InstanceRoleName,
 		SessionName:   testInstanceID,
 	}
 }
@@ -38,8 +38,8 @@ func agentCaller() Caller {
 func newIndexedNATS(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := handlers_rds.NewService(nc, "ap-southeast-2")
-	require.NoError(t, svc.PutInstanceIndex(context.Background(), testInstanceID, handlers_rds.InstanceIndexEntry{
+	svc := rdsinstance.NewService(nc, "ap-southeast-2")
+	require.NoError(t, svc.PutInstanceIndex(context.Background(), testInstanceID, rdsinstance.InstanceIndexEntry{
 		AccountID:            testAccountID,
 		DBInstanceIdentifier: testDBID,
 		VMGeneration:         1,
@@ -72,12 +72,12 @@ func TestAuthorizeAgent_RejectsNonAgentCallers(t *testing.T) {
 		name   string
 		caller Caller
 	}{
-		{"plain IAM user", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user", RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID}},
-		{"root", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "root", RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID}},
-		{"customer account", Caller{AccountID: testAccountID, PrincipalType: principalTypeAssumedRole, RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID}},
+		{"plain IAM user", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user", RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
+		{"root", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "root", RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
+		{"customer account", Caller{AccountID: testAccountID, PrincipalType: principalTypeAssumedRole, RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
 		{"another role", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: "ecsInstanceRole", SessionName: testInstanceID}},
 		{"unresolvable role", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: "", SessionName: testInstanceID}},
-		{"no session name", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: handlers_rds.InstanceRoleName, SessionName: ""}},
+		{"no session name", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: rdsinstance.InstanceRoleName, SessionName: ""}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -140,7 +140,7 @@ func TestPollDBCommands_ReturnsEmptyOnTimeout(t *testing.T) {
 
 func TestPollDBCommands_DeliversPublishedCommand(t *testing.T) {
 	nc := newIndexedNATS(t)
-	subject := handlers_rds.BusCommandSubject(testAccountID, testDBID)
+	subject := rdsinstance.BusCommandSubject(testAccountID, testDBID)
 
 	type result struct {
 		out any
@@ -152,7 +152,7 @@ func TestPollDBCommands_DeliversPublishedCommand(t *testing.T) {
 		done <- result{out, err}
 	}()
 
-	data, err := json.Marshal(handlers_rds.Command{CommandID: "cmd-1", Type: "set-password"})
+	data, err := json.Marshal(rdsinstance.Command{CommandID: "cmd-1", Type: "set-password"})
 	require.NoError(t, err)
 
 	// The command channel is a live subscription, so a directive published
@@ -187,7 +187,7 @@ func TestPublishReplies_ReturnsNATSPublishFailure(t *testing.T) {
 
 	err = publishReplies(closed, &agentIdentity{
 		AccountID: testAccountID, DBInstanceIdentifier: testDBID,
-	}, []handlers_rds.CommandReply{{CommandID: "cmd-1"}})
+	}, []rdsinstance.CommandReply{{CommandID: "cmd-1"}})
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, nats.ErrConnectionClosed)
@@ -195,24 +195,24 @@ func TestPublishReplies_ReturnsNATSPublishFailure(t *testing.T) {
 
 func TestPublishReplies_StopsAtFirstPublicationFailure(t *testing.T) {
 	nc := newIndexedNATS(t)
-	replySub, err := nc.SubscribeSync(handlers_rds.BusCommandReplySubject(testAccountID, testDBID))
+	replySub, err := nc.SubscribeSync(rdsinstance.BusCommandReplySubject(testAccountID, testDBID))
 	require.NoError(t, err)
 	defer func() { _ = replySub.Unsubscribe() }()
 	require.NoError(t, nc.Flush())
 
 	err = publishReplies(nc, &agentIdentity{
 		AccountID: testAccountID, DBInstanceIdentifier: testDBID,
-	}, []handlers_rds.CommandReply{
-		{CommandID: "cmd-1", Status: handlers_rds.CommandStatusSucceeded},
+	}, []rdsinstance.CommandReply{
+		{CommandID: "cmd-1", Status: rdsinstance.CommandStatusSucceeded},
 		{CommandID: "cmd-2", Message: strings.Repeat("x", int(nc.MaxPayload()))},
-		{CommandID: "cmd-3", Status: handlers_rds.CommandStatusSucceeded},
+		{CommandID: "cmd-3", Status: rdsinstance.CommandStatusSucceeded},
 	})
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, nats.ErrMaxPayload)
 	msg, err := replySub.NextMsg(time.Second)
 	require.NoError(t, err)
-	var reply handlers_rds.CommandReply
+	var reply rdsinstance.CommandReply
 	require.NoError(t, json.Unmarshal(msg.Data, &reply))
 	assert.Equal(t, "cmd-1", reply.CommandID)
 	_, err = replySub.NextMsg(100 * time.Millisecond)
@@ -224,7 +224,7 @@ func TestPollDBCommands_FailsWhenReplyPublicationFails(t *testing.T) {
 
 	out, err := PollDBCommands(t.Context(), &PollDBCommandsInput{
 		WaitTimeSeconds: 1,
-		Replies: []handlers_rds.CommandReply{{
+		Replies: []rdsinstance.CommandReply{{
 			CommandID: "cmd-too-large",
 			Message:   strings.Repeat("x", int(nc.MaxPayload())),
 		}},
@@ -237,25 +237,25 @@ func TestPollDBCommands_FailsWhenReplyPublicationFails(t *testing.T) {
 
 func TestPollDBCommands_RepublishesReplies(t *testing.T) {
 	nc := newIndexedNATS(t)
-	replySub, err := nc.SubscribeSync(handlers_rds.BusCommandReplySubject(testAccountID, testDBID))
+	replySub, err := nc.SubscribeSync(rdsinstance.BusCommandReplySubject(testAccountID, testDBID))
 	require.NoError(t, err)
 	defer func() { _ = replySub.Unsubscribe() }()
 
 	_, err = PollDBCommands(t.Context(), &PollDBCommandsInput{
 		WaitTimeSeconds: 1,
-		Replies: []handlers_rds.CommandReply{
-			{CommandID: "cmd-1", Status: handlers_rds.CommandStatusSucceeded},
-			{CommandID: "", Status: handlers_rds.CommandStatusFailed}, // dropped: no correlation
+		Replies: []rdsinstance.CommandReply{
+			{CommandID: "cmd-1", Status: rdsinstance.CommandStatusSucceeded},
+			{CommandID: "", Status: rdsinstance.CommandStatusFailed}, // dropped: no correlation
 		},
 	}, nc, agentCaller())
 	require.NoError(t, err)
 
 	msg, err := replySub.NextMsg(2 * time.Second)
 	require.NoError(t, err)
-	var reply handlers_rds.CommandReply
+	var reply rdsinstance.CommandReply
 	require.NoError(t, json.Unmarshal(msg.Data, &reply))
 	assert.Equal(t, "cmd-1", reply.CommandID)
-	assert.Equal(t, handlers_rds.CommandStatusSucceeded, reply.Status)
+	assert.Equal(t, rdsinstance.CommandStatusSucceeded, reply.Status)
 
 	_, err = replySub.NextMsg(100 * time.Millisecond)
 	assert.Error(t, err, "an uncorrelatable reply must not be republished")
@@ -266,7 +266,7 @@ func TestPollDBCommands_RepublishesReplies(t *testing.T) {
 // an attach response must not carry the element at all.
 func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 	password := "s3cr3t-master-pw"
-	base := handlers_rds.GetDBBootstrapConfigOutput{
+	base := rdsinstance.GetDBBootstrapConfigOutput{
 		DBInstanceIdentifier: testDBID,
 		Engine:               "postgres",
 		MasterUsername:       "postgres",
@@ -275,17 +275,17 @@ func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 		DataVolumeSerial:     "voldata01",
 		VMGeneration:         1,
 		FormatAuthorized:     true,
-		Parameters:           []handlers_rds.Parameter{{Name: "shared_buffers", Value: "128MB"}},
+		Parameters:           []rdsinstance.Parameter{{Name: "shared_buffers", Value: "128MB"}},
 	}
 
 	initialize := base
-	initialize.Mode = handlers_rds.BootstrapModeInitialize
+	initialize.Mode = rdsinstance.BootstrapModeInitialize
 	initialize.MasterUserPassword = &password
 	body := marshalResult(t, "GetDBBootstrapConfig", &initialize)
 	assert.Contains(t, body, "<MasterUserPassword>"+password+"</MasterUserPassword>")
 
 	attach := base
-	attach.Mode = handlers_rds.BootstrapModeAttach
+	attach.Mode = rdsinstance.BootstrapModeAttach
 	body = marshalResult(t, "GetDBBootstrapConfig", &attach)
 	assert.NotContains(t, body, "MasterUserPassword", "the element must be absent, not empty")
 	assert.NotContains(t, body, password)

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 const (
@@ -129,11 +129,11 @@ func TestProtectedAccountsMatchTheRestOfTheSystem(t *testing.T) {
 		if _, protected := protectedAccountIDs[id]; !protected {
 			t.Fatalf("account %s is not protected by teardown", id)
 		}
-		if _, protected := handlers_iam.UndeletableAccountIDs[id]; !protected {
+		if _, protected := iamdomain.UndeletableAccountIDs[id]; !protected {
 			t.Fatalf("account %s is not protected by the IAM service", id)
 		}
 	}
-	if len(protectedAccountIDs) != len(handlers_iam.UndeletableAccountIDs) {
+	if len(protectedAccountIDs) != len(iamdomain.UndeletableAccountIDs) {
 		t.Fatal("teardown and the IAM service disagree on which accounts are protected")
 	}
 }

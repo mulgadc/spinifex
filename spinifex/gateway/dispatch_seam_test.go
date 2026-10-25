@@ -18,9 +18,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
@@ -135,9 +135,9 @@ func fakeNoResolverRegistration(c *dispatchCapture) dispatch.Registration {
 // dispatchSeamApp wires SigV4AuthMiddleware -> traceActionEnricher -> Request
 // on live test NATS, with regs registered through dispatch.NewBuilder, so a
 // fake service's full pipeline mirrors ecrPipelineApp for a real one.
-func dispatchSeamApp(t *testing.T, docs []handlers_iam.PolicyDocument, regs ...dispatch.Registration) (*GatewayConfig, http.Handler) {
+func dispatchSeamApp(t *testing.T, docs []iamdomain.PolicyDocument, regs ...dispatch.Registration) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
@@ -154,7 +154,7 @@ func dispatchSeamApp(t *testing.T, docs []handlers_iam.PolicyDocument, regs ...d
 		IAMService: &policyMockIAMService{
 			mockIAMService: mockIAMService{
 				masterKey: testMasterKey,
-				accessKeys: map[string]*handlers_iam.AccessKey{
+				accessKeys: map[string]*iamdomain.AccessKey{
 					testAccessKey: {
 						AccessKeyID:     testAccessKey,
 						SecretAccessKey: encryptedSecret,
@@ -164,7 +164,7 @@ func dispatchSeamApp(t *testing.T, docs []handlers_iam.PolicyDocument, regs ...d
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	}
 
@@ -257,10 +257,10 @@ func TestDispatchSeam_AuthorizeDeniesOnMismatchAllowsOnMatch(t *testing.T) {
 
 	t.Run("scoped to a different resource is denied", func(t *testing.T) {
 		capt := &dispatchCapture{authorizeResource: allowedResource}
-		scopedDocs := []handlers_iam.PolicyDocument{{
+		scopedDocs := []iamdomain.PolicyDocument{{
 			Version: "2012-10-17",
-			Statement: []handlers_iam.Statement{
-				{Effect: "Allow", Action: handlers_iam.StringOrArr{"testsvc:FakeAction"}, Resource: handlers_iam.StringOrArr{otherResource}},
+			Statement: []iamdomain.Statement{
+				{Effect: "Allow", Action: iamdomain.StringOrArr{"testsvc:FakeAction"}, Resource: iamdomain.StringOrArr{otherResource}},
 			},
 		}}
 		_, app := dispatchSeamApp(t, scopedDocs, fakeJSONRegistration(capt))
@@ -275,10 +275,10 @@ func TestDispatchSeam_AuthorizeDeniesOnMismatchAllowsOnMatch(t *testing.T) {
 
 	t.Run("matching policy allows", func(t *testing.T) {
 		capt := &dispatchCapture{authorizeResource: allowedResource}
-		matchingDocs := []handlers_iam.PolicyDocument{{
+		matchingDocs := []iamdomain.PolicyDocument{{
 			Version: "2012-10-17",
-			Statement: []handlers_iam.Statement{
-				{Effect: "Allow", Action: handlers_iam.StringOrArr{"testsvc:FakeAction"}, Resource: handlers_iam.StringOrArr{allowedResource}},
+			Statement: []iamdomain.Statement{
+				{Effect: "Allow", Action: iamdomain.StringOrArr{"testsvc:FakeAction"}, Resource: iamdomain.StringOrArr{allowedResource}},
 			},
 		}}
 		_, app := dispatchSeamApp(t, matchingDocs, fakeJSONRegistration(capt))
@@ -365,7 +365,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 	b := dispatch.NewBuilder()
 	require.NoError(t, b.Register(fakeJSONRegistration(&dispatchCapture{})))
 
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -373,7 +373,7 @@ func TestDispatchSeam_UnregisteredUnknownServiceStillInvalidAction(t *testing.T)
 		Services:       b.Build(),
 		IAMService: &mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret, UserName: "root", Status: "Active"},
 			},
 		},

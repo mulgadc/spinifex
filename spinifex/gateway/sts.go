@@ -8,11 +8,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	spxarn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 )
 
@@ -105,11 +105,11 @@ func (gw *GatewayConfig) stsPolicyResource(queryArgs map[string]string) (string,
 		return "", errors.New(awserrors.ErrorInternalError)
 	}
 
-	_, role, err := handlers_sts.ResolveRoleByARN(gw.IAMService, roleARN)
+	_, role, err := stsdomain.ResolveRoleByARN(gw.IAMService, roleARN)
 	switch {
 	case err == nil:
 		return aws.StringValue(role.Arn), nil
-	case errors.Is(err, handlers_sts.ErrRoleUnresolved):
+	case errors.Is(err, stsdomain.ErrRoleUnresolved):
 		// Echoing the supplied ARN keeps the denial identical whether or not the
 		// role exists. The handler refuses an ARN that is not the stored one, so
 		// a grant matched here on an invented path still ends in a denial there.

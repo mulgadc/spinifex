@@ -18,7 +18,7 @@ import (
 	"time"
 
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // Stands in for the control plane's own definition of the engine. It mirrors the
@@ -335,7 +335,7 @@ func TestMariaDBEngine_ApplyParametersSetsOnlyTheDynamicHalfLive(t *testing.T) {
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
 
-	pending, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+	pending, err := engine.ApplyParameters(context.Background(), []rdsinstance.Parameter{
 		{Name: "max_connections", Value: "200"},
 		{Name: "innodb_buffer_pool_size", Value: "1073741824"},
 	})
@@ -378,7 +378,7 @@ func TestMariaDBEngine_ApplyParametersRendersEachValueByItsCatalogType(t *testin
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
 
-	if _, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+	if _, err := engine.ApplyParameters(context.Background(), []rdsinstance.Parameter{
 		{Name: "max_connections", Value: "200"},
 		{Name: "long_query_time", Value: "2.5"},
 		{Name: "innodb_adaptive_hash_index", Value: "on"},
@@ -410,7 +410,7 @@ func TestMariaDBEngine_ApplyParametersRefusesANonNumericNumber(t *testing.T) {
 	engine := newTestMariaDBEngine(t, runner.run)
 
 	_, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200; DROP DATABASE orders"}})
+		[]rdsinstance.Parameter{{Name: "max_connections", Value: "200; DROP DATABASE orders"}})
 	if err == nil {
 		t.Fatal("ApplyParameters accepted a non-numeric value for an integer parameter")
 	}
@@ -426,7 +426,7 @@ func TestMariaDBEngine_ApplyParametersRunsNoStatementForAStaticOnlySet(t *testin
 	engine := newTestMariaDBEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "innodb_log_file_size", Value: "268435456"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "innodb_log_file_size", Value: "268435456"}}); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	if len(runner.calls) != 0 {
@@ -441,13 +441,13 @@ func TestMariaDBEngine_ApplyParametersRollsBackAValueTheServerRefuses(t *testing
 	engine := newTestMariaDBEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
 		t.Fatalf("first ApplyParameters: %v", err)
 	}
 
 	runner.err = errors.New("ERROR 1231 (42000): Variable 'max_connections' can't be set to the value of '0'")
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "max_connections", Value: "0"}}); err == nil {
+		[]rdsinstance.Parameter{{Name: "max_connections", Value: "0"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a value the server refused")
 	}
 
@@ -496,8 +496,8 @@ func (r *mariadbTLSReadBackRunner) run(ctx context.Context, c command) (string, 
 	return r.recordingRunner.run(ctx, c)
 }
 
-func requireSecureTransport(value string) []handlers_rds.Parameter {
-	return []handlers_rds.Parameter{
+func requireSecureTransport(value string) []rdsinstance.Parameter {
+	return []rdsinstance.Parameter{
 		{Name: "max_connections", Value: "200"},
 		{Name: "require_secure_transport", Value: value},
 	}
@@ -554,7 +554,7 @@ func TestMariaDBEngine_ApplyParametersReadsAnAbsentEnforcementKeyAsOn(t *testing
 	engine := newScriptedTestMariaDBEngine(t, runner.run)
 
 	_, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}})
+		[]rdsinstance.Parameter{{Name: "max_connections", Value: "200"}})
 	if err == nil || !strings.Contains(err.Error(), "serving without TLS") {
 		t.Fatalf("ApplyParameters error = %v, want a set predating the parameter to read as enforcing", err)
 	}
@@ -568,7 +568,7 @@ func TestMariaDBEngine_ApplyParametersEnforcesOnAnAbsentKey(t *testing.T) {
 	engine := newScriptedTestMariaDBEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	sql := runner.calls[len(runner.calls)-1].Stdin
@@ -585,7 +585,7 @@ func TestMariaDBEngine_ApplyParametersLeavesTLSAloneWhenTheBatchFails(t *testing
 	engine := newScriptedTestMariaDBEngine(t, runner.run)
 	runner.err = errors.New("ERROR 1231 (42000): Variable 'max_connections' can't be set to the value of '0'")
 
-	if _, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+	if _, err := engine.ApplyParameters(context.Background(), []rdsinstance.Parameter{
 		{Name: "max_connections", Value: "0"},
 		{Name: "require_secure_transport", Value: "0"},
 	}); err == nil {
@@ -762,7 +762,7 @@ func TestMariaDBEngine_LastKnownGoodWaitsForARestartToAdoptAStaticSet(t *testing
 	engine := newTestMariaDBEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(t.Context(),
-		[]handlers_rds.Parameter{{Name: "innodb_buffer_pool_size", Value: "1073741824"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "innodb_buffer_pool_size", Value: "1073741824"}}); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
@@ -797,7 +797,7 @@ func TestMariaDBEngine_LastKnownGoodAdvancesOnADynamicApply(t *testing.T) {
 	}
 
 	if _, err := engine.ApplyParameters(t.Context(),
-		[]handlers_rds.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "max_connections", Value: "200"}}); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
@@ -928,15 +928,15 @@ func TestMariaDBProbe_MapsToTheHealthTheControlPlaneReads(t *testing.T) {
 		},
 		func(int) bool { return alive }))
 
-	if got, _ := probe.Check(context.Background()); got != handlers_rds.EngineHealthHealthy {
+	if got, _ := probe.Check(context.Background()); got != rdsinstance.EngineHealthHealthy {
 		t.Fatalf("health = %q, want healthy", got)
 	}
 	serving = false
-	if got, _ := probe.Check(context.Background()); got != handlers_rds.EngineHealthStarting {
+	if got, _ := probe.Check(context.Background()); got != rdsinstance.EngineHealthStarting {
 		t.Errorf("health while recovering = %q, want starting", got)
 	}
 	alive = false
-	if got, _ := probe.Check(context.Background()); got != handlers_rds.EngineHealthUnhealthy {
+	if got, _ := probe.Check(context.Background()); got != rdsinstance.EngineHealthUnhealthy {
 		t.Errorf("health after the engine went away = %q, want unhealthy", got)
 	}
 }
@@ -1051,7 +1051,7 @@ func TestMariaDBEngine_TimeZoneAppliesLiveByItsCustomerFacingName(t *testing.T) 
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
 
-	if _, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+	if _, err := engine.ApplyParameters(context.Background(), []rdsinstance.Parameter{
 		{Name: "time_zone", Value: "+10:00"},
 	}); err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
@@ -1090,7 +1090,7 @@ func TestMariaDBEngine_ALiveTimeZoneChangeLeavesNothingPendingRestart(t *testing
 		t.Fatalf("seed the serving copy: %v", err)
 	}
 
-	pending, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+	pending, err := engine.ApplyParameters(context.Background(), []rdsinstance.Parameter{
 		{Name: "time_zone", Value: "+10:00"},
 	})
 	if err != nil {
@@ -1112,7 +1112,7 @@ func TestMariaDBEngine_PendingRestartReportsCatalogNames(t *testing.T) {
 		t.Fatalf("seed the serving copy: %v", err)
 	}
 
-	pending, err := engine.ApplyParameters(context.Background(), []handlers_rds.Parameter{
+	pending, err := engine.ApplyParameters(context.Background(), []rdsinstance.Parameter{
 		{Name: "innodb_buffer_pool_size", Value: "1073741824"},
 		{Name: "time_zone", Value: "SYSTEM"},
 	})
@@ -1134,7 +1134,7 @@ func TestMariaDBEngine_EveryResolvedDynamicValueRenders(t *testing.T) {
 		t.Fatalf("LookupEngine: %v", err)
 	}
 	rules := controlPlaneRulesFrom(catalogFromEngine{engine: meta})
-	sizing := handlers_rds.InstanceSizing()
+	sizing := rdsinstance.InstanceSizing()
 
 	for _, class := range rdsengine.SupportedInstanceClasses() {
 		params, err := meta.ResolveEffectiveParameters(sizing, class, nil)

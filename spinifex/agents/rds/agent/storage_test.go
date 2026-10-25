@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // Stands in for the guest's storage in the registry tests, where what matters
@@ -225,12 +225,12 @@ func TestCommandRegistry_GrowFilesystemReachesTheGuestStorage(t *testing.T) {
 	storage := &fakeStorage{message: "grew /dev/vdb (ext4) at /var/lib/postgresql"}
 
 	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}, storage), 0).execute(context.Background(),
-		handlers_rds.Command{CommandID: "cmd-9", Type: handlers_rds.CommandGrowFilesystem})
+		rdsinstance.Command{CommandID: "cmd-9", Type: rdsinstance.CommandGrowFilesystem})
 
 	if !storage.grown {
 		t.Error("the grow-filesystem command did not reach the guest storage")
 	}
-	if reply.Status != handlers_rds.CommandStatusSucceeded || reply.Message != storage.message {
+	if reply.Status != rdsinstance.CommandStatusSucceeded || reply.Message != storage.message {
 		t.Errorf("reply = %+v, want succeeded carrying what the grow reported", reply)
 	}
 }

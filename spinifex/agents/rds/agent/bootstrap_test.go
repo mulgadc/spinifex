@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // testPostgresOptionFileName resolves the real catalog's startup spellings,
@@ -25,8 +25,8 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
 	password := "s3cret"
 
-	err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:               handlers_rds.BootstrapModeInitialize,
+	err := writeHandoff(dir, &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:               rdsinstance.BootstrapModeInitialize,
 		Engine:             "postgres",
 		MasterUsername:     "master",
 		ListenAddress:      "10.0.1.20",
@@ -38,7 +38,7 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 		DataVolumeSerial:   "voldata01",
 		VMGeneration:       4,
 		FormatAuthorized:   true,
-		Parameters: []handlers_rds.Parameter{
+		Parameters: []rdsinstance.Parameter{
 			{Name: "max_connections", Value: "200"},
 			{Name: "shared_buffers", Value: "256MB"},
 		},
@@ -94,8 +94,8 @@ func TestWriteHandoff_WritesEveryFileRootOnly(t *testing.T) {
 // accident, and a later boot would inherit it.
 func TestWriteHandoff_AttachOmitsPassword(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
-	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:           handlers_rds.BootstrapModeAttach,
+	if err := writeHandoff(dir, &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:           rdsinstance.BootstrapModeAttach,
 		Engine:         "postgres",
 		MasterUsername: "master",
 		ListenAddress:  "10.0.1.20",
@@ -127,8 +127,8 @@ func TestWriteHandoff_QuotesShellMetacharacters(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
 	password := `a b$(id);'"\` + "`whoami`"
 
-	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:               handlers_rds.BootstrapModeInitialize,
+	if err := writeHandoff(dir, &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:               rdsinstance.BootstrapModeInitialize,
 		Engine:             "postgres",
 		MasterUsername:     "master",
 		ListenAddress:      "10.0.1.20",
@@ -150,8 +150,8 @@ func TestWriteHandoff_QuotesShellMetacharacters(t *testing.T) {
 // that is not there; the pair is delivered together or not at all.
 func TestWriteHandoff_SkipsHalfATLSPair(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
-	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:               handlers_rds.BootstrapModeAttach,
+	if err := writeHandoff(dir, &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:               rdsinstance.BootstrapModeAttach,
 		Engine:             "postgres",
 		MasterUsername:     "master",
 		ListenAddress:      "10.0.1.20",
@@ -171,8 +171,8 @@ func TestWriteHandoff_SkipsHalfATLSPair(t *testing.T) {
 // would only move the failure into rds-init after the boot has committed to it.
 func TestWriteHandoff_RejectsConfigWithNoMasterUser(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "handoff")
-	err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:   handlers_rds.BootstrapModeAttach,
+	err := writeHandoff(dir, &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:   rdsinstance.BootstrapModeAttach,
 		Engine: "postgres",
 		Port:   5432,
 	}, testPostgresOptionFileName(t))
@@ -192,8 +192,8 @@ func TestWriteHandoff_TightensExistingDirectory(t *testing.T) {
 		t.Fatalf("seed dir: %v", err)
 	}
 
-	if err := writeHandoff(dir, &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:           handlers_rds.BootstrapModeAttach,
+	if err := writeHandoff(dir, &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:           rdsinstance.BootstrapModeAttach,
 		Engine:         "postgres",
 		MasterUsername: "master",
 		ListenAddress:  "10.0.1.20",
@@ -250,7 +250,7 @@ func findLine(t *testing.T, body, prefix string) string {
 // The include rds-init installs is what the engine starts on, so the spelling
 // written here is the one that has to boot.
 func TestRenderParameters_UsesTheEngineStartupSpelling(t *testing.T) {
-	params := []handlers_rds.Parameter{
+	params := []rdsinstance.Parameter{
 		{Name: "time_zone", Value: "SYSTEM"},
 		{Name: "max_connections", Value: "85"},
 	}
@@ -275,7 +275,7 @@ func TestRenderParameters_UsesTheEngineStartupSpelling(t *testing.T) {
 }
 
 func TestRenderParameters_PostgresKeepsEveryName(t *testing.T) {
-	rendered, err := renderParameters(testPostgresOptionFileName(t), []handlers_rds.Parameter{
+	rendered, err := renderParameters(testPostgresOptionFileName(t), []rdsinstance.Parameter{
 		{Name: "shared_buffers", Value: "262144"},
 	})
 	if err != nil {

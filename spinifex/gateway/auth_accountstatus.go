@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // accountActiveTTL bounds how long an account is trusted to still be ACTIVE
@@ -86,7 +86,7 @@ func (gw *GatewayConfig) checkAccountActive(accountID string, src authSource) st
 		return awserrors.ErrorInternalError
 	}
 
-	if account.Status != handlers_iam.AccountStatusActive {
+	if account.Status != iamdomain.AccountStatusActive {
 		slog.Warn("Auth failure: account is not active",
 			"accountID", accountID, "status", account.Status, "sourceIP", src.logIP)
 		return awserrors.ErrorAccessDenied

@@ -23,6 +23,7 @@ import (
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
@@ -30,7 +31,6 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
@@ -104,14 +104,14 @@ var _ ELBv2Service = (*ELBv2ServiceImpl)(nil)
 type ELBv2ServiceImpl struct {
 	config           *config.Config
 	store            *Store
-	acmStore         *acmdomain.Store                       // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
-	nc               *nats.Conn                             // NATS connection for JetStream KV store
-	VPCService       *ec2vpc.VPCServiceImpl                 // nil-safe: ENI ops skipped when nil (e.g. in tests)
-	InstanceLauncher SystemInstanceLauncher                 // nil-safe: system VM ops skipped when nil
-	IAM              handlers_iam.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
+	acmStore         *acmdomain.Store                    // resolves listener cert ARNs → PEM; nil-safe (HTTPS unavailable when nil)
+	nc               *nats.Conn                          // NATS connection for JetStream KV store
+	VPCService       *ec2vpc.VPCServiceImpl              // nil-safe: ENI ops skipped when nil (e.g. in tests)
+	InstanceLauncher SystemInstanceLauncher              // nil-safe: system VM ops skipped when nil
+	IAM              iamdomain.SystemInstanceRoleEnsurer // nil-safe: LB VM falls back to baked static creds when nil (tests set directly)
 	// IAMProvider lazily resolves the IAM ensurer at launch time so it cannot
 	// race the NATS KV backend at daemon startup. Preferred over IAM when set.
-	IAMProvider                func() handlers_iam.SystemInstanceRoleEnsurer
+	IAMProvider                func() iamdomain.SystemInstanceRoleEnsurer
 	SystemAccessKey            string // System account access key for ALB agent SigV4 auth
 	SystemSecretKey            string // System account secret key for ALB agent SigV4 auth
 	GatewayURL                 string // AWS gateway URL for ALB agent outbound connections

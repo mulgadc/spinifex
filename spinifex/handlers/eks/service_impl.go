@@ -28,12 +28,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -100,7 +100,7 @@ type EKSServiceDeps struct {
 	// IAMProvider lazily resolves the IAM ensurer at cluster-launch time so it
 	// cannot race the NATS KV backend at daemon startup. Preferred over IAM when
 	// set; its concrete service satisfies instanceProfileEnsurer.
-	IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
+	IAMProvider func() iamdomain.SystemInstanceRoleEnsurer
 
 	// VPCMgr / NATGW / RouteTable compose the managed control-plane VPC ("Set B")
 	// from the real EC2 VPC-family APIs under the system account. The daemon

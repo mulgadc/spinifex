@@ -9,9 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 )
 
@@ -39,7 +39,11 @@ func (s *Service) EnforceVPCs(ctx context.Context, natsConn *nats.Conn, accountI
 	if err != nil {
 		return err
 	}
-	return exceeds(len(out.Vpcs), want, s.limitsFor(ctx, accountID).VPCs)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(len(out.Vpcs), want, limits.VPCs)
 }
 
 // EnforceSubnets gates CreateSubnet on the account's live DescribeSubnets count.
@@ -52,7 +56,11 @@ func (s *Service) EnforceSubnets(ctx context.Context, natsConn *nats.Conn, accou
 	if err != nil {
 		return err
 	}
-	return exceeds(len(out.Subnets), want, s.limitsFor(ctx, accountID).Subnets)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(len(out.Subnets), want, limits.Subnets)
 }
 
 // EnforceEIPs gates AllocateAddress on the account's live DescribeAddresses count.
@@ -64,7 +72,11 @@ func (s *Service) EnforceEIPs(ctx context.Context, natsConn *nats.Conn, accountI
 	if err != nil {
 		return err
 	}
-	return exceeds(len(out.Addresses), want, s.limitsFor(ctx, accountID).EIPs)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(len(out.Addresses), want, limits.EIPs)
 }
 
 // EnforceLoadBalancers gates CreateLoadBalancer on the account's live count.
@@ -77,7 +89,11 @@ func (s *Service) EnforceLoadBalancers(ctx context.Context, natsConn *nats.Conn,
 	if err != nil {
 		return err
 	}
-	return exceeds(len(out.LoadBalancers), want, s.limitsFor(ctx, accountID).LoadBalancers)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(len(out.LoadBalancers), want, limits.LoadBalancers)
 }
 
 // EnforceRDSInstances gates CreateDBInstance on the account's live count. A DB
@@ -87,9 +103,13 @@ func (s *Service) EnforceRDSInstances(ctx context.Context, natsConn *nats.Conn, 
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := handlers_rds.NewNATSService(natsConn).DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{}, accountID)
+	out, err := rdsinstance.NewNATSService(natsConn).DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{}, accountID)
 	if err != nil {
 		return err
 	}
-	return exceeds(len(out.DBInstances), want, s.limitsFor(ctx, accountID).RDSInstances)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(len(out.DBInstances), want, limits.RDSInstances)
 }

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/gwsign"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // gatewayStub captures the request the client sent and replies with the body a
@@ -74,12 +74,12 @@ func xmlResult(t *testing.T, action string, payload any) []byte {
 
 func TestCall_SignsAndFormEncodes(t *testing.T) {
 	stub := newGatewayStub(t, http.StatusOK, func(url.Values) []byte {
-		return xmlResult(t, "RegisterDBInstance", &handlers_rds.RegisterDBInstanceOutput{
+		return xmlResult(t, "RegisterDBInstance", &rdsinstance.RegisterDBInstanceOutput{
 			DBInstanceIdentifier: "db-1", HeartbeatIntervalSeconds: 30,
 		})
 	})
 
-	var out handlers_rds.RegisterDBInstanceOutput
+	var out rdsinstance.RegisterDBInstanceOutput
 	err := newTestClient(t, stub).Call(context.Background(), "RegisterDBInstance",
 		url.Values{"DBInstanceIdentifier": {"db-1"}, "AgentVersion": {"test"}}, &out)
 	if err != nil {
@@ -116,8 +116,8 @@ func TestCall_SignsAndFormEncodes(t *testing.T) {
 
 func TestCall_DecodesNestedListsAndOptionalFields(t *testing.T) {
 	password := "s3cret"
-	want := &handlers_rds.GetDBBootstrapConfigOutput{
-		Mode:                 handlers_rds.BootstrapModeInitialize,
+	want := &rdsinstance.GetDBBootstrapConfigOutput{
+		Mode:                 rdsinstance.BootstrapModeInitialize,
 		DBInstanceIdentifier: "db-1",
 		Engine:               "postgres",
 		MasterUsername:       "master",
@@ -127,7 +127,7 @@ func TestCall_DecodesNestedListsAndOptionalFields(t *testing.T) {
 		DataVolumeSerial:     "voldata01",
 		VMGeneration:         3,
 		FormatAuthorized:     true,
-		Parameters: []handlers_rds.Parameter{
+		Parameters: []rdsinstance.Parameter{
 			{Name: "max_connections", Value: "100"},
 			{Name: "work_mem", Value: "4MB"},
 		},
@@ -137,12 +137,12 @@ func TestCall_DecodesNestedListsAndOptionalFields(t *testing.T) {
 		return xmlResult(t, "GetDBBootstrapConfig", want)
 	})
 
-	var got handlers_rds.GetDBBootstrapConfigOutput
+	var got rdsinstance.GetDBBootstrapConfigOutput
 	if err := newTestClient(t, stub).Call(context.Background(), "GetDBBootstrapConfig", nil, &got); err != nil {
 		t.Fatalf("Call: %v", err)
 	}
 
-	if got.Mode != handlers_rds.BootstrapModeInitialize || got.Port != 5432 {
+	if got.Mode != rdsinstance.BootstrapModeInitialize || got.Port != 5432 {
 		t.Errorf("mode/port = %q/%d, want initialize/5432", got.Mode, got.Port)
 	}
 	if got.MasterUserPassword == nil || *got.MasterUserPassword != password {
@@ -166,14 +166,14 @@ func TestCall_DecodesNestedListsAndOptionalFields(t *testing.T) {
 // mode is defined by the password element being missing entirely.
 func TestCall_AbsentOptionalStaysNil(t *testing.T) {
 	stub := newGatewayStub(t, http.StatusOK, func(url.Values) []byte {
-		return xmlResult(t, "GetDBBootstrapConfig", &handlers_rds.GetDBBootstrapConfigOutput{
-			Mode:           handlers_rds.BootstrapModeAttach,
+		return xmlResult(t, "GetDBBootstrapConfig", &rdsinstance.GetDBBootstrapConfigOutput{
+			Mode:           rdsinstance.BootstrapModeAttach,
 			MasterUsername: "master",
 			Port:           5432,
 		})
 	})
 
-	var got handlers_rds.GetDBBootstrapConfigOutput
+	var got rdsinstance.GetDBBootstrapConfigOutput
 	if err := newTestClient(t, stub).Call(context.Background(), "GetDBBootstrapConfig", nil, &got); err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -189,15 +189,15 @@ func TestCall_AbsentOptionalStaysNil(t *testing.T) {
 // the wire: the locationName tags drive the gateway's marshal, the xml tags the
 // agent's decode.
 type commandsResult struct {
-	Commands []handlers_rds.Command `locationName:"Commands" locationNameList:"member" xml:"Commands>member"`
+	Commands []rdsinstance.Command `locationName:"Commands" locationNameList:"member" xml:"Commands>member"`
 }
 
 func TestCall_RoundTripsCommands(t *testing.T) {
 	issued := time.Date(2026, 7, 28, 4, 5, 6, 0, time.UTC)
-	want := commandsResult{Commands: []handlers_rds.Command{{
+	want := commandsResult{Commands: []rdsinstance.Command{{
 		CommandID:  "cmd-1",
 		Type:       "set-master-password",
-		Parameters: []handlers_rds.Parameter{{Name: "MasterUserPassword", Value: "s3cret"}},
+		Parameters: []rdsinstance.Parameter{{Name: "MasterUserPassword", Value: "s3cret"}},
 		IssuedAt:   &issued,
 	}}}
 	stub := newGatewayStub(t, http.StatusOK, func(url.Values) []byte {

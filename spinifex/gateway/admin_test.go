@@ -14,9 +14,9 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,19 +47,19 @@ func TestAdminPathMethod(t *testing.T) {
 
 // createAccountPolicy grants exactly the action the signup principal holds.
 func createAccountPolicy() *policyMockIAMService {
-	allow := []handlers_iam.PolicyDocument{{
+	allow := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
+		Statement: []iamdomain.Statement{
 			{
 				Effect:   "Allow",
-				Action:   handlers_iam.StringOrArr{"spinifex:CreateAccount"},
-				Resource: handlers_iam.StringOrArr{"*"},
+				Action:   iamdomain.StringOrArr{"spinifex:CreateAccount"},
+				Resource: iamdomain.StringOrArr{"*"},
 			},
 		},
 	}}
 	return &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return allow, nil },
-		getRolePoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return allow, nil },
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
+		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
 	}
 }
 

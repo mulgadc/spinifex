@@ -15,7 +15,7 @@ import (
 )
 
 // rdsCreateSubject, rdsDescribeSubject and rdsDeleteSubject mirror
-// handlers/rds's SubjectCreateDBInstance/SubjectDescribeDBInstances/
+// domains/rds/instance's SubjectCreateDBInstance/SubjectDescribeDBInstances/
 // SubjectDeleteDBInstance. Restated as literals rather than imported, so
 // this launcher stays decoupled from the rds handler package (it talks to
 // RDS only over NATS, like any other client).
@@ -25,7 +25,7 @@ const (
 	rdsDeleteSubject   = "rds.DeleteDBInstance"
 )
 
-// rdsAvailableStatus mirrors handlers/rds's StatusAvailable ("available"),
+// rdsAvailableStatus mirrors domains/rds/instance's StatusAvailable ("available"),
 // restated for the same reason as the subjects above.
 const rdsAvailableStatus = "available"
 
@@ -39,7 +39,7 @@ const (
 )
 
 // rdsCreateTimeout and rdsDescribeTimeout bound one NATS round trip each,
-// mirroring handlers/rds's own NATSService client timeouts for the same
+// mirroring domains/rds/instance's own NATSService client timeouts for the same
 // two calls.
 const (
 	rdsCreateTimeout   = 5 * time.Minute

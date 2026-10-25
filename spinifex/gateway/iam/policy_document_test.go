@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +22,7 @@ const (
 // rawDocIAMService answers every document-bearing read with rawDoc, as the
 // service layer stores and returns it.
 type rawDocIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 }
 
 func rawDocRole() *iam.Role {

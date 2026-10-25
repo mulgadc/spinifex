@@ -9,8 +9,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -25,11 +25,11 @@ type quotaIAMService struct {
 	known string
 }
 
-func (m *quotaIAMService) GetAccount(accountID string) (*handlers_iam.Account, error) {
+func (m *quotaIAMService) GetAccount(accountID string) (*iamdomain.Account, error) {
 	if accountID != m.known {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
 	}
-	return &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}, nil
+	return &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}, nil
 }
 
 // quotaTestGateway wires a real quota Service over a real JetStream KV bucket,
@@ -204,4 +204,57 @@ func TestAccountQuotaMethodsAreRegistered(t *testing.T) {
 	require.True(t, adminMethods["PutAccountQuota"])
 	require.Contains(t, AdminMethodNames(), "GetAccountQuota")
 	require.Contains(t, AdminMethodNames(), "PutAccountQuota")
+}
+
+// quotaStubChecker answers AccountTerminating from a fixed set, so these
+// tests can seal a record without a real IAM bucket.
+type quotaStubChecker struct {
+	terminating map[string]bool
+}
+
+func (c *quotaStubChecker) AccountTerminating(_ context.Context, accountID string) (bool, error) {
+	return c.terminating[accountID], nil
+}
+
+// A request body cannot carry or alter the stored state: an attempted
+// "state":"sealed" in the overrides object is simply unknown to the wire
+// type, the stored record stays active, and the response never shows state.
+func TestAdminRequestCannotCarryState(t *testing.T) {
+	gw, account := quotaTestGateway(t)
+	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+
+	body := []byte(`{"accountId":"` + account + `","overrides":{"vcpus":32,"state":"sealed"}}`)
+	output, err := gw.adminPutAccountQuota(ctx, body)
+	require.NoError(t, err)
+
+	resp, ok := output.(*AccountQuotaResponse)
+	require.True(t, ok)
+	require.Equal(t, 32, resp.Limits["vcpus"])
+
+	data, err := json.Marshal(resp.Overrides)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "state")
+
+	_, _, err = gw.Quota.GetAccountQuota(ctx, account)
+	require.NoError(t, err, "the record must still be active, not sealed")
+}
+
+// Admin get and the put read-back on a sealed record must return Blocked,
+// not the generic InternalError every other read failure maps to.
+func TestAdminQuotaReadsMapBlocked(t *testing.T) {
+	gw, account := quotaTestGateway(t)
+	gw.Quota.SetAccountTerminationChecker(&quotaStubChecker{terminating: map[string]bool{account: true}})
+	_, err := gw.Quota.SealAccountOverrides(t.Context(), account)
+	require.NoError(t, err)
+
+	_, err = gw.adminGetAccountQuota(t.Context(), quotaRequestBody(t, AccountQuotaRequest{AccountID: account}))
+	require.Error(t, err)
+	require.Equal(t, awserrors.ErrorBlocked, err.Error())
+
+	ctx := context.WithValue(t.Context(), ctxIdentity, "operator")
+	_, err = gw.adminPutAccountQuota(ctx, quotaRequestBody(t, AccountQuotaRequest{
+		AccountID: account, Overrides: admissionquota.Overrides{VCPUs: quotaPtr(8)},
+	}))
+	require.Error(t, err)
+	require.Equal(t, awserrors.ErrorBlocked, err.Error())
 }

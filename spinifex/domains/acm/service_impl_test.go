@@ -21,9 +21,9 @@ import (
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ const testAccountID = "000000000001"
 func setupACMService(t *testing.T) *ACMServiceImpl {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	svc, err := NewACMServiceImplWithNATS(t.Context(), nil, nc, masterKey)
 	require.NoError(t, err)
@@ -307,7 +307,7 @@ func TestImportCertificate_PrivateKeyEncryptedAtRest(t *testing.T) {
 // TestDescribeCertificate_DoesNotLeakPrivateKey asserts the public
 // CertificateDetail response can never carry key material, however the
 // record is stored. Precedent: TestSensitiveDataNotLogged_MasterKey in
-// handlers/iam/service_impl_test.go.
+// domains/iam/service_impl_test.go.
 func TestDescribeCertificate_DoesNotLeakPrivateKey(t *testing.T) {
 	t.Parallel()
 	svc := setupACMService(t)
@@ -331,7 +331,7 @@ func TestDescribeCertificate_DoesNotLeakPrivateKey(t *testing.T) {
 // TestSensitiveDataNotLogged_ACMPrivateKey asserts ImportCertificate and
 // DescribeCertificate never place the raw private key PEM in log output.
 // Precedent: TestSensitiveDataNotLogged_MasterKey in
-// handlers/iam/service_impl_test.go.
+// domains/iam/service_impl_test.go.
 // fakeCertAuthority is a minimal CertAuthority for testing RequestCertificate's
 // PRIVATE_CA path without the real tenant CA implementation (domains/acm/privateca.go
 // lives on a separate branch).

@@ -32,6 +32,12 @@ A replica that is merely behind is not divergent, so only these fail:
   - replicas disagree on the replica count;
   - no sequence range is common to every replica, so nothing can be checked.
 
+A stream with a max_age whose replicas, copied at different times, share no
+sequence range is reported as skipped (volatile) rather than diverged: a short
+lived bucket such as a leader lease turns over between two copies. Sequences
+two of its replicas do share must still hold the same content, and each
+message a replica lacks must be superseded, expired, or written after its copy.
+
 Sequences past the slowest replica's last one are not compared. Digests are
 taken from live stores a few seconds apart, so re-run before trusting a
 failure that could be a write landing between two copies.
@@ -110,6 +116,8 @@ type streamVerdict struct {
 	Holders  []string
 	Problems []string
 	Notes    []string
+	// Volatile says why a stream that turned over between copies was not compared.
+	Volatile string
 }
 
 type kvCompareResult struct {
@@ -228,6 +236,16 @@ func compareStream(name string, hosts []string, views []*replicaView) streamVerd
 		}
 	}
 	if lo > hi {
+		maxAge, spread := views[0].d.MaxAge, copySpread(views)
+		if maxAge > 0 && spread > 0 {
+			mismatches, unexplained := turnoverFindings(views)
+			v.Problems = append(v.Problems, mismatches...)
+			if len(unexplained) == 0 {
+				v.Volatile = fmt.Sprintf("volatile: max_age %s and copies %s apart share no sequence range, so it turned over between them; not compared", maxAge, spread)
+				return v
+			}
+			v.Problems = append(v.Problems, unexplained...)
+		}
 		v.Problems = append(v.Problems, "no sequence range is common to every replica, so nothing could be compared")
 		return v
 	}
@@ -253,18 +271,8 @@ func compareStream(name string, hosts []string, views []*replicaView) streamVerd
 		if len(present) == 0 {
 			continue
 		}
-		byHash := map[string][]string{}
-		for _, r := range present {
-			h := r.bySeq[seq].Hash
-			byHash[h] = append(byHash[h], r.host)
-		}
-		if len(byHash) > 1 {
-			var parts []string
-			for h, hs := range byHash {
-				parts = append(parts, strings.Join(hs, ",")+"="+h)
-			}
-			sort.Strings(parts)
-			problems = append(problems, fmt.Sprintf("seq %d %s holds different content: %s", seq, present[0].bySeq[seq].Subject, strings.Join(parts, " ")))
+		if p := contentMismatch(seq, present); p != "" {
+			problems = append(problems, p)
 			continue
 		}
 		msg := present[0].bySeq[seq]
@@ -277,10 +285,7 @@ func compareStream(name string, hosts []string, views []*replicaView) streamVerd
 				seq, msg.Subject, hostsOf(present), r.host))
 		}
 	}
-	if len(problems) > maxFindingsPerStream {
-		problems = append(problems[:maxFindingsPerStream], fmt.Sprintf("... and %d more", len(problems)-maxFindingsPerStream))
-	}
-	v.Problems = append(v.Problems, problems...)
+	v.Problems = append(v.Problems, capFindings(problems)...)
 
 	note := fmt.Sprintf("seqs %d-%d compared", lo, hi)
 	if explained > 0 {
@@ -297,6 +302,84 @@ func compareStream(name string, hosts []string, views []*replicaView) streamVerd
 	}
 	v.Notes = append(v.Notes, note)
 	return v
+}
+
+// contentMismatch describes seq holding different content on the replicas
+// present at it, or returns "" when they agree.
+func contentMismatch(seq uint64, present []*replicaView) string {
+	byHash := map[string][]string{}
+	for _, r := range present {
+		h := r.bySeq[seq].Hash
+		byHash[h] = append(byHash[h], r.host)
+	}
+	if len(byHash) < 2 {
+		return ""
+	}
+	var parts []string
+	for h, hs := range byHash {
+		parts = append(parts, strings.Join(hs, ",")+"="+h)
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("seq %d %s holds different content: %s", seq, present[0].bySeq[seq].Subject, strings.Join(parts, " "))
+}
+
+// turnoverFindings compares every sequence held by two or more replicas, since
+// no timing explains two values at one sequence, and lists each absence that
+// neither absenceExplained nor a write after that replica's copy accounts for.
+func turnoverFindings(views []*replicaView) (mismatches, unexplained []string) {
+	seqSet := map[uint64]struct{}{}
+	for _, r := range views {
+		for s := range r.bySeq {
+			seqSet[s] = struct{}{}
+		}
+	}
+	for _, seq := range slices.Sorted(maps.Keys(seqSet)) {
+		var present, absent []*replicaView
+		for _, r := range views {
+			if e, ok := r.bySeq[seq]; ok && e.Hash != deletedHash {
+				present = append(present, r)
+			} else {
+				absent = append(absent, r)
+			}
+		}
+		if len(present) == 0 {
+			continue
+		}
+		if p := contentMismatch(seq, present); p != "" {
+			mismatches = append(mismatches, p)
+			continue
+		}
+		msg := present[0].bySeq[seq]
+		for _, r := range absent {
+			if absenceExplained(r, msg) || (seq > r.d.LastSeq && msg.Time.After(r.copiedAt)) {
+				continue
+			}
+			unexplained = append(unexplained, fmt.Sprintf("seq %d %s is on %s but missing from %s, with no later write to that subject, expiry, limit or copy order to explain it",
+				seq, msg.Subject, hostsOf(present), r.host))
+		}
+	}
+	return capFindings(mismatches), capFindings(unexplained)
+}
+
+func capFindings(problems []string) []string {
+	if len(problems) > maxFindingsPerStream {
+		return append(problems[:maxFindingsPerStream], fmt.Sprintf("... and %d more", len(problems)-maxFindingsPerStream))
+	}
+	return problems
+}
+
+// copySpread is how far apart the earliest and latest replica copies were taken.
+func copySpread(views []*replicaView) time.Duration {
+	first, last := views[0].copiedAt, views[0].copiedAt
+	for _, r := range views[1:] {
+		if r.copiedAt.Before(first) {
+			first = r.copiedAt
+		}
+		if r.copiedAt.After(last) {
+			last = r.copiedAt
+		}
+	}
+	return last.Sub(first)
 }
 
 // absenceExplained reports whether a replica lacking msg removed it legitimately:
@@ -338,12 +421,16 @@ func writeCompareResult(w io.Writer, nodes []nodeDigest, res kvCompareResult) {
 		fmt.Fprintf(w, " %s@%s", n.Host, n.CopiedAt.Format(time.TimeOnly))
 	}
 	fmt.Fprintln(w)
-	bad := 0
+	bad, volatile := 0, 0
 	for _, v := range res.Streams {
 		status := "ok"
-		if len(v.Problems) > 0 {
+		switch {
+		case len(v.Problems) > 0:
 			status = "DIVERGED"
 			bad++
+		case v.Volatile != "":
+			status = "skipped"
+			volatile++
 		}
 		fmt.Fprintf(w, "%-9s %s  [%s]\n", status, v.Name, strings.Join(v.Holders, ","))
 		for _, p := range v.Problems {
@@ -352,6 +439,13 @@ func writeCompareResult(w io.Writer, nodes []nodeDigest, res kvCompareResult) {
 		for _, n := range v.Notes {
 			fmt.Fprintf(w, "      %s\n", n)
 		}
+		if v.Volatile != "" {
+			fmt.Fprintf(w, "      %s\n", v.Volatile)
+		}
 	}
-	fmt.Fprintf(w, "%d streams: %d consistent, %d diverged\n", len(res.Streams), len(res.Streams)-bad, bad)
+	fmt.Fprintf(w, "%d streams: %d consistent, %d diverged", len(res.Streams), len(res.Streams)-bad-volatile, bad)
+	if volatile > 0 {
+		fmt.Fprintf(w, ", %d skipped as volatile", volatile)
+	}
+	fmt.Fprintln(w)
 }

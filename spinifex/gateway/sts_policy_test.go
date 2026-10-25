@@ -16,8 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,13 +54,13 @@ func (m *stsPolicyIAMService) GetRole(_ string, input *iam.GetRoleInput) (*iam.G
 // stsIdentityPolicy builds an IAM service returning the given statements as the
 // caller's only identity policy, for a user and for an assumed role alike. The
 // one stored role is the pathless `app`; withRoles replaces the set.
-func stsIdentityPolicy(statements ...handlers_iam.Statement) *stsPolicyIAMService {
-	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+func stsIdentityPolicy(statements ...iamdomain.Statement) *stsPolicyIAMService {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	svc := &stsPolicyIAMService{roles: map[string]string{stsTestRoleName: stsTestRoleARN}}
-	svc.getUserPoliciesFn = func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	svc.getUserPoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return docs, nil
 	}
-	svc.getRolePoliciesFn = func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	svc.getRolePoliciesFn = func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return docs, nil
 	}
 	return svc
@@ -74,11 +74,11 @@ func (m *stsPolicyIAMService) withRoles(roles map[string]string) *stsPolicyIAMSe
 }
 
 // stsStatement is shorthand for a single-action, single-resource statement.
-func stsStatement(effect, action, resource string) handlers_iam.Statement {
-	return handlers_iam.Statement{
+func stsStatement(effect, action, resource string) iamdomain.Statement {
+	return iamdomain.Statement{
 		Effect:   effect,
-		Action:   handlers_iam.StringOrArr{action},
-		Resource: handlers_iam.StringOrArr{resource},
+		Action:   iamdomain.StringOrArr{action},
+		Resource: iamdomain.StringOrArr{resource},
 	}
 }
 
@@ -96,7 +96,7 @@ func deniedSTSService(t *testing.T) *flexMockSTSService {
 
 // stsPolicyRequest dispatches an STS action as alice with the given identity
 // policies.
-func stsPolicyRequest(t *testing.T, iamSvc handlers_iam.IAMService, stsSvc *flexMockSTSService, body string) *http.Response {
+func stsPolicyRequest(t *testing.T, iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService, body string) *http.Response {
 	t.Helper()
 	if stsSvc == nil {
 		stsSvc = deniedSTSService(t)
@@ -166,7 +166,7 @@ func TestSTSRequest_AssumeRole_IdentityPolicyGate(t *testing.T) {
 // grants a non-sts action and nothing else must not be able to assume anything.
 func TestSTSRequest_AssumeRole_AssumedRoleCallerIsGated(t *testing.T) {
 	body := "Action=AssumeRole&RoleArn=" + stsTestRoleARN + "&RoleSessionName=s1"
-	params := func(iamSvc handlers_iam.IAMService, stsSvc *flexMockSTSService) stsRequestParams {
+	params := func(iamSvc iamdomain.IAMService, stsSvc *flexMockSTSService) stsRequestParams {
 		return stsRequestParams{
 			accountID:         awsidentifiers.GlobalAccountID,
 			identity:          "s1",
@@ -222,7 +222,7 @@ func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
 // TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted pins the gate to the ARN
 // IAM stored, so a role genuinely stored under a path is matched by its full
 // ARN. An ARN that is not the stored one is refused by role resolution itself
-// — see TestResolveRoleByARN in handlers/sts.
+// — see TestResolveRoleByARN in domains/sts.
 func TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted(t *testing.T) {
 	t.Run("stored ARN matching exactly is admitted", func(t *testing.T) {
 		svc := stsIdentityPolicy(

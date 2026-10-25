@@ -8,8 +8,8 @@ import (
 	"log/slog"
 	"time"
 
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -70,7 +70,7 @@ func authorizeAgent(ctx context.Context, nc *nats.Conn, caller Caller, requested
 
 // Reads JetStream directly rather than adding a NATS round trip, matching the
 // OIDC discovery and client-token paths, because this runs on every agent call.
-func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) (*handlers_rds.InstanceIndexEntry, error) {
+func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) (*rdsinstance.InstanceIndexEntry, error) {
 	if nc == nil {
 		return nil, errors.New("gateway NATS connection not initialised")
 	}
@@ -78,7 +78,7 @@ func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) 
 	if err != nil {
 		return nil, err
 	}
-	kv, err := js.KeyValue(ctx, handlers_rds.KVBucketRDSSystem)
+	kv, err := js.KeyValue(ctx, rdsinstance.KVBucketRDSSystem)
 	if err != nil {
 		// No bucket means no RDS instance has ever been created, so no caller
 		// can be an agent. That is a denial, not an internal failure.
@@ -87,14 +87,14 @@ func lookupInstanceIndex(ctx context.Context, nc *nats.Conn, instanceID string) 
 		}
 		return nil, err
 	}
-	entry, err := kv.Get(ctx, handlers_rds.InstanceIndexKey(instanceID))
+	entry, err := kv.Get(ctx, rdsinstance.InstanceIndexKey(instanceID))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var out handlers_rds.InstanceIndexEntry
+	var out rdsinstance.InstanceIndexEntry
 	if err := json.Unmarshal(entry.Value(), &out); err != nil {
 		return nil, fmt.Errorf("unmarshal instance index %s: %w", instanceID, err)
 	}
@@ -116,7 +116,7 @@ func RegisterDBInstance(ctx context.Context, input *RegisterDBInstanceInput, nc 
 	if err != nil {
 		return nil, err
 	}
-	return handlers_rds.NewNATSService(nc).RegisterDBInstance(ctx, &handlers_rds.RegisterDBInstanceInput{
+	return rdsinstance.NewNATSService(nc).RegisterDBInstance(ctx, &rdsinstance.RegisterDBInstanceInput{
 		DBInstanceIdentifier: id.DBInstanceIdentifier,
 		InstanceID:           id.InstanceID,
 		AgentVersion:         input.AgentVersion,
@@ -139,10 +139,10 @@ func SubmitDBStateChange(ctx context.Context, input *SubmitDBStateChangeInput, n
 	if err != nil {
 		return nil, err
 	}
-	return handlers_rds.NewNATSService(nc).SubmitDBStateChange(ctx, &handlers_rds.SubmitDBStateChangeInput{
+	return rdsinstance.NewNATSService(nc).SubmitDBStateChange(ctx, &rdsinstance.SubmitDBStateChangeInput{
 		DBInstanceIdentifier: id.DBInstanceIdentifier,
 		InstanceID:           id.InstanceID,
-		EngineHealth:         handlers_rds.EngineHealth(input.EngineHealth),
+		EngineHealth:         rdsinstance.EngineHealth(input.EngineHealth),
 		EngineVersion:        input.EngineVersion,
 		Message:              input.Message,
 	}, id.AccountID)
@@ -160,7 +160,7 @@ func GetDBBootstrapConfig(ctx context.Context, input *GetDBBootstrapConfigInput,
 	if err != nil {
 		return nil, err
 	}
-	return handlers_rds.NewNATSService(nc).GetDBBootstrapConfig(ctx, &handlers_rds.GetDBBootstrapConfigInput{
+	return rdsinstance.NewNATSService(nc).GetDBBootstrapConfig(ctx, &rdsinstance.GetDBBootstrapConfigInput{
 		DBInstanceIdentifier: id.DBInstanceIdentifier,
 		InstanceID:           id.InstanceID,
 		VMGeneration:         id.VMGeneration,
@@ -184,7 +184,7 @@ func AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapIn
 	if err != nil {
 		return nil, err
 	}
-	return handlers_rds.NewNATSService(nc).AcknowledgeDBBootstrap(ctx, &handlers_rds.AcknowledgeDBBootstrapInput{
+	return rdsinstance.NewNATSService(nc).AcknowledgeDBBootstrap(ctx, &rdsinstance.AcknowledgeDBBootstrapInput{
 		DBInstanceIdentifier: id.DBInstanceIdentifier,
 		InstanceID:           id.InstanceID,
 		PayloadID:            input.PayloadId,
@@ -196,15 +196,15 @@ func AcknowledgeDBBootstrap(ctx context.Context, input *AcknowledgeDBBootstrapIn
 // PollDBCommandsInput carries results for commands delivered on an earlier poll and asks for the
 // next one, matching the ECS ack-on-poll shape.
 type PollDBCommandsInput struct {
-	DBInstanceIdentifier string                      `locationName:"DBInstanceIdentifier"`
-	WaitTimeSeconds      int64                       `locationName:"WaitTimeSeconds"`
-	Replies              []handlers_rds.CommandReply `locationName:"Replies" locationNameList:"member"`
+	DBInstanceIdentifier string                     `locationName:"DBInstanceIdentifier"`
+	WaitTimeSeconds      int64                      `locationName:"WaitTimeSeconds"`
+	Replies              []rdsinstance.CommandReply `locationName:"Replies" locationNameList:"member"`
 }
 
 // PollDBCommandsOutput holds at most one command per poll: each is a discrete guest operation the
 // agent must complete and report before the next is safe to issue.
 type PollDBCommandsOutput struct {
-	Commands []handlers_rds.Command `locationName:"Commands" locationNameList:"member"`
+	Commands []rdsinstance.Command `locationName:"Commands" locationNameList:"member"`
 }
 
 // PollDBCommands reads from a live subscription, not a durable queue, so a set-password that
@@ -228,8 +228,8 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 	}
 
 	sub, err := nc.QueueSubscribeSync(
-		handlers_rds.BusCommandSubject(id.AccountID, id.DBInstanceIdentifier),
-		handlers_rds.CommandQueueGroup)
+		rdsinstance.BusCommandSubject(id.AccountID, id.DBInstanceIdentifier),
+		rdsinstance.CommandQueueGroup)
 	if err != nil {
 		slog.ErrorContext(ctx, "RDS: command subscribe failed", "dbInstanceIdentifier", id.DBInstanceIdentifier, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -260,12 +260,12 @@ func PollDBCommands(ctx context.Context, input *PollDBCommandsInput, nc *nats.Co
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var cmd handlers_rds.Command
+	var cmd rdsinstance.Command
 	if err := json.Unmarshal(msg.Data, &cmd); err != nil {
 		slog.ErrorContext(ctx, "RDS: undecodable command dropped", "dbInstanceIdentifier", id.DBInstanceIdentifier, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return &PollDBCommandsOutput{Commands: []handlers_rds.Command{cmd}}, nil
+	return &PollDBCommandsOutput{Commands: []rdsinstance.Command{cmd}}, nil
 }
 
 func pollWait(requested int64) time.Duration {
@@ -275,8 +275,8 @@ func pollWait(requested int64) time.Duration {
 	return min(max(time.Duration(requested)*time.Second, minPollWait), maxPollWait)
 }
 
-func publishReplies(nc *nats.Conn, id *agentIdentity, replies []handlers_rds.CommandReply) error {
-	subject := handlers_rds.BusCommandReplySubject(id.AccountID, id.DBInstanceIdentifier)
+func publishReplies(nc *nats.Conn, id *agentIdentity, replies []rdsinstance.CommandReply) error {
+	subject := rdsinstance.BusCommandReplySubject(id.AccountID, id.DBInstanceIdentifier)
 	for _, reply := range replies {
 		if reply.CommandID == "" {
 			continue

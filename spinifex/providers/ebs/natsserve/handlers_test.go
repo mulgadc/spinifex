@@ -161,7 +161,7 @@ func TestHandlersRejectMalformedRequests(t *testing.T) {
 			require.NoError(t, err)
 
 			envelope := decodeEnvelope(t, msg.Data)
-			assert.Equal(t, ebsprovider.SchemaVersion, envelope.SchemaVersion)
+			assert.Equal(t, ebsprovider.LegacySchemaVersion, envelope.SchemaVersion)
 			require.NotNil(t, envelope.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, envelope.Error.Code)
 			assert.True(t, strings.HasPrefix(envelope.Error.Message, "bad request: "), "got %q", envelope.Error.Message)
@@ -181,10 +181,10 @@ func TestHandlersRejectVersionSkew(t *testing.T) {
 			require.NoError(t, err)
 
 			envelope := decodeEnvelope(t, msg.Data)
-			assert.Equal(t, ebsprovider.SchemaVersion, envelope.SchemaVersion, "the refusal itself must be versioned")
+			assert.Equal(t, ebsprovider.LegacySchemaVersion, envelope.SchemaVersion, "the refusal itself must be versioned")
 			require.NotNil(t, envelope.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, envelope.Error.Code)
-			assert.Equal(t, fmt.Sprintf("unsupported schema version 99, want %d", ebsprovider.SchemaVersion), envelope.Error.Message)
+			assert.Equal(t, fmt.Sprintf("unsupported schema version 99; supported versions are %d and %d", ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion), envelope.Error.Message)
 		})
 	}
 }
@@ -466,6 +466,52 @@ func TestPublishVolumeRejectsInvalidExport(t *testing.T) {
 	require.NotNil(t, resp.Error)
 	assert.Equal(t, ebsprovider.ErrorCodeInternal, resp.Error.Code)
 	assert.Equal(t, "provider returned an invalid export for vol-1: block export has a zero size", resp.Error.Message)
+}
+
+func TestPublishVolumeServesExactV1WireShape(t *testing.T) {
+	provider := &exportProvider{
+		EBSProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
+		export:      ebsprovider.NewNBDExport("nbd+unix:///?socket=/run/vol-1.sock"),
+	}
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	subject, err := ebsprovider.PublishSubject("node-1")
+	require.NoError(t, err)
+	payload, err := json.Marshal(ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1",
+	})
+	require.NoError(t, err)
+
+	msg, err := conn.Request(subject, payload, requestTimeout)
+	require.NoError(t, err)
+	var response ebsprovider.PublishVolumeResponseV1
+	require.NoError(t, json.Unmarshal(msg.Data, &response))
+	require.NotNil(t, response.Published)
+	assert.Equal(t, ebsprovider.LegacySchemaVersion, response.SchemaVersion)
+	assert.Equal(t, "nbd+unix:///?socket=/run/vol-1.sock", response.Published.NBDURI)
+}
+
+func TestPublishVolumeRefusesBlockExportForV1Caller(t *testing.T) {
+	provider := &exportProvider{
+		EBSProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}),
+		export: ebsprovider.VolumeExport{Kind: ebsprovider.ExportKindBlock, Block: &ebsprovider.BlockExport{
+			DevicePath: "/dev/sdb", SizeBytes: 1 << 30,
+		}},
+	}
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	subject, err := ebsprovider.PublishSubject("node-1")
+	require.NoError(t, err)
+	payload, err := json.Marshal(ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1",
+	})
+	require.NoError(t, err)
+
+	msg, err := conn.Request(subject, payload, requestTimeout)
+	require.NoError(t, err)
+	var response ebsprovider.PublishVolumeResponseV1
+	require.NoError(t, json.Unmarshal(msg.Data, &response))
+	require.NotNil(t, response.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, response.Error.Code)
+	assert.Equal(t, "block export requires schema version 2", response.Error.Message)
 }
 
 // handlerSettle is how long a handler count is watched after it reaches the

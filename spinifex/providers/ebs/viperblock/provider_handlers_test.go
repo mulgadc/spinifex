@@ -170,7 +170,7 @@ func TestProviderHandlers_UnsupportedSchemaVersion(t *testing.T) {
 			// The zero-version guard: even an error response must carry a
 			// valid SchemaVersion, or NATSProvider's responseError would
 			// reject it before ever inspecting Error.
-			assert.Equal(t, ebsprovider.SchemaVersion, resp.SchemaVersion)
+			assert.Equal(t, ebsprovider.LegacySchemaVersion, resp.SchemaVersion)
 		})
 	}
 }
@@ -188,7 +188,7 @@ func TestProviderHandlers_MalformedJSON(t *testing.T) {
 			require.NoError(t, json.Unmarshal(msg.Data, &resp))
 			require.NotNil(t, resp.Error, "expected an error for malformed JSON")
 			assert.Equal(t, ebsprovider.ErrorCodeInvalidArgument, resp.Error.Code)
-			assert.Equal(t, ebsprovider.SchemaVersion, resp.SchemaVersion)
+			assert.Equal(t, ebsprovider.LegacySchemaVersion, resp.SchemaVersion)
 		})
 	}
 }
@@ -845,6 +845,35 @@ func TestProviderHandlers_PublishVolume_IdempotentRepublish(t *testing.T) {
 	cfg.mu.Unlock()
 	assert.Equal(t, 1, count, "republish of an already-mounted volume must not add a second entry")
 	assert.Equal(t, 424242, pid, "republish must not spawn a second nbdkit (PID must be unchanged)")
+}
+
+func TestProviderHandlers_PublishVolume_LegacyV1Wire(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+	cfg := setupTestConfig(t, natsURL)
+	nc := startProviderSubjects(t, cfg, natsURL)
+
+	const volumeName = "vol-publegacyv1"
+	const existingURI = "nbd:unix:/fake/vol-publegacyv1.sock"
+	vb := createTestVBWithState(t, volumeName)
+	cfg.MountedVolumes = append(cfg.MountedVolumes, MountedVolume{
+		Name: volumeName, VB: vb, PID: 424242, NBDURI: existingURI,
+	})
+
+	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body := marshalRequest(t, map[string]any{
+		"schema_version": ebsprovider.LegacySchemaVersion,
+		"volume_id":      volumeName,
+		"node_id":        cfg.NodeName,
+	})
+	msg := requestProvider(t, nc, publishSubject, body)
+
+	var resp ebsprovider.PublishVolumeResponseV1
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Nil(t, resp.Error)
+	require.NotNil(t, resp.Published)
+	assert.Equal(t, ebsprovider.LegacySchemaVersion, resp.SchemaVersion)
+	assert.Equal(t, existingURI, resp.Published.NBDURI)
 }
 
 // TestProviderHandlers_PublishVolume_ReadOnlyModeMismatchRefused covers the

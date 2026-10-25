@@ -172,7 +172,32 @@ func badRequestError(err error) *ebsprovider.ProviderError {
 }
 
 func unsupportedVersionError(got uint16) *ebsprovider.ProviderError {
-	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: fmt.Sprintf("unsupported schema version %d, want %d", got, ebsprovider.SchemaVersion)}
+	return &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: fmt.Sprintf("unsupported schema version %d; supported versions are %d and %d", got, ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion)}
+}
+
+// respondPublishedVolume selects the exact publish response a caller asked
+// for. Schema v1 has no safe block-export representation, so it is never sent
+// an empty legacy NBD URI that it might try to attach.
+func respondPublishedVolume(ctx context.Context, msg *nats.Msg, schemaVersion uint16, published *ebsprovider.PublishedVolume) {
+	if schemaVersion == ebsprovider.LegacySchemaVersion {
+		legacy, err := published.AsV1()
+		if err != nil {
+			respondProvider(ctx, msg, ebsprovider.PublishVolumeResponseV1{
+				Versioned: ebsprovider.NewVersioned(),
+				Error:     &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: err.Error()},
+			})
+			return
+		}
+		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponseV1{
+			Versioned: ebsprovider.NewVersioned(),
+			Published: legacy,
+		})
+		return
+	}
+	respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{
+		Versioned: ebsprovider.NewLatestVersioned(),
+		Published: published,
+	})
 }
 
 func invalidArgumentError(format string, args ...any) *ebsprovider.ProviderError {
@@ -240,7 +265,7 @@ func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		slog.Error("ebs.provider.capabilities: unsupported schema version", "version", req.SchemaVersion)
 		respondProvider(ctx, msg, ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
@@ -351,7 +376,7 @@ func handleListVolumes(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.ListVolumesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -381,7 +406,7 @@ func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -438,7 +463,7 @@ func handleCreateVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		slog.Error("ebs.provider.volume.create: unsupported schema version", "version", req.SchemaVersion)
 		respondProvider(ctx, msg, ebsprovider.CreateVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
@@ -631,7 +656,7 @@ func handleGetVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.GetVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -660,7 +685,7 @@ func handleExpandVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.ExpandVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -820,7 +845,7 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -886,7 +911,7 @@ func handleDeleteSnapshot(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.DeleteSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -918,7 +943,7 @@ func handleCopySnapshot(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.CopySnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -1018,7 +1043,7 @@ func handleCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, msg *
 		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		respondProvider(ctx, msg, ebsprovider.CreateSnapshotResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
@@ -1740,7 +1765,7 @@ func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *n
 		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		slog.Error("ebs.provider.volume.publish: unsupported schema version", "version", req.SchemaVersion)
 		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return
@@ -1760,13 +1785,10 @@ func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *n
 			return
 		}
 		slog.Info("ebs.provider.volume.publish: already published, returning existing attachment", "volume", req.VolumeID)
-		respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{
-			Versioned: ebsprovider.NewVersioned(),
-			Published: &ebsprovider.PublishedVolume{
-				VolumeID: req.VolumeID,
-				NodeID:   cfg.NodeName,
-				Export:   ebsprovider.NewNBDExport(mv.NBDURI),
-			},
+		respondPublishedVolume(ctx, msg, req.SchemaVersion, &ebsprovider.PublishedVolume{
+			VolumeID: req.VolumeID,
+			NodeID:   cfg.NodeName,
+			Export:   ebsprovider.NewNBDExport(mv.NBDURI),
 		})
 		return
 	}
@@ -1790,13 +1812,10 @@ func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *n
 	}
 
 	slog.Info("ebs.provider.volume.publish: published", "volume", req.VolumeID, "node", cfg.NodeName)
-	respondProvider(ctx, msg, ebsprovider.PublishVolumeResponse{
-		Versioned: ebsprovider.NewVersioned(),
-		Published: &ebsprovider.PublishedVolume{
-			VolumeID: req.VolumeID,
-			NodeID:   cfg.NodeName,
-			Export:   ebsprovider.NewNBDExport(mountResp.URI),
-		},
+	respondPublishedVolume(ctx, msg, req.SchemaVersion, &ebsprovider.PublishedVolume{
+		VolumeID: req.VolumeID,
+		NodeID:   cfg.NodeName,
+		Export:   ebsprovider.NewNBDExport(mountResp.URI),
 	})
 }
 
@@ -1811,7 +1830,7 @@ func handleUnpublishVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
 		return
 	}
-	if req.SchemaVersion != ebsprovider.SchemaVersion {
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
 		slog.Error("ebs.provider.volume.unpublish: unsupported schema version", "version", req.SchemaVersion)
 		respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
 		return

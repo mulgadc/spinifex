@@ -233,6 +233,12 @@ func TestCreateVolume_UnsupportedVersion(t *testing.T) {
 	require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 }
 
+func TestCheckVersion_SupportsCompatibilityWindow(t *testing.T) {
+	require.NoError(t, checkVersion(ebsprovider.LegacySchemaVersion))
+	require.NoError(t, checkVersion(ebsprovider.SchemaVersion))
+	require.ErrorIs(t, checkVersion(ebsprovider.SchemaVersion+1), ebsprovider.ErrUnsupportedVersion)
+}
+
 func TestCreateVolume_SeedDataWritesViaQemuIO(t *testing.T) {
 	p, fr := newTestProvider(t)
 	ctx := context.Background()

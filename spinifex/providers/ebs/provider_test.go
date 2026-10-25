@@ -29,6 +29,7 @@ func TestVolumeExportValidate(t *testing.T) {
 		{name: "block kind with nbd variant", export: VolumeExport{Kind: ExportKindBlock, NBD: nbd, Block: block}, wantErr: "block export also sets nbd details"},
 		{name: "relative device path", export: VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "dev/sdb", SizeBytes: 1}}, wantErr: `block export device path "dev/sdb" is not absolute`},
 		{name: "empty device path", export: VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{SizeBytes: 1}}, wantErr: `block export device path "" is not absolute`},
+		{name: "comma in device path", export: VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "/dev/disk,unsafe", SizeBytes: 1}}, wantErr: `block export device path "/dev/disk,unsafe" contains a comma`},
 		{name: "zero size", export: VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "/dev/sdb"}}, wantErr: "block export has a zero size"},
 	}
 	for _, tt := range tests {
@@ -41,6 +42,22 @@ func TestVolumeExportValidate(t *testing.T) {
 			require.EqualError(t, err, tt.wantErr)
 		})
 	}
+}
+
+func TestPublishedVolumeV1Conversion(t *testing.T) {
+	t.Run("NBD is exactly representable", func(t *testing.T) {
+		published := &PublishedVolume{VolumeID: "vol-1", NodeID: "node-1", Export: NewNBDExport("nbd+unix:///?socket=/run/vol-1.sock")}
+		legacy, err := published.AsV1()
+		require.NoError(t, err)
+		assert.Equal(t, &PublishedVolumeV1{VolumeID: "vol-1", NodeID: "node-1", NBDURI: "nbd+unix:///?socket=/run/vol-1.sock"}, legacy)
+		assert.Equal(t, *published, *PublishedVolumeFromV1(legacy))
+	})
+
+	t.Run("block has no safe legacy projection", func(t *testing.T) {
+		published := &PublishedVolume{VolumeID: "vol-1", NodeID: "node-1", Export: VolumeExport{Kind: ExportKindBlock, Block: &BlockExport{DevicePath: "/dev/sdb", SizeBytes: 1}}}
+		_, err := published.AsV1()
+		require.EqualError(t, err, "block export requires schema version 2")
+	})
 }
 
 // TestPublishedVolumeWireShape pins the JSON the contract carries: a renamed

@@ -130,12 +130,12 @@ func (p *Provider) pidFilePath(volumeID string) string {
 	return filepath.Join(p.baseDir, "sockets", volumeID+".pid")
 }
 
-// checkVersion mirrors ebsprovider's own unexported check: the wire schema
-// version must match exactly, since this provider does not translate between
-// versions.
+// checkVersion mirrors ebsprovider's supported schema window. qemunbdd's
+// normal operations have the same representation in both versions; the NATS
+// server owns the version-specific PublishVolume wire conversion.
 func checkVersion(version uint16) error {
-	if version != ebsprovider.SchemaVersion {
-		return fmt.Errorf("%w: got %d, want %d", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.SchemaVersion)
+	if !ebsprovider.SupportsSchemaVersion(version) {
+		return fmt.Errorf("%w: got %d, supported versions are %d and %d", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion)
 	}
 	return nil
 }

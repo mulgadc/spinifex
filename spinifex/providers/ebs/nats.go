@@ -442,6 +442,23 @@ func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeReque
 	if err != nil {
 		return nil, err
 	}
+	if req.SchemaVersion == LegacySchemaVersion {
+		var response PublishVolumeResponseV1
+		if err := p.request(ctx, subject, req, &response); err != nil {
+			return nil, err
+		}
+		if err := responseError(response.SchemaVersion, response.Error); err != nil {
+			return nil, err
+		}
+		if response.Published == nil {
+			return nil, fmt.Errorf("%s returned no published volume", subject)
+		}
+		published := PublishedVolumeFromV1(response.Published)
+		if err := published.Export.Validate(); err != nil {
+			return nil, fmt.Errorf("%s returned an invalid export: %w", subject, err)
+		}
+		return published, nil
+	}
 	var response PublishVolumeResponse
 	if err := p.request(ctx, subject, req, &response); err != nil {
 		return nil, err

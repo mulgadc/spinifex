@@ -88,8 +88,8 @@ func (e *ProviderError) Unwrap() error {
 }
 
 func checkVersion(version uint16) error {
-	if version != SchemaVersion {
-		return fmt.Errorf("%w: got %d, want %d", ErrUnsupportedVersion, version, SchemaVersion)
+	if !SupportsSchemaVersion(version) {
+		return fmt.Errorf("%w: got %d, supported versions are %d and %d", ErrUnsupportedVersion, version, LegacySchemaVersion, SchemaVersion)
 	}
 	return nil
 }

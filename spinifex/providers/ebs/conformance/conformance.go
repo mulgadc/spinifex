@@ -180,10 +180,11 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 	t.Run("GetCapabilities", func(t *testing.T) {
 		provider := newProvider(t)
-		resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
+		versioned := ebsprovider.NewVersioned()
+		resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: versioned})
 		require.NoError(t, err)
 		require.NotNil(t, resp)
-		assert.Equal(t, ebsprovider.SchemaVersion, resp.SchemaVersion, "response must carry the negotiated schema version")
+		assert.Equal(t, versioned.SchemaVersion, resp.SchemaVersion, "response must carry the requested schema version")
 
 		// Capabilities describe the implementation, so they must not vary
 		// between calls: a caller branches on them once and caches.

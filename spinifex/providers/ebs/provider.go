@@ -9,22 +9,41 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-// SchemaVersion is the only wire-contract version understood by this build.
-// Every request and response carries it so version skew fails at the boundary
-// instead of silently decoding a changed payload.
-const SchemaVersion uint16 = 2
+const (
+	// LegacySchemaVersion is the oldest representation every supported release
+	// understands. Ordinary callers use it until they have target-specific
+	// evidence that the peer supports a newer representation.
+	LegacySchemaVersion uint16 = 1
+
+	// SchemaVersion is the newest wire-contract version understood by this
+	// build. Every request and response carries a version so an unsupported
+	// representation fails at the boundary rather than silently decoding it.
+	SchemaVersion uint16 = 2
+)
 
 // Versioned is embedded in every request and response sent over NATS.
 type Versioned struct {
 	SchemaVersion uint16 `json:"schema_version"`
 }
 
-// NewVersioned returns a Versioned stamped with this build's SchemaVersion, for
-// embedding in an outgoing request or response.
-func NewVersioned() Versioned { return Versioned{SchemaVersion: SchemaVersion} }
+// NewVersioned returns the oldest representation guaranteed to interoperate
+// during an N/N-1 rollout. Callers may use NewLatestVersioned only after a
+// capability exchange proves the target understands SchemaVersion.
+func NewVersioned() Versioned { return Versioned{SchemaVersion: LegacySchemaVersion} }
+
+// NewLatestVersioned returns the newest representation this build understands.
+// It must not be used merely because this binary is new: a separately released
+// peer may still be serving LegacySchemaVersion.
+func NewLatestVersioned() Versioned { return Versioned{SchemaVersion: SchemaVersion} }
+
+// SupportsSchemaVersion reports whether this build can safely decode version.
+func SupportsSchemaVersion(version uint16) bool {
+	return version == LegacySchemaVersion || version == SchemaVersion
+}
 
 // EBSProvider is the block-storage controller contract consumed by Spinifex.
 // Its operation and idempotency shape follows the CSI controller service, but
@@ -499,6 +518,9 @@ func (e VolumeExport) Validate() error {
 		if !filepath.IsAbs(e.Block.DevicePath) {
 			return fmt.Errorf("block export device path %q is not absolute", e.Block.DevicePath)
 		}
+		if strings.Contains(e.Block.DevicePath, ",") {
+			return fmt.Errorf("block export device path %q contains a comma", e.Block.DevicePath)
+		}
 		if e.Block.SizeBytes == 0 {
 			return errors.New("block export has a zero size")
 		}
@@ -516,6 +538,48 @@ type PublishedVolume struct {
 	Export   VolumeExport `json:"export"`
 }
 
+// PublishedVolumeV1 is the schema-v1 publish result. It remains a public wire
+// type so a v2 server can reply in the exact shape an N-1 client understands.
+// New code uses PublishedVolume and VolumeExport instead.
+type PublishedVolumeV1 struct {
+	VolumeID string `json:"volume_id"`
+	NodeID   string `json:"node_id"`
+	NBDURI   string `json:"nbd_uri"`
+}
+
+// AsV1 converts an NBD export to the legacy response. A block export has no
+// safe v1 projection: an old consumer would treat an empty NBD URI as usable.
+func (p *PublishedVolume) AsV1() (*PublishedVolumeV1, error) {
+	if p == nil {
+		return nil, errors.New("published volume is nil")
+	}
+	if err := p.Export.Validate(); err != nil {
+		return nil, err
+	}
+	if p.Export.Kind != ExportKindNBD {
+		return nil, fmt.Errorf("%s export requires schema version %d", p.Export.Kind, SchemaVersion)
+	}
+	return &PublishedVolumeV1{
+		VolumeID: p.VolumeID,
+		NodeID:   p.NodeID,
+		NBDURI:   p.Export.NBD.NBDURI,
+	}, nil
+}
+
+// PublishedVolumeFromV1 converts the legacy NBD-only response to the current
+// descriptor form. Validation remains with the transport boundary so callers
+// receive the same error context for either wire representation.
+func PublishedVolumeFromV1(p *PublishedVolumeV1) *PublishedVolume {
+	if p == nil {
+		return nil
+	}
+	return &PublishedVolume{
+		VolumeID: p.VolumeID,
+		NodeID:   p.NodeID,
+		Export:   NewNBDExport(p.NBDURI),
+	}
+}
+
 // NewNBDExport returns an nbd export for uri.
 func NewNBDExport(uri string) VolumeExport {
 	return VolumeExport{Kind: ExportKindNBD, NBD: &NBDExport{NBDURI: uri}}
@@ -528,6 +592,15 @@ type PublishVolumeResponse struct {
 
 	Published *PublishedVolume `json:"published,omitempty"`
 	Error     *ProviderError   `json:"error,omitempty"`
+}
+
+// PublishVolumeResponseV1 is the exact schema-v1 wire response retained for
+// mixed-version operation. Its JSON shape is intentionally the pre-v2 shape.
+type PublishVolumeResponseV1 struct {
+	Versioned
+
+	Published *PublishedVolumeV1 `json:"published,omitempty"`
+	Error     *ProviderError     `json:"error,omitempty"`
 }
 
 // UnpublishVolumeRequest unmounts a volume from NodeID, over that node's

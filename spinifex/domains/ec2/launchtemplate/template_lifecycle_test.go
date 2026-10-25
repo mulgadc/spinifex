@@ -233,3 +233,96 @@ func TestAccountTemplateReferences_FailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// A default-version change whose header commit loses to a whole delete fails
+// with the NotFound code for whichever identifier the request used.
+func TestModifyLaunchTemplate_RacingADeleteIsNotFound(t *testing.T) {
+	for _, byName := range []bool{false, true} {
+		t.Run(map[bool]string{false: "by-id", true: "by-name"}[byName], func(t *testing.T) {
+			svc := setupTestService(t)
+			id := createWithUserData(t, svc, "web")
+			header := kvutil.AccountKey(testAccountID, id)
+			raced := false
+			svc.kv = &faultyKV{KeyValue: svc.kv, beforeUpdate: func(key string) {
+				if key == header && !raced {
+					raced = true
+					raceDelete(t, svc, id)
+				}
+			}}
+			in := &ec2.ModifyLaunchTemplateInput{DefaultVersion: aws.String("2")}
+			want := awserrors.ErrorInvalidLaunchTemplateIdNotFound
+			if byName {
+				in.LaunchTemplateName = aws.String("web")
+				want = awserrors.ErrorInvalidLaunchTemplateNameNotFoundException
+			} else {
+				in.LaunchTemplateId = aws.String(id)
+			}
+
+			_, err := svc.ModifyLaunchTemplate(context.Background(), in, testAccountID)
+			require.True(t, raced)
+			require.Error(t, err)
+			code, _ := awserrors.ResolveErrorCode(err)
+			assert.Equal(t, want, code)
+		})
+	}
+}
+
+// A default-version change racing another header change retries at the new
+// revision and its own default is the one that lands.
+func TestModifyLaunchTemplate_RetriesAConcurrentHeaderChange(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	_, err := svc.CreateLaunchTemplateVersion(context.Background(), newVersionInput(id), testAccountID) // v3
+	require.NoError(t, err)
+	inner := svc.kv
+	header := kvutil.AccountKey(testAccountID, id)
+	raced := false
+	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
+		if key != header || raced {
+			return
+		}
+		raced = true
+		other := &LaunchTemplateServiceImpl{kv: inner}
+		_, err := other.ModifyLaunchTemplate(context.Background(), &ec2.ModifyLaunchTemplateInput{
+			LaunchTemplateId: aws.String(id), DefaultVersion: aws.String("2"),
+		}, testAccountID)
+		require.NoError(t, err)
+	}}
+
+	out, err := svc.ModifyLaunchTemplate(context.Background(), &ec2.ModifyLaunchTemplateInput{
+		LaunchTemplateId: aws.String(id), DefaultVersion: aws.String("3"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.True(t, raced)
+	assert.Equal(t, int64(3), aws.Int64Value(out.LaunchTemplate.DefaultVersionNumber))
+	h, _, err := svc.getHeaderByID(context.Background(), testAccountID, id)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), h.DefaultVersionNumber)
+}
+
+// A header that changes before every commit attempt exhausts the bounded
+// retries and fails InternalError rather than spinning.
+func TestModifyLaunchTemplate_ConflictRetriesAreBounded(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	header := kvutil.AccountKey(testAccountID, id)
+	attempts := 0
+	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
+		if key != header {
+			return
+		}
+		attempts++
+		entry, err := inner.Get(context.Background(), header)
+		require.NoError(t, err)
+		_, err = inner.Put(context.Background(), header, entry.Value())
+		require.NoError(t, err)
+	}}
+
+	_, err := svc.ModifyLaunchTemplate(context.Background(), &ec2.ModifyLaunchTemplateInput{
+		LaunchTemplateId: aws.String(id), DefaultVersion: aws.String("2"),
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, maxVersionRetries, attempts)
+}

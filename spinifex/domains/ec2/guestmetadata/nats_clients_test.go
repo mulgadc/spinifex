@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,9 +41,9 @@ func serveCounted[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	var gotReq handlers_sts.AssumeRoleForInstanceRequest
-	calls := serveCounted(t, nc, handlers_sts.SubjectAssumeRoleForInstance,
-		func(req *handlers_sts.AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
+	var gotReq stsdomain.AssumeRoleForInstanceRequest
+	calls := serveCounted(t, nc, stsdomain.SubjectAssumeRoleForInstance,
+		func(req *stsdomain.AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
 			gotReq = *req
 			return &sts.AssumeRoleOutput{Credentials: &sts.Credentials{
 				AccessKeyId:     aws.String("ASIATESTKEY"),
@@ -61,7 +61,7 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 	assert.Equal(t, "ASIATESTKEY", aws.StringValue(out.Credentials.AccessKeyId))
 	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
 	// The request payload must round-trip every field the responder needs.
-	assert.Equal(t, handlers_sts.AssumeRoleForInstanceRequest{
+	assert.Equal(t, stsdomain.AssumeRoleForInstanceRequest{
 		AccountID:       imdsTestAccountID,
 		RoleARN:         "arn:aws:iam::123456789012:role/app",
 		InstanceID:      "i-abc",
@@ -72,9 +72,9 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	calls := serveCounted(t, nc, handlers_iam.SubjectResolveInstanceProfile,
-		func(req *handlers_iam.ResolveInstanceProfileRequest) (*handlers_iam.InstanceProfile, error) {
-			return &handlers_iam.InstanceProfile{
+	calls := serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
+		func(req *iamdomain.ResolveInstanceProfileRequest) (*iamdomain.InstanceProfile, error) {
+			return &iamdomain.InstanceProfile{
 				InstanceProfileName: "app",
 				AccountID:           req.AccountID,
 				RoleName:            "app-role",
@@ -94,8 +94,8 @@ func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 func TestNATSProfileLookup_CachesRole(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	calls := serveCounted(t, nc, handlers_iam.SubjectGetRole,
-		func(req *handlers_iam.GetRoleRequest) (*iam.GetRoleOutput, error) {
+	calls := serveCounted(t, nc, iamdomain.SubjectGetRole,
+		func(req *iamdomain.GetRoleRequest) (*iam.GetRoleOutput, error) {
 			return &iam.GetRoleOutput{Role: &iam.Role{
 				RoleName: req.Input.RoleName,
 				Arn:      aws.String("arn:aws:iam::123456789012:role/app-role"),
@@ -114,8 +114,8 @@ func TestNATSProfileLookup_CachesRole(t *testing.T) {
 func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	serveCounted(t, nc, handlers_iam.SubjectResolveInstanceProfile,
-		func(_ *handlers_iam.ResolveInstanceProfileRequest) (*handlers_iam.InstanceProfile, error) {
+	serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
+		func(_ *iamdomain.ResolveInstanceProfileRequest) (*iamdomain.InstanceProfile, error) {
 			return nil, assert.AnError
 		})
 

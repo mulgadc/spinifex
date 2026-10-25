@@ -6,15 +6,15 @@ package gateway
 import (
 	"testing"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // The PowerUserAccess shape: an Allow on everything except the listed actions.
 func TestEC2Request_AllowNotActionGrantsTheComplement(t *testing.T) {
-	gw := scopedPolicyGateway(handlers_iam.Statement{
+	gw := scopedPolicyGateway(iamdomain.Statement{
 		Effect:    "Allow",
-		NotAction: handlers_iam.StringOrArr{"iam:*", "ec2:TerminateInstances"},
-		Resource:  handlers_iam.StringOrArr{"*"},
+		NotAction: iamdomain.StringOrArr{"iam:*", "ec2:TerminateInstances"},
+		Resource:  iamdomain.StringOrArr{"*"},
 	})
 
 	assertPermitted(t, dispatchEC2(t, gw, "Action=StopInstances&InstanceId.1=i-dev"))
@@ -25,10 +25,10 @@ func TestEC2Request_AllowNotActionGrantsTheComplement(t *testing.T) {
 func TestEC2Request_DenyNotResourceFencesTheComplement(t *testing.T) {
 	gw := scopedPolicyGateway(
 		statement("Allow", "ec2:*", "*"),
-		handlers_iam.Statement{
+		iamdomain.Statement{
 			Effect:      "Deny",
-			Action:      handlers_iam.StringOrArr{"ec2:TerminateInstances"},
-			NotResource: handlers_iam.StringOrArr{"arn:aws:ec2:*:*:instance/i-dev"},
+			Action:      iamdomain.StringOrArr{"ec2:TerminateInstances"},
+			NotResource: iamdomain.StringOrArr{"arn:aws:ec2:*:*:instance/i-dev"},
 		},
 	)
 

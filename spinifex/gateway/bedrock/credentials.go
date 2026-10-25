@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -63,7 +63,7 @@ func (s *CredentialStore) Resolve(ctx context.Context, accountID, vendor string)
 		entry, err := kv.Get(ctx, credentialKey(accountID, vendor))
 		switch {
 		case err == nil:
-			plaintext, err := handlers_iam.DecryptSecret(string(entry.Value()), s.masterKey)
+			plaintext, err := iamdomain.DecryptSecret(string(entry.Value()), s.masterKey)
 			if err != nil {
 				return "", false, fmt.Errorf("decrypt credential for %s/%s: %w", accountID, vendor, err)
 			}
@@ -84,7 +84,7 @@ func (s *CredentialStore) PutCredential(ctx context.Context, accountID, vendor, 
 	if err != nil {
 		return err
 	}
-	ciphertext, err := handlers_iam.EncryptSecret(key, s.masterKey)
+	ciphertext, err := iamdomain.EncryptSecret(key, s.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt credential for %s/%s: %w", accountID, vendor, err)
 	}

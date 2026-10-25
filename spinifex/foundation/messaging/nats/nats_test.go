@@ -287,7 +287,7 @@ func TestNATSRequest_ErrorResponse(t *testing.T) {
 }
 
 // TestNATSRequest_DecodedErrorContainsCode pins the shape strings.Contains(err.Error(), code)
-// classifiers depend on (e.g. handlers/iam/provision.go's isAlreadyExists,
+// classifiers depend on (e.g. domains/iam/provision.go's isAlreadyExists,
 // gateway/auth.go's IAM-not-found branch): the decoded error's Error() text
 // must still contain the wire code even when a message rides alongside it.
 func TestNATSRequest_DecodedErrorContainsCode(t *testing.T) {

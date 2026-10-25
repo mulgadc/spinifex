@@ -7,28 +7,28 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// stubSTSService implements handlers_sts.STSService for table tests. It embeds
+// stubSTSService implements stsdomain.STSService for table tests. It embeds
 // the interface so it satisfies the full contract; each fn-field method
 // delegates to an injectable function so individual cases can simulate the
 // underlying service's behaviour without standing up NATS/JetStream. Any other
 // method nil-panics if a test reaches an unmocked path.
 type stubSTSService struct {
-	handlers_sts.STSService
+	stsdomain.STSService
 
 	assumeRoleFn        func(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(callerAccountID, callerARN, callerUserID string, input *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 	getSessionTokenFn   func(callerAccountID, callerUserName, callerPrincipalType, callerAccessKeyID string, input *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
-	lookupSessionFn     func(akid string) (*handlers_sts.SessionCredential, error)
+	lookupSessionFn     func(akid string) (*stsdomain.SessionCredential, error)
 }
 
-var _ handlers_sts.STSService = (*stubSTSService)(nil)
+var _ stsdomain.STSService = (*stubSTSService)(nil)
 
 func (s *stubSTSService) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 	if s.assumeRoleFn != nil {
@@ -55,7 +55,7 @@ func (s *stubSTSService) GetSessionToken(callerAccountID, callerUserName, caller
 	return &sts.GetSessionTokenOutput{}, nil
 }
 
-func (s *stubSTSService) LookupSessionCredential(akid string) (*handlers_sts.SessionCredential, error) {
+func (s *stubSTSService) LookupSessionCredential(akid string) (*stsdomain.SessionCredential, error) {
 	if s.lookupSessionFn != nil {
 		return s.lookupSessionFn(akid)
 	}
@@ -67,12 +67,12 @@ func (s *stubSTSService) LookupSessionCredential(akid string) (*handlers_sts.Ses
 // that triggers an unexpected call fails loudly instead of silently returning
 // zero values.
 type stubIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 }
 
-var _ handlers_iam.IAMService = (*stubIAMService)(nil)
+var _ iamdomain.IAMService = (*stubIAMService)(nil)
 
 func (s *stubIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
 	if s.getUserFn != nil {
@@ -235,7 +235,7 @@ func TestGetCallerIdentity_AssumedRole(t *testing.T) {
 	// handler must NOT issue a second LookupSessionCredential — the verifier
 	// already loaded the record.
 	stsSvc := &stubSTSService{
-		lookupSessionFn: func(string) (*handlers_sts.SessionCredential, error) {
+		lookupSessionFn: func(string) (*stsdomain.SessionCredential, error) {
 			t.Fatal("assumed-role path must not re-lookup the session credential")
 			return nil, nil
 		},

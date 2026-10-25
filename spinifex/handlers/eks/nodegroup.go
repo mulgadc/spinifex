@@ -23,9 +23,9 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -1157,7 +1157,7 @@ func (s *EKSServiceImpl) decryptNodeToken(ctx context.Context, kv jetstream.KeyV
 		}
 		return "", fmt.Errorf("kv get node token: %w", err)
 	}
-	token, err := handlers_iam.DecryptSecret(string(entry.Value()), s.deps.MasterKey)
+	token, err := iamdomain.DecryptSecret(string(entry.Value()), s.deps.MasterKey)
 	if err != nil {
 		return "", fmt.Errorf("decrypt node token: %w", err)
 	}

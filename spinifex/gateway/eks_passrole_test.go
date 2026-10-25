@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"testing"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,11 +37,11 @@ func (s *roleStoreIAMService) CanonicalResourceARN(account string, _ arn.IAMReso
 
 // The foreign account holds a role of the same name, so only the gateway's
 // account check stops its ARN from resolving.
-func eksPassRoleService(statements ...handlers_iam.Statement) *roleStoreIAMService {
-	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+func eksPassRoleService(statements ...iamdomain.Statement) *roleStoreIAMService {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	return &roleStoreIAMService{
 		policyMockIAMService: policyMockIAMService{
-			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 		roles: map[string]map[string]string{
 			authzAccountID:   {"node-role": eksNodeRoleARN},
@@ -50,7 +50,7 @@ func eksPassRoleService(statements ...handlers_iam.Statement) *roleStoreIAMServi
 	}
 }
 
-func eksPassRoleGateway(statements ...handlers_iam.Statement) *GatewayConfig {
+func eksPassRoleGateway(statements ...iamdomain.Statement) *GatewayConfig {
 	return eksGatewayWithIAM(eksPassRoleService(statements...))
 }
 

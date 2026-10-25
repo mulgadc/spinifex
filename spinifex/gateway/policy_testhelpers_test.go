@@ -4,22 +4,22 @@ import (
 	"context"
 	"net/http"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // allowAllIAMService resolves an allow-everything policy for every principal.
 // Tests that exercise handler behaviour rather than authorization use it so the
 // policy gate passes on a real evaluation instead of a bypass.
 func allowAllIAMService() *policyMockIAMService {
-	allow := []handlers_iam.PolicyDocument{{
+	allow := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
-			{Effect: "Allow", Action: handlers_iam.StringOrArr{"*"}, Resource: handlers_iam.StringOrArr{"*"}},
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
 		},
 	}}
 	return &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return allow, nil },
-		getRolePoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return allow, nil },
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
+		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allow, nil },
 	}
 }
 

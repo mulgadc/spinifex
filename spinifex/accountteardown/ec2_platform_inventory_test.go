@@ -17,9 +17,9 @@ import (
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountinventory"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,9 +165,9 @@ func TestEC2PlatformInventoryClientDistrustsAMalformedReply(t *testing.T) {
 // a Teardown request marked dry run and a full teardown all leave it uncalled.
 func TestOnlyTheExplicitDryRunCallsTheEC2PlatformInventory(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 	cluster, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
 	require.NoError(t, err)

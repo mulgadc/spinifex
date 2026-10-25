@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/spf13/cobra"
 )
 
@@ -33,7 +33,7 @@ func runAccountListRemote(cmd *cobra.Command) error {
 
 // accountSummaries adapts the local listing to the shape the remote one
 // returns, so both paths print through one function and cannot drift.
-func accountSummaries(accounts []*handlers_iam.Account) []gateway.AccountSummary {
+func accountSummaries(accounts []*iamdomain.Account) []gateway.AccountSummary {
 	summaries := make([]gateway.AccountSummary, 0, len(accounts))
 	for _, account := range accounts {
 		if account == nil {

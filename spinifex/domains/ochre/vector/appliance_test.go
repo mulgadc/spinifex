@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,7 +110,7 @@ func TestCredentialRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, password, appliancePasswordLength)
 
-	encrypted, err := handlers_iam.EncryptSecret(password, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(password, masterKey)
 	require.NoError(t, err)
 	assert.NotEqual(t, password, encrypted)
 	assert.NotContains(t, encrypted, password)
@@ -196,7 +196,7 @@ func TestEnsure_StaleProvisioningIsResumed(t *testing.T) {
 
 	seedPassword, err := generateMasterPassword()
 	require.NoError(t, err)
-	encrypted, err := handlers_iam.EncryptSecret(seedPassword, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(seedPassword, masterKey)
 	require.NoError(t, err)
 
 	stale := time.Now().UTC().Add(-2 * applianceStaleAfter)
@@ -236,7 +236,7 @@ func TestEnsure_FreshProvisioningIsWaitedNotResumed(t *testing.T) {
 
 	seedPassword, err := generateMasterPassword()
 	require.NoError(t, err)
-	encrypted, err := handlers_iam.EncryptSecret(seedPassword, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(seedPassword, masterKey)
 	require.NoError(t, err)
 
 	fresh := time.Now().UTC()
@@ -328,7 +328,7 @@ func TestResume_LaunchFailureLeavesRecordProvisioning(t *testing.T) {
 
 	seedPassword, err := generateMasterPassword()
 	require.NoError(t, err)
-	encrypted, err := handlers_iam.EncryptSecret(seedPassword, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(seedPassword, masterKey)
 	require.NoError(t, err)
 
 	stale := time.Now().UTC().Add(-2 * applianceStaleAfter)
@@ -379,7 +379,7 @@ func TestConnect_NotAvailable(t *testing.T) {
 
 	password, err := generateMasterPassword()
 	require.NoError(t, err)
-	encrypted, err := handlers_iam.EncryptSecret(password, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(password, masterKey)
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
@@ -418,7 +418,7 @@ func seedAvailableAppliance(t *testing.T, appliance *Appliance, masterKey []byte
 	t.Helper()
 	password, err := generateMasterPassword()
 	require.NoError(t, err)
-	encrypted, err := handlers_iam.EncryptSecret(password, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(password, masterKey)
 	require.NoError(t, err)
 
 	now := time.Now().UTC()
@@ -800,7 +800,7 @@ func TestDecryptPassword_WrongKeyErrors(t *testing.T) {
 
 	password, err := generateMasterPassword()
 	require.NoError(t, err)
-	encrypted, err := handlers_iam.EncryptSecret(password, rightKey)
+	encrypted, err := iamdomain.EncryptSecret(password, rightKey)
 	require.NoError(t, err)
 
 	appliance := &Appliance{masterKey: wrongKey}

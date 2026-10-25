@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // LiveAssociationCounter reports how many live EC2 instances reference the
@@ -17,7 +17,7 @@ type LiveAssociationCounter func(profileARN string) (int, error)
 // CreateInstanceProfile implements the IAM CreateInstanceProfile action, creating an instance
 // profile. It returns MissingParameter when InstanceProfileName is absent, then calls the IAM
 // service for accountID.
-func CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput, svc handlers_iam.IAMService) (*iam.CreateInstanceProfileOutput, error) {
+func CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput, svc iamdomain.IAMService) (*iam.CreateInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -26,7 +26,7 @@ func CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInp
 
 // GetInstanceProfile implements the IAM GetInstanceProfile action. It requires
 // InstanceProfileName and percent-encodes each role's trust policy as the IAM Query API does.
-func GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput, svc handlers_iam.IAMService) (*iam.GetInstanceProfileOutput, error) {
+func GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput, svc iamdomain.IAMService) (*iam.GetInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -40,7 +40,7 @@ func GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput, sv
 
 // ListInstanceProfiles implements the IAM ListInstanceProfiles action. It validates PathPrefix,
 // pages results here by Marker and MaxItems, and percent-encodes role trust policies.
-func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfilesOutput, error) {
+func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput, svc iamdomain.IAMService) (*iam.ListInstanceProfilesOutput, error) {
 	if err := validatePathPrefix(input.PathPrefix, identityPathPrefix); err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput
 // VM. countLive fans out to all daemons; a non-zero count returns DeleteConflict.
 // The RoleName-attached guard runs inside svc.DeleteInstanceProfile afterward.
 // countLive may be nil (e.g. in unit tests); the live-instance check is skipped.
-func DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput, svc handlers_iam.IAMService, countLive LiveAssociationCounter) (*iam.DeleteInstanceProfileOutput, error) {
+func DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput, svc iamdomain.IAMService, countLive LiveAssociationCounter) (*iam.DeleteInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -96,7 +96,7 @@ func DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInp
 
 // ListInstanceProfilesForRole implements the IAM action of the same name. It requires RoleName,
 // pages results here by Marker and MaxItems, and percent-encodes role trust policies.
-func ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfilesForRoleInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfilesForRoleOutput, error) {
+func ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfilesForRoleInput, svc iamdomain.IAMService) (*iam.ListInstanceProfilesForRoleOutput, error) {
 	if input.RoleName == nil || *input.RoleName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -117,7 +117,7 @@ func ListInstanceProfilesForRole(accountID string, input *iam.ListInstanceProfil
 // AddRoleToInstanceProfile implements the IAM AddRoleToInstanceProfile action, adding a role to
 // an instance profile. It returns MissingParameter when InstanceProfileName or RoleName is
 // absent, then calls the IAM service for accountID.
-func AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput, svc handlers_iam.IAMService) (*iam.AddRoleToInstanceProfileOutput, error) {
+func AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput, svc iamdomain.IAMService) (*iam.AddRoleToInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -130,7 +130,7 @@ func AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProf
 // RemoveRoleFromInstanceProfile implements the IAM RemoveRoleFromInstanceProfile action, removing
 // a role from an instance profile. It returns MissingParameter when InstanceProfileName or
 // RoleName is absent, then calls the IAM service for accountID.
-func RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput, svc handlers_iam.IAMService) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+func RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput, svc iamdomain.IAMService) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -142,7 +142,7 @@ func RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromIn
 
 // TagInstanceProfile implements the IAM TagInstanceProfile action. It returns MissingParameter
 // when InstanceProfileName is absent or Tags is empty.
-func TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput, svc handlers_iam.IAMService) (*iam.TagInstanceProfileOutput, error) {
+func TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput, svc iamdomain.IAMService) (*iam.TagInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -154,7 +154,7 @@ func TagInstanceProfile(accountID string, input *iam.TagInstanceProfileInput, sv
 
 // UntagInstanceProfile implements the IAM UntagInstanceProfile action. It returns
 // MissingParameter when InstanceProfileName is absent or TagKeys is empty.
-func UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput, svc handlers_iam.IAMService) (*iam.UntagInstanceProfileOutput, error) {
+func UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput, svc iamdomain.IAMService) (*iam.UntagInstanceProfileOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -166,7 +166,7 @@ func UntagInstanceProfile(accountID string, input *iam.UntagInstanceProfileInput
 
 // ListInstanceProfileTags implements the IAM ListInstanceProfileTags action, listing an instance
 // profile's tags. It requires InstanceProfileName; results are paged here by Marker and MaxItems.
-func ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput, svc handlers_iam.IAMService) (*iam.ListInstanceProfileTagsOutput, error) {
+func ListInstanceProfileTags(accountID string, input *iam.ListInstanceProfileTagsInput, svc iamdomain.IAMService) (*iam.ListInstanceProfileTagsOutput, error) {
 	if input.InstanceProfileName == nil || *input.InstanceProfileName == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}

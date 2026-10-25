@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -22,19 +22,19 @@ const (
 // auth_test.go's allowPolicy/allowPolicyResource helpers because those are
 // fixed to a single action string; ECR route classification can require
 // multiple actions per operation (e.g. cross-repo mount).
-func ecrAllowPolicy(actions, resources []string) handlers_iam.PolicyDocument {
-	return handlers_iam.PolicyDocument{
+func ecrAllowPolicy(actions, resources []string) iamdomain.PolicyDocument {
+	return iamdomain.PolicyDocument{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
+		Statement: []iamdomain.Statement{
 			{Effect: "Allow", Action: actions, Resource: resources},
 		},
 	}
 }
 
-func ecrDenyPolicy(actions, resources []string) handlers_iam.PolicyDocument {
-	return handlers_iam.PolicyDocument{
+func ecrDenyPolicy(actions, resources []string) iamdomain.PolicyDocument {
+	return iamdomain.PolicyDocument{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
+		Statement: []iamdomain.Statement{
 			{Effect: "Deny", Action: actions, Resource: resources},
 		},
 	}
@@ -43,7 +43,7 @@ func ecrDenyPolicy(actions, resources []string) handlers_iam.PolicyDocument {
 // ecrAuthzTestGateway builds a GatewayConfig wired for ecrOperationAuthorization
 // tests: a non-nil ECRTokenVerifier (so the middleware is active) and an
 // ecrMockIAMService seeded with ecrAuthzTestUser's policy documents.
-func ecrAuthzTestGateway(t *testing.T, policies []handlers_iam.PolicyDocument) (*GatewayConfig, *ecrMockIAMService) {
+func ecrAuthzTestGateway(t *testing.T, policies []iamdomain.PolicyDocument) (*GatewayConfig, *ecrMockIAMService) {
 	t.Helper()
 	_, verify := newECRAuth(t)
 	iamSvc := newECRMockIAMService()
@@ -76,7 +76,7 @@ func TestECROperationAuthorization_PullOnlyMatrix(t *testing.T) {
 		[]string{"ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"},
 		[]string{repoARN},
 	)
-	gw, _ := ecrAuthzTestGateway(t, []handlers_iam.PolicyDocument{pullOnly})
+	gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{pullOnly})
 
 	allowed := []struct{ method, path string }{
 		{http.MethodHead, "/v2/team/app/blobs/sha256:abc"},
@@ -126,7 +126,7 @@ func TestECROperationAuthorization_ReadOnlyMatrix(t *testing.T) {
 		},
 		[]string{repoARN, wildcardARN},
 	)
-	gw, _ := ecrAuthzTestGateway(t, []handlers_iam.PolicyDocument{readOnly})
+	gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{readOnly})
 
 	allowed := []struct{ method, path string }{
 		{http.MethodGet, "/v2/_catalog"},
@@ -166,7 +166,7 @@ func TestECROperationAuthorization_ReadOnlyMatrix(t *testing.T) {
 func TestECROperationAuthorization_RepoScopedAllowDoesNotCrossRepos(t *testing.T) {
 	repoAARN := "arn:aws:ecr:" + ecrTestRegion + ":" + ecrAuthzTestAccount + ":repository/team/a"
 	policy := ecrAllowPolicy([]string{"ecr:BatchGetImage"}, []string{repoAARN})
-	gw, _ := ecrAuthzTestGateway(t, []handlers_iam.PolicyDocument{policy})
+	gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{policy})
 
 	t.Run("repo A allowed", func(t *testing.T) {
 		next, called := okHandler()
@@ -191,7 +191,7 @@ func TestECROperationAuthorization_ExplicitDenyWins(t *testing.T) {
 	repoARN := "arn:aws:ecr:" + ecrTestRegion + ":" + ecrAuthzTestAccount + ":repository/team/app"
 	allow := ecrAllowPolicy([]string{"ecr:BatchGetImage"}, []string{"arn:aws:ecr:" + ecrTestRegion + ":" + ecrAuthzTestAccount + ":repository/*"})
 	deny := ecrDenyPolicy([]string{"ecr:BatchGetImage"}, []string{repoARN})
-	gw, _ := ecrAuthzTestGateway(t, []handlers_iam.PolicyDocument{allow, deny})
+	gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{allow, deny})
 
 	next, called := okHandler()
 	w := httptest.NewRecorder()
@@ -207,7 +207,7 @@ func TestECROperationAuthorization_CrossRepoMount(t *testing.T) {
 	sourceARN := "arn:aws:ecr:" + ecrTestRegion + ":" + ecrAuthzTestAccount + ":repository/team/base"
 
 	t.Run("destination write only: denied, never dispatches", func(t *testing.T) {
-		gw, _ := ecrAuthzTestGateway(t, []handlers_iam.PolicyDocument{
+		gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{
 			ecrAllowPolicy([]string{"ecr:InitiateLayerUpload"}, []string{destARN}),
 		})
 		next, called := okHandler()
@@ -219,7 +219,7 @@ func TestECROperationAuthorization_CrossRepoMount(t *testing.T) {
 	})
 
 	t.Run("destination write + source read: allowed", func(t *testing.T) {
-		gw, _ := ecrAuthzTestGateway(t, []handlers_iam.PolicyDocument{
+		gw, _ := ecrAuthzTestGateway(t, []iamdomain.PolicyDocument{
 			ecrAllowPolicy([]string{"ecr:InitiateLayerUpload"}, []string{destARN}),
 			ecrAllowPolicy([]string{"ecr:BatchCheckLayerAvailability"}, []string{sourceARN}),
 		})

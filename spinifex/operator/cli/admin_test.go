@@ -18,7 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/operator/imagecatalog"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
@@ -470,7 +470,7 @@ func TestEnsureMasterKey(t *testing.T) {
 		for i := range seed {
 			seed[i] = byte(200 - i)
 		}
-		require.NoError(t, handlers_iam.SaveMasterKey(filepath.Join(configDir, "master.key"), seed))
+		require.NoError(t, iamdomain.SaveMasterKey(filepath.Join(configDir, "master.key"), seed))
 
 		key, existed, err := ensureMasterKey(configDir)
 		require.NoError(t, err)
@@ -502,7 +502,7 @@ func TestPreservedIdentityBundle(t *testing.T) {
 	configDir := t.TempDir()
 	bootstrapDir := filepath.Join(configDir, "awsgw")
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	const (
 		sysAccess   = "AKIASYSTEM0000000000"

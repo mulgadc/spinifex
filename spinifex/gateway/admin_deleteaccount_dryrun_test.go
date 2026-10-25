@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,14 +23,14 @@ const dryRunShadowMessage = "Account teardown dry-run EC2 platform shadow compar
 // deleteAccountGrant is the real IAM service with a policy granting
 // spinifex:DeleteAccount, so a request clears the admin gates.
 type deleteAccountGrant struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 }
 
-func (deleteAccountGrant) GetUserPolicies(string, string) ([]handlers_iam.PolicyDocument, error) {
-	return []handlers_iam.PolicyDocument{{
+func (deleteAccountGrant) GetUserPolicies(string, string) ([]iamdomain.PolicyDocument, error) {
+	return []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{{
-			Effect: "Allow", Action: handlers_iam.StringOrArr{"spinifex:DeleteAccount"}, Resource: handlers_iam.StringOrArr{"*"},
+		Statement: []iamdomain.Statement{{
+			Effect: "Allow", Action: iamdomain.StringOrArr{"spinifex:DeleteAccount"}, Resource: iamdomain.StringOrArr{"*"},
 		}},
 	}}, nil
 }

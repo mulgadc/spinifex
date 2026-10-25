@@ -24,10 +24,7 @@ var frozenLegacyPackages = []string{
 	"handlers/ecs",
 	"handlers/eks",
 	"handlers/elbv2",
-	"handlers/iam",
-	"handlers/iam/mock",
 	"handlers/rds",
-	"handlers/sts",
 	"lbagent",
 }
 

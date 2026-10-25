@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // A handler reached outside the middleware chain — a direct call from a test —
@@ -73,7 +73,7 @@ func TestRequestAuditCarriesNoSecret(t *testing.T) {
 
 // auditRouter wires the audit middleware ahead of SigV4 auth the way
 // SetupRoutes does, and hands back the record for the request just served.
-func auditRouter(t *testing.T, keys map[string]*handlers_iam.AccessKey) (http.Handler, func() *requestAudit) {
+func auditRouter(t *testing.T, keys map[string]*iamdomain.AccessKey) (http.Handler, func() *requestAudit) {
 	t.Helper()
 
 	rl := authlimit.NewAuthRateLimiter()
@@ -143,7 +143,7 @@ func signedRequestForKey(remoteAddr, accessKeyID string) *http.Request {
 // A rejected caller is identifiable: the key it presented is recorded even
 // though authentication failed on it.
 func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
-	handler, audit := auditRouter(t, map[string]*handlers_iam.AccessKey{})
+	handler, audit := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, signedRequest("10.15.8.12:54321"))
@@ -157,7 +157,7 @@ func TestRequestAuditRecordsRejectedAccessKey(t *testing.T) {
 // The lockout that answers 503 is the case that motivated this: without the
 // record, the response carries no client address and no reason at all.
 func TestRequestAuditRecordsRateLimitLockout(t *testing.T) {
-	handler, audit := auditRouter(t, map[string]*handlers_iam.AccessKey{})
+	handler, audit := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	// Distinct key ids: one key id repeated is one fault and never locks out.
 	send := func(accessKeyID string) int {

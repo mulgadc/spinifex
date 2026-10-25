@@ -1672,3 +1672,40 @@ func TestGenerateAndWriteConfigs_NorthstarRecursionIsClosedButServesTheCluster(t
 	assert.False(t, policy.Allows(netip.MustParseAddr("198.51.100.7")))
 	assert.False(t, policy.Allows(netip.MustParseAddr("8.8.8.8")))
 }
+
+func TestResolvePoolDNSServers(t *testing.T) {
+	detected := []string{"10.20.0.53"}
+	detectCalls := 0
+	detect := func() []string {
+		detectCalls++
+		return detected
+	}
+
+	t.Run("explicit servers are used verbatim without detection", func(t *testing.T) {
+		detectCalls = 0
+		got, err := resolvePoolDNSServers([]string{"1.1.1.1", " 8.8.8.8"}, detect, "10.0.0.5")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, got)
+		assert.Zero(t, detectCalls)
+	})
+
+	t.Run("omitted flag falls back to detection", func(t *testing.T) {
+		detectCalls = 0
+		got, err := resolvePoolDNSServers(nil, detect, "10.0.0.5")
+		require.NoError(t, err)
+		assert.Equal(t, detected, got)
+		assert.Equal(t, 1, detectCalls)
+	})
+
+	for name, explicit := range map[string][]string{
+		"invalid IP":           {"1.1.1.1", "dns.example"},
+		"too many servers":     {"1.1.1.1", "8.8.8.8", "9.9.9.9", "4.4.4.4"},
+		"loopback resolver":    {"127.0.0.53"},
+		"local northstar loop": {"10.0.0.5"},
+	} {
+		t.Run(name+" is rejected", func(t *testing.T) {
+			_, err := resolvePoolDNSServers(explicit, detect, "10.0.0.5")
+			assert.Error(t, err)
+		})
+	}
+}

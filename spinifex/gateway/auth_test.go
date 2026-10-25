@@ -31,8 +31,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1642,15 +1642,15 @@ func TestSigV4Auth_NATSDisconnectedShortCircuit(t *testing.T) {
 
 // --- Session credential (ASIA) auth tests ---
 
-// mockSTSService implements handlers_sts.STSService for auth-middleware tests.
+// mockSTSService implements stsdomain.STSService for auth-middleware tests.
 // It embeds the interface so it satisfies the full contract; only
 // LookupSessionCredential and VerifySessionToken are exercised, and any other
 // method nil-panics so a misrouted call fails loudly instead of silently
 // allowing.
 type mockSTSService struct {
-	handlers_sts.STSService
+	stsdomain.STSService
 
-	sessions  map[string]*handlers_sts.SessionCredential
+	sessions  map[string]*stsdomain.SessionCredential
 	tokens    map[string]string // AKID → plaintext wire token for HMAC equivalence
 	lookupErr error
 	lookups   atomic.Int32 // counts LookupSessionCredential calls for negative-side-effect assertions
@@ -1659,7 +1659,7 @@ type mockSTSService struct {
 	principalChecks atomic.Int32 // counts VerifySessionPrincipal calls, to pin its ordering
 }
 
-func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_sts.SessionCredential, error) {
+func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*stsdomain.SessionCredential, error) {
 	m.lookups.Add(1)
 	if m.lookupErr != nil {
 		return nil, m.lookupErr
@@ -1676,7 +1676,7 @@ func (m *mockSTSService) LookupSessionCredential(accessKeyID string) (*handlers_
 
 // VerifySessionToken uses plaintext equality rather than HMAC to keep tests
 // simple while preserving the contract shape.
-func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential, wireToken string) bool {
+func (m *mockSTSService) VerifySessionToken(cred *stsdomain.SessionCredential, wireToken string) bool {
 	if cred == nil {
 		return false
 	}
@@ -1689,7 +1689,7 @@ func (m *mockSTSService) VerifySessionToken(cred *handlers_sts.SessionCredential
 
 // VerifySessionPrincipal defaults to "still the same principal"; principalErr
 // drives the rejection-verdict and dependency-fault branches.
-func (m *mockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.SessionPrincipal, error) {
+func (m *mockSTSService) VerifySessionPrincipal(cred *stsdomain.SessionCredential) (*stsdomain.SessionPrincipal, error) {
 	m.principalChecks.Add(1)
 	if m.principalErr != nil {
 		return nil, m.principalErr
@@ -1701,7 +1701,7 @@ func (m *mockSTSService) VerifySessionPrincipal(cred *handlers_sts.SessionCreden
 // package doubles. It derives RoleName from the underlying role ARN rather than
 // the session name, because that is what the real implementation returns: a
 // stub echoing SessionName would let a door read the wrong field and stay green.
-func stubSessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.SessionPrincipal, error) {
+func stubSessionPrincipal(cred *stsdomain.SessionCredential) (*stsdomain.SessionPrincipal, error) {
 	if cred == nil {
 		return nil, errors.New("nil session credential")
 	}
@@ -1709,7 +1709,7 @@ func stubSessionPrincipal(cred *handlers_sts.SessionCredential) (*handlers_sts.S
 	if idx := strings.LastIndex(roleName, "/"); idx >= 0 {
 		roleName = roleName[idx+1:]
 	}
-	return &handlers_sts.SessionPrincipal{
+	return &stsdomain.SessionPrincipal{
 		UserID:   cred.UserID,
 		RoleID:   cred.RoleID,
 		RoleName: roleName,
@@ -1731,7 +1731,7 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
-	cred := &handlers_sts.SessionCredential{
+	cred := &stsdomain.SessionCredential{
 		AccessKeyID:       testSessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		SessionTokenHMAC:  "ignored-in-mock", // mock verifies by plaintext map
@@ -1750,13 +1750,13 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 
 // mountSessionGateway wires SigV4 middleware over a handler that echoes the
 // principal context; varies cred to drive the principal-type branch in resolveSessionAKID.
-func mountSessionGateway(t *testing.T, cred *handlers_sts.SessionCredential) (http.Handler, *mockSTSService) {
+func mountSessionGateway(t *testing.T, cred *stsdomain.SessionCredential) (http.Handler, *mockSTSService) {
 	t.Helper()
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
 	stsMock := &mockSTSService{
-		sessions: map[string]*handlers_sts.SessionCredential{cred.AccessKeyID: cred},
+		sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
 		tokens:   map[string]string{cred.AccessKeyID: testSessionToken},
 	}
 
@@ -1826,7 +1826,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 	// user with no assumed-role fields, so buildCallerARN yields arn:aws:iam::A:user/N.
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
-	cred := &handlers_sts.SessionCredential{
+	cred := &stsdomain.SessionCredential{
 		AccessKeyID:      testSessionAKID,
 		SecretEncrypted:  encryptedSecret,
 		SessionTokenHMAC: "ignored-in-mock",
@@ -1858,7 +1858,7 @@ func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) 
 	// Pre-PrincipalType records have an empty value and must still resolve as assumed-role.
 	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
-	cred := &handlers_sts.SessionCredential{
+	cred := &stsdomain.SessionCredential{
 		AccessKeyID:       testSessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		SessionTokenHMAC:  "ignored-in-mock",
@@ -1954,9 +1954,9 @@ func TestSigV4Auth_Session_StalePrincipalRejected(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"gone", handlers_sts.ErrSessionPrincipalGone},
-		{"replaced", handlers_sts.ErrSessionPrincipalReplaced},
-		{"legacy", handlers_sts.ErrSessionPrincipalLegacy},
+		{"gone", stsdomain.ErrSessionPrincipalGone},
+		{"replaced", stsdomain.ErrSessionPrincipalReplaced},
+		{"legacy", stsdomain.ErrSessionPrincipalLegacy},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1998,7 +1998,7 @@ func TestSigV4Auth_Session_PrincipalCheckFault_IsInternalError(t *testing.T) {
 // sig.Verify, so a bad signature is answered without the check running at all.
 func TestSigV4Auth_Session_StalePrincipal_BadSignatureWinsFirst(t *testing.T) {
 	handler, stsMock := setupSessionTestApp(t, time.Now().UTC().Add(time.Hour))
-	stsMock.principalErr = handlers_sts.ErrSessionPrincipalReplaced
+	stsMock.principalErr = stsdomain.ErrSessionPrincipalReplaced
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "localhost:9999"
@@ -2041,9 +2041,9 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 		err      error
 		recorded bool
 	}{
-		{"gone", handlers_sts.ErrSessionPrincipalGone, true},
-		{"replaced", handlers_sts.ErrSessionPrincipalReplaced, true},
-		{"legacy", handlers_sts.ErrSessionPrincipalLegacy, false},
+		{"gone", stsdomain.ErrSessionPrincipalGone, true},
+		{"replaced", stsdomain.ErrSessionPrincipalReplaced, true},
+		{"legacy", stsdomain.ErrSessionPrincipalLegacy, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2057,7 +2057,7 @@ func TestSigV4Auth_SessionPrincipalVerdict_RateLimitRecording(t *testing.T) {
 			principal := principalContext{
 				identity:      "test-session",
 				principalType: principalTypeAssumedRole,
-				sessionCred:   &handlers_sts.SessionCredential{AccessKeyID: testSessionAKID},
+				sessionCred:   &stsdomain.SessionCredential{AccessKeyID: testSessionAKID},
 			}
 
 			const ip = "10.15.8.11"
@@ -2215,7 +2215,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 		},
 	}
 
-	cred := &handlers_sts.SessionCredential{
+	cred := &stsdomain.SessionCredential{
 		AccessKeyID:       testSessionAKID,
 		SecretEncrypted:   encryptedSecret,
 		AccountID:         "123456789012",
@@ -2227,7 +2227,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 		CreatedAt:         time.Now().UTC().Add(-time.Minute),
 	}
 	stsMock := &mockSTSService{
-		sessions: map[string]*handlers_sts.SessionCredential{testSessionAKID: cred},
+		sessions: map[string]*stsdomain.SessionCredential{testSessionAKID: cred},
 		tokens:   map[string]string{testSessionAKID: testSessionToken},
 	}
 
@@ -2272,8 +2272,8 @@ func allowPolicyResource(action, resource string) []iamdomain.PolicyDocument {
 
 // assumedRoleSessionCred builds an assumed-role SessionCredential.
 // SecretEncrypted is filled in by the gateway builder.
-func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *handlers_sts.SessionCredential {
-	return &handlers_sts.SessionCredential{
+func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *stsdomain.SessionCredential {
+	return &stsdomain.SessionCredential{
 		AccessKeyID:       testSessionAKID,
 		AccountID:         accountID,
 		PrincipalType:     principalTypeAssumedRole,
@@ -2287,7 +2287,7 @@ func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *h
 
 // newAssumedRoleEnforcementGateway wires a gateway for assumed-role checkPolicy tests.
 // The user resolver fails the test if called — an assumed-role must never be evaluated as a user.
-func newAssumedRoleEnforcementGateway(t *testing.T, cred *handlers_sts.SessionCredential,
+func newAssumedRoleEnforcementGateway(t *testing.T, cred *stsdomain.SessionCredential,
 	getRoleFn func(accountID, roleName string) ([]iamdomain.PolicyDocument, error),
 ) *GatewayConfig {
 	t.Helper()
@@ -2304,7 +2304,7 @@ func newAssumedRoleEnforcementGateway(t *testing.T, cred *handlers_sts.SessionCr
 		getRolePoliciesFn: getRoleFn,
 	}
 	stsMock := &mockSTSService{
-		sessions: map[string]*handlers_sts.SessionCredential{cred.AccessKeyID: cred},
+		sessions: map[string]*stsdomain.SessionCredential{cred.AccessKeyID: cred},
 		tokens:   map[string]string{cred.AccessKeyID: testSessionToken},
 	}
 	return &GatewayConfig{

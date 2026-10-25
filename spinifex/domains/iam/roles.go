@@ -738,12 +738,12 @@ func gotRoleToSDK(r *Role) *iam.Role {
 // STSActionAssumeRoleWithWebIdentity is one of the two actions that may carry a Condition block.
 const STSActionAssumeRoleWithWebIdentity = "sts:AssumeRoleWithWebIdentity"
 
-// stsActionAssumeRole mirrors handlers_sts's unexported constant of the same value.
-// Duplicated rather than imported: handlers_sts imports this package, not the reverse.
+// stsActionAssumeRole mirrors domains/sts's unexported constant of the same value.
+// Duplicated rather than imported: domains/sts imports this package, not the reverse.
 const stsActionAssumeRole = "sts:AssumeRole"
 
 // conditionKeySourceAccount is the only condition key accepted on the sts:AssumeRole
-// trust-policy path. handlers_sts.assumeRoleConditionsHold is the evaluator that must
+// trust-policy path. stsdomain.assumeRoleConditionsHold is the evaluator that must
 // accept exactly this key for this action — the two lists must never drift apart, or
 // a stored condition becomes a security control nothing enforces.
 const conditionKeySourceAccount = "aws:SourceAccount"
@@ -828,7 +828,7 @@ func validateWebIdentityCondition(i int, stmt TrustStatement) error {
 		return nil
 	}
 
-	// action == stsActionAssumeRole: the evaluator (handlers_sts.assumeRoleConditionsHold)
+	// action == stsActionAssumeRole: the evaluator (stsdomain.assumeRoleConditionsHold)
 	// enforces only aws:SourceAccount under StringEquals; name the offending
 	// operator, key and action rather than a bare "malformed" refusal.
 	for op, keys := range ops {

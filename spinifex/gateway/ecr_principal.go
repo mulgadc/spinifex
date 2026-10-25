@@ -10,8 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
 // An ECR registry token is a signed pointer to an IAM/STS record, not a
@@ -176,7 +176,7 @@ func (gw *GatewayConfig) resolveECRSessionPrincipal(claims *ecrauth.Claims) (pri
 	// supplies the resolved record the branches below would otherwise re-read.
 	live, err := gw.STSService.VerifySessionPrincipal(cred)
 	if err != nil {
-		if handlers_sts.IsSessionPrincipalVerdict(err) {
+		if stsdomain.IsSessionPrincipalVerdict(err) {
 			return principalContext{}, ecrInvalidPrincipal("session principal is no longer valid: %w", err)
 		}
 		return principalContext{}, ecrDependencyFailure("session principal check failed: %w", err)

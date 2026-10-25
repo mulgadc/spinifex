@@ -1,4 +1,4 @@
-package handlers_sts
+package sts
 
 import (
 	"crypto/ecdsa"

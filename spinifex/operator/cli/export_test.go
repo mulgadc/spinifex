@@ -5,7 +5,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -182,4 +184,27 @@ func CompareKVDigests(docs ...string) (bool, string, error) {
 // AdminInitFlagDefault returns the registered default of an admin init flag.
 func AdminInitFlagDefault(name string) string {
 	return adminInitCmd.Flags().Lookup(name).DefValue
+}
+
+// GetStorageStatusRemote exposes getStorageStatusRemote for testing, rendering
+// the result as spx admin storage status prints it.
+func GetStorageStatusRemote(ctx context.Context, target adminTarget, w io.Writer) error {
+	status, err := getStorageStatusRemote(ctx, target)
+	if err != nil {
+		return err
+	}
+	return renderStorageStatus(w, status)
+}
+
+// ExecuteRoot runs spx with args through cobra, sending cobra's own stderr
+// output to stderr, and returns the command's error.
+func ExecuteRoot(args []string, stderr io.Writer) error {
+	rootCmd.SetArgs(args)
+	rootCmd.SetErr(stderr)
+	defer func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetErr(nil)
+	}()
+	_, err := rootCmd.ExecuteC()
+	return err
 }

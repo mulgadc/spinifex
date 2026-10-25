@@ -1486,7 +1486,8 @@ func (d *Daemon) ovnSBAddr() string {
 }
 
 // installOCIAllocators builds one OCI allocator per source="oci" pool and
-// reconciles it against OCI before it serves anything. The reconcile is on the
+// reconciles it against OCI, before it serves anything unless the bindings KV
+// is not yet reachable and the pass is deferred. The reconcile is on the
 // startup path on purpose: Allocate creates OCI objects before writing its
 // record, so a crash in between leaves a reserved public IP that bills and
 // holds one of the 50 per-region slots with nothing referencing it, and this
@@ -1614,12 +1615,12 @@ const (
 func (p ociPool) reconcile(ctx context.Context, startup bool) error {
 	res, err := p.alloc.Reconcile(ctx)
 	switch {
-	case err != nil && kvutil.IsStreamUnavailable(err):
+	case kvutil.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
 		slog.Warn("OCI allocator reconcile deferred: bindings KV store not reachable",
 			"pool", p.name, "err", err)
 	case err != nil:
 		slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
-			"pool", p.name, "err", err)
+			"pool", p.name, "collected", len(res.Collected), "orphaned_public_ips", len(res.Orphaned), "err", err)
 	case startup:
 		slog.Info("OCI allocator ready", "pool", p.name,
 			"collected", len(res.Collected), "stale_bindings", len(res.Stale),

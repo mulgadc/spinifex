@@ -123,3 +123,32 @@ func TestOCIReconcileLogsAnUnreachableKVApartFromAFailedPass(t *testing.T) {
 	assert.Contains(t, buf.String(), "leaked addresses may be billing")
 	assert.NotContains(t, buf.String(), "not reachable")
 }
+
+// lostWriteStore reads normally but loses its responder on every write.
+type lostWriteStore struct{ *ocinet.MemStore }
+
+func (s lostWriteStore) Mutate(context.Context, string, func(*ocinet.Record) (bool, error)) error {
+	return fmt.Errorf("kvstore: update: %w", nats.ErrNoResponders)
+}
+
+// A pass that read the KV and collected leaks before losing it did work, so it
+// must not be reported as deferred, which says nothing was done.
+func TestOCIReconcileDoesNotReportAPassThatCollectedAsDeferred(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mem := ocinet.NewMemStore()
+	require.NoError(t, mem.Mutate(context.Background(), "oci-public", func(r *ocinet.Record) (bool, error) {
+		r.Bindings = map[string]ocinet.Binding{"203.0.113.9": {PrivateIPID: "ocid1.privateip.oc1..gone", VNICID: testOCIVNIC}}
+		return true, nil
+	}))
+	pool, fake := ociPoolWithLeak(t, lostWriteStore{mem})
+
+	err := pool.reconcile(context.Background(), true)
+	require.ErrorIs(t, err, nats.ErrNoResponders)
+	require.Empty(t, fake.PrivateIPs(), "the leak should have been collected before the write failed")
+	assert.Contains(t, buf.String(), "level=ERROR")
+	assert.NotContains(t, buf.String(), "deferred")
+}

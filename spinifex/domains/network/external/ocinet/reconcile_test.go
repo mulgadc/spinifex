@@ -384,3 +384,53 @@ func TestReconcileDoesNotSweepWhenThereIsNoBindingRecord(t *testing.T) {
 	assert.Empty(t, res.Orphaned)
 	assert.Len(t, fake.PublicIPs(), 1)
 }
+
+// An Allocate between creating its OCI objects and writing their binding looks
+// exactly like an interrupted one. A reconcile landing in that window, as the
+// periodic or a deferred startup pass can, must wait rather than collect it.
+func TestReconcileWaitsForAnAllocateInFlight(t *testing.T) {
+	ctx := context.Background()
+	fake := oci.NewFake()
+	fake.AssignAfter = 1
+	polling := make(chan struct{})
+	release := make(chan struct{})
+	a, err := ocinet.New(fake, ocinet.NewMemStore(), ocinet.Config{
+		Pool:          external.ExternalPoolConfig{Name: "oci-wan", Source: external.SourceOCI},
+		VNICID:        "ocid1.vnic.oc1..vnic1",
+		CompartmentID: "ocid1.compartment.oc1..comp1",
+		Schedule:      []time.Duration{time.Millisecond},
+		Budget:        time.Minute,
+		Sleep: func(context.Context, time.Duration) error {
+			close(polling)
+			<-release
+			return nil
+		},
+	})
+	require.NoError(t, err)
+
+	allocErr := make(chan error, 1)
+	go func() {
+		_, err := a.Allocate(ctx, external.AllocateRequest{PoolName: "oci-wan", Purpose: "eip", AllocationID: "eipalloc-1"})
+		allocErr <- err
+	}()
+	<-polling
+
+	reconciled := make(chan ocinet.ReconcileResult, 1)
+	go func() {
+		res, err := a.Reconcile(ctx)
+		assert.NoError(t, err)
+		reconciled <- res
+	}()
+	select {
+	case <-reconciled:
+		t.Error("reconcile ran while an allocate was between creating its objects and recording them")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+
+	require.NoError(t, <-allocErr)
+	res := <-reconciled
+	assert.Empty(t, res.Collected, "the in-flight allocation was collected as a leak")
+	assert.Len(t, fake.PrivateIPs(), 1)
+	assert.Len(t, fake.PublicIPs(), 1)
+}

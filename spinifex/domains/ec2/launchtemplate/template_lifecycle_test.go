@@ -233,3 +233,137 @@ func TestAccountTemplateReferences_FailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func setDefault(svc *LaunchTemplateServiceImpl, id, version string) error {
+	_, err := svc.ModifyLaunchTemplate(context.Background(), &ec2.ModifyLaunchTemplateInput{
+		LaunchTemplateId: aws.String(id), DefaultVersion: aws.String(version),
+	}, testAccountID)
+	return err
+}
+
+func deleteVersions(svc *LaunchTemplateServiceImpl, id string, versions ...string) (*ec2.DeleteLaunchTemplateVersionsOutput, error) {
+	return svc.DeleteLaunchTemplateVersions(context.Background(), &ec2.DeleteLaunchTemplateVersionsInput{
+		LaunchTemplateId: aws.String(id), Versions: aws.StringSlice(versions),
+	}, testAccountID)
+}
+
+// requireDefaultResolves asserts the header's default version has a body.
+func requireDefaultResolves(t *testing.T, svc *LaunchTemplateServiceImpl, id string, want int64) {
+	t.Helper()
+	h, _, err := svc.getHeaderByID(context.Background(), testAccountID, id)
+	require.NoError(t, err)
+	assert.Equal(t, want, h.DefaultVersionNumber)
+	_, err = svc.getVersion(context.Background(), testAccountID, id, h.DefaultVersionNumber)
+	assert.NoError(t, err, "the default version has a body")
+}
+
+// A default change that commits while a version delete is removing the new
+// default makes the delete fail as a default-version delete and restore it.
+func TestDeleteVersionsRacingADefaultChangeKeepsTheDefault(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	raced := false
+	svc.kv = &faultyKV{KeyValue: inner, beforeDelete: func(key string) {
+		if key != versionKey(testAccountID, id, 2) || raced {
+			return
+		}
+		raced = true
+		require.NoError(t, setDefault(&LaunchTemplateServiceImpl{kv: inner}, id, "2"))
+	}}
+
+	_, err := deleteVersions(svc, id, "2")
+	require.True(t, raced)
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	requireDefaultResolves(t, svc, id, 2)
+}
+
+// A default change paused before its header write, while the target version
+// is deleted, fails VersionNotFound and leaves the old default.
+func TestDefaultChangeRacingAVersionDeleteFailsNotFound(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	header := kvutil.AccountKey(testAccountID, id)
+	raced := false
+	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
+		if key != header || raced {
+			return
+		}
+		raced = true
+		out, err := deleteVersions(&LaunchTemplateServiceImpl{kv: inner}, id, "2")
+		require.NoError(t, err)
+		require.Len(t, out.SuccessfullyDeletedLaunchTemplateVersions, 1)
+	}}
+
+	err := setDefault(svc, id, "2")
+	require.True(t, raced)
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdVersionNotFound, code)
+	requireDefaultResolves(t, svc, id, 1)
+}
+
+// A default change to a version the delete does not name lets the delete
+// commit at the new header revision and keeps the change.
+func TestDeleteVersionsKeepsAnUnrelatedDefaultChange(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	addVersion(t, svc, id, "t3.large", "") // v3
+	inner := svc.kv
+	raced := false
+	svc.kv = &faultyKV{KeyValue: inner, beforeDelete: func(key string) {
+		if key != versionKey(testAccountID, id, 2) || raced {
+			return
+		}
+		raced = true
+		require.NoError(t, setDefault(&LaunchTemplateServiceImpl{kv: inner}, id, "3"))
+	}}
+
+	out, err := deleteVersions(svc, id, "2")
+	require.NoError(t, err)
+	assert.True(t, raced)
+	require.Len(t, out.SuccessfullyDeletedLaunchTemplateVersions, 1)
+	requireDefaultResolves(t, svc, id, 3)
+	_, err = svc.getVersion(context.Background(), testAccountID, id, 2)
+	assert.Error(t, err)
+}
+
+// A version delete whose header commit fails restores the bodies it removed.
+func TestFailedVersionDeleteCommitRestoresTheBodies(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	before := accountKeys(t, svc.kv, testAccountID)
+	header := kvutil.AccountKey(testAccountID, id)
+	svc.kv = &faultyKV{KeyValue: svc.kv, failUpdate: func(key string) bool { return key == header }}
+
+	_, err := deleteVersions(svc, id, "2")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Equal(t, before, accountKeys(t, svc.kv, testAccountID))
+}
+
+// A template deleted while its versions are being deleted fails NotFound and
+// leaves nothing behind.
+func TestVersionDeleteRacingATemplateDeleteLeavesNothing(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	header := kvutil.AccountKey(testAccountID, id)
+	raced := false
+	svc.kv = &faultyKV{KeyValue: svc.kv, beforeUpdate: func(key string) {
+		if key != header || raced {
+			return
+		}
+		raced = true
+		raceDelete(t, svc, id)
+	}}
+
+	_, err := deleteVersions(svc, id, "2")
+	require.True(t, raced)
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, code)
+	assert.Empty(t, accountKeys(t, svc.kv, testAccountID))
+}

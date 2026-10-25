@@ -289,9 +289,11 @@ var certRenewCmd = &cobra.Command{
 	Use:   "renew",
 	Short: "Regenerate the server certificate with current IPs",
 	Long: `Regenerate the server certificate signed by the existing CA.
-The new certificate will include all current network interface IPs
-and the machine hostname in its SANs. Use this after adding a new
-network interface or changing IP addresses.`,
+The new certificate keeps the SANs 'spx admin init' gave it (bind IP,
+mgmt-bridge IP and the AWS service names for the configured region and
+services domain) and picks up all current network interface IPs and the
+machine hostname. Use this after adding a new network interface or
+changing IP addresses.`,
 	Run: runCertRenew,
 }
 
@@ -3089,17 +3091,40 @@ func runCertRenew(cmd *cobra.Command, _ []string) {
 	extraIPs, _ := cmd.Flags().GetStringSlice("extra-ip")
 	extraDNS, _ := cmd.Flags().GetStringSlice("extra-dns")
 
-	serverCertPath := filepath.Join(configDir, "server.pem")
-	serverKeyPath := filepath.Join(configDir, "server.key")
+	cfgPath := filepath.Join(configDir, "spinifex.toml")
+	if !admin.FileExists(cfgPath) {
+		fmt.Fprintf(os.Stderr, "Error: %s not found\nRun 'spx admin init' first.\n", cfgPath)
+		os.Exit(1)
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
 
-	if err := admin.GenerateSignedCert(serverCertPath, serverKeyPath, caCertPath, caKeyPath, extraIPs, extraDNS); err != nil {
+	if err := renewServerCert(configDir, cfg, extraIPs, extraDNS); err != nil {
 		fmt.Fprintf(os.Stderr, "Error regenerating server certificate: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Println("✅ Server certificate regenerated with current IPs and hostname")
-	fmt.Printf("   Certificate: %s\n", serverCertPath)
+	fmt.Printf("   Certificate: %s\n", filepath.Join(configDir, "server.pem"))
 	fmt.Println("\n⚠️  Restart awsgw and daemon services to pick up the new certificate.")
+}
+
+// renewServerCert reissues the server cert with the SANs init gave it, taking
+// the bind IP and region from the node's entry (the region the daemon publishes
+// service names under) and the services domain from the config.
+func renewServerCert(configDir string, cfg *config.ClusterConfig, extraIPs, extraDNS []string) error {
+	node, ok := cfg.Nodes[cfg.Node]
+	if !ok {
+		return fmt.Errorf("node %q not found in config [nodes]", cfg.Node)
+	}
+	region := node.Region
+	if region == "" {
+		region = cfg.AWS.Region
+	}
+	return admin.GenerateServerCert(configDir, node.Host, region, cfg.AWS.ServicesDomain, extraIPs, extraDNS)
 }
 
 // configDirs holds the paths to config subdirectories created by createConfigSubdirs.

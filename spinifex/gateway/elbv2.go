@@ -187,6 +187,9 @@ func accountLoadBalancerLimit(ctx context.Context, gw *GatewayConfig, accountID 
 	}
 	_, limits, err := gw.Quota.GetAccountQuota(ctx, accountID)
 	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorBlocked) {
+			return 0, err
+		}
 		slog.ErrorContext(ctx, "DescribeAccountLimits: failed to read account quota", "accountID", accountID, "err", err)
 		return 0, errors.New(awserrors.ErrorInternalError)
 	}

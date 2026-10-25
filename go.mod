@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/aws/aws-sdk-go-v2 v1.47.3
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.22
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.23
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.3
@@ -30,8 +30,8 @@ require (
 	github.com/nats-io/nats-server/v2 v2.15.1
 	github.com/nats-io/nats.go v1.54.0
 	github.com/opencontainers/runtime-spec v1.3.0
-	github.com/oracle/oci-go-sdk/v65 v65.127.0
-	github.com/ovn-kubernetes/libovsdb v0.8.1
+	github.com/oracle/oci-go-sdk/v65 v65.128.0
+	github.com/ovn-kubernetes/libovsdb v0.9.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pterm/pterm v0.12.84
 	github.com/spf13/cobra v1.10.2
@@ -82,7 +82,7 @@ require (
 	github.com/buraksezer/consistent v1.1.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cenkalti/hub v1.0.2 // indirect
-	github.com/cenkalti/rpc2 v1.0.5 // indirect
+	github.com/cenkalti/rpc2 v1.0.6 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
@@ -111,12 +111,12 @@ require (
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.30.1 // indirect
+	github.com/go-playground/validator/v10 v10.30.5 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gofrs/flock v0.10.0 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
@@ -139,7 +139,7 @@ require (
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/jstemmer/go-junit-report/v2 v2.1.0 // indirect
 	github.com/klauspost/reedsolomon v1.14.2 // indirect
-	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect

@@ -37,7 +37,11 @@ func (s *Service) CheckVCPU(ctx context.Context, accountID string, want int) err
 	if err != nil {
 		return err
 	}
-	return exceeds(current, want, s.limitsFor(ctx, accountID).VCPUs)
+	limits, err := s.limitsFor(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	return exceeds(current, want, limits.VCPUs)
 }
 
 // casVCPU applies next to accountID's counter under bounded JetStream CAS so

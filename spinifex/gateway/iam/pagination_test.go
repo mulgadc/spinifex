@@ -6,9 +6,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ const testAccountID = "000000000000"
 // listStub serves fixed lists in whatever order the test gives, as the KV
 // bucket does, and counts service calls.
 type listStub struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	users    []string
 	versions []string
@@ -134,7 +134,7 @@ func TestListUsers_RejectsBadPagingBeforeListing(t *testing.T) {
 
 // listAliasesStub counts calls so a rejected page proves the service never ran.
 type listAliasesStub struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	calls int
 }

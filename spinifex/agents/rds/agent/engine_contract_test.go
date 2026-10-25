@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // A probe the test drives directly, in place of whichever binaries the engine's
@@ -40,7 +40,7 @@ type engineHarness struct {
 	useSession func(*fakeSession) *[]command
 	// A setting this engine's catalog really carries, so a shared case installs
 	// something the implementation would genuinely be handed.
-	parameter handlers_rds.Parameter
+	parameter rdsinstance.Parameter
 	// What the engine's own include directive globs. Neither the rollback copy
 	// nor the serving copy may end in it.
 	includeSuffix string
@@ -83,7 +83,7 @@ func buildPostgresHarness(t *testing.T) *engineHarness {
 			}
 			return started
 		},
-		parameter:     handlers_rds.Parameter{Name: "work_mem", Value: "4096"},
+		parameter:     rdsinstance.Parameter{Name: "work_mem", Value: "4096"},
 		includeSuffix: ".conf",
 	}
 }
@@ -105,7 +105,7 @@ func buildMariaDBHarness(t *testing.T) *engineHarness {
 			}
 			return started
 		},
-		parameter:     handlers_rds.Parameter{Name: "max_connections", Value: "200"},
+		parameter:     rdsinstance.Parameter{Name: "max_connections", Value: "200"},
 		includeSuffix: ".cnf",
 	}
 }
@@ -114,7 +114,7 @@ func buildMariaDBHarness(t *testing.T) *engineHarness {
 // the file rather than shadowing it with a second copy.
 func TestEngineContract_ApplyParametersInstallsWhereRdsInitDoes(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, h *engineHarness) {
-		if _, err := h.engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{h.parameter}); err != nil {
+		if _, err := h.engine.ApplyParameters(t.Context(), []rdsinstance.Parameter{h.parameter}); err != nil {
 			t.Fatalf("ApplyParameters: %v", err)
 		}
 
@@ -149,7 +149,7 @@ func TestEngineContract_ApplyParametersRefusesWhileTheEngineIsRecovering(t *test
 	forEachEngine(t, func(t *testing.T, h *engineHarness) {
 		*h.state = engineRecovering
 
-		if _, err := h.engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{h.parameter}); err == nil {
+		if _, err := h.engine.ApplyParameters(t.Context(), []rdsinstance.Parameter{h.parameter}); err == nil {
 			t.Fatal("ApplyParameters succeeded against an engine that was still coming up")
 		}
 		if _, err := os.Stat(h.params.installedPath()); !os.IsNotExist(err) {
@@ -163,14 +163,14 @@ func TestEngineContract_ApplyParametersRefusesWhileTheEngineIsRecovering(t *test
 func TestEngineContract_RestoreLastKnownGoodOnlyRollsBackADownEngine(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, h *engineHarness) {
 		accepted := h.parameter
-		if _, err := h.engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{accepted}); err != nil {
+		if _, err := h.engine.ApplyParameters(t.Context(), []rdsinstance.Parameter{accepted}); err != nil {
 			t.Fatalf("ApplyParameters: %v", err)
 		}
 		if err := h.engine.RecordServingParameters(t.Context()); err != nil {
 			t.Fatalf("RecordServingParameters: %v", err)
 		}
 		if _, err := h.engine.ApplyParameters(t.Context(),
-			[]handlers_rds.Parameter{{Name: accepted.Name, Value: accepted.Value + "0"}}); err != nil {
+			[]rdsinstance.Parameter{{Name: accepted.Name, Value: accepted.Value + "0"}}); err != nil {
 			t.Fatalf("second ApplyParameters: %v", err)
 		}
 
@@ -322,8 +322,8 @@ func TestEngineContract_ServesEveryRegisteredCommand(t *testing.T) {
 	forEachEngine(t, func(t *testing.T, h *engineHarness) {
 		registry := newCommandRegistry(h.engine, &fakeStorage{})
 		for _, name := range []string{
-			handlers_rds.CommandSetPassword, handlers_rds.CommandApplyParams, handlers_rds.CommandStopEngine,
-			handlers_rds.CommandGrowFilesystem, handlers_rds.CommandQuiesce, handlers_rds.CommandUnquiesce,
+			rdsinstance.CommandSetPassword, rdsinstance.CommandApplyParams, rdsinstance.CommandStopEngine,
+			rdsinstance.CommandGrowFilesystem, rdsinstance.CommandQuiesce, rdsinstance.CommandUnquiesce,
 		} {
 			if _, ok := registry[name]; !ok {
 				t.Errorf("command %q has no handler", name)

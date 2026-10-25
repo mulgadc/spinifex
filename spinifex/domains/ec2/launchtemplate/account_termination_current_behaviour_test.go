@@ -38,6 +38,7 @@ type faultyKV struct {
 	failDelete   func(key string) bool
 	failKeys     func() bool
 	failUpdate   func(key string) bool
+	failCreate   func(key string) bool
 	beforeDelete func(key string)
 	beforeCreate func(key string)
 	beforeUpdate func(key string)
@@ -46,6 +47,9 @@ type faultyKV struct {
 func (k *faultyKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
 	if k.beforeCreate != nil {
 		k.beforeCreate(key)
+	}
+	if k.failCreate != nil && k.failCreate(key) {
+		return 0, errInjected
 	}
 	return k.KeyValue.Create(ctx, key, value, opts...)
 }

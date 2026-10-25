@@ -3,7 +3,7 @@ package handlers_ecs
 import (
 	"fmt"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 const (
@@ -35,7 +35,7 @@ func ecsInstanceRolePolicyDoc(accountID string) string {
 // is written rather than created so an existing role picks up a changed
 // document instead of keeping the one it was provisioned with.
 func (s *Service) ensureECSInstanceProfile(accountID string) (string, error) {
-	return handlers_iam.EnsureSystemInstanceProfile(s.deps.IAM, accountID,
+	return iamdomain.EnsureSystemInstanceProfile(s.deps.IAM, accountID,
 		ecsInstanceRoleName, ecsInstanceRolePolicyName, ecsInstanceRolePolicyDoc(accountID))
 }
 
@@ -43,6 +43,6 @@ func (s *Service) ensureECSInstanceProfile(accountID string) (string, error) {
 // already has the role, so a running cluster picks up a changed document
 // without creating IAM entities in accounts that never launched capacity.
 func (s *Service) convergeECSInstanceRole(accountID string) error {
-	return handlers_iam.ConvergeSystemRolePolicy(s.deps.IAM, accountID,
+	return iamdomain.ConvergeSystemRolePolicy(s.deps.IAM, accountID,
 		ecsInstanceRoleName, ecsInstanceRolePolicyName, ecsInstanceRolePolicyDoc(accountID))
 }

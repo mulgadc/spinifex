@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // The first healthy probe is the first proof that the installed include can
@@ -33,7 +33,7 @@ func TestHeartbeater_FirstServingProbeSeedsLastKnownGood(t *testing.T) {
 		t.Errorf("last known good = %q, want %q", lastGood, content)
 	}
 	states := cp.snapshotStates()
-	if len(states) != 1 || states[0].health != handlers_rds.EngineHealthHealthy {
+	if len(states) != 1 || states[0].health != rdsinstance.EngineHealthHealthy {
 		t.Errorf("states = %+v, want one healthy heartbeat", states)
 	}
 }
@@ -109,8 +109,8 @@ func TestHeartbeater_ReportsPromptlyUntilTheEngineHasServed(t *testing.T) {
 	waitFor(t, func() bool { return len(cp.snapshotStates()) > 0 }, "the first heartbeat")
 	cancel()
 
-	if states := cp.snapshotStates(); states[0].health != handlers_rds.EngineHealthStarting {
-		t.Errorf("first beat health = %q, want %q", states[0].health, handlers_rds.EngineHealthStarting)
+	if states := cp.snapshotStates(); states[0].health != rdsinstance.EngineHealthStarting {
+		t.Errorf("first beat health = %q, want %q", states[0].health, rdsinstance.EngineHealthStarting)
 	}
 
 	code = 0

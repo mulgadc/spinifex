@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -244,7 +244,7 @@ func (b *NATSBootstrap) persistToken(ctx context.Context, data []byte) error {
 	if env.Token == "" {
 		return fmt.Errorf("%w: token envelope empty", errBootstrapPermanent)
 	}
-	ct, err := handlers_iam.EncryptSecret(env.Token, b.masterKey)
+	ct, err := iamdomain.EncryptSecret(env.Token, b.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt token: %w", err)
 	}
@@ -262,7 +262,7 @@ func (b *NATSBootstrap) persistKubeconfig(ctx context.Context, data []byte) erro
 	if env.AdminKubeconfig == "" {
 		return fmt.Errorf("%w: adminKubeconfig envelope empty", errBootstrapPermanent)
 	}
-	ct, err := handlers_iam.EncryptSecret(env.AdminKubeconfig, b.masterKey)
+	ct, err := iamdomain.EncryptSecret(env.AdminKubeconfig, b.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt kubeconfig: %w", err)
 	}

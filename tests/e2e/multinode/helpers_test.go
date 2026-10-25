@@ -4,6 +4,7 @@ package multinode
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,21 @@ import (
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
+
+// envDurationOr reads a positive time.Duration from key, returning def when
+// unset. A malformed or non-positive value panics rather than falling back, so
+// a mistyped budget can't quietly run with the default and be blamed on it.
+func envDurationOr(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		panic(fmt.Sprintf("%s=%q is not a positive duration", key, v))
+	}
+	return d
+}
 
 // needAZ returns the discovered default AZ, memoized on the harness fixture.
 func needAZ(t *testing.T, fix *Fixture) string {

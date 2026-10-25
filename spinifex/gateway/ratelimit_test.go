@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,14 +25,14 @@ import (
 func setupTestAppWithRateLimiter(t *testing.T, accessKey, secretKey string, rl *authlimit.AuthRateLimiter) http.Handler {
 	t.Helper()
 
-	encryptedSecret, err := handlers_iam.EncryptSecret(secretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, testMasterKey)
 	if err != nil {
 		panic("failed to encrypt test secret: " + err.Error())
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			accessKey: {
 				AccessKeyID:     accessKey,
 				SecretAccessKey: encryptedSecret,
@@ -146,7 +146,7 @@ func recordProbeFailures(rl *authlimit.AuthRateLimiter, ip, batch string, n int)
 // End to end: a client whose credential will never resolve keeps getting the
 // verdict that says so, and never the 503 that tells it to retry.
 func TestStaleCredentialNeverLocksTheAddressOut(t *testing.T) {
-	handler, _ := auditRouter(t, map[string]*handlers_iam.AccessKey{})
+	handler, _ := auditRouter(t, map[string]*iamdomain.AccessKey{})
 
 	for range authlimit.MaxFailures * 3 {
 		w := httptest.NewRecorder()

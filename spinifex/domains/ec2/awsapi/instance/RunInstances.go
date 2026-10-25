@@ -20,8 +20,8 @@ import (
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
@@ -131,7 +131,7 @@ func hasPinnedPrivateIP(input *ec2.RunInstancesInput) bool {
 // passRoleCheck may be nil to skip PassRole enforcement.
 // launchQuotaCheck may be nil to skip quota enforcement; when present it runs
 // after validation and PassRole authorization, but before any launch dispatch.
-func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	// Expand a referenced launch template before validation so validation, quota,
 	// and downstream routing all see the effective (post-merge) parameters.
 	if err = ExpandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
@@ -163,7 +163,7 @@ func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *n
 
 // runInstancesInner performs the actual launch: profile resolution, placement
 // routing, and capacity-aware distribution. Wrapped by RunInstances for idempotency.
-func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	resolvedProfile, err := resolveAndAuthorizeInstanceProfile(input, iamSvc, accountID, passRoleCheck)
 	if err != nil {
 		return reservation, err
@@ -236,7 +236,7 @@ func runInstancesInner(ctx context.Context, input *ec2.RunInstancesInput, natsCo
 
 // resolveAndAuthorizeInstanceProfile resolves an optional instance profile,
 // enforces PassRole, and normalises input to the canonical ARN only.
-func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc handlers_iam.IAMService, accountID string, passRoleCheck PassRoleChecker) (*handlers_iam.InstanceProfile, error) {
+func resolveAndAuthorizeInstanceProfile(input *ec2.RunInstancesInput, iamSvc iamdomain.IAMService, accountID string, passRoleCheck PassRoleChecker) (*iamdomain.InstanceProfile, error) {
 	if input.IamInstanceProfile == nil {
 		return nil, nil
 	}
@@ -261,7 +261,7 @@ func profileNameOrARN(spec *ec2.IamInstanceProfileSpecification) string {
 
 // enrichReservationWithProfileID fills IamInstanceProfile.Id on every instance.
 // Daemons emit Arn only (no IAM access); the gateway adds Id from the resolved profile.
-func enrichReservationWithProfileID(reservation *ec2.Reservation, profile *handlers_iam.InstanceProfile) {
+func enrichReservationWithProfileID(reservation *ec2.Reservation, profile *iamdomain.InstanceProfile) {
 	if reservation == nil || profile == nil {
 		return
 	}

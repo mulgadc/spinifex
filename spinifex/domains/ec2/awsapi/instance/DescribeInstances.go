@@ -14,8 +14,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
@@ -126,10 +126,10 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 			// An incomplete sweep cannot prove absence, so a missing id is
 			// unresolved, not gone. NotFound would be a false negative and an
 			// empty success would look identical to a real one, so return 503.
-			return nil, errors.Join(
+			return nil, awserrors.WithRetryAfter(
 				awserrors.Errorf(awserrors.ErrorServiceUnavailable,
 					"cannot confirm status of instance(s) %s: describe fan-out did not complete", strings.Join(missing, ", ")),
-				awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+				describeIncompleteRetryAfter,
 			)
 		}
 	}
@@ -186,10 +186,10 @@ func DescribeAccountInstancesComplete(ctx context.Context, natsConn *nats.Conn, 
 }
 
 func incompleteListingError() error {
-	return errors.Join(
+	return awserrors.WithRetryAfter(
 		awserrors.Errorf(awserrors.ErrorServiceUnavailable,
 			"cannot list instances: not every node and instance store answered"),
-		awserrors.RetryAfter(awserrors.ErrorServiceUnavailable, describeIncompleteRetryAfter),
+		describeIncompleteRetryAfter,
 	)
 }
 
@@ -465,7 +465,7 @@ func judgeIdentityCompleteness(ctx context.Context, frames []natsmsg.Frame, sum 
 // that carries only an ARN. Results are cached per ARN to avoid repeated RPCs.
 // Misses are warn-logged and leave Id empty (graceful degradation for deleted profiles).
 // Safe to call with a nil output or nil IAMService (no-op).
-func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_iam.IAMService, accountID string) {
+func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc iamdomain.IAMService, accountID string) {
 	if out == nil || iamSvc == nil {
 		return
 	}

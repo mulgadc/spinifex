@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ import (
 // stay unimplemented — calling one is a test failure by panic, which is the
 // honest outcome for a reaper reaching somewhere it was not meant to.
 type fakeIAM struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	calls []string
 
@@ -396,9 +396,9 @@ func TestPolicyReaperAsksOnlyForLocalPolicies(t *testing.T) {
 // DeletePolicy refuses it until they are gone.
 func TestPolicyReaperDeletesAPolicyWithSeveralVersions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	svc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	const accountID = "000000000042"

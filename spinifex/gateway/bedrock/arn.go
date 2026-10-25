@@ -36,7 +36,7 @@ const provisionedModelARNSegmentCount = 6
 // ParseProvisionedModelARN parses a PT ARN and validates it belongs to the
 // caller: wrong partition/service/resource-type, a foreign region or account,
 // or a malformed id are all rejected here, so a foreign-account ARN never
-// reaches a store lookup at all, mirroring handlers_rds.ParseARN.
+// reaches a store lookup at all, mirroring rdsinstance.ParseARN.
 func ParseProvisionedModelARN(arn, region, accountID string) (ParsedProvisionedModelARN, error) {
 	parts := strings.SplitN(arn, ":", provisionedModelARNSegmentCount)
 	if len(parts) != provisionedModelARNSegmentCount {

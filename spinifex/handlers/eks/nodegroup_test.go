@@ -17,10 +17,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -165,7 +165,7 @@ func seedActiveClusterWithToken(t *testing.T, f *eksServiceFixture, cluster stri
 	}
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
 
-	ct, err := handlers_iam.EncryptSecret("K10node-join-token::server:abc", bootstrapTestMasterKey)
+	ct, err := iamdomain.EncryptSecret("K10node-join-token::server:abc", bootstrapTestMasterKey)
 	require.NoError(t, err)
 	_, err = f.kv.Put(t.Context(), NodeTokenKey(cluster), []byte(ct))
 	require.NoError(t, err)

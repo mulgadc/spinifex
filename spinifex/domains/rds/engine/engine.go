@@ -78,7 +78,7 @@ var engines = map[string]Engine{
 var enginesByFamily, engineRegistryValidationErr = indexEnginesByFamily(engines)
 
 // The prefix AWS reserves for the groups the service itself owns. Duplicated
-// against handlers_rds's own copy deliberately: each package's constant backs
+// against domains/rds/instance's own copy deliberately: each package's constant backs
 // a different check (this one a name this package derives, that one a name a
 // caller recognises), and neither may reach across the boundary to the other.
 const defaultParameterGroupPrefix = "default."
@@ -291,7 +291,7 @@ func validateIdentifier(field, value string, maxLen int, allowEmpty bool) error 
 	return nil
 }
 
-// isLetter and isDigit are duplicated against handlers_rds's own copy
+// isLetter and isDigit are duplicated against domains/rds/instance's own copy
 // deliberately: that one backs identifier checks this package does not own,
 // and neither may reach across the boundary to the other.
 func isLetter(r rune) bool {

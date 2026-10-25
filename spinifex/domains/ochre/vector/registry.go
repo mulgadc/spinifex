@@ -103,7 +103,7 @@ func registryKey(accountID, indexID string) string {
 }
 
 // Reserve atomically claims rec.ID for accountID: the create-only KV write is
-// the single-writer mutex (mirrors handlers/rds's identifier claim), so two
+// the single-writer mutex (mirrors domains/rds/instance's identifier claim), so two
 // concurrent creates of the same id race safely and exactly one wins.
 // rec.AccountID is stamped from accountID, overriding whatever the caller set.
 func (reg *Registry) Reserve(ctx context.Context, accountID string, rec Record) error {

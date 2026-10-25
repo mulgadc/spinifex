@@ -178,18 +178,18 @@ func sameGroupSet(current []*ec2.GroupIdentifier, desired []string) bool {
 }
 
 // applianceInstanceTagKey mirrors the unexported rdsInstanceTagKey in
-// handlers/rds/launch.go, which stamps it on the appliance's customer ENI at
+// domains/rds/instance/launch.go, which stamps it on the appliance's customer ENI at
 // launch. Keep this literal in sync with that const; the e2e harness
 // (tests/e2e/harness/rds.go) duplicates it the same way.
 const applianceInstanceTagKey = "spinifex:rds-db-instance"
 
-// endpointENIDescriptionPrefix mirrors the description handlers/rds gives the
+// endpointENIDescriptionPrefix mirrors the description domains/rds/instance gives the
 // customer (endpoint) ENI in resolveCustomerENI. The management NIC shares the
 // rds-db-instance tag, so description is what tells the reachable ENI apart.
 const endpointENIDescriptionPrefix = "RDS endpoint ENI for "
 
 // resolveApplianceTarget finds the appliance's own customer ENI by the tag
-// handlers/rds stamps on it at launch, returning the real private IP to dial
+// domains/rds/instance stamps on it at launch, returning the real private IP to dial
 // and the subnet it lives in -- never the vanity endpoint hostname, which is
 // unresolvable and unroutable from the daemon host.
 func resolveApplianceTarget(ctx context.Context, deps HostPortDeps, identifier string) (dialIP, subnetID, subnetCIDR string, groupIDs []string, err error) {

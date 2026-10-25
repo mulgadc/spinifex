@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // AccountReapers returns the final-stage reapers: the per-account counters and
 // reservations that outlive every resource but must not outlive the account.
-func AccountReapers(svc handlers_iam.IAMService, names *handlers_iam.AccountNameIndex, usage jetstream.KeyValue) []Reaper {
+func AccountReapers(svc iamdomain.IAMService, names *iamdomain.AccountNameIndex, usage jetstream.KeyValue) []Reaper {
 	return []Reaper{
 		&quotaUsageReaper{usage: usage},
 		&nameReservationReaper{svc: svc, names: names},
@@ -53,8 +53,8 @@ func (r *quotaUsageReaper) Delete(ctx context.Context, _ string, resource Resour
 // up again. A customer who deletes an account and returns must not be told the
 // address is taken by a tenant that no longer exists.
 type nameReservationReaper struct {
-	svc   handlers_iam.IAMService
-	names *handlers_iam.AccountNameIndex
+	svc   iamdomain.IAMService
+	names *iamdomain.AccountNameIndex
 }
 
 func (r *nameReservationReaper) Kind() string { return "name-reservation" }
@@ -92,12 +92,12 @@ func (r *nameReservationReaper) Delete(ctx context.Context, accountID string, re
 // IAMAccounts adapts the IAM service to the engine's AccountStore. The engine
 // declares its own Account type so its tests need no cluster; this is the one
 // place the two meet.
-type IAMAccounts struct{ svc handlers_iam.IAMService }
+type IAMAccounts struct{ svc iamdomain.IAMService }
 
 var _ AccountStore = (*IAMAccounts)(nil)
 
 // NewIAMAccounts wraps svc as the engine's AccountStore.
-func NewIAMAccounts(svc handlers_iam.IAMService) *IAMAccounts {
+func NewIAMAccounts(svc iamdomain.IAMService) *IAMAccounts {
 	return &IAMAccounts{svc: svc}
 }
 

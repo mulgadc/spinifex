@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -73,7 +73,7 @@ const appliancePasswordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrs
 
 // ApplianceRecord is the persisted singleton record for the platform Postgres
 // appliance. EncryptedPassword is AES-256-GCM ciphertext (base64, via
-// handlers_iam.EncryptSecret/DecryptSecret) — the plaintext master password
+// iamdomain.EncryptSecret/DecryptSecret) — the plaintext master password
 // is never stored, logged, or held anywhere outside a launch/Connect call.
 //
 // No exported Appliance method ever returns an ApplianceRecord: Ensure
@@ -496,7 +496,7 @@ func (a *Appliance) getRecord(ctx context.Context) (*ApplianceRecord, uint64, er
 // decryptPassword resolves rec's encrypted master password to plaintext. The
 // error path never includes the ciphertext or any decrypted material.
 func (a *Appliance) decryptPassword(rec *ApplianceRecord) (string, error) {
-	plaintext, err := handlers_iam.DecryptSecret(rec.EncryptedPassword, a.masterKey)
+	plaintext, err := iamdomain.DecryptSecret(rec.EncryptedPassword, a.masterKey)
 	if err != nil {
 		return "", fmt.Errorf("ochrevector: decrypt appliance master password: %w", err)
 	}
@@ -511,7 +511,7 @@ func newApplianceRecord(masterKey []byte) (ApplianceRecord, string, error) {
 	if err != nil {
 		return ApplianceRecord{}, "", err
 	}
-	encrypted, err := handlers_iam.EncryptSecret(password, masterKey)
+	encrypted, err := iamdomain.EncryptSecret(password, masterKey)
 	if err != nil {
 		return ApplianceRecord{}, "", fmt.Errorf("ochrevector: encrypt appliance master password: %w", err)
 	}

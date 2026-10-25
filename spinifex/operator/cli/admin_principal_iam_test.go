@@ -6,7 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/operator/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +18,7 @@ const superAdminAccountID = "000000000001"
 // principal commands make are implemented. Anything else nil-panics, which is
 // the point: an unexpected call is a change in behaviour, not a passing test.
 type principalIAMStub struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	inlinePolicies   []string
 	inlineDocument   string
@@ -133,11 +133,11 @@ func TestDescribePrincipalReportsScopedGrants(t *testing.T) {
 // An attached wildcard policy is reported rather than expanded: an unscoped
 // principal is exactly what the listing exists to surface.
 func TestDescribePrincipalMarksAnAttachedPolicy(t *testing.T) {
-	svc := &principalIAMStub{attachedPolicies: []string{handlers_iam.AdminPolicyName}}
+	svc := &principalIAMStub{attachedPolicies: []string{iamdomain.AdminPolicyName}}
 
-	row, err := cli.DescribePrincipal(svc, superAdminAccountID, handlers_iam.AdminUserName)
+	row, err := cli.DescribePrincipal(svc, superAdminAccountID, iamdomain.AdminUserName)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{handlers_iam.AdminPolicyName + " (attached)"}, row.Grants)
+	assert.Equal(t, []string{iamdomain.AdminPolicyName + " (attached)"}, row.Grants)
 	assert.Zero(t, row.Keys)
 }

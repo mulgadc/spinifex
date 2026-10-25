@@ -7,7 +7,7 @@
 # Debian is the build host regardless of what is being built — mkosi bootstraps
 # the target distribution from its own archive, so an Ubuntu image builds fine
 # from here (see ubuntu-keyring below).
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 # The runner user is uid 1000; matching it keeps bind-mounted build output
 # owned by the invoking user instead of root.

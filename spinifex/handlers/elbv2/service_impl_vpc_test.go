@@ -12,7 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +32,7 @@ func setupTestServiceWithVPC(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServic
 	// Create ELBv2 service with VPC wired in.
 	// Use DevNetworking=true so single-subnet tests aren't blocked by multi-AZ validation.
 	cfg := &config.Config{Daemon: config.DaemonConfig{DevNetworking: true}}
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err)
@@ -277,7 +277,7 @@ func TestDeleteLoadBalancer_PersistsSurvivingENIsOnPersistentDeleteFailure(t *te
 	require.NoError(t, err)
 
 	cfg := &config.Config{Daemon: config.DaemonConfig{DevNetworking: true}}
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	svc, err := NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err)

@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,16 +25,16 @@ import (
 // the fn-field methods below are wired, and any other method nil-panics if a
 // test reaches an unmocked path.
 type flexMockSTSService struct {
-	handlers_sts.STSService
+	stsdomain.STSService
 
 	assumeRoleFn        func(string, string, string, *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error)
 	getCallerIdentityFn func(string, string, string, *sts.GetCallerIdentityInput) (*sts.GetCallerIdentityOutput, error)
 	getSessionTokenFn   func(string, string, string, string, *sts.GetSessionTokenInput) (*sts.GetSessionTokenOutput, error)
-	lookupSessionFn     func(string) (*handlers_sts.SessionCredential, error)
+	lookupSessionFn     func(string) (*stsdomain.SessionCredential, error)
 	assumeWebIdentityFn func(*sts.AssumeRoleWithWebIdentityInput) (*sts.AssumeRoleWithWebIdentityOutput, error)
 }
 
-var _ handlers_sts.STSService = (*flexMockSTSService)(nil)
+var _ stsdomain.STSService = (*flexMockSTSService)(nil)
 
 func (m *flexMockSTSService) AssumeRole(callerAccountID, callerARN, callerIdentity string, input *sts.AssumeRoleInput) (*sts.AssumeRoleOutput, error) {
 	if m.assumeRoleFn != nil {
@@ -61,7 +61,7 @@ func (m *flexMockSTSService) GetSessionToken(callerAccountID, callerUserName, ca
 	return &sts.GetSessionTokenOutput{}, nil
 }
 
-func (m *flexMockSTSService) LookupSessionCredential(akid string) (*handlers_sts.SessionCredential, error) {
+func (m *flexMockSTSService) LookupSessionCredential(akid string) (*stsdomain.SessionCredential, error) {
 	if m.lookupSessionFn != nil {
 		return m.lookupSessionFn(akid)
 	}
@@ -86,8 +86,8 @@ type stsRequestParams struct {
 	// underlyingRoleARN is what the policy gate resolves an assumed-role
 	// caller's policies by; SessionName never participates.
 	underlyingRoleARN string
-	stsSvc            handlers_sts.STSService
-	iamSvc            handlers_iam.IAMService
+	stsSvc            stsdomain.STSService
+	iamSvc            iamdomain.IAMService
 }
 
 func setupSTSRequestHandler(p stsRequestParams) http.Handler {
@@ -166,7 +166,7 @@ func TestSTSRequest_AssumeRole_Success(t *testing.T) {
 func TestSTSRequest_GetCallerIdentity_AssumedRole(t *testing.T) {
 	// AssumedRoleID comes from the resolved SessionCredential; the dispatcher must not re-lookup it.
 	svc := &flexMockSTSService{
-		lookupSessionFn: func(string) (*handlers_sts.SessionCredential, error) {
+		lookupSessionFn: func(string) (*stsdomain.SessionCredential, error) {
 			t.Fatal("assumed-role GetCallerIdentity must not re-lookup the session credential")
 			return nil, nil
 		},
@@ -447,7 +447,7 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 // resolved by the SigV4 middleware rather than reformatted at "/".
 func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) {
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -455,7 +455,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 		STSService:     &flexMockSTSService{},
 		IAMService: &mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{testAccessKey: {
+			accessKeys: map[string]*iamdomain.AccessKey{testAccessKey: {
 				AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret,
 				UserName: "alice", AccountID: "123456789012", Status: "Active",
 			}},

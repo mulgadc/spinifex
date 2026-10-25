@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +21,7 @@ import (
 func setupACMStore(t *testing.T) *Store {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	store, err := NewStore(t.Context(), nc, masterKey)
 	require.NoError(t, err)

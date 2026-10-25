@@ -63,6 +63,7 @@ import (
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
@@ -78,7 +79,6 @@ import (
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -297,7 +297,7 @@ type Daemon struct {
 
 	// iamEnsurerMu guards the lazily-built system-role IAM service (systemRoleEnsurer).
 	iamEnsurerMu     sync.Mutex
-	iamEnsurerCached handlers_iam.SystemInstanceRoleEnsurer
+	iamEnsurerCached iamdomain.SystemInstanceRoleEnsurer
 
 	mu sync.Mutex
 }
@@ -1026,6 +1026,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.GetSerialConsoleAccessStatus", handleNATSRequest(d.node, d.accountService.GetSerialConsoleAccessStatus), "spinifex-workers"},
 		{"ec2.EnableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.EnableSerialConsoleAccess), "spinifex-workers"},
 		{"ec2.DisableSerialConsoleAccess", handleNATSRequest(d.node, d.accountService.DisableSerialConsoleAccess), "spinifex-workers"},
+		{ec2v1.SealAccountSettingsSubject, handleNATSRequest(d.node, d.sealAccountSettings), "spinifex-workers"},
 		{clusterv1.NodeHealthSubject(d.node), d.handleHealthCheck, ""},
 		{clusterv1.NodesDiscoverSubject, d.handleNodeDiscover, ""},
 		{clusterv1.NodeStatusSubject, d.handleNodeStatus, ""},
@@ -1287,6 +1288,15 @@ func (d *Daemon) subscribeAll() error {
 		// so a worker on another node would find nothing to stop.
 		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
+
+	// Per-node, no queue group: a second daemon claiming this node ID also
+	// answers, so the teardown probe sees a duplicate and refuses to seal. An
+	// invalid node ID serves nothing, so this daemon reads as incompatible.
+	if ec2v1.ValidSealCapabilityNode(d.node) {
+		subs = append(subs, natsSub{ec2v1.AccountSettingsSealCapabilitySubject(d.node), handleNATSRequest(d.node, d.accountSettingsSealCapability), ""})
+	} else {
+		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
+	}
 
 	return d.registerNatsSubs(subs)
 }
@@ -1992,6 +2002,12 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize account settings service: %w", err)
 	}
+	accountStatusJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("jetstream handle for account status reader: %w", err)
+	}
+	var _ ec2account.AccountTerminationChecker = (*iamdomain.AccountStatusReader)(nil)
+	d.accountService.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(accountStatusJS))
 
 	// ELBv2 resolves listener certificate private keys through its own ACM
 	// Store over the same JetStream bucket the ACM service writes, so it needs

@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +41,7 @@ func (s *addRoleIAMService) AddRoleToInstanceProfile(_ string, input *iam.AddRol
 	return &iam.AddRoleToInstanceProfileOutput{}, nil
 }
 
-func addRoleGateway(statements ...handlers_iam.Statement) (*GatewayConfig, *addRoleIAMService) {
+func addRoleGateway(statements ...iamdomain.Statement) (*GatewayConfig, *addRoleIAMService) {
 	base, inner := iamScopedGateway(map[string]string{
 		"web":   passRoleProfileARN,
 		"admin": passRoleAdminARN,

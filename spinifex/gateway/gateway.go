@@ -33,15 +33,15 @@ import (
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	gateway_sts "github.com/mulgadc/spinifex/spinifex/gateway/sts"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -147,13 +147,13 @@ type GatewayConfig struct {
 	// stopped answering, which would otherwise drop out of the answer entirely.
 	// Zero value keeps the pre-existing fan-out-only behaviour.
 	InstanceStatus ec2instanceapi.StatusSynthesis
-	IAMService     handlers_iam.IAMService
+	IAMService     iamdomain.IAMService
 	// BucketStore reaps a tenant's S3 buckets during account teardown. It
 	// signs with the config service credential, which predastore already
 	// trusts to reach any bucket, so this grants enumeration, not access.
 	// Nil makes DeleteAccount refuse rather than tear down around the data.
 	BucketStore accountteardown.BucketStore
-	STSService  handlers_sts.STSService
+	STSService  stsdomain.STSService
 	RateLimiter *authlimit.AuthRateLimiter // Per-IP auth failure rate limiter
 	Throttler   *ratelimit.Throttler       // Per-account+action API request throttler
 	// accountStatus caches which accounts are ACTIVE, so enforcing account
@@ -824,7 +824,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	// type. Identity-sensitive decisions (root bypass, resolver selection) are
 	// fully inside their branch so an assumed-role SessionName of "root" cannot
 	// reach the user-branch root short-circuit.
-	var resolve func() ([]handlers_iam.PolicyDocument, error)
+	var resolve func() ([]iamdomain.PolicyDocument, error)
 	var logIdentity string
 
 	switch principal.principalType {
@@ -833,7 +833,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 			// Global root bypass — user branch only.
 			return nil
 		}
-		resolve = func() ([]handlers_iam.PolicyDocument, error) {
+		resolve = func() ([]iamdomain.PolicyDocument, error) {
 			return gw.IAMService.GetUserPolicies(principal.accountID, principal.identity)
 		}
 		logIdentity = principal.identity
@@ -849,7 +849,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 				"err", perr)
 			return errors.New(awserrors.ErrorAccessDenied)
 		}
-		resolve = func() ([]handlers_iam.PolicyDocument, error) {
+		resolve = func() ([]iamdomain.PolicyDocument, error) {
 			return gw.IAMService.GetRolePolicies(principal.accountID, roleName)
 		}
 		logIdentity = principal.assumedRoleARN
@@ -859,7 +859,7 @@ func (gw *GatewayConfig) evaluatePrincipalPolicyResources(
 	}
 
 	// Resolve policies, retrying transient NATS errors. Fail-closed on non-transient errors.
-	var policies []handlers_iam.PolicyDocument
+	var policies []iamdomain.PolicyDocument
 	var err error
 	for attempt := range 3 {
 		policies, err = resolve()

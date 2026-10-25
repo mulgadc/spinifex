@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -212,4 +213,132 @@ func countDocumentRows(ctx context.Context, t *testing.T, backend *pgxBackend, a
 	var count int
 	err = tx.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %s WHERE source_key = $1", sanitizeIdent(tableName(indexID))), sourceKey).Scan(&count)
 	return count, err
+}
+
+// TestPgxBackend_EnsureAccount_GrantFailure_Integration fails EnsureAccount's
+// schema grant after CREATE SCHEMA and CREATE ROLE have run, and proves the
+// schema is rolled back with it rather than left behind ungranted.
+func TestPgxBackend_EnsureAccount_GrantFailure_Integration(t *testing.T) {
+	dsn := os.Getenv(testDSNEnv)
+	if dsn == "" {
+		t.Skipf("%s not set; skipping pgvector integration test", testDSNEnv)
+	}
+
+	ctx := context.Background()
+	backend, err := NewPgxBackend(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(backend.Close)
+
+	const accountID = "333333333333"
+	dropAccount(ctx, t, backend, accountID)
+	t.Cleanup(func() { dropAccount(context.Background(), t, backend, accountID) })
+
+	removeTrigger := failGrantsMatching(ctx, t, backend, "%ON SCHEMA%"+schemaName(accountID)+"%")
+	err = backend.EnsureAccount(ctx, accountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grant schema to role")
+
+	var schemaExists, roleExists bool
+	require.NoError(t, backend.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, schemaName(accountID)).Scan(&schemaExists))
+	require.NoError(t, backend.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, roleName(accountID)).Scan(&roleExists))
+	assert.False(t, schemaExists, "a failed grant must roll back the schema it would have granted")
+	assert.False(t, roleExists, "a failed grant must roll back the role it would have granted to")
+
+	removeTrigger()
+	require.NoError(t, backend.EnsureAccount(ctx, accountID))
+
+	var usage, create bool
+	require.NoError(t, backend.pool.QueryRow(ctx,
+		`SELECT has_schema_privilege($1, $2, 'USAGE'), has_schema_privilege($1, $2, 'CREATE')`,
+		roleName(accountID), schemaName(accountID)).Scan(&usage, &create))
+	assert.True(t, usage, "a retried EnsureAccount must grant USAGE on the schema")
+	assert.True(t, create, "a retried EnsureAccount must grant CREATE on the schema")
+}
+
+// TestPgxBackend_RegrantAccount_PartialFailure_Integration fails
+// RegrantAccount's sequence grant after its table grant has run, as a restore
+// would hit it, and proves a retry leaves the role able to insert again.
+func TestPgxBackend_RegrantAccount_PartialFailure_Integration(t *testing.T) {
+	dsn := os.Getenv(testDSNEnv)
+	if dsn == "" {
+		t.Skipf("%s not set; skipping pgvector integration test", testDSNEnv)
+	}
+
+	ctx := context.Background()
+	backend, err := NewPgxBackend(ctx, dsn)
+	require.NoError(t, err)
+	t.Cleanup(backend.Close)
+
+	const accountID = "444444444444"
+	dropAccount(ctx, t, backend, accountID)
+	t.Cleanup(func() { dropAccount(context.Background(), t, backend, accountID) })
+	require.NoError(t, backend.EnsureAccount(ctx, accountID))
+
+	// A restore recreates the account's tables owned by the connecting role,
+	// not the account role, so the account role starts with no grant on them.
+	table := sanitizeIdent(schemaName(accountID)) + "." + sanitizeIdent("restored")
+	_, err = backend.pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigserial PRIMARY KEY, chunk text NOT NULL)`, table))
+	require.NoError(t, err)
+
+	removeTrigger := failGrantsMatching(ctx, t, backend, "%ALL SEQUENCES%"+schemaName(accountID)+"%")
+	err = backend.RegrantAccount(ctx, accountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "regrant sequences")
+
+	removeTrigger()
+	require.NoError(t, backend.RegrantAccount(ctx, accountID))
+
+	tx, err := backend.pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL ROLE %s", sanitizeIdent(roleName(accountID))))
+	require.NoError(t, err)
+	_, err = tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (chunk) VALUES ('after retry')`, table))
+	assert.NoError(t, err, "a retried RegrantAccount must restore insert access, sequence included")
+}
+
+// failGrantsMatching installs a database-wide event trigger that aborts any
+// GRANT whose statement text matches the LIKE pattern, so a test can fail one
+// step of a multi-statement grant. The returned func removes it early.
+func failGrantsMatching(ctx context.Context, t *testing.T, backend *pgxBackend, pattern string) func() {
+	t.Helper()
+	_, err := backend.pool.Exec(ctx, fmt.Sprintf(`CREATE OR REPLACE FUNCTION ochrevector_test_fail_grant() RETURNS event_trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF current_query() LIKE %s THEN
+		RAISE EXCEPTION 'injected grant failure';
+	END IF;
+END $$`, quoteLiteral(pattern)))
+	require.NoError(t, err)
+	// A killed earlier run can leave the trigger behind; CREATE EVENT TRIGGER
+	// has no IF NOT EXISTS form.
+	_, err = backend.pool.Exec(ctx, `DROP EVENT TRIGGER IF EXISTS ochrevector_test_fail_grant`)
+	require.NoError(t, err)
+	_, err = backend.pool.Exec(ctx, `CREATE EVENT TRIGGER ochrevector_test_fail_grant ON ddl_command_start WHEN TAG IN ('GRANT') EXECUTE FUNCTION ochrevector_test_fail_grant()`)
+	require.NoError(t, err)
+
+	remove := func() {
+		_, err := backend.pool.Exec(context.Background(), `DROP EVENT TRIGGER IF EXISTS ochrevector_test_fail_grant`)
+		require.NoError(t, err)
+		_, err = backend.pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS ochrevector_test_fail_grant()`)
+		require.NoError(t, err)
+	}
+	t.Cleanup(remove)
+	return remove
+}
+
+// quoteLiteral renders s as a single-quoted SQL string literal.
+func quoteLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// dropAccount removes accountID's schema and role so a test starts from, and
+// leaves behind, an account that was never ensured.
+func dropAccount(ctx context.Context, t *testing.T, backend *pgxBackend, accountID string) {
+	t.Helper()
+	_, err := backend.pool.Exec(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, sanitizeIdent(schemaName(accountID))))
+	require.NoError(t, err)
+	_, err = backend.pool.Exec(ctx, fmt.Sprintf(`DROP ROLE IF EXISTS %s`, sanitizeIdent(roleName(accountID))))
+	require.NoError(t, err)
 }

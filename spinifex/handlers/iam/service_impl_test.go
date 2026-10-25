@@ -351,6 +351,35 @@ func TestDeleteUser_WithAccessKeys(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
 }
 
+func TestDeleteUser_DanglingAccessKeyID(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "danglingkey")
+
+	keyOut, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.accessKeysBucket.Delete(t.Context(), *keyOut.AccessKey.AccessKeyId))
+
+	listOut, err := svc.ListAccessKeys(testAccountID, &iam.ListAccessKeysInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.NoError(t, err)
+	require.Empty(t, listOut.AccessKeyMetadata)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
 func TestDeleteUser_WithAttachedPolicies(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

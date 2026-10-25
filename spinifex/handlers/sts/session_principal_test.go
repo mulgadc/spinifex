@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -331,7 +331,7 @@ func TestVerifySessionPrincipal_NilCredential_IsAFault(t *testing.T) {
 // faultingIAMService fails every lookup with a non-NoSuchEntity error, standing
 // in for an unreachable IAM backend.
 type faultingIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	err error
 }

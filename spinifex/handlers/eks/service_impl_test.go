@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,7 +73,7 @@ func TestMissingOrchestrationDeps_IAMProviderSatisfiesGate(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
 	f.svc.deps.IAM = nil
-	f.svc.deps.IAMProvider = func() handlers_iam.SystemInstanceRoleEnsurer { return newFakeEnsurer() }
+	f.svc.deps.IAMProvider = func() iamdomain.SystemInstanceRoleEnsurer { return newFakeEnsurer() }
 
 	require.Empty(t, f.svc.missingOrchestrationDeps())
 }

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +47,7 @@ func TestProfileForReportsWhyTheRoleIsMissing(t *testing.T) {
 		{
 			name: "role resolved",
 			res:  &fakeResolver{eni: testENI(), inst: &instanceFacts{iamInstanceProfileArn: "arn:aws:iam::111122223333:instance-profile/app"}},
-			iam:  &fakeIAM{profile: &handlers_iam.InstanceProfile{ARN: "arn", InstanceProfileID: "AIPA", RoleName: "app"}},
+			iam:  &fakeIAM{profile: &iamdomain.InstanceProfile{ARN: "arn", InstanceProfileID: "AIPA", RoleName: "app"}},
 			want: roleMissNone,
 		},
 	}

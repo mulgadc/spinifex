@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -72,9 +72,9 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	calls := serveCounted(t, nc, handlers_iam.SubjectResolveInstanceProfile,
-		func(req *handlers_iam.ResolveInstanceProfileRequest) (*handlers_iam.InstanceProfile, error) {
-			return &handlers_iam.InstanceProfile{
+	calls := serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
+		func(req *iamdomain.ResolveInstanceProfileRequest) (*iamdomain.InstanceProfile, error) {
+			return &iamdomain.InstanceProfile{
 				InstanceProfileName: "app",
 				AccountID:           req.AccountID,
 				RoleName:            "app-role",
@@ -94,8 +94,8 @@ func TestNATSProfileLookup_CachesProfile(t *testing.T) {
 func TestNATSProfileLookup_CachesRole(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	calls := serveCounted(t, nc, handlers_iam.SubjectGetRole,
-		func(req *handlers_iam.GetRoleRequest) (*iam.GetRoleOutput, error) {
+	calls := serveCounted(t, nc, iamdomain.SubjectGetRole,
+		func(req *iamdomain.GetRoleRequest) (*iam.GetRoleOutput, error) {
 			return &iam.GetRoleOutput{Role: &iam.Role{
 				RoleName: req.Input.RoleName,
 				Arn:      aws.String("arn:aws:iam::123456789012:role/app-role"),
@@ -114,8 +114,8 @@ func TestNATSProfileLookup_CachesRole(t *testing.T) {
 func TestNATSProfileLookup_PropagatesError(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	serveCounted(t, nc, handlers_iam.SubjectResolveInstanceProfile,
-		func(_ *handlers_iam.ResolveInstanceProfileRequest) (*handlers_iam.InstanceProfile, error) {
+	serveCounted(t, nc, iamdomain.SubjectResolveInstanceProfile,
+		func(_ *iamdomain.ResolveInstanceProfileRequest) (*iamdomain.InstanceProfile, error) {
 			return nil, assert.AnError
 		})
 

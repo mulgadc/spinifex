@@ -6,10 +6,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_iam "github.com/mulgadc/spinifex/spinifex/gateway/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,11 +17,11 @@ import (
 const testAccount = "123456789012"
 
 type resolverService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	arns      map[arn.IAMResourceType]map[string]string
 	lookupErr error
-	key       *handlers_iam.AccessKey
+	key       *iamdomain.AccessKey
 	gotKind   arn.IAMResourceType
 	gotName   string
 }
@@ -36,7 +36,7 @@ func (s *resolverService) CanonicalResourceARN(_ string, kind arn.IAMResourceTyp
 	return "", errors.New(awserrors.ErrorIAMNoSuchEntity)
 }
 
-func (s *resolverService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
+func (s *resolverService) LookupAccessKey(_ string) (*iamdomain.AccessKey, error) {
 	if s.lookupErr != nil {
 		return nil, s.lookupErr
 	}
@@ -113,7 +113,7 @@ func TestResourceARNs_UpdateAccessKeyUsesRecordedOwner(t *testing.T) {
 		arns: map[arn.IAMResourceType]map[string]string{
 			arn.IAMUser: {"owner": "arn:aws:iam::123456789012:user/team/owner"},
 		},
-		key: &handlers_iam.AccessKey{AccountID: testAccount, UserName: "owner"},
+		key: &iamdomain.AccessKey{AccountID: testAccount, UserName: "owner"},
 	}
 	input := &iam.UpdateAccessKeyInput{
 		AccessKeyId: aws.String("AKIAEXAMPLE"),

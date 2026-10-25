@@ -13,9 +13,9 @@ import (
 	"uuid"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
@@ -383,7 +383,7 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID string, src authSource
 		slog.Error("IAM lookup failed", "accessKeyID", accessKeyID, "err", err)
 		return "", principalContext{}, awserrors.ErrorInternalError
 	}
-	if ak.Status != handlers_iam.AccessKeyStatusActive {
+	if ak.Status != iamdomain.AccessKeyStatusActive {
 		slog.Warn("Auth failure: access key inactive", "accessKeyID", accessKeyID, "sourceIP", src.logIP)
 		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("akid-inactive", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId

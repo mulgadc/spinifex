@@ -21,10 +21,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 const (
@@ -237,7 +237,7 @@ func (s *STSServiceImpl) assumeRoleForCaller(ctx context.Context, callerARN, pri
 }
 
 // assumeRoleConditionKeySourceAccount is the only condition key evaluated on the
-// sts:AssumeRole trust-policy path. validateWebIdentityCondition (handlers_iam)
+// sts:AssumeRole trust-policy path. validateWebIdentityCondition (domains/iam)
 // is the write-time gate that must accept exactly this key for this action.
 const assumeRoleConditionKeySourceAccount = "aws:SourceAccount"
 
@@ -245,7 +245,7 @@ const assumeRoleConditionKeySourceAccount = "aws:SourceAccount"
 // Deny statements, second pass scans all Allows. A single-pass loop would skip a later
 // Deny and silently grant access.
 func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error {
-	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
+	doc, err := iamdomain.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
 		// Docs are validated at write time; reaching here implies on-disk corruption.
 		return fmt.Errorf("stored trust policy invalid: %w", err)
@@ -261,7 +261,7 @@ func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error
 	}
 
 	for _, stmt := range doc.Statement {
-		if stmt.Effect != handlers_iam.PolicyEffectDeny {
+		if stmt.Effect != iamdomain.PolicyEffectDeny {
 			continue
 		}
 		if !matchTrustAction(stmt.Action) {
@@ -277,7 +277,7 @@ func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error
 	}
 
 	for _, stmt := range doc.Statement {
-		if stmt.Effect != handlers_iam.PolicyEffectAllow {
+		if stmt.Effect != iamdomain.PolicyEffectAllow {
 			continue
 		}
 		if !matchTrustAction(stmt.Action) {
@@ -545,7 +545,7 @@ func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, d
 	if err != nil {
 		return nil, "", "", err
 	}
-	secretEncrypted, err := handlers_iam.EncryptSecret(plainSecret, s.masterKey)
+	secretEncrypted, err := iamdomain.EncryptSecret(plainSecret, s.masterKey)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("encrypt session secret: %w", err)
 	}

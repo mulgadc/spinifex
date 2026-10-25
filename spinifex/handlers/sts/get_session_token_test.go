@@ -11,8 +11,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +64,7 @@ func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 	assert.Equal(t, expected, stored.SessionTokenHMAC)
 	assert.NotEqual(t, token, stored.SessionTokenHMAC, "raw token must not be persisted")
 
-	decrypted, err := handlers_iam.DecryptSecret(stored.SecretEncrypted, svc.masterKey)
+	decrypted, err := iamdomain.DecryptSecret(stored.SecretEncrypted, svc.masterKey)
 	require.NoError(t, err)
 	assert.Equal(t, secret, decrypted)
 }

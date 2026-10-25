@@ -18,8 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -92,7 +92,7 @@ type ecsImageResolver interface {
 // ecsIAM is the narrow IAM surface ProvisionCapacity needs to find-or-create the
 // ecsInstanceRole, its inline policy, and the instance profile workers expose
 // over IMDS. It is the same shape the ELBv2 and EKS system roles use.
-type ecsIAM = handlers_iam.SystemInstanceRoleEnsurer
+type ecsIAM = iamdomain.SystemInstanceRoleEnsurer
 
 // Deps are the collaborators ProvisionCapacity needs: the gateway endpoint/CA to
 // seed the agent's config, the IAM service to back the instance profile, the

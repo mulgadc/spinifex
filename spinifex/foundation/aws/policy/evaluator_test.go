@@ -5,22 +5,22 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // doc builds a single-statement policy document.
-func doc(effect, action, resource string) handlers_iam.PolicyDocument {
-	return handlers_iam.PolicyDocument{
+func doc(effect, action, resource string) iamdomain.PolicyDocument {
+	return iamdomain.PolicyDocument{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
-			{Effect: effect, Action: handlers_iam.StringOrArr{action}, Resource: handlers_iam.StringOrArr{resource}},
+		Statement: []iamdomain.Statement{
+			{Effect: effect, Action: iamdomain.StringOrArr{action}, Resource: iamdomain.StringOrArr{resource}},
 		},
 	}
 }
 
 // The deny-wins algorithm and wildcard matcher are unit-tested in predastore's
 // pkg/iampolicy. These tests pin spinifex's own action-string conventions end to
-// end through iampolicy.Evaluate, exercising the aliased handlers_iam DTOs.
+// end through iampolicy.Evaluate, exercising the aliased domains/iam DTOs.
 
 // TestEvaluate_IAMInstanceProfileActionStrings pins the action strings for
 // iam:PassRole + the four EC2 instance-profile association actions so a rename of
@@ -34,7 +34,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 		"ec2:ReplaceIamInstanceProfileAssociation",
 		"ec2:DescribeIamInstanceProfileAssociations",
 	}
-	policies := []handlers_iam.PolicyDocument{
+	policies := []iamdomain.PolicyDocument{
 		doc("Allow", "*", "*"),
 	}
 	for _, a := range actions {
@@ -43,7 +43,7 @@ func TestEvaluate_IAMInstanceProfileActionStrings(t *testing.T) {
 		}
 	}
 
-	scoped := []handlers_iam.PolicyDocument{
+	scoped := []iamdomain.PolicyDocument{
 		doc("Allow", "ec2:*IamInstanceProfile*", "*"),
 		doc("Allow", "iam:PassRole", "arn:aws:iam::*:role/*"),
 	}
@@ -80,8 +80,8 @@ func TestEvaluate_STSActionStrings(t *testing.T) {
 		"sts:GetCallerIdentity",
 	}
 
-	wildcard := []handlers_iam.PolicyDocument{doc("Allow", "*", "*")}
-	scoped := []handlers_iam.PolicyDocument{doc("Allow", "sts:*", "*")}
+	wildcard := []iamdomain.PolicyDocument{doc("Allow", "*", "*")}
+	scoped := []iamdomain.PolicyDocument{doc("Allow", "sts:*", "*")}
 
 	for _, a := range actions {
 		if got := iampolicy.EvaluateWithKeys(a, "*", wildcard, nil); got != iampolicy.Allow {
@@ -119,7 +119,7 @@ func TestEvaluate_ResourceScopedStatementsNeedARealARN(t *testing.T) {
 	const prod = "arn:aws:ec2:ap-southeast-2:123456789012:instance/i-prod"
 	const dev = "arn:aws:ec2:ap-southeast-2:123456789012:instance/i-dev"
 
-	fenced := []handlers_iam.PolicyDocument{
+	fenced := []iamdomain.PolicyDocument{
 		doc("Allow", "ec2:*", "*"),
 		doc("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
 	}
@@ -133,7 +133,7 @@ func TestEvaluate_ResourceScopedStatementsNeedARealARN(t *testing.T) {
 		t.Errorf("fenced policy against an unfenced instance: got %v, want Allow", got)
 	}
 
-	scopedAllow := []handlers_iam.PolicyDocument{
+	scopedAllow := []iamdomain.PolicyDocument{
 		doc("Allow", "ec2:*", "arn:aws:ec2:*:*:instance/i-dev"),
 	}
 	if got := iampolicy.EvaluateWithKeys("ec2:TerminateInstances", "*", scopedAllow, nil); got != iampolicy.Deny {
@@ -161,7 +161,7 @@ func TestEvaluate_IAMResourceARNs(t *testing.T) {
 		"arn:aws:iam::123456789012:oidc-provider/issuer.example/id/cluster",
 	}
 	for _, resource := range resources {
-		policies := []handlers_iam.PolicyDocument{doc("Allow", "iam:Delete*", resource)}
+		policies := []iamdomain.PolicyDocument{doc("Allow", "iam:Delete*", resource)}
 		if got := iampolicy.EvaluateWithKeys("iam:DeleteRole", resource, policies, nil); got != iampolicy.Allow {
 			t.Errorf("IAM scoped policy against %q: got %v, want Allow", resource, got)
 		}
@@ -176,7 +176,7 @@ func TestEvaluate_PassingARealARNCannotWithdrawAccess(t *testing.T) {
 		"arn:aws:ec2:ap-southeast-2:123456789012:instance/i-abc/admin",
 		"not-an-arn",
 	}
-	policies := [][]handlers_iam.PolicyDocument{
+	policies := [][]iamdomain.PolicyDocument{
 		{doc("Allow", "ec2:*", "*")},
 		{doc("Allow", "*", "*")},
 	}

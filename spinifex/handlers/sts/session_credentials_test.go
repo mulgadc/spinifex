@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -285,7 +285,7 @@ func TestRunJanitor_StopsOnContextCancel(t *testing.T) {
 // wireRevoker installs svc as its IAM service's session revoker, as awsgw does.
 func wireRevoker(t *testing.T, svc *STSServiceImpl) {
 	t.Helper()
-	iamSvc, ok := svc.iamSvc.(*handlers_iam.IAMServiceImpl)
+	iamSvc, ok := svc.iamSvc.(*iamdomain.IAMServiceImpl)
 	require.True(t, ok)
 	iamSvc.SetSessionRevoker(svc)
 }

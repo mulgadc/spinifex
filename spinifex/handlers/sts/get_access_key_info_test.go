@@ -7,8 +7,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,14 +17,14 @@ import (
 // canned result, so a test can assert both the outcome and whether the KV
 // bucket was reached at all.
 type lookupStubIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	calls int
-	key   *handlers_iam.AccessKey
+	key   *iamdomain.AccessKey
 	err   error
 }
 
-func (s *lookupStubIAMService) LookupAccessKey(string) (*handlers_iam.AccessKey, error) {
+func (s *lookupStubIAMService) LookupAccessKey(string) (*iamdomain.AccessKey, error) {
 	s.calls++
 	return s.key, s.err
 }
@@ -154,7 +154,7 @@ func TestGetAccessKeyInfo_KVFaultIsInternalError(t *testing.T) {
 // a blank account would read to a caller as a mismatch with their own.
 func TestGetAccessKeyInfo_RecordWithoutAccountIsInternalError(t *testing.T) {
 	svc, _ := newTestSetup(t)
-	svc.iamSvc = &lookupStubIAMService{key: &handlers_iam.AccessKey{AccessKeyID: "AKIA0123456789ABCDEF"}}
+	svc.iamSvc = &lookupStubIAMService{key: &iamdomain.AccessKey{AccessKeyID: "AKIA0123456789ABCDEF"}}
 
 	_, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String("AKIA0123456789ABCDEF")})
 	require.Error(t, err)

@@ -17,8 +17,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/mulgadc/bluebottle/pkg/auth"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // webIdentityClaims is the RegisteredClaims subset the IRSA flow consumes (iss/sub/aud/exp).
@@ -104,7 +104,7 @@ func (s *STSServiceImpl) AssumeRoleWithWebIdentity(input *sts.AssumeRoleWithWebI
 	}
 
 	issuerHostPath := strings.TrimPrefix(claims.Issuer, "https://")
-	federatedARN := handlers_iam.OIDCProviderARN(roleAccountID, issuerHostPath)
+	federatedARN := iamdomain.OIDCProviderARN(roleAccountID, issuerHostPath)
 	identity := webIdentityContext{
 		federatedPrincipalARN: federatedARN,
 		issuer:                claims.Issuer,
@@ -196,7 +196,7 @@ func (s *STSServiceImpl) webIdentityKeyFunc(ctx context.Context, roleAccountID s
 // registry. Bucket-not-found and key-not-found return the same error to avoid leaking
 // account activation status to anonymous callers.
 func (s *STSServiceImpl) verifyOIDCProviderRegistered(ctx context.Context, roleAccountID, issuer string) error {
-	bucketName := handlers_iam.IAMAccountBucketName(roleAccountID)
+	bucketName := iamdomain.IAMAccountBucketName(roleAccountID)
 	kv, err := s.js.KeyValue(ctx, bucketName)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrBucketNotFound) {
@@ -204,7 +204,7 @@ func (s *STSServiceImpl) verifyOIDCProviderRegistered(ctx context.Context, roleA
 		}
 		return fmt.Errorf("open IAM account bucket %s: %w", bucketName, err)
 	}
-	_, err = kv.Get(ctx, handlers_iam.OIDCProviderKey(issuer))
+	_, err = kv.Get(ctx, iamdomain.OIDCProviderKey(issuer))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return errors.New("OIDC provider not registered")

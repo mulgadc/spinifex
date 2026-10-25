@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -161,7 +161,7 @@ type CertRecord struct {
 type Store struct {
 	store *kvstore.Store[CertRecord]
 	// masterKey encrypts/decrypts CertRecord.PrivateKey at rest (AES-256-GCM via
-	// handlers_iam.EncryptSecret/DecryptSecret). Every Store over the ACM bucket
+	// iamdomain.EncryptSecret/DecryptSecret). Every Store over the ACM bucket
 	// — the ACM service and ELBv2's independent read-only Store alike — must be
 	// constructed with the same deployment key: a keyed writer and an unkeyed (or
 	// differently keyed) reader of the same bucket disagree silently, with the
@@ -221,7 +221,7 @@ func certKey(certArn string) string {
 // via the legacy-passthrough path in decryptPrivateKey is therefore
 // re-encrypted the next time it is put.
 func (s *Store) PutCert(ctx context.Context, rec *CertRecord) error {
-	ciphertext, err := handlers_iam.EncryptSecret(rec.PrivateKey, s.masterKey)
+	ciphertext, err := iamdomain.EncryptSecret(rec.PrivateKey, s.masterKey)
 	if err != nil {
 		return fmt.Errorf("encrypt private key: %w", err)
 	}
@@ -324,7 +324,7 @@ func isPlaintextPrivateKeyPEM(raw string) bool {
 // ciphertext, garbage) is a hard error rather than a silent plaintext
 // fallback.
 func (s *Store) decryptPrivateKey(rec *CertRecord) error {
-	if plaintext, err := handlers_iam.DecryptSecret(rec.PrivateKey, s.masterKey); err == nil {
+	if plaintext, err := iamdomain.DecryptSecret(rec.PrivateKey, s.masterKey); err == nil {
 		rec.PrivateKey = plaintext
 		return nil
 	}

@@ -233,7 +233,7 @@ func TestPgxBackend_EnsureAccount_GrantFailure_Integration(t *testing.T) {
 	dropAccount(ctx, t, backend, accountID)
 	t.Cleanup(func() { dropAccount(context.Background(), t, backend, accountID) })
 
-	removeTrigger := failGrantsMatching(ctx, t, backend, "%ON SCHEMA%")
+	removeTrigger := failGrantsMatching(ctx, t, backend, "%ON SCHEMA%"+schemaName(accountID)+"%")
 	err = backend.EnsureAccount(ctx, accountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "grant schema to role")
@@ -282,7 +282,7 @@ func TestPgxBackend_RegrantAccount_PartialFailure_Integration(t *testing.T) {
 	_, err = backend.pool.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigserial PRIMARY KEY, chunk text NOT NULL)`, table))
 	require.NoError(t, err)
 
-	removeTrigger := failGrantsMatching(ctx, t, backend, "%ALL SEQUENCES%")
+	removeTrigger := failGrantsMatching(ctx, t, backend, "%ALL SEQUENCES%"+schemaName(accountID)+"%")
 	err = backend.RegrantAccount(ctx, accountID)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "regrant sequences")
@@ -310,6 +310,10 @@ BEGIN
 		RAISE EXCEPTION 'injected grant failure';
 	END IF;
 END $$`, quoteLiteral(pattern)))
+	require.NoError(t, err)
+	// A killed earlier run can leave the trigger behind; CREATE EVENT TRIGGER
+	// has no IF NOT EXISTS form.
+	_, err = backend.pool.Exec(ctx, `DROP EVENT TRIGGER IF EXISTS ochrevector_test_fail_grant`)
 	require.NoError(t, err)
 	_, err = backend.pool.Exec(ctx, `CREATE EVENT TRIGGER ochrevector_test_fail_grant ON ddl_command_start WHEN TAG IN ('GRANT') EXECUTE FUNCTION ochrevector_test_fail_grant()`)
 	require.NoError(t, err)

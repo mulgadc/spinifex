@@ -326,3 +326,34 @@ func TestModifyLaunchTemplate_ConflictRetriesAreBounded(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 	assert.Equal(t, maxVersionRetries, attempts)
 }
+
+// A conflict whose header re-read fails at the store is InternalError: an
+// unreadable header is not proof the template was deleted.
+func TestModifyLaunchTemplate_ConflictReReadFailureIsInternal(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	header := kvutil.AccountKey(testAccountID, id)
+	conflicted := false
+	svc.kv = &faultyKV{
+		KeyValue: inner,
+		beforeUpdate: func(key string) {
+			if key != header || conflicted {
+				return
+			}
+			conflicted = true
+			entry, err := inner.Get(context.Background(), header)
+			require.NoError(t, err)
+			_, err = inner.Put(context.Background(), header, entry.Value())
+			require.NoError(t, err)
+		},
+		failGet: func(key string) bool { return key == header && conflicted },
+	}
+
+	_, err := svc.ModifyLaunchTemplate(context.Background(), &ec2.ModifyLaunchTemplateInput{
+		LaunchTemplateId: aws.String(id), DefaultVersion: aws.String("2"),
+	}, testAccountID)
+	require.True(t, conflicted)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}

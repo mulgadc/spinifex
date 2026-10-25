@@ -76,7 +76,7 @@ services:
       - spinifex/domains/ec2/vpc
       - spinifex/handlers/elbv2
       - spinifex/domains/acm
-      - spinifex/handlers/iam
+      - spinifex/domains/iam
       - spinifex/handlers/ecs
       - spinifex/handlers/rds
       - spinifex/domains/rds/subnetgroup

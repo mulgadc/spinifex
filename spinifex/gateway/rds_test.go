@@ -11,9 +11,9 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -59,17 +59,17 @@ type rdsPolicyProbe struct{ consulted int }
 
 // A gateway whose IAM service answers with policies, so the RDS dispatch path
 // runs a real evaluation for either principal branch.
-func newRDSPolicyGateway(policies []handlers_iam.PolicyDocument) (*GatewayConfig, *rdsPolicyProbe) {
-	return newRDSGatewayWithResolver(func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+func newRDSPolicyGateway(policies []iamdomain.PolicyDocument) (*GatewayConfig, *rdsPolicyProbe) {
+	return newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return policies, nil
 	})
 }
 
 func newRDSGatewayWithResolver(
-	resolve func(accountID, name string) ([]handlers_iam.PolicyDocument, error),
+	resolve func(accountID, name string) ([]iamdomain.PolicyDocument, error),
 ) (*GatewayConfig, *rdsPolicyProbe) {
 	probe := &rdsPolicyProbe{}
-	counted := func(accountID, name string) ([]handlers_iam.PolicyDocument, error) {
+	counted := func(accountID, name string) ([]iamdomain.PolicyDocument, error) {
 		probe.consulted++
 		return resolve(accountID, name)
 	}
@@ -200,14 +200,14 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 		name      string
 		action    string
 		query     string
-		resources handlers_iam.StringOrArr
+		resources iamdomain.StringOrArr
 	}{
 		{
 			name:   "create snapshot",
 			action: "rds:CreateDBSnapshot",
 			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
 				"&DBSnapshotIdentifier=orders-db-nightly",
-			resources: handlers_iam.StringOrArr{
+			resources: iamdomain.StringOrArr{
 				handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db"),
 				handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
 			},
@@ -217,7 +217,7 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 			action: "rds:RestoreDBInstanceFromDBSnapshot",
 			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
 				"&DBInstanceIdentifier=orders-db-restored",
-			resources: handlers_iam.StringOrArr{
+			resources: iamdomain.StringOrArr{
 				handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
 				handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
 			},
@@ -225,10 +225,10 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			policies := []handlers_iam.PolicyDocument{{
+			policies := []iamdomain.PolicyDocument{{
 				Version: "2012-10-17",
-				Statement: []handlers_iam.Statement{{
-					Effect: "Allow", Action: handlers_iam.StringOrArr{tt.action}, Resource: tt.resources,
+				Statement: []iamdomain.Statement{{
+					Effect: "Allow", Action: iamdomain.StringOrArr{tt.action}, Resource: tt.resources,
 				}},
 			}}
 			gw, probe := newRDSPolicyGateway(policies)
@@ -244,7 +244,7 @@ func TestRDSRequest_SnapshotActionsUseOnePolicySnapshot(t *testing.T) {
 	source := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db")
 	target := handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
 	resolution := 0
-	gw, probe := newRDSGatewayWithResolver(func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw, probe := newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		resolution++
 		if resolution == 1 {
 			return allowPolicyResource("rds:CreateDBSnapshot", source), nil
@@ -283,11 +283,11 @@ func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			policies := []handlers_iam.PolicyDocument{{
+			policies := []iamdomain.PolicyDocument{{
 				Version: "2012-10-17",
-				Statement: []handlers_iam.Statement{
-					{Effect: "Allow", Action: handlers_iam.StringOrArr{tt.action}, Resource: handlers_iam.StringOrArr{"*"}},
-					{Effect: "Deny", Action: handlers_iam.StringOrArr{tt.action}, Resource: handlers_iam.StringOrArr{tt.target}},
+				Statement: []iamdomain.Statement{
+					{Effect: "Allow", Action: iamdomain.StringOrArr{tt.action}, Resource: iamdomain.StringOrArr{"*"}},
+					{Effect: "Deny", Action: iamdomain.StringOrArr{tt.action}, Resource: iamdomain.StringOrArr{tt.target}},
 				},
 			}}
 			gw, probe := newRDSPolicyGateway(policies)
@@ -313,7 +313,7 @@ func TestRDSRequest_UnscopedActionsEvaluateAgainstAnyResource(t *testing.T) {
 // snapshot sharing is out of v1, and an evaluator that sees a foreign account is
 // one policy away from allowing it.
 func TestRDSRequest_CrossAccountARNIsRejectedNotEvaluated(t *testing.T) {
-	gw, _ := newRDSGatewayWithResolver(func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw, _ := newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		t.Error("a cross-account ARN must never reach policy evaluation")
 		return nil, nil
 	})

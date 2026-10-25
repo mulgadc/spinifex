@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,20 +22,20 @@ import (
 type accountIAM struct {
 	fakeIAM
 
-	account   *handlers_iam.Account
+	account   *iamdomain.Account
 	getErr    error
 	deleted   bool
 	setStatus string
 }
 
-func (f *accountIAM) GetAccount(string) (*handlers_iam.Account, error) {
+func (f *accountIAM) GetAccount(string) (*iamdomain.Account, error) {
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
 	return f.account, nil
 }
 
-func (f *accountIAM) SetAccountStatus(_, status string) (*handlers_iam.Account, error) {
+func (f *accountIAM) SetAccountStatus(_, status string) (*iamdomain.Account, error) {
 	f.setStatus = status
 	updated := *f.account
 	updated.Status = status
@@ -102,12 +102,12 @@ func TestNameReservationReaperReleasesTheName(t *testing.T) {
 	_, js, _ := testKV(t, "spinifex-name-reaper-warmup")
 	ctx := testCtx(t)
 
-	names, err := handlers_iam.NewAccountNameIndex(ctx, js)
+	names, err := iamdomain.NewAccountNameIndex(ctx, js)
 	require.NoError(t, err)
 	require.NoError(t, names.Reserve(ctx, "tenant@example.com", "token-1"))
 	require.NoError(t, names.Commit(ctx, "tenant@example.com", "000000000042", "token-1"))
 
-	svc := &accountIAM{account: &handlers_iam.Account{
+	svc := &accountIAM{account: &iamdomain.Account{
 		AccountID: "000000000042", AccountName: "tenant@example.com",
 	}}
 	reaper := &nameReservationReaper{svc: svc, names: names}
@@ -130,12 +130,12 @@ func TestNameReservationReaperIgnoresAnotherAccountsName(t *testing.T) {
 	_, js, _ := testKV(t, "spinifex-name-reaper-other")
 	ctx := testCtx(t)
 
-	names, err := handlers_iam.NewAccountNameIndex(ctx, js)
+	names, err := iamdomain.NewAccountNameIndex(ctx, js)
 	require.NoError(t, err)
 	require.NoError(t, names.Reserve(ctx, "tenant@example.com", "token-1"))
 	require.NoError(t, names.Commit(ctx, "tenant@example.com", "000000000099", "token-1"))
 
-	svc := &accountIAM{account: &handlers_iam.Account{
+	svc := &accountIAM{account: &iamdomain.Account{
 		AccountID: "000000000042", AccountName: "tenant@example.com",
 	}}
 
@@ -154,7 +154,7 @@ func TestNameReservationReaperReportsAMissingAccount(t *testing.T) {
 	_, js, _ := testKV(t, "spinifex-name-reaper-missing")
 	ctx := testCtx(t)
 
-	names, err := handlers_iam.NewAccountNameIndex(ctx, js)
+	names, err := iamdomain.NewAccountNameIndex(ctx, js)
 	require.NoError(t, err)
 
 	svc := &accountIAM{getErr: errors.New("account not found")}
@@ -177,10 +177,10 @@ func TestAccountReapersRunLast(t *testing.T) {
 // The adapter is the one place the engine's Account and the IAM record meet,
 // so a field dropped in translation would silently break the name confirmation.
 func TestIAMAccountsAdapterCarriesEveryField(t *testing.T) {
-	svc := &accountIAM{account: &handlers_iam.Account{
+	svc := &accountIAM{account: &iamdomain.Account{
 		AccountID:   "000000000042",
 		AccountName: "tenant@example.com",
-		Status:      handlers_iam.AccountStatusActive,
+		Status:      iamdomain.AccountStatusActive,
 	}}
 	accounts := NewIAMAccounts(svc)
 
@@ -188,12 +188,12 @@ func TestIAMAccountsAdapterCarriesEveryField(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "000000000042", account.AccountID)
 	assert.Equal(t, "tenant@example.com", account.AccountName)
-	assert.Equal(t, handlers_iam.AccountStatusActive, account.Status)
+	assert.Equal(t, iamdomain.AccountStatusActive, account.Status)
 
 	updated, err := accounts.SetAccountStatus("000000000042", AccountStatusTerminating)
 	require.NoError(t, err)
 	assert.Equal(t, AccountStatusTerminating, updated.Status)
-	assert.Equal(t, handlers_iam.AccountStatusTerminating, svc.setStatus)
+	assert.Equal(t, iamdomain.AccountStatusTerminating, svc.setStatus)
 
 	require.NoError(t, accounts.DeleteAccount("000000000042"))
 	assert.True(t, svc.deleted)
@@ -203,5 +203,5 @@ func TestIAMAccountsAdapterCarriesEveryField(t *testing.T) {
 // two must not drift: a mismatch would mark accounts with a status the auth
 // gate does not recognise, and they would keep authenticating.
 func TestTerminatingStatusMatchesTheIAMRecord(t *testing.T) {
-	assert.Equal(t, handlers_iam.AccountStatusTerminating, AccountStatusTerminating)
+	assert.Equal(t, iamdomain.AccountStatusTerminating, AccountStatusTerminating)
 }

@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,7 +76,7 @@ func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
 	t.Parallel()
 	f := newFakeEnsurer()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{
-		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return f },
+		IAMProvider: func() iamdomain.SystemInstanceRoleEnsurer { return f },
 	}}
 	arn := s.ensureCPInstanceProfile(testSysAcct)
 	assert.Equal(t, "arn:aws:iam::"+testSysAcct+":instance-profile/"+CPInstanceRoleName, arn)
@@ -89,7 +89,7 @@ func TestEnsureCPInstanceProfile_UsesLazyProvider(t *testing.T) {
 func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
 	t.Parallel()
 	s := &EKSServiceImpl{deps: EKSServiceDeps{
-		IAMProvider: func() handlers_iam.SystemInstanceRoleEnsurer { return nil },
+		IAMProvider: func() iamdomain.SystemInstanceRoleEnsurer { return nil },
 	}}
 	assert.Empty(t, s.ensureCPInstanceProfile(testSysAcct))
 }
@@ -99,6 +99,6 @@ func TestEnsureCPInstanceProfile_ProviderNotReadyFallsBack(t *testing.T) {
 // matches; a drift here silently breaks IMDS credential minting.
 func TestEKSServerTrustPolicyIsAssumable(t *testing.T) {
 	t.Parallel()
-	assert.Contains(t, handlers_iam.EC2InstanceTrustPolicy, `"Service":"ec2.amazonaws.com"`)
-	assert.Contains(t, handlers_iam.EC2InstanceTrustPolicy, `"Action":"sts:AssumeRole"`)
+	assert.Contains(t, iamdomain.EC2InstanceTrustPolicy, `"Service":"ec2.amazonaws.com"`)
+	assert.Contains(t, iamdomain.EC2InstanceTrustPolicy, `"Action":"sts:AssumeRole"`)
 }

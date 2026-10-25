@@ -13,10 +13,10 @@ import (
 	"uuid"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -368,7 +368,7 @@ type principalContext struct {
 	userARN string
 	// sessionCred is the rehydrated STS record on the ASIA path, nil on the
 	// long-lived one. It carries the continuity check past sig.Verify.
-	sessionCred *handlers_sts.SessionCredential
+	sessionCred *stsdomain.SessionCredential
 }
 
 // resolveLongLivedAKID handles the AKIA path: IAM lookup, status check, secret decrypt.
@@ -383,7 +383,7 @@ func (gw *GatewayConfig) resolveLongLivedAKID(accessKeyID string, src authSource
 		slog.Error("IAM lookup failed", "accessKeyID", accessKeyID, "err", err)
 		return "", principalContext{}, awserrors.ErrorInternalError
 	}
-	if ak.Status != handlers_iam.AccessKeyStatusActive {
+	if ak.Status != iamdomain.AccessKeyStatusActive {
 		slog.Warn("Auth failure: access key inactive", "accessKeyID", accessKeyID, "sourceIP", src.logIP)
 		gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("akid-inactive", accessKeyID))
 		return "", principalContext{}, awserrors.ErrorInvalidClientTokenId
@@ -490,7 +490,7 @@ func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, acces
 	}
 
 	if _, err := gw.STSService.VerifySessionPrincipal(principal.sessionCred); err != nil {
-		if !handlers_sts.IsSessionPrincipalVerdict(err) {
+		if !stsdomain.IsSessionPrincipalVerdict(err) {
 			slog.Error("Session principal continuity check faulted, refusing to authorize",
 				"accessKeyID", accessKeyID, "err", err)
 			return awserrors.ErrorInternalError
@@ -504,7 +504,7 @@ func (gw *GatewayConfig) checkSessionPrincipal(principal principalContext, acces
 		// Every legacy record fails at once on the deploy that ships this check, so
 		// counting them would lock out a shared egress address on distinct-attempt
 		// volume alone and answer "retry later" to a fleet that cannot act on it.
-		if !errors.Is(err, handlers_sts.ErrSessionPrincipalLegacy) {
+		if !errors.Is(err, stsdomain.ErrSessionPrincipalLegacy) {
 			gw.RateLimiter.RecordFailure(src.limitKey, authlimit.Fingerprint("session-principal", accessKeyID))
 		}
 		return awserrors.ErrorInvalidClientTokenId

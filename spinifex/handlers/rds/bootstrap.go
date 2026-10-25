@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"time"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // The staged master password is encrypted at rest under bootstrap-payloads/{id}
@@ -37,7 +37,7 @@ type BootstrapPayloadEnvelope struct {
 	EncryptedPayload  string    `json:"encryptedPayload"`
 }
 
-// The plaintext inside EncryptedPayload. handlers_iam.EncryptSecret takes no
+// The plaintext inside EncryptedPayload. iamdomain.EncryptSecret takes no
 // additional authenticated data, so every claim is carried here and validated
 // after decrypting — ciphertext copied between accounts, instances or
 // generations then fails on a claim rather than being accepted.
@@ -102,7 +102,7 @@ func (s *Service) writeBootstrapPayload(ctx context.Context, kv *kvstore.Bucket,
 	if err != nil {
 		return "", fmt.Errorf("rds bootstrap: marshal the payload for %s: %w", rec.DBInstanceIdentifier, err)
 	}
-	ciphertext, err := handlers_iam.EncryptSecret(string(plaintext), key)
+	ciphertext, err := iamdomain.EncryptSecret(string(plaintext), key)
 	if err != nil {
 		return "", fmt.Errorf("rds bootstrap: encrypt the payload for %s: %w", rec.DBInstanceIdentifier, err)
 	}
@@ -196,7 +196,7 @@ func (s *Service) openBootstrapPayload(envelope *BootstrapPayloadEnvelope, accou
 			rec.DBInstanceIdentifier, envelope.KeyID, keyID)
 	}
 
-	plaintext, err := handlers_iam.DecryptSecret(envelope.EncryptedPayload, key)
+	plaintext, err := iamdomain.DecryptSecret(envelope.EncryptedPayload, key)
 	if err != nil {
 		return nil, fmt.Errorf("rds bootstrap: decrypt the payload for %s: %w", rec.DBInstanceIdentifier, err)
 	}

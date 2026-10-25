@@ -1,0 +1,1098 @@
+package sts
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	testCallerAccountID   = awsidentifiers.GlobalAccountID
+	testCallerUserName    = "alice"
+	testCallerAccessKeyID = "AKIAIOSFODNN7EXAMPLE"
+	testCrossAccountID    = "999999999999"
+)
+
+func testCallerARN() string {
+	return fmt.Sprintf("arn:aws:iam::%s:user/%s", testCallerAccountID, testCallerUserName)
+}
+
+func trustPolicyAllowingUser(callerARN string) string {
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}]}`, callerARN)
+}
+
+func trustPolicyAllowingWildcard() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}`
+}
+
+func trustPolicyAllowingRoot(accountID string) string {
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::%s:root"},"Action":"sts:AssumeRole"}]}`, accountID)
+}
+
+func trustPolicyAllowingBareAccount(accountID string) string {
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}]}`, accountID)
+}
+
+// createRoleInAccount writes a role directly into the IAM roles bucket. The
+// public CreateRole API is account-scoped, and the test helpers in this file
+// need to seed roles into arbitrary accounts to exercise cross-account paths.
+func createRoleInAccount(t *testing.T, svc *STSServiceImpl, accountID, roleName, trustPolicy string) *iam.Role {
+	t.Helper()
+	out, err := svc.iamSvc.CreateRole(accountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String(roleName),
+		AssumeRolePolicyDocument: aws.String(trustPolicy),
+	})
+	require.NoError(t, err)
+	return out.Role
+}
+
+func basicAssumeRoleInput(roleARN, sessionName string) *sts.AssumeRoleInput {
+	return &sts.AssumeRoleInput{
+		RoleArn:         aws.String(roleARN),
+		RoleSessionName: aws.String(sessionName),
+	}
+}
+
+func TestAssumeRole_HappyPath_PersistsRecord(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(caller))
+
+	out, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "session-1"))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Credentials)
+	require.NotNil(t, out.AssumedRoleUser)
+
+	akid := aws.StringValue(out.Credentials.AccessKeyId)
+	secret := aws.StringValue(out.Credentials.SecretAccessKey)
+	token := aws.StringValue(out.Credentials.SessionToken)
+
+	assert.True(t, strings.HasPrefix(akid, SessionAccessKeyIDPrefix))
+	assert.Len(t, akid, 20)
+	assert.NotEmpty(t, secret)
+	assert.NotEmpty(t, token)
+	assert.True(t, out.Credentials.Expiration.After(time.Now().UTC()))
+	assert.Equal(t, fmt.Sprintf("arn:aws:sts::%s:assumed-role/app/session-1", testCallerAccountID),
+		aws.StringValue(out.AssumedRoleUser.Arn))
+	assert.Equal(t, aws.StringValue(role.RoleId)+":session-1",
+		aws.StringValue(out.AssumedRoleUser.AssumedRoleId))
+
+	stored, err := svc.LookupSessionCredential(akid)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, "session-1", stored.SessionName)
+	assert.Equal(t, aws.StringValue(role.RoleId), stored.RoleID)
+	assert.Equal(t, aws.StringValue(role.Arn), stored.UnderlyingRoleARN)
+
+	// SessionToken returned to the client must HMAC to the persisted record
+	// using the same master key. This protects the SigV4 verifier's eventual
+	// constant-time compare from a stored-vs-wire mismatch regression.
+	mac := hmac.New(sha256.New, svc.masterKey)
+	mac.Write([]byte(token))
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	assert.Equal(t, expected, stored.SessionTokenHMAC)
+	assert.NotEqual(t, token, stored.SessionTokenHMAC, "raw token must not be persisted")
+
+	// Persisted secret must decrypt back to the secret returned to the client.
+	decrypted, err := iamdomain.DecryptSecret(stored.SecretEncrypted, svc.masterKey)
+	require.NoError(t, err)
+	assert.Equal(t, secret, decrypted)
+}
+
+func TestAssumeRole_WildcardPrincipal_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "open", trustPolicyAllowingWildcard())
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.NoError(t, err)
+}
+
+func TestAssumeRole_RootPrincipal_MatchesAnyPrincipalInAccount(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "rooted", trustPolicyAllowingRoot(testCallerAccountID))
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.NoError(t, err)
+}
+
+// TestAssumeRole_NonIAMRootARN_DoesNotMatch ensures the :root shorthand is
+// scoped to arn:aws:iam — a malformed ARN like arn:aws:s3::A:root pasted into
+// a trust policy must fail closed, not silently grant the account.
+func TestAssumeRole_NonIAMRootARN_DoesNotMatch(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	trustPolicy := fmt.Sprintf(
+		`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:s3::%s:root"},"Action":"sts:AssumeRole"}]}`,
+		testCallerAccountID)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "s3root", trustPolicy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+func TestAssumeRole_BareAccountIDPrincipal_TreatedAsRoot(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "bare", trustPolicyAllowingBareAccount(testCallerAccountID))
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.NoError(t, err)
+}
+
+func TestAssumeRole_ActionWildcards(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+
+	cases := []struct {
+		name   string
+		action string
+	}{
+		{"sts_wildcard", `"sts:*"`},
+		{"global_wildcard", `"*"`},
+		{"sts_assumeRole_in_array", `["sts:AssumeRole"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":%s}]}`, caller, tc.action)
+			role := createRoleInAccount(t, svc, testCallerAccountID, "wild-"+tc.name, policy)
+			_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+				basicAssumeRoleInput(*role.Arn, "sess"))
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+
+	// Allow listed first; Deny second. A single-pass "return on first Allow"
+	// loop would silently skip the Deny and grant the session.
+	policyAllowThenDeny := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"},
+        {"Effect":"Deny","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}
+    ]}`, caller)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "deny-second", policyAllowThenDeny)
+
+	_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(caller, *role.Arn))
+
+	// And in the opposite order: Deny first, Allow second — same result.
+	policyDenyThenAllow := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
+        {"Effect":"Deny","Principal":{"AWS":%q},"Action":"sts:AssumeRole"},
+        {"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}
+    ]}`, caller)
+	role2 := createRoleInAccount(t, svc, testCallerAccountID, "deny-first", policyDenyThenAllow)
+	_, err = svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role2.Arn, "sess"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	other := fmt.Sprintf("arn:aws:iam::%s:user/bob", testCallerAccountID)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "narrow", trustPolicyAllowingUser(other))
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), *role.Arn))
+}
+
+func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	// AWS masks missing roles to AccessDenied regardless of account, naming the
+	// RoleArn as supplied, path included.
+	roleARN := fmt.Sprintf("arn:aws:iam::%s:role/team/ghost", testCallerAccountID)
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(roleARN, "sess"))
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
+}
+
+func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	// Caller is in callerAccountID; missing role is in testCrossAccountID.
+	// Masking to AccessDenied (rather than NoSuchEntity) prevents
+	// cross-account role enumeration.
+	roleARN := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID)
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(roleARN, "sess"))
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
+}
+
+func TestAssumeRole_DurationBounds(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	role := createRoleInAccount(t, svc, testCallerAccountID, "dur", trustPolicyAllowingUser(caller))
+
+	const exceedsRoleMax = "The requested DurationSeconds exceeds the MaxSessionDuration set for this role."
+	cases := []struct {
+		name        string
+		seconds     int64
+		wantErr     bool
+		wantMessage string
+	}{
+		{"below_minimum", 899, true, "1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: " +
+			"Member must have value greater than or equal to 900"},
+		{"at_minimum", 900, false, ""},
+		{"default_via_unset", 0, false, ""},
+		{"at_role_max", 3600, false, ""},
+		{"above_role_max", 3601, true, exceedsRoleMax},
+		{"at_absolute_max", maxDurationSeconds, true, exceedsRoleMax},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := basicAssumeRoleInput(*role.Arn, "sess")
+			if tc.seconds != 0 {
+				input.DurationSeconds = aws.Int64(tc.seconds)
+			}
+			_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName, input)
+			if tc.wantErr {
+				requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestAssumeRole_LongerMaxSessionDuration_CapAtTwelveHours(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	out, err := svc.iamSvc.CreateRole(testCallerAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("long"),
+		AssumeRolePolicyDocument: aws.String(trustPolicyAllowingUser(caller)),
+		MaxSessionDuration:       aws.Int64(maxDurationSeconds),
+	})
+	require.NoError(t, err)
+	role := out.Role
+
+	// 12-hour duration is permitted because role.MaxSessionDuration == 43200.
+	_, err = svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		&sts.AssumeRoleInput{
+			RoleArn:         role.Arn,
+			RoleSessionName: aws.String("sess"),
+			DurationSeconds: aws.Int64(maxDurationSeconds),
+		})
+	require.NoError(t, err)
+
+	// 43201s is rejected — above the absolute 12h ceiling.
+	_, err = svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		&sts.AssumeRoleInput{
+			RoleArn:         role.Arn,
+			RoleSessionName: aws.String("sess2"),
+			DurationSeconds: aws.Int64(maxDurationSeconds + 1),
+		})
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value less than or equal to 43200")
+}
+
+// AWS checks input constraints before the role, so a bad value against a missing
+// role is a ValidationError, and every failed constraint is reported at once.
+func TestAssumeRole_ConstraintsCheckedBeforeRoleAndReportedTogether(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	missing := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCallerAccountID)
+
+	input := basicAssumeRoleInput(missing, "sess")
+	input.DurationSeconds = aws.Int64(899)
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value greater than or equal to 900")
+
+	input = basicAssumeRoleInput(missing, "bad name!")
+	input.DurationSeconds = aws.Int64(43201)
+	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+	requireAWSError(t, err, awserrors.ErrorValidationError,
+		"2 validation errors detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
+			"Member must have value less than or equal to 43200; "+
+			"Value 'bad name!' at 'roleSessionName' failed to satisfy constraint: "+
+			`Member must satisfy regular expression pattern: [\w+=,.@-]*`)
+}
+
+func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "nopol", trustPolicyAllowingUser(testCallerARN()))
+
+	cases := []struct {
+		name  string
+		input *sts.AssumeRoleInput
+	}{
+		{
+			name: "inline_policy",
+			input: &sts.AssumeRoleInput{
+				RoleArn:         role.Arn,
+				RoleSessionName: aws.String("sess"),
+				Policy:          aws.String(`{"Version":"2012-10-17","Statement":[]}`),
+			},
+		},
+		{
+			name: "policy_arns",
+			input: &sts.AssumeRoleInput{
+				RoleArn:         role.Arn,
+				RoleSessionName: aws.String("sess"),
+				PolicyArns: []*sts.PolicyDescriptorType{{
+					Arn: aws.String("arn:aws:iam::000000000000:policy/x"),
+				}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
+			requireUnsupportedSessionInput(t, err, "Session policies are not supported")
+		})
+	}
+}
+
+func TestAssumeRole_RejectsSessionTags(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "notag", trustPolicyAllowingUser(testCallerARN()))
+
+	cases := []struct {
+		name  string
+		input *sts.AssumeRoleInput
+	}{
+		{
+			name: "tags",
+			input: &sts.AssumeRoleInput{
+				RoleArn:         role.Arn,
+				RoleSessionName: aws.String("sess"),
+				Tags:            []*sts.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+			},
+		},
+		{
+			name: "transitive_tag_keys",
+			input: &sts.AssumeRoleInput{
+				RoleArn:           role.Arn,
+				RoleSessionName:   aws.String("sess"),
+				TransitiveTagKeys: []*string{aws.String("k")},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
+			requireUnsupportedSessionInput(t, err, "Session tags are not supported")
+		})
+	}
+}
+
+// assertErrorCode resolves the registered code, which a message attached via
+// awserrors.Errorf hides from err.Error().
+func assertErrorCode(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	require.Error(t, err)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, wantCode, code)
+}
+
+// requireAWSError pins the code and the exact client-facing message; an empty
+// wantMessage asserts the bare code with no message attached.
+func requireAWSError(t *testing.T, err error, wantCode, wantMessage string) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMessage, message)
+}
+
+// assumeRoleDeniedMessage is AWS's AccessDenied text, naming the RoleArn as supplied.
+func assumeRoleDeniedMessage(callerARN, roleARN string) string {
+	return fmt.Sprintf("User: %s is not authorized to perform: sts:AssumeRole on resource: %s", callerARN, roleARN)
+}
+
+// requireUnsupportedSessionInput pins both the code and the message, since the
+// defect being guarded is a misleading message under a plausible code.
+func requireUnsupportedSessionInput(t *testing.T, err error, wantMessage string) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorValidationError, code)
+	assert.Contains(t, message, wantMessage)
+}
+
+func requireMFANotSupported(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "MFA is not supported in this release; omit SerialNumber and TokenCode", message)
+}
+
+func TestAssumeRole_EchoesSourceIdentity(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	role := createRoleInAccount(t, svc, testCallerAccountID, "srcid", trustPolicyAllowingUser(caller))
+
+	input := basicAssumeRoleInput(*role.Arn, "sess")
+	input.SourceIdentity = aws.String("alice@example.com")
+	out, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName, input)
+	require.NoError(t, err)
+	assert.Equal(t, "alice@example.com", aws.StringValue(out.SourceIdentity))
+	assert.Equal(t, int64(0), aws.Int64Value(out.PackedPolicySize))
+
+	out, err = svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-none"))
+	require.NoError(t, err)
+	assert.Nil(t, out.SourceIdentity, "no SourceIdentity requested, none echoed")
+	assert.NotNil(t, out.PackedPolicySize, "AWS returns PackedPolicySize on every AssumeRole")
+}
+
+func TestAssumeRole_RejectsMFA(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "nomfa", trustPolicyAllowingUser(testCallerARN()))
+
+	cases := []struct {
+		name  string
+		input *sts.AssumeRoleInput
+	}{
+		{
+			name: "serial_number",
+			input: &sts.AssumeRoleInput{
+				RoleArn:         role.Arn,
+				RoleSessionName: aws.String("sess"),
+				SerialNumber:    aws.String("arn:aws:iam::000000000000:mfa/alice"),
+			},
+		},
+		{
+			name: "token_code",
+			input: &sts.AssumeRoleInput{
+				RoleArn:         role.Arn,
+				RoleSessionName: aws.String("sess"),
+				TokenCode:       aws.String("123456"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
+			requireMFANotSupported(t, err)
+		})
+	}
+
+	for _, tc := range mfaConstraintCases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := basicAssumeRoleInput(*role.Arn, "sess")
+			input.SerialNumber, input.TokenCode = tc.serialNumber, tc.tokenCode
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
+			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+		})
+	}
+}
+
+// mfaConstraintCases break the model's serialNumber and tokenCode constraints, which
+// are checked before MFA is refused as unsupported.
+var mfaConstraintCases = func() []struct {
+	name                    string
+	serialNumber, tokenCode *string
+	wantMessage             string
+} {
+	const (
+		serialPattern = `Member must satisfy regular expression pattern: [\w+=/:,.@-]*`
+		serialShort   = "Member must have length greater than or equal to 9"
+		serialLong    = "Member must have length less than or equal to 256"
+		tokenPattern  = `Member must satisfy regular expression pattern: [\d]*`
+		tokenShort    = "Member must have length greater than or equal to 6"
+		tokenLong     = "Member must have length less than or equal to 6"
+	)
+	violation := func(field, value, constraint string) string {
+		return fmt.Sprintf("Value '%s' at '%s' failed to satisfy constraint: %s", value, field, constraint)
+	}
+	one := func(field, value, constraint string) string {
+		return "1 validation error detected: " + violation(field, value, constraint)
+	}
+	long := strings.Repeat("a", 257)
+	return []struct {
+		name                    string
+		serialNumber, tokenCode *string
+		wantMessage             string
+	}{
+		{"serial_empty", aws.String(""), nil, one("serialNumber", "", serialShort)},
+		{"serial_short", aws.String("GAHT1234"), nil, one("serialNumber", "GAHT1234", serialShort)},
+		{"serial_long", aws.String(long), nil, one("serialNumber", long, serialLong)},
+		{"serial_charset", aws.String("GAHT 12345"), nil, one("serialNumber", "GAHT 12345", serialPattern)},
+		{"token_empty", nil, aws.String(""), one("tokenCode", "", tokenShort)},
+		{"token_long", nil, aws.String("1234567"), one("tokenCode", "1234567", tokenLong)},
+		{"token_charset", nil, aws.String("12345a"), one("tokenCode", "12345a", tokenPattern)},
+		{"token_charset_and_short", nil, aws.String("abc"), "2 validation errors detected: " +
+			violation("tokenCode", "abc", tokenPattern) + "; " + violation("tokenCode", "abc", tokenShort)},
+		{"both", aws.String(""), aws.String(""), "2 validation errors detected: " +
+			violation("serialNumber", "", serialShort) + "; " + violation("tokenCode", "", tokenShort)},
+	}
+}()
+
+func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "name", trustPolicyAllowingUser(testCallerARN()))
+
+	const (
+		pattern  = `Member must satisfy regular expression pattern: [\w+=,.@-]*`
+		tooShort = "Member must have length greater than or equal to 2"
+		tooLong  = "Member must have length less than or equal to 64"
+	)
+	violation := func(name, constraint string) string {
+		return fmt.Sprintf("Value '%s' at 'roleSessionName' failed to satisfy constraint: %s", name, constraint)
+	}
+	patternMessage := func(name string) string {
+		return "1 validation error detected: " + violation(name, pattern)
+	}
+	long, longBad := strings.Repeat("a", 65), strings.Repeat("a", 64)+"!"
+	bad := []struct {
+		name        string
+		wantMessage string
+	}{
+		{"a", "1 validation error detected: " + violation("a", tooShort)},
+		{long, "1 validation error detected: " + violation(long, tooLong)},
+		{"!", "2 validation errors detected: " + violation("!", pattern) + "; " + violation("!", tooShort)},
+		{longBad, "2 validation errors detected: " + violation(longBad, pattern) + "; " + violation(longBad, tooLong)},
+		{"has/slash", patternMessage("has/slash")},
+		{"has:colon", patternMessage("has:colon")},
+		{"bad name!", patternMessage("bad name!")},
+		{"ué", patternMessage("ué")}, // non-ASCII; literal regex deliberately excludes Unicode
+	}
+	for _, tc := range bad {
+		t.Run("session_"+tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+				basicAssumeRoleInput(*role.Arn, tc.name))
+			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+		})
+	}
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, ""))
+	requireAWSError(t, err, awserrors.ErrorMissingParameter, "")
+}
+
+func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	cases := []struct {
+		name  string
+		input *sts.AssumeRoleInput
+	}{
+		{"nil_input", nil},
+		{"missing_role_arn", &sts.AssumeRoleInput{RoleSessionName: aws.String("sess")}},
+		{"missing_session_name", &sts.AssumeRoleInput{RoleArn: aws.String("arn:aws:iam::000000000000:role/x")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+		})
+	}
+}
+
+func TestAssumeRole_RejectsMalformedRoleARN(t *testing.T) {
+	svc, _ := newTestSetup(t)
+
+	bad := []string{
+		"not-an-arn",
+		"arn:aws:iam::000000000000:user/alice",      // wrong resource type
+		"arn:aws:s3:::bucket/key",                   // wrong service
+		"arn:aws:iam::000000000000:role/",           // empty name
+		"arn:aws:iam:us-east-1:000000000000:role/x", // region populated
+	}
+	for _, badARN := range bad {
+		t.Run(badARN, func(t *testing.T) {
+			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+				basicAssumeRoleInput(badARN, "sess"))
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorValidationError, err.Error())
+		})
+	}
+}
+
+func TestAssumeRole_CrossAccountSuccess(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	// Role lives in account B, trust policy allows account-A user.
+	role := createRoleInAccount(t, svc, testCrossAccountID, "x-acct", trustPolicyAllowingUser(caller))
+
+	out, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "x-sess"))
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("arn:aws:sts::%s:assumed-role/x-acct/x-sess", testCrossAccountID),
+		aws.StringValue(out.AssumedRoleUser.Arn))
+
+	stored, err := svc.LookupSessionCredential(aws.StringValue(out.Credentials.AccessKeyId))
+	require.NoError(t, err)
+	assert.Equal(t, testCrossAccountID, stored.AccountID, "session is bound to the role's account, not the caller's")
+}
+
+func TestAssumeRole_ChainedAssume_RoleArnAutoExpansion(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	// Caller is already an assumed-role session of SourceRole in account A.
+	callerSession := fmt.Sprintf("arn:aws:sts::%s:assumed-role/SourceRole/orig-sess", testCallerAccountID)
+	// Target role's trust policy names the source role (not the session).
+	clausePolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::%s:role/SourceRole"},"Action":"sts:AssumeRole"}]}`, testCallerAccountID)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "TargetRole", clausePolicy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, callerSession, "SourceRole",
+		basicAssumeRoleInput(*role.Arn, "chained"))
+	require.NoError(t, err)
+}
+
+func TestAssumeRole_ChainedAssume_LiteralSessionARN(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	exactSession := fmt.Sprintf("arn:aws:sts::%s:assumed-role/SourceRole/named", testCallerAccountID)
+	clausePolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}]}`, exactSession)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "Target2", clausePolicy)
+
+	// Exact session ARN → allowed.
+	_, err := svc.AssumeRole(testCallerAccountID, exactSession, "SourceRole",
+		basicAssumeRoleInput(*role.Arn, "ok"))
+	require.NoError(t, err)
+
+	// Different session of the same role → denied (literal match only).
+	otherSession := fmt.Sprintf("arn:aws:sts::%s:assumed-role/SourceRole/other", testCallerAccountID)
+	_, err = svc.AssumeRole(testCallerAccountID, otherSession, "SourceRole",
+		basicAssumeRoleInput(*role.Arn, "no"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+func TestAssumeRole_PrincipalArray_AnyEntryMatches(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	bob := fmt.Sprintf("arn:aws:iam::%s:user/bob", testCallerAccountID)
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":[%q,%q]},"Action":"sts:AssumeRole"}]}`, bob, caller)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "multi", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.NoError(t, err)
+}
+
+func TestAssumeRole_ServicePrincipal_NotMatchedByUserCaller(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	// AWS-only Principal alongside Service entry — an IAM user is attributed no
+	// service principal, so the Service entry skips and the AWS entry decides.
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com","AWS":%q},"Action":"sts:AssumeRole"}]}`, testCallerARN())
+	role := createRoleInAccount(t, svc, testCallerAccountID, "mixed-allow", policy)
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.NoError(t, err)
+
+	// Service-only policy → never matches a caller with no attributed service.
+	svcOnly := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	role2 := createRoleInAccount(t, svc, testCallerAccountID, "svc-only", svcOnly)
+	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role2.Arn, "sess"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// ----- ECS task-role attribution (HTTPS AssumeRole path) -----------------
+
+// trustPolicyAllowingECSTasks is the trust policy AWS documents for an ECS task
+// or execution role — a Service principal and nothing else.
+func trustPolicyAllowingECSTasks() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+}
+
+// instanceRoleCallerARN is the caller ARN the gateway resolves for the in-guest
+// ECS agent: an assumed-role session of the container-instance role.
+func instanceRoleCallerARN(accountID, instanceID string) string {
+	return fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s/%s", accountID, ecsInstanceRoleName, instanceID)
+}
+
+func TestAssumeRole_ECSTasks_ContainerInstanceCaller_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role", trustPolicyAllowingECSTasks())
+
+	caller := instanceRoleCallerARN(testCallerAccountID, testInstanceID)
+	out, err := svc.AssumeRole(testCallerAccountID, caller, ecsInstanceRoleName,
+		basicAssumeRoleInput(*role.Arn, "ecs-task-1"))
+	require.NoError(t, err)
+	require.NotNil(t, out.Credentials)
+	assert.Equal(t, fmt.Sprintf("arn:aws:sts::%s:assumed-role/task-role/ecs-task-1", testCallerAccountID),
+		aws.StringValue(out.AssumedRoleUser.Arn))
+}
+
+func TestAssumeRole_ECSTasks_ServiceArrayForm_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":["lambda.amazonaws.com","ecs-tasks.amazonaws.com"]},"Action":"sts:AssumeRole"}]}`
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-arr", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-1"))
+	require.NoError(t, err)
+}
+
+// The escalation this guards: a task holds a session of its own task role, not of
+// the container-instance role, so it cannot claim ecs-tasks.amazonaws.com and
+// reach a sibling task's role.
+func TestAssumeRole_ECSTasks_TaskRoleCallerDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	victim := createRoleInAccount(t, svc, testCallerAccountID, "victim-task-role", trustPolicyAllowingECSTasks())
+
+	taskCaller := fmt.Sprintf("arn:aws:sts::%s:assumed-role/attacker-task-role/ecs-abc123", testCallerAccountID)
+	_, err := svc.AssumeRole(testCallerAccountID, taskCaller, "attacker-task-role",
+		basicAssumeRoleInput(*victim.Arn, "ecs-task-2"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+func TestAssumeRole_ECSTasks_UserCallerDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-user", trustPolicyAllowingECSTasks())
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// A container instance is attributed the service principal only for roles in its
+// own account, so one account's agent cannot reach another's task roles.
+func TestAssumeRole_ECSTasks_CrossAccountInstanceCallerDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCrossAccountID, "task-role-x", trustPolicyAllowingECSTasks())
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-3"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// Attribution is per-principal, not blanket: a container instance is ecs-tasks
+// only, so an EC2-trusting role stays reachable from IMDS alone.
+func TestAssumeRole_ECSTasks_InstanceCallerCannotClaimEC2(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "ec2-trust", trustPolicyAllowingEC2Service())
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-4"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+func TestAssumeRole_ECSTasks_ExplicitDenyWins(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := `{"Version":"2012-10-17","Statement":[` +
+		`{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},` +
+		`{"Effect":"Deny","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-denied", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-5"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// ----- Trust-policy Condition evaluation on sts:AssumeRole (mulga-yxd9p, B) --
+
+// trustPolicyAllowingECSTasksWithSourceAccount is the shape terraform-aws-modules/ecs
+// writes: a Service principal plus an aws:SourceAccount confused-deputy condition.
+func trustPolicyAllowingECSTasksWithSourceAccount(accountID string) string {
+	return fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":%q}}}]}`, accountID)
+}
+
+// TestAssumeRole_SourceAccountCondition_MatchingAccountGrants pins that the new
+// condition arm on evalTrustPolicy does not merely tolerate a stored
+// aws:SourceAccount condition — it is evaluated, and a caller attributed to the
+// role's own account (the only shape serviceSourcesForCaller ever attributes) grants.
+func TestAssumeRole_SourceAccountCondition_MatchingAccountGrants(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-match",
+		trustPolicyAllowingECSTasksWithSourceAccount(testCallerAccountID))
+
+	out, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-1"))
+	require.NoError(t, err)
+	require.NotNil(t, out.Credentials)
+}
+
+// TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies is the
+// discriminating case: the condition names an account other than the caller's
+// own, so it must not be satisfied even though the Service principal matches.
+func TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-mismatch",
+		trustPolicyAllowingECSTasksWithSourceAccount(testCrossAccountID))
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-2"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow pins that the
+// Deny pass still runs first when a condition is present: an unconditional
+// Allow is listed first, but a conditioned Deny matching the caller's account
+// must still win.
+func TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
+        {"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},
+        {"Effect":"Deny","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":%q}}}
+    ]}`, testCallerAccountID)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-deny-first", policy)
+
+	_, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-sa-3"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// TestAssumeRoleConditionsHold_UnknownKeyFailsClosed unit-tests the evaluator
+// directly: the write-time gate never lets an unrecognised key reach this
+// function through CreateRole, so the only way to exercise the fail-closed
+// branch is a stored document the current gate would no longer accept —
+// exactly the corruption case evalTrustPolicy's own doc comment names.
+func TestAssumeRoleConditionsHold_UnknownKeyFailsClosed(t *testing.T) {
+	raw := json.RawMessage(`{"StringEquals":{"aws:PrincipalTag/team":"platform"}}`)
+	assert.False(t, assumeRoleConditionsHold(raw, testCallerAccountID),
+		"an unrecognised condition key must fail closed, not be silently ignored")
+}
+
+// TestAssumeRoleConditionsHold_NoConditionAlwaysHolds pins the pre-existing
+// no-condition-arm behaviour: an absent Condition must keep matching, exactly
+// as it did before this evaluator existed.
+func TestAssumeRoleConditionsHold_NoConditionAlwaysHolds(t *testing.T) {
+	assert.True(t, assumeRoleConditionsHold(nil, ""))
+	assert.True(t, assumeRoleConditionsHold(json.RawMessage(`{}`), ""))
+}
+
+// TestAssumeRole_ECSTasks_Regression_NoConditionStillGrants is the regression
+// the plan calls out by name: the ECS task-role attribution path this whole
+// change sits on top of must keep working for a trust policy that carries no
+// Condition at all.
+func TestAssumeRole_ECSTasks_Regression_NoConditionStillGrants(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-regression", trustPolicyAllowingECSTasks())
+
+	out, err := svc.AssumeRole(testCallerAccountID, instanceRoleCallerARN(testCallerAccountID, testInstanceID),
+		ecsInstanceRoleName, basicAssumeRoleInput(*role.Arn, "ecs-task-regression"))
+	require.NoError(t, err)
+	require.NotNil(t, out.Credentials)
+}
+
+func TestServiceSourcesForCaller(t *testing.T) {
+	const acct = testCallerAccountID
+	cases := []struct {
+		name      string
+		callerARN string
+		want      []string
+	}{
+		{"container_instance", instanceRoleCallerARN(acct, testInstanceID), []string{ecsTasksServicePrincipal}},
+		{"empty_caller", "", nil},
+		{"iam_user", testCallerARN(), nil},
+		{"iam_role_arn", fmt.Sprintf("arn:aws:iam::%s:role/%s", acct, ecsInstanceRoleName), nil},
+		{"other_role_session", fmt.Sprintf("arn:aws:sts::%s:assumed-role/other/%s", acct, testInstanceID), nil},
+		{"role_name_prefix_only", fmt.Sprintf("arn:aws:sts::%s:assumed-role/%sX/%s", acct, ecsInstanceRoleName, testInstanceID), nil},
+		{"cross_account", instanceRoleCallerARN(testCrossAccountID, testInstanceID), nil},
+		{"no_session_segment", fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s", acct, ecsInstanceRoleName), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, serviceSourcesForCaller(tc.callerARN, acct))
+		})
+	}
+}
+
+// ----- AssumeRoleForInstance (IMDS in-process path) ----------------------
+
+const testInstanceID = "i-0123456789abcdef0"
+
+func trustPolicyAllowingEC2Service() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+}
+
+func TestAssumeRoleForInstance_EC2ServicePrincipal_Allowed(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "app-role", trustPolicyAllowingEC2Service())
+
+	out, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Credentials)
+
+	akid := aws.StringValue(out.Credentials.AccessKeyId)
+	assert.True(t, strings.HasPrefix(akid, SessionAccessKeyIDPrefix))
+	assert.Len(t, akid, 20)
+
+	// The session name is the instance ID, matching AWS.
+	assert.Equal(t, fmt.Sprintf("arn:aws:sts::%s:assumed-role/app-role/%s", testCallerAccountID, testInstanceID),
+		aws.StringValue(out.AssumedRoleUser.Arn))
+
+	stored, err := svc.LookupSessionCredential(akid)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	assert.Equal(t, testInstanceID, stored.SessionName)
+	assert.Equal(t, testCallerAccountID, stored.AccountID)
+}
+
+// Service principals other than ec2.amazonaws.com are not whitelisted in v1, so
+// even though the caller is synthesised as the EC2 service principal, a
+// lambda.amazonaws.com trust statement must not match.
+func TestAssumeRoleForInstance_NonWhitelistedService_Denied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	role := createRoleInAccount(t, svc, testCallerAccountID, "lambda-role", policy)
+
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// Attribution does not leak between entry points: IMDS is ec2.amazonaws.com only,
+// so an ECS task role is not assumable as an instance role.
+func TestAssumeRoleForInstance_ECSTasksService_Denied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "imds-task-role", trustPolicyAllowingECSTasks())
+
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+// A role that only trusts an AWS principal (no Service entry) must not be
+// assumable by an instance — the synthesised EC2 caller has no ARN to match.
+func TestAssumeRoleForInstance_AWSOnlyPrincipal_Denied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "user-role", trustPolicyAllowingUser(testCallerARN()))
+
+	// IMDS has no caller ARN to name, so the denial carries the bare code.
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, "")
+}
+
+// Regression: the EC2 service principal must remain unreachable over the HTTPS
+// AssumeRole path. A role trusting only ec2.amazonaws.com is never assumable by
+// a normal SigV4 caller, no matter what — the security boundary between the two
+// entry points.
+func TestAssumeRoleForInstance_EC2ServiceUnreachableViaHTTPS(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "ec2-only", trustPolicyAllowingEC2Service())
+
+	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess"))
+	require.Error(t, err)
+	assertErrorCode(t, err, awserrors.ErrorAccessDenied)
+}
+
+func TestAssumeRoleForInstance_RejectsMissingFields(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	role := createRoleInAccount(t, svc, testCallerAccountID, "fields", trustPolicyAllowingEC2Service())
+
+	cases := []struct {
+		name       string
+		accountID  string
+		roleARN    string
+		instanceID string
+	}{
+		{"missing_account", "", *role.Arn, testInstanceID},
+		{"missing_role_arn", testCallerAccountID, "", testInstanceID},
+		{"missing_instance_id", testCallerAccountID, *role.Arn, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.AssumeRoleForInstance(tc.accountID, tc.roleARN, tc.instanceID, defaultDurationSeconds)
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
+		})
+	}
+}
+
+func TestAssumeRoleForInstance_CrossAccountRoleMiss_AccessDenied(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	// Instance's account differs from the role's account and the role is
+	// missing — masked to AccessDenied to prevent cross-account enumeration.
+	_, err := svc.AssumeRoleForInstance(testCallerAccountID,
+		fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID), testInstanceID, defaultDurationSeconds)
+	requireAWSError(t, err, awserrors.ErrorAccessDenied, "")
+}
+
+func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	caller := testCallerARN()
+	role := createRoleInAccount(t, svc, testCallerAccountID, "collide", trustPolicyAllowingUser(caller))
+
+	// Pre-seed an arbitrary ASIA AKID so the chance of a real collision is
+	// not relied on; the mint loop's collision behaviour is otherwise hard to
+	// exercise. We can't predict the AKID generator's output, so this test
+	// exercises the success path and asserts that two consecutive AssumeRole
+	// calls produce distinct AKIDs (entropy sanity check rather than
+	// retry-path coverage). The retry loop itself is small and obvious; this
+	// guards the more likely regression — accidentally reusing an AKID.
+	out1, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-a"))
+	require.NoError(t, err)
+	out2, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-b"))
+	require.NoError(t, err)
+	assert.NotEqual(t,
+		aws.StringValue(out1.Credentials.AccessKeyId),
+		aws.StringValue(out2.Credentials.AccessKeyId))
+	assert.NotEqual(t,
+		aws.StringValue(out1.Credentials.SessionToken),
+		aws.StringValue(out2.Credentials.SessionToken))
+}
+
+// ----- Unit tests for the trust-policy helpers ---------------------------
+
+func TestComputeTokenHMAC_Deterministic(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	a := computeTokenHMAC(key, "wire-token")
+	b := computeTokenHMAC(key, "wire-token")
+	assert.Equal(t, a, b)
+	c := computeTokenHMAC(key, "wire-token-2")
+	assert.NotEqual(t, a, c)
+
+	differentKey := []byte("DIFFERENT_KEY_DIFFERENT_KEY_DIFF")
+	require.Len(t, differentKey, masterKeySize)
+	d := computeTokenHMAC(differentKey, "wire-token")
+	assert.NotEqual(t, a, d)
+}
+
+func TestGenerateSessionAKID_FormatAndUniqueness(t *testing.T) {
+	seen := map[string]bool{}
+	for i := range 64 {
+		akid, err := generateSessionAKID()
+		require.NoError(t, err)
+		require.True(t, strings.HasPrefix(akid, SessionAccessKeyIDPrefix))
+		require.Len(t, akid, 20)
+		require.False(t, seen[akid], "duplicate AKID at iteration %d: %q", i, akid)
+		seen[akid] = true
+	}
+}
+
+func TestEvalTrustPolicy_CorruptDocReturnsError(t *testing.T) {
+	// Stored docs are validated upstream; reaching evalTrustPolicy with a
+	// malformed doc indicates corruption — must fail closed and NOT collapse
+	// to AccessDenied (which would hide the corruption from operators).
+	err := evalTrustPolicy(`{not json`, testCallerARN(), nil)
+	require.Error(t, err)
+	assert.NotEqual(t, awserrors.ErrorAccessDenied, err.Error(),
+		"corrupt doc must not be reported as AccessDenied — operators need to see the corruption signal")
+}

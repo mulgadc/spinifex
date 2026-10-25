@@ -10,8 +10,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
@@ -24,7 +24,7 @@ import (
 // first-use (an LB/cluster create) the backend is up. Returns nil (caller falls
 // back to static creds) until a build succeeds; retried on each call until then,
 // cached once it works.
-func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
+func (d *Daemon) systemRoleEnsurer() iamdomain.SystemInstanceRoleEnsurer {
 	d.iamEnsurerMu.Lock()
 	defer d.iamEnsurerMu.Unlock()
 	if d.iamEnsurerCached != nil {
@@ -36,7 +36,7 @@ func (d *Daemon) systemRoleEnsurer() handlers_iam.SystemInstanceRoleEnsurer {
 			"err", err)
 		return nil
 	}
-	iamSvc, iamErr := handlers_iam.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey)
+	iamSvc, iamErr := iamdomain.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey)
 	if iamErr != nil {
 		slog.Warn("System role ensurer: IAM service init failed (retried on next launch); system VMs fall back to baked static creds",
 			"err", iamErr)

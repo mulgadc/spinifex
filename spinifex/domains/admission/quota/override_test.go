@@ -126,7 +126,11 @@ func TestOverridesEmpty(t *testing.T) {
 // fall through to the configured limits rather than panicking.
 func TestLimitsForWithoutBucket(t *testing.T) {
 	svc := New(baseLimits(), nil)
-	if got := svc.limitsFor(t.Context(), "123456789012"); got != baseLimits() {
+	got, err := svc.limitsFor(t.Context(), "123456789012")
+	if err != nil {
+		t.Fatalf("limitsFor error = %v, want nil", err)
+	}
+	if got != baseLimits() {
 		t.Fatalf("limitsFor = %+v, want the configured limits", got)
 	}
 }

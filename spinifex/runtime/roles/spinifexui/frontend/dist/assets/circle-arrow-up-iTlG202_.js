@@ -1,0 +1,1 @@
+import{t as e}from"./createLucideIcon-3TmFBsmS.js";var t={name:`circle-arrow-up`,size:24,node:[[`circle`,{cx:`12`,cy:`12`,r:`10`,key:`1mglay`}],[`path`,{d:`m16 12-4-4-4 4`,key:`177agl`}],[`path`,{d:`M12 16V8`,key:`1sbj14`}]],aliases:[`arrow-up-circle`]};t.node;var n=e(t);export{n as t};

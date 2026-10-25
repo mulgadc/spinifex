@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,7 +81,7 @@ func TestElbv2WatchBuckets_NoStoreIsNilSafe(t *testing.T) {
 
 func TestElbv2WatchBuckets_WithStoreReturnsWatchBucket(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	svc, err := handlers_elbv2.NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
 	require.NoError(t, err)

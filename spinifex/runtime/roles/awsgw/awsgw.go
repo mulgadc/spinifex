@@ -33,17 +33,17 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -57,8 +57,13 @@ import (
 var serviceName = "awsgw"
 
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
-// handlers/eks, because handlers/eks must not import handlers/sts.
-var _ handlers_sts.ClusterJWKSResolver = (*handlers_eks.OIDCJWKSReader)(nil)
+// handlers/eks, because handlers/eks must not import domains/sts.
+var _ stsdomain.ClusterJWKSResolver = (*handlers_eks.OIDCJWKSReader)(nil)
+
+// AccountStatusReader also serves as the quota override seal's TERMINATING
+// precondition, wired here because domains/iam must not import
+// domains/admission/quota.
+var _ admissionquota.AccountTerminationChecker = (*iamdomain.AccountStatusReader)(nil)
 
 // Version and Commit are set by the cmd package before Start() to pass
 // build-time ldflags to the gateway without creating an import cycle.
@@ -217,7 +222,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Initialize IAM service with NATS KV backend (required for auth).
 	// On multi-node clusters, JetStream KV requires cluster quorum which may
 	// not be available yet if nodes start concurrently. Retry with backoff.
-	iamService, err := handlers_iam.NewIAMServiceWithRetry(janitorCtx, natsConn, masterKey)
+	iamService, err := iamdomain.NewIAMServiceWithRetry(janitorCtx, natsConn, masterKey)
 	if err != nil {
 		return fmt.Errorf("initialize IAM service: %w", err)
 	}
@@ -232,7 +237,7 @@ func launchService(config *config.ClusterConfig) error {
 
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.
-	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, jwksResolver)
+	stsService, err := stsdomain.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, jwksResolver)
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}
@@ -270,7 +275,7 @@ func launchService(config *config.ClusterConfig) error {
 	// Check data directory first (production: /var/lib/spinifex/awsgw/), then
 	// awsgw subdir (dev: ~/spinifex/awsgw/), then legacy config dir.
 	bootstrapPath := findBootstrapFile(nodeConfig.BaseDir)
-	data, err := handlers_iam.LoadBootstrapData(bootstrapPath)
+	data, err := iamdomain.LoadBootstrapData(bootstrapPath)
 	switch {
 	case err == nil:
 		slog.Info("Bootstrap file found, seeding IAM users")
@@ -561,6 +566,25 @@ func launchService(config *config.ClusterConfig) error {
 	gw.Quota = admissionquota.New(quotaCfg, usageBucket)
 	gw.Quota.SetOverrides(quotaOverrides)
 
+	// Seal precondition: the quota owner's only fact from IAM, read directly
+	// rather than through the gateway's cached IAMService, so a seal sees a
+	// TERMINATING flip the moment IAM commits it.
+	gw.Quota.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(js))
+	// SealAccountOverrides opens the override bucket itself when this
+	// gateway's quotas are disabled, so the seal subject works regardless of
+	// quotaCfg.Enabled and never touches the bucket at startup.
+	gw.Quota.SetJetStream(js)
+
+	quotaSealSub, err := registerQuotaOverrideSeal(natsConn, gw.Quota)
+	if err != nil {
+		return fmt.Errorf("subscribe quota override seal: %w", err)
+	}
+	defer func() {
+		if err := quotaSealSub.Unsubscribe(); err != nil {
+			slog.Warn("Quota override seal: unsubscribe failed", "err", err)
+		}
+	}()
+
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
 	gw.Quota.SetBedrockUsage(bedrockUsage)
@@ -691,7 +715,7 @@ func quotaKeyFor(entry jetstream.KeyValueEntry) ([]string, bool) {
 
 // accountLister is the slice of IAMService the lifecycle sweeper needs.
 type accountLister interface {
-	ListAccounts() ([]*handlers_iam.Account, error)
+	ListAccounts() ([]*iamdomain.Account, error)
 }
 
 // activeAccountIDs adapts IAMService.ListAccounts into the account-ID enumerator
@@ -704,7 +728,7 @@ func activeAccountIDs(iam accountLister) func() ([]string, error) {
 		}
 		ids := make([]string, 0, len(accounts))
 		for _, acct := range accounts {
-			if acct.Status == handlers_iam.AccountStatusActive {
+			if acct.Status == iamdomain.AccountStatusActive {
 				ids = append(ids, acct.AccountID)
 			}
 		}

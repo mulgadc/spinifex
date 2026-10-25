@@ -10,8 +10,8 @@ import (
 
 // OIDCJWKSReader resolves the raw JWKS document published for an EKS
 // cluster's OIDC issuer, from the per-account bucket this package owns.
-// It is the transitional handlers/sts-facing adapter; runtime/roles/awsgw
-// wires it into STS as a handlers_sts.ClusterJWKSResolver.
+// It is the transitional domains/sts-facing adapter; runtime/roles/awsgw
+// wires it into STS as a stsdomain.ClusterJWKSResolver.
 type OIDCJWKSReader struct {
 	js jetstream.JetStream
 }

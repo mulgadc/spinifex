@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,12 +46,12 @@ func (s *iamAuthzPolicyService) DeleteRole(_ string, input *iam.DeleteRoleInput)
 	return &iam.DeleteRoleOutput{}, nil
 }
 
-func iamScopedGateway(resources map[string]string, statements ...handlers_iam.Statement) (*GatewayConfig, *iamAuthzPolicyService) {
-	docs := []handlers_iam.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+func iamScopedGateway(resources map[string]string, statements ...iamdomain.Statement) (*GatewayConfig, *iamAuthzPolicyService) {
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
 	svc := &iamAuthzPolicyService{
 		policyMockIAMService: policyMockIAMService{
-			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
-			getRolePoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+			getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 		arns: resources,
 	}

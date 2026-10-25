@@ -576,38 +576,9 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 	}
 
 	if sel := aws.StringValue(input.DefaultVersion); sel != "" {
-		notFound := fmt.Sprintf("The launch template version %s is not found for the specified launch template.", sel)
-		for attempt := 1; ; attempt++ {
-			n, err := s.resolveVersionNumber(ctx, accountID, header, sel)
-			if err != nil {
-				return nil, withVersionNotFoundMessage(err, notFound)
-			}
-			// Verify the target body exists immediately before the header CAS. A
-			// version delete commits through the header too, so a delete that
-			// lands in between fails this CAS and the retry finds no body.
-			if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
-				return nil, withVersionNotFoundMessage(err, notFound)
-			}
-			header.DefaultVersionNumber = n
-			data, err := json.Marshal(header)
-			if err != nil {
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			_, err = s.kv.Update(ctx, kvutil.AccountKey(accountID, header.LaunchTemplateId), data, entry.Revision())
-			if err == nil {
-				break
-			}
-			if !isRevisionConflict(err) || attempt >= maxVersionRetries {
-				slog.ErrorContext(ctx, "ModifyLaunchTemplate: header update failed", "launchTemplateId", header.LaunchTemplateId, "attempt", attempt, "err", err)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			header, entry, err = s.getHeaderByID(ctx, accountID, header.LaunchTemplateId)
-			if err != nil {
-				if err.Error() == awserrors.ErrorInvalidLaunchTemplateIdNotFound {
-					return nil, templateNotFound(input.LaunchTemplateId, input.LaunchTemplateName)
-				}
-				return nil, err
-			}
+		header, err = s.setDefaultVersion(ctx, accountID, input, header, entry, sel)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -617,6 +588,48 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 	}
 	slog.InfoContext(ctx, "ModifyLaunchTemplate completed", "launchTemplateId", header.LaunchTemplateId, "defaultVersion", header.DefaultVersionNumber, "accountID", accountID)
 	return &ec2.ModifyLaunchTemplateOutput{LaunchTemplate: headerToEC2(header, latest)}, nil
+}
+
+// setDefaultVersion moves the header's default to sel under a revision guard.
+// A header changed meanwhile is re-read and the change retried, bounded; a
+// header deleted meanwhile is NotFound for the identifier the request used.
+func (s *LaunchTemplateServiceImpl) setDefaultVersion(ctx context.Context, accountID string, input *ec2.ModifyLaunchTemplateInput, header *LaunchTemplateHeader, entry jetstream.KeyValueEntry, sel string) (*LaunchTemplateHeader, error) {
+	notFound := fmt.Sprintf("The launch template version %s is not found for the specified launch template.", sel)
+	key := kvutil.AccountKey(accountID, header.LaunchTemplateId)
+	for range maxVersionRetries {
+		n, err := s.resolveVersionNumber(ctx, accountID, header, sel)
+		if err != nil {
+			return nil, withVersionNotFoundMessage(err, notFound)
+		}
+		// Verify the target body exists immediately before the header CAS. A
+		// version delete commits through the header too, so a delete that
+		// lands in between fails this CAS and the retry finds no body.
+		if _, err := s.getVersion(ctx, accountID, header.LaunchTemplateId, n); err != nil {
+			return nil, withVersionNotFoundMessage(err, notFound)
+		}
+		header.DefaultVersionNumber = n
+		data, err := json.Marshal(header)
+		if err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		_, err = s.kv.Update(ctx, key, data, entry.Revision())
+		if err == nil {
+			return header, nil
+		}
+		if !isRevisionConflict(err) {
+			slog.ErrorContext(ctx, "ModifyLaunchTemplate: header update failed", "launchTemplateId", header.LaunchTemplateId, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		header, entry, err = s.getHeaderByID(ctx, accountID, header.LaunchTemplateId)
+		if err != nil {
+			if err.Error() == awserrors.ErrorInvalidLaunchTemplateIdNotFound {
+				return nil, templateNotFound(input.LaunchTemplateId, input.LaunchTemplateName)
+			}
+			return nil, err
+		}
+	}
+	slog.ErrorContext(ctx, "ModifyLaunchTemplate: header update retries exhausted", "launchTemplateId", header.LaunchTemplateId, "accountID", accountID)
+	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // --- DeleteLaunchTemplate ---

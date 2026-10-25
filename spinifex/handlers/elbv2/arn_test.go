@@ -11,7 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,7 +113,7 @@ func setupMicrovmTestService(t *testing.T) (*ELBv2ServiceImpl, *ec2vpc.VPCServic
 			DevNetworking: true,
 		},
 	}
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(cfg, nc, masterKey)
 	require.NoError(t, err)

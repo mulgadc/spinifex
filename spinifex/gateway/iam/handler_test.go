@@ -3,8 +3,8 @@ package gateway_iam
 import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"testing"
@@ -18,7 +18,7 @@ const testAccountID = "000000000000"
 // promoted from the embedded interface and nil-panic if unexpectedly called.
 // Individual tests can override a method by setting the matching function field.
 type stubIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	getInstanceProfile func(string, *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
 }

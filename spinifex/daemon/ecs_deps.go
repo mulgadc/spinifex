@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // buildECSServiceDeps assembles the ECS service Deps for ProvisionCapacity: the
@@ -47,8 +47,8 @@ func (d *Daemon) buildECSServiceDeps() handlers_ecs.Deps {
 	// to have responders. A daemon that started first got one attempt, failed
 	// it, and had capacity provisioning off for the life of the process with no
 	// symptom but a 500 from ProvisionCapacity.
-	iamSvc, iamErr := initServiceWithRetry("ECS IAM service", func() (*handlers_iam.IAMServiceImpl, error) {
-		return handlers_iam.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey)
+	iamSvc, iamErr := initServiceWithRetry("ECS IAM service", func() (*iamdomain.IAMServiceImpl, error) {
+		return iamdomain.NewIAMServiceImpl(d.ctx, d.natsConn, masterKey)
 	})
 	if iamErr != nil {
 		// Off rather than fatal: ECS CRUD, EKS and EC2 do not need this, and a

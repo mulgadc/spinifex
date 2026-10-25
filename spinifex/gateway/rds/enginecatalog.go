@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 )
 
@@ -32,7 +32,7 @@ const (
 
 // rdsSizing is this gateway's composition of the engine package's class-to-
 // memory projection, built once from the platform's instance-type table.
-var rdsSizing = handlers_rds.InstanceSizing()
+var rdsSizing = rdsinstance.InstanceSizing()
 
 var (
 	engineVersionFilterNames = []string{
@@ -52,7 +52,7 @@ func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVe
 	filter.EngineVersion.AddParam(aws.StringValue(input.EngineVersion))
 	filter.ParameterGroupFamily.AddParam(aws.StringValue(input.DBParameterGroupFamily))
 
-	entries, err := handlers_rds.ReadFilters(input.Filters, engineVersionFilterNames...)
+	entries, err := rdsinstance.ReadFilters(input.Filters, engineVersionFilterNames...)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +72,8 @@ func DescribeDBEngineVersions(ctx context.Context, input *rds.DescribeDBEngineVe
 	// DefaultOnly, IncludeAll, ListSupportedCharacterSets and ListSupportedTimezones
 	// are accepted and not read: each is an identity on a catalog of one available
 	// version per engine with no character-set or timezone list to populate.
-	versions, marker, err := handlers_rds.Page(handlers_rds.EngineVersions(filter),
-		handlers_rds.EngineVersionPageKey, input.MaxRecords, input.Marker)
+	versions, marker, err := rdsinstance.Page(rdsinstance.EngineVersions(filter),
+		rdsinstance.EngineVersionPageKey, input.MaxRecords, input.Marker)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 		filter.Vpc.AddParam(strconv.FormatBool(aws.BoolValue(input.Vpc)))
 	}
 
-	entries, err := handlers_rds.ReadFilters(input.Filters, orderableFilterNames...)
+	entries, err := rdsinstance.ReadFilters(input.Filters, orderableFilterNames...)
 	if err != nil {
 		return nil, err
 	}
@@ -131,8 +131,8 @@ func DescribeOrderableDBInstanceOptions(ctx context.Context, input *rds.Describe
 	if err != nil {
 		return nil, err
 	}
-	options, marker, err := handlers_rds.Page(handlers_rds.OrderableOptions(filter, rdsSizing, runnable),
-		handlers_rds.OrderableOptionPageKey, input.MaxRecords, input.Marker)
+	options, marker, err := rdsinstance.Page(rdsinstance.OrderableOptions(filter, rdsSizing, runnable),
+		rdsinstance.OrderableOptionPageKey, input.MaxRecords, input.Marker)
 	if err != nil {
 		return nil, err
 	}

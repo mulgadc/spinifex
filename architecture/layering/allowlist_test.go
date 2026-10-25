@@ -27,7 +27,7 @@ var allowlist = []allowance{
 
 	{From: "agents/eks/tokenwebhook", To: "handlers/eks", Debt: "agents/eks/tokenwebhook", Reason: "WebhookTokenReviewResult from the EKS implementation; needs an EKS contract or projection"},
 
-	{From: "agents/rds/agent", To: "handlers/rds", Debt: "agents/rds/agent (dependency, narrowed)", Reason: "command protocol, wire and record types; needs a guest/controller wire contract"},
+	{From: "agents/rds/agent", To: "domains/rds/instance", Debt: "agents/rds/agent (dependency, narrowed)", Reason: "command protocol, wire and record types; needs a guest/controller wire contract"},
 
 	{From: "cmd/aws-model-coverage", To: "domains/acm/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM inventories; named exception, must not construct a registration"},
 	{From: "cmd/aws-model-coverage", To: "domains/ecr/awsapi", Debt: "cmd/aws-model-coverage", Reason: "reads declared ECR/ACM inventories; named exception, must not construct a registration"},
@@ -42,7 +42,7 @@ var allowlist = []allowance{
 	{From: "domains/admission/quota", To: "domains/ec2/awsapi/vpc", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "describe adapter used as a counter; needs a reader capability"},
 	{From: "domains/admission/quota", To: "domains/ec2/instancetypes", Debt: "domains/admission/quota → domains/ec2/instancetypes", Reason: "DefaultVCPUs sizing; needs a consumer-owned capability or EC2 projection"},
 	{From: "domains/admission/quota", To: "gateway/elbv2", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "live ELBv2 counter; needs a reader capability"},
-	{From: "domains/admission/quota", To: "handlers/rds", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "live RDS counter; needs a reader capability"},
+	{From: "domains/admission/quota", To: "domains/rds/instance", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "live RDS counter; needs a reader capability"},
 	{From: "domains/admission/quota", To: "runtime/compute/vm", Debt: "domains/admission/quota (dependency, moved from handlers/quota unchanged)", Reason: "instance-record vCPU sweep; needs a reader capability"},
 
 	{From: "domains/dns", To: "domains/network/reconcile", Debt: "domains/dns", Reason: "takes the reconcile lock from network's implementation"},
@@ -145,13 +145,13 @@ var allowlist = []allowance{
 	{From: "handlers/elbv2", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "system-instance role ensurer; needs an IAM capability"},
 	{From: "handlers/elbv2", To: "lbagent", Debt: "handlers/elbv2/{agent_types,haproxy,health_checker,nginx}.go import lbagent", Reason: "health-report and cert/PID-path vocabulary; needs a guest/controller contract"},
 
-	{From: "handlers/rds", To: "domains/dns", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
-	{From: "handlers/rds", To: "domains/ec2/instance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
-	{From: "handlers/rds", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
-	{From: "handlers/rds", To: "domains/ec2/systeminstance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
-	{From: "handlers/rds", To: "domains/network/systemvpc", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
-	{From: "handlers/rds", To: "domains/iam", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
-	{From: "handlers/rds", To: "runtime/compute/vm", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "domains/dns", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "domains/ec2/instance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "domains/ec2/instancetypes", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "domains/ec2/systeminstance", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "domains/network/systemvpc", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "domains/iam", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
+	{From: "domains/rds/instance", To: "runtime/compute/vm", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 
 	{From: "domains/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 

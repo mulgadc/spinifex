@@ -114,7 +114,7 @@ type ApplianceConnInfo struct {
 }
 
 // ApplianceLauncher is the seam to the real VM launch machinery: this stage
-// fakes it in tests, a later stage wires it to handlers/rds's
+// fakes it in tests, a later stage wires it to domains/rds/instance's
 // CreateDBInstance/LaunchDBInstanceVM. Launch must be identifier-idempotent
 // downstream, since Ensure's re-entrant recovery path may call it again for
 // an identifier it already launched.

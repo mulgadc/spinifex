@@ -96,7 +96,7 @@ func TestRDSApplianceLauncher_LaunchIsIdempotentOnAlreadyExists(t *testing.T) {
 	defer nc.Close()
 
 	createSub, err := nc.Subscribe(rdsCreateSubject, func(msg *nats.Msg) {
-		// Mirrors handlers/rds's actual CreateDBInstance collision error
+		// Mirrors domains/rds/instance's actual CreateDBInstance collision error
 		// (awserrors.Errorf), whose Error() text carries the code as a
 		// ": <code>" suffix -- the idempotency check below depends on that
 		// suffix being present, so a hand-written message would not exercise

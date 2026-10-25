@@ -72,6 +72,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -79,7 +80,6 @@ import (
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
@@ -169,8 +169,8 @@ type Daemon struct {
 	eksService            *handlers_eks.EKSServiceImpl
 	ecsService            *handlers_ecs.Service
 	ecsScheduler          *handlers_ecs.Scheduler
-	rdsService            *handlers_rds.Service
-	rdsReconciler         *handlers_rds.Reconciler
+	rdsService            *rdsinstance.Service
+	rdsReconciler         *rdsinstance.Reconciler
 	bedrockService        *ochre.Service
 	bedrockReaper         *ochre.Reaper
 	acmService            *acmdomain.ACMServiceImpl
@@ -1167,35 +1167,35 @@ func (d *Daemon) subscribeAll() error {
 	// the gateway relays onto, addressing only — the payload is authoritative.
 	if d.rdsService != nil {
 		subs = append(subs,
-			natsSub{handlers_rds.SubjectRegisterWildcard, handleNATSRequest(d.node, d.rdsService.RegisterDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectHealthWildcard, handleNATSRequest(d.node, d.rdsService.SubmitDBStateChange), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectGetDBBootstrapConfig, handleNATSRequest(d.node, d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectAcknowledgeDBBootstrap, handleNATSRequest(d.node, d.rdsService.AcknowledgeDBBootstrap), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectCreateDBInstance, handleNATSRequest(d.node, d.rdsService.CreateDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeDBInstances, handleNATSRequest(d.node, d.rdsService.DescribeDBInstances), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectRebootDBInstance, handleNATSRequest(d.node, d.rdsService.RebootDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectStartDBInstance, handleNATSRequest(d.node, d.rdsService.StartDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectStopDBInstance, handleNATSRequest(d.node, d.rdsService.StopDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectModifyDBInstance, handleNATSRequest(d.node, d.rdsService.ModifyDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDeleteDBInstance, handleNATSRequest(d.node, d.rdsService.DeleteDBInstance), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectCreateDBSnapshot, handleNATSRequest(d.node, d.rdsService.CreateDBSnapshot), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeDBSnapshots, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDeleteDBSnapshot, handleNATSRequest(d.node, d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.node, d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.node, d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeEvents, handleNATSRequest(d.node, d.rdsService.DescribeEvents), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectAddTagsToResource, handleNATSRequest(d.node, d.rdsService.AddTagsToResource), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectRemoveTagsFromResource, handleNATSRequest(d.node, d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectListTagsForResource, handleNATSRequest(d.node, d.rdsService.ListTagsForResource), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectCreateDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.CreateDBSubnetGroup), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeDBSubnetGroups, handleNATSRequest(d.node, d.rdsService.DescribeDBSubnetGroups), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectModifyDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.ModifyDBSubnetGroup), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDeleteDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.DeleteDBSubnetGroup), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectCreateDBParameterGroup, handleNATSRequest(d.node, d.rdsService.CreateDBParameterGroup), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeDBParameterGroups, handleNATSRequest(d.node, d.rdsService.DescribeDBParameterGroups), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectModifyDBParameterGroup, handleNATSRequest(d.node, d.rdsService.ModifyDBParameterGroup), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDescribeDBParameters, handleNATSRequest(d.node, d.rdsService.DescribeDBParameters), "spinifex-workers"},
-			natsSub{handlers_rds.SubjectDeleteDBParameterGroup, handleNATSRequest(d.node, d.rdsService.DeleteDBParameterGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRegisterWildcard, handleNATSRequest(d.node, d.rdsService.RegisterDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectHealthWildcard, handleNATSRequest(d.node, d.rdsService.SubmitDBStateChange), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectGetDBBootstrapConfig, handleNATSRequest(d.node, d.rdsService.GetDBBootstrapConfig), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectAcknowledgeDBBootstrap, handleNATSRequest(d.node, d.rdsService.AcknowledgeDBBootstrap), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBInstance, handleNATSRequest(d.node, d.rdsService.CreateDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBInstances, handleNATSRequest(d.node, d.rdsService.DescribeDBInstances), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRebootDBInstance, handleNATSRequest(d.node, d.rdsService.RebootDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectStartDBInstance, handleNATSRequest(d.node, d.rdsService.StartDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectStopDBInstance, handleNATSRequest(d.node, d.rdsService.StopDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectModifyDBInstance, handleNATSRequest(d.node, d.rdsService.ModifyDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBInstance, handleNATSRequest(d.node, d.rdsService.DeleteDBInstance), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBSnapshot, handleNATSRequest(d.node, d.rdsService.CreateDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSnapshots, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBSnapshot, handleNATSRequest(d.node, d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.node, d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.node, d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeEvents, handleNATSRequest(d.node, d.rdsService.DescribeEvents), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectAddTagsToResource, handleNATSRequest(d.node, d.rdsService.AddTagsToResource), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectRemoveTagsFromResource, handleNATSRequest(d.node, d.rdsService.RemoveTagsFromResource), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectListTagsForResource, handleNATSRequest(d.node, d.rdsService.ListTagsForResource), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.CreateDBSubnetGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSubnetGroups, handleNATSRequest(d.node, d.rdsService.DescribeDBSubnetGroups), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectModifyDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.ModifyDBSubnetGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBSubnetGroup, handleNATSRequest(d.node, d.rdsService.DeleteDBSubnetGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectCreateDBParameterGroup, handleNATSRequest(d.node, d.rdsService.CreateDBParameterGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBParameterGroups, handleNATSRequest(d.node, d.rdsService.DescribeDBParameterGroups), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectModifyDBParameterGroup, handleNATSRequest(d.node, d.rdsService.ModifyDBParameterGroup), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBParameters, handleNATSRequest(d.node, d.rdsService.DescribeDBParameters), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDeleteDBParameterGroup, handleNATSRequest(d.node, d.rdsService.DeleteDBParameterGroup), "spinifex-workers"},
 		)
 	}
 
@@ -2131,7 +2131,7 @@ func (d *Daemon) startCluster() error {
 	// bootstrap password is encrypted under it, and the fetch is answered by
 	// whichever node the queue group picks, so a node without it would make the
 	// first boot of a DB instance fail intermittently rather than not at all.
-	d.rdsService, err = initServiceWithRetry("RDS service", func() (*handlers_rds.Service, error) {
+	d.rdsService, err = initServiceWithRetry("RDS service", func() (*rdsinstance.Service, error) {
 		if registryErr := rdsengine.ValidateEngineRegistry(); registryErr != nil {
 			return nil, registryErr
 		}
@@ -2139,7 +2139,7 @@ func (d *Daemon) startCluster() error {
 		if depsErr != nil {
 			return nil, depsErr
 		}
-		return handlers_rds.NewService(d.natsConn, d.config.Region).WithDeps(deps), nil
+		return rdsinstance.NewService(d.natsConn, d.config.Region).WithDeps(deps), nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize RDS service: %w", err)
@@ -2147,7 +2147,7 @@ func (d *Daemon) startCluster() error {
 
 	// One leader across the cluster derives DB instance status from the agent
 	// heartbeat; every node keeps serving the API.
-	d.rdsReconciler = handlers_rds.NewReconciler(d.rdsService, d.node)
+	d.rdsReconciler = rdsinstance.NewReconciler(d.rdsService, d.node)
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {

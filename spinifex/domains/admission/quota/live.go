@@ -9,9 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	gateway_elbv2 "github.com/mulgadc/spinifex/spinifex/gateway/elbv2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 )
 
@@ -103,7 +103,7 @@ func (s *Service) EnforceRDSInstances(ctx context.Context, natsConn *nats.Conn, 
 	if s.Exempt(accountID) {
 		return nil
 	}
-	out, err := handlers_rds.NewNATSService(natsConn).DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{}, accountID)
+	out, err := rdsinstance.NewNATSService(natsConn).DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{}, accountID)
 	if err != nil {
 		return err
 	}

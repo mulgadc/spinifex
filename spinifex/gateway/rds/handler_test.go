@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -179,38 +179,38 @@ var testEnv = Env{ExpectedNodes: 1}
 func newStubbedNATS(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	respondWith(t, nc, handlers_rds.SubjectCreateDBInstance,
+	respondWith(t, nc, rdsinstance.SubjectCreateDBInstance,
 		&rds.CreateDBInstanceOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db")}})
-	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstances,
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBInstances,
 		&rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{}})
-	respondWith(t, nc, handlers_rds.SubjectModifyDBInstance, &rds.ModifyDBInstanceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectRebootDBInstance, &rds.RebootDBInstanceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectStartDBInstance, &rds.StartDBInstanceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectStopDBInstance, &rds.StopDBInstanceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDeleteDBInstance, &rds.DeleteDBInstanceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDescribeEvents, &rds.DescribeEventsOutput{})
-	respondWith(t, nc, handlers_rds.SubjectAddTagsToResource, &rds.AddTagsToResourceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectRemoveTagsFromResource, &rds.RemoveTagsFromResourceOutput{})
-	respondWith(t, nc, handlers_rds.SubjectListTagsForResource,
+	respondWith(t, nc, rdsinstance.SubjectModifyDBInstance, &rds.ModifyDBInstanceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectRebootDBInstance, &rds.RebootDBInstanceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectStartDBInstance, &rds.StartDBInstanceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectStopDBInstance, &rds.StopDBInstanceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDeleteDBInstance, &rds.DeleteDBInstanceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDescribeEvents, &rds.DescribeEventsOutput{})
+	respondWith(t, nc, rdsinstance.SubjectAddTagsToResource, &rds.AddTagsToResourceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectRemoveTagsFromResource, &rds.RemoveTagsFromResourceOutput{})
+	respondWith(t, nc, rdsinstance.SubjectListTagsForResource,
 		&rds.ListTagsForResourceOutput{TagList: []*rds.Tag{
 			{Key: aws.String("env"), Value: aws.String("prod")},
 		}})
-	respondWith(t, nc, handlers_rds.SubjectCreateDBSubnetGroup, &rds.CreateDBSubnetGroupOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDescribeDBSubnetGroups, &rds.DescribeDBSubnetGroupsOutput{})
-	respondWith(t, nc, handlers_rds.SubjectModifyDBSubnetGroup, &rds.ModifyDBSubnetGroupOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDeleteDBSubnetGroup, &rds.DeleteDBSubnetGroupOutput{})
-	respondWith(t, nc, handlers_rds.SubjectCreateDBParameterGroup, &rds.CreateDBParameterGroupOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDescribeDBParameterGroups, &rds.DescribeDBParameterGroupsOutput{})
-	respondWith(t, nc, handlers_rds.SubjectModifyDBParameterGroup, &rds.DBParameterGroupNameMessage{})
-	respondWith(t, nc, handlers_rds.SubjectDescribeDBParameters, &rds.DescribeDBParametersOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDeleteDBParameterGroup, &rds.DeleteDBParameterGroupOutput{})
-	respondWith(t, nc, handlers_rds.SubjectCreateDBSnapshot,
+	respondWith(t, nc, rdsinstance.SubjectCreateDBSubnetGroup, &rds.CreateDBSubnetGroupOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBSubnetGroups, &rds.DescribeDBSubnetGroupsOutput{})
+	respondWith(t, nc, rdsinstance.SubjectModifyDBSubnetGroup, &rds.ModifyDBSubnetGroupOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDeleteDBSubnetGroup, &rds.DeleteDBSubnetGroupOutput{})
+	respondWith(t, nc, rdsinstance.SubjectCreateDBParameterGroup, &rds.CreateDBParameterGroupOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBParameterGroups, &rds.DescribeDBParameterGroupsOutput{})
+	respondWith(t, nc, rdsinstance.SubjectModifyDBParameterGroup, &rds.DBParameterGroupNameMessage{})
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBParameters, &rds.DescribeDBParametersOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDeleteDBParameterGroup, &rds.DeleteDBParameterGroupOutput{})
+	respondWith(t, nc, rdsinstance.SubjectCreateDBSnapshot,
 		&rds.CreateDBSnapshotOutput{DBSnapshot: &rds.DBSnapshot{DBSnapshotIdentifier: aws.String("orders-db-pre-upgrade")}})
-	respondWith(t, nc, handlers_rds.SubjectDescribeDBSnapshots, &rds.DescribeDBSnapshotsOutput{})
-	respondWith(t, nc, handlers_rds.SubjectDeleteDBSnapshot, &rds.DeleteDBSnapshotOutput{})
-	respondWith(t, nc, handlers_rds.SubjectRestoreDBInstanceFromDBSnapshot,
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBSnapshots, &rds.DescribeDBSnapshotsOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDeleteDBSnapshot, &rds.DeleteDBSnapshotOutput{})
+	respondWith(t, nc, rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot,
 		&rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db-restored")}})
-	respondWith(t, nc, handlers_rds.SubjectDescribeDBInstanceAutomatedBackups,
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBInstanceAutomatedBackups,
 		&rds.DescribeDBInstanceAutomatedBackupsOutput{})
 	// The orderable catalog's capability probe. Unstubbed it would get no
 	// ErrNoResponders — Gather publishes and reads an inbox rather than
@@ -300,7 +300,7 @@ func TestDispatch_DescribeDBInstancesReturnsEmptyResultSet(t *testing.T) {
 func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	body, err := Dispatch(t.Context(), "ListTagsForResource", map[string]string{
 		"Action":       "ListTagsForResource",
-		"ResourceName": handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
+		"ResourceName": rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
 	}, newStubbedNATS(t), testCaller, testEnv)
 	require.NoError(t, err)
 
@@ -319,7 +319,7 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	requests := make(chan rds.AddTagsToResourceInput, 1)
-	sub, err := nc.Subscribe(handlers_rds.SubjectAddTagsToResource, func(msg *nats.Msg) {
+	sub, err := nc.Subscribe(rdsinstance.SubjectAddTagsToResource, func(msg *nats.Msg) {
 		var in rds.AddTagsToResourceInput
 		if err := json.Unmarshal(msg.Data, &in); err != nil {
 			t.Errorf("unmarshal AddTagsToResource request: %v", err)
@@ -327,13 +327,13 @@ func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 		}
 		requests <- in
 		if err := msg.Respond([]byte(`{}`)); err != nil {
-			t.Logf("respond on %s: %v", handlers_rds.SubjectAddTagsToResource, err)
+			t.Logf("respond on %s: %v", rdsinstance.SubjectAddTagsToResource, err)
 		}
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	arn := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db")
+	arn := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db")
 	_, err = Dispatch(t.Context(), "AddTagsToResource", map[string]string{
 		"Action":         "AddTagsToResource",
 		"ResourceName":   arn,
@@ -356,7 +356,7 @@ func TestDispatch_AddTagsToResourceParsesTheTagList(t *testing.T) {
 func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	requests := make(chan rds.RemoveTagsFromResourceInput, 1)
-	sub, err := nc.Subscribe(handlers_rds.SubjectRemoveTagsFromResource, func(msg *nats.Msg) {
+	sub, err := nc.Subscribe(rdsinstance.SubjectRemoveTagsFromResource, func(msg *nats.Msg) {
 		var in rds.RemoveTagsFromResourceInput
 		if err := json.Unmarshal(msg.Data, &in); err != nil {
 			t.Errorf("unmarshal RemoveTagsFromResource request: %v", err)
@@ -364,7 +364,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 		}
 		requests <- in
 		if err := msg.Respond([]byte(`{}`)); err != nil {
-			t.Logf("respond on %s: %v", handlers_rds.SubjectRemoveTagsFromResource, err)
+			t.Logf("respond on %s: %v", rdsinstance.SubjectRemoveTagsFromResource, err)
 		}
 	})
 	require.NoError(t, err)
@@ -372,7 +372,7 @@ func TestDispatch_RemoveTagsFromResourceParsesMemberTagKeys(t *testing.T) {
 
 	_, err = Dispatch(t.Context(), "RemoveTagsFromResource", map[string]string{
 		"Action":           "RemoveTagsFromResource",
-		"ResourceName":     handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
+		"ResourceName":     rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", testAccountID, "orders-db"),
 		"TagKeys.member.1": "env",
 		"TagKeys.member.2": "team",
 	}, nc, testCaller, testEnv)

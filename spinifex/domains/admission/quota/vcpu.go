@@ -168,17 +168,21 @@ func (s *Service) ChargeLaunch(ctx context.Context, accountID string, reservatio
 // static type without a NATS round trip.
 type InstanceTypeResolver func(accountID, instanceID string) (instanceType string, ok bool, err error)
 
-// NATSInstanceTypeResolver builds the production resolver from the account's
-// instance listing. The listing is refused as retryable ServiceUnavailable unless
-// every node in nodeIDs answered, so an instance on a silent node is never read
-// as absent and waved past the cap. nodeIDs is re-evaluated per call.
+// NATSInstanceTypeResolver builds the production resolver from a node-identity
+// checked describe of the one instance. A found instance resolves even with a node
+// silent; an absence a silent node could hide is a retryable ServiceUnavailable.
 func NATSInstanceTypeResolver(natsConn *nats.Conn, nodeIDs func() []string) InstanceTypeResolver {
 	return func(accountID, instanceID string) (string, bool, error) {
-		listing, err := ec2instanceapi.DescribeAccountInstancesComplete(context.Background(), natsConn, nodeIDs(), accountID)
+		out, err := ec2instanceapi.DescribeInstancesChecked(context.Background(),
+			&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
+			natsConn, 0, nodeIDs(), accountID)
 		if err != nil {
+			if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInvalidInstanceIDNotFound {
+				return "", false, nil
+			}
 			return "", false, err
 		}
-		instanceType, ok := instanceTypeFromReservations(listing.Reservations, instanceID)
+		instanceType, ok := instanceTypeFromReservations(out.Reservations, instanceID)
 		return instanceType, ok, nil
 	}
 }

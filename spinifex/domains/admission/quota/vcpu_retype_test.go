@@ -279,3 +279,50 @@ func TestNATSInstanceTypeResolver_FindsInstanceWhenEveryNodeAnswers(t *testing.T
 		t.Fatalf("EnforceRetype err = %v, want %q", err, awserrors.ErrorResourceLimitExceeded)
 	}
 }
+
+// An instance absent from a complete listing charges nothing and returns no
+// error, so the daemon rejects the modify with the AWS NotFound error.
+func TestNATSInstanceTypeResolver_AbsentOnCompleteListingDefersToDaemon(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
+	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
+		t.Fatalf("seed AddVCPU: %v", err)
+	}
+	_, nc := testutil.StartTestNATS(t)
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-2", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeStoppedInstances", "", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", ec2.DescribeInstancesOutput{})
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} })
+	delta, err := s.EnforceRetype(t.Context(), resolve, testAccount, "i-missing", "m5.xlarge")
+	if delta != 0 || err != nil {
+		t.Fatalf("EnforceRetype = (%d, %v), want (0, nil)", delta, err)
+	}
+}
+
+// A retype targets a stopped instance, which the shared stopped bucket serves
+// whatever the node fan-out does, so a silent node must not block judging it.
+func TestNATSInstanceTypeResolver_FindsStoppedInstanceWhileANodeIsSilent(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
+	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
+		t.Fatalf("seed AddVCPU: %v", err)
+	}
+	_, nc := testutil.StartTestNATS(t)
+	inst := instance("t3.micro", ec2.InstanceStateNameStopped)
+	inst.InstanceId = aws.String("i-stopped")
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeStoppedInstances", "", ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{reservation(inst)}})
+	replyAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", ec2.DescribeInstancesOutput{})
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} })
+	_, err := s.EnforceRetype(t.Context(), resolve, testAccount, "i-stopped", "m5.xlarge")
+	if err == nil || err.Error() != awserrors.ErrorResourceLimitExceeded {
+		t.Fatalf("EnforceRetype err = %v, want %q", err, awserrors.ErrorResourceLimitExceeded)
+	}
+}

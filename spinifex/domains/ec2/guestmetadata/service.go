@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -35,7 +35,7 @@ type listTapsFunc func(ctx context.Context) (map[string]string, error)
 
 // profileLookup is the IAMService slice needed for credential + iam/* paths.
 type profileLookup interface {
-	ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*handlers_iam.InstanceProfile, error)
+	ResolveInstanceProfile(ctx context.Context, accountID, nameOrARN string) (*iamdomain.InstanceProfile, error)
 	GetRole(ctx context.Context, accountID string, input *iam.GetRoleInput) (*iam.GetRoleOutput, error)
 }
 

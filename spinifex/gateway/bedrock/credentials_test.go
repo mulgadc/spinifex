@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -106,11 +106,11 @@ func TestEncryptDecryptSecret_RoundTrip(t *testing.T) {
 	key := fixedMasterKey()
 	plaintext := "sk-ant-test-secret"
 
-	ciphertext, err := handlers_iam.EncryptSecret(plaintext, key)
+	ciphertext, err := iamdomain.EncryptSecret(plaintext, key)
 	require.NoError(t, err)
 	assert.NotEqual(t, plaintext, ciphertext)
 
-	decrypted, err := handlers_iam.DecryptSecret(ciphertext, key)
+	decrypted, err := iamdomain.DecryptSecret(ciphertext, key)
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, decrypted)
 }

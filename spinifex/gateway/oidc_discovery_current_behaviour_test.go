@@ -20,9 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
@@ -174,20 +174,20 @@ func TestCurrentBehaviour_OIDCDiscoveryKVUnavailable(t *testing.T) {
 func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	iamSvc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, handlers_eks.NewOIDCJWKSReader(js))
 	require.NoError(t, err)
 
 	issuer := testDiscIssuer
 	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), js,
-		handlers_iam.IAMAccountBucketName(testDiscAccount), handlers_iam.KVBucketIAMAccountVersion)
+		iamdomain.IAMAccountBucketName(testDiscAccount), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
-	_, err = iamKV.Put(t.Context(), handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
+	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
 	require.NoError(t, err)
-	federated := handlers_iam.OIDCProviderARN(testDiscAccount, strings.TrimPrefix(issuer, "https://"))
+	federated := iamdomain.OIDCProviderARN(testDiscAccount, strings.TrimPrefix(issuer, "https://"))
 	role, err := iamSvc.CreateRole(testDiscAccount, &iam.CreateRoleInput{
 		RoleName: aws.String("irsa-wire"),
 		AssumeRolePolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Federated":"` +

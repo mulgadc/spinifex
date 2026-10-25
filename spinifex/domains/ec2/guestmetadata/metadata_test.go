@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,13 +62,13 @@ func (f *fakeResolver) resolveVPCCIDR(_ context.Context, _, _ string) (string, e
 }
 
 type fakeIAM struct {
-	profile    *handlers_iam.InstanceProfile
+	profile    *iamdomain.InstanceProfile
 	profileErr error
 	roleARN    string
 	roleErr    error
 }
 
-func (f *fakeIAM) ResolveInstanceProfile(_ context.Context, _, _ string) (*handlers_iam.InstanceProfile, error) {
+func (f *fakeIAM) ResolveInstanceProfile(_ context.Context, _, _ string) (*iamdomain.InstanceProfile, error) {
 	return f.profile, f.profileErr
 }
 
@@ -991,8 +991,8 @@ func TestHTTP_PublicKeysInstanceBackendError500(t *testing.T) {
 
 // ----- IAM / credentials -------------------------------------------------
 
-func profileFixture() *handlers_iam.InstanceProfile {
-	return &handlers_iam.InstanceProfile{
+func profileFixture() *iamdomain.InstanceProfile {
+	return &iamdomain.InstanceProfile{
 		InstanceProfileName: "app-profile",
 		InstanceProfileID:   "AIPAEXAMPLE",
 		AccountID:           "111122223333",

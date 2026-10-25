@@ -14,7 +14,7 @@ import (
 	"errors"
 	"fmt"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -79,7 +79,7 @@ func GenerateClusterOIDCKeypair(ctx context.Context, kv jetstream.KeyValue, clus
 	}
 	pemBlock := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
 
-	ciphertext, err := handlers_iam.EncryptSecret(string(pemBlock), masterKey)
+	ciphertext, err := iamdomain.EncryptSecret(string(pemBlock), masterKey)
 	if err != nil {
 		return "", nil, fmt.Errorf("encrypt OIDC private key: %w", err)
 	}
@@ -113,7 +113,7 @@ func LoadClusterOIDCPrivateKey(ctx context.Context, kv jetstream.KeyValue, clust
 		}
 		return nil, fmt.Errorf("kv get %s: %w", OIDCSigningKeyKey(clusterName), err)
 	}
-	pemStr, err := handlers_iam.DecryptSecret(string(entry.Value()), masterKey)
+	pemStr, err := iamdomain.DecryptSecret(string(entry.Value()), masterKey)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt OIDC private key: %w", err)
 	}

@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +25,7 @@ import (
 // methods below are wired, and any other method nil-panics if a test reaches
 // an unmocked path.
 type flexMockIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	createUserFn           func(string, *iam.CreateUserInput) (*iam.CreateUserOutput, error)
 	getUserFn              func(string, *iam.GetUserInput) (*iam.GetUserOutput, error)
@@ -36,7 +36,7 @@ type flexMockIAMService struct {
 	deleteAccessKeyFn      func(string, *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
 	updateAccessKeyFn      func(string, *iam.UpdateAccessKeyInput) (*iam.UpdateAccessKeyOutput, error)
 	canonicalResourceARNFn func(string, arn.IAMResourceType, string) (string, error)
-	lookupAccessKeyFn      func(string) (*handlers_iam.AccessKey, error)
+	lookupAccessKeyFn      func(string) (*iamdomain.AccessKey, error)
 
 	getAccountSummaryFn func(string, *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error)
 	getRoleFn           func(string, *iam.GetRoleInput) (*iam.GetRoleOutput, error)
@@ -115,11 +115,11 @@ func (m *flexMockIAMService) CanonicalResourceARN(accountID string, kind arn.IAM
 	return arn.FormatIAMPath(kind, accountID, "/", name), nil
 }
 
-func (m *flexMockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
+func (m *flexMockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.AccessKey, error) {
 	if m.lookupAccessKeyFn != nil {
 		return m.lookupAccessKeyFn(accessKeyID)
 	}
-	return &handlers_iam.AccessKey{AccessKeyID: accessKeyID, AccountID: "000000000000", UserName: "user"}, nil
+	return &iamdomain.AccessKey{AccessKeyID: accessKeyID, AccountID: "000000000000", UserName: "user"}, nil
 }
 
 func (m *flexMockIAMService) GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput) (*iam.GetAccountSummaryOutput, error) {
@@ -187,7 +187,7 @@ func (m *flexMockIAMService) ListUserPolicies(_ string, _ *iam.ListUserPoliciesI
 }
 
 // setupIAMRequestHandler wires an http.Handler for IAM_Request with injected SigV4 context values.
-func setupIAMRequestHandler(svc handlers_iam.IAMService) http.Handler {
+func setupIAMRequestHandler(svc iamdomain.IAMService) http.Handler {
 	gw := &GatewayConfig{
 		DisableLogging: true,
 		IAMService:     svc,
@@ -295,7 +295,7 @@ type realAliasesIAMService struct {
 }
 
 func (realAliasesIAMService) ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput) (*iam.ListAccountAliasesOutput, error) {
-	return (&handlers_iam.IAMServiceImpl{}).ListAccountAliases(accountID, input)
+	return (&iamdomain.IAMServiceImpl{}).ListAccountAliases(accountID, input)
 }
 
 // AWS answers an account with no alias with an empty AccountAliases list and

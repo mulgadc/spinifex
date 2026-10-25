@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 const (
@@ -32,16 +32,16 @@ var InternalAgentActions = []string{
 // Never rds:*: granting the customer surface here would let a Postgres RCE on
 // one DB VM manage its account's whole fleet.
 func instanceRoleInlinePolicy() (string, error) {
-	actions := make(handlers_iam.StringOrArr, 0, len(InternalAgentActions))
+	actions := make(iamdomain.StringOrArr, 0, len(InternalAgentActions))
 	for _, action := range InternalAgentActions {
 		actions = append(actions, "rds:"+action)
 	}
-	doc, err := json.Marshal(handlers_iam.PolicyDocument{
+	doc, err := json.Marshal(iamdomain.PolicyDocument{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{{
-			Effect:   handlers_iam.PolicyEffectAllow,
+		Statement: []iamdomain.Statement{{
+			Effect:   iamdomain.PolicyEffectAllow,
 			Action:   actions,
-			Resource: handlers_iam.StringOrArr{"*"},
+			Resource: iamdomain.StringOrArr{"*"},
 		}},
 	})
 	if err != nil {
@@ -53,7 +53,7 @@ func instanceRoleInlinePolicy() (string, error) {
 // IAMProvider returns the system instance-role ensurer. It is resolved per launch rather than held,
 // mirroring EKS: the KV-backed IAM service has no responders until JetStream is up, so an eager build
 // races daemon boot and fails permanently on the node that loses.
-type IAMProvider func() handlers_iam.SystemInstanceRoleEnsurer
+type IAMProvider func() iamdomain.SystemInstanceRoleEnsurer
 
 // Returns the mandatory instance-profile ARN. Unlike EKS there is no
 // static-credential fallback: without the role the agent cannot authenticate.
@@ -69,7 +69,7 @@ func ensureInstanceProfile(provider IAMProvider, accountID string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("rds: construct instance-role inline policy: %w", err)
 	}
-	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iamSvc, accountID,
+	profileARN, err := iamdomain.EnsureSystemInstanceProfile(iamSvc, accountID,
 		InstanceRoleName, instanceRoleInlinePolicyName, policy)
 	if err != nil {
 		return "", fmt.Errorf("rds: ensure instance profile %s for account %s: %w",

@@ -7,8 +7,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -67,12 +67,12 @@ func (s *stubSTSService) LookupSessionCredential(akid string) (*handlers_sts.Ses
 // that triggers an unexpected call fails loudly instead of silently returning
 // zero values.
 type stubIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
 	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 }
 
-var _ handlers_iam.IAMService = (*stubIAMService)(nil)
+var _ iamdomain.IAMService = (*stubIAMService)(nil)
 
 func (s *stubIAMService) GetUser(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error) {
 	if s.getUserFn != nil {

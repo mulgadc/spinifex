@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 const (
@@ -39,13 +39,13 @@ type webIdentityContext struct {
 // Explicit-deny wins; a statement matches when Action, Principal.Federated, and all Conditions hold.
 // Returns nil on grant or AccessDenied/error on deny/corruption.
 func evalTrustPolicyForWebIdentity(docJSON string, identity webIdentityContext) error {
-	doc, err := handlers_iam.ValidateTrustPolicyDocument(docJSON)
+	doc, err := iamdomain.ValidateTrustPolicyDocument(docJSON)
 	if err != nil {
 		return fmt.Errorf("stored trust policy invalid: %w", err)
 	}
 
 	for _, stmt := range doc.Statement {
-		if stmt.Effect != handlers_iam.PolicyEffectDeny {
+		if stmt.Effect != iamdomain.PolicyEffectDeny {
 			continue
 		}
 		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)
@@ -58,7 +58,7 @@ func evalTrustPolicyForWebIdentity(docJSON string, identity webIdentityContext) 
 	}
 
 	for _, stmt := range doc.Statement {
-		if stmt.Effect != handlers_iam.PolicyEffectAllow {
+		if stmt.Effect != iamdomain.PolicyEffectAllow {
 			continue
 		}
 		matched, err := matchWebIdentityStatement(stmt.Action, stmt.Principal, stmt.Condition, identity)

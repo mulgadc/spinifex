@@ -7,8 +7,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,7 +36,7 @@ func TestCurrentBehaviour_AccountTermination_QuotaOverridesSurviveTeardown(t *te
 	require.NoError(t, svc.PutAccountQuota(ctx, testAccountID, quota.Overrides{VCPUs: &unlimited}, "operator"))
 
 	accounts := newFakeAccounts()
-	iam := &accountIAM{account: &handlers_iam.Account{AccountID: testAccountID, AccountName: testAccountName}}
+	iam := &accountIAM{account: &iamdomain.Account{AccountID: testAccountID, AccountName: testAccountName}}
 	engine := quietEngine(accounts, AccountReapers(iam, nil, usage)...)
 
 	result, err := engine.Teardown(ctx, request())

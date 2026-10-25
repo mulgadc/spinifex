@@ -3,7 +3,7 @@ package handlers_elbv2
 import (
 	"log/slog"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 const (
@@ -38,7 +38,7 @@ func (s *ELBv2ServiceImpl) ensureLBInstanceProfile(accountID string) string {
 		slog.Warn("ELBv2: IAM service unwired; LB VM falls back to baked static gateway creds")
 		return ""
 	}
-	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iam, accountID,
+	profileARN, err := iamdomain.EnsureSystemInstanceProfile(iam, accountID,
 		lbAgentSystemRoleName, lbAgentInlinePolicyName, lbAgentInlinePolicy)
 	if err != nil {
 		slog.Warn("ELBv2: ensure LB instance profile failed; falling back to baked static gateway creds",

@@ -17,8 +17,8 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -31,9 +31,9 @@ import (
 // acmPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does, on
 // live test NATS, with docs as every principal's policy. The region is
 // testRegion because signTestRequestAs always signs for it.
-func acmPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayConfig, http.Handler) {
+func acmPipelineApp(t *testing.T, docs []iamdomain.PolicyDocument) (*GatewayConfig, http.Handler) {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	_, nc := testutil.StartTestNATS(t)
 
@@ -44,7 +44,7 @@ func acmPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 		IAMService: &policyMockIAMService{
 			mockIAMService: mockIAMService{
 				masterKey: testMasterKey,
-				accessKeys: map[string]*handlers_iam.AccessKey{
+				accessKeys: map[string]*iamdomain.AccessKey{
 					testAccessKey: {
 						AccessKeyID:     testAccessKey,
 						SecretAccessKey: encryptedSecret,
@@ -54,7 +54,7 @@ func acmPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 					},
 				},
 			},
-			getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+			getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 		},
 	}
 
@@ -68,11 +68,11 @@ func acmPipelineApp(t *testing.T, docs []handlers_iam.PolicyDocument) (*GatewayC
 
 // allowAllACMDocs is the policy acmPipelineApp uses when the test is not
 // exercising authorization itself.
-func allowAllACMDocs() []handlers_iam.PolicyDocument {
-	return []handlers_iam.PolicyDocument{{
+func allowAllACMDocs() []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
-			{Effect: "Allow", Action: handlers_iam.StringOrArr{"*"}, Resource: handlers_iam.StringOrArr{"*"}},
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
 		},
 	}}
 }
@@ -209,13 +209,13 @@ func TestACMPipeline_OversizedBody_413OverHTTP(t *testing.T) {
 // dispatch runs, and denies, before the NATS-backed action handler is ever
 // invoked, through the full pipeline.
 func TestACMPipeline_AuthzGateBlocksAction(t *testing.T) {
-	scopedDocs := []handlers_iam.PolicyDocument{{
+	scopedDocs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
+		Statement: []iamdomain.Statement{
 			{
 				Effect:   "Allow",
-				Action:   handlers_iam.StringOrArr{"acm:DeleteCertificate"},
-				Resource: handlers_iam.StringOrArr{"arn:aws:acm:" + testRegion + ":" + authzAccountID + ":certificate/other"},
+				Action:   iamdomain.StringOrArr{"acm:DeleteCertificate"},
+				Resource: iamdomain.StringOrArr{"arn:aws:acm:" + testRegion + ":" + authzAccountID + ":certificate/other"},
 			},
 		},
 	}}

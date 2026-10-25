@@ -6,8 +6,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -433,7 +433,7 @@ func TestCreateDBInstance_StagesThePasswordEncrypted(t *testing.T) {
 	entry, err := raw.Get(t.Context(), BootstrapPayloadKey(testDBInstanceID))
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(entry.Value(), &envelope))
-	plaintext, err := handlers_iam.DecryptSecret(envelope.EncryptedPayload, testMasterKey)
+	plaintext, err := iamdomain.DecryptSecret(envelope.EncryptedPayload, testMasterKey)
 	require.NoError(t, err)
 	assert.Contains(t, plaintext, "Sup3rSecret!",
 		"the payload has to actually carry the password it staged")

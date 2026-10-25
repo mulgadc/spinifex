@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// AccountStatusTerminating mirrors handlers_iam.AccountStatusTerminating.
+// AccountStatusTerminating mirrors iamdomain.AccountStatusTerminating.
 // Redeclared so this package does not depend on the IAM service to be tested.
 const AccountStatusTerminating = "TERMINATING"
 

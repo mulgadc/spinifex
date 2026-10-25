@@ -13,9 +13,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 const (
@@ -155,7 +155,7 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 		if presignedTimeNow().After(cred.ExpiresAt) {
 			return nil, "", nil, errors.New(awserrors.ErrorExpiredToken)
 		}
-		secret, err := handlers_iam.DecryptSecret(cred.SecretEncrypted, s.masterKey)
+		secret, err := iamdomain.DecryptSecret(cred.SecretEncrypted, s.masterKey)
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("decrypt session secret: %w", err)
 		}
@@ -173,7 +173,7 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 			}
 			return nil, "", nil, err
 		}
-		if ak.Status != handlers_iam.AccessKeyStatusActive {
+		if ak.Status != iamdomain.AccessKeyStatusActive {
 			return nil, "", nil, errors.New(awserrors.ErrorInvalidIdentityToken)
 		}
 		secret, err := s.iamSvc.DecryptSecret(ak.SecretAccessKey)

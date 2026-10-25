@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // Test hooks for the external cmd_test package.
@@ -139,7 +139,7 @@ var DropStalePrincipalPolicies = dropStalePrincipalPolicies
 var RevokePrincipalKeys = revokePrincipalKeys
 
 // DescribePrincipal exposes describePrincipal for testing.
-func DescribePrincipal(svc handlers_iam.IAMService, accountID, userName string) (PrincipalRowSpec, error) {
+func DescribePrincipal(svc iamdomain.IAMService, accountID, userName string) (PrincipalRowSpec, error) {
 	row, err := describePrincipal(svc, accountID, userName)
 	return PrincipalRowSpec(row), err
 }

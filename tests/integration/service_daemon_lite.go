@@ -11,7 +11,7 @@ import (
 	handlers_ecs "github.com/mulgadc/spinifex/spinifex/handlers/ecs"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Helper()
 	nc := gw.NATSConn
 	cfg := &config.Config{AZ: testAZ, Region: testRegion}
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
 	acm, err := acmdomain.NewACMServiceImplWithNATS(t.Context(), cfg, nc, masterKey)

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,10 +32,10 @@ func newTestSetup(t *testing.T) (*STSServiceImpl, *nats.Conn) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	iamSvc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	stsSvc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, newFakeJWKSResolver())
@@ -95,9 +95,9 @@ func TestNewSTSServiceImpl_InitializesBucket(t *testing.T) {
 
 func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
-	iamSvc, err := handlers_iam.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	iamSvc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	svc, err := NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, nopJWKSResolver{})
@@ -190,10 +190,10 @@ func TestSessionCredential_JSONRoundTrip(t *testing.T) {
 	assert.Equal(t, cred, got)
 }
 
-// nopIAMService satisfies handlers_iam.IAMService via embedding so the
+// nopIAMService satisfies iamdomain.IAMService via embedding so the
 // constructor's nil-check tests can pass a non-nil interface without
 // implementing 40+ methods. Any actual call panics — the Step 2 tests never
 // reach that code path.
 type nopIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 }

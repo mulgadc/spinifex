@@ -1,13 +1,17 @@
 package quota
 
 import (
+	"encoding/json"
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/nats-io/nats.go"
 )
 
 // reservation builds a single reservation whose instances carry the given type
@@ -202,46 +206,76 @@ func TestInstanceTypeFromReservations(t *testing.T) {
 	}
 }
 
-// TestConfirmInstanceType locks in the partial-view fix the production resolver
-// relies on. A found instance resolves regardless of sweep completeness. A
-// genuine absence on a complete sweep returns ok false with no error, so the gate
-// charges nothing and the daemon rejects the modify; but an absence on an
-// incomplete sweep fails closed with ErrorServerInternal, so a node or bucket that
-// missed the sweep cannot be read as "absent" and wave a retype past the cap.
-func TestConfirmInstanceType(t *testing.T) {
-	withID := func(id, instanceType, state string) *ec2.Instance {
-		inst := instance(instanceType, state)
-		inst.InstanceId = aws.String(id)
-		return inst
+// replyAsNode answers every request on subject with reply, attributed to node.
+func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, reply any) {
+	t.Helper()
+	data, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
 	}
-	reservations := []*ec2.Reservation{
-		reservation(withID("i-stopped", "t3.micro", ec2.InstanceStateNameStopped)),
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		out := nats.NewMsg(msg.Reply)
+		out.Data = data
+		if node != "" {
+			out.Header.Set(natsmsg.NodeIDHeader, node)
+		}
+		_ = msg.RespondMsg(out)
+	})
+	if err != nil {
+		t.Fatalf("subscribe %s: %v", subject, err)
 	}
-	tests := []struct {
-		name       string
-		instanceID string
-		complete   bool
-		wantType   string
-		wantOK     bool
-		wantErr    string
-	}{
-		{"found on complete sweep", "i-stopped", true, "t3.micro", true, ""},
-		{"found on incomplete sweep", "i-stopped", false, "t3.micro", true, ""},
-		{"absent on complete sweep defers to daemon", "i-missing", true, "", false, ""},
-		{"absent on incomplete sweep fails closed", "i-missing", false, "", false, awserrors.ErrorServerInternal},
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+}
+
+// node-2 holds the instance but never answers, and node-1 answers twice.
+// Counting replies reads that as every node heard from and the instance as
+// absent, waving the retype past the cap; the gate must see node-2 is missing.
+func TestNATSInstanceTypeResolver_RefusesWhenOneNodeAnswersTwiceAndAnotherIsSilent(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
+	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
+		t.Fatalf("seed AddVCPU: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotType, gotOK, err := confirmInstanceType(reservations, tt.instanceID, tt.complete)
-			if gotType != tt.wantType || gotOK != tt.wantOK {
-				t.Fatalf("confirmInstanceType() = (%q, %v), want (%q, %v)", gotType, gotOK, tt.wantType, tt.wantOK)
-			}
-			switch {
-			case tt.wantErr == "" && err != nil:
-				t.Fatalf("confirmInstanceType() err = %v, want nil", err)
-			case tt.wantErr != "" && (err == nil || err.Error() != tt.wantErr):
-				t.Fatalf("confirmInstanceType() err = %v, want %q", err, tt.wantErr)
-			}
-		})
+	_, nc := testutil.StartTestNATS(t)
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeStoppedInstances", "", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", ec2.DescribeInstancesOutput{})
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} })
+	delta, err := s.EnforceRetype(t.Context(), resolve, testAccount, "i-on-node2", "m5.xlarge")
+	if err == nil {
+		t.Fatalf("EnforceRetype = (%d, nil), want a refusal while node-2 is silent", delta)
+	}
+	code, ok := awserrors.ResolveErrorCode(err)
+	if !ok || code != awserrors.ErrorServiceUnavailable {
+		t.Fatalf("EnforceRetype err = %v, want retryable %q", err, awserrors.ErrorServiceUnavailable)
+	}
+}
+
+// With every node answering, the resolver finds the instance on node-2 and the
+// gate judges the retype against the cap.
+func TestNATSInstanceTypeResolver_FindsInstanceWhenEveryNodeAnswers(t *testing.T) {
+	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
+	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
+		t.Fatalf("seed AddVCPU: %v", err)
+	}
+	_, nc := testutil.StartTestNATS(t)
+	inst := instance("t3.micro", ec2.InstanceStateNameRunning)
+	inst.InstanceId = aws.String("i-on-node2")
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-2", ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{reservation(inst)}})
+	replyAsNode(t, nc, "ec2.DescribeStoppedInstances", "", ec2.DescribeInstancesOutput{})
+	replyAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", ec2.DescribeInstancesOutput{})
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} })
+	_, err := s.EnforceRetype(t.Context(), resolve, testAccount, "i-on-node2", "m5.xlarge")
+	if err == nil || err.Error() != awserrors.ErrorResourceLimitExceeded {
+		t.Fatalf("EnforceRetype err = %v, want %q", err, awserrors.ErrorResourceLimitExceeded)
 	}
 }

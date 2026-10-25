@@ -1496,7 +1496,8 @@ func (d *Daemon) ovnSBAddr() string {
 }
 
 // installOCIAllocators builds one OCI allocator per source="oci" pool and
-// reconciles it against OCI before it serves anything. The reconcile is on the
+// reconciles it against OCI, before it serves anything unless the bindings KV
+// is not yet reachable and the pass is deferred. The reconcile is on the
 // startup path on purpose: Allocate creates OCI objects before writing its
 // record, so a crash in between leaves a reserved public IP that bills and
 // holds one of the 50 per-region slots with nothing referencing it, and this
@@ -1512,17 +1513,14 @@ func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.Je
 		}
 		// A reconcile failure is not fatal: it leaks money, not correctness,
 		// and refusing to start would take EIPs down over a transient API
-		// error. It is logged at Error so it is never silently skipped.
-		res, err := alloc.Reconcile(d.ctx)
-		if err != nil {
-			slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
-				"pool", p.Name, "err", err)
-			continue
+		// error. The pool joins the loops either way, so a later pass covers it.
+		pool := ociPool{name: p.Name, alloc: alloc}
+		d.ociAllocators = append(d.ociAllocators, pool)
+		if err := pool.reconcile(d.ctx, true); kvutil.IsStreamUnavailable(err) {
+			// On a cluster starting together the bindings KV can lag vpcd by
+			// moments; waiting ten minutes for the loop would leave leaks billing.
+			go pool.retryStartupReconcile(d.ctx, ociStartupReconcileInitialBackoff, ociStartupReconcileMaxBackoff)
 		}
-		slog.Info("OCI allocator ready", "pool", p.Name,
-			"collected", len(res.Collected), "stale_bindings", len(res.Stale),
-			"orphaned_public_ips", len(res.Orphaned), "skipped", res.Skipped)
-		d.ociAllocators = append(d.ociAllocators, ociPool{name: p.Name, alloc: alloc})
 	}
 	if len(d.ociAllocators) > 0 {
 		go d.runOCIAffinityLoop()
@@ -1609,19 +1607,54 @@ func (d *Daemon) runOCIReconcileLoop() {
 		case <-ticker.C:
 		}
 		for _, p := range d.ociAllocators {
-			res, err := p.alloc.Reconcile(d.ctx)
-			if err != nil {
-				slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
-					"pool", p.name, "err", err)
-				continue
-			}
-			if len(res.Collected) > 0 || len(res.Stale) > 0 || len(res.Orphaned) > 0 {
-				slog.Info("OCI allocator reconcile collected leaks", "pool", p.name,
-					"collected", len(res.Collected), "stale_bindings", len(res.Stale),
-					"orphaned_public_ips", len(res.Orphaned))
-			}
+			_ = p.reconcile(d.ctx, false)
 		}
 	}
+}
+
+// ociStartupReconcileInitialBackoff and ociStartupReconcileMaxBackoff pace the
+// startup reconcile's retries while the bindings KV has no responder.
+const (
+	ociStartupReconcileInitialBackoff = 500 * time.Millisecond
+	ociStartupReconcileMaxBackoff     = 30 * time.Second
+)
+
+// reconcile runs one pass and logs its outcome, returning the error so a
+// caller can tell an unreachable bindings KV, which says nothing about leaks,
+// from a pass that reached OCI and the KV and failed.
+func (p ociPool) reconcile(ctx context.Context, startup bool) error {
+	res, err := p.alloc.Reconcile(ctx)
+	switch {
+	case kvutil.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
+		slog.Warn("OCI allocator reconcile deferred: bindings KV store not reachable",
+			"pool", p.name, "err", err)
+	case err != nil:
+		slog.Error("OCI allocator reconcile failed; leaked addresses may be billing",
+			"pool", p.name, "collected", len(res.Collected), "orphaned_public_ips", len(res.Orphaned), "err", err)
+	case startup:
+		slog.Info("OCI allocator ready", "pool", p.name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale),
+			"orphaned_public_ips", len(res.Orphaned), "skipped", res.Skipped)
+	case len(res.Collected) > 0 || len(res.Stale) > 0 || len(res.Orphaned) > 0:
+		slog.Info("OCI allocator reconcile collected leaks", "pool", p.name,
+			"collected", len(res.Collected), "stale_bindings", len(res.Stale),
+			"orphaned_public_ips", len(res.Orphaned))
+	}
+	return err
+}
+
+// retryStartupReconcile repeats the startup reconcile until the bindings KV
+// answers or ctx ends. Any other failure stops it: that pass reached the KV,
+// logged its own error, and the periodic loop owns the next attempt.
+func (p ociPool) retryStartupReconcile(ctx context.Context, initialBackoff, maxBackoff time.Duration) {
+	_, _ = retryUntilContext(ctx, initialBackoff, maxBackoff,
+		func(int, time.Duration, error) {},
+		func() (struct{}, error) {
+			if err := p.reconcile(ctx, true); kvutil.IsStreamUnavailable(err) {
+				return struct{}{}, err
+			}
+			return struct{}{}, nil
+		})
 }
 
 // ClaimOCIAddresses runs one affinity pass over every OCI pool and records which

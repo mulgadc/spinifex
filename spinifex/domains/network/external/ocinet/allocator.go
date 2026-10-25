@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -159,6 +160,10 @@ type PoolAllocator struct {
 	now          func() time.Time
 	localPorts   func(context.Context) (map[string]struct{}, error)
 	localGateway func(context.Context, string) (bool, error)
+
+	// inflight is held shared by Allocate and exclusively by Reconcile: until
+	// Allocate records its binding, its objects look exactly like a leak.
+	inflight sync.RWMutex
 }
 
 var (
@@ -221,6 +226,9 @@ func (a *PoolAllocator) Allocate(ctx context.Context, req external.AllocateReque
 	if req.PoolName != "" && req.PoolName != a.cfg.Pool.Name {
 		return netip.Addr{}, fmt.Errorf("ocinet: pool mismatch (got %q, bound to %q)", req.PoolName, a.cfg.Pool.Name)
 	}
+
+	a.inflight.RLock()
+	defer a.inflight.RUnlock()
 
 	name := displayName(req)
 	priv, err := a.client.AssignPrivateIP(ctx, a.cfg.VNICID, netip.Addr{}, name)

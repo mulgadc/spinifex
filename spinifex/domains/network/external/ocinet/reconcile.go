@@ -54,6 +54,9 @@ const orphanGrace = 30 * time.Minute
 // prefix is the entire safety property here, so an object whose name we cannot
 // read is skipped, not guessed at.
 func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) {
+	a.inflight.Lock()
+	defer a.inflight.Unlock()
+
 	var res ReconcileResult
 
 	live, err := a.client.ListPrivateIPs(ctx, a.cfg.VNICID)

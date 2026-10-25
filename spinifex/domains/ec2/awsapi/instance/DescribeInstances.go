@@ -14,8 +14,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 )
 
@@ -477,7 +477,7 @@ func judgeIdentityCompleteness(ctx context.Context, frames []natsmsg.Frame, sum 
 // that carries only an ARN. Results are cached per ARN to avoid repeated RPCs.
 // Misses are warn-logged and leave Id empty (graceful degradation for deleted profiles).
 // Safe to call with a nil output or nil IAMService (no-op).
-func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc handlers_iam.IAMService, accountID string) {
+func EnrichInstanceProfileIDs(out *ec2.DescribeInstancesOutput, iamSvc iamdomain.IAMService, accountID string) {
 	if out == nil || iamSvc == nil {
 		return
 	}

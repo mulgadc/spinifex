@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -141,7 +141,7 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 
 	record, err := json.Marshal(adminIdemRecord{
 		State:     adminIdemDone,
-		Name:      handlers_iam.NormalizeAccountName(req.Name),
+		Name:      iamdomain.NormalizeAccountName(req.Name),
 		Response:  &stored,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	})
@@ -163,12 +163,12 @@ func (gw *GatewayConfig) adminCreateAccount(ctx context.Context, body []byte) (a
 // admin identity and waits for the default VPC.
 func (gw *GatewayConfig) provisionNewAccount(
 	ctx context.Context,
-	names *handlers_iam.AccountNameIndex,
+	names *iamdomain.AccountNameIndex,
 	req *CreateAccountRequest,
 ) (*CreateAccountResponse, error) {
 	// Accounts that predate the reservation index have no entry to collide
 	// with, so they are found by name scan. The same listing bounds the cap.
-	existing, err := handlers_iam.FindAccountByName(gw.IAMService, req.Name)
+	existing, err := iamdomain.FindAccountByName(gw.IAMService, req.Name)
 	if err != nil {
 		slog.Error("CreateAccount: failed to list accounts", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -181,16 +181,16 @@ func (gw *GatewayConfig) provisionNewAccount(
 	}
 
 	switch err := names.Reserve(ctx, req.Name, req.ClientToken); {
-	case errors.Is(err, handlers_iam.ErrNameTaken):
+	case errors.Is(err, iamdomain.ErrNameTaken):
 		return nil, errors.New(awserrors.ErrorAccountAlreadyExists)
-	case errors.Is(err, handlers_iam.ErrNameInFlight):
+	case errors.Is(err, iamdomain.ErrNameInFlight):
 		return nil, errors.New(awserrors.ErrorOperationInProgress)
 	case err != nil:
 		slog.Error("CreateAccount: failed to reserve account name", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	account, err := gw.IAMService.CreateAccount(handlers_iam.NormalizeAccountName(req.Name))
+	account, err := gw.IAMService.CreateAccount(iamdomain.NormalizeAccountName(req.Name))
 	if err != nil {
 		if relErr := names.Release(ctx, req.Name, req.ClientToken); relErr != nil {
 			slog.Error("CreateAccount: failed to release name reservation", "err", relErr)
@@ -208,7 +208,7 @@ func (gw *GatewayConfig) provisionNewAccount(
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	provisioned, err := handlers_iam.ProvisionAccount(gw.IAMService, account.AccountID, account.AccountName)
+	provisioned, err := iamdomain.ProvisionAccount(gw.IAMService, account.AccountID, account.AccountName)
 	if err != nil {
 		slog.Error("CreateAccount: failed to provision account",
 			"accountID", account.AccountID, "err", err)
@@ -239,7 +239,7 @@ func (gw *GatewayConfig) provisionNewAccount(
 // response when the token has already completed, meaning the caller should
 // replay it rather than provision again.
 func claimClientToken(ctx context.Context, idem jetstream.KeyValue, clientToken, name string) (*CreateAccountResponse, error) {
-	normalized := handlers_iam.NormalizeAccountName(name)
+	normalized := iamdomain.NormalizeAccountName(name)
 	claim, err := json.Marshal(adminIdemRecord{
 		State:     adminIdemInProgress,
 		Name:      normalized,
@@ -340,14 +340,14 @@ func (gw *GatewayConfig) ensureDefaultVPC(ctx context.Context, accountID string)
 // adminStores opens the name index and the idempotency bucket. Both are opened
 // per request rather than cached on the gateway so a bucket created after
 // startup (a cluster upgraded into this feature) is picked up without a restart.
-func (gw *GatewayConfig) adminStores(ctx context.Context) (*handlers_iam.AccountNameIndex, jetstream.KeyValue, error) {
+func (gw *GatewayConfig) adminStores(ctx context.Context) (*iamdomain.AccountNameIndex, jetstream.KeyValue, error) {
 	js, err := jetstream.New(gw.NATSConn)
 	if err != nil {
 		slog.Error("CreateAccount: failed to get JetStream context", "err", err)
 		return nil, nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	names, err := handlers_iam.NewAccountNameIndex(ctx, js)
+	names, err := iamdomain.NewAccountNameIndex(ctx, js)
 	if err != nil {
 		slog.Error("CreateAccount: failed to open account name index", "err", err)
 		return nil, nil, errors.New(awserrors.ErrorServiceUnavailable)

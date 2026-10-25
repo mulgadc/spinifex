@@ -16,8 +16,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -279,15 +279,15 @@ func TestRequestConditionKeys_SourceIPWithoutAuthMiddleware(t *testing.T) {
 
 // conditionedPolicyIAMService serves one statement carrying cond, so a test can
 // drive a real condition through checkPolicyResources.
-func conditionedPolicyIAMService(effect string, cond map[string]map[string]handlers_iam.ConditionValue) *policyMockIAMService {
-	docs := []handlers_iam.PolicyDocument{{
+func conditionedPolicyIAMService(effect string, cond map[string]map[string]iamdomain.ConditionValue) *policyMockIAMService {
+	docs := []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{
-			{Effect: "Allow", Action: handlers_iam.StringOrArr{"*"}, Resource: handlers_iam.StringOrArr{"*"}},
+		Statement: []iamdomain.Statement{
+			{Effect: "Allow", Action: iamdomain.StringOrArr{"*"}, Resource: iamdomain.StringOrArr{"*"}},
 			{
 				Effect:    effect,
-				Action:    handlers_iam.StringOrArr{"ec2:*"},
-				Resource:  handlers_iam.StringOrArr{"*"},
+				Action:    iamdomain.StringOrArr{"ec2:*"},
+				Resource:  iamdomain.StringOrArr{"*"},
 				Condition: cond,
 			},
 		},
@@ -296,8 +296,8 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]handl
 		docs[0].Statement = docs[0].Statement[1:]
 	}
 	return &policyMockIAMService{
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
-		getRolePoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) { return docs, nil },
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
+		getRolePoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 }
 
@@ -307,7 +307,7 @@ func conditionedPolicyIAMService(effect string, cond map[string]map[string]handl
 func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
-		IAMService: conditionedPolicyIAMService("Allow", map[string]map[string]handlers_iam.ConditionValue{
+		IAMService: conditionedPolicyIAMService("Allow", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"10.0.0.0/8"}},
 		}),
 	}
@@ -346,7 +346,7 @@ func TestCheckPolicyResources_ConditionalAllowHonoursSourceIP(t *testing.T) {
 func TestCheckPolicyResources_ConditionalDenyHonoursSourceIP(t *testing.T) {
 	gw := &GatewayConfig{
 		DisableLogging: true,
-		IAMService: conditionedPolicyIAMService("Deny", map[string]map[string]handlers_iam.ConditionValue{
+		IAMService: conditionedPolicyIAMService("Deny", map[string]map[string]iamdomain.ConditionValue{
 			iampolicy.OpIPAddress: {iampolicy.KeySourceIP: {"203.0.113.0/24"}},
 		}),
 	}

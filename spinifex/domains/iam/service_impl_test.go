@@ -1,0 +1,3095 @@
+package iam
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// Interface compliance check.
+var _ IAMService = (*IAMServiceImpl)(nil)
+
+const testAccountID = awsidentifiers.GlobalAccountID
+
+func setupTestIAMService(t *testing.T) *IAMServiceImpl {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+
+	svc, err := NewIAMServiceImpl(t.Context(), nc, masterKey)
+	require.NoError(t, err)
+	return svc
+}
+
+func createTestUser(t *testing.T, svc *IAMServiceImpl, userName string) *iam.User {
+	t.Helper()
+	out, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String(userName),
+	})
+	require.NoError(t, err)
+	return out.User
+}
+
+// ============================================================================
+// User CRUD Tests
+// ============================================================================
+
+func TestCreateUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	out, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("testuser"),
+		Path:     aws.String("/developers/"),
+		Tags: []*iam.Tag{
+			{Key: aws.String("team"), Value: aws.String("backend")},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.User)
+	assert.Equal(t, "testuser", *out.User.UserName)
+	assert.Contains(t, *out.User.Arn, "testuser")
+	assert.Equal(t, "/developers/", *out.User.Path)
+	assert.Greater(t, len(*out.User.UserId), 4)
+	assert.Equal(t, "AIDA", (*out.User.UserId)[:4])
+}
+
+func TestCreateUser_DefaultPath(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	out, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("defaultpath"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "/", *out.User.Path)
+}
+
+func TestCreateUser_Duplicate(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("duplicateuser"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("duplicateuser"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMEntityAlreadyExists)
+}
+
+func TestCreateUser_PermissionsBoundarySet(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName:            aws.String("boundeduser"),
+		PermissionsBoundary: aws.String("arn:aws:iam::" + testAccountID + ":policy/deny-all"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+	assert.Contains(t, err.Error(), "PermissionsBoundary")
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("boundeduser")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestCreateUser_PermissionsBoundaryAbsent(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	tests := []struct {
+		name     string
+		userName string
+		boundary *string
+	}{
+		{name: "nil", userName: "nilboundary", boundary: nil},
+		{name: "empty string", userName: "emptyboundary", boundary: aws.String("")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+				UserName:            aws.String(tt.userName),
+				PermissionsBoundary: tt.boundary,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.userName, *out.User.UserName)
+		})
+	}
+}
+
+func TestGetUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "getuser")
+
+	out, err := svc.GetUser(testAccountID, &iam.GetUserInput{
+		UserName: aws.String("getuser"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "getuser", *out.User.UserName)
+}
+
+func TestGetUser_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetUser(testAccountID, &iam.GetUserInput{
+		UserName: aws.String("nonexistent"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestListUsers(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	createTestUser(t, svc, "user1")
+	createTestUser(t, svc, "user2")
+	createTestUser(t, svc, "user3")
+
+	out, err := svc.ListUsers(testAccountID, &iam.ListUsersInput{})
+	require.NoError(t, err)
+	assert.Len(t, out.Users, 3)
+
+	names := make(map[string]bool)
+	for _, u := range out.Users {
+		names[*u.UserName] = true
+	}
+	assert.True(t, names["user1"])
+	assert.True(t, names["user2"])
+	assert.True(t, names["user3"])
+}
+
+func TestListUsers_Empty(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	out, err := svc.ListUsers(testAccountID, &iam.ListUsersInput{})
+	require.NoError(t, err)
+	assert.Empty(t, out.Users)
+}
+
+// TestListRequiredMembersAreEmptyNotNil covers every IAM list operation whose
+// output shape marks the list member required. Each seeds a record that cannot
+// match, so the filtering loop runs rather than the no-keys shortcut, and the
+// result must come back empty but non-nil.
+func TestListRequiredMembersAreEmptyNotNil(t *testing.T) {
+	t.Parallel()
+	const otherAccountID = "999988887777"
+
+	tests := []struct {
+		operation string
+		member    string
+		// seed writes a record the listing must filter out, so an empty result
+		// is reached through the loop rather than the empty-bucket shortcut.
+		seed func(t *testing.T, svc *IAMServiceImpl)
+		list func(t *testing.T, svc *IAMServiceImpl) any
+	}{
+		{
+			operation: "ListUsers",
+			member:    "Users",
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				_, err := svc.CreateUser(otherAccountID, &iam.CreateUserInput{UserName: aws.String("otheruser")})
+				require.NoError(t, err)
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListUsers(testAccountID, &iam.ListUsersInput{})
+				require.NoError(t, err)
+				return out.Users
+			},
+		},
+		{
+			operation: "ListRoles",
+			member:    "Roles",
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				_, err := svc.CreateRole(otherAccountID, &iam.CreateRoleInput{
+					RoleName:                 aws.String("otherrole"),
+					AssumeRolePolicyDocument: aws.String(validTrustPolicy()),
+				})
+				require.NoError(t, err)
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListRoles(testAccountID, &iam.ListRolesInput{})
+				require.NoError(t, err)
+				return out.Roles
+			},
+		},
+		{
+			operation: "ListInstanceProfiles",
+			member:    "InstanceProfiles",
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				_, err := svc.CreateInstanceProfile(otherAccountID, &iam.CreateInstanceProfileInput{
+					InstanceProfileName: aws.String("otherprofile"),
+				})
+				require.NoError(t, err)
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListInstanceProfiles(testAccountID, &iam.ListInstanceProfilesInput{})
+				require.NoError(t, err)
+				return out.InstanceProfiles
+			},
+		},
+		{
+			operation: "ListGroupsForUser",
+			member:    "Groups",
+			// Membership is read off the user, so a user belonging to no group
+			// is the empty case; a foreign record would not reach the loop.
+			seed: func(t *testing.T, svc *IAMServiceImpl) {
+				createTestUser(t, svc, "grouplessuser")
+				createTestGroup(t, svc, "unrelatedgroup")
+			},
+			list: func(t *testing.T, svc *IAMServiceImpl) any {
+				out, err := svc.ListGroupsForUser(testAccountID, &iam.ListGroupsForUserInput{
+					UserName: aws.String("grouplessuser"),
+				})
+				require.NoError(t, err)
+				return out.Groups
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestIAMService(t)
+			tt.seed(t, svc)
+
+			got := tt.list(t, svc)
+			assert.Empty(t, got)
+			assert.NotNil(t, got, emptyRequiredListMsg(tt.operation, tt.member))
+		})
+	}
+}
+
+func TestListUsers_PathFilter(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("dev1"),
+		Path:     aws.String("/developers/"),
+	})
+	svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("admin1"),
+		Path:     aws.String("/admins/"),
+	})
+
+	out, err := svc.ListUsers(testAccountID, &iam.ListUsersInput{
+		PathPrefix: aws.String("/developers/"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, out.Users, 1)
+	assert.Equal(t, "dev1", *out.Users[0].UserName)
+}
+
+func TestDeleteUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "deleteuser")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("deleteuser"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{
+		UserName: aws.String("deleteuser"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteUser_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("nonexistent"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteUser_WithAccessKeys(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "userWithKeys")
+
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("userWithKeys"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("userWithKeys"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}
+
+func TestDeleteUser_WithAttachedPolicies(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "policyuser")
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TestPolicy"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+	})
+	require.NoError(t, err)
+
+	policyARN := "arn:aws:iam::" + testAccountID + ":policy/TestPolicy"
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("policyuser"),
+		PolicyArn: aws.String(policyARN),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("policyuser"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}
+
+// ============================================================================
+// Input Validation Tests
+// ============================================================================
+
+func TestCreateUser_InvalidName_TooLong(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	longName := strings.Repeat("a", 65)
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String(longName),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+}
+
+func TestCreateUser_InvalidName_BadChars(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("bad name!"),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for userName is invalid. It must contain only alphanumeric characters and/or the following: +=,.@_-")
+}
+
+func TestCreateUser_InvalidPath(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("validuser"),
+		Path:     aws.String("noslash"),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
+}
+
+func TestCreatePolicy_InvalidName(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	longName := strings.Repeat("a", 129)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String(longName),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+}
+
+func TestCreatePolicy_InvalidPath(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("ValidPolicy"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+		Path:           aws.String("bad-path"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+}
+
+// AWS refuses an empty Path, as every other Create* does, and checks it before
+// the policy document.
+func TestCreatePolicy_EmptyPathRefusedBeforeDocument(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("EmptyPath"), PolicyDocument: aws.String("{"), Path: aws.String(""),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters.")
+
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("NoPath"), PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "/", aws.StringValue(out.Policy.Path))
+}
+
+func TestValidatePolicyDocument_TooLarge(t *testing.T) {
+	t.Parallel()
+	largeDoc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"` + strings.Repeat("a", maxPolicyDocumentLength) + `"}]}`
+	_, err := ValidatePolicyDocument(largeDoc)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum length")
+}
+
+// ============================================================================
+// Access Key Tests
+// ============================================================================
+
+func TestCreateAccessKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "keyuser")
+
+	out, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("keyuser"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.AccessKey)
+
+	assert.Equal(t, "keyuser", *out.AccessKey.UserName)
+	assert.Equal(t, "Active", *out.AccessKey.Status)
+	assert.GreaterOrEqual(t, len(*out.AccessKey.AccessKeyId), 20)
+	assert.Equal(t, "AKIA", (*out.AccessKey.AccessKeyId)[:4])
+	assert.GreaterOrEqual(t, len(*out.AccessKey.SecretAccessKey), 30)
+}
+
+func TestCreateAccessKey_SecretIsDecryptable(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "decryptuser")
+
+	out, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("decryptuser"),
+	})
+	require.NoError(t, err)
+
+	plaintextSecret := *out.AccessKey.SecretAccessKey
+	accessKeyID := *out.AccessKey.AccessKeyId
+
+	// Look up the stored key and verify the encrypted secret can be decrypted
+	ak, err := svc.LookupAccessKey(accessKeyID)
+	require.NoError(t, err)
+
+	decrypted, err := svc.key.DecryptBase64(ak.SecretAccessKey)
+	require.NoError(t, err)
+	assert.Equal(t, plaintextSecret, decrypted)
+}
+
+func TestCreateAccessKey_UserNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("nonexistent"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestCreateAccessKey_MaxLimit(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "limituser")
+
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("limituser"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("limituser"),
+	})
+	require.NoError(t, err)
+
+	// Third key should fail (AWS limit is 2)
+	_, err = svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("limituser"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMLimitExceeded)
+}
+
+func TestAccessKeyQuota_Recovery(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "quotauser")
+
+	// Create 2 keys (at limit)
+	key1, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("quotauser"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("quotauser"),
+	})
+	require.NoError(t, err)
+
+	// Delete 1
+	_, err = svc.DeleteAccessKey(testAccountID, &iam.DeleteAccessKeyInput{
+		UserName:    aws.String("quotauser"),
+		AccessKeyId: key1.AccessKey.AccessKeyId,
+	})
+	require.NoError(t, err)
+
+	// Create another — should succeed (back under quota)
+	_, err = svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("quotauser"),
+	})
+	assert.NoError(t, err, "should be able to create key after deleting one")
+}
+
+func TestAccessKeyQuota_PerUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "user1")
+	createTestUser(t, svc, "user2")
+
+	// Fill user1's quota
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{UserName: aws.String("user1")})
+	require.NoError(t, err)
+	_, err = svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{UserName: aws.String("user1")})
+	require.NoError(t, err)
+
+	// user2 should still be able to create keys
+	_, err = svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{UserName: aws.String("user2")})
+	assert.NoError(t, err, "user2 quota should be independent of user1")
+}
+
+func TestListAccessKeys(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "listkeysuser")
+
+	key1, _ := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("listkeysuser"),
+	})
+	key2, _ := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("listkeysuser"),
+	})
+
+	out, err := svc.ListAccessKeys(testAccountID, &iam.ListAccessKeysInput{
+		UserName: aws.String("listkeysuser"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, out.AccessKeyMetadata, 2)
+
+	keyIDs := make(map[string]bool)
+	for _, k := range out.AccessKeyMetadata {
+		keyIDs[*k.AccessKeyId] = true
+	}
+	assert.True(t, keyIDs[*key1.AccessKey.AccessKeyId])
+	assert.True(t, keyIDs[*key2.AccessKey.AccessKeyId])
+}
+
+func TestDeleteAccessKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "delkeyuser")
+
+	keyOut, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("delkeyuser"),
+	})
+	require.NoError(t, err)
+	keyID := *keyOut.AccessKey.AccessKeyId
+
+	_, err = svc.DeleteAccessKey(testAccountID, &iam.DeleteAccessKeyInput{
+		UserName:    aws.String("delkeyuser"),
+		AccessKeyId: aws.String(keyID),
+	})
+	require.NoError(t, err)
+
+	listOut, err := svc.ListAccessKeys(testAccountID, &iam.ListAccessKeysInput{
+		UserName: aws.String("delkeyuser"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, listOut.AccessKeyMetadata)
+	assert.NotNil(t, listOut.AccessKeyMetadata, emptyRequiredListMsg("ListAccessKeys", "AccessKeyMetadata"))
+
+	// User should now be deletable (no access keys)
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("delkeyuser"),
+	})
+	require.NoError(t, err)
+}
+
+func TestDeleteAccessKey_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "delnotfounduser")
+
+	_, err := svc.DeleteAccessKey(testAccountID, &iam.DeleteAccessKeyInput{
+		UserName:    aws.String("delnotfounduser"),
+		AccessKeyId: aws.String("AKIANONEXISTENT12345"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestUpdateAccessKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "updatekeyuser")
+
+	keyOut, _ := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("updatekeyuser"),
+	})
+	keyID := *keyOut.AccessKey.AccessKeyId
+
+	// Deactivate
+	_, err := svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: aws.String(keyID),
+		Status:      aws.String("Inactive"),
+	})
+	require.NoError(t, err)
+
+	// Verify status changed
+	listOut, _ := svc.ListAccessKeys(testAccountID, &iam.ListAccessKeysInput{
+		UserName: aws.String("updatekeyuser"),
+	})
+	assert.Equal(t, "Inactive", *listOut.AccessKeyMetadata[0].Status)
+
+	// Reactivate
+	_, err = svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: aws.String(keyID),
+		Status:      aws.String("Active"),
+	})
+	require.NoError(t, err)
+
+	listOut, _ = svc.ListAccessKeys(testAccountID, &iam.ListAccessKeysInput{
+		UserName: aws.String("updatekeyuser"),
+	})
+	assert.Equal(t, "Active", *listOut.AccessKeyMetadata[0].Status)
+}
+
+func TestUpdateAccessKey_InvalidStatus(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "invalidstatususer")
+
+	keyOut, _ := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("invalidstatususer"),
+	})
+
+	_, err := svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: keyOut.AccessKey.AccessKeyId,
+		Status:      aws.String("Invalid"),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError,
+		"1 validation error detected: Value at 'status' failed to satisfy constraint: Member must satisfy enum value set: [Expired, Active, Inactive]")
+}
+
+func TestUpdateAccessKey_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: aws.String("AKIANONEXISTENT12345"),
+		Status:      aws.String("Inactive"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestUpdateAccessKey_CaseSensitiveStatus(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "caseuser")
+
+	keyOut, _ := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("caseuser"),
+	})
+
+	// "active" (lowercase) should be rejected — must be "Active"
+	_, err := svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: keyOut.AccessKey.AccessKeyId,
+		Status:      aws.String("active"),
+	})
+	assert.Error(t, err, "lowercase 'active' should be rejected")
+
+	// "inactive" (lowercase) should be rejected
+	_, err = svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: keyOut.AccessKey.AccessKeyId,
+		Status:      aws.String("inactive"),
+	})
+	assert.Error(t, err, "lowercase 'inactive' should be rejected")
+
+	// "ACTIVE" (uppercase) should be rejected
+	_, err = svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: keyOut.AccessKey.AccessKeyId,
+		Status:      aws.String("ACTIVE"),
+	})
+	assert.Error(t, err, "uppercase 'ACTIVE' should be rejected")
+}
+
+func TestUpdateAccessKey_CrossAccountBlocked(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	accA, err := svc.CreateAccount("Status Org A")
+	require.NoError(t, err)
+	accB, err := svc.CreateAccount("Status Org B")
+	require.NoError(t, err)
+
+	_, err = svc.CreateUser(accA.AccountID, &iam.CreateUserInput{UserName: aws.String("alice")})
+	require.NoError(t, err)
+
+	keyOut, err := svc.CreateAccessKey(accA.AccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("alice"),
+	})
+	require.NoError(t, err)
+
+	// Account B trying to update Account A's key should fail
+	_, err = svc.UpdateAccessKey(accB.AccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: keyOut.AccessKey.AccessKeyId,
+		Status:      aws.String("Inactive"),
+	})
+	assert.Error(t, err, "cross-account key update should be blocked")
+}
+
+// ============================================================================
+// Auth Tests (LookupAccessKey)
+// ============================================================================
+
+func TestLookupAccessKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "lookupuser")
+
+	keyOut, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("lookupuser"),
+	})
+	require.NoError(t, err)
+
+	ak, err := svc.LookupAccessKey(*keyOut.AccessKey.AccessKeyId)
+	require.NoError(t, err)
+	assert.Equal(t, "lookupuser", ak.UserName)
+	assert.Equal(t, "Active", ak.Status)
+	assert.NotEmpty(t, ak.SecretAccessKey) // encrypted secret
+}
+
+func TestLookupAccessKey_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.LookupAccessKey("AKIANONEXISTENT12345")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestLookupAccessKey_InactiveKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "inactiveuser")
+
+	keyOut, _ := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("inactiveuser"),
+	})
+	keyID := *keyOut.AccessKey.AccessKeyId
+
+	svc.UpdateAccessKey(testAccountID, &iam.UpdateAccessKeyInput{
+		AccessKeyId: aws.String(keyID),
+		Status:      aws.String("Inactive"),
+	})
+
+	// LookupAccessKey should still return the key — status check is the caller's job
+	ak, err := svc.LookupAccessKey(keyID)
+	require.NoError(t, err)
+	assert.Equal(t, "Inactive", ak.Status)
+}
+
+// ============================================================================
+// SeedBootstrap Tests
+// ============================================================================
+
+func TestSeedBootstrap(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	encryptedSecret, err := svc.key.EncryptBase64("test-secret-key")
+	require.NoError(t, err)
+
+	err = svc.SeedBootstrap(&BootstrapData{
+		AccessKeyID:     "AKIAEXAMPLE123456789",
+		EncryptedSecret: encryptedSecret,
+		AccountID:       awsidentifiers.GlobalAccountID,
+	})
+	require.NoError(t, err)
+
+	// Verify root user exists at account-scoped key
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
+		UserName: aws.String("root"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "root", *out.User.UserName)
+	assert.Contains(t, *out.User.Arn, awsidentifiers.GlobalAccountID)
+	assert.Contains(t, *out.User.Arn, "root")
+
+	// Verify access key exists with AccountID
+	ak, err := svc.LookupAccessKey("AKIAEXAMPLE123456789")
+	require.NoError(t, err)
+	assert.Equal(t, "root", ak.UserName)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, ak.AccountID)
+	assert.Equal(t, "Active", ak.Status)
+
+	// Verify secret is decryptable
+	decrypted, err := svc.key.DecryptBase64(ak.SecretAccessKey)
+	require.NoError(t, err)
+	assert.Equal(t, "test-secret-key", decrypted)
+
+	// Verify global account record was created
+	account, err := svc.GetAccount(awsidentifiers.GlobalAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, awsidentifiers.GlobalAccountID, account.AccountID)
+	assert.Equal(t, "system", account.AccountName)
+	assert.Equal(t, "ACTIVE", account.Status)
+}
+
+func TestSeedBootstrap_Idempotent(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	encryptedSecret, _ := svc.key.EncryptBase64("test-secret")
+	data := &BootstrapData{
+		AccessKeyID:     "AKIAEXAMPLE123456789",
+		EncryptedSecret: encryptedSecret,
+		AccountID:       awsidentifiers.GlobalAccountID,
+	}
+
+	// First call seeds
+	err := svc.SeedBootstrap(data)
+	require.NoError(t, err)
+
+	// Second call should succeed (no-op, idempotent)
+	err = svc.SeedBootstrap(data)
+	require.NoError(t, err)
+
+	// Root user should still exist with original data
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
+		UserName: aws.String("root"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "root", *out.User.UserName)
+}
+
+func TestSeedBootstrap_WithAdmin(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	systemSecret, err := svc.key.EncryptBase64("system-secret")
+	require.NoError(t, err)
+	adminSecret, err := svc.key.EncryptBase64("admin-secret")
+	require.NoError(t, err)
+
+	err = svc.SeedBootstrap(&BootstrapData{
+		AccessKeyID:     "AKIASYSTEM1234567890",
+		EncryptedSecret: systemSecret,
+		AccountID:       awsidentifiers.GlobalAccountID,
+		Admin: &AdminBootstrapData{
+			AccountID:       "000000000001",
+			AccountName:     "spinifex",
+			UserName:        "admin",
+			AccessKeyID:     "AKIAADMIN12345678901",
+			EncryptedSecret: adminSecret,
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify system root user exists
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
+		UserName: aws.String("root"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "root", *out.User.UserName)
+
+	// Verify admin account created
+	account, err := svc.GetAccount("000000000001")
+	require.NoError(t, err)
+	assert.Equal(t, "000000000001", account.AccountID)
+	assert.Equal(t, "spinifex", account.AccountName)
+	assert.Equal(t, "ACTIVE", account.Status)
+
+	// Verify admin user exists
+	adminOut, err := svc.GetUser("000000000001", &iam.GetUserInput{
+		UserName: aws.String("admin"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "admin", *adminOut.User.UserName)
+	assert.Contains(t, *adminOut.User.Arn, "000000000001")
+
+	// Verify admin access key
+	ak, err := svc.LookupAccessKey("AKIAADMIN12345678901")
+	require.NoError(t, err)
+	assert.Equal(t, "admin", ak.UserName)
+	assert.Equal(t, "000000000001", ak.AccountID)
+
+	decrypted, err := svc.key.DecryptBase64(ak.SecretAccessKey)
+	require.NoError(t, err)
+	assert.Equal(t, "admin-secret", decrypted)
+
+	// Verify AdministratorAccess policy was created and attached
+	policies, err := svc.GetUserPolicies("000000000001", "admin")
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	assert.Equal(t, "Allow", policies[0].Statement[0].Effect)
+	assert.Equal(t, StringOrArr{"*"}, policies[0].Statement[0].Action)
+	assert.Equal(t, StringOrArr{"*"}, policies[0].Statement[0].Resource)
+
+	// Verify account counter set to 2 (next CreateAccount gets 000000000002)
+	nextAccount, err := svc.CreateAccount("test-org")
+	require.NoError(t, err)
+	assert.Equal(t, "000000000002", nextAccount.AccountID)
+}
+
+func TestSeedBootstrap_AdminNil_BackwardCompat(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	encryptedSecret, err := svc.key.EncryptBase64("test-secret")
+	require.NoError(t, err)
+
+	// No Admin field — backward compatibility with old bootstrap.json
+	err = svc.SeedBootstrap(&BootstrapData{
+		AccessKeyID:     "AKIAEXAMPLE123456789",
+		EncryptedSecret: encryptedSecret,
+		AccountID:       awsidentifiers.GlobalAccountID,
+	})
+	require.NoError(t, err)
+
+	// Root user should exist
+	out, err := svc.GetUser(awsidentifiers.GlobalAccountID, &iam.GetUserInput{
+		UserName: aws.String("root"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "root", *out.User.UserName)
+
+	// Admin account should NOT exist
+	_, err = svc.GetAccount("000000000001")
+	assert.Error(t, err)
+}
+
+// ============================================================================
+// IsEmpty Tests
+// ============================================================================
+
+func TestIsEmpty_True(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	empty, err := svc.IsEmpty()
+	require.NoError(t, err)
+	assert.True(t, empty)
+}
+
+func TestIsEmpty_False(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "notempty")
+
+	empty, err := svc.IsEmpty()
+	require.NoError(t, err)
+	assert.False(t, empty)
+}
+
+// ============================================================================
+// Helper Function Tests
+// ============================================================================
+
+func TestGenerateIAMID(t *testing.T) {
+	t.Parallel()
+	id, err := generateIAMID("AIDA")
+	assert.NoError(t, err)
+	assert.Equal(t, "AIDA", id[:4])
+	assert.Len(t, id, 21) // AIDA + 17 hex chars
+
+	// Two IDs should differ
+	id2, err := generateIAMID("AIDA")
+	assert.NoError(t, err)
+	assert.NotEqual(t, id, id2)
+
+	// Policy ID prefix
+	pid, err := generateIAMID("ANPA")
+	assert.NoError(t, err)
+	assert.Equal(t, "ANPA", pid[:4])
+	assert.Len(t, pid, 21)
+}
+
+func TestGenerateAccessKeyID(t *testing.T) {
+	t.Parallel()
+	id, err := generateAccessKeyID()
+	assert.NoError(t, err)
+	assert.Equal(t, "AKIA", id[:4])
+	assert.Len(t, id, 24) // AKIA + 20 hex chars
+
+	id2, err := generateAccessKeyID()
+	assert.NoError(t, err)
+	assert.NotEqual(t, id, id2)
+}
+
+func TestGenerateSecretAccessKey(t *testing.T) {
+	t.Parallel()
+	secret, err := awscredentials.GenerateAWSSecretKey()
+	assert.NoError(t, err)
+	assert.Len(t, secret, 40)
+
+	secret2, err := awscredentials.GenerateAWSSecretKey()
+	assert.NoError(t, err)
+	assert.NotEqual(t, secret, secret2)
+}
+
+// ============================================================================
+// Policy CRUD Tests
+// ============================================================================
+
+// validPolicyDocument returns a valid IAM policy document JSON string.
+func validPolicyDocument() string {
+	return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:DescribeInstances","Resource":"*"}]}`
+}
+
+func createTestPolicy(t *testing.T, svc *IAMServiceImpl, name string) *iam.Policy {
+	t.Helper()
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String(name),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	return out.Policy
+}
+
+func TestCreatePolicy(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("AllowEC2"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+		Path:           aws.String("/devteam/"),
+		Description:    aws.String("Allow EC2 describe"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.Policy)
+	assert.Equal(t, "AllowEC2", *out.Policy.PolicyName)
+	assert.Equal(t, "/devteam/", *out.Policy.Path)
+	assert.Nil(t, out.Policy.Description, "AWS omits Description from CreatePolicy even when supplied")
+	assert.Equal(t, "v1", *out.Policy.DefaultVersionId)
+	assert.Contains(t, *out.Policy.Arn, "policy/devteam/AllowEC2")
+	assert.Greater(t, len(*out.Policy.PolicyId), 4)
+	assert.Equal(t, "ANPA", (*out.Policy.PolicyId)[:4])
+	assert.Equal(t, int64(0), *out.Policy.AttachmentCount)
+	assert.True(t, *out.Policy.IsAttachable)
+}
+
+func TestCreatePolicy_DefaultPath(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("DefaultPath"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "/", *out.Policy.Path)
+	assert.Contains(t, *out.Policy.Arn, "policy/DefaultPath")
+}
+
+func TestCreatePolicy_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("BadJSON"),
+		PolicyDocument: aws.String(`{not valid json`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreatePolicy_InvalidVersion(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("BadVersion"),
+		PolicyDocument: aws.String(`{"Version":"2010-01-01","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreatePolicy_NoStatements(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("NoStmts"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[]}`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreatePolicy_InvalidEffect(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("BadEffect"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Maybe","Action":"*","Resource":"*"}]}`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreatePolicy_MissingAction(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("NoAction"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Resource":"*"}]}`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreatePolicy_MissingResource(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("NoResource"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*"}]}`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+func TestCreatePolicy_Duplicate(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	createTestPolicy(t, svc, "DupPolicy")
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("DupPolicy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMEntityAlreadyExists)
+}
+
+func TestCreatePolicy_ArrayActions(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ec2:DescribeInstances","ec2:RunInstances"],"Resource":"*"}]}`
+	out, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("ArrayActions"),
+		PolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "ArrayActions", *out.Policy.PolicyName)
+}
+
+func TestCreatePolicy_WithTags(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	tags := []*iam.Tag{
+		{Key: aws.String("team"), Value: aws.String("platform")},
+		{Key: aws.String("env"), Value: aws.String("prod")},
+	}
+	createOut, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TaggedPolicy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+		Tags:           tags,
+	})
+	require.NoError(t, err)
+	require.Len(t, createOut.Policy.Tags, 2)
+
+	getOut, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: createOut.Policy.Arn})
+	require.NoError(t, err)
+	require.Len(t, getOut.Policy.Tags, 2)
+
+	listOut, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{})
+	require.NoError(t, err)
+	var listed *iam.Policy
+	for _, p := range listOut.Policies {
+		if *p.PolicyName == "TaggedPolicy" {
+			listed = p
+		}
+	}
+	require.NotNil(t, listed, "TaggedPolicy missing from ListPolicies")
+	assert.Nil(t, listed.Tags, "AWS omits Tags from ListPolicies")
+
+	tagsOut, err := svc.ListPolicyTags(testAccountID, &iam.ListPolicyTagsInput{PolicyArn: createOut.Policy.Arn})
+	require.NoError(t, err)
+	require.Len(t, tagsOut.Tags, 2)
+
+	byKey := func(tags []*iam.Tag) map[string]string {
+		m := make(map[string]string, len(tags))
+		for _, tag := range tags {
+			m[*tag.Key] = aws.StringValue(tag.Value)
+		}
+		return m
+	}
+	want := map[string]string{"team": "platform", "env": "prod"}
+	assert.Equal(t, want, byKey(createOut.Policy.Tags))
+	assert.Equal(t, want, byKey(getOut.Policy.Tags))
+	assert.Equal(t, want, byKey(tagsOut.Tags))
+}
+
+func TestCreatePolicy_InvalidTag(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("BadTagPolicy"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+		Tags:           []*iam.Tag{{Key: aws.String(""), Value: aws.String("x")}},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorValidationError)
+
+	// The rejected policy must not have been stored.
+	_, err = svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::" + testAccountID + ":policy/BadTagPolicy"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetPolicy(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "GetMe")
+
+	out, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "GetMe", *out.Policy.PolicyName)
+	assert.Equal(t, *created.PolicyId, *out.Policy.PolicyId)
+	assert.Equal(t, *created.Arn, *out.Policy.Arn)
+	assert.Equal(t, "v1", *out.Policy.DefaultVersionId)
+	assert.Equal(t, int64(0), *out.Policy.AttachmentCount)
+}
+
+func TestGetPolicy_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Nonexistent"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetPolicy_MalformedARN(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: aws.String("not-an-arn"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetPolicy_ARNParsingEdgeCases(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`
+
+	// Create a real policy so we can test ARN mismatches
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TestARN"),
+		PolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+
+	testCases := []struct {
+		name string
+		arn  string
+	}{
+		{"wrong partition", "arn:aws-cn:iam::" + testAccountID + ":policy/TestARN"},
+		{"wrong service", "arn:aws:s3::" + testAccountID + ":policy/TestARN"},
+		{"extra path segments", "arn:aws:iam::" + testAccountID + ":policy/extra/path/TestARN"},
+		{"trailing slash only", "arn:aws:iam::" + testAccountID + ":policy/"},
+		{"empty after policy", "arn:aws:iam::" + testAccountID + ":policy"},
+		{"no policy segment", "arn:aws:iam::" + testAccountID + ":user/TestARN"},
+		{"policy-backup near miss", "arn:aws:iam::" + testAccountID + ":policy-backup/TestARN"},
+		{"policyset near miss", "arn:aws:iam::" + testAccountID + ":policyset/TestARN"},
+		{"empty account", "arn:aws:iam:::policy/TestARN"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+				PolicyArn: aws.String(tc.arn),
+			})
+			require.Error(t, err, "ARN %q should fail", tc.arn)
+			assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity, "ARN %q", tc.arn)
+		})
+	}
+}
+
+func TestGetPolicy_WithAttachments(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "AttachedPolicy")
+	createTestUser(t, svc, "attachuser1")
+	createTestUser(t, svc, "attachuser2")
+
+	svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("attachuser1"),
+		PolicyArn: created.Arn,
+	})
+	svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("attachuser2"),
+		PolicyArn: created.Arn,
+	})
+
+	out, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), *out.Policy.AttachmentCount)
+}
+
+func TestGetPolicyVersion(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "VersionPolicy")
+
+	out, err := svc.GetPolicyVersion(testAccountID, &iam.GetPolicyVersionInput{
+		PolicyArn: created.Arn,
+		VersionId: aws.String("v1"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "v1", *out.PolicyVersion.VersionId)
+	assert.True(t, *out.PolicyVersion.IsDefaultVersion)
+	assert.NotEmpty(t, *out.PolicyVersion.Document)
+
+	// Verify the returned document is valid JSON
+	doc, err := ValidatePolicyDocument(*out.PolicyVersion.Document)
+	require.NoError(t, err)
+	assert.Equal(t, "2012-10-17", doc.Version)
+	assert.Len(t, doc.Statement, 1)
+}
+
+func TestGetPolicyVersion_InvalidVersion(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "VersionPolicy2")
+
+	_, err := svc.GetPolicyVersion(testAccountID, &iam.GetPolicyVersionInput{
+		PolicyArn: created.Arn,
+		VersionId: aws.String("v2"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestGetPolicyVersion_PolicyNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetPolicyVersion(testAccountID, &iam.GetPolicyVersionInput{
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Ghost"),
+		VersionId: aws.String("v1"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestListPolicyVersions(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "ListVersionPolicy")
+
+	out, err := svc.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+	assert.False(t, *out.IsTruncated)
+	require.Len(t, out.Versions, 1)
+	assert.Equal(t, "v1", *out.Versions[0].VersionId)
+	assert.True(t, *out.Versions[0].IsDefaultVersion)
+	// AWS omits the document from list entries — callers fetch it via GetPolicyVersion.
+	assert.Nil(t, out.Versions[0].Document)
+}
+
+func TestListPolicyVersions_PolicyNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ListPolicyVersions(testAccountID, &iam.ListPolicyVersionsInput{
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Ghost"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestListPolicies(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	createTestPolicy(t, svc, "Policy1")
+	createTestPolicy(t, svc, "Policy2")
+	createTestPolicy(t, svc, "Policy3")
+
+	out, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{})
+	require.NoError(t, err)
+	assert.Len(t, out.Policies, 3)
+
+	names := make(map[string]bool)
+	for _, p := range out.Policies {
+		names[*p.PolicyName] = true
+	}
+	assert.True(t, names["Policy1"])
+	assert.True(t, names["Policy2"])
+	assert.True(t, names["Policy3"])
+}
+
+func TestListPolicies_Empty(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	out, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{})
+	require.NoError(t, err)
+	assert.Empty(t, out.Policies)
+}
+
+func TestListPolicies_Filters(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	createTestPolicy(t, svc, "RootPolicy")
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("TeamPolicy"),
+		Path:           aws.String("/team/"),
+		PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	attached := createTestPolicy(t, svc, "AttachedPolicy")
+	createTestUser(t, svc, "filterlistuser")
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("filterlistuser"),
+		PolicyArn: attached.Arn,
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name  string
+		input *iam.ListPoliciesInput
+		want  []string
+	}{
+		{"no filters", &iam.ListPoliciesInput{}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/team/")}, []string{"TeamPolicy"}},
+		{"partial path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/te")}, []string{"TeamPolicy"}},
+		{"root path prefix", &iam.ListPoliciesInput{PathPrefix: aws.String("/")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope local", &iam.ListPoliciesInput{Scope: aws.String("Local")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope all", &iam.ListPoliciesInput{Scope: aws.String("All")}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"scope aws", &iam.ListPoliciesInput{Scope: aws.String("AWS")}, []string{}},
+		{"only attached", &iam.ListPoliciesInput{OnlyAttached: aws.Bool(true)}, []string{"AttachedPolicy"}},
+		{"only attached false", &iam.ListPoliciesInput{OnlyAttached: aws.Bool(false)}, []string{"AttachedPolicy", "RootPolicy", "TeamPolicy"}},
+		{"only attached under path", &iam.ListPoliciesInput{PathPrefix: aws.String("/team/"), OnlyAttached: aws.Bool(true)}, []string{}},
+		{"local under path", &iam.ListPoliciesInput{Scope: aws.String("Local"), PathPrefix: aws.String("/team/")}, []string{"TeamPolicy"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := svc.ListPolicies(testAccountID, tc.input)
+			require.NoError(t, err)
+			// A nil slice would drop the Policies element from the XML response.
+			require.NotNil(t, out.Policies)
+			names := []string{}
+			for _, p := range out.Policies {
+				names = append(names, *p.PolicyName)
+			}
+			assert.ElementsMatch(t, tc.want, names)
+		})
+	}
+}
+
+func TestPolicyInScope(t *testing.T) {
+	t.Parallel()
+	local := "arn:aws:iam::000000000000:policy/AdministratorAccess"
+	awsManaged := "arn:aws:iam::aws:policy/AdministratorAccess"
+
+	assert.True(t, policyInScope(local, ""))
+	assert.True(t, policyInScope(awsManaged, ""))
+	assert.True(t, policyInScope(local, "All"))
+	assert.True(t, policyInScope(awsManaged, "All"))
+	assert.True(t, policyInScope(local, "Local"))
+	assert.False(t, policyInScope(awsManaged, "Local"))
+	assert.False(t, policyInScope(local, "AWS"))
+	assert.True(t, policyInScope(awsManaged, "AWS"))
+}
+
+func TestDeletePolicy(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "DeleteMe")
+
+	_, err := svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	// Confirm it's gone
+	_, err = svc.GetPolicy(testAccountID, &iam.GetPolicyInput{
+		PolicyArn: created.Arn,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeletePolicy_NotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Ghost"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeletePolicy_AttachedConflict(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "Attached")
+	createTestUser(t, svc, "conflictuser")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("conflictuser"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{
+		PolicyArn: created.Arn,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	// Detach, then delete should succeed
+	_, err = svc.DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{
+		UserName:  aws.String("conflictuser"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+}
+
+func TestGetPolicy_AttachmentCount_AllPrincipalKinds(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	userPolicy := createTestPolicy(t, svc, "UserAttached")
+	rolePolicy := createTestPolicy(t, svc, "RoleAttached")
+	groupPolicy := createTestPolicy(t, svc, "GroupAttached")
+
+	createTestUser(t, svc, "countuser")
+	createTestRole(t, svc, "countrole")
+	createTestGroup(t, svc, "countgroup")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName: aws.String("countuser"), PolicyArn: userPolicy.Arn,
+	})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName: aws.String("countrole"), PolicyArn: rolePolicy.Arn,
+	})
+	require.NoError(t, err)
+	_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{
+		GroupName: aws.String("countgroup"), PolicyArn: groupPolicy.Arn,
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		arn  *string
+	}{
+		{"user", userPolicy.Arn},
+		{"role", rolePolicy.Arn},
+		{"group", groupPolicy.Arn},
+	} {
+		out, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: tc.arn})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), *out.Policy.AttachmentCount, "%s-attached policy", tc.name)
+	}
+}
+
+func TestDeletePolicy_AttachedConflict_Role(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "RoleConflict")
+	createTestRole(t, svc, "conflictrole")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName:  aws.String("conflictrole"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	_, err = svc.DetachRolePolicy(testAccountID, &iam.DetachRolePolicyInput{
+		RoleName:  aws.String("conflictrole"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	require.NoError(t, err)
+}
+
+func TestDeletePolicy_AttachedConflict_Group(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "GroupConflict")
+	createTestGroup(t, svc, "conflictgroup")
+
+	_, err := svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{
+		GroupName: aws.String("conflictgroup"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	_, err = svc.DetachGroupPolicy(testAccountID, &iam.DetachGroupPolicyInput{
+		GroupName: aws.String("conflictgroup"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeletePolicy(testAccountID, &iam.DeletePolicyInput{PolicyArn: created.Arn})
+	require.NoError(t, err)
+}
+
+// ============================================================================
+// ListEntitiesForPolicy Tests
+// ============================================================================
+
+// The messages are the ones AWS returned for the same values.
+func TestListPolicyCalls_EnumViolations(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const (
+		scopeMsg = "1 validation error detected: Value at 'scope' failed to satisfy constraint: Member must satisfy enum value set: [All, Local, AWS]"
+		usageMsg = "1 validation error detected: Value at 'policyUsageFilter' failed to satisfy constraint: Member must satisfy enum value set: [PermissionsBoundary, PermissionsPolicy]"
+	)
+	_, err := svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{Scope: aws.String("Bogus")})
+	requireIAMError(t, err, awserrors.ErrorValidationError, scopeMsg)
+	_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{PolicyUsageFilter: aws.String("Bogus")})
+	requireIAMError(t, err, awserrors.ErrorValidationError, usageMsg)
+	_, err = svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), PolicyUsageFilter: aws.String("Bogus"),
+	})
+	requireIAMError(t, err, awserrors.ErrorValidationError, usageMsg)
+
+	for _, scope := range iam.PolicyScopeType_Values() {
+		_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{Scope: aws.String(scope)})
+		require.NoError(t, err, scope)
+	}
+	for _, usage := range iam.PolicyUsageType_Values() {
+		_, err = svc.ListPolicies(testAccountID, &iam.ListPoliciesInput{PolicyUsageFilter: aws.String(usage)})
+		require.NoError(t, err, usage)
+		_, err = svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+			PolicyArn: aws.String("arn:aws:iam::aws:policy/ReadOnlyAccess"), PolicyUsageFilter: aws.String(usage),
+		})
+		require.NoError(t, err, usage)
+	}
+}
+
+func TestListEntitiesForPolicy_Empty(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "NoEntities")
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, out.PolicyUsers, emptyRequiredListMsg("ListEntitiesForPolicy", "PolicyUsers"))
+	require.NotNil(t, out.PolicyRoles, emptyRequiredListMsg("ListEntitiesForPolicy", "PolicyRoles"))
+	require.NotNil(t, out.PolicyGroups, emptyRequiredListMsg("ListEntitiesForPolicy", "PolicyGroups"))
+	assert.Empty(t, out.PolicyUsers)
+	assert.Empty(t, out.PolicyRoles)
+	assert.Empty(t, out.PolicyGroups)
+}
+
+func TestListEntitiesForPolicy_AllKinds(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "Shared")
+
+	createTestUser(t, svc, "entuser")
+	createTestRole(t, svc, "entrole")
+	createTestGroup(t, svc, "entgroup")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("entuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("entrole"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("entgroup"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{PolicyArn: created.Arn})
+	require.NoError(t, err)
+	require.Len(t, out.PolicyUsers, 1)
+	require.Len(t, out.PolicyRoles, 1)
+	require.Len(t, out.PolicyGroups, 1)
+	assert.Equal(t, "entuser", *out.PolicyUsers[0].UserName)
+	assert.Equal(t, "entrole", *out.PolicyRoles[0].RoleName)
+	assert.Equal(t, "entgroup", *out.PolicyGroups[0].GroupName)
+}
+
+func TestListEntitiesForPolicy_EntityFilter(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "FilterMe")
+
+	createTestUser(t, svc, "filteruser")
+	createTestRole(t, svc, "filterrole")
+	createTestGroup(t, svc, "filtergroup")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("filteruser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("filterrole"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("filtergroup"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn:    created.Arn,
+		EntityFilter: aws.String(iam.EntityTypeRole),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.PolicyUsers)
+	assert.Empty(t, out.PolicyGroups)
+	require.Len(t, out.PolicyRoles, 1)
+	assert.Equal(t, "filterrole", *out.PolicyRoles[0].RoleName)
+}
+
+func TestListEntitiesForPolicy_PolicyTypeFilterYieldsNoEntities(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "PolicyTypeFilter")
+	createTestUser(t, svc, "ptfuser")
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("ptfuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	// LocalManagedPolicy/AWSManagedPolicy describe the policy's own management
+	// type; ListEntitiesForPolicy only ever returns users/roles/groups, so
+	// neither value can match any collected entity.
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn:    created.Arn,
+		EntityFilter: aws.String(iam.EntityTypeLocalManagedPolicy),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.PolicyUsers)
+	assert.Empty(t, out.PolicyRoles)
+	assert.Empty(t, out.PolicyGroups)
+}
+
+func TestListEntitiesForPolicy_PathPrefix(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "PathFiltered")
+
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("devuser"), Path: aws.String("/dev/"),
+	})
+	require.NoError(t, err)
+	_, err = svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("opsuser"), Path: aws.String("/ops/"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("devuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+	_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("opsuser"), PolicyArn: created.Arn})
+	require.NoError(t, err)
+
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn:  created.Arn,
+		PathPrefix: aws.String("/dev/"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.PolicyUsers, 1)
+	assert.Equal(t, "devuser", *out.PolicyUsers[0].UserName)
+}
+
+func TestListEntitiesForPolicy_AWSManagedARN(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	managedARN := "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+	createTestRole(t, svc, "eksrole")
+
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName: aws.String("eksrole"), PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	// AWS-managed ARNs are stored opaquely and never appear in the policies
+	// bucket, so this call resolves entities purely from the attachment
+	// traversal rather than a lookup keyed on a stored Policy record.
+	out, err := svc.ListEntitiesForPolicy(testAccountID, &iam.ListEntitiesForPolicyInput{
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.PolicyRoles, 1)
+	assert.Equal(t, "eksrole", *out.PolicyRoles[0].RoleName)
+}
+
+// ============================================================================
+// Policy Attachment Tests
+// ============================================================================
+
+func TestAttachUserPolicy(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "AttachPolicy")
+	createTestUser(t, svc, "attachme")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("attachme"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	// Verify via list
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("attachme"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, "AttachPolicy", *out.AttachedPolicies[0].PolicyName)
+	assert.Equal(t, *created.Arn, *out.AttachedPolicies[0].PolicyArn)
+}
+
+func TestAttachUserPolicy_Idempotent(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "IdempotentPolicy")
+	createTestUser(t, svc, "idempotentuser")
+
+	input := &iam.AttachUserPolicyInput{
+		UserName:  aws.String("idempotentuser"),
+		PolicyArn: created.Arn,
+	}
+
+	_, err := svc.AttachUserPolicy(testAccountID, input)
+	require.NoError(t, err)
+
+	// Attach same policy again — should succeed silently
+	_, err = svc.AttachUserPolicy(testAccountID, input)
+	require.NoError(t, err)
+
+	// Should still have exactly 1 attachment
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("idempotentuser"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, out.AttachedPolicies, 1)
+}
+
+func TestAttachUserPolicy_NonexistentPolicy(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "orphanuser")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("orphanuser"),
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Ghost"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestAttachUserPolicy_NonexistentUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "OrphanPolicy")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("ghostuser"),
+		PolicyArn: created.Arn,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDetachUserPolicy(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "DetachPolicy")
+	createTestUser(t, svc, "detachme")
+
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("detachme"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{
+		UserName:  aws.String("detachme"),
+		PolicyArn: created.Arn,
+	})
+	require.NoError(t, err)
+
+	// Verify detached
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("detachme"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.AttachedPolicies)
+}
+
+func TestDetachUserPolicy_NotAttached(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	created := createTestPolicy(t, svc, "NeverAttached")
+	createTestUser(t, svc, "cleanuser")
+
+	_, err := svc.DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{
+		UserName:  aws.String("cleanuser"),
+		PolicyArn: created.Arn,
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDetachUserPolicy_NonexistentUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.DetachUserPolicy(testAccountID, &iam.DetachUserPolicyInput{
+		UserName:  aws.String("ghostuser"),
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/Whatever"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestListAttachedUserPolicies(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	p1 := createTestPolicy(t, svc, "ListPolicy1")
+	p2 := createTestPolicy(t, svc, "ListPolicy2")
+	createTestUser(t, svc, "listpuser")
+
+	svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("listpuser"),
+		PolicyArn: p1.Arn,
+	})
+	svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("listpuser"),
+		PolicyArn: p2.Arn,
+	})
+
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("listpuser"),
+	})
+	require.NoError(t, err)
+	assert.Len(t, out.AttachedPolicies, 2)
+
+	names := make(map[string]bool)
+	for _, p := range out.AttachedPolicies {
+		names[*p.PolicyName] = true
+	}
+	assert.True(t, names["ListPolicy1"])
+	assert.True(t, names["ListPolicy2"])
+}
+
+func TestListAttachedPolicies_FilterByPathPrefix(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	root := createTestPolicy(t, svc, "RootPolicy")
+	team, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName: aws.String("TeamPolicy"), Path: aws.String("/team/a/"), PolicyDocument: aws.String(validPolicyDocument()),
+	})
+	require.NoError(t, err)
+	createTestUser(t, svc, "u")
+	createTestRole(t, svc, "r")
+	createTestGroup(t, svc, "g")
+	for _, arn := range []*string{root.Arn, team.Policy.Arn} {
+		_, err = svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{UserName: aws.String("u"), PolicyArn: arn})
+		require.NoError(t, err)
+		_, err = svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{RoleName: aws.String("r"), PolicyArn: arn})
+		require.NoError(t, err)
+		_, err = svc.AttachGroupPolicy(testAccountID, &iam.AttachGroupPolicyInput{GroupName: aws.String("g"), PolicyArn: arn})
+		require.NoError(t, err)
+	}
+
+	list := map[string]func(prefix *string) ([]*iam.AttachedPolicy, error){
+		"user": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{UserName: aws.String("u"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+		"role": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String("r"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+		"group": func(prefix *string) ([]*iam.AttachedPolicy, error) {
+			out, err := svc.ListAttachedGroupPolicies(testAccountID, &iam.ListAttachedGroupPoliciesInput{GroupName: aws.String("g"), PathPrefix: prefix})
+			if err != nil {
+				return nil, err
+			}
+			return out.AttachedPolicies, nil
+		},
+	}
+	cases := []struct {
+		prefix *string
+		want   []string
+	}{
+		{nil, []string{"RootPolicy", "TeamPolicy"}},
+		{aws.String("/"), []string{"RootPolicy", "TeamPolicy"}},
+		{aws.String("/team/"), []string{"TeamPolicy"}},
+		{aws.String("/other/"), nil},
+	}
+	for identity, fn := range list {
+		for _, tc := range cases {
+			got, err := fn(tc.prefix)
+			require.NoError(t, err)
+			var names []string
+			for _, p := range got {
+				names = append(names, aws.StringValue(p.PolicyName))
+			}
+			assert.ElementsMatch(t, tc.want, names, "%s with PathPrefix %v", identity, aws.StringValue(tc.prefix))
+		}
+	}
+}
+
+func TestPolicyPathFromARN(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "/", policyPathFromARN("arn:aws:iam::aws:policy/ReadOnlyAccess"))
+	assert.Equal(t, "/service-role/", policyPathFromARN("arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM"))
+	assert.Equal(t, "/team/a/", policyPathFromARN("arn:aws:iam::000000000000:policy/team/a/TeamPolicy"))
+}
+
+func TestListAttachedUserPolicies_Empty(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "nopolicies")
+
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("nopolicies"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.AttachedPolicies)
+}
+
+func TestListAttachedUserPolicies_NonexistentUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("ghostuser"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+// ============================================================================
+// GetUserPolicies (internal) Tests
+// ============================================================================
+
+func TestGetUserPolicies(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:DescribeInstances","Resource":"*"}]}`
+	p1, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("InternalPolicy1"),
+		PolicyDocument: aws.String(doc),
+	})
+	require.NoError(t, err)
+
+	doc2 := `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"ec2:TerminateInstances","Resource":"*"}]}`
+	p2, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("InternalPolicy2"),
+		PolicyDocument: aws.String(doc2),
+	})
+	require.NoError(t, err)
+
+	createTestUser(t, svc, "evaluser")
+
+	svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("evaluser"),
+		PolicyArn: p1.Policy.Arn,
+	})
+	svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("evaluser"),
+		PolicyArn: p2.Policy.Arn,
+	})
+
+	docs, err := svc.GetUserPolicies(testAccountID, "evaluser")
+	require.NoError(t, err)
+	assert.Len(t, docs, 2)
+	assert.Equal(t, "2012-10-17", docs[0].Version)
+	assert.Equal(t, "2012-10-17", docs[1].Version)
+}
+
+func TestGetUserPolicies_NoPolicies(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "emptyuser")
+
+	docs, err := svc.GetUserPolicies(testAccountID, "emptyuser")
+	require.NoError(t, err)
+	assert.Empty(t, docs)
+}
+
+func TestGetUserPolicies_NonexistentUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.GetUserPolicies(testAccountID, "ghostuser")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+// ============================================================================
+// ValidatePolicyDocument Tests
+// ============================================================================
+
+func TestValidatePolicyDocument_Valid(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`)
+	require.NoError(t, err)
+	assert.Equal(t, "2012-10-17", doc.Version)
+	assert.Len(t, doc.Statement, 1)
+	assert.Equal(t, "Allow", doc.Statement[0].Effect)
+}
+
+func TestValidatePolicyDocument_MultipleStatements(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[
+			{"Sid":"AllowEC2","Effect":"Allow","Action":["ec2:DescribeInstances","ec2:RunInstances"],"Resource":"*"},
+			{"Effect":"Deny","Action":"ec2:TerminateInstances","Resource":"*"}
+		]
+	}`)
+	require.NoError(t, err)
+	assert.Len(t, doc.Statement, 2)
+	assert.Equal(t, "AllowEC2", doc.Statement[0].Sid)
+	assert.Len(t, doc.Statement[0].Action, 2)
+}
+
+func TestValidatePolicyDocument_BadJSON(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{broken`)
+	assert.Error(t, err)
+}
+
+func TestValidatePolicyDocument_WrongVersion(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2010-01-01","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported policy version")
+}
+
+func TestValidatePolicyDocument_EmptyStatements(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "at least one statement")
+}
+
+func TestValidatePolicyDocument_BadEffect(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Maybe","Action":"*","Resource":"*"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Effect must be Allow or Deny")
+}
+
+func TestValidatePolicyDocument_MissingAction(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Resource":"*"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Action is required")
+}
+
+func TestValidatePolicyDocument_MissingResource(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*"}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Resource is required")
+}
+
+func TestValidatePolicyDocument_SupportedCondition(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"}}}]}`)
+	require.NoError(t, err)
+	assert.Equal(t, ConditionValue{"10.0.0.0/8"},
+		doc.Statement[0].Condition["IpAddress"]["aws:SourceIp"])
+}
+
+// Null takes a JSON boolean or its string form, and IfExists forms reach the
+// write path on the keys their base operator does.
+func TestValidatePolicyDocument_NullAndIfExists(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"Null":{"aws:username":true}}`,
+		`{"Null":{"s3:prefix":"false"}}`,
+		`{"StringEqualsIfExists":{"aws:username":"alice"}}`,
+		`{"NotIpAddressIfExists":{"aws:SourceIp":"10.0.0.0/8"}}`,
+		`{"BoolIfExists":{"aws:SecureTransport":"true"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
+// Date values take either W3C ISO 8601 or epoch seconds, the latter as a JSON
+// number too, on both date-valued keys.
+func TestValidatePolicyDocument_DateOperators(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"DateGreaterThan":{"aws:CurrentTime":"2026-10-01T12:00:00Z"}}`,
+		`{"DateLessThan":{"aws:CurrentTime":"2027-01-01"}}`,
+		`{"DateEquals":{"aws:EpochTime":"2026-10-01"}}`,
+		`{"DateNotEquals":{"aws:EpochTime":1790856000}}`,
+		`{"DateLessThanEquals":{"aws:EpochTime":["1790856000","2026-10-01T22:00+10:00"]}}`,
+		`{"DateGreaterThanEqualsIfExists":{"aws:CurrentTime":"2026-10-01T12:00:00.5Z"}}`,
+		`{"Null":{"aws:CurrentTime":"false"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
+// Numeric values take an integer or decimal, with an optional sign and exponent,
+// as a string or a JSON number, on s3:max-keys and aws:EpochTime.
+func TestValidatePolicyDocument_NumericOperators(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"NumericLessThanEquals":{"s3:max-keys":"10"}}`,
+		`{"NumericGreaterThan":{"s3:max-keys":100}}`,
+		`{"NumericEquals":{"s3:max-keys":["+10","1e1","10.0"]}}`,
+		`{"NumericNotEquals":{"s3:max-keys":".5"}}`,
+		`{"NumericLessThan":{"aws:EpochTime":1790856000}}`,
+		`{"NumericGreaterThanEqualsIfExists":{"s3:max-keys":"-1.5e2"}}`,
+		`{"Null":{"s3:max-keys":"true"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, cond)
+	}
+}
+
+func TestValidatePolicyDocument_UnsupportedConditionOperator(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"StringEquals":{"aws:SourceIp":"10.0.0.1"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "is not supported in this release")
+}
+
+func TestValidatePolicyDocument_UnsupportedConditionKey(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"StringEquals":{"aws:PrincipalOrgID":"o-1234"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:PrincipalOrgID")
+}
+
+// MFA does not exist in spinifex, so this key could never be true and accepting
+// it would mint a grant that silently never fires.
+func TestValidatePolicyDocument_RejectsMFACondition(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*",
+	 "Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:MultiFactorAuthPresent")
+}
+
+func TestValidatePolicyDocument_RejectsPrincipal(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*",
+	 "Principal":{"AWS":"arn:aws:iam::123456789012:root"}}]}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Principal is not valid on an identity policy")
+}
+
+func TestValidatePolicyDocument_Selectors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stmt    string
+		wantErr string
+	}{
+		{"NotAction", `"NotAction":"iam:*","Resource":"*"`, ""},
+		{"NotResource", `"Action":"s3:*","NotResource":["arn:aws:s3:::secret","arn:aws:s3:::secret/*"]`, ""},
+		{"NotAction and NotResource", `"NotAction":"iam:*","NotResource":"arn:aws:s3:::secret/*"`, ""},
+		{"NotResource with a variable", `"Action":"s3:*","NotResource":"arn:aws:s3:::home/${aws:username}/*"`, ""},
+		{"Action and NotAction", `"Action":"*","NotAction":"sts:AssumeRole","Resource":"*"`, "Action and NotAction cannot both be specified"},
+		{"Resource and NotResource", `"Action":"*","Resource":"*","NotResource":"arn:aws:s3:::public/*"`, "Resource and NotResource cannot both be specified"},
+		{"NotResource with an unknown variable", `"Action":"s3:*","NotResource":"arn:aws:s3:::${aws:PrincipalOrgID}/*"`, "NotResource"},
+		{"empty NotAction entry", `"NotAction":"","Resource":"*"`, "must be prefaced by a vendor"},
+		{"NotAction without a vendor", `"NotAction":["iam"],"Resource":"*"`, "must be prefaced by a vendor"},
+		{"NotAction with an empty name", `"NotAction":"iam:","Resource":"*"`, "must be prefaced by a vendor"},
+		{"Action without a vendor", `"Action":"RunInstances","Resource":"*"`, "must be prefaced by a vendor"},
+		{"empty NotResource entry", `"Action":"s3:*","NotResource":[""]`, "must be in ARN format"},
+		{"NotResource not an ARN", `"Action":"s3:*","NotResource":"secret-bucket"`, "must be in ARN format"},
+		{"Resource not an ARN", `"Action":"s3:*","Resource":"secret-bucket"`, "must be in ARN format"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, effect := range []string{"Allow", "Deny"} {
+				_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"` + effect + `",` + tc.stmt + `}]}`)
+				if tc.wantErr == "" {
+					assert.NoError(t, err, effect)
+				} else {
+					require.Error(t, err, effect)
+					assert.Contains(t, err.Error(), tc.wantErr, effect)
+				}
+			}
+		})
+	}
+}
+
+// NotAction reaches CreatePolicy as an accepted identity policy, and both
+// selectors together come back as MalformedPolicyDocument.
+func TestCreatePolicy_NotAction(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("PowerUser"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotAction":"iam:*","Resource":"*"}]}`),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String("Both"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","NotAction":"iam:*","Resource":"*"}]}`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMMalformedPolicyDocument)
+}
+
+// An allowlisted operator over a malformed value is still an inert grant: the
+// matcher cannot parse it, so the Allow never fires and the operator gets a bare
+// AccessDenied with nothing naming the cause.
+func TestValidatePolicyDocument_RejectsMalformedConditionValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		cond    string
+		wantErr string
+	}{
+		{"truncated CIDR", `{"IpAddress":{"aws:SourceIp":"10.0.0/8"}}`, "not a valid IP address or CIDR block"},
+		{"comma string", `{"IpAddress":{"aws:SourceIp":"10.0.0.0/8, 192.168.0.0/16"}}`, "not a valid IP address or CIDR block"},
+		{"hostname", `{"IpAddress":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"numeric bool", `{"Bool":{"aws:SecureTransport":1}}`, "not true or false"},
+		{"yes", `{"Bool":{"aws:SecureTransport":"yes"}}`, "not true or false"},
+		{"empty array", `{"IpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+		{"NotIpAddress hostname", `{"NotIpAddress":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"NotIpAddress empty array", `{"NotIpAddress":{"aws:SourceIp":[]}}`, "has no value"},
+		{"Null yes", `{"Null":{"aws:username":"yes"}}`, "not true or false"},
+		{"Null variable", `{"Null":{"aws:username":"${aws:username}"}}`, "not true or false"},
+		{"IpAddressIfExists hostname", `{"IpAddressIfExists":{"aws:SourceIp":"office.example.com"}}`, "not a valid IP address or CIDR block"},
+		{"BoolIfExists yes", `{"BoolIfExists":{"aws:SecureTransport":"yes"}}`, "not true or false"},
+		{"StringEqualsIfExists unknown variable", `{"StringEqualsIfExists":{"aws:username":"${aws:bogus}"}}`, `references policy variable "aws:bogus"`},
+		{"NullIfExists", `{"NullIfExists":{"aws:username":"true"}}`, "is not supported in this release"},
+		{"DateGreaterThan prose", `{"DateGreaterThan":{"aws:CurrentTime":"next week"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateLessThan no time zone", `{"DateLessThan":{"aws:CurrentTime":"2026-10-01T12:00:00"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateEquals fractional epoch", `{"DateEquals":{"aws:EpochTime":"1790856000.5"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateEquals variable", `{"DateEquals":{"aws:CurrentTime":"${aws:CurrentTime}"}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateLessThanIfExists empty", `{"DateLessThanIfExists":{"aws:EpochTime":""}}`, "not an ISO 8601 date or epoch seconds"},
+		{"DateGreaterThan on a string key", `{"DateGreaterThan":{"aws:username":"2026"}}`, "is not supported in this release"},
+		{"NumericLessThan prose", `{"NumericLessThan":{"s3:max-keys":"ten"}}`, "is not a number"},
+		{"NumericEquals hex", `{"NumericEquals":{"s3:max-keys":"0x0A"}}`, "is not a number"},
+		{"NumericEquals padded", `{"NumericEquals":{"s3:max-keys":" 10"}}`, "is not a number"},
+		{"NumericEquals variable", `{"NumericEquals":{"aws:EpochTime":"${aws:EpochTime}"}}`, "is not a number"},
+		{"NumericGreaterThanIfExists empty", `{"NumericGreaterThanIfExists":{"s3:max-keys":""}}`, "is not a number"},
+		{"NumericLessThan scale overflow", `{"NumericLessThan":{"s3:max-keys":"1e2147483648"}}`, "is not a number"},
+		{"NumericLessThan on a date key", `{"NumericLessThan":{"aws:CurrentTime":"10"}}`, "is not supported in this release"},
+		{"NumericLessThan on MFA age", `{"NumericLessThan":{"aws:MultiFactorAuthAge":"3600"}}`, "is not supported in this release"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+			 "Action":"s3:*","Resource":"*","Condition":` + tt.cond + `}]}`)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// No supported key carries an Arn operator yet, so the write path cannot reach
+// this arm; it is exercised directly so the key that unlocks it lands validated.
+func TestValidateConditionValues_ArnOperators(t *testing.T) {
+	t.Parallel()
+	const key = "aws:SourceArn"
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{"exact ARN", "arn:aws:ecs:us-east-1:111122223333:task/c/abc", ""},
+		{"wildcard components", "arn:aws:ecs:*:111122223333:*", ""},
+		{"resource with colons", "arn:aws:logs:us-east-1:111122223333:log-group:app:*", ""},
+		{"variable", "arn:aws:iam::${aws:PrincipalAccount}:role/*", ""},
+		{"too few components", "arn:aws:ecs:*", "not an ARN of six colon-separated components"},
+		{"bare wildcard", "*", "not an ARN of six colon-separated components"},
+		{"unknown variable", "arn:aws:iam::${aws:bogus}:role/*", `references policy variable "aws:bogus"`},
+	}
+	for _, op := range []string{
+		iampolicy.OpArnEquals, iampolicy.OpArnLike, iampolicy.OpArnNotEquals, iampolicy.OpArnNotLike,
+	} {
+		for _, tt := range tests {
+			err := validateConditionValues(0, op, key, ConditionValue{tt.value}, true)
+			if tt.wantErr == "" {
+				assert.NoError(t, err, "%s %s", op, tt.name)
+				continue
+			}
+			assert.ErrorContains(t, err, tt.wantErr, "%s %s", op, tt.name)
+		}
+	}
+}
+
+// A reference the evaluator cannot resolve makes an Allow select nothing and a
+// Deny select everything it named, so the policy does not do what it reads as.
+// Rejecting it on write is the only place an operator can be told.
+func TestValidatePolicyDocument_RejectsUnresolvableVariables(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stmt    string
+		wantErr string
+	}{
+		{"MFA in a resource", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:MultiFactorAuthPresent}/*"`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringEquals value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:username":"${aws:MultiFactorAuthPresent}"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringLike value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringNotEquals value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringNotEquals":{"aws:username":"${aws:MultiFactorAuthPresent}"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"MFA in a StringNotLike value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringNotLike":{"s3:prefix":"${aws:MultiFactorAuthPresent}/*"}}`,
+			`references policy variable "aws:MultiFactorAuthPresent"`},
+		{"unterminated in a StringEqualsIgnoreCase value",
+			`"Action":"s3:*","Resource":"*","Condition":{"StringEqualsIgnoreCase":{"aws:username":"${aws:username"}}`,
+			"unterminated policy variable reference"},
+		{"unknown key", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:bogus}/*"`,
+			`references policy variable "aws:bogus"`},
+		{"condition key that is not substitutable",
+			`"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:SourceIp}/*"`,
+			`references policy variable "aws:SourceIp"`},
+		{"unterminated", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:username"`,
+			"unterminated policy variable reference"},
+		{"empty reference", `"Action":"s3:*","Resource":"arn:aws:s3:::home/${}/*"`,
+			"references policy variable"},
+		{"second resource carries it",
+			`"Action":"s3:*","Resource":["arn:aws:s3:::a/*","arn:aws:s3:::${aws:bogus}/*"]`,
+			`references policy variable "aws:bogus"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+				tt.stmt + `}]}`)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// ${aws:username} resolves for an IAM user and is deliberately absent for a role
+// session, so it is inert on a role-only path but correct on a user path.
+// Rejecting it here would refuse a policy that works.
+func TestValidatePolicyDocument_AcceptsSupportedVariables(t *testing.T) {
+	t.Parallel()
+	for _, stmt := range []string{
+		`"Action":"s3:*","Resource":"arn:aws:s3:::home/${aws:username}/*"`,
+		`"Action":"s3:*","Resource":"arn:aws:s3:::${aws:PrincipalAccount}/*"`,
+		`"Action":"s3:*","Resource":"*","Condition":{"StringEquals":{"aws:username":"${aws:username}"}}`,
+		`"Action":"s3:*","Resource":"*","Condition":{"StringLike":{"s3:prefix":"home/${aws:username}/*"}}`,
+		// AWS's literal escapes: the only way to write these characters
+		// literally in a pattern, so they must survive the gate.
+		`"Action":"s3:*","Resource":"arn:aws:s3:::home/${*}/${?}/${$}"`,
+		// A "$" that opens nothing is ordinary text.
+		`"Action":"s3:*","Resource":"arn:aws:s3:::home/$aws:username/*"`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
+			stmt + `}]}`)
+		assert.NoError(t, err, "the evaluator resolves this policy's variables, so the write path must accept it: %s", stmt)
+	}
+}
+
+// D4's lenient leaf parsing must survive at the API surface: a native JSON bool
+// is what Terraform emits, and rejecting it would fail ordinary valid policies.
+func TestValidatePolicyDocument_AcceptsNativeBoolAndCIDRForms(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"Bool":{"aws:SecureTransport":true}}`,
+		`{"Bool":{"aws:SecureTransport":"TRUE"}}`,
+		`{"IpAddress":{"aws:SourceIp":["10.0.0.0/8","192.168.1.1"]}}`,
+		`{"IpAddress":{"aws:SourceIp":"2001:db8::/32"}}`,
+	} {
+		_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+		 "Action":"s3:*","Resource":"*","Condition":` + cond + `}]}`)
+		assert.NoError(t, err, "condition %s must be accepted", cond)
+	}
+}
+
+// Map iteration order makes a break-instead-of-continue bug non-deterministic,
+// so a single-operator document cannot pin the loop.
+func TestValidatePolicyDocument_RejectsUnsupportedAlongsideSupported(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*",
+	 "Condition":{"IpAddress":{"aws:SourceIp":"10.0.0.0/8"},"StringEquals":{"aws:PrincipalOrgID":"o-1234"}}}]}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aws:PrincipalOrgID")
+}
+
+// ============================================================================
+// Sensitive Data Not Logged Tests
+// ============================================================================
+
+// Serial: swaps the process-wide default logger to capture output. In parallel
+// a racing restore would leave this asserting against an empty buffer, which
+// passes while proving nothing.
+func TestSensitiveDataNotLogged_CreateAccessKey(t *testing.T) {
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "loguser")
+
+	// Capture log output
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.DiscardHandler))
+	})
+
+	akOut, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("loguser"),
+	})
+	require.NoError(t, err)
+
+	secretKey := *akOut.AccessKey.SecretAccessKey
+	logOutput := buf.String()
+
+	// The plaintext secret key must never appear in logs
+	assert.NotContains(t, logOutput, secretKey,
+		"plaintext secret access key must not appear in log output")
+
+	// The encrypted secret should also not appear in logs
+	ak, err := svc.LookupAccessKey(*akOut.AccessKey.AccessKeyId)
+	require.NoError(t, err)
+	assert.NotContains(t, logOutput, ak.SecretAccessKey,
+		"encrypted secret must not appear in log output")
+}
+
+// Serial: swaps the process-wide default logger, as above.
+func TestSensitiveDataNotLogged_MasterKey(t *testing.T) {
+	// Capture log output during service init
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.DiscardHandler))
+	})
+
+	_, nc, _ := testutil.StartTestJetStream(t)
+	masterKey, err := GenerateMasterKey()
+	require.NoError(t, err)
+	_, err = NewIAMServiceImpl(t.Context(), nc, masterKey)
+	require.NoError(t, err)
+
+	logOutput := buf.String()
+	masterKeyHex := hex.EncodeToString(masterKey)
+
+	assert.NotContains(t, logOutput, masterKeyHex,
+		"master key hex must not appear in log output")
+	assert.NotContains(t, logOutput, string(masterKey),
+		"raw master key bytes must not appear in log output")
+}
+
+// ============================================================================
+// Input Validation Boundary Tests
+// ============================================================================
+
+func TestInputValidation_UserNameLength(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	// 64 chars — should pass
+	name64 := strings.Repeat("a", 64)
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{UserName: aws.String(name64)})
+	assert.NoError(t, err, "64-char username should be valid")
+
+	// 65 chars — should fail
+	name65 := strings.Repeat("a", 65)
+	_, err = svc.CreateUser(testAccountID, &iam.CreateUserInput{UserName: aws.String(name65)})
+	assert.Error(t, err, "65-char username should be rejected")
+}
+
+func TestInputValidation_PolicyNameLength(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	doc := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`
+
+	// 128 chars — should pass
+	name128 := strings.Repeat("P", 128)
+	_, err := svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String(name128),
+		PolicyDocument: aws.String(doc),
+	})
+	assert.NoError(t, err, "128-char policy name should be valid")
+
+	// 129 chars — should fail
+	name129 := strings.Repeat("P", 129)
+	_, err = svc.CreatePolicy(testAccountID, &iam.CreatePolicyInput{
+		PolicyName:     aws.String(name129),
+		PolicyDocument: aws.String(doc),
+	})
+	assert.Error(t, err, "129-char policy name should be rejected")
+}
+
+func TestInputValidation_PathLength(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+
+	// 512 chars — should pass (path must start and end with /)
+	path512 := "/" + strings.Repeat("a", 510) + "/"
+	assert.Len(t, path512, 512)
+	_, err := svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("pathuser512"),
+		Path:     aws.String(path512),
+	})
+	assert.NoError(t, err, "512-char path should be valid")
+
+	// 513 chars — should fail
+	path513 := "/" + strings.Repeat("a", 511) + "/"
+	assert.Len(t, path513, 513)
+	_, err = svc.CreateUser(testAccountID, &iam.CreateUserInput{
+		UserName: aws.String("pathuser513"),
+		Path:     aws.String(path513),
+	})
+	assert.Error(t, err, "513-char path should be rejected")
+}
+
+func TestValidatePolicyDocument_OverlappingDenyAllow(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[
+			{"Effect":"Allow","Action":"ec2:*","Resource":"*"},
+			{"Effect":"Deny","Action":"ec2:TerminateInstances","Resource":"*"},
+			{"Effect":"Allow","Action":"ec2:TerminateInstances","Resource":"arn:aws:ec2:*:*:instance/i-abc123"}
+		]
+	}`)
+	require.NoError(t, err)
+	assert.Len(t, doc.Statement, 3)
+	assert.Equal(t, PolicyEffectAllow, doc.Statement[0].Effect)
+	assert.Equal(t, PolicyEffectDeny, doc.Statement[1].Effect)
+	assert.Equal(t, PolicyEffectAllow, doc.Statement[2].Effect)
+}
+
+func TestValidatePolicyDocument_WithoutSid(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]
+	}`)
+	require.NoError(t, err)
+	assert.Empty(t, doc.Statement[0].Sid, "Sid should be empty when omitted")
+}
+
+func TestValidatePolicyDocument_ActionSingleString(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]
+	}`)
+	require.NoError(t, err)
+	assert.Equal(t, StringOrArr{"s3:*"}, doc.Statement[0].Action)
+}
+
+func TestValidatePolicyDocument_ActionArray(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[{"Effect":"Allow","Action":["s3:Get*","s3:List*"],"Resource":"*"}]
+	}`)
+	require.NoError(t, err)
+	assert.Equal(t, StringOrArr{"s3:Get*", "s3:List*"}, doc.Statement[0].Action)
+}
+
+func TestValidatePolicyDocument_EmptyActionArray(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[{"Effect":"Allow","Action":[],"Resource":"*"}]
+	}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Action is required")
+}
+
+func TestValidatePolicyDocument_EmptyResourceArray(t *testing.T) {
+	t.Parallel()
+	_, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[{"Effect":"Allow","Action":"s3:*","Resource":[]}]
+	}`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Resource is required")
+}
+
+func TestValidatePolicyDocument_ResourceARNFormat(t *testing.T) {
+	t.Parallel()
+	doc, err := ValidatePolicyDocument(`{
+		"Version":"2012-10-17",
+		"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::my-bucket/*"}]
+	}`)
+	require.NoError(t, err)
+	assert.Equal(t, StringOrArr{"arn:aws:s3:::my-bucket/*"}, doc.Statement[0].Resource)
+}
+
+// ============================================================================
+// Helper Function Tests (Policy)
+// ============================================================================
+
+func TestGeneratePolicyID(t *testing.T) {
+	t.Parallel()
+	id, err := generateIAMID("ANPA")
+	assert.NoError(t, err)
+	assert.Equal(t, "ANPA", id[:4])
+	assert.Len(t, id, 21) // ANPA + 17 hex chars
+
+	id2, err := generateIAMID("ANPA")
+	assert.NoError(t, err)
+	assert.NotEqual(t, id, id2)
+}
+
+// ============================================================================
+// Validator Tests
+// ============================================================================
+
+func TestIsIAMNameChar(t *testing.T) {
+	t.Parallel()
+	// Valid characters
+	for _, c := range "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+=,.@-_" {
+		assert.True(t, isIAMNameChar(byte(c)), "expected valid: %c", c)
+	}
+	// Invalid characters
+	for _, c := range " !#$%^&*(){}[]|\\:;\"'<>?/`~\t\n" {
+		assert.False(t, isIAMNameChar(byte(c)), "expected invalid: %c", c)
+	}
+}
+
+func TestValidateIAMName(t *testing.T) {
+	t.Parallel()
+	const charset = "It must contain only alphanumeric characters and/or the following: +=,.@_-"
+	validation := awserrors.ErrorValidationError
+	tests := []struct {
+		name     string
+		field    string
+		input    string
+		maxLen   int
+		wantCode string
+		wantMsg  string
+	}{
+		{"valid simple", "userName", "alice", 64, "", ""},
+		{"valid with special chars", "userName", "alice.bob+test@example_com", 64, "", ""},
+		{"valid single char", "userName", "a", 64, "", ""},
+		{"valid at max length", "userName", strings.Repeat("a", 64), 64, "", ""},
+		{"valid policy at max length", "policyName", strings.Repeat("x", 128), 128, "", ""},
+		{"empty", "userName", "", 64, validation,
+			"1 validation error detected: Value at 'userName' failed to satisfy constraint: Member must have length greater than or equal to 1"},
+		{"too long", "policyName", strings.Repeat("x", 129), 128, validation,
+			"1 validation error detected: Value at 'policyName' failed to satisfy constraint: Member must have length less than or equal to 128"},
+		{"space", "userName", "bad name!", 64, validation, "The specified value for userName is invalid. " + charset},
+		{"slash", "roleName", "alice/bob", 64, validation, "The specified value for roleName is invalid. " + charset},
+		{"colon", "groupName", "alice:bob", 128, validation, "The specified value for groupName is invalid. " + charset},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateIAMName(tt.field, tt.input, tt.maxLen)
+			if tt.wantMsg == "" {
+				assert.NoError(t, err)
+				return
+			}
+			requireIAMError(t, err, tt.wantCode, tt.wantMsg)
+		})
+	}
+}
+
+func requireIAMError(t *testing.T, err error, wantCode, wantMsg string) {
+	t.Helper()
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "error must carry a registered code: %v", err)
+	assert.Equal(t, wantCode, code)
+	assert.Equal(t, wantMsg, msg)
+}
+
+func TestValidatePath(t *testing.T) {
+	t.Parallel()
+	const shape = "The specified value for path is invalid. It must begin and end with / and contain only alphanumeric characters and/or / characters."
+	tooLong := "/" + strings.Repeat("a", 511) + "/"
+	validation := awserrors.ErrorValidationError
+	tests := []struct {
+		name     string
+		input    string
+		wantCode string
+		wantMsg  string
+	}{
+		{"root path", "/", "", ""},
+		{"nested path", "/division/engineering/", "", ""},
+		{"no leading slash", "division/", validation, shape},
+		{"no trailing slash", "/division", validation, shape},
+		{"empty string", "", validation, shape},
+		{"just text", "noslash", validation, shape},
+		{"max length 512", "/" + strings.Repeat("a", 510) + "/", "", ""},
+		{"over max length 513", tooLong, validation,
+			"1 validation error detected: Value at 'path' failed to satisfy constraint: Member must have length less than or equal to 512"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validatePath(tt.input)
+			if tt.wantMsg == "" {
+				assert.NoError(t, err)
+				return
+			}
+			requireIAMError(t, err, tt.wantCode, tt.wantMsg)
+		})
+	}
+}
+
+func TestParseCreatedAt(t *testing.T) {
+	t.Parallel()
+	// Valid RFC3339
+	ts := "2024-01-15T10:30:00Z"
+	result := parseCreatedAt(ts)
+	assert.Equal(t, 2024, result.Year())
+	assert.Equal(t, time.January, result.Month())
+	assert.Equal(t, 15, result.Day())
+	assert.Equal(t, 10, result.Hour())
+	assert.Equal(t, 30, result.Minute())
+
+	// With timezone offset
+	ts2 := "2024-06-01T12:00:00+05:00"
+	result2 := parseCreatedAt(ts2)
+	assert.Equal(t, 2024, result2.Year())
+	assert.Equal(t, time.June, result2.Month())
+
+	// Invalid — returns zero time (fallback)
+	result3 := parseCreatedAt("not-a-date")
+	assert.True(t, result3.IsZero())
+
+	// Empty string — returns zero time
+	result4 := parseCreatedAt("")
+	assert.True(t, result4.IsZero())
+}
+
+func TestGenerateIAMID_AllUpperHex(t *testing.T) {
+	t.Parallel()
+	for range 20 {
+		id, err := generateIAMID("AIDA")
+		assert.NoError(t, err)
+		suffix := id[4:]
+		for _, c := range suffix {
+			assert.True(t, (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'),
+				"expected uppercase hex char, got %c in ID %s", c, id)
+		}
+	}
+}
+
+func TestGenerateAccessKeyID_AllUpperHex(t *testing.T) {
+	t.Parallel()
+	for range 20 {
+		id, err := generateAccessKeyID()
+		assert.NoError(t, err)
+		suffix := id[4:]
+		for _, c := range suffix {
+			assert.True(t, (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'),
+				"expected uppercase hex char, got %c in ID %s", c, id)
+		}
+	}
+}
+
+func TestAttachUserPolicy_AWSManagedOpaque(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "managed-user")
+	const managedARN = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
+
+	// AWS-managed ARNs have no KV entry, so attach must not require one.
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("managed-user"),
+		PolicyArn: aws.String(managedARN),
+	})
+	require.NoError(t, err)
+
+	out, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{
+		UserName: aws.String("managed-user"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.AttachedPolicies, 1)
+	assert.Equal(t, managedARN, *out.AttachedPolicies[0].PolicyArn)
+	assert.Equal(t, "AmazonEC2ContainerRegistryPullOnly", *out.AttachedPolicies[0].PolicyName)
+}
+
+func TestAttachUserPolicy_CustomerManagedMustExist(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "strict-user")
+
+	// Customer-managed ARNs keep failing closed when unprovisioned.
+	_, err := svc.AttachUserPolicy(testAccountID, &iam.AttachUserPolicyInput{
+		UserName:  aws.String("strict-user"),
+		PolicyArn: aws.String("arn:aws:iam::000000000000:policy/DoesNotExist"),
+	})
+	require.Error(t, err)
+}
+
+// recordingRevoker records each revocation and whether the principal record was
+// already gone when it ran, which is the ordering a racing mint relies on.
+type recordingRevoker struct {
+	svc *IAMServiceImpl
+	err error
+
+	calls []revocation
+}
+
+type revocation struct {
+	accountID, name, id string
+	recordGone          bool
+}
+
+var _ SessionRevoker = (*recordingRevoker)(nil)
+
+func (r *recordingRevoker) RevokeUserSessions(_ context.Context, accountID, userName, userID string) (int, error) {
+	_, err := r.svc.GetUser(accountID, &iam.GetUserInput{UserName: aws.String(userName)})
+	r.calls = append(r.calls, revocation{accountID, userName, userID, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity)})
+	return 0, r.err
+}
+
+func (r *recordingRevoker) RevokeRoleSessions(_ context.Context, accountID, roleARN, roleID string) (int, error) {
+	name := roleARN[strings.LastIndex(roleARN, "/")+1:]
+	_, err := r.svc.GetRole(accountID, &iam.GetRoleInput{RoleName: aws.String(name)})
+	r.calls = append(r.calls, revocation{accountID, roleARN, roleID, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity)})
+	return 0, r.err
+}
+
+func TestDeleteUser_RevokesSessionsOnceRecordIsGone(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	user := createTestUser(t, svc, "leaver")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("leaver")})
+	require.NoError(t, err)
+
+	require.Len(t, revoker.calls, 1)
+	assert.Equal(t, revocation{testAccountID, "leaver", aws.StringValue(user.UserId), true}, revoker.calls[0])
+}
+
+func TestDeleteUser_ConflictDoesNotRevoke(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc}
+	svc.SetSessionRevoker(revoker)
+	createTestUser(t, svc, "keyholder")
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{UserName: aws.String("keyholder")})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("keyholder")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+	assert.Empty(t, revoker.calls, "a user that survives the delete keeps its sessions")
+}
+
+// The user is already gone when revocation fails, so failing the call would
+// report a delete that happened as one that did not; the janitor retries.
+func TestDeleteUser_RevocationFailureKeepsDelete(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	revoker := &recordingRevoker{svc: svc, err: errors.New("jetstream unavailable")}
+	svc.SetSessionRevoker(revoker)
+	createTestUser(t, svc, "leaver")
+
+	_, err := svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("leaver")})
+	require.NoError(t, err)
+	require.Len(t, revoker.calls, 1)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("leaver")})
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
+}

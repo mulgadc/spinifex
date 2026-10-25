@@ -42,7 +42,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	awsdispatch "github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -142,19 +142,19 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	nc, js, err := sharedNATSHarness.connectIsolated(accountNameFor(t))
 	require.NoError(t, err)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
-	iamSvc, err := handlers_iam.NewIAMServiceWithRetry(t.Context(), nc, masterKey)
+	iamSvc, err := iamdomain.NewIAMServiceWithRetry(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
 	stsSvc, err := handlers_sts.NewSTSServiceImpl(t.Context(), nc, iamSvc, masterKey, handlers_eks.NewOIDCJWKSReader(js))
 	require.NoError(t, err)
 
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretAccessKey, masterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretAccessKey, masterKey)
 	require.NoError(t, err)
 
-	require.NoError(t, iamSvc.SeedBootstrap(&handlers_iam.BootstrapData{
+	require.NoError(t, iamSvc.SeedBootstrap(&iamdomain.BootstrapData{
 		AccessKeyID:     testAccessKeyID,
 		EncryptedSecret: encryptedSecret,
 		AccountID:       awsidentifiers.GlobalAccountID,

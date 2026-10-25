@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/accountteardown"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,11 +23,11 @@ import (
 type listAccountsIAMService struct {
 	policyMockIAMService
 
-	accounts []*handlers_iam.Account
+	accounts []*iamdomain.Account
 	err      error
 }
 
-func (m *listAccountsIAMService) ListAccounts() ([]*handlers_iam.Account, error) {
+func (m *listAccountsIAMService) ListAccounts() ([]*iamdomain.Account, error) {
 	return m.accounts, m.err
 }
 
@@ -177,10 +177,10 @@ func TestTeardownErrorMapping(t *testing.T) {
 // that is how a stuck TERMINATING account is noticed — and no key material.
 func TestAdminListAccountsReportsStatus(t *testing.T) {
 	gw := &GatewayConfig{DisableLogging: true, IAMService: &listAccountsIAMService{
-		accounts: []*handlers_iam.Account{
-			{AccountID: "000000000042", AccountName: "t@example.com", Status: handlers_iam.AccountStatusActive},
+		accounts: []*iamdomain.Account{
+			{AccountID: "000000000042", AccountName: "t@example.com", Status: iamdomain.AccountStatusActive},
 			nil,
-			{AccountID: "000000000043", AccountName: "u@example.com", Status: handlers_iam.AccountStatusTerminating},
+			{AccountID: "000000000043", AccountName: "u@example.com", Status: iamdomain.AccountStatusTerminating},
 		},
 	}}
 
@@ -190,8 +190,8 @@ func TestAdminListAccountsReportsStatus(t *testing.T) {
 	response, ok := output.(*ListAccountsResponse)
 	require.True(t, ok)
 	assert.Equal(t, 2, response.Count)
-	assert.Equal(t, handlers_iam.AccountStatusActive, response.Accounts[0].Status)
-	assert.Equal(t, handlers_iam.AccountStatusTerminating, response.Accounts[1].Status)
+	assert.Equal(t, iamdomain.AccountStatusActive, response.Accounts[0].Status)
+	assert.Equal(t, iamdomain.AccountStatusTerminating, response.Accounts[1].Status)
 }
 
 // Failing closed matters here: an empty listing reads as "no accounts", which

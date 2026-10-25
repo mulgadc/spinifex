@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
-	iammock "github.com/mulgadc/spinifex/spinifex/handlers/iam/mock"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iammock "github.com/mulgadc/spinifex/spinifex/domains/iam/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func testIAMProvider(f *iammock.SystemInstanceRoleEnsurer) IAMProvider {
-	return func() handlers_iam.SystemInstanceRoleEnsurer { return f }
+	return func() iamdomain.SystemInstanceRoleEnsurer { return f }
 }
 
 // rdsInstanceProfileARN mirrors the ARN ensureInstanceProfile computes, for
@@ -30,12 +30,12 @@ func TestInstanceRolePolicy_GrantsOnlyTheInternalActions(t *testing.T) {
 	t.Parallel()
 	policy, err := instanceRoleInlinePolicy()
 	require.NoError(t, err)
-	var doc handlers_iam.PolicyDocument
+	var doc iamdomain.PolicyDocument
 	require.NoError(t, json.Unmarshal([]byte(policy), &doc))
 	require.Len(t, doc.Statement, 1)
 
 	stmt := doc.Statement[0]
-	assert.Equal(t, handlers_iam.PolicyEffectAllow, stmt.Effect)
+	assert.Equal(t, iamdomain.PolicyEffectAllow, stmt.Effect)
 
 	want := make([]string, 0, len(InternalAgentActions))
 	for _, action := range InternalAgentActions {
@@ -57,13 +57,13 @@ func TestInstanceRolePolicy_GrantsOnlyTheInternalActions(t *testing.T) {
 func TestEnsureInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 	t.Parallel()
 	f := iammock.New()
-	arn, err := ensureInstanceProfile(func() handlers_iam.SystemInstanceRoleEnsurer { return f }, awsidentifiers.GlobalAccountID)
+	arn, err := ensureInstanceProfile(func() iamdomain.SystemInstanceRoleEnsurer { return f }, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
 
 	assert.Equal(t, "arn:aws:iam::"+awsidentifiers.GlobalAccountID+":instance-profile/"+InstanceRoleName, arn)
 	assert.Equal(t, awsidentifiers.GlobalAccountID, f.LastRoleAcct)
 	assert.Equal(t, awsidentifiers.GlobalAccountID, f.LastProfileAcct)
-	assert.Equal(t, handlers_iam.EC2InstanceTrustPolicy, f.LastTrustDoc,
+	assert.Equal(t, iamdomain.EC2InstanceTrustPolicy, f.LastTrustDoc,
 		"AssumeRoleForInstance only mints credentials for the EC2 trust document")
 }
 
@@ -72,7 +72,7 @@ func TestEnsureInstanceProfile_CreatesInSystemAccount(t *testing.T) {
 func TestEnsureInstanceProfile_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	f := iammock.New()
-	provider := func() handlers_iam.SystemInstanceRoleEnsurer { return f }
+	provider := func() iamdomain.SystemInstanceRoleEnsurer { return f }
 
 	first, err := ensureInstanceProfile(provider, awsidentifiers.GlobalAccountID)
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestEnsureInstanceProfile_IsIdempotent(t *testing.T) {
 func TestEnsureInstanceProfile_RejectsUnavailableIAM(t *testing.T) {
 	tests := map[string]IAMProvider{
 		"nil provider": nil,
-		"nil service":  func() handlers_iam.SystemInstanceRoleEnsurer { return nil },
+		"nil service":  func() iamdomain.SystemInstanceRoleEnsurer { return nil },
 	}
 	for name, provider := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -115,7 +115,7 @@ func TestEnsureInstanceProfile_PreservesEnsureFailure(t *testing.T) {
 	f.PutRolePolicyErr = ensureErr
 
 	arn, err := ensureInstanceProfile(
-		func() handlers_iam.SystemInstanceRoleEnsurer { return f }, awsidentifiers.GlobalAccountID)
+		func() iamdomain.SystemInstanceRoleEnsurer { return f }, awsidentifiers.GlobalAccountID)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ensureErr)
@@ -129,7 +129,7 @@ func TestEnsureInstanceProfile_RejectsEmptyARN(t *testing.T) {
 	f.EmptyInstanceProfileARN = true
 
 	arn, err := ensureInstanceProfile(
-		func() handlers_iam.SystemInstanceRoleEnsurer { return f }, awsidentifiers.GlobalAccountID)
+		func() iamdomain.SystemInstanceRoleEnsurer { return f }, awsidentifiers.GlobalAccountID)
 
 	require.Error(t, err)
 	assert.Empty(t, arn)

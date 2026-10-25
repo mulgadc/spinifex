@@ -3,7 +3,7 @@ package handlers_eks
 import (
 	"log/slog"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 const (
@@ -39,7 +39,7 @@ func (s *EKSServiceImpl) ensureCPInstanceProfile(accountID string) string {
 			"accountID", accountID)
 		return ""
 	}
-	profileARN, err := handlers_iam.EnsureSystemInstanceProfile(iam, accountID,
+	profileARN, err := iamdomain.EnsureSystemInstanceProfile(iam, accountID,
 		CPInstanceRoleName, eksServerInlinePolicyName, eksServerInlinePolicy)
 	if err != nil {
 		slog.Error("EKS: ensure CP instance profile failed; CP VM falls back to baked static gateway creds and "+

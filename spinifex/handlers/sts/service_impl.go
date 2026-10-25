@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const masterKeySize = 32 // AES-256, must match handlers_iam.
+const masterKeySize = 32 // AES-256, must match iamdomain.
 
 // STSServiceImpl implements STS operations backed by NATS JetStream KV.
 // Roles and IAM crypto are resolved through the in-process IAMService; the master key
@@ -30,14 +30,14 @@ type STSServiceImpl struct {
 	natsConn     *nats.Conn
 	js           jetstream.JetStream
 	sessions     *kvstore.Store[SessionCredential]
-	iamSvc       handlers_iam.IAMService
+	iamSvc       iamdomain.IAMService
 	masterKey    []byte
 	jwksResolver ClusterJWKSResolver
 }
 
 var (
-	_ STSService                  = (*STSServiceImpl)(nil)
-	_ handlers_iam.SessionRevoker = (*STSServiceImpl)(nil)
+	_ STSService               = (*STSServiceImpl)(nil)
+	_ iamdomain.SessionRevoker = (*STSServiceImpl)(nil)
 )
 
 // NewSTSServiceImpl constructs an STSServiceImpl. masterKey must be the 32-byte
@@ -45,7 +45,7 @@ var (
 // documents for AssumeRoleWithWebIdentity; a nil resolver is rejected so a
 // missing binding fails at start-up rather than as a permissive path. The
 // context bounds bucket creation and the schema migration only.
-func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc handlers_iam.IAMService, masterKey []byte, jwksResolver ClusterJWKSResolver) (*STSServiceImpl, error) {
+func NewSTSServiceImpl(ctx context.Context, natsConn *nats.Conn, iamSvc iamdomain.IAMService, masterKey []byte, jwksResolver ClusterJWKSResolver) (*STSServiceImpl, error) {
 	if natsConn == nil {
 		return nil, errors.New("nil NATS connection")
 	}

@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strings"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 const anyResource = "*"
@@ -153,7 +153,7 @@ func ScopedActions() []string {
 
 // ResourceARNs resolves the resource an IAM request authorizes against from
 // the same parsed SDK input that dispatch receives.
-func ResourceARNs(action, accountID string, input any, svc handlers_iam.IAMService) ([]string, error) {
+func ResourceARNs(action, accountID string, input any, svc iamdomain.IAMService) ([]string, error) {
 	scope, ok := iamScopes[action]
 	if !ok {
 		slog.Error("IAM authz: action is served but absent from the scope table", "action", action)
@@ -169,7 +169,7 @@ func ResourceARNs(action, accountID string, input any, svc handlers_iam.IAMServi
 	return []string{resource}, nil
 }
 
-func (s resourceScope) resolve(action, accountID string, input any, svc handlers_iam.IAMService) (string, error) {
+func (s resourceScope) resolve(action, accountID string, input any, svc iamdomain.IAMService) (string, error) {
 	if s.source == sourceAccount {
 		return anyResource, nil
 	}
@@ -209,7 +209,7 @@ func (s resourceScope) resolve(action, accountID string, input any, svc handlers
 		}
 		return arn.FormatIAMResource(arn.IAMPolicy, accountID, pathAndName), nil
 	case sourceOIDCCreate:
-		hostPath, err := handlers_iam.OIDCProviderHostPathFromURL(name)
+		hostPath, err := iamdomain.OIDCProviderHostPathFromURL(name)
 		if hostPath == "" {
 			slog.Warn("IAM authz: issuer URL unresolvable, authorizing account-wide",
 				"action", action, "url", name, "account_id", accountID, "err", err)
@@ -217,7 +217,7 @@ func (s resourceScope) resolve(action, accountID string, input any, svc handlers
 		}
 		return arn.FormatIAMResource(arn.IAMOIDCProvider, accountID, hostPath), nil
 	case sourceOIDCARN:
-		hostPath, err := handlers_iam.OIDCProviderHostPathFromARN(name)
+		hostPath, err := iamdomain.OIDCProviderHostPathFromARN(name)
 		if hostPath == "" {
 			slog.Warn("IAM authz: provider ARN unresolvable, authorizing account-wide",
 				"action", action, "provider_arn", name, "account_id", accountID, "err", err)
@@ -267,7 +267,7 @@ type lookupTarget struct {
 	accountID string
 }
 
-func canonicalARN(t lookupTarget, kind arn.IAMResourceType, svc handlers_iam.IAMService) (string, error) {
+func canonicalARN(t lookupTarget, kind arn.IAMResourceType, svc iamdomain.IAMService) (string, error) {
 	resource, err := svc.CanonicalResourceARN(t.accountID, kind, t.name)
 	return lookupResult(t, resource, err)
 }

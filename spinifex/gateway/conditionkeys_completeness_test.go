@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -176,7 +176,7 @@ func TestValidatePolicyDocument_AcceptsExactlyTheSupportedConditions(t *testing.
 	for _, key := range allConditionKeys {
 		for op, value := range withIfExists(operatorValues) {
 			doc := conditionDocument(t, op, key, value)
-			_, err := handlers_iam.ValidatePolicyDocument(doc)
+			_, err := iamdomain.ValidatePolicyDocument(doc)
 
 			if iampolicy.SupportedCondition(op, key) {
 				assert.NoError(t, err,
@@ -204,7 +204,7 @@ func TestValidatePolicyDocument_AcceptsExactlyTheSubstitutableVariables(t *testi
 			resourceDocument(t, "arn:aws:s3:::reports/"+reference+"/*"),
 			conditionDocument(t, iampolicy.OpStringLike, iampolicy.KeyS3Prefix, reference+"/*"),
 		} {
-			_, err := handlers_iam.ValidatePolicyDocument(doc)
+			_, err := iamdomain.ValidatePolicyDocument(doc)
 			if unresolvable {
 				assert.Error(t, err,
 					"the write path accepts %s, which the evaluator cannot resolve: the policy would "+
@@ -220,7 +220,7 @@ func TestValidatePolicyDocument_AcceptsExactlyTheSubstitutableVariables(t *testi
 
 // A malformed reference resolves nowhere and is rejected on every path.
 func TestValidatePolicyDocument_RejectsUnterminatedVariable(t *testing.T) {
-	_, err := handlers_iam.ValidatePolicyDocument(
+	_, err := iamdomain.ValidatePolicyDocument(
 		resourceDocument(t, "arn:aws:s3:::reports/"+iampolicy.VariablePrefix+iampolicy.KeyUsername))
 	assert.ErrorContains(t, err, "unterminated policy variable reference")
 }

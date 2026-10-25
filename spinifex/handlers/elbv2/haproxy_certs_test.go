@@ -15,9 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,7 +147,7 @@ func TestResolveCertPEM_CrossesACMServiceKeyBoundary(t *testing.T) {
 	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
 	svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)

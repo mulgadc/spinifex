@@ -15,9 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/golang-jwt/jwt/v5"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,7 +71,7 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 	issuer := fmt.Sprintf("https://gw.%s/oidc/eks/%s/%s/%s",
 		testWebSuffix, testWebRegion, accountID, testWebClusterName)
 	issuerHostPath := strings.TrimPrefix(issuer, "https://")
-	federatedARN := handlers_iam.OIDCProviderARN(accountID, issuerHostPath)
+	federatedARN := iamdomain.OIDCProviderARN(accountID, issuerHostPath)
 
 	// Seed the fake JWKS resolver for this (account, cluster) — no real KV
 	// involved.
@@ -83,9 +83,9 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 	// created on-the-fly here — the IAM CreateOpenIDConnectProvider API lands
 	// in Sprint 6e.
 	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
-		handlers_iam.IAMAccountBucketName(accountID), handlers_iam.KVBucketIAMAccountVersion)
+		iamdomain.IAMAccountBucketName(accountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
-	_, err = iamKV.Put(t.Context(), handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
+	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
 	require.NoError(t, err)
 
 	return &webIdentityFixture{
@@ -360,7 +360,7 @@ func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
 	issuer := fmt.Sprintf("https://gw.%s/oidc/eks/%s/%s/%s",
 		testWebSuffix, testWebRegion, testCallerAccountID, "unregistered-cluster")
 	issuerHostPath := strings.TrimPrefix(issuer, "https://")
-	federatedARN := handlers_iam.OIDCProviderARN(testCallerAccountID, issuerHostPath)
+	federatedARN := iamdomain.OIDCProviderARN(testCallerAccountID, issuerHostPath)
 
 	// Seed the JWKS resolver — but skip the IAM provider registration.
 	jwk := signingJWK(t, &priv.PublicKey)
@@ -419,7 +419,7 @@ func TestAssumeRoleWithWebIdentity_SubjectMismatch(t *testing.T) {
 func TestAssumeRoleWithWebIdentity_FederatedPrincipalMismatch(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
-	otherARN := handlers_iam.OIDCProviderARN(testCallerAccountID, "oidc.eks.other.example.com/000000000000/other-cluster")
+	otherARN := iamdomain.OIDCProviderARN(testCallerAccountID, "oidc.eks.other.example.com/000000000000/other-cluster")
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-other",
 		webIdentityTrustPolicyNoCondition(otherARN))
 

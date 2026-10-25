@@ -17,9 +17,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's AssumeRoleWithWebIdentity
@@ -44,9 +44,9 @@ func assumeWebIdentity(svc *STSServiceImpl, role *iam.Role, token string) (*sts.
 func registerIssuer(t *testing.T, svc *STSServiceImpl, roleAccountID, issuer string) {
 	t.Helper()
 	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
-		handlers_iam.IAMAccountBucketName(roleAccountID), handlers_iam.KVBucketIAMAccountVersion)
+		iamdomain.IAMAccountBucketName(roleAccountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
-	_, err = iamKV.Put(t.Context(), handlers_iam.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
+	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))
 	require.NoError(t, err)
 }
 
@@ -111,7 +111,7 @@ func TestCurrentBehaviour_CrossAccountIssuerQueriesIssuerAccount(t *testing.T) {
 	priv, jwk := newKeyJWK(t, "remote-kid")
 	seedJWKS(t, svc, issuerAccount, "remote", jwk)
 
-	federated := handlers_iam.OIDCProviderARN(testCallerAccountID, strings.TrimPrefix(issuer, "https://"))
+	federated := iamdomain.OIDCProviderARN(testCallerAccountID, strings.TrimPrefix(issuer, "https://"))
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-xacct", webIdentityTrustPolicyNoCondition(federated))
 
 	f := &webIdentityFixture{issuer: issuer}

@@ -9,8 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
@@ -103,7 +103,7 @@ func (gw *GatewayConfig) resolveECRLongLivedPrincipal(claims *ecrauth.Claims) (p
 	if err != nil {
 		return principalContext{}, classifyIAMLookupErr(err, "access key")
 	}
-	if ak.Status != handlers_iam.AccessKeyStatusActive {
+	if ak.Status != iamdomain.AccessKeyStatusActive {
 		return principalContext{}, ecrInvalidPrincipal("access key %q is inactive", claims.AccessKeyID)
 	}
 	if ak.AccountID != claims.AccountID {
@@ -238,7 +238,7 @@ func (gw *GatewayConfig) requireActiveECRAccount(accountID string) error {
 	if err != nil {
 		return classifyIAMLookupErr(err, "account")
 	}
-	if account.Status != handlers_iam.AccountStatusActive {
+	if account.Status != iamdomain.AccountStatusActive {
 		return ecrInvalidPrincipal("account %q is not active", accountID)
 	}
 	return nil

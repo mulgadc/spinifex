@@ -3,18 +3,18 @@ package gateway_iam
 import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 )
 
 // GetAccountSummary forwards to the service. The input has no required fields,
 // so this is a straight pass-through.
-func GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput, svc handlers_iam.IAMService) (*iam.GetAccountSummaryOutput, error) {
+func GetAccountSummary(accountID string, input *iam.GetAccountSummaryInput, svc iamdomain.IAMService) (*iam.GetAccountSummaryOutput, error) {
 	return svc.GetAccountSummary(accountID, input)
 }
 
 // ListAccountAliases implements the IAM ListAccountAliases action. Aliases are paged here by
 // Marker and MaxItems; a bad Marker or MaxItems is a ValidationError.
-func ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput, svc handlers_iam.IAMService) (*iam.ListAccountAliasesOutput, error) {
+func ListAccountAliases(accountID string, input *iam.ListAccountAliasesInput, svc iamdomain.IAMService) (*iam.ListAccountAliasesOutput, error) {
 	p, err := newPager(input.Marker, input.MaxItems)
 	if err != nil {
 		return nil, err

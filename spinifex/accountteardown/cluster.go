@@ -6,8 +6,8 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -22,7 +22,7 @@ func NewClusterEngine(
 	nc *nats.Conn,
 	expectedNodes int,
 	nodeIDs []string,
-	svc handlers_iam.IAMService,
+	svc iamdomain.IAMService,
 	buckets BucketStore,
 ) (*Engine, error) {
 	// Refused rather than skipped. A teardown missing its bucket reaper still
@@ -37,7 +37,7 @@ func NewClusterEngine(
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	names, err := handlers_iam.NewAccountNameIndex(ctx, js)
+	names, err := iamdomain.NewAccountNameIndex(ctx, js)
 	if err != nil {
 		return nil, fmt.Errorf("open account name index: %w", err)
 	}

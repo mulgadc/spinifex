@@ -17,7 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -338,7 +338,7 @@ func TestReconcileCertInUseIndex_RestoresRenewalFanOut(t *testing.T) {
 	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)
@@ -438,7 +438,7 @@ func TestACMReimport_FansOutToInUseLoadBalancer(t *testing.T) {
 
 	// Both services read the same bucket, so they must share one key or the
 	// reader gets ciphertext where it expects PEM.
-	masterKey, err := handlers_iam.GenerateMasterKey()
+	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 
 	elbv2Svc, err := NewELBv2ServiceImplWithNATS(nil, nc, masterKey)

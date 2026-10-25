@@ -3,25 +3,25 @@ package awsgw
 import (
 	"testing"
 
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type fakeAccountLister struct {
-	accounts []*handlers_iam.Account
+	accounts []*iamdomain.Account
 	err      error
 }
 
-func (f *fakeAccountLister) ListAccounts() ([]*handlers_iam.Account, error) {
+func (f *fakeAccountLister) ListAccounts() ([]*iamdomain.Account, error) {
 	return f.accounts, f.err
 }
 
 func TestActiveAccountIDs_FiltersActive(t *testing.T) {
-	lister := &fakeAccountLister{accounts: []*handlers_iam.Account{
-		{AccountID: "000000000001", Status: handlers_iam.AccountStatusActive},
+	lister := &fakeAccountLister{accounts: []*iamdomain.Account{
+		{AccountID: "000000000001", Status: iamdomain.AccountStatusActive},
 		{AccountID: "000000000002", Status: "SUSPENDED"},
-		{AccountID: "000000000003", Status: handlers_iam.AccountStatusActive},
+		{AccountID: "000000000003", Status: iamdomain.AccountStatusActive},
 	}}
 
 	ids, err := activeAccountIDs(lister)()

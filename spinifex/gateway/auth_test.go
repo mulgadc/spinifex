@@ -30,8 +30,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -45,27 +45,27 @@ const (
 	testService   = "ec2"
 )
 
-// mockIAMService implements handlers_iam.IAMService for auth tests. It embeds
+// mockIAMService implements iamdomain.IAMService for auth tests. It embeds
 // the interface so it satisfies the full contract; the SigV4 middleware drives
 // LookupAccessKey, DecryptSecret and GetUser, so those are the methods wired.
 // Any other method nil-panics, surfacing an unexpected call.
 type mockIAMService struct {
-	handlers_iam.IAMService
+	iamdomain.IAMService
 
-	accessKeys map[string]*handlers_iam.AccessKey
+	accessKeys map[string]*iamdomain.AccessKey
 	masterKey  []byte
 
 	// accounts overrides the status the auth gate reads. An empty map means
 	// every account is ACTIVE, which is what most tests here are asserting
 	// around rather than asserting about.
-	accounts map[string]*handlers_iam.Account
+	accounts map[string]*iamdomain.Account
 
 	// getUserFn overrides the synthetic user record below, for a test that cares
 	// what aws:userid resolves to or that it fails to resolve at all.
 	getUserFn func(accountID string, input *iam.GetUserInput) (*iam.GetUserOutput, error)
 }
 
-func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.AccessKey, error) {
+func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*iamdomain.AccessKey, error) {
 	ak, ok := m.accessKeys[accessKeyID]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity)
@@ -74,14 +74,14 @@ func (m *mockIAMService) LookupAccessKey(accessKeyID string) (*handlers_iam.Acce
 }
 
 func (m *mockIAMService) DecryptSecret(ciphertext string) (string, error) {
-	return handlers_iam.DecryptSecret(ciphertext, m.masterKey)
+	return iamdomain.DecryptSecret(ciphertext, m.masterKey)
 }
 
-func (m *mockIAMService) GetAccount(accountID string) (*handlers_iam.Account, error) {
+func (m *mockIAMService) GetAccount(accountID string) (*iamdomain.Account, error) {
 	if account, ok := m.accounts[accountID]; ok {
 		return account, nil
 	}
-	return &handlers_iam.Account{AccountID: accountID, Status: handlers_iam.AccountStatusActive}, nil
+	return &iamdomain.Account{AccountID: accountID, Status: iamdomain.AccountStatusActive}, nil
 }
 
 // GetUser answers with a unique ID derived from the name, so aws:userid resolves
@@ -102,7 +102,7 @@ var testMasterKey []byte
 
 func init() {
 	var err error
-	testMasterKey, err = handlers_iam.GenerateMasterKey()
+	testMasterKey, err = iamdomain.GenerateMasterKey()
 	if err != nil {
 		panic("failed to generate test master key: " + err.Error())
 	}
@@ -136,14 +136,14 @@ func signTestRequestAs(t *testing.T, req *http.Request, body []byte, accessKey, 
 }
 
 func setupTestApp(accessKey, secretKey string) http.Handler {
-	encryptedSecret, err := handlers_iam.EncryptSecret(secretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(secretKey, testMasterKey)
 	if err != nil {
 		panic("failed to encrypt test secret: " + err.Error())
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			accessKey: {
 				AccessKeyID:     accessKey,
 				SecretAccessKey: encryptedSecret,
@@ -172,10 +172,10 @@ func setupTestApp(accessKey, secretKey string) http.Handler {
 // the aws:userid branch that a user principal reaches in production.
 func userIDApp(t *testing.T, svc *mockIAMService) (http.Handler, *string) {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	svc.masterKey = testMasterKey
-	svc.accessKeys = map[string]*handlers_iam.AccessKey{
+	svc.accessKeys = map[string]*iamdomain.AccessKey{
 		testAccessKey: {
 			AccessKeyID:     testAccessKey,
 			SecretAccessKey: encryptedSecret,
@@ -371,14 +371,14 @@ func TestSigV4Auth_ValidSignatureWithQueryString(t *testing.T) {
 }
 
 func TestSigV4Auth_InactiveAccessKey(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
@@ -480,18 +480,18 @@ func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 func TestSigV4Auth_DecryptFailure(t *testing.T) {
 	// Secret encrypted under a rotated master key — unverifiable credential must
 	// return 403 InvalidClientTokenId, not 500, so the client re-authenticates.
-	otherKey, err := handlers_iam.GenerateMasterKey()
+	otherKey, err := iamdomain.GenerateMasterKey()
 	if err != nil {
 		t.Fatalf("GenerateMasterKey() error: %v", err)
 	}
-	encryptedWithOther, err := handlers_iam.EncryptSecret(testSecretKey, otherKey)
+	encryptedWithOther, err := iamdomain.EncryptSecret(testSecretKey, otherKey)
 	if err != nil {
 		t.Fatalf("EncryptSecret() error: %v", err)
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedWithOther, // encrypted with wrong key
@@ -832,14 +832,14 @@ func TestSigV4Auth_S3ScopeReturnsFlatS3Error(t *testing.T) {
 // --- Context Propagation Tests ---
 
 func TestSigV4Auth_ContextPropagation(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
@@ -902,20 +902,20 @@ func TestSigV4Auth_ContextPropagation(t *testing.T) {
 }
 
 func TestSigV4Auth_ContextDoesNotLeakBetweenRequests(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	secondKey := "AKIAIOSFODNN7SECOND0"
-	encryptedSecret2, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret2, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
@@ -1034,14 +1034,14 @@ func TestSigV4Auth_PathWithSpecialCharacters(t *testing.T) {
 
 func TestSigV4Auth_SignedContentType(t *testing.T) {
 	// Verify signature works when content-type is included in signed headers.
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
@@ -1146,18 +1146,18 @@ func TestSigV4Auth_QueryStringEdgeCases(t *testing.T) {
 type policyMockIAMService struct {
 	mockIAMService
 
-	getUserPoliciesFn func(accountID, userName string) ([]handlers_iam.PolicyDocument, error)
-	getRolePoliciesFn func(accountID, roleName string) ([]handlers_iam.PolicyDocument, error)
+	getUserPoliciesFn func(accountID, userName string) ([]iamdomain.PolicyDocument, error)
+	getRolePoliciesFn func(accountID, roleName string) ([]iamdomain.PolicyDocument, error)
 }
 
-func (m *policyMockIAMService) GetUserPolicies(accountID, userName string) ([]handlers_iam.PolicyDocument, error) {
+func (m *policyMockIAMService) GetUserPolicies(accountID, userName string) ([]iamdomain.PolicyDocument, error) {
 	if m.getUserPoliciesFn != nil {
 		return m.getUserPoliciesFn(accountID, userName)
 	}
 	return nil, nil
 }
 
-func (m *policyMockIAMService) GetRolePolicies(accountID, roleName string) ([]handlers_iam.PolicyDocument, error) {
+func (m *policyMockIAMService) GetRolePolicies(accountID, roleName string) ([]iamdomain.PolicyDocument, error) {
 	if m.getRolePoliciesFn != nil {
 		return m.getRolePoliciesFn(accountID, roleName)
 	}
@@ -1171,7 +1171,7 @@ type errorLookupMockIAMService struct {
 	err error
 }
 
-func (m *errorLookupMockIAMService) LookupAccessKey(_ string) (*handlers_iam.AccessKey, error) {
+func (m *errorLookupMockIAMService) LookupAccessKey(_ string) (*iamdomain.AccessKey, error) {
 	return nil, m.err
 }
 
@@ -1190,7 +1190,7 @@ func setupPolicyTestHandler(gw *GatewayConfig) http.Handler {
 }
 
 func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1198,7 +1198,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1208,7 +1208,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil // no policies
 		},
 	}
@@ -1239,7 +1239,7 @@ func TestCheckPolicy_NonRootNoPolicies_Denied(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1247,7 +1247,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1257,15 +1257,15 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-			return []handlers_iam.PolicyDocument{
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
-					Statement: []handlers_iam.Statement{
+					Statement: []iamdomain.Statement{
 						{
 							Effect:   "Allow",
-							Action:   handlers_iam.StringOrArr{"ec2:RunInstances"},
-							Resource: handlers_iam.StringOrArr{"*"},
+							Action:   iamdomain.StringOrArr{"ec2:RunInstances"},
+							Resource: iamdomain.StringOrArr{"*"},
 						},
 					},
 				},
@@ -1294,7 +1294,7 @@ func TestCheckPolicy_NonRootWithAllow_Passes(t *testing.T) {
 }
 
 func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1302,7 +1302,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1312,20 +1312,20 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-			return []handlers_iam.PolicyDocument{
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
-					Statement: []handlers_iam.Statement{
+					Statement: []iamdomain.Statement{
 						{
 							Effect:   "Allow",
-							Action:   handlers_iam.StringOrArr{"ec2:*"},
-							Resource: handlers_iam.StringOrArr{"*"},
+							Action:   iamdomain.StringOrArr{"ec2:*"},
+							Resource: iamdomain.StringOrArr{"*"},
 						},
 						{
 							Effect:   "Deny",
-							Action:   handlers_iam.StringOrArr{"ec2:RunInstances"},
-							Resource: handlers_iam.StringOrArr{"*"},
+							Action:   iamdomain.StringOrArr{"ec2:RunInstances"},
+							Resource: iamdomain.StringOrArr{"*"},
 						},
 					},
 				},
@@ -1359,7 +1359,7 @@ func TestCheckPolicy_NonRootWithExplicitDeny_Denied(t *testing.T) {
 }
 
 func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1367,7 +1367,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1377,16 +1377,16 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			// Return explicit deny — root should bypass anyway
-			return []handlers_iam.PolicyDocument{
+			return []iamdomain.PolicyDocument{
 				{
 					Version: "2012-10-17",
-					Statement: []handlers_iam.Statement{
+					Statement: []iamdomain.Statement{
 						{
 							Effect:   "Deny",
-							Action:   handlers_iam.StringOrArr{"*"},
-							Resource: handlers_iam.StringOrArr{"*"},
+							Action:   iamdomain.StringOrArr{"*"},
+							Resource: iamdomain.StringOrArr{"*"},
 						},
 					},
 				},
@@ -1415,7 +1415,7 @@ func TestCheckPolicy_RootGlobalAccount_Bypasses(t *testing.T) {
 }
 
 func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1424,7 +1424,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1457,7 +1457,7 @@ func TestCheckPolicy_MissingAccountID_InternalError(t *testing.T) {
 }
 
 func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1465,7 +1465,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1475,7 +1475,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, errors.New("nats: timeout")
 		},
 	}
@@ -1503,7 +1503,7 @@ func TestCheckPolicy_GetUserPoliciesError_InternalError(t *testing.T) {
 func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 	// A user named "root" but on a non-global account should still have
 	// policies evaluated (only root + GlobalAccountID bypasses).
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secret: %v", err)
 	}
@@ -1511,7 +1511,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 	mockSvc := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -1521,7 +1521,7 @@ func TestCheckPolicy_RootNonGlobalAccount_StillEvaluated(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			return nil, nil // no policies → should deny
 		},
 	}
@@ -1728,7 +1728,7 @@ const (
 // real AES-GCM so the SigV4 verify path exercises the actual decrypt code.
 func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mockSTSService) {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
 	cred := &handlers_sts.SessionCredential{
@@ -1752,7 +1752,7 @@ func setupSessionTestApp(t *testing.T, expiresAt time.Time) (http.Handler, *mock
 // principal context; varies cred to drive the principal-type branch in resolveSessionAKID.
 func mountSessionGateway(t *testing.T, cred *handlers_sts.SessionCredential) (http.Handler, *mockSTSService) {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
 	stsMock := &mockSTSService{
@@ -1762,7 +1762,7 @@ func mountSessionGateway(t *testing.T, cred *handlers_sts.SessionCredential) (ht
 
 	iamMock := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
@@ -1824,7 +1824,7 @@ func TestSigV4Auth_Session_ValidSignature(t *testing.T) {
 func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 	// GetSessionToken session (PrincipalType "user") must resolve back to the IAM
 	// user with no assumed-role fields, so buildCallerARN yields arn:aws:iam::A:user/N.
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	cred := &handlers_sts.SessionCredential{
 		AccessKeyID:      testSessionAKID,
@@ -1856,7 +1856,7 @@ func TestSigV4Auth_Session_UserPrincipal(t *testing.T) {
 
 func TestSigV4Auth_Session_EmptyPrincipalType_ResolvesAssumedRole(t *testing.T) {
 	// Pre-PrincipalType records have an empty value and must still resolve as assumed-role.
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	cred := &handlers_sts.SessionCredential{
 		AccessKeyID:       testSessionAKID,
@@ -2111,12 +2111,12 @@ func TestSigV4Auth_UnknownAKIDPrefix_NoLookup(t *testing.T) {
 
 func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 	// Long-lived AKIA path must set ctxPrincipalType=user for correct policy gating.
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
 	iamMock := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,
@@ -2150,11 +2150,11 @@ func TestSigV4Auth_AKIA_PrincipalTypeUser(t *testing.T) {
 
 func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 	// Session AKID with nil STSService is a misconfiguration — must fail with InternalError.
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	iamMock := &mockIAMService{
 		masterKey:  testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{},
+		accessKeys: map[string]*iamdomain.AccessKey{},
 	}
 	_ = encryptedSecret
 	gw := &GatewayConfig{
@@ -2184,7 +2184,7 @@ func TestSigV4Auth_Session_STSServiceNil(t *testing.T) {
 // that grants nothing. The enforcement path must resolve the underlying role —
 // never the SessionName — so the request is denied and GetUserPolicies is never called.
 func TestCheckPolicy_SessionNameCollision(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
 	var userPoliciesCalled bool
@@ -2195,7 +2195,7 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 	iamMock := &policyMockIAMService{
 		mockIAMService: mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{
+			accessKeys: map[string]*iamdomain.AccessKey{
 				testAccessKey: {
 					AccessKeyID:     testAccessKey,
 					SecretAccessKey: encryptedSecret,
@@ -2205,11 +2205,11 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 				},
 			},
 		},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			userPoliciesCalled = true
 			return allowPolicy("ec2:*"), nil
 		},
-		getRolePoliciesFn: func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
+		getRolePoliciesFn: func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
 			resolvedRoleName = roleName
 			return nil, nil
 		},
@@ -2254,18 +2254,18 @@ func TestCheckPolicy_SessionNameCollision(t *testing.T) {
 }
 
 // allowPolicy returns a single-statement Allow policy granting action on "*".
-func allowPolicy(action string) []handlers_iam.PolicyDocument {
+func allowPolicy(action string) []iamdomain.PolicyDocument {
 	return allowPolicyResource(action, "*")
 }
 
 // allowPolicyResource returns a single-statement Allow policy for action on resource.
-func allowPolicyResource(action, resource string) []handlers_iam.PolicyDocument {
-	return []handlers_iam.PolicyDocument{{
+func allowPolicyResource(action, resource string) []iamdomain.PolicyDocument {
+	return []iamdomain.PolicyDocument{{
 		Version: "2012-10-17",
-		Statement: []handlers_iam.Statement{{
+		Statement: []iamdomain.Statement{{
 			Effect:   "Allow",
-			Action:   handlers_iam.StringOrArr{action},
-			Resource: handlers_iam.StringOrArr{resource},
+			Action:   iamdomain.StringOrArr{action},
+			Resource: iamdomain.StringOrArr{resource},
 		}},
 	}}
 }
@@ -2288,16 +2288,16 @@ func assumedRoleSessionCred(sessionName, underlyingRoleARN, accountID string) *h
 // newAssumedRoleEnforcementGateway wires a gateway for assumed-role checkPolicy tests.
 // The user resolver fails the test if called — an assumed-role must never be evaluated as a user.
 func newAssumedRoleEnforcementGateway(t *testing.T, cred *handlers_sts.SessionCredential,
-	getRoleFn func(accountID, roleName string) ([]handlers_iam.PolicyDocument, error),
+	getRoleFn func(accountID, roleName string) ([]iamdomain.PolicyDocument, error),
 ) *GatewayConfig {
 	t.Helper()
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	cred.SecretEncrypted = encryptedSecret
 
 	iamMock := &policyMockIAMService{
 		mockIAMService: mockIAMService{masterKey: testMasterKey},
-		getUserPoliciesFn: func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+		getUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 			t.Errorf("priv-esc: assumed-role principal must not consult GetUserPolicies")
 			return nil, nil
 		},
@@ -2344,7 +2344,7 @@ func doSessionPolicyRequest(t *testing.T, handler http.Handler, akid string) *ht
 // predastore's assumed-role S3 enforcement.
 func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
 		require.Equal(t, "app-role", roleName)
 		return allowPolicy("ec2:RunInstances"), nil
 	})
@@ -2358,7 +2358,7 @@ func TestCheckPolicy_AssumedRole_AllowedByRolePolicy(t *testing.T) {
 // action nor an explicit Deny, so the default deny applies.
 func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return allowPolicy("ec2:DescribeInstances"), nil // does not cover RunInstances
 	})
 
@@ -2372,12 +2372,12 @@ func TestCheckPolicy_AssumedRole_ImplicitDeny(t *testing.T) {
 // overrides any Allow.
 func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
-		return []handlers_iam.PolicyDocument{{
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
+		return []iamdomain.PolicyDocument{{
 			Version: "2012-10-17",
-			Statement: []handlers_iam.Statement{
-				{Effect: "Allow", Action: handlers_iam.StringOrArr{"ec2:*"}, Resource: handlers_iam.StringOrArr{"*"}},
-				{Effect: "Deny", Action: handlers_iam.StringOrArr{"ec2:RunInstances"}, Resource: handlers_iam.StringOrArr{"*"}},
+			Statement: []iamdomain.Statement{
+				{Effect: "Allow", Action: iamdomain.StringOrArr{"ec2:*"}, Resource: iamdomain.StringOrArr{"*"}},
+				{Effect: "Deny", Action: iamdomain.StringOrArr{"ec2:RunInstances"}, Resource: iamdomain.StringOrArr{"*"}},
 			},
 		}}, nil
 	})
@@ -2393,7 +2393,7 @@ func TestCheckPolicy_AssumedRole_ExplicitDeny(t *testing.T) {
 // permissions.
 func TestCheckPolicy_AssumedRole_ZeroPolicyRole_DenyAll(t *testing.T) {
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return nil, nil // role exists, zero attached policies
 	})
 
@@ -2411,7 +2411,7 @@ func TestCheckPolicy_AssumedRole_SessionNamedRoot_NoBypass(t *testing.T) {
 	cred := assumedRoleSessionCred("root",
 		"arn:aws:iam::"+awsidentifiers.GlobalAccountID+":role/sneaky-role", awsidentifiers.GlobalAccountID)
 	var roleResolved bool
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, roleName string) ([]iamdomain.PolicyDocument, error) {
 		roleResolved = true
 		require.Equal(t, "sneaky-role", roleName)
 		return nil, nil // role grants nothing
@@ -2440,7 +2440,7 @@ func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cred := assumedRoleSessionCred("app", tc.underlyingRoleARN, "123456789012")
-			gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+			gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 				t.Errorf("role resolver must not be consulted for an edge-case ARN (%s)", tc.name)
 				return nil, nil
 			})
@@ -2457,7 +2457,7 @@ func TestCheckPolicy_AssumedRole_EdgeARNs_Denied(t *testing.T) {
 // resolve error fails closed — never an allow-on-error.
 func TestCheckPolicy_AssumedRole_ResolveError_InternalError(t *testing.T) {
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return nil, errors.New(awserrors.ErrorIAMNoSuchEntity) // role deleted after mint
 	})
 
@@ -2473,7 +2473,7 @@ func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
 	shortenPolicyResolveRetry(t)
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/app-role", "123456789012")
 	var calls int
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		calls++
 		return nil, nats.ErrNoResponders
 	})
@@ -2491,7 +2491,7 @@ func TestCheckPolicy_AssumedRole_TransientNATS_RetriesThenFails(t *testing.T) {
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return allowPolicyResource("iam:PassRole", targetRoleARN), nil
 	})
 
@@ -2506,7 +2506,7 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToTargetARN_Allowed(t *testing.T
 func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return allowPolicyResource("iam:PassRole", "arn:aws:iam::123456789012:role/some-other-role"), nil
 	})
 
@@ -2523,7 +2523,7 @@ func TestCheckPolicy_AssumedRole_PassRole_ScopedToOtherARN_Denied(t *testing.T) 
 func TestCheckPolicy_AssumedRole_PassRole_WildcardResource_Allowed(t *testing.T) {
 	const targetRoleARN = "arn:aws:iam::123456789012:role/instance-role"
 	cred := assumedRoleSessionCred("app", "arn:aws:iam::123456789012:role/launcher-role", "123456789012")
-	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]handlers_iam.PolicyDocument, error) {
+	gw := newAssumedRoleEnforcementGateway(t, cred, func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		return allowPolicyResource("iam:PassRole", "*"), nil
 	})
 
@@ -2737,12 +2737,12 @@ func TestSigV4Auth_ServedScopeSignatureMismatchStillSignatureDoesNotMatch(t *tes
 // so before the fix ctxAction stayed empty and every such request shared the
 // throttle bucket "<account>:unknown", which no per-action limit can match.
 func TestSigV4Auth_ResolvesCtxActionForNonQueryServices(t *testing.T) {
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 
 	mockSvc := &mockIAMService{
 		masterKey: testMasterKey,
-		accessKeys: map[string]*handlers_iam.AccessKey{
+		accessKeys: map[string]*iamdomain.AccessKey{
 			testAccessKey: {
 				AccessKeyID:     testAccessKey,
 				SecretAccessKey: encryptedSecret,

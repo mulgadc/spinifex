@@ -13,8 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_iam "github.com/mulgadc/spinifex/spinifex/handlers/iam"
 	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,7 +87,7 @@ type stsRequestParams struct {
 	// caller's policies by; SessionName never participates.
 	underlyingRoleARN string
 	stsSvc            handlers_sts.STSService
-	iamSvc            handlers_iam.IAMService
+	iamSvc            iamdomain.IAMService
 }
 
 func setupSTSRequestHandler(p stsRequestParams) http.Handler {
@@ -447,7 +447,7 @@ func TestSTSRequest_GetCallerIdentity_User_LookupIAM(t *testing.T) {
 // resolved by the SigV4 middleware rather than reformatted at "/".
 func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) {
 	const pathed = "arn:aws:iam::123456789012:user/eng/alice"
-	encryptedSecret, err := handlers_iam.EncryptSecret(testSecretKey, testMasterKey)
+	encryptedSecret, err := iamdomain.EncryptSecret(testSecretKey, testMasterKey)
 	require.NoError(t, err)
 	gw := &GatewayConfig{
 		DisableLogging: true,
@@ -455,7 +455,7 @@ func TestSTSRequest_GetCallerIdentity_PathedUserThroughMiddleware(t *testing.T) 
 		STSService:     &flexMockSTSService{},
 		IAMService: &mockIAMService{
 			masterKey: testMasterKey,
-			accessKeys: map[string]*handlers_iam.AccessKey{testAccessKey: {
+			accessKeys: map[string]*iamdomain.AccessKey{testAccessKey: {
 				AccessKeyID: testAccessKey, SecretAccessKey: encryptedSecret,
 				UserName: "alice", AccountID: "123456789012", Status: "Active",
 			}},

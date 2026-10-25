@@ -677,14 +677,13 @@ func TestIntegration_EBSMountClearsStaleSealReceipt(t *testing.T) {
 	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-mount-clear", VolType: "gp3"})
 	require.NoError(t, err)
 
-	// Fire-and-forget: the mount will fail deep in the mocked S3 backend, but
-	// the receipt is cleared before any of that, so don't wait for a response.
-	require.NoError(t, nc.Publish("ebs.test-node.mount", requestData))
+	// Wait for the reply even though the mount fails in the mocked S3 backend:
+	// until it arrives the handler is still creating the volume's directories
+	// under BaseDir, which would race t.TempDir's cleanup.
+	_, err = nc.Request("ebs.test-node.mount", requestData, 10*time.Second)
+	require.NoError(t, err)
 
-	assert.Eventually(t, func() bool {
-		_, statErr := os.Stat(receiptPath)
-		return os.IsNotExist(statErr)
-	}, 3*time.Second, 20*time.Millisecond, "mount must clear a pre-existing receipt for the volume it is mounting")
+	assert.NoFileExists(t, receiptPath, "mount must clear a pre-existing receipt for the volume it is mounting")
 }
 
 // TestIntegration_ConcurrentMountRequests tests multiple concurrent mount requests.

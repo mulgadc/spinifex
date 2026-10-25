@@ -12,9 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,13 +43,13 @@ func setupRDSUserRequest(body, accountID string) *http.Request {
 // whose underlying role is the DB VM instance role.
 func setupRDSAgentRequest(body, sessionName string) *http.Request {
 	req := setupRDSRequest(body)
-	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + handlers_rds.InstanceRoleName
+	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + rdsinstance.InstanceRoleName
 	ctx := context.WithValue(req.Context(), ctxAccountID, awsidentifiers.GlobalAccountID)
 	ctx = context.WithValue(ctx, ctxIdentity, sessionName)
 	ctx = context.WithValue(ctx, ctxPrincipalType, principalTypeAssumedRole)
 	ctx = context.WithValue(ctx, ctxUnderlyingRoleARN, roleARN)
 	ctx = context.WithValue(ctx, ctxAssumedRoleARN,
-		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+handlers_rds.InstanceRoleName+"/"+sessionName)
+		"arn:aws:sts::"+awsidentifiers.GlobalAccountID+":assumed-role/"+rdsinstance.InstanceRoleName+"/"+sessionName)
 	return req.WithContext(ctx)
 }
 
@@ -142,7 +142,7 @@ func TestRDSRequest_NoNATSConn(t *testing.T) {
 // database master password.
 func TestRDSRequest_InternalActionsDeniedToCustomerAdmin(t *testing.T) {
 	gw, _ := newRDSPolicyGateway(allowPolicy("rds:*"))
-	for _, action := range handlers_rds.InternalAgentActions {
+	for _, action := range rdsinstance.InternalAgentActions {
 		t.Run(action, func(t *testing.T) {
 			err := gw.RDS_Request(httptest.NewRecorder(),
 				setupRDSUserRequest("Action="+action, rdsTestAccountID))
@@ -208,8 +208,8 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
 				"&DBSnapshotIdentifier=orders-db-nightly",
 			resources: iamdomain.StringOrArr{
-				handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db"),
-				handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+				rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db"),
+				rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
 			},
 		},
 		{
@@ -218,8 +218,8 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
 				"&DBInstanceIdentifier=orders-db-restored",
 			resources: iamdomain.StringOrArr{
-				handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
-				handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
+				rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+				rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
 			},
 		},
 	}
@@ -241,8 +241,8 @@ func TestRDSRequest_SnapshotActionsAuthorizeSourceAndTarget(t *testing.T) {
 }
 
 func TestRDSRequest_SnapshotActionsUseOnePolicySnapshot(t *testing.T) {
-	source := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db")
-	target := handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
+	source := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db")
+	target := rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly")
 	resolution := 0
 	gw, probe := newRDSGatewayWithResolver(func(_, _ string) ([]iamdomain.PolicyDocument, error) {
 		resolution++
@@ -272,13 +272,13 @@ func TestRDSRequest_SnapshotActionsHonorTargetDeny(t *testing.T) {
 			name: "create snapshot", action: "rds:CreateDBSnapshot",
 			query: "Action=CreateDBSnapshot&DBInstanceIdentifier=orders-db" +
 				"&DBSnapshotIdentifier=orders-db-nightly",
-			target: handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
+			target: rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, "ap-southeast-2", rdsTestAccountID, "orders-db-nightly"),
 		},
 		{
 			name: "restore snapshot", action: "rds:RestoreDBInstanceFromDBSnapshot",
 			query: "Action=RestoreDBInstanceFromDBSnapshot&DBSnapshotIdentifier=orders-db-nightly" +
 				"&DBInstanceIdentifier=orders-db-restored",
-			target: handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
+			target: rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", rdsTestAccountID, "orders-db-restored"),
 		},
 	}
 	for _, tt := range tests {
@@ -317,7 +317,7 @@ func TestRDSRequest_CrossAccountARNIsRejectedNotEvaluated(t *testing.T) {
 		t.Error("a cross-account ARN must never reach policy evaluation")
 		return nil, nil
 	})
-	foreign := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "ap-southeast-2", "999988887777", "orders-db")
+	foreign := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "ap-southeast-2", "999988887777", "orders-db")
 	err := gw.RDS_Request(httptest.NewRecorder(),
 		setupRDSUserRequest("Action=ListTagsForResource&ResourceName="+foreign, rdsTestAccountID))
 	require.Error(t, err)
@@ -367,12 +367,12 @@ var errNotImplementedForTest = errors.New(awserrors.ErrorNotImplemented)
 
 // TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400 runs the real public path:
 // a CreateDBInstance query request through RDS_Request, over NATS, into the production
-// handlers_rds.Service, and the resulting error through ErrorHandler's HTTP/XML rendering. AWS
+// rdsinstance.Service, and the resulting error through ErrorHandler's HTTP/XML rendering. AWS
 // returns 400 InvalidParameterValue for a create with no MasterUserPassword.
 func TestRDSRequest_CreateDBInstance_EmptyMasterUserPasswordReturns400(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	svc := handlers_rds.NewService(nc, "ap-southeast-2")
-	sub, err := nc.Subscribe(handlers_rds.SubjectCreateDBInstance, func(msg *nats.Msg) {
+	svc := rdsinstance.NewService(nc, "ap-southeast-2")
+	sub, err := nc.Subscribe(rdsinstance.SubjectCreateDBInstance, func(msg *nats.Msg) {
 		natsmsg.ServeNATSRequestCtx(msg, func(ctx context.Context, in *rds.CreateDBInstanceInput) (*rds.CreateDBInstanceOutput, error) {
 			return svc.CreateDBInstance(ctx, in, natsmsg.AccountIDFromMsg(msg))
 		})

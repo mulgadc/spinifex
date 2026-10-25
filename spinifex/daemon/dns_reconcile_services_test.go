@@ -7,9 +7,9 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,7 @@ func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
 	d := &Daemon{
 		elbv2Service: &handlers_elbv2.ELBv2ServiceImpl{},
 		eksService:   &handlers_eks.EKSServiceImpl{},
-		rdsService:   &handlers_rds.Service{},
+		rdsService:   &rdsinstance.Service{},
 	}
 
 	ds := d.dnsDesiredSet()
@@ -41,7 +41,7 @@ func TestDNSDesiredSet_ServicesEnumerateCompletely(t *testing.T) {
 	eks, err := handlers_eks.NewEKSServiceImpl(handlers_eks.EKSServiceDeps{NATSConn: nc, Config: cfg})
 	require.NoError(t, err)
 	t.Cleanup(eks.Shutdown)
-	rds := handlers_rds.NewService(nc, cfg.Region).WithDeps(handlers_rds.Deps{BaseDomain: "example.internal"})
+	rds := rdsinstance.NewService(nc, cfg.Region).WithDeps(rdsinstance.Deps{BaseDomain: "example.internal"})
 
 	d := &Daemon{elbv2Service: elb, eksService: eks, rdsService: rds}
 	ds := d.dnsDesiredSet()

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // A runner that fails only the offline config check, so the check's own
@@ -39,13 +39,13 @@ func TestPostgresEngine_ApplyParametersRollsBackAValueTheEngineRejects(t *testin
 	// roll back to.
 	runner.checkErr = nil
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
 		t.Fatalf("first ApplyParameters: %v", err)
 	}
 	runner.checkErr = errors.New(`unrecognized configuration parameter "work_men"`)
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "999999999"}}); err == nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "999999999"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a config the engine rejected")
 	}
 
@@ -65,7 +65,7 @@ func TestPostgresEngine_ApplyParametersWithdrawsTheFirstRejectedSet(t *testing.T
 	engine := newTestEngine(t, runner.run)
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "0"}}); err == nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "0"}}); err == nil {
 		t.Fatal("ApplyParameters succeeded against a config the engine rejected")
 	}
 	if _, err := os.Stat(engine.params.installedPath()); !os.IsNotExist(err) {
@@ -100,7 +100,7 @@ func TestPostgresEngine_ApplyBeforeFirstHeartbeatSeedsLastKnownGood(t *testing.T
 		t.Fatalf("write serving parameter set: %v", err)
 	}
 
-	pending, err := engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{{Name: "shared_buffers", Value: "65536"}})
+	pending, err := engine.ApplyParameters(t.Context(), []rdsinstance.Parameter{{Name: "shared_buffers", Value: "65536"}})
 	if err != nil {
 		t.Fatalf("ApplyParameters: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPostgresEngine_ServingSnapshotWaitsForParameterApply(t *testing.T) {
 
 	applyDone := make(chan error, 1)
 	go func() {
-		_, err := engine.ApplyParameters(t.Context(), []handlers_rds.Parameter{{Name: "shared_buffers", Value: "65536"}})
+		_, err := engine.ApplyParameters(t.Context(), []rdsinstance.Parameter{{Name: "shared_buffers", Value: "65536"}})
 		applyDone <- err
 	}()
 	<-runner.checkStarted
@@ -209,7 +209,7 @@ func TestPostgresEngine_LastKnownGoodTracksTheServingSet(t *testing.T) {
 	apply := func(value string) {
 		t.Helper()
 		if _, err := engine.ApplyParameters(context.Background(),
-			[]handlers_rds.Parameter{{Name: "work_mem", Value: value}}); err != nil {
+			[]rdsinstance.Parameter{{Name: "work_mem", Value: value}}); err != nil {
 			t.Fatalf("ApplyParameters(%s): %v", value, err)
 		}
 	}
@@ -300,14 +300,14 @@ func TestPostgresEngine_RestoreLastKnownGoodParameters(t *testing.T) {
 	}
 
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "4096"}}); err != nil {
 		t.Fatalf("ApplyParameters(4096): %v", err)
 	}
 	if err := engine.RecordServingParameters(t.Context()); err != nil {
 		t.Fatalf("RecordServingParameters: %v", err)
 	}
 	if _, err := engine.ApplyParameters(context.Background(),
-		[]handlers_rds.Parameter{{Name: "work_mem", Value: "8192"}}); err != nil {
+		[]rdsinstance.Parameter{{Name: "work_mem", Value: "8192"}}); err != nil {
 		t.Fatalf("ApplyParameters(8192): %v", err)
 	}
 
@@ -399,7 +399,7 @@ func TestParamGuard_RollsBackReportsAndRestartsWhenTheEngineNeverComesUp(t *test
 	if len(states) != 1 {
 		t.Fatalf("submitted states = %d, want the rollback report", len(states))
 	}
-	if states[0].health != handlers_rds.EngineHealthUnhealthy || states[0].message != handlers_rds.ParameterRollbackMessage {
+	if states[0].health != rdsinstance.EngineHealthUnhealthy || states[0].message != rdsinstance.ParameterRollbackMessage {
 		t.Errorf("rollback state = %+v, want the unhealthy rollback report", states[0])
 	}
 }
@@ -422,7 +422,7 @@ func TestParamGuard_ReportsAndRestartsWhenOnlyTheEnforcementFailed(t *testing.T)
 	if len(states) != 1 {
 		t.Fatalf("submitted states = %d, want the rollback still reported", len(states))
 	}
-	if states[0].health != handlers_rds.EngineHealthUnhealthy || states[0].message != handlers_rds.ParameterRollbackMessage {
+	if states[0].health != rdsinstance.EngineHealthUnhealthy || states[0].message != rdsinstance.ParameterRollbackMessage {
 		t.Errorf("rollback state = %+v, want the unhealthy rollback report", states[0])
 	}
 }

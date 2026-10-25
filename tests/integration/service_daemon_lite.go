@@ -12,7 +12,7 @@ import (
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,5 +48,5 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	subscribeServiceMethods(t, nc, "eks", eks)
 
 	subscribeServiceMethods(t, nc, "ecs", handlers_ecs.NewService(nc, testRegion, ""))
-	subscribeServiceMethods(t, nc, "rds", handlers_rds.NewService(nc, testRegion))
+	subscribeServiceMethods(t, nc, "rds", rdsinstance.NewService(nc, testRegion))
 }

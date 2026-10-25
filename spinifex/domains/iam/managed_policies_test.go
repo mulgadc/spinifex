@@ -15,7 +15,7 @@ const (
 )
 
 // The four internal RDS agent actions. Written out rather than imported from
-// handlers_rds, which imports this package.
+// domains/rds/instance, which imports this package.
 var rdsInternalActions = []string{
 	"rds:RegisterDBInstance",
 	"rds:SubmitDBStateChange",

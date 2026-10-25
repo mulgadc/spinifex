@@ -431,7 +431,7 @@ func (f *fakeHostPort) calls() []hostPortCall {
 const testNodeID = "node-a"
 
 // launchHarness bundles every LaunchDeps fake so a test can reach into any of
-// them, mirroring handlers_rds's launchHarness.
+// them, mirroring domains/rds/instance's launchHarness.
 type launchHarness struct {
 	sysvpc   *fakeSystemVPC
 	vpc      *fakeVPC

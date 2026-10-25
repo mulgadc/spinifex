@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 func TestEngineProbe_MapsExitCodesToHealth(t *testing.T) {
@@ -16,15 +16,15 @@ func TestEngineProbe_MapsExitCodesToHealth(t *testing.T) {
 		code        int
 		runErr      error
 		seenHealthy bool
-		want        handlers_rds.EngineHealth
+		want        rdsinstance.EngineHealth
 	}{
-		{name: "accepting connections", code: 0, want: handlers_rds.EngineHealthHealthy},
-		{name: "rejecting during startup", code: 1, want: handlers_rds.EngineHealthStarting},
-		{name: "silent before first success", code: 2, want: handlers_rds.EngineHealthStarting},
-		{name: "silent after first success", code: 2, seenHealthy: true, want: handlers_rds.EngineHealthUnhealthy},
-		{name: "no attempt made", code: 3, want: handlers_rds.EngineHealthStarting},
-		{name: "probe missing before first success", runErr: errors.New("executable not found"), want: handlers_rds.EngineHealthStarting},
-		{name: "probe missing after first success", runErr: errors.New("executable not found"), seenHealthy: true, want: handlers_rds.EngineHealthUnhealthy},
+		{name: "accepting connections", code: 0, want: rdsinstance.EngineHealthHealthy},
+		{name: "rejecting during startup", code: 1, want: rdsinstance.EngineHealthStarting},
+		{name: "silent before first success", code: 2, want: rdsinstance.EngineHealthStarting},
+		{name: "silent after first success", code: 2, seenHealthy: true, want: rdsinstance.EngineHealthUnhealthy},
+		{name: "no attempt made", code: 3, want: rdsinstance.EngineHealthStarting},
+		{name: "probe missing before first success", runErr: errors.New("executable not found"), want: rdsinstance.EngineHealthStarting},
+		{name: "probe missing after first success", runErr: errors.New("executable not found"), seenHealthy: true, want: rdsinstance.EngineHealthUnhealthy},
 	}
 
 	for _, tt := range tests {
@@ -38,10 +38,10 @@ func TestEngineProbe_MapsExitCodesToHealth(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("health = %q, want %q", got, tt.want)
 			}
-			if got != handlers_rds.EngineHealthHealthy && message == "" {
+			if got != rdsinstance.EngineHealthHealthy && message == "" {
 				t.Error("a non-healthy result carried no message explaining it")
 			}
-			if got == handlers_rds.EngineHealthHealthy && message != "" {
+			if got == rdsinstance.EngineHealthHealthy && message != "" {
 				t.Errorf("a healthy result carried a message: %q", message)
 			}
 		})
@@ -56,11 +56,11 @@ func TestEngineProbe_LatchesAfterFirstHealthy(t *testing.T) {
 		return code, "", nil
 	})
 
-	if got, _ := probe.Check(context.Background()); got != handlers_rds.EngineHealthHealthy {
+	if got, _ := probe.Check(context.Background()); got != rdsinstance.EngineHealthHealthy {
 		t.Fatalf("first check = %q, want healthy", got)
 	}
 	code = 2
-	if got, _ := probe.Check(context.Background()); got != handlers_rds.EngineHealthUnhealthy {
+	if got, _ := probe.Check(context.Background()); got != rdsinstance.EngineHealthUnhealthy {
 		t.Errorf("check after the engine went away = %q, want unhealthy", got)
 	}
 }

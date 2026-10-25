@@ -6,8 +6,8 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 )
 
 // The resource a policy check evaluates against when the request names nothing
@@ -21,14 +21,14 @@ type resourceScope struct {
 	param string
 	// Empty when param already carries a full ARN — the tag actions — which is
 	// validated rather than built.
-	kind handlers_rds.ResourceKind
+	kind rdsinstance.ResourceKind
 }
 
 var (
-	dbInstanceScope       = &resourceScope{param: "DBInstanceIdentifier", kind: handlers_rds.ResourceKindDBInstance}
-	dbSnapshotScope       = &resourceScope{param: "DBSnapshotIdentifier", kind: handlers_rds.ResourceKindDBSnapshot}
-	dbSubnetGroupScope    = &resourceScope{param: "DBSubnetGroupName", kind: handlers_rds.ResourceKindDBSubnetGroup}
-	dbParameterGroupScope = &resourceScope{param: "DBParameterGroupName", kind: handlers_rds.ResourceKindDBParameterGroup}
+	dbInstanceScope       = &resourceScope{param: "DBInstanceIdentifier", kind: rdsinstance.ResourceKindDBInstance}
+	dbSnapshotScope       = &resourceScope{param: "DBSnapshotIdentifier", kind: rdsinstance.ResourceKindDBSnapshot}
+	dbSubnetGroupScope    = &resourceScope{param: "DBSubnetGroupName", kind: rdsinstance.ResourceKindDBSubnetGroup}
+	dbParameterGroupScope = &resourceScope{param: "DBParameterGroupName", kind: rdsinstance.ResourceKindDBParameterGroup}
 	taggedResourceScope   = &resourceScope{param: "ResourceName"}
 )
 
@@ -52,7 +52,7 @@ func AuthorizeCaller(ctx context.Context, action string, caller Caller) error {
 func requireAgentPrincipal(ctx context.Context, caller Caller) error {
 	if caller.PrincipalType != principalTypeAssumedRole ||
 		caller.AccountID != awsidentifiers.GlobalAccountID ||
-		caller.RoleName != handlers_rds.InstanceRoleName ||
+		caller.RoleName != rdsinstance.InstanceRoleName ||
 		caller.SessionName == "" {
 		slog.DebugContext(ctx, "RDS: internal action rejected for non-agent caller",
 			"principalType", caller.PrincipalType, "accountID", caller.AccountID, "roleName", caller.RoleName)
@@ -100,13 +100,13 @@ func ResourceARN(action, region, accountID string, q map[string]string) ([]strin
 		if scope.kind == "" {
 			// Parsed rather than passed through, so a foreign account or region is an
 			// InvalidParameterValue before the evaluator sees it.
-			if _, err := handlers_rds.ParseARN(identifier, region, accountID); err != nil {
+			if _, err := rdsinstance.ParseARN(identifier, region, accountID); err != nil {
 				return nil, err
 			}
 			resources = append(resources, identifier)
 			continue
 		}
-		resources = append(resources, handlers_rds.FormatARN(scope.kind, region, accountID, identifier))
+		resources = append(resources, rdsinstance.FormatARN(scope.kind, region, accountID, identifier))
 	}
 	return resources, nil
 }

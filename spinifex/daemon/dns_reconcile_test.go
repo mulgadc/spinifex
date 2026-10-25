@@ -10,10 +10,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
 	handlers_elbv2 "github.com/mulgadc/spinifex/spinifex/handlers/elbv2"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,19 +130,19 @@ func TestRdsWatchBuckets_NilGuards(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, buckets)
 
-	buckets, err = (&Daemon{rdsService: &handlers_rds.Service{}}).rdsWatchBuckets(t.Context())
+	buckets, err = (&Daemon{rdsService: &rdsinstance.Service{}}).rdsWatchBuckets(t.Context())
 	require.NoError(t, err)
 	assert.Nil(t, buckets)
 }
 
 func TestRdsWatchBuckets_DelegatesToAccountWatchBuckets(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	_, err := handlers_rds.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
+	_, err := rdsinstance.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
 	require.NoError(t, err)
 
-	d := &Daemon{rdsService: &handlers_rds.Service{}, jsManager: &JetStreamManager{js: js}}
+	d := &Daemon{rdsService: &rdsinstance.Service{}, jsManager: &JetStreamManager{js: js}}
 	buckets, err := d.rdsWatchBuckets(t.Context())
 	require.NoError(t, err)
 	require.Len(t, buckets, 1)
-	assert.Equal(t, handlers_rds.AccountBucketName("111111111111"), buckets[0].Name())
+	assert.Equal(t, rdsinstance.AccountBucketName("111111111111"), buckets[0].Name())
 }

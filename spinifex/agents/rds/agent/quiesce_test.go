@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
 // fakeSession stands in for the held psql child. Closing it is what the engine
@@ -116,16 +116,16 @@ func TestPostgresEngine_UnquiesceStopsTheBackupAndEndsTheSession(t *testing.T) {
 func TestCommandRegistry_QuiesceCarriesTheLabelAndDeadline(t *testing.T) {
 	engine := &fakeEngine{}
 	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
-		handlers_rds.Command{
+		rdsinstance.Command{
 			CommandID: "cmd-5",
-			Type:      handlers_rds.CommandQuiesce,
-			Parameters: []handlers_rds.Parameter{
-				{Name: handlers_rds.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
-				{Name: handlers_rds.CommandParamQuiesceDeadlineSeconds, Value: "360"},
+			Type:      rdsinstance.CommandQuiesce,
+			Parameters: []rdsinstance.Parameter{
+				{Name: rdsinstance.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
+				{Name: rdsinstance.CommandParamQuiesceDeadlineSeconds, Value: "360"},
 			},
 		})
 
-	if reply.Status != handlers_rds.CommandStatusSucceeded {
+	if reply.Status != rdsinstance.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
 	if engine.label != "orders-db-pre-upgrade" || engine.hold != 6*time.Minute {
@@ -142,7 +142,7 @@ func TestCommandRegistry_QuiesceFlushesTheDataMount(t *testing.T) {
 	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}, storage), 0).execute(context.Background(),
 		quiesceCommand("cmd-5a", "360"))
 
-	if reply.Status != handlers_rds.CommandStatusSucceeded {
+	if reply.Status != rdsinstance.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
 	if !storage.synced {
@@ -158,7 +158,7 @@ func TestCommandRegistry_QuiesceFailsWhenTheDataMountCannotBeFlushed(t *testing.
 	reply := newCommander(nil, newCommandRegistry(&fakeEngine{}, storage), 0).execute(context.Background(),
 		quiesceCommand("cmd-5b", "360"))
 
-	if reply.Status != handlers_rds.CommandStatusFailed {
+	if reply.Status != rdsinstance.CommandStatusFailed {
 		t.Fatalf("reply = %+v, want failed", reply)
 	}
 	if !strings.Contains(reply.Message, "input/output error") {
@@ -166,13 +166,13 @@ func TestCommandRegistry_QuiesceFailsWhenTheDataMountCannotBeFlushed(t *testing.
 	}
 }
 
-func quiesceCommand(id, deadline string) handlers_rds.Command {
-	return handlers_rds.Command{
+func quiesceCommand(id, deadline string) rdsinstance.Command {
+	return rdsinstance.Command{
 		CommandID: id,
-		Type:      handlers_rds.CommandQuiesce,
-		Parameters: []handlers_rds.Parameter{
-			{Name: handlers_rds.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
-			{Name: handlers_rds.CommandParamQuiesceDeadlineSeconds, Value: deadline},
+		Type:      rdsinstance.CommandQuiesce,
+		Parameters: []rdsinstance.Parameter{
+			{Name: rdsinstance.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
+			{Name: rdsinstance.CommandParamQuiesceDeadlineSeconds, Value: deadline},
 		},
 	}
 }
@@ -183,16 +183,16 @@ func TestCommandRegistry_QuiesceRejectsAnUnusableDeadline(t *testing.T) {
 	for _, value := range []string{"", "soon", "0", "-30"} {
 		engine := &fakeEngine{}
 		reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
-			handlers_rds.Command{
+			rdsinstance.Command{
 				CommandID: "cmd-6",
-				Type:      handlers_rds.CommandQuiesce,
-				Parameters: []handlers_rds.Parameter{
-					{Name: handlers_rds.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
-					{Name: handlers_rds.CommandParamQuiesceDeadlineSeconds, Value: value},
+				Type:      rdsinstance.CommandQuiesce,
+				Parameters: []rdsinstance.Parameter{
+					{Name: rdsinstance.CommandParamQuiesceLabel, Value: "orders-db-pre-upgrade"},
+					{Name: rdsinstance.CommandParamQuiesceDeadlineSeconds, Value: value},
 				},
 			})
 
-		if reply.Status != handlers_rds.CommandStatusFailed {
+		if reply.Status != rdsinstance.CommandStatusFailed {
 			t.Errorf("deadline %q: reply = %+v, want failed", value, reply)
 		}
 		if engine.label != "" {
@@ -204,9 +204,9 @@ func TestCommandRegistry_QuiesceRejectsAnUnusableDeadline(t *testing.T) {
 func TestCommandRegistry_UnquiesceReachesTheEngine(t *testing.T) {
 	engine := &fakeEngine{}
 	reply := newCommander(nil, newCommandRegistry(engine, &fakeStorage{}), 0).execute(context.Background(),
-		handlers_rds.Command{CommandID: "cmd-7", Type: handlers_rds.CommandUnquiesce})
+		rdsinstance.Command{CommandID: "cmd-7", Type: rdsinstance.CommandUnquiesce})
 
-	if reply.Status != handlers_rds.CommandStatusSucceeded {
+	if reply.Status != rdsinstance.CommandStatusSucceeded {
 		t.Fatalf("reply = %+v, want succeeded", reply)
 	}
 	if !engine.released {

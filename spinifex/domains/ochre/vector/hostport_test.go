@@ -109,7 +109,7 @@ func (f *fakeVPC) putRecord(eniID, subnetID, description, ip, mac string) {
 }
 
 // putApplianceENI seeds the appliance's own customer ENI, tagged the way
-// handlers/rds tags it at launch, so resolveApplianceTarget's tag-filtered
+// domains/rds/instance tags it at launch, so resolveApplianceTarget's tag-filtered
 // lookup can find it.
 func (f *fakeVPC) putApplianceENI(eniID, identifier, subnetID, ip string) {
 	f.mu.Lock()

@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
+	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
-	handlers_rds "github.com/mulgadc/spinifex/spinifex/handlers/rds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +25,7 @@ func TestActions_InternalSetMatchesTheInstanceRoleGrant(t *testing.T) {
 		}
 	}
 	slices.Sort(internal)
-	want := slices.Clone(handlers_rds.InternalAgentActions)
+	want := slices.Clone(rdsinstance.InternalAgentActions)
 	slices.Sort(want)
 	assert.Equal(t, want, internal)
 }
@@ -43,18 +43,18 @@ func TestAuthorizeCaller_DeniesInternalActionsToCustomers(t *testing.T) {
 		// The one an rds:* admin grant would otherwise carry all the way in.
 		{"customer session named like an instance", Caller{
 			AccountID: testAccountID, PrincipalType: principalTypeAssumedRole,
-			RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID,
+			RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID,
 		}},
 		{"system user rather than a session", Caller{
 			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user",
-			RoleName: handlers_rds.InstanceRoleName, SessionName: testInstanceID,
+			RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID,
 		}},
 		{"system session under another role", Caller{
 			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
 			RoleName: "ecsInstanceRole", SessionName: testInstanceID,
 		}},
 	}
-	for _, action := range handlers_rds.InternalAgentActions {
+	for _, action := range rdsinstance.InternalAgentActions {
 		for _, tt := range callers {
 			t.Run(action+"/"+tt.name, func(t *testing.T) {
 				err := AuthorizeCaller(t.Context(), action, tt.caller)
@@ -68,7 +68,7 @@ func TestAuthorizeCaller_DeniesInternalActionsToCustomers(t *testing.T) {
 // The class gate says the caller is an RDS VM. Which instance it is stays
 // authorizeAgent's question, so no NATS lookup happens here.
 func TestAuthorizeCaller_AdmitsTheAgentPrincipalClass(t *testing.T) {
-	for _, action := range handlers_rds.InternalAgentActions {
+	for _, action := range rdsinstance.InternalAgentActions {
 		t.Run(action, func(t *testing.T) {
 			require.NoError(t, AuthorizeCaller(t.Context(), action, agentCaller()))
 		})
@@ -184,8 +184,8 @@ func TestResourceARN_UnscopedActions(t *testing.T) {
 // so a principal fenced off an instance could snapshot it, restore the copy
 // under a name the Deny does not cover, and set a master password of their own.
 func TestResourceARN_ResourceScopedDenyReachesTheSnapshotActions(t *testing.T) {
-	deniedInstance := handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, testRegion, testAccountID, "prod-db")
-	deniedSnapshot := handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, testRegion, testAccountID, "prod-db-nightly")
+	deniedInstance := rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, testRegion, testAccountID, "prod-db")
+	deniedSnapshot := rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, testRegion, testAccountID, "prod-db-nightly")
 	// The common shape: a blanket grant fenced by a resource-scoped deny.
 	policies := []iampolicy.PolicyDocument{{
 		Version: "2012-10-17",
@@ -233,7 +233,7 @@ func TestResourceARN_ResourceScopedDenyReachesTheSnapshotActions(t *testing.T) {
 // The tag actions name their resource by ARN, so the scope validates the ARN it
 // was given rather than rebuilding it from an identifier.
 func TestResourceARN_TagActionsUseTheSuppliedARN(t *testing.T) {
-	arn := handlers_rds.FormatARN(handlers_rds.ResourceKindDBSnapshot, testRegion, testAccountID, "orders-db-pre-upgrade")
+	arn := rdsinstance.FormatARN(rdsinstance.ResourceKindDBSnapshot, testRegion, testAccountID, "orders-db-pre-upgrade")
 	for _, action := range []string{"AddTagsToResource", "RemoveTagsFromResource", "ListTagsForResource"} {
 		t.Run(action, func(t *testing.T) {
 			got, err := ResourceARN(action, testRegion, testAccountID, map[string]string{"ResourceName": arn})
@@ -248,8 +248,8 @@ func TestResourceARN_RejectsUnusableARNs(t *testing.T) {
 		name         string
 		resourceName string
 	}{
-		{"another account", handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, testRegion, "999988887777", "orders-db")},
-		{"another region", handlers_rds.FormatARN(handlers_rds.ResourceKindDBInstance, "us-east-1", testAccountID, "orders-db")},
+		{"another account", rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, testRegion, "999988887777", "orders-db")},
+		{"another region", rdsinstance.FormatARN(rdsinstance.ResourceKindDBInstance, "us-east-1", testAccountID, "orders-db")},
 		{"another service", "arn:aws:ec2:" + testRegion + ":" + testAccountID + ":instance/i-0abc123"},
 		{"not an ARN", "orders-db"},
 		{"unknown resource type", "arn:aws:rds:" + testRegion + ":" + testAccountID + ":cluster:orders"},

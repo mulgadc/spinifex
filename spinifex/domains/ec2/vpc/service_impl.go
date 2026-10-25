@@ -591,7 +591,7 @@ func (s *VPCServiceImpl) rejectAttachedIGW(ctx context.Context, accountID, vpcID
 
 // describeVpcsValidFilters defines the set of filter names accepted by DescribeVpcs.
 // cidr-block and is-default are the spellings an internal caller
-// (handlers/rds/network.go) is pinned to; cidr and isDefault are the
+// (domains/rds/instance/network.go) is pinned to; cidr and isDefault are the
 // spellings AWS itself sends, so both must be accepted side by side.
 var describeVpcsValidFilters = map[string]bool{
 	"vpc-id":                            true,

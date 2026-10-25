@@ -222,7 +222,7 @@ func TestSTSRequest_AssumeRole_PolicyScopedToRole(t *testing.T) {
 // TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted pins the gate to the ARN
 // IAM stored, so a role genuinely stored under a path is matched by its full
 // ARN. An ARN that is not the stored one is refused by role resolution itself
-// — see TestResolveRoleByARN in handlers/sts.
+// — see TestResolveRoleByARN in domains/sts.
 func TestSTSRequest_AssumeRole_PathIsResolvedNotTrusted(t *testing.T) {
 	t.Run("stored ARN matching exactly is admitted", func(t *testing.T) {
 		svc := stsIdentityPolicy(

@@ -37,13 +37,13 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/gateway"
 	gateway_bedrock "github.com/mulgadc/spinifex/spinifex/gateway/bedrock"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
@@ -57,8 +57,8 @@ import (
 var serviceName = "awsgw"
 
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
-// handlers/eks, because handlers/eks must not import handlers/sts.
-var _ handlers_sts.ClusterJWKSResolver = (*handlers_eks.OIDCJWKSReader)(nil)
+// handlers/eks, because handlers/eks must not import domains/sts.
+var _ stsdomain.ClusterJWKSResolver = (*handlers_eks.OIDCJWKSReader)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
@@ -237,7 +237,7 @@ func launchService(config *config.ClusterConfig) error {
 
 	// STS service shares the IAM master key (single envelope for at-rest
 	// secrets + session-token HMACs) and resolves roles via IAMService.
-	stsService, err := handlers_sts.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, jwksResolver)
+	stsService, err := stsdomain.NewSTSServiceImpl(janitorCtx, natsConn, iamService, masterKey, jwksResolver)
 	if err != nil {
 		return fmt.Errorf("initialize STS service: %w", err)
 	}

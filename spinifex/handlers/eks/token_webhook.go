@@ -29,7 +29,7 @@ type TokenVerifyRequest struct {
 }
 
 // TokenVerifyResponse is the NATS reply: the resolved caller principal. It
-// mirrors the fields of handlers_sts.PresignedCallerIdentity the webhook needs
+// mirrors the fields of stsdomain.PresignedCallerIdentity the webhook needs
 // to key its AccessEntry lookup.
 type TokenVerifyResponse struct {
 	AccountID     string `json:"accountID"`

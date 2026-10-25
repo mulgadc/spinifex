@@ -14,8 +14,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,9 +41,9 @@ func serveCounted[I any, O any](t *testing.T, nc *nats.Conn, subject string, fn 
 func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 
-	var gotReq handlers_sts.AssumeRoleForInstanceRequest
-	calls := serveCounted(t, nc, handlers_sts.SubjectAssumeRoleForInstance,
-		func(req *handlers_sts.AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
+	var gotReq stsdomain.AssumeRoleForInstanceRequest
+	calls := serveCounted(t, nc, stsdomain.SubjectAssumeRoleForInstance,
+		func(req *stsdomain.AssumeRoleForInstanceRequest) (*sts.AssumeRoleOutput, error) {
 			gotReq = *req
 			return &sts.AssumeRoleOutput{Credentials: &sts.Credentials{
 				AccessKeyId:     aws.String("ASIATESTKEY"),
@@ -61,7 +61,7 @@ func TestNATSSTSAssumer_RoundTrip(t *testing.T) {
 	assert.Equal(t, "ASIATESTKEY", aws.StringValue(out.Credentials.AccessKeyId))
 	assert.Equal(t, int32(1), atomic.LoadInt32(calls))
 	// The request payload must round-trip every field the responder needs.
-	assert.Equal(t, handlers_sts.AssumeRoleForInstanceRequest{
+	assert.Equal(t, stsdomain.AssumeRoleForInstanceRequest{
 		AccountID:       imdsTestAccountID,
 		RoleARN:         "arn:aws:iam::123456789012:role/app",
 		InstanceID:      "i-abc",

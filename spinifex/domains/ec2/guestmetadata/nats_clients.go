@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/nats-io/nats.go"
 )
 
@@ -39,7 +39,7 @@ func NewNATSSTSAssumer(nc *nats.Conn) *NATSSTSAssumer {
 }
 
 func (a *NATSSTSAssumer) AssumeRoleForInstance(ctx context.Context, accountID, roleARN, instanceID string, durationSeconds int64) (*sts.AssumeRoleOutput, error) {
-	return natsmsg.NATSRequest[sts.AssumeRoleOutput](ctx, a.nc, handlers_sts.SubjectAssumeRoleForInstance, handlers_sts.AssumeRoleForInstanceRequest{
+	return natsmsg.NATSRequest[sts.AssumeRoleOutput](ctx, a.nc, stsdomain.SubjectAssumeRoleForInstance, stsdomain.AssumeRoleForInstanceRequest{
 		AccountID:       accountID,
 		RoleARN:         roleARN,
 		InstanceID:      instanceID,

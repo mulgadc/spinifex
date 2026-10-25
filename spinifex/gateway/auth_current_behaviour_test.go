@@ -29,11 +29,11 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	handlers_eks "github.com/mulgadc/spinifex/spinifex/handlers/eks"
-	handlers_sts "github.com/mulgadc/spinifex/spinifex/handlers/sts"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's SigV4 authentication,
@@ -80,7 +80,7 @@ type cbEnv struct {
 	iamNC     *nats.Conn // IAM/STS connection; == nc unless separateIAMConn
 	js        jetstream.JetStream
 	iam       *iamdomain.IAMServiceImpl
-	sts       *handlers_sts.STSServiceImpl
+	sts       *stsdomain.STSServiceImpl
 	counter   *cbDecryptCounter
 	h         http.Handler
 	accountID string
@@ -105,7 +105,7 @@ func newCBEnv(t *testing.T, opts cbEnvOpts) *cbEnv {
 	e.iam, err = iamdomain.NewIAMServiceImpl(t.Context(), e.iamNC, masterKey)
 	require.NoError(t, err)
 	iamJS := testutil.NewJetStream(t, e.iamNC)
-	e.sts, err = handlers_sts.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, handlers_eks.NewOIDCJWKSReader(iamJS))
+	e.sts, err = stsdomain.NewSTSServiceImpl(t.Context(), e.iamNC, e.iam, masterKey, handlers_eks.NewOIDCJWKSReader(iamJS))
 	require.NoError(t, err)
 	if !opts.noRevoker {
 		e.iam.SetSessionRevoker(e.sts)
@@ -268,11 +268,11 @@ func (e *cbEnv) getSessionToken(t *testing.T, c cbCreds) cbCreds {
 // expireSession rewrites a stored session record's expiry into the past.
 func (e *cbEnv) expireSession(t *testing.T, akid string) {
 	t.Helper()
-	kv, err := e.js.KeyValue(t.Context(), handlers_sts.KVBucketSessionCredentials)
+	kv, err := e.js.KeyValue(t.Context(), stsdomain.KVBucketSessionCredentials)
 	require.NoError(t, err)
 	entry, err := kv.Get(t.Context(), akid)
 	require.NoError(t, err)
-	var cred handlers_sts.SessionCredential
+	var cred stsdomain.SessionCredential
 	require.NoError(t, json.Unmarshal(entry.Value(), &cred))
 	cred.ExpiresAt = time.Now().UTC().Add(-time.Minute)
 	data, err := json.Marshal(cred)
@@ -495,7 +495,7 @@ func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
 	require.NoError(t, err)
 	point, err := priv.PublicKey.Bytes()
 	require.NoError(t, err)
-	jwks, err := json.Marshal(handlers_sts.JWKS{Keys: []handlers_sts.JWK{{
+	jwks, err := json.Marshal(stsdomain.JWKS{Keys: []stsdomain.JWK{{
 		Kty: "EC", Kid: "k1", Alg: "ES256", Use: "sig", Crv: "P-256",
 		X: base64.RawURLEncoding.EncodeToString(point[1:33]),
 		Y: base64.RawURLEncoding.EncodeToString(point[33:65]),
@@ -754,7 +754,7 @@ func TestCurrentBehaviour_Auth_BackingStateUnavailable(t *testing.T) {
 		e := newCBEnv(t, cbEnvOpts{})
 		roleARN, _ := e.createAssumableRole(t, "app")
 		s := e.assumeRole(t, roleARN, "s1")
-		require.NoError(t, e.js.DeleteKeyValue(t.Context(), handlers_sts.KVBucketSessionCredentials))
+		require.NoError(t, e.js.DeleteKeyValue(t.Context(), stsdomain.KVBucketSessionCredentials))
 		assert.Equal(t, internal, cbOutcomeOf(e.callerIdentity(t, s)))
 	})
 

@@ -1,4 +1,4 @@
-package handlers_sts
+package sts
 
 import (
 	"github.com/aws/aws-sdk-go/aws"

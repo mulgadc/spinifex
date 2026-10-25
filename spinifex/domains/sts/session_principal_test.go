@@ -2,7 +2,7 @@
 // and the credential fixtures set unexported principal-type constants.
 //
 //test:in-package — the verdicts are asserted against the real IAM backend
-package handlers_sts
+package sts
 
 import (
 	"errors"

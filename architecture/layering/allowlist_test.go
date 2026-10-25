@@ -59,7 +59,7 @@ var allowlist = []allowance{
 
 	{From: "domains/ec2/guestmetadata", To: "domains/dns", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
 	{From: "domains/ec2/guestmetadata", To: "domains/iam", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
-	{From: "domains/ec2/guestmetadata", To: "handlers/sts", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
+	{From: "domains/ec2/guestmetadata", To: "domains/sts", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
 	{From: "domains/ec2/guestmetadata", To: "runtime/compute/vm", Debt: "Guest metadata: the cross-domain and runtime imports above", Reason: "guest-metadata relocation residual; needs capabilities, projections or contracts"},
 
 	{From: "domains/ec2/instance", To: "domains/dns", Debt: "domains/ec2/instance", Reason: "cross-domain implementation import of DNS"},
@@ -153,7 +153,7 @@ var allowlist = []allowance{
 	{From: "handlers/rds", To: "domains/iam", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 	{From: "handlers/rds", To: "runtime/compute/vm", Debt: "close-out: handlers/rds (ADR-0004 blocked-dependency list; inventory-rds boundary imports)", Reason: "legacy RDS calls another domain's or runtime implementation directly"},
 
-	{From: "handlers/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
+	{From: "domains/sts", To: "domains/iam", Debt: "IAM implementation consumers in STS, Ochre and ELBv2", Reason: "STS reads IAM service, trust-policy and OIDC-provider state; needs an IAM capability"},
 
 	{From: "operator/cli", To: "accountteardown", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},
 	{From: "operator/cli", To: "daemon", Debt: "operator/cli (dependency)", Reason: "command tree imports implementations; needs public capabilities"},

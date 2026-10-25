@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -349,6 +350,92 @@ func TestDeleteUser_WithAccessKeys(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}
+
+func TestDeleteUser_DanglingAccessKeyID(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "danglingkey")
+
+	keyOut, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.accessKeysBucket.Delete(t.Context(), *keyOut.AccessKey.AccessKeyId))
+
+	listOut, err := svc.ListAccessKeys(testAccountID, &iam.ListAccessKeysInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.NoError(t, err)
+	require.Empty(t, listOut.AccessKeyMetadata)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{
+		UserName: aws.String("danglingkey"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteUser_DanglingAccessKeyIDBeforeLiveKey(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "mixedkeys")
+
+	dangling, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("mixedkeys"),
+	})
+	require.NoError(t, err)
+	live, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("mixedkeys"),
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.accessKeysBucket.Delete(t.Context(), *dangling.AccessKey.AccessKeyId))
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("mixedkeys"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	_, err = svc.accessKeysBucket.Get(t.Context(), *live.AccessKey.AccessKeyId)
+	require.NoError(t, err)
+}
+
+// failingGet fails every Get, standing in for a KV outage.
+type failingGet struct {
+	jetstream.KeyValue
+}
+
+func (failingGet) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
+	return nil, errors.New("kv unavailable")
+}
+
+func TestDeleteUser_AccessKeyReadErrorKeepsUser(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "kvdown")
+
+	_, err := svc.CreateAccessKey(testAccountID, &iam.CreateAccessKeyInput{
+		UserName: aws.String("kvdown"),
+	})
+	require.NoError(t, err)
+
+	svc.accessKeysBucket = failingGet{KeyValue: svc.accessKeysBucket}
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{
+		UserName: aws.String("kvdown"),
+	})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{
+		UserName: aws.String("kvdown"),
+	})
+	require.NoError(t, err)
 }
 
 func TestDeleteUser_WithAttachedPolicies(t *testing.T) {

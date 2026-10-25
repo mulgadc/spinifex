@@ -582,8 +582,16 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 		return nil, err
 	}
 
-	if len(user.AccessKeys) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	// A key ID with no key entry is invisible to ListAccessKeys, so it must not
+	// block the delete either; removing the user record drops it.
+	for _, keyID := range user.AccessKeys {
+		if _, err := s.accessKeysBucket.Get(ctx, keyID); err == nil {
+			return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+		} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, fmt.Errorf("get access key: %w", err)
+		}
+		slog.Warn("DeleteUser: ignoring access key ID with no key entry",
+			"accountID", accountID, "userName", userName, "accessKeyID", keyID)
 	}
 	if len(user.AttachedPolicies) > 0 {
 		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)

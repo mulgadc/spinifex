@@ -1,6 +1,7 @@
 package sts
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,6 +107,119 @@ func TestVerifyPresignedGetCallerIdentity_HappyPath_SessionCred(t *testing.T) {
 	assert.Equal(t, testCallerAccountID, got.AccountID)
 	assert.Equal(t, cluster, got.XK8sAwsID)
 	assert.Equal(t, principalTypeAssumedRolePresigned, got.PrincipalType)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.Arn), got.ARN)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.AssumedRoleId), got.UserID)
+}
+
+// A GetSessionToken session is the IAM user itself, as GetCallerIdentity reports
+// it on AWS: the user ARN, path included, and the user's UserId.
+func TestVerifyPresignedGetCallerIdentity_UserSession_ResolvesAsUser(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	out, err := svc.iamSvc.CreateUser(testCallerAccountID, &iam.CreateUserInput{
+		UserName: aws.String(testCallerUserName), Path: aws.String("/eng/"),
+	})
+	require.NoError(t, err)
+	tokOut, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser,
+		testCallerAccessKeyID, &sts.GetSessionTokenInput{})
+	require.NoError(t, err)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "user-session-cluster"
+	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
+		aws.StringValue(tokOut.Credentials.SecretAccessKey), cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeUserPresigned, got.PrincipalType)
+	assert.Equal(t, "arn:aws:iam::"+testCallerAccountID+":user/eng/"+testCallerUserName, got.ARN)
+	assert.Equal(t, aws.StringValue(out.User.UserId), got.UserID)
+	assert.Equal(t, testCallerAccountID, got.AccountID)
+}
+
+// GetCallerIdentity reports the account ID as root's UserId, so the presigned
+// door must agree with the SigV4 one for a root session.
+func TestVerifyPresignedGetCallerIdentity_RootSession_UserIDIsAccountID(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	seedUser(t, svc, testCallerAccountID, "root")
+	tokOut, err := svc.GetSessionToken(testCallerAccountID, "root", principalTypeUser,
+		testCallerAccessKeyID, &sts.GetSessionTokenInput{})
+	require.NoError(t, err)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "root-session-cluster"
+	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
+		aws.StringValue(tokOut.Credentials.SecretAccessKey), cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeUserPresigned, got.PrincipalType)
+	assert.Equal(t, testCallerAccountID, got.UserID)
+}
+
+// rewriteSession mints a role session, applies mutate to its stored record and
+// returns a URL presigned with it.
+func rewriteSession(t *testing.T, svc *STSServiceImpl, roleName, cluster string, signedAt time.Time, mutate func(*SessionCredential)) (string, *sts.AssumeRoleOutput) {
+	t.Helper()
+	role := createRoleInAccount(t, svc, testCallerAccountID, roleName, trustPolicyAllowingUser(testCallerARN()))
+	assumeOut, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
+		basicAssumeRoleInput(*role.Arn, "sess-"+roleName))
+	require.NoError(t, err)
+	akid := aws.StringValue(assumeOut.Credentials.AccessKeyId)
+
+	cred, err := svc.LookupSessionCredential(akid)
+	require.NoError(t, err)
+	require.NotNil(t, cred)
+	mutate(cred)
+	raw, err := json.Marshal(cred)
+	require.NoError(t, err)
+	_, err = sessionsKV(t, svc).Put(t.Context(), akid, raw)
+	require.NoError(t, err)
+
+	return presignTestURL(t, akid, aws.StringValue(assumeOut.Credentials.SecretAccessKey), cluster, signedAt, 900), assumeOut
+}
+
+// A record minted before PrincipalType existed carries an empty value and is a
+// role session.
+func TestVerifyPresignedGetCallerIdentity_LegacyEmptyPrincipalType_ResolvesAsAssumedRole(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "legacy-cluster"
+	u, assumeOut := rewriteSession(t, svc, "irsa-legacy", cluster, signedAt, func(c *SessionCredential) {
+		c.PrincipalType = ""
+	})
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeAssumedRolePresigned, got.PrincipalType)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.Arn), got.ARN)
+	assert.Equal(t, aws.StringValue(assumeOut.AssumedRoleUser.AssumedRoleId), got.UserID)
+}
+
+// The EKS webhook maps the returned ARN to a Kubernetes identity, so an identity
+// that resolves without one must be refused, not returned empty.
+func TestVerifyPresignedGetCallerIdentity_EmptyARN_Rejected(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "no-arn-cluster"
+	u, _ := rewriteSession(t, svc, "irsa-noarn", cluster, signedAt, func(c *SessionCredential) {
+		c.AssumedRoleARN = ""
+	})
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Equal(t, awserrors.ErrorInvalidIdentityToken, err.Error())
 }
 
 // Before the continuity check the session branch performed no IAM lookup at

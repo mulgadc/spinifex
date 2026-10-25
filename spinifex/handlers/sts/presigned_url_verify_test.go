@@ -139,6 +139,29 @@ func TestVerifyPresignedGetCallerIdentity_UserSession_ResolvesAsUser(t *testing.
 	assert.Equal(t, testCallerAccountID, got.AccountID)
 }
 
+// GetCallerIdentity reports the account ID as root's UserId, so the presigned
+// door must agree with the SigV4 one for a root session.
+func TestVerifyPresignedGetCallerIdentity_RootSession_UserIDIsAccountID(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	seedUser(t, svc, testCallerAccountID, "root")
+	tokOut, err := svc.GetSessionToken(testCallerAccountID, "root", principalTypeUser,
+		testCallerAccessKeyID, &sts.GetSessionTokenInput{})
+	require.NoError(t, err)
+
+	signedAt := time.Now().UTC().Truncate(time.Second)
+	withFrozenTime(t, signedAt)
+
+	const cluster = "root-session-cluster"
+	u := presignTestURL(t, aws.StringValue(tokOut.Credentials.AccessKeyId),
+		aws.StringValue(tokOut.Credentials.SecretAccessKey), cluster, signedAt, 900)
+
+	got, err := svc.VerifyPresignedGetCallerIdentity(u, cluster)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, principalTypeUserPresigned, got.PrincipalType)
+	assert.Equal(t, testCallerAccountID, got.UserID)
+}
+
 // rewriteSession mints a role session, applies mutate to its stored record and
 // returns a URL presigned with it.
 func rewriteSession(t *testing.T, svc *STSServiceImpl, roleName, cluster string, signedAt time.Time, mutate func(*SessionCredential)) (string, *sts.AssumeRoleOutput) {

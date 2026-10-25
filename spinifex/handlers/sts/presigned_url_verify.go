@@ -180,9 +180,14 @@ func (s *STSServiceImpl) resolvePrincipalForVerify(accessKeyID string) (*Presign
 		if cred.PrincipalType == principalTypeUser {
 			// GetSessionToken session: the caller is the IAM user itself. The ARN
 			// is filled in once the signature and continuity check have passed.
+			userID := cred.UserID
+			if cred.SessionName == "root" {
+				// AWS reports the account ID as root's UserId.
+				userID = cred.AccountID
+			}
 			return &PresignedCallerIdentity{
 				AccountID:     cred.AccountID,
-				UserID:        cred.UserID,
+				UserID:        userID,
 				PrincipalType: principalTypeUserPresigned,
 			}, secret, cred, nil
 		}

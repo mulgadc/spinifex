@@ -64,3 +64,33 @@ func TestRenewServerCert_KeepsInitSANs(t *testing.T) {
 	assert.Subset(t, renewed.DNSNames, append(serviceNames, extraDNS))
 	assert.Subset(t, certIPs(renewed), []string{config.DefaultMgmtBridgeIP, bindIP, extraIP})
 }
+
+// The daemon publishes service names under the node's region, so renew must
+// mint them for that region even when [aws] region says otherwise.
+func TestRenewServerCert_UsesNodeRegion(t *testing.T) {
+	configDir := t.TempDir()
+	const nodeRegion = "ap-southeast-2"
+	require.NoError(t, admin.GenerateCACert(filepath.Join(configDir, "ca.pem"), filepath.Join(configDir, "ca.key")))
+
+	cfg := &config.ClusterConfig{
+		Node:  "node1",
+		AWS:   config.AWSConfig{Region: config.DefaultAWSRegion, ServicesDomain: config.DefaultAWSServicesDomain},
+		Nodes: map[string]config.Config{"node1": {Host: "203.0.113.7", Region: nodeRegion}},
+	}
+	require.NoError(t, renewServerCert(configDir, cfg, nil, nil))
+	renewed := readServerCert(t, configDir)
+
+	assert.Subset(t, renewed.DNSNames, admin.AWSGWServiceDNSNames(nodeRegion, config.DefaultAWSServicesDomain))
+	for _, name := range admin.AWSGWServiceDNSNames(config.DefaultAWSRegion, config.DefaultAWSServicesDomain) {
+		assert.NotContains(t, renewed.DNSNames, name)
+	}
+}
+
+func TestRenewServerCert_MissingNodeEntry(t *testing.T) {
+	configDir := t.TempDir()
+	require.NoError(t, admin.GenerateCACert(filepath.Join(configDir, "ca.pem"), filepath.Join(configDir, "ca.key")))
+
+	cfg := &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node2": {Host: "203.0.113.7"}}}
+	require.Error(t, renewServerCert(configDir, cfg, nil, nil))
+	assert.NoFileExists(t, filepath.Join(configDir, "server.pem"))
+}

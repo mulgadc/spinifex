@@ -3097,10 +3097,18 @@ func runCertRenew(cmd *cobra.Command, _ []string) {
 }
 
 // renewServerCert reissues the server cert with the SANs init gave it, taking
-// the bind IP, region and services domain from the node's config.
+// the bind IP and region from the node's entry (the region the daemon publishes
+// service names under) and the services domain from the config.
 func renewServerCert(configDir string, cfg *config.ClusterConfig, extraIPs, extraDNS []string) error {
-	bindIP := cfg.Nodes[cfg.Node].Host
-	return admin.GenerateServerCert(configDir, bindIP, cfg.AWS.Region, cfg.AWS.ServicesDomain, extraIPs, extraDNS)
+	node, ok := cfg.Nodes[cfg.Node]
+	if !ok {
+		return fmt.Errorf("node %q not found in config [nodes]", cfg.Node)
+	}
+	region := node.Region
+	if region == "" {
+		region = cfg.AWS.Region
+	}
+	return admin.GenerateServerCert(configDir, node.Host, region, cfg.AWS.ServicesDomain, extraIPs, extraDNS)
 }
 
 // configDirs holds the paths to config subdirectories created by createConfigSubdirs.

@@ -807,10 +807,26 @@ func (s *LaunchTemplateServiceImpl) commitVersionDeletes(ctx context.Context, ac
 	if err == nil || errors.Is(err, errTemplateGone) {
 		return err
 	}
+	restoreFailed := false
 	for n, body := range deleted {
 		if _, cerr := s.kv.Create(ctx, versionKey(accountID, ltID, n), body); cerr != nil {
+			restoreFailed = true
 			slog.ErrorContext(ctx, "DeleteLaunchTemplateVersions: failed to restore a version", "launchTemplateId", ltID, "version", n, "err", cerr)
 		}
+	}
+	// A template delete that removed the header before the restore has already
+	// swept its bodies, so the restored ones would be left headerless.
+	if _, gerr := s.kv.Get(ctx, kvutil.AccountKey(accountID, ltID)); errors.Is(gerr, jetstream.ErrKeyNotFound) {
+		for n := range deleted {
+			if derr := s.kv.Delete(ctx, versionKey(accountID, ltID, n)); derr != nil {
+				slog.ErrorContext(ctx, "DeleteLaunchTemplateVersions: failed to remove a restored version", "launchTemplateId", ltID, "version", n, "err", derr)
+			}
+		}
+		return errTemplateGone
+	}
+	// A version left deleted makes the default-version refusal untrue.
+	if restoreFailed {
+		return errors.New("restore deleted versions failed")
 	}
 	return err
 }

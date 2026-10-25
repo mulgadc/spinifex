@@ -367,3 +367,85 @@ func TestVersionDeleteRacingATemplateDeleteLeavesNothing(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, code)
 	assert.Empty(t, accountKeys(t, svc.kv, testAccountID))
 }
+
+// A template deleted after a version delete lost to a default change, but
+// before it restored the bodies, is not left with restored headerless bodies.
+func TestRestoredVersionsAfterATemplateDeleteLeaveNothing(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	v2 := versionKey(testAccountID, id, 2)
+	defaulted, deleted := false, false
+	svc.kv = &faultyKV{KeyValue: inner,
+		beforeDelete: func(key string) {
+			if key != v2 || defaulted {
+				return
+			}
+			defaulted = true
+			require.NoError(t, setDefault(&LaunchTemplateServiceImpl{kv: inner}, id, "2"))
+		},
+		beforeCreate: func(key string) {
+			if key != v2 || deleted {
+				return
+			}
+			deleted = true
+			raceDelete(t, svc, id)
+		},
+	}
+
+	_, err := deleteVersions(svc, id, "2")
+	require.True(t, deleted)
+	require.Error(t, err)
+	code, _ := awserrors.ResolveErrorCode(err)
+	assert.Equal(t, awserrors.ErrorInvalidLaunchTemplateIdNotFound, code)
+	assert.Empty(t, accountKeys(t, inner, testAccountID))
+}
+
+// A default change whose header write loses to a version create re-reads the
+// header and commits at its new revision.
+func TestDefaultChangeRetriesAfterAConcurrentVersionCreate(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	header := kvutil.AccountKey(testAccountID, id)
+	raced := false
+	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
+		if key != header || raced {
+			return
+		}
+		raced = true
+		_, err := (&LaunchTemplateServiceImpl{kv: inner}).CreateLaunchTemplateVersion(context.Background(), newVersionInput(id), testAccountID)
+		require.NoError(t, err)
+	}}
+
+	require.NoError(t, setDefault(svc, id, "2"))
+	require.True(t, raced)
+	requireDefaultResolves(t, svc, id, 2)
+	_, err := svc.getVersion(context.Background(), testAccountID, id, 3)
+	assert.NoError(t, err)
+}
+
+// A version delete that loses to a default change but cannot restore the
+// version fails InternalError, not the refusal that implies nothing was deleted.
+func TestUnrestoredVersionDeleteFailsInternalError(t *testing.T) {
+	svc := setupTestService(t)
+	id := createWithUserData(t, svc, "web")
+	inner := svc.kv
+	v2 := versionKey(testAccountID, id, 2)
+	raced := false
+	svc.kv = &faultyKV{KeyValue: inner,
+		beforeDelete: func(key string) {
+			if key != v2 || raced {
+				return
+			}
+			raced = true
+			require.NoError(t, setDefault(&LaunchTemplateServiceImpl{kv: inner}, id, "2"))
+		},
+		failCreate: func(key string) bool { return key == v2 },
+	}
+
+	_, err := deleteVersions(svc, id, "2")
+	require.True(t, raced)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}

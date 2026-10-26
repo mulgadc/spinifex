@@ -16,8 +16,8 @@
 #   VERBOSE                    Set to 1 to echo "[setup] <stage>" before each top-level step.
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, users, sudoers, firewall, timesync, files,
-#                                directories, env, systemd, sysctl, logrotate, udev,
-#                                fixown, migrations
+#                                directories, env, systemd, sysctl, modules, logrotate,
+#                                udev, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -39,8 +39,12 @@ FIREWALL_PEERS="${FIREWALL_DIR}/peers.nft"
 FIREWALL_LOCAL="${FIREWALL_DIR}/local.nft"
 FIREWALL_OPEN="${FIREWALL_DIR}/open-ports.nft"
 FIREWALL_CUSTOM="${FIREWALL_DIR}/custom.nft"
-FIREWALL_MODE_FILE="${FIREWALL_DIR}/mode"
+FIREWALL_MODE_FILE="${SPINIFEX_FIREWALL_MODE_FILE:-${FIREWALL_DIR}/mode}"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
+
+# The daemon runs with ProtectKernelModules=yes, so every module it needs must
+# already be loaded when it starts.
+SPINIFEX_KERNEL_MODULES="openvswitch geneve vhost_net tun"
 
 # Whether the policy is armed, not merely installed. The ISO is an appliance on
 # hardware we define, so a default-deny policy is the product; a curl-to-bash
@@ -420,6 +424,71 @@ sshd_ports() {
     printf '%s' "$_out"
 }
 
+# An unset --firewall keeps the mode a previous install recorded, so a rerun
+# never disarms a node. Otherwise a host that had firewalld running is armed,
+# since masking firewalld would leave it with no firewall at all.
+resolve_firewall_mode() {
+    local recorded
+    case "${INSTALL_SPINIFEX_FIREWALL}" in
+        on|off) return 0 ;;
+        "") ;;
+        *) fatal "--firewall must be 'on' or 'off', got: ${INSTALL_SPINIFEX_FIREWALL}" ;;
+    esac
+    if [ -e "$FIREWALL_MODE_FILE" ]; then
+        recorded=$(tr -d '[:space:]' < "$FIREWALL_MODE_FILE")
+        case "$recorded" in
+            on|off) INSTALL_SPINIFEX_FIREWALL="$recorded"
+                info "Host firewall: keeping the recorded mode '$recorded' ($FIREWALL_MODE_FILE)"
+                return 0 ;;
+            *) fatal "$FIREWALL_MODE_FILE holds '${recorded}', not 'on' or 'off'. Re-run with --firewall=on or --firewall=off" ;;
+        esac
+    fi
+    if [ "${ISO_BUILD:-0}" != "1" ] && firewalld_active; then
+        INSTALL_SPINIFEX_FIREWALL="on"
+        info "Host firewall: firewalld is active, so the Spinifex policy will be armed in its place"
+        return 0
+    fi
+    # The ISO is an appliance and arms; any other host was already doing something.
+    if [ "${ISO_BUILD:-0}" = "1" ]; then
+        INSTALL_SPINIFEX_FIREWALL="on"
+    else
+        INSTALL_SPINIFEX_FIREWALL="off"
+    fi
+}
+
+firewalld_active() {
+    systemctl is-active --quiet firewalld.service 2>/dev/null
+}
+
+# Disable firewalld if present. The node firewall is spinifex-managed: with
+# firewalld running, a packet must be accepted by both its table and ours, so
+# routed NAT, elastic IPs and IMDS on ime-* ports break with nothing logged.
+# Masked, not just disabled, so a package update or D-Bus activation cannot
+# bring it back. Its rules are not saved or migrated.
+mask_firewalld() {
+    local state
+    [ "${ISO_BUILD:-0}" = "1" ] && return 0
+    state=$(systemctl is-enabled firewalld.service 2>/dev/null) || true
+    case "$state" in
+        "" | not-found) return 0 ;;
+        masked) if ! firewalld_active; then
+                info "  firewalld already masked"
+                return 0
+            fi ;;
+    esac
+    $SUDO systemctl mask --now firewalld.service > /dev/null \
+        || fatal "Cannot stop and mask firewalld. The Spinifex nftables policy cannot run beside it"
+    warn "firewalld is now stopped and masked: the Spinifex nftables policy is the only supported node firewall."
+    warn "  firewalld's rules were not migrated. The Spinifex policy filters input only, accepts ssh"
+    warn "  from every IPv4 source until \$trusted_ssh_peers in $FIREWALL_CUSTOM narrows it, and opens"
+    warn "  53, 443, 3000, 8443 and 9999 to any source. Restate any other restriction in that file."
+    if [ "$INSTALL_SPINIFEX_FIREWALL" = "on" ]; then
+        warn "  Until the daemon first loads the policy, this host accepts every connection."
+    else
+        warn "  The Spinifex policy is not armed (--firewall=off), so this host now has no firewall."
+    fi
+}
+
 # The policy is written here rather than shipped in the tarball so the ISO chroot
 # and the ansible path get an identical file without a packaging step. Installed
 # but NOT enabled: the peer set is empty until spinifex-daemon resolves the
@@ -592,6 +661,10 @@ CUSTOM
     printf '%s\n' "$INSTALL_SPINIFEX_FIREWALL" | $SUDO tee "$FIREWALL_MODE_FILE" > /dev/null
     $SUDO chmod 0644 "$FIREWALL_MODE_FILE"
     info "  $FIREWALL_MODE_FILE ($INSTALL_SPINIFEX_FIREWALL)"
+
+    # After the mode file, so a retry after an interrupted install still finds
+    # 'on' once firewalld is no longer active.
+    mask_firewalld
 
     $SUDO tee "$FIREWALL_APPLY" > /dev/null << 'APPLY'
 #!/bin/sh
@@ -934,7 +1007,8 @@ install_dnf_deps() {
     $SUDO dnf install -y -q $OL_RUNTIME_PACKAGES > /dev/null
     info "System dependencies installed"
 
-    load_kernel_modules openvswitch geneve vhost_net tun
+    # shellcheck disable=SC2086  # a whitespace-separated module list
+    load_kernel_modules $SPINIFEX_KERNEL_MODULES
 }
 
 # Enables KVM Utilities, pins QEMU to it, and adds the NFV SIG repository with
@@ -1500,6 +1574,23 @@ EOF
     info "Systemd units installed and enabled (per-service users)"
 }
 
+# --- Install kernel module list ---
+# The file covers later boots; modprobe covers this one.
+install_kernel_modules() {
+    stage "installing kernel module list"
+    $SUDO install -d /etc/modules-load.d
+    # shellcheck disable=SC2086  # one module per line
+    printf '# Managed by spinifex setup.sh — do not edit.\n%s\n' $SPINIFEX_KERNEL_MODULES \
+        | $SUDO tee /etc/modules-load.d/spinifex.conf > /dev/null
+    $SUDO chmod 0644 /etc/modules-load.d/spinifex.conf
+    # A chroot would load them into the build host's kernel.
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        # shellcheck disable=SC2086  # a whitespace-separated module list
+        load_kernel_modules $SPINIFEX_KERNEL_MODULES
+    fi
+    info "Kernel modules: $SPINIFEX_KERNEL_MODULES (/etc/modules-load.d/spinifex.conf)"
+}
+
 # --- Install kernel tunables ---
 # Predastore carries blob, meta and raft over QUIC, and quic-go asks for a 7 MiB
 # UDP receive buffer. Left at the kernel default of 208 KiB it silently drops
@@ -1676,16 +1767,7 @@ main() {
         *) fatal "--channel must be 'latest' or 'dev', got: ${INSTALL_SPINIFEX_CHANNEL} (use --version for a specific tag)" ;;
     esac
 
-    case "${INSTALL_SPINIFEX_FIREWALL}" in
-        on|off) ;;
-        # Unset resolves by install path: the ISO arms, everything else does not.
-        "") if [ "${ISO_BUILD:-0}" = "1" ]; then
-                INSTALL_SPINIFEX_FIREWALL="on"
-            else
-                INSTALL_SPINIFEX_FIREWALL="off"
-            fi ;;
-        *) fatal "--firewall must be 'on' or 'off', got: ${INSTALL_SPINIFEX_FIREWALL}" ;;
-    esac
+    resolve_firewall_mode
 
     info "Spinifex installer"
     echo ""
@@ -1721,6 +1803,7 @@ main() {
     stage_enabled fixown     && fix_file_ownership
     stage_enabled systemd    && install_systemd
     stage_enabled sysctl     && install_sysctl
+    stage_enabled modules    && install_kernel_modules
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
     stage_enabled swap       && setup_swap

@@ -37,7 +37,8 @@
 # /var/lib/spinifex unless --purge-data. Every apt package unless --purge-deps.
 # /swapfile, which setup.sh may have created but cannot be told apart from one
 # the host already had. Anything the operator configured around us: netplan,
-# /etc/iptables/rules.v4, hand-written bridges.
+# /etc/iptables/rules.v4, hand-written bridges. firewalld, which setup.sh
+# masked, is unmasked but not started. /etc/modules-load.d/spinifex.conf.
 set -euo pipefail
 
 ETC_DIR="${SPX_ETC_DIR:-/etc/spinifex}"
@@ -277,6 +278,12 @@ if command -v iptables-save >/dev/null 2>&1 && ! $DRY_RUN; then
     done
 elif $DRY_RUN; then
     echo "  would remove iptables rules commented spinifex-nat-egress / spinifex-eip-ingress / spinifex-imds / spinifex-imds-remap"
+fi
+# setup.sh masks firewalld. Unmasked but left disabled: its rules were never
+# migrated, so starting it is the operator's decision.
+if [ "$(systemctl is-enabled firewalld.service 2>/dev/null)" = masked ]; then
+    run sudo systemctl unmask firewalld.service
+    $DRY_RUN || log "  firewalld unmasked, left disabled"
 fi
 
 # ---------------------------------------------------------------------------

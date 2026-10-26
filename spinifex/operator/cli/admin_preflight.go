@@ -31,6 +31,10 @@ on both.
 It runs the host network check spinifex-daemon and spinifex-vpcd run before they
 start, so a failed spinifex-hostnet apply shows here.
 
+It fails while firewalld or ufw is active: the Spinifex nftables policy is the
+only supported node firewall, and a second ruleset silently drops routed NAT,
+elastic IP and IMDS traffic.
+
 Checks compare content, not mere existence, so a present-but-stale asset is
 caught too. Exits non-zero if any asset is Missing, Stale, Ungranted, Unsupported or
 Failed.`,

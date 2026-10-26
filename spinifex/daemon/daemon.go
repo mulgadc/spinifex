@@ -1398,8 +1398,11 @@ func (d *Daemon) startLocal() error {
 	// Warn on host assets this build expects but that are missing, stale, or
 	// ungranted, so drift surfaces as a named log line rather than a later
 	// cryptic failure. Never fatal — unrelated asset problems must not ground a node.
+	// A Failed check is a host fault rather than asset drift, and its detail names the fix.
 	for _, r := range preflight.CheckHost() {
-		if r.Status != preflight.OK {
+		if r.Status == preflight.Failed {
+			slog.Error("Host preflight check failed", "path", r.Path, "kind", r.Kind, "detail", r.Detail)
+		} else if r.Status != preflight.OK {
 			slog.Warn("Host asset preflight problem", "path", r.Path, "kind", r.Kind,
 				"status", r.Status.String(), "detail", r.Detail,
 				"remediation", "run scripts/update-nodes.sh or make reinstall")

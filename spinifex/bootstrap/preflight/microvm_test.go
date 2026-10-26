@@ -34,6 +34,7 @@ func TestMain(m *testing.M) {
 	resolveQEMU = func() (string, error) { return hostos.QEMUKVMPath, nil }
 	machineHelp = func(string) ([]byte, error) { return []byte(helpWithMicroVM), nil }
 	hostnetOVNRemote = func(context.Context) (string, error) { return "", nil }
+	unitActive = func(string) bool { return false }
 	os.Exit(m.Run())
 }
 

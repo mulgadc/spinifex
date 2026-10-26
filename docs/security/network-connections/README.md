@@ -173,7 +173,10 @@ Nodes **must** sit on a network segment that is not routed to tenant/guest VMs o
 
 Default external surface is five listeners — **9999** (AWS API), **3000** (UI), **22** (SSH), **8443** (S3) and **53** (DNS) — plus **4432** transiently during bootstrap. Every other listener is cluster- or encap-scoped and the operator must enforce this with a host firewall or an upstream network ACL.
 
-The nodes ship no firewall policy today. Until one is installed, this is the operator's responsibility and the reference below is the starting point.
+Every node ships a host firewall policy, `table inet spinifex_filter` in `/etc/spinifex/firewall/spinifex.nft`, written by `setup.sh`; `spinifex-daemon` loads it once cluster peers resolve, filling the peer and encap sets itself.
+It is armed by default on ISO installs; a `setup.sh` install arms it with `--firewall=on`, or when firewalld was active, and otherwise installs it unarmed, so on those nodes the scope split is still the operator's to enforce.
+`setup.sh` masks firewalld wherever it is installed, and `spx admin preflight` fails while firewalld or ufw is active, because a second ruleset silently drops routed NAT, elastic IP and metadata traffic.
+The shipped policy is the authority; the reference below explains the rules it needs and is looser than the shipped one in places, such as accepting all `ime-*` traffic where the shipped policy accepts only the metadata and DNS endpoints.
 
 > **Read the notes under the ruleset before applying it.** A default-deny input policy that
 > omits any of the loopback, conntrack, `ime-*` or Geneve rules will break instance

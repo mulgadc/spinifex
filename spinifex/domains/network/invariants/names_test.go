@@ -250,6 +250,11 @@ func s4ScanRoots(t *testing.T) []string {
 		filepath.Join(root, "spinifex", "runtime", "roles", "vpcd"),
 		filepath.Join(root, "spinifex", "runtime", "daemon"),
 		filepath.Join(root, "spinifex", "domains", "ecs"),
+		filepath.Join(root, "spinifex", "domains", "iam"),
+		filepath.Join(root, "spinifex", "domains", "sts"),
+		filepath.Join(root, "spinifex", "domains", "rds", "instance"),
+		filepath.Join(root, "spinifex", "domains", "eks", "cluster"),
+		filepath.Join(root, "spinifex", "domains", "elbv2"),
 		filepath.Join(root, "spinifex", "runtime", "compute", "vm"),
 	}
 }
